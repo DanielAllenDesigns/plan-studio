@@ -58,7 +58,11 @@ fn crc_table() -> [u32; 256] {
     for (n, slot) in t.iter_mut().enumerate() {
         let mut c = n as u32;
         for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
         }
         *slot = c;
     }
@@ -295,15 +299,11 @@ pub fn export_library(
 /// Reads an archive written by [`export_library`].
 pub fn import_library(bytes: &[u8]) -> Result<LibraryArchive, ArchiveError> {
     let entries = read_zip(bytes)?;
-    let manifest = entries
-        .iter()
-        .find(|(n, _)| n == MANIFEST)
-        .ok_or_else(|| {
-            ArchiveError(
-                "This zip is not a Plan Studio library export (no plan-studio-library.json)"
-                    .into(),
-            )
-        })?;
+    let manifest = entries.iter().find(|(n, _)| n == MANIFEST).ok_or_else(|| {
+        ArchiveError(
+            "This zip is not a Plan Studio library export (no plan-studio-library.json)".into(),
+        )
+    })?;
     let m: Manifest = serde_json::from_slice(&manifest.1)
         .map_err(|e| ArchiveError(format!("Damaged library file: {e}")))?;
     if m.format != FORMAT {
@@ -362,22 +362,35 @@ mod tests {
         bad[at] = b'j';
         assert!(read_zip(&bad).unwrap_err().0.contains("checksum"));
         assert!(read_zip(b"nope").is_err());
-        assert!(read_zip(b"SQLite format 3\0 and more bytes here....").unwrap_err().0.contains("Chief"));
+        assert!(read_zip(b"SQLite format 3\0 and more bytes here....")
+            .unwrap_err()
+            .0
+            .contains("Chief"));
         assert_eq!(read_zip(&write_zip(&[])).unwrap(), Vec::new());
     }
 
     fn sample_items() -> (Vec<CatalogItem>, Model3d) {
         let model = Model3d::box_model(30.0, 20.0, 40.0, Some([10, 200, 30]));
-        let mut a = CatalogItem::new("user.model.1", "Sofa", Placement::FreeStanding, Symbol2d::default())
-            .with_category(&["User", "Furniture"])
-            .with_size(30.0, 20.0, 40.0)
-            .with_tags(&["couch"]);
+        let mut a = CatalogItem::new(
+            "user.model.1",
+            "Sofa",
+            Placement::FreeStanding,
+            Symbol2d::default(),
+        )
+        .with_category(&["User", "Furniture"])
+        .with_size(30.0, 20.0, 40.0)
+        .with_tags(&["couch"]);
         a.kind = ItemKind::Model;
         a.model3d = Some("user-models/user.model.1.psm".into());
         a.style = Some("modern".into());
         a.model_rotation = 90.0;
-        let b = CatalogItem::new("user.plain.1", "Plain", Placement::Ceiling, Symbol2d::default())
-            .with_category(&["User"]);
+        let b = CatalogItem::new(
+            "user.plain.1",
+            "Plain",
+            Placement::Ceiling,
+            Symbol2d::default(),
+        )
+        .with_category(&["User"]);
         (vec![a, b], model)
     }
 
@@ -385,7 +398,8 @@ mod tests {
     fn an_exported_library_imports_identical() {
         let (items, model) = sample_items();
         let mut meta = UserMeta::default();
-        meta.create_folder(&["User".into(), "Empty".into()]).unwrap();
+        meta.create_folder(&["User".into(), "Empty".into()])
+            .unwrap();
         meta.toggle_favorite("user.model.1");
         meta.add_recent("user.plain.1");
         let bytes = model.to_bytes();
@@ -413,7 +427,10 @@ mod tests {
             .0
             .contains("missing"));
         let foreign = write_zip(&[("x.txt".into(), b"x".to_vec())]);
-        assert!(import_library(&foreign).unwrap_err().0.contains("not a Plan Studio"));
+        assert!(import_library(&foreign)
+            .unwrap_err()
+            .0
+            .contains("not a Plan Studio"));
         let mut evil = items[0].clone();
         evil.model3d = Some("../../etc/passwd".into());
         assert!(export_library(&[evil], &UserMeta::default(), &|_| Some(vec![])).is_err());

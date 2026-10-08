@@ -1105,7 +1105,9 @@ pub fn run_preset_command(cx: &mut EditorContext, id: &str) -> bool {
     };
     request_preset(preset);
     cx.requests
-        .push(EditorRequest::SetTool(ToolId::CabinetVariant(preset.kind())));
+        .push(EditorRequest::SetTool(ToolId::CabinetVariant(
+            preset.kind(),
+        )));
     true
 }
 
@@ -1976,7 +1978,10 @@ mod tests {
     fn a_library_type_entry_asks_for_the_type_and_starts_the_tool() {
         let mut cx = setup();
         assert!(!run_preset_command(&mut cx, "cabinet.nope"));
-        assert!(run_preset_command(&mut cx, preset_command(CabinetPreset::Pantry)));
+        assert!(run_preset_command(
+            &mut cx,
+            preset_command(CabinetPreset::Pantry)
+        ));
         assert!(matches!(
             cx.requests.last(),
             Some(EditorRequest::SetTool(ToolId::CabinetVariant(k))) if *k == CabinetPreset::Pantry.kind()

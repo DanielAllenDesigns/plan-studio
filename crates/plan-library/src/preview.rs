@@ -16,7 +16,12 @@ pub struct Preview {
 impl Preview {
     /// Number of pixels a triangle covers.
     pub fn covered_pixels(&self) -> usize {
-        self.rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count()
+        self.rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] > 0)
+            .count()
     }
 }
 
@@ -123,7 +128,11 @@ pub fn render_preview(model: &Model3d, size: usize, yaw_deg: f32, pitch_deg: f32
             // Both sides shade (imported meshes often have flipped faces):
             // face the normal towards the eye.
             let facing = dot(n, eye);
-            let n = if facing < 0.0 { [-n[0], -n[1], -n[2]] } else { n };
+            let n = if facing < 0.0 {
+                [-n[0], -n[1], -n[2]]
+            } else {
+                n
+            };
             let lambert = 0.35 + 0.35 * dot(n, eye).max(0.0) + 0.45 * dot(n, key).max(0.0);
             let shade = lambert.clamp(0.0, 1.0);
             let rgb = [
@@ -136,7 +145,16 @@ pub fn render_preview(model: &Model3d, size: usize, yaw_deg: f32, pitch_deg: f32
                 to_screen(project(b)),
                 to_screen(project(c)),
             );
-            fill(&sa, &sb, &sc, hi_res, rgb, &mut color, &mut depth, &mut covered);
+            fill(
+                &sa,
+                &sb,
+                &sc,
+                hi_res,
+                rgb,
+                &mut color,
+                &mut depth,
+                &mut covered,
+            );
         }
     }
 

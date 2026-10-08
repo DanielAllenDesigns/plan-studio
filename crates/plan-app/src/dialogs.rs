@@ -255,10 +255,8 @@ impl SpecDialog {
             } else {
                 PREVIEW_WIDTH
             };
-            let prev_rect = Rect::from_min_max(
-                Pos2::new(body.max.x - preview_width, body.min.y),
-                body.max,
-            );
+            let prev_rect =
+                Rect::from_min_max(Pos2::new(body.max.x - preview_width, body.min.y), body.max);
             let mid_rect = Rect::from_min_max(
                 Pos2::new(tab_rect.max.x + 10.0, body.min.y),
                 Pos2::new(

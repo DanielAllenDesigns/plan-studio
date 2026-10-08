@@ -3035,14 +3035,26 @@ mod tests {
         assert_eq!(look(RenderingTechnique::Clay), Look::Clay);
         assert_eq!(look(RenderingTechnique::GlassHouse), Look::GlassHouse);
         assert_eq!(look(RenderingTechnique::Watercolor), Look::Watercolor);
-        assert_eq!(look(RenderingTechnique::TechnicalIllustration), Look::Technical);
+        assert_eq!(
+            look(RenderingTechnique::TechnicalIllustration),
+            Look::Technical
+        );
         assert_eq!(look(RenderingTechnique::Duotone), Look::Duotone);
         assert_eq!(look(RenderingTechnique::LineDrawing), Look::Flat);
         // The looks that draw edge lines in the composite pass.
-        assert!(look(RenderingTechnique::TechnicalIllustration).params().edge_lines > 0.0);
+        assert!(
+            look(RenderingTechnique::TechnicalIllustration)
+                .params()
+                .edge_lines
+                > 0.0
+        );
         assert!(look(RenderingTechnique::Standard).params().sky);
         let mut vp = Viewport3d::new();
-        apply_to_viewport(&mut vp, &technique_view(RenderingTechnique::Watercolor), None);
+        apply_to_viewport(
+            &mut vp,
+            &technique_view(RenderingTechnique::Watercolor),
+            None,
+        );
         assert_eq!(vp.look, Look::Watercolor);
         assert!(vp.settings.shadows && vp.settings.ambient_occlusion);
     }

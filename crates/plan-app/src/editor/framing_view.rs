@@ -41,8 +41,8 @@
 use super::{Camera, EditorContext, ObjectRef};
 use crate::editor::roof_view;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Shape, Stroke};
-use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
 use plan_core::foundation::{FoundationLayer, PlatformKind};
+use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
 use plan_core::{
     detect_rooms, DxfExport, Floor, FloorKind, Id, Layer, Opening, Project, Room, Wall,
 };
@@ -307,7 +307,10 @@ impl Layout {
 /// Base lines.
 pub fn frame_floor_all(project: &Project, fi: usize, with_roof: bool) -> FloorBuild {
     let floor = &project.floors[fi];
-    let FramingSettings { walls: d, roof: roof_d } = settings(project);
+    let FramingSettings {
+        walls: d,
+        roof: roof_d,
+    } = settings(project);
     let layout = Layout::from_records(&load_records(floor));
     let mut out = FloorBuild::default();
 
@@ -540,10 +543,17 @@ pub fn table_of(t: &Takeoff) -> (Vec<String>, Vec<Vec<String>>) {
 /// The framing schedule of a [`Takeoff`]: one row per member type, size and
 /// cut length with its count, linear feet and board feet, then a total.
 pub fn cut_table(t: &Takeoff) -> (Vec<String>, Vec<Vec<String>>) {
-    let columns: Vec<String> = ["Member", "Size", "Cut Length", "Qty", "Linear ft", "Board ft"]
-        .iter()
-        .map(|c| c.to_string())
-        .collect();
+    let columns: Vec<String> = [
+        "Member",
+        "Size",
+        "Cut Length",
+        "Qty",
+        "Linear ft",
+        "Board ft",
+    ]
+    .iter()
+    .map(|c| c.to_string())
+    .collect();
     let mut rows: Vec<Vec<String>> = t
         .cuts
         .iter()
@@ -2394,15 +2404,14 @@ mod tests {
         assert_eq!(count_kind(&cx.framing, MemberKind::TeeStud), 0);
         // A partition butting into the south wall backs it on both sides.
         let mut cx = house();
-        cx.project
-            .add_wall(
-                0,
-                Point::new(160.0, 0.0),
-                Point::new(160.0, 192.0),
-                4.5,
-                109.125,
-                WallKind::Interior,
-            );
+        cx.project.add_wall(
+            0,
+            Point::new(160.0, 0.0),
+            Point::new(160.0, 192.0),
+            4.5,
+            109.125,
+            WallKind::Interior,
+        );
         cx.refresh();
         build(&mut cx, false);
         // The partition's two ends meet the south and north walls.
@@ -2438,7 +2447,10 @@ mod tests {
         build(&mut cx, false);
         assert_eq!(count_kind(&cx.framing, MemberKind::CornerStud), 0);
         assert_eq!(count_kind(&cx.framing, MemberKind::Blocking), 0);
-        assert!(cx.framing.len() < plain, "24\" studs and no blocking: fewer pieces");
+        assert!(
+            cx.framing.len() < plain,
+            "24\" studs and no blocking: fewer pieces"
+        );
         // Delete Framing keeps the defaults, and so does a rebuild.
         clear(&mut cx);
         assert_eq!(settings(&cx.project), s);
@@ -2458,16 +2470,18 @@ mod tests {
     fn a_stairwell_in_the_floor_platform_is_framed_with_headers_and_trimmers() {
         let mut cx = house();
         let mut layer = FoundationLayer::default();
-        layer.platform_holes.push(plan_core::foundation::PlatformHole::new(
-            5,
-            vec![
-                Point::new(100.0, 60.0),
-                Point::new(136.0, 60.0),
-                Point::new(136.0, 120.0),
-                Point::new(100.0, 120.0),
-            ],
-            PlatformKind::Floor,
-        ));
+        layer
+            .platform_holes
+            .push(plan_core::foundation::PlatformHole::new(
+                5,
+                vec![
+                    Point::new(100.0, 60.0),
+                    Point::new(136.0, 60.0),
+                    Point::new(136.0, 120.0),
+                    Point::new(100.0, 120.0),
+                ],
+                PlatformKind::Floor,
+            ));
         cx.project.floors[0].set_foundation(&layer).unwrap();
         assert_eq!(floor_holes(cx.floor()).len(), 1);
         build(&mut cx, false);
@@ -2517,7 +2531,9 @@ mod tests {
             p.eave.eave_cut = Some(EaveCut::Level);
         }
         roof_view::store(&mut cx.project, 0, &mut set);
-        assert!(eave_specs(cx.floor()).iter().all(|e| e.cut == Some(TailCut::Level)));
+        assert!(eave_specs(cx.floor())
+            .iter()
+            .all(|e| e.cut == Some(TailCut::Level)));
         build(&mut cx, false);
         assert!(cx
             .framing
@@ -2533,14 +2549,29 @@ mod tests {
         let data = takeoff_data(&cx.project, 0, false);
         assert_eq!(
             data.cut_columns,
-            ["Member", "Size", "Cut Length", "Qty", "Linear ft", "Board ft"]
+            [
+                "Member",
+                "Size",
+                "Cut Length",
+                "Qty",
+                "Linear ft",
+                "Board ft"
+            ]
         );
         let studs: Vec<_> = data.cut_rows.iter().filter(|r| r[0] == "stud").collect();
         assert!(!studs.is_empty());
         // Studs are 2x6 cut to 104 5/8".
         assert!(studs.iter().any(|r| r[1] == "2x6" && r[2] == "104 5/8\""));
         let kinds: Vec<&str> = data.cut_rows.iter().map(|r| r[0].as_str()).collect();
-        for want in ["top plate", "bottom plate", "header", "joist", "rim joist", "corner stud", "blocking"] {
+        for want in [
+            "top plate",
+            "bottom plate",
+            "header",
+            "joist",
+            "rim joist",
+            "corner stud",
+            "blocking",
+        ] {
             assert!(kinds.contains(&want), "{want} missing: {kinds:?}");
         }
         // Members of one type sit together and the table ends with a total.
@@ -2560,7 +2591,9 @@ mod tests {
         let (n, lf): (f64, f64) = (r[3].parse().unwrap(), r[4].parse().unwrap());
         assert!((lf - n * 104.625 / 12.0).abs() < 0.06, "{lf}");
         assert_eq!(data.cut_csv.lines().count(), data.cut_rows.len() + 1);
-        assert!(data.cut_csv.starts_with("Member,Size,Cut Length,Qty,Linear ft,Board ft\n"));
+        assert!(data
+            .cut_csv
+            .starts_with("Member,Size,Cut Length,Qty,Linear ft,Board ft\n"));
         // Manual members join the table.
         place(
             &mut cx,
@@ -2570,7 +2603,10 @@ mod tests {
         );
         let more = takeoff_data(&cx.project, 0, false);
         assert_eq!(more.members, data.members + 1);
-        assert!(more.cut_rows.iter().any(|r| r[0] == "joist" && r[2] == "120\""));
+        assert!(more
+            .cut_rows
+            .iter()
+            .any(|r| r[0] == "joist" && r[2] == "120\""));
     }
 
     #[test]
@@ -2608,7 +2644,12 @@ mod tests {
         activate_overview(&mut cx);
         assert!(!cx.layers().is_visible("Extra"));
         assert_eq!(
-            cx.project.layer_sets.names().iter().filter(|n| **n == OVERVIEW).count(),
+            cx.project
+                .layer_sets
+                .names()
+                .iter()
+                .filter(|n| **n == OVERVIEW)
+                .count(),
             1
         );
         // An unframed floor is framed on the way in.
@@ -2628,7 +2669,11 @@ mod tests {
         build(&mut cx, false);
         let plain = elevation_scene(&cx.project);
         let base = plan_3d::build_scene(&cx.project);
-        assert_eq!(plain.meshes.len(), base.meshes.len(), "no change outside the overview");
+        assert_eq!(
+            plain.meshes.len(),
+            base.meshes.len(),
+            "no change outside the overview"
+        );
         let wall_ids: Vec<Id> = cx.floor().walls.iter().map(|w| w.id).collect();
         let skin = |m: &plan_3d::Mesh| {
             WALL_SURFACES.contains(&m.material)
@@ -2643,11 +2688,17 @@ mod tests {
             .iter()
             .filter(|m| m.material == plan_3d::Material::Framing)
             .count();
-        let walls = load(cx.floor()).iter().filter(|m| m.wall_id.is_some()).count();
+        let walls = load(cx.floor())
+            .iter()
+            .filter(|m| m.wall_id.is_some())
+            .count();
         assert_eq!(studs, walls);
         assert!(studs > 40);
         // The meshes are the members' own boxes: the first stud's bounds match.
-        let m = load(cx.floor()).into_iter().find(|m| m.kind == MemberKind::Stud).unwrap();
+        let m = load(cx.floor())
+            .into_iter()
+            .find(|m| m.kind == MemberKind::Stud)
+            .unwrap();
         let (lo, hi) = m.mesh().bounds().unwrap();
         assert!(hi[1] > lo[1]);
         // The 3D view gets the automatic members too.

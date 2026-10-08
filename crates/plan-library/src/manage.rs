@@ -336,11 +336,19 @@ mod tests {
         assert!(meta
             .rename_folder(&mut items, &path(&["User", "Cooking"]), "Other")
             .is_err());
-        meta.move_folder(&mut items, &path(&["User", "Cooking"]), &path(&["User", "Other"]))
-            .unwrap();
+        meta.move_folder(
+            &mut items,
+            &path(&["User", "Cooking"]),
+            &path(&["User", "Other"]),
+        )
+        .unwrap();
         assert_eq!(items[0].category, path(&["User", "Other", "Cooking"]));
         assert!(meta
-            .move_folder(&mut items, &path(&["User", "Other"]), &path(&["User", "Other", "Cooking"]))
+            .move_folder(
+                &mut items,
+                &path(&["User", "Other"]),
+                &path(&["User", "Other", "Cooking"])
+            )
             .is_err());
         meta.toggle_favorite("user.a.2");
         let gone = meta.delete_folder(&mut items, &path(&["User", "Other"]));

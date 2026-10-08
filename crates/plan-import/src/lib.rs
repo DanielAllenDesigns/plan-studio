@@ -28,8 +28,8 @@ pub use convert::{
     apply_cad, to_cad_objects, to_cad_objects_with, to_inches_factor, ImportOptions, LayerMapping,
     LayerTarget,
 };
-pub use model::{ImportedModel, ImportedPart, ModelError, ModelOptions, UpAxis};
 pub use dxf::{parse_dxf, DxfBlock, DxfDrawing, DxfEntity, DxfLayer, DxfUnits};
+pub use model::{ImportedModel, ImportedPart, ModelError, ModelOptions, UpAxis};
 pub use walls::{apply_walls, cad_to_walls, CadToWallsOptions, CadToWallsResult, WallProposal};
 
 /// Why a drawing could not be imported.

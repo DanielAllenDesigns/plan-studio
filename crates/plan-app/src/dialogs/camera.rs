@@ -2129,7 +2129,10 @@ mod tests {
             ..RayTraceDialog::default()
         };
         let s = d.settings();
-        assert!((s.exposure - 2.0).abs() < 1e-5, "+1 EV doubles the exposure");
+        assert!(
+            (s.exposure - 2.0).abs() < 1e-5,
+            "+1 EV doubles the exposure"
+        );
         assert!(s.denoise && s.preview_blocks);
         assert_eq!(
             d.environment().sky_model,
@@ -2150,7 +2153,12 @@ mod tests {
             focus_in: 120.0,
             ..RayTraceDialog::default()
         };
-        d.areas = vec![AreaLight::ceiling_panel([5.0, 90.0, -5.0], 24.0, 24.0, [4.0; 3])];
+        d.areas = vec![AreaLight::ceiling_panel(
+            [5.0, 90.0, -5.0],
+            24.0,
+            24.0,
+            [4.0; 3],
+        )];
         d.start(
             tiny_scene(),
             plan_render::Camera::from_plan(Point::new(0.0, -300.0), 90.0, 120.0, 60.0),

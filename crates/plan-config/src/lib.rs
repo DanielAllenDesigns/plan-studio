@@ -34,9 +34,7 @@ pub use hotkeys::{
     parse_hotkeys_xml, resolve_names, resolved_markdown, to_plan_studio_bindings, HotkeyBinding,
     HotkeyFile, NameSource, PlanBinding, ResolveStats,
 };
-pub use import::{
-    all_view_buttons, buttons_for_view, import_hotkeys_xml, ChiefView, ViewToolbar,
-};
+pub use import::{all_view_buttons, buttons_for_view, import_hotkeys_xml, ChiefView, ViewToolbar};
 pub use prefs::{
     daniel_x18, parse_ini, preferences_from_ini, ChiefPreferences, IniFile, IniSection, SnapPrefs,
 };

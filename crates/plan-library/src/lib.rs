@@ -54,8 +54,8 @@ mod symbol;
 pub mod user;
 
 pub use catalog::{Catalog, CatalogItem, ItemKind, Placement};
-pub use model::{Model3d, ModelPart};
 pub use library::{CategoryNode, Library};
+pub use model::{Model3d, ModelPart};
 pub use starter::core_catalog;
 pub use symbol::{Bounds, Stroke, Symbol2d};
 

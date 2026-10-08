@@ -17,8 +17,8 @@ use super::{
     dis_combo, fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab,
     PV_FAINT, PV_INK, PV_WALL,
 };
-use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use crate::editor::framing_view::FramingSettings;
+use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::geometry::Point;
 use plan_framing::{
     FramingMaterial, FramingMember, LumberSize, ManualMemberKind, Truss, TrussSpec, TrussType,
@@ -645,7 +645,9 @@ impl DefaultsForm {
     fn walls(&mut self, ui: &mut Ui) {
         let d = &mut self.draft.walls;
         section(ui, "Studs and plates");
-        row(ui, "Stud size", |ui| size_combo(ui, "fd_stud", &mut d.stud_size));
+        row(ui, "Stud size", |ui| {
+            size_combo(ui, "fd_stud", &mut d.stud_size)
+        });
         self.fields
             .length_row(ui, "Stud spacing", "fd_stud_spacing", &mut d.stud_spacing);
         ui.weak("A 2x4 stud becomes 2x6 in walls 6\" and thicker.");
@@ -716,13 +718,8 @@ impl DefaultsForm {
                 .header_table
                 .last()
                 .map_or(plan_framing::TWO_BY_SIX, |r| r.lumber);
-            d.header_table.insert(
-                before,
-                plan_framing::HeaderRow {
-                    up_to,
-                    lumber,
-                },
-            );
+            d.header_table
+                .insert(before, plan_framing::HeaderRow { up_to, lumber });
         }
         // Rows stay in order of width.
         let last = d.header_table.len().saturating_sub(1);
@@ -739,9 +736,15 @@ impl DefaultsForm {
     fn floor(&mut self, ui: &mut Ui) {
         let d = &mut self.draft.walls;
         section(ui, "Floor joists");
-        row(ui, "Joist size", |ui| size_combo(ui, "fd_joist", &mut d.joist_size));
-        self.fields
-            .length_row(ui, "Joist spacing", "fd_joist_spacing", &mut d.joist_spacing);
+        row(ui, "Joist size", |ui| {
+            size_combo(ui, "fd_joist", &mut d.joist_size)
+        });
+        self.fields.length_row(
+            ui,
+            "Joist spacing",
+            "fd_joist_spacing",
+            &mut d.joist_spacing,
+        );
         ui.checkbox(&mut d.rim_joist, "Rim joists");
         ui.checkbox(&mut d.blocking, "Mid-span blocking");
         section(ui, "Holes (stairwells)");
@@ -753,14 +756,18 @@ impl DefaultsForm {
         use plan_framing::OverhangCut;
         let r = &mut self.draft.roof;
         section(ui, "Rafters");
-        row(ui, "Rafter size", |ui| size_combo(ui, "fd_rafter", &mut r.rafter));
+        row(ui, "Rafter size", |ui| {
+            size_combo(ui, "fd_rafter", &mut r.rafter)
+        });
         self.fields
             .length_row(ui, "Rafter spacing", "fd_rafter_spacing", &mut r.spacing);
         row(ui, "Ridge", |ui| size_combo(ui, "fd_ridge", &mut r.ridge));
         row(ui, "Hip and valley", |ui| {
             size_combo(ui, "fd_hip", &mut r.hip_valley);
         });
-        row(ui, "Fascia", |ui| size_combo(ui, "fd_fascia", &mut r.fascia));
+        row(ui, "Fascia", |ui| {
+            size_combo(ui, "fd_fascia", &mut r.fascia)
+        });
         section(ui, "Cuts");
         row(ui, "Tail cut", |ui| {
             egui::ComboBox::from_id_salt("fd_tail")
@@ -780,18 +787,18 @@ impl DefaultsForm {
                 });
         });
         ui.weak("A plane's own Eave cut wins over this one.");
-        self.fields.length_row(
-            ui,
-            "Birdsmouth seat",
-            "fd_seat",
-            &mut r.birdsmouth_seat,
-        );
+        self.fields
+            .length_row(ui, "Birdsmouth seat", "fd_seat", &mut r.birdsmouth_seat);
         section(ui, "Other roof framing");
         ui.checkbox(&mut r.collar_ties, "Collar ties");
         ui.checkbox(&mut r.ceiling_joists, "Ceiling joists");
         ui.checkbox(&mut r.trusses, "Trusses instead of rafters");
-        self.fields
-            .length_row(ui, "Truss spacing", "fd_truss_spacing", &mut r.truss_spacing);
+        self.fields.length_row(
+            ui,
+            "Truss spacing",
+            "fd_truss_spacing",
+            &mut r.truss_spacing,
+        );
         self.fields.length_row(
             ui,
             "Trusses over a span of (0 = never)",
@@ -970,8 +977,14 @@ mod tests {
         d.draft_mut().walls.stud_spacing = 24.0;
         d.draft_mut().walls.header_table[2].lumber = plan_framing::TWO_BY_TWELVE;
         d.draft_mut().roof.overhang_cut = plan_framing::OverhangCut::Level;
-        assert_eq!(stored.walls.stud_spacing, 16.0, "the stored settings are untouched");
-        assert_eq!(d.draft().walls.header_lumber_for(72.0).nominal_name(), "2x12");
+        assert_eq!(
+            stored.walls.stud_spacing, 16.0,
+            "the stored settings are untouched"
+        );
+        assert_eq!(
+            d.draft().walls.header_lumber_for(72.0).nominal_name(),
+            "2x12"
+        );
         let ctx = egui::Context::default();
         for _ in 0..2 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {

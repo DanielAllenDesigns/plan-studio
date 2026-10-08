@@ -26,14 +26,15 @@ pub mod schedule_kinds;
 pub mod terrain_report;
 
 pub use materials::{
-    fmt_money, materials_list, materials_report, price_keys, row_cells as materials_cells, to_csv as materials_to_csv,
-    to_schedule as materials_to_schedule, total_price as materials_total, MaterialLine,
-    MaterialsScope, MasterItem, MasterList, CATEGORIES as MATERIAL_CATEGORIES,
-    COLUMNS as MATERIAL_COLUMNS,
+    fmt_money, materials_list, materials_report, price_keys, row_cells as materials_cells,
+    to_csv as materials_to_csv, to_schedule as materials_to_schedule,
+    total_price as materials_total, MasterItem, MasterList, MaterialLine, MaterialsScope,
+    CATEGORIES as MATERIAL_CATEGORIES, COLUMNS as MATERIAL_COLUMNS,
 };
 pub use pdf::{
-    plan_sheet, plan_sheet_with, LineCap, LineJoin, PdfColor, PdfColorMode, PdfDoc, PlanSheetOptions,
-    PlanSheetResult, RoomAreaBasis, Scale, SheetSize, TitleBlock, CHIEF_SHEET_BACKGROUND,
+    plan_sheet, plan_sheet_with, LineCap, LineJoin, PdfColor, PdfColorMode, PdfDoc,
+    PlanSheetOptions, PlanSheetResult, RoomAreaBasis, Scale, SheetSize, TitleBlock,
+    CHIEF_SHEET_BACKGROUND,
 };
 pub use schedule::{
     door_schedule, room_name, room_schedule, wall_schedule, window_schedule, Schedule,

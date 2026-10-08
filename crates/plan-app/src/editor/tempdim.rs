@@ -531,15 +531,8 @@ pub fn cabinet_temp_dims(
     // Each end looks outward from its own edge, so a ghost that overlaps a
     // neighbour still measures to the things on its other sides.
     let span = |s0: f64| {
-        plan_cabinets::free_span(
-            &obstacles,
-            cab.position,
-            u,
-            v,
-            (0.05, cab.depth - 0.05),
-            s0,
-        )
-        .unwrap_or((None, None))
+        plan_cabinets::free_span(&obstacles, cab.position, u, v, (0.05, cab.depth - 0.05), s0)
+            .unwrap_or((None, None))
     };
     let left = span(0.0).0;
     let right = span(cab.width).1;
@@ -1210,7 +1203,11 @@ mod tests {
     }
 
     fn dim(cx: &EditorContext, kind: TempDimKind) -> Option<f64> {
-        cx.temp.dims.iter().find(|d| d.kind == kind).map(|d| d.value)
+        cx.temp
+            .dims
+            .iter()
+            .find(|d| d.kind == kind)
+            .map(|d| d.value)
     }
 
     #[test]
@@ -1343,7 +1340,12 @@ mod tests {
         let (cx, _) = kitchen();
         let mut ghost = Cabinet::base(30.0);
         ghost.position = Point::new(10.0, 3.0);
-        let dims = cabinet_temp_dims(cx.floor(), &ghost, ObjectRef::Cabinet(0), &TempLocate::default());
+        let dims = cabinet_temp_dims(
+            cx.floor(),
+            &ghost,
+            ObjectRef::Cabinet(0),
+            &TempLocate::default(),
+        );
         let get = |k| dims.iter().find(|d| d.kind == k).map(|d| d.value);
         assert_eq!(get(TempDimKind::CabinetWidth), Some(30.0));
         assert!((get(TempDimKind::CabinetToLeft).unwrap() - 7.0).abs() < 1e-9);
@@ -1355,9 +1357,12 @@ mod tests {
             c.position = Point::new(10.0, 3.0);
             c
         };
-        assert!(
-            cabinet_temp_dims(cx.floor(), &custom, ObjectRef::Cabinet(0), &TempLocate::default())
-                .is_empty()
-        );
+        assert!(cabinet_temp_dims(
+            cx.floor(),
+            &custom,
+            ObjectRef::Cabinet(0),
+            &TempLocate::default()
+        )
+        .is_empty());
     }
 }

@@ -130,16 +130,10 @@ impl Soup {
             self.tri([a0, b0, b1], n);
             self.tri([a0, b1, a1], n);
             if r1 > 1e-6 {
-                self.tri(
-                    [scene(center, y1), a1, b1],
-                    [0.0, 1.0, 0.0],
-                );
+                self.tri([scene(center, y1), a1, b1], [0.0, 1.0, 0.0]);
             }
             if r0 > 1e-6 {
-                self.tri(
-                    [scene(center, y0), a0, b0],
-                    [0.0, -1.0, 0.0],
-                );
+                self.tri([scene(center, y0), a0, b0], [0.0, -1.0, 0.0]);
             }
         }
     }
@@ -285,19 +279,27 @@ fn device_parts<'a>(
             match k {
                 DeviceKind::Panel => {
                     let (w, h, t) = PANEL;
-                    parts.body().prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
+                    parts
+                        .body()
+                        .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
                 }
                 DeviceKind::WallSconce => {
                     let (w, h, t) = SCONCE;
-                    parts.body().prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
+                    parts
+                        .body()
+                        .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
                 }
                 DeviceKind::Thermostat => {
                     let (w, h, t) = THERMOSTAT;
-                    parts.body().prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
+                    parts
+                        .body()
+                        .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
                 }
                 _ => {
                     let (w, h, t) = PLATE;
-                    parts.body().prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
+                    parts
+                        .body()
+                        .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
                     plate_details(&mut parts, face, n, y);
                 }
             }
@@ -310,9 +312,11 @@ fn device_parts<'a>(
         DeviceKind::RecessedCan => {
             let (r, t) = CAN_TRIM;
             parts.body().prism(&disc(d.position, r), y - t, y);
-            parts
-                .soup(Material::Asphalt)
-                .prism(&disc(d.position, CAN_APERTURE), y - t - DETAIL, y - t);
+            parts.soup(Material::Asphalt).prism(
+                &disc(d.position, CAN_APERTURE),
+                y - t - DETAIL,
+                y - t,
+            );
         }
         DeviceKind::PendantLight => {
             let (rb, rt, h) = SHADE;

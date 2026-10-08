@@ -334,8 +334,12 @@ fn a_plan_without_devices_or_framing_gets_no_electrical_or_framing_findings() {
     let mut p = Project::new("t");
     rect(&mut p, 0.0, 0.0, 168.0, 144.0, WallKind::Exterior);
     let f = run(&p, &["Bedroom"]);
-    assert!(!f.iter().any(|x| x.rule.starts_with("NEC") || x.rule.contains("R314")));
-    assert!(!f.iter().any(|x| x.rule.contains("R602.7") || x.rule.contains("R502")));
+    assert!(!f
+        .iter()
+        .any(|x| x.rule.starts_with("NEC") || x.rule.contains("R314")));
+    assert!(!f
+        .iter()
+        .any(|x| x.rule.contains("R602.7") || x.rule.contains("R502")));
 }
 
 #[test]
@@ -352,7 +356,13 @@ fn bedrooms_need_smoke_alarms_and_wet_rooms_gfci() {
     // A bedroom without a smoke detector is flagged; with one it is not.
     wire(&mut p, vec![dev("Outlet110", 3.0, 70.0)]);
     assert!(has(&run(&p, &["Bedroom"]), "R314.3", Severity::Warning));
-    wire(&mut p, vec![dev("Outlet110", 3.0, 70.0), dev("SmokeDetector", 80.0, 70.0)]);
+    wire(
+        &mut p,
+        vec![
+            dev("Outlet110", 3.0, 70.0),
+            dev("SmokeDetector", 80.0, 70.0),
+        ],
+    );
     assert!(!has(&run(&p, &["Bedroom"]), "R314.3", Severity::Warning));
 }
 
@@ -361,10 +371,20 @@ fn rooms_need_a_receptacle_for_every_twelve_feet_of_wall() {
     let mut p = Project::new("t");
     // 14' x 12' living room: 52' of wall needs 5 receptacles (one per 12', rounded up).
     rect(&mut p, 0.0, 0.0, 168.0, 144.0, WallKind::Exterior);
-    wire(&mut p, vec![dev("Outlet110", 3.0, 70.0), dev("Outlet110", 165.0, 70.0)]);
+    wire(
+        &mut p,
+        vec![dev("Outlet110", 3.0, 70.0), dev("Outlet110", 165.0, 70.0)],
+    );
     let f = run(&p, &["Living Room"]);
-    let spacing = f.iter().find(|x| x.rule.contains("210.52")).expect("spacing finding");
-    assert!(spacing.message.contains("at least 5"), "{}", spacing.message);
+    let spacing = f
+        .iter()
+        .find(|x| x.rule.contains("210.52"))
+        .expect("spacing finding");
+    assert!(
+        spacing.message.contains("at least 5"),
+        "{}",
+        spacing.message
+    );
     wire(
         &mut p,
         vec![
@@ -375,7 +395,9 @@ fn rooms_need_a_receptacle_for_every_twelve_feet_of_wall() {
             dev("Outlet110", 120.0, 141.0),
         ],
     );
-    assert!(!run(&p, &["Living Room"]).iter().any(|x| x.rule.contains("210.52")));
+    assert!(!run(&p, &["Living Room"])
+        .iter()
+        .any(|x| x.rule.contains("210.52")));
 }
 
 fn header_json(wall: u64, x0: f64, len: f64, depth: f64) -> serde_json::Value {
@@ -397,16 +419,27 @@ fn headers_are_checked_against_the_table() {
     let win = add(&mut p, ids[0], 120.0, 72.0, 48.0, 36.0, OpeningKind::Window);
     p.floors[0].framing = vec![header_json(ids[0], 82.5, 75.0, 7.25)];
     let f = run(&p, &["Living Room"]);
-    let h = f.iter().find(|x| x.rule.contains("R602.7")).expect("header finding");
+    let h = f
+        .iter()
+        .find(|x| x.rule.contains("R602.7"))
+        .expect("header finding");
     assert_eq!(h.severity, Severity::Warning);
     assert_eq!(h.object, Some(Target::Opening(win)));
-    assert!(h.message.contains("2x8") && h.message.contains("2x10"), "{}", h.message);
+    assert!(
+        h.message.contains("2x8") && h.message.contains("2x10"),
+        "{}",
+        h.message
+    );
     // A 2x10 header satisfies the table.
     p.floors[0].framing = vec![header_json(ids[0], 82.5, 75.0, 9.25)];
-    assert!(!run(&p, &["Living Room"]).iter().any(|x| x.rule.contains("R602.7")));
+    assert!(!run(&p, &["Living Room"])
+        .iter()
+        .any(|x| x.rule.contains("R602.7")));
     // A header over some other opening does not count.
     p.floors[0].framing = vec![header_json(ids[0], 10.0, 40.0, 11.25)];
-    assert!(!run(&p, &["Living Room"]).iter().any(|x| x.rule.contains("R602.7")));
+    assert!(!run(&p, &["Living Room"])
+        .iter()
+        .any(|x| x.rule.contains("R602.7")));
 }
 
 #[test]
@@ -425,10 +458,15 @@ fn long_joists_are_flagged_by_size() {
     };
     // 2x8 joists up to 12'-10" are fine; a 14' one is not. 2x10 at 14' is fine.
     p.floors[0].framing = vec![joist(7.25, 150.0), joist(9.25, 168.0)];
-    assert!(!run(&p, &["Living Room"]).iter().any(|x| x.rule.contains("R502.3")));
+    assert!(!run(&p, &["Living Room"])
+        .iter()
+        .any(|x| x.rule.contains("R502.3")));
     p.floors[0].framing = vec![joist(7.25, 168.0), joist(7.25, 160.0), joist(9.25, 168.0)];
     let f = run(&p, &["Living Room"]);
-    let j = f.iter().find(|x| x.rule.contains("R502.3")).expect("span finding");
+    let j = f
+        .iter()
+        .find(|x| x.rule.contains("R502.3"))
+        .expect("span finding");
     assert!(j.message.contains("2 2x8 joists"), "{}", j.message);
     assert_eq!(f.iter().filter(|x| x.rule.contains("R502.3")).count(), 1);
 }

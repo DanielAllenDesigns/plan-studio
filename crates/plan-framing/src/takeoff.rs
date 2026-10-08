@@ -94,7 +94,13 @@ pub fn takeoff(members: &[Member]) -> Takeoff {
     let mut board_feet = 0.0;
     let mut cuts: Vec<CutLine> = Vec::new();
     for m in members {
-        add_cut(&mut cuts, m.kind.name(), &m.lumber.nominal_name(), m.length, 1);
+        add_cut(
+            &mut cuts,
+            m.kind.name(),
+            &m.lumber.nominal_name(),
+            m.length,
+            1,
+        );
         let key = (m.kind, m.label.as_str());
         match lines.iter_mut().find(|(k, _)| *k == key) {
             Some((_, n)) => *n += 1,

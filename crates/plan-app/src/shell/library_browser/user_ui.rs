@@ -297,7 +297,12 @@ impl InfoForm {
         it.name = name;
         // Keywords replace the plain tags; tags with a colon (image:, material:)
         // are the item's own data and stay.
-        let keep: Vec<String> = it.tags.iter().filter(|t| t.contains(':')).cloned().collect();
+        let keep: Vec<String> = it
+            .tags
+            .iter()
+            .filter(|t| t.contains(':'))
+            .cloned()
+            .collect();
         it.tags = self
             .keywords
             .split(',')
@@ -391,7 +396,11 @@ fn scale_symbol(s: &plan_library::Symbol2d, sx: f64, sy: f64) -> plan_library::S
 
 fn rectangle_symbol(w: f64, d: f64, placement: Placement) -> plan_library::Symbol2d {
     use plan_core::geometry::Point;
-    let y0 = if placement == Placement::WallMounted { 0.0 } else { -d * 0.5 };
+    let y0 = if placement == Placement::WallMounted {
+        0.0
+    } else {
+        -d * 0.5
+    };
     plan_library::Symbol2d::new(vec![plan_library::Stroke::Polyline {
         points: vec![
             Point::new(-w * 0.5, y0),
@@ -529,7 +538,10 @@ impl UserUi {
                 egui::ComboBox::from_id_salt("library_type")
                     .selected_text(text)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(self.filter.kinds.is_empty(), "Any").clicked() {
+                        if ui
+                            .selectable_label(self.filter.kinds.is_empty(), "Any")
+                            .clicked()
+                        {
                             self.filter.kinds.clear();
                         }
                         for k in ItemKind::ALL {
@@ -549,7 +561,10 @@ impl UserUi {
                 egui::ComboBox::from_id_salt("library_catalog")
                     .selected_text(self.filter.catalog.clone().unwrap_or_else(|| "Any".into()))
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(self.filter.catalog.is_none(), "Any").clicked() {
+                        if ui
+                            .selectable_label(self.filter.catalog.is_none(), "Any")
+                            .clicked()
+                        {
                             self.filter.catalog = None;
                         }
                         for c in catalogs {
@@ -572,12 +587,18 @@ impl UserUi {
                 ui.checkbox(&mut self.min_on, "Min");
                 ui.add_enabled(
                     self.min_on,
-                    egui::DragValue::new(&mut self.min_size).speed(1.0).range(0.0..=1000.0).suffix(" in"),
+                    egui::DragValue::new(&mut self.min_size)
+                        .speed(1.0)
+                        .range(0.0..=1000.0)
+                        .suffix(" in"),
                 );
                 ui.checkbox(&mut self.max_on, "Max");
                 ui.add_enabled(
                     self.max_on,
-                    egui::DragValue::new(&mut self.max_size).speed(1.0).range(0.0..=1000.0).suffix(" in"),
+                    egui::DragValue::new(&mut self.max_size)
+                        .speed(1.0)
+                        .range(0.0..=1000.0)
+                        .suffix(" in"),
                 );
             });
             ui.checkbox(&mut self.filter.favorites_only, "Favorites only");
@@ -591,16 +612,30 @@ impl UserUi {
         let favs = self.meta.favorites.len();
         let recent = self.meta.recent.len();
         if ui
-            .selectable_label(self.view == View::Favorites, format!("\u{2605} Favorites ({favs})"))
+            .selectable_label(
+                self.view == View::Favorites,
+                format!("\u{2605} Favorites ({favs})"),
+            )
             .clicked()
         {
-            self.view = if self.view == View::Favorites { View::Category } else { View::Favorites };
+            self.view = if self.view == View::Favorites {
+                View::Category
+            } else {
+                View::Favorites
+            };
         }
         if ui
-            .selectable_label(self.view == View::Recent, format!("Recently Used ({recent})"))
+            .selectable_label(
+                self.view == View::Recent,
+                format!("Recently Used ({recent})"),
+            )
             .clicked()
         {
-            self.view = if self.view == View::Recent { View::Category } else { View::Recent };
+            self.view = if self.view == View::Recent {
+                View::Category
+            } else {
+                View::Recent
+            };
         }
         self.view != before
     }
@@ -662,7 +697,11 @@ impl UserUi {
         let mine = item.id.starts_with("user.");
         let fav = self.meta.is_favorite(&item.id);
         if ui
-            .button(if fav { "Remove from Favorites" } else { "Add to Favorites" })
+            .button(if fav {
+                "Remove from Favorites"
+            } else {
+                "Add to Favorites"
+            })
             .clicked()
         {
             out = Some(UserAction::ToggleFavorite(item.id.clone()));
@@ -720,7 +759,14 @@ impl UserUi {
             UserAction::ToggleFavorite(id) => {
                 let on = store::toggle_favorite(&id);
                 self.refresh();
-                Some(if on { "Added to Favorites" } else { "Removed from Favorites" }.to_string())
+                Some(
+                    if on {
+                        "Added to Favorites"
+                    } else {
+                        "Removed from Favorites"
+                    }
+                    .to_string(),
+                )
             }
             UserAction::Duplicate(id) => {
                 let r = store::duplicate(&id).map(|new| {
@@ -741,7 +787,8 @@ impl UserUi {
                 None
             }
             UserAction::MoveTo(id, folder) => {
-                let r = store::move_to(&id, &folder).map(|()| format!("Moved to {}", folder_text(&folder)));
+                let r = store::move_to(&id, &folder)
+                    .map(|()| format!("Moved to {}", folder_text(&folder)));
                 self.refresh();
                 msg(r)
             }
@@ -767,7 +814,10 @@ impl UserUi {
                 msg(r)
             }
             UserAction::NewFolder(parent) => {
-                self.prompt = Some(Prompt::NewFolder { parent, name: String::new() });
+                self.prompt = Some(Prompt::NewFolder {
+                    parent,
+                    name: String::new(),
+                });
                 None
             }
             UserAction::RenameFolder(path) => {
@@ -778,13 +828,16 @@ impl UserUi {
             UserAction::DeleteFolder(path) => {
                 let count = store::items()
                     .iter()
-                    .filter(|i| i.category.len() >= path.len() && i.category[..path.len()] == path[..])
+                    .filter(|i| {
+                        i.category.len() >= path.len() && i.category[..path.len()] == path[..]
+                    })
                     .count();
                 self.prompt = Some(Prompt::DeleteFolder { path, count });
                 None
             }
             UserAction::MoveFolder(path, to) => {
-                let r = store::move_folder(&path, &to).map(|n| format!("Moved the folder ({n} item(s))"));
+                let r = store::move_folder(&path, &to)
+                    .map(|n| format!("Moved the folder ({n} item(s))"));
                 self.refresh();
                 msg(r)
             }
@@ -862,16 +915,32 @@ impl UserUi {
             ui.selectable_value(&mut self.mode, PreviewMode::Plan, "2D");
             ui.selectable_value(&mut self.mode, PreviewMode::Model, "3D");
             if self.mode == PreviewMode::Model {
-                if ui.small_button("\u{25C0}").on_hover_text("Rotate left").clicked() {
+                if ui
+                    .small_button("\u{25C0}")
+                    .on_hover_text("Rotate left")
+                    .clicked()
+                {
                     self.yaw -= 30.0;
                 }
-                if ui.small_button("\u{25B6}").on_hover_text("Rotate right").clicked() {
+                if ui
+                    .small_button("\u{25B6}")
+                    .on_hover_text("Rotate right")
+                    .clicked()
+                {
                     self.yaw += 30.0;
                 }
-                if ui.small_button("\u{25B2}").on_hover_text("Tilt up").clicked() {
+                if ui
+                    .small_button("\u{25B2}")
+                    .on_hover_text("Tilt up")
+                    .clicked()
+                {
                     self.pitch = (self.pitch + 15.0).min(80.0);
                 }
-                if ui.small_button("\u{25BC}").on_hover_text("Tilt down").clicked() {
+                if ui
+                    .small_button("\u{25BC}")
+                    .on_hover_text("Tilt down")
+                    .clicked()
+                {
                     self.pitch = (self.pitch - 15.0).max(-10.0);
                 }
                 if ui.small_button("Reset").clicked() {
@@ -881,7 +950,8 @@ impl UserUi {
             }
         });
         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(PANE_PX), Sense::drag());
-        ui.painter().rect_filled(rect, 3.0, Color32::from_gray(0xEC));
+        ui.painter()
+            .rect_filled(rect, 3.0, Color32::from_gray(0xEC));
         match self.mode {
             PreviewMode::Plan => {
                 let ink = Stroke::new(1.25_f32, Color32::from_gray(0x2B));
@@ -993,21 +1063,22 @@ impl UserUi {
                 Prompt::NewFolder { mut parent, name } => plan_library::manage::valid_name(&name)
                     .and_then(|n| {
                         parent.push(n);
-                        store::create_folder(&parent).map(|()| format!("Made folder {}", folder_text(&parent)))
+                        store::create_folder(&parent)
+                            .map(|()| format!("Made folder {}", folder_text(&parent)))
                     }),
-                Prompt::RenameFolder { path, name } => {
-                    store::rename_folder(&path, &name).map(|n| format!("Renamed the folder ({n} item(s))"))
+                Prompt::RenameFolder { path, name } => store::rename_folder(&path, &name)
+                    .map(|n| format!("Renamed the folder ({n} item(s))")),
+                Prompt::RenameItem { id, name } => {
+                    store::rename(&id, &name).map(|()| "Renamed".to_string())
                 }
-                Prompt::RenameItem { id, name } => store::rename(&id, &name).map(|()| "Renamed".to_string()),
                 Prompt::DeleteItem { id, .. } => {
                     if self.selected.as_deref() == Some(id.as_str()) {
                         self.selected = None;
                     }
                     store::delete(&id).map(|_| "Deleted".to_string())
                 }
-                Prompt::DeleteFolder { path, .. } => {
-                    store::delete_folder(&path).map(|n| format!("Deleted the folder and {n} item(s)"))
-                }
+                Prompt::DeleteFolder { path, .. } => store::delete_folder(&path)
+                    .map(|n| format!("Deleted the folder and {n} item(s)")),
             };
             match r {
                 Ok(m) => {
@@ -1087,7 +1158,12 @@ impl UserUi {
                             ("Elevation", &mut form.elevation, 400.0),
                         ] {
                             ui.label(label);
-                            ui.add(egui::DragValue::new(value).speed(0.5).range(0.0..=max).suffix(" in"));
+                            ui.add(
+                                egui::DragValue::new(value)
+                                    .speed(0.5)
+                                    .range(0.0..=max)
+                                    .suffix(" in"),
+                            );
                             ui.end_row();
                         }
                         ui.label("Placement");
@@ -1106,9 +1182,13 @@ impl UserUi {
                         ui.end_row();
                         ui.label("Turn to wall");
                         egui::ComboBox::from_id_salt("info_autorotate")
-                            .selected_text(["Follow placement", "Always", "Never"][form.auto_rotate as usize])
+                            .selected_text(
+                                ["Follow placement", "Always", "Never"][form.auto_rotate as usize],
+                            )
                             .show_ui(ui, |ui| {
-                                for (i, t) in ["Follow placement", "Always", "Never"].iter().enumerate() {
+                                for (i, t) in
+                                    ["Follow placement", "Always", "Never"].iter().enumerate()
+                                {
                                     ui.selectable_value(&mut form.auto_rotate, i as u8, *t);
                                 }
                             });
@@ -1127,16 +1207,32 @@ impl UserUi {
                                 SymbolChoice::Rectangle => "Plain rectangle",
                             })
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut form.symbol_choice, SymbolChoice::Keep, "Keep the current drawing");
+                                ui.selectable_value(
+                                    &mut form.symbol_choice,
+                                    SymbolChoice::Keep,
+                                    "Keep the current drawing",
+                                );
                                 ui.add_enabled_ui(has_model, |ui| {
-                                    ui.selectable_value(&mut form.symbol_choice, SymbolChoice::FromModel, "Draw from the 3D model");
+                                    ui.selectable_value(
+                                        &mut form.symbol_choice,
+                                        SymbolChoice::FromModel,
+                                        "Draw from the 3D model",
+                                    );
                                 });
-                                ui.selectable_value(&mut form.symbol_choice, SymbolChoice::Rectangle, "Plain rectangle");
+                                ui.selectable_value(
+                                    &mut form.symbol_choice,
+                                    SymbolChoice::Rectangle,
+                                    "Plain rectangle",
+                                );
                             });
                         ui.end_row();
                         if has_model {
                             ui.label("3D rotation");
-                            ui.add(egui::DragValue::new(&mut form.model_rotation).speed(1.0).suffix("\u{00B0}"));
+                            ui.add(
+                                egui::DragValue::new(&mut form.model_rotation)
+                                    .speed(1.0)
+                                    .suffix("\u{00B0}"),
+                            );
                             ui.end_row();
                             ui.label("3D origin x / up / y");
                             ui.horizontal(|ui| {
@@ -1160,7 +1256,10 @@ impl UserUi {
                 });
             });
         if apply {
-            match form.build().and_then(|(item, _)| store::update(item).map(|i| i.name.clone())) {
+            match form
+                .build()
+                .and_then(|(item, _)| store::update(item).map(|i| i.name.clone()))
+            {
                 Ok(name) => {
                     *message = Some(format!("Saved \"{name}\""));
                     self.tex = None;
@@ -1191,8 +1290,15 @@ impl UserUi {
                 let key = model.triangle_count() + (form.unit_index + 1) * 1_000_003;
                 if self.import_tex.as_ref().map(|(k, _)| *k) != Some(key) {
                     let img = render_preview(&model, 160, DEFAULT_YAW, DEFAULT_PITCH);
-                    let color = egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.rgba);
-                    let tex = ctx.load_texture("library_import_preview", color, egui::TextureOptions::LINEAR);
+                    let color = egui::ColorImage::from_rgba_unmultiplied(
+                        [img.width, img.height],
+                        &img.rgba,
+                    );
+                    let tex = ctx.load_texture(
+                        "library_import_preview",
+                        color,
+                        egui::TextureOptions::LINEAR,
+                    );
                     self.import_tex = Some((key, tex));
                 }
                 self.import_tex.as_ref().map(|(_, t)| t.clone())
@@ -1323,15 +1429,21 @@ impl UserUi {
     /// Test hook: the import form's parsed triangle count.
     #[cfg(test)]
     pub(crate) fn import_triangles(&self) -> Option<usize> {
-        self.import.as_ref().and_then(|f| f.parsed.as_ref().ok()).map(ImportedModel::triangle_count)
+        self.import
+            .as_ref()
+            .and_then(|f| f.parsed.as_ref().ok())
+            .map(ImportedModel::triangle_count)
     }
 }
 
 fn ui_highlight(resp: &egui::Response) {
     let stroke = Stroke::new(2.0_f32, resp.ctx.style().visuals.selection.stroke.color);
-    resp.ctx
-        .layer_painter(resp.layer_id)
-        .rect_stroke(resp.rect, 2.0, stroke, egui::StrokeKind::Outside);
+    resp.ctx.layer_painter(resp.layer_id).rect_stroke(
+        resp.rect,
+        2.0,
+        stroke,
+        egui::StrokeKind::Outside,
+    );
 }
 
 /// The model the 3D preview draws, and whether it is the item's own (not a
@@ -1351,7 +1463,6 @@ pub fn preview_model(item: &CatalogItem) -> (Model3d, bool) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1365,7 +1476,8 @@ mod tests {
     fn add_box(name: &str, f: &[&str]) -> CatalogItem {
         let m = Model3d::box_model(30.0, 20.0, 40.0, Some([200, 30, 30]));
         let id = store::new_id(ItemKind::Model);
-        let item = crate::tools::library::make::item_from_model(&m, &id, name, &folder(f), None).unwrap();
+        let item =
+            crate::tools::library::make::item_from_model(&m, &id, name, &folder(f), None).unwrap();
         (*store::add(item, Some(&m)).unwrap()).clone()
     }
 
@@ -1377,9 +1489,15 @@ mod tests {
         let get = |k: &str| lines.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
         assert_eq!(get("Type").as_deref(), Some("3D Model"));
         assert_eq!(get("Category").as_deref(), Some("User > Furniture"));
-        assert_eq!(get("Size").as_deref(), Some("30 \u{00D7} 20 \u{00D7} 40 in"));
+        assert_eq!(
+            get("Size").as_deref(),
+            Some("30 \u{00D7} 20 \u{00D7} 40 in")
+        );
         assert!(get("3D model").unwrap().starts_with("12 triangles"));
-        let builtin = crate::tools::library::library_catalog().all_items().next().unwrap();
+        let builtin = crate::tools::library::library_catalog()
+            .all_items()
+            .next()
+            .unwrap();
         assert!(info_lines(builtin)
             .iter()
             .any(|(k, v)| *k == "3D model" && v.contains("box")));
@@ -1391,13 +1509,23 @@ mod tests {
         let it = add_box("Ottoman", &["User", "Furniture"]);
         let mut ui = UserUi::default();
         ui.refresh();
-        assert_eq!(ui.perform(UserAction::ToggleFavorite(it.id.clone())).as_deref(), Some("Added to Favorites"));
+        assert_eq!(
+            ui.perform(UserAction::ToggleFavorite(it.id.clone()))
+                .as_deref(),
+            Some("Added to Favorites")
+        );
         assert!(ui.meta.is_favorite(&it.id));
-        assert_eq!(ui.perform(UserAction::Duplicate(it.id.clone())).as_deref(), Some("Duplicated"));
+        assert_eq!(
+            ui.perform(UserAction::Duplicate(it.id.clone())).as_deref(),
+            Some("Duplicated")
+        );
         let copy = ui.selected.clone().unwrap();
         assert_ne!(copy, it.id);
         let msg = ui
-            .perform(UserAction::MoveTo(copy.clone(), folder(&["User", "Elsewhere"])))
+            .perform(UserAction::MoveTo(
+                copy.clone(),
+                folder(&["User", "Elsewhere"]),
+            ))
             .unwrap();
         assert!(msg.contains("User > Elsewhere"), "{msg}");
         assert!(ui.folders.contains(&folder(&["User", "Elsewhere"])));
@@ -1407,8 +1535,13 @@ mod tests {
         let ctx = egui::Context::default();
         let mut message = None;
         // The prompt window's OK is a click; run it directly.
-        ui.prompt = Some(Prompt::DeleteItem { id: copy.clone(), name: "x".into() });
-        let _ = ctx.run(egui::RawInput::default(), |ctx| ui.prompt_window(ctx, &mut message));
+        ui.prompt = Some(Prompt::DeleteItem {
+            id: copy.clone(),
+            name: "x".into(),
+        });
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ui.prompt_window(ctx, &mut message)
+        });
         // (No click happened, so the prompt is still up.)
         assert!(ui.prompt.is_some());
         assert!(store::item(&copy).is_some());
@@ -1416,23 +1549,42 @@ mod tests {
         store::delete(&copy).unwrap();
         assert!(store::item(&copy).is_none());
         // Folder prompts.
-        assert!(ui.perform(UserAction::NewFolder(folder(&["User"]))).is_none());
+        assert!(ui
+            .perform(UserAction::NewFolder(folder(&["User"])))
+            .is_none());
         assert!(matches!(ui.prompt, Some(Prompt::NewFolder { .. })));
-        assert!(ui.perform(UserAction::RenameFolder(folder(&["User", "Furniture"]))).is_none());
-        assert!(matches!(&ui.prompt, Some(Prompt::RenameFolder { name, .. }) if name == "Furniture"));
+        assert!(ui
+            .perform(UserAction::RenameFolder(folder(&["User", "Furniture"])))
+            .is_none());
+        assert!(
+            matches!(&ui.prompt, Some(Prompt::RenameFolder { name, .. }) if name == "Furniture")
+        );
         ui.perform(UserAction::DeleteFolder(folder(&["User", "Furniture"])));
-        assert!(matches!(ui.prompt, Some(Prompt::DeleteFolder { count: 1, .. })));
+        assert!(matches!(
+            ui.prompt,
+            Some(Prompt::DeleteFolder { count: 1, .. })
+        ));
         // Adding a copy of a built-in item.
-        let builtin = crate::tools::library::library_catalog().all_items().next().unwrap();
+        let builtin = crate::tools::library::library_catalog()
+            .all_items()
+            .next()
+            .unwrap();
         let msg = ui.perform(UserAction::AddCopy(builtin.id.clone())).unwrap();
         assert!(msg.contains("User Catalog"), "{msg}");
         // Chief objects cannot be copied.
         crate::tools::library::chief::install_item(
-            CatalogItem::new("chief.cafe-0009.9", "Licensed", Placement::FreeStanding, Default::default())
-                .with_size(10.0, 10.0, 10.0),
+            CatalogItem::new(
+                "chief.cafe-0009.9",
+                "Licensed",
+                Placement::FreeStanding,
+                Default::default(),
+            )
+            .with_size(10.0, 10.0, 10.0),
             "Core",
         );
-        let msg = ui.perform(UserAction::AddCopy("chief.cafe-0009.9".into())).unwrap();
+        let msg = ui
+            .perform(UserAction::AddCopy("chief.cafe-0009.9".into()))
+            .unwrap();
         assert!(msg.contains("Chief"), "{msg}");
     }
 
@@ -1447,7 +1599,10 @@ mod tests {
         ui.min_on = true;
         ui.min_size = 24.0;
         let f = ui.full_filter("sink", &folder(&["User"]));
-        assert_eq!((f.min_size, f.max_size, f.query.as_str()), (Some(24.0), None, "sink"));
+        assert_eq!(
+            (f.min_size, f.max_size, f.query.as_str()),
+            (Some(24.0), None, "sink")
+        );
         ui.min_on = false;
         ui.view = View::Favorites;
         assert!(ui.full_filter("", &[]).favorites_only);
@@ -1479,7 +1634,10 @@ mod tests {
         assert_eq!((built.width, built.depth), (60.0, 40.0));
         assert_eq!(built.auto_rotate, Some(true));
         assert_eq!(built.layer.as_deref(), Some("Furniture"));
-        assert_eq!((built.model_rotation, built.model_origin), (90.0, [1.0, 2.0, 3.0]));
+        assert_eq!(
+            (built.model_rotation, built.model_origin),
+            (90.0, [1.0, 2.0, 3.0])
+        );
         assert!(!built.symbol.is_empty());
         assert!(model.is_some());
         store::update(built.clone()).unwrap();
@@ -1505,7 +1663,10 @@ mod tests {
         bad.folder = "a/b".into();
         assert!(bad.build().is_err());
         // A plain symbol cannot be drawn from a model it lacks.
-        let builtin = crate::tools::library::library_catalog().all_items().next().unwrap();
+        let builtin = crate::tools::library::library_catalog()
+            .all_items()
+            .next()
+            .unwrap();
         let mut no_model = InfoForm::new(builtin);
         no_model.symbol_choice = SymbolChoice::FromModel;
         assert!(no_model.build().is_err());
@@ -1538,7 +1699,10 @@ mod tests {
         f.folder = "User > Stools".into();
         let done = f.do_import().unwrap();
         assert_eq!(done, "Cube Stool");
-        let item = store::items().into_iter().find(|i| i.name == "Cube Stool").unwrap();
+        let item = store::items()
+            .into_iter()
+            .find(|i| i.name == "Cube Stool")
+            .unwrap();
         assert_eq!(item.category, folder(&["User", "Stools"]));
         assert!((item.width - 1.0).abs() < 1e-3);
         assert!(message.is_none());
@@ -1550,7 +1714,11 @@ mod tests {
     fn the_preview_pane_and_filter_bar_draw_in_every_mode() {
         fresh(false);
         let it = add_box("Ottoman", &["User", "Furniture"]);
-        let builtin = crate::tools::library::library_catalog().all_items().next().unwrap().clone();
+        let builtin = crate::tools::library::library_catalog()
+            .all_items()
+            .next()
+            .unwrap()
+            .clone();
         let ctx = egui::Context::default();
         let mut ui_state = UserUi::default();
         ui_state.refresh();

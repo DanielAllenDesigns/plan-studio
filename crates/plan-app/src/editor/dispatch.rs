@@ -283,7 +283,12 @@ impl EditorContext {
                 let free = site_view::electrical_layer(self.floor, self.floor())
                     .device(id)
                     .is_some_and(|d| d.wall_id.is_none());
-                v.push(custom(cmd::SYMBOL_REPLACE, "Replace From Library", "", true));
+                v.push(custom(
+                    cmd::SYMBOL_REPLACE,
+                    "Replace From Library",
+                    "",
+                    true,
+                ));
                 v.push(custom(cmd::DEVICE_FLIP, "Flip Side", "", true));
                 v.push(custom(cmd::DEVICE_ROTATE, "Rotate", "", free));
             }

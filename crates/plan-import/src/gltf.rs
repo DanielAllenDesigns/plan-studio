@@ -89,7 +89,8 @@ fn determinant3(m: &Mat) -> f64 {
 
 fn numbers(v: Option<&Value>, n: usize) -> Option<Vec<f64>> {
     let a = v?.as_array()?;
-    (a.len() == n).then(|| a.iter().filter_map(Value::as_f64).collect::<Vec<_>>())
+    (a.len() == n)
+        .then(|| a.iter().filter_map(Value::as_f64).collect::<Vec<_>>())
         .filter(|v| v.len() == n)
 }
 
@@ -239,7 +240,10 @@ fn accessor<'a>(root: &Value, buffers: &'a [Vec<u8>], idx: usize) -> Result<View
         return bad("Sparse accessors are not supported");
     }
     let count = acc.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let ctype = acc.get("componentType").and_then(Value::as_u64).unwrap_or(0);
+    let ctype = acc
+        .get("componentType")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let comps = match acc.get("type").and_then(Value::as_str) {
         Some("SCALAR") => 1,
         Some("VEC2") => 2,
@@ -302,13 +306,23 @@ impl View<'_> {
     }
 }
 
-fn read_positions(root: &Value, buffers: &[Vec<u8>], idx: usize) -> Result<Vec<[f32; 3]>, ModelError> {
+fn read_positions(
+    root: &Value,
+    buffers: &[Vec<u8>],
+    idx: usize,
+) -> Result<Vec<[f32; 3]>, ModelError> {
     let v = accessor(root, buffers, idx)?;
     if v.comps != 3 || v.ctype != 5126 {
         return bad("POSITION must be float VEC3 (quantized meshes are not supported)");
     }
     Ok((0..v.count)
-        .map(|i| [v.read(i, 0) as f32, v.read(i, 1) as f32, v.read(i, 2) as f32])
+        .map(|i| {
+            [
+                v.read(i, 0) as f32,
+                v.read(i, 1) as f32,
+                v.read(i, 2) as f32,
+            ]
+        })
         .collect())
 }
 
@@ -474,7 +488,10 @@ pub fn parse_gltf(
     if root
         .get("extensionsRequired")
         .and_then(Value::as_array)
-        .is_some_and(|a| a.iter().any(|e| e.as_str() == Some("KHR_draco_mesh_compression")))
+        .is_some_and(|a| {
+            a.iter()
+                .any(|e| e.as_str() == Some("KHR_draco_mesh_compression"))
+        })
     {
         return bad("Draco-compressed glTF files are not supported");
     }
@@ -494,7 +511,11 @@ pub fn parse_gltf(
         })
         .and_then(|s| s.get("nodes"))
         .and_then(Value::as_array)
-        .map(|n| n.iter().filter_map(|v| v.as_u64().map(|u| u as usize)).collect());
+        .map(|n| {
+            n.iter()
+                .filter_map(|v| v.as_u64().map(|u| u as usize))
+                .collect()
+        });
     match scene_nodes {
         Some(nodes) => {
             for n in nodes {
@@ -533,8 +554,16 @@ mod tests {
                 | *c.get(2).unwrap_or(&0) as u32;
             s.push(T[(n >> 18) as usize & 63] as char);
             s.push(T[(n >> 12) as usize & 63] as char);
-            s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-            s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+            s.push(if c.len() > 1 {
+                T[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            s.push(if c.len() > 2 {
+                T[n as usize & 63] as char
+            } else {
+                '='
+            });
         }
         s
     }
@@ -542,7 +571,12 @@ mod tests {
     /// A unit quad in the XY plane as two triangles plus 16-bit indices.
     fn quad_buffer() -> Vec<u8> {
         let mut b = Vec::new();
-        for p in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]] {
+        for p in [
+            [0.0f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ] {
             for c in p {
                 b.extend_from_slice(&c.to_le_bytes());
             }
@@ -578,7 +612,10 @@ mod tests {
     }
 
     fn data_uri() -> String {
-        format!("data:application/octet-stream;base64,{}", b64(&quad_buffer()))
+        format!(
+            "data:application/octet-stream;base64,{}",
+            b64(&quad_buffer())
+        )
     }
 
     fn glb(json: &Value, bin: &[u8]) -> Vec<u8> {

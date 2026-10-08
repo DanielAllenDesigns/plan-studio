@@ -629,9 +629,7 @@ fn draw_plan(
             let exterior = plan_core::exterior_sign(w, rooms);
             draw_opening(cv, w, o, exterior, tp, k, pen(layer));
             // Casing drawn in plan (a mulled unit shares one loop around its span).
-            let unit = o
-                .mull_group
-                .and_then(|_| cx.project.unit_span(floor, o.id));
+            let unit = o.mull_group.and_then(|_| cx.project.unit_span(floor, o.id));
             for part in casing_parts(w, o, unit, exterior) {
                 let pts: Vec<Pt> = part.points.iter().map(|&p| tp(p)).collect();
                 cv.stroke(&pts, true, pen(layer).scaled(0.6).solid());

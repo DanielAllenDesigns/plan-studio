@@ -293,7 +293,8 @@ impl PlanApp {
             Action::Custom(id) if files::is_command(id) => self.file_command(id),
             Action::Custom(id) => {
                 // The Edit commands work on the plan, not on the 3D or layout view.
-                if id.starts_with("edit.") && (self.view3d.active || shell::layout_window::is_active())
+                if id.starts_with("edit.")
+                    && (self.view3d.active || shell::layout_window::is_active())
                 {
                     self.cx.status = "Switch to the plan view to use this command".into();
                 } else {
@@ -842,7 +843,10 @@ impl PlanApp {
                 if e.sep_before {
                     ui.separator();
                 }
-                if ui.add_enabled(e.enabled, egui::Button::new(e.label.as_str())).clicked() {
+                if ui
+                    .add_enabled(e.enabled, egui::Button::new(e.label.as_str()))
+                    .clicked()
+                {
                     chosen = Some(e.action);
                     ui.close_menu();
                 }
@@ -2269,12 +2273,11 @@ mod tests {
         right_click(&mut a, &ctx, Point::new(300.0, 100.0));
         assert!(a.cx.selection.is_empty());
         let bar = a.tools.active().edit_toolbar(&a.cx);
-        let names: Vec<String> = a
-            .cx
-            .context_entries(&bar, false)
-            .into_iter()
-            .map(|e| e.label)
-            .collect();
+        let names: Vec<String> =
+            a.cx.context_entries(&bar, false)
+                .into_iter()
+                .map(|e| e.label)
+                .collect();
         assert!(names.contains(&"Select All".to_string()), "{names:?}");
         // The drawing tools keep right click as their Esc.
         a.set_tool(ToolId::Wall {
@@ -2291,7 +2294,4 @@ mod tests {
         assert_eq!(a.cx.floor().walls.len(), before);
         assert!(a.cx.status.contains("plan view"));
     }
-
-
-
 }

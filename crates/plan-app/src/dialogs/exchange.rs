@@ -1158,7 +1158,9 @@ fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) ->
     let data = framing_view::takeoff_data(&cx.project, cx.floor, all);
     // By member type with cut lengths (the framing schedule), or the lumber list.
     let by_member_id = egui::Id::new("framing_takeoff_by_member");
-    let mut by_member = ctx.data(|d| d.get_temp::<bool>(by_member_id)).unwrap_or(true);
+    let mut by_member = ctx
+        .data(|d| d.get_temp::<bool>(by_member_id))
+        .unwrap_or(true);
     egui::Window::new("Framing Takeoff")
         .id(egui::Id::new("framing_takeoff"))
         .open(&mut open)

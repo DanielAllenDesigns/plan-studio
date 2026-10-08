@@ -162,7 +162,14 @@ pub(crate) fn frame_wall_grid(
     d: &FramingDefaults,
     grid_origin: Option<f64>,
 ) -> Vec<Member> {
-    frame_wall_joined(wall, openings, floor_elevation, d, grid_origin, &WallJoints::default())
+    frame_wall_joined(
+        wall,
+        openings,
+        floor_elevation,
+        d,
+        grid_origin,
+        &WallJoints::default(),
+    )
 }
 
 /// [`frame_wall`] with the stud grid anchored at `grid_origin` and the wall's
@@ -245,7 +252,10 @@ pub fn frame_wall_joined(
     for tee in &joints.tees {
         for k in 0..d.tee_studs {
             let off = f64::from(k) * t;
-            extras.push((tee.offset - tee.thickness / 2.0 - t - off, MemberKind::TeeStud));
+            extras.push((
+                tee.offset - tee.thickness / 2.0 - t - off,
+                MemberKind::TeeStud,
+            ));
             extras.push((tee.offset + tee.thickness / 2.0 + off, MemberKind::TeeStud));
         }
     }
@@ -271,7 +281,15 @@ pub fn frame_wall_joined(
     }
 
     if d.wall_blocking && d.wall_blocking_spacing > 1.0 {
-        blocking(&f, wall, lumber, d, (floor_elevation, y_top), &zones, &mut out);
+        blocking(
+            &f,
+            wall,
+            lumber,
+            d,
+            (floor_elevation, y_top),
+            &zones,
+            &mut out,
+        );
     }
     out
 }
@@ -296,11 +314,18 @@ fn blocking(
         .filter(|m| {
             matches!(
                 m.kind,
-                MemberKind::Stud | MemberKind::CornerStud | MemberKind::TeeStud | MemberKind::KingStud
+                MemberKind::Stud
+                    | MemberKind::CornerStud
+                    | MemberKind::TeeStud
+                    | MemberKind::KingStud
             )
         })
         .map(|m| {
-            let rel = [m.transform.origin[0] - start[0], 0.0, m.transform.origin[2] - start[2]];
+            let rel = [
+                m.transform.origin[0] - start[0],
+                0.0,
+                m.transform.origin[2] - start[2],
+            ];
             crate::member::dot(rel, f.dir) - t / 2.0
         })
         .collect();
@@ -622,8 +647,14 @@ mod tests {
         // Above the header: one over each trimmer plus the 16" grid between
         // them (96, 112, 128, 144). Below the sill: the grid under the opening.
         let cripples = of(&m, MemberKind::CrippleStud);
-        let above: Vec<_> = cripples.iter().filter(|c| c.transform.origin[1] > 84.0).collect();
-        let below: Vec<_> = cripples.iter().filter(|c| c.transform.origin[1] < 24.0).collect();
+        let above: Vec<_> = cripples
+            .iter()
+            .filter(|c| c.transform.origin[1] > 84.0)
+            .collect();
+        let below: Vec<_> = cripples
+            .iter()
+            .filter(|c| c.transform.origin[1] < 24.0)
+            .collect();
         assert_eq!(above.len(), 2 + 4);
         assert_eq!(below.len(), 4);
         assert_eq!(cripples.len(), 10);
@@ -728,7 +759,10 @@ mod tests {
         // Never across the door opening (102 .. 138, 99 .. 141 with the kings).
         for b in &blocks {
             let s = b.transform.origin[0];
-            assert!(s + b.length <= 99.0 + 1e-9 || s >= 141.0 - 1e-9, "block at {s}");
+            assert!(
+                s + b.length <= 99.0 + 1e-9 || s >= 141.0 - 1e-9,
+                "block at {s}"
+            );
             assert!(b.length > 1.0 && b.length <= 16.0, "{}", b.length);
         }
         // Rows are flat 2x6 pieces; blocking can be turned off.
@@ -745,7 +779,10 @@ mod tests {
             ..d
         };
         let m = frame_wall_joined(&w, &[&door], 0.0, &tight, None, &WallJoints::default());
-        let mut rows: Vec<f64> = of(&m, MemberKind::Blocking).iter().map(|b| b.transform.origin[1]).collect();
+        let mut rows: Vec<f64> = of(&m, MemberKind::Blocking)
+            .iter()
+            .map(|b| b.transform.origin[1])
+            .collect();
         rows.sort_by(f64::total_cmp);
         rows.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
         assert_eq!(rows, [24.0, 48.0, 72.0, 96.0]);
@@ -757,6 +794,8 @@ mod tests {
         assert_eq!(of(&m, MemberKind::TopPlate).len(), 2);
         assert_eq!(of(&m, MemberKind::BottomPlate).len(), 1);
         // Studs are cut to fit between: wall - 3 plates.
-        assert!(of(&m, MemberKind::Stud).iter().all(|s| (s.length - 104.625).abs() < 1e-9));
+        assert!(of(&m, MemberKind::Stud)
+            .iter()
+            .all(|s| (s.length - 104.625).abs() < 1e-9));
     }
 }

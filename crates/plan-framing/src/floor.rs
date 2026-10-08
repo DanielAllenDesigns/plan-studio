@@ -461,9 +461,17 @@ mod tests {
 
     /// Plan-space (min, max) of a member's box.
     fn plan_box(m: &Member) -> (Point, Point) {
-        let pts: Vec<Point> = m.corners().iter().map(|c| Point::new(c[0], -c[2])).collect();
-        let lo = pts.iter().fold(Point::new(1e9, 1e9), |a, p| Point::new(a.x.min(p.x), a.y.min(p.y)));
-        let hi = pts.iter().fold(Point::new(-1e9, -1e9), |a, p| Point::new(a.x.max(p.x), a.y.max(p.y)));
+        let pts: Vec<Point> = m
+            .corners()
+            .iter()
+            .map(|c| Point::new(c[0], -c[2]))
+            .collect();
+        let lo = pts.iter().fold(Point::new(1e9, 1e9), |a, p| {
+            Point::new(a.x.min(p.x), a.y.min(p.y))
+        });
+        let hi = pts.iter().fold(Point::new(-1e9, -1e9), |a, p| {
+            Point::new(a.x.max(p.x), a.y.max(p.y))
+        });
         (lo, hi)
     }
 
@@ -481,7 +489,13 @@ mod tests {
         let d = FramingDefaults::default();
         let hole = square_hole(100.0, 30.0, 36.0, 48.0);
         let plain = frame_floor(&rect(), 0.0, &d, JoistDirection::Auto);
-        let m = frame_floor_holes(&rect(), 0.0, &d, JoistDirection::Auto, std::slice::from_ref(&hole));
+        let m = frame_floor_holes(
+            &rect(),
+            0.0,
+            &d,
+            JoistDirection::Auto,
+            std::slice::from_ref(&hole),
+        );
         // Two plies each side, two plies each end.
         let trimmers = of(&m, MemberKind::TrimmerJoist);
         let headers = of(&m, MemberKind::HeaderJoist);
@@ -501,7 +515,10 @@ mod tests {
         let (hlo, hhi) = (Point::new(100.0, 30.0), Point::new(136.0, 78.0));
         for j in of(&m, MemberKind::Joist) {
             let (lo, hi) = plan_box(j);
-            let clear = hi.x <= hlo.x + 1e-9 || lo.x >= hhi.x - 1e-9 || hi.y <= hlo.y + 1e-9 || lo.y >= hhi.y - 1e-9;
+            let clear = hi.x <= hlo.x + 1e-9
+                || lo.x >= hhi.x - 1e-9
+                || hi.y <= hlo.y + 1e-9
+                || lo.y >= hhi.y - 1e-9;
             assert!(clear, "a joist crosses the hole: {lo:?} {hi:?}");
         }
         let tails: Vec<f64> = of(&m, MemberKind::Joist)
@@ -524,12 +541,19 @@ mod tests {
 
     #[test]
     fn rim_joists_run_along_the_edges_the_joists_butt() {
-        let m = frame_floor(&rect(), 0.0, &FramingDefaults::default(), JoistDirection::AlongX);
+        let m = frame_floor(
+            &rect(),
+            0.0,
+            &FramingDefaults::default(),
+            JoistDirection::AlongX,
+        );
         // Joists run along X, so the rims are the two 120" ends.
         let rims = of(&m, MemberKind::RimJoist);
         assert_eq!(rims.len(), 2);
         assert!(rims.iter().all(|r| (r.length - 120.0).abs() < 1e-9));
         // Each joist is shortened by both rims.
-        assert!(of(&m, MemberKind::Joist).iter().all(|j| (j.length - 237.0).abs() < 1e-9));
+        assert!(of(&m, MemberKind::Joist)
+            .iter()
+            .all(|j| (j.length - 237.0).abs() < 1e-9));
     }
 }

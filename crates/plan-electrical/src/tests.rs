@@ -452,7 +452,10 @@ fn meshes_are_plates_with_details_and_discs() {
     assert!(of(1, plan_3d::Material::Asphalt).is_some());
 
     // Plate: 2.75" wide, 4.5" tall, 0.25" proud of the left face (y = 2.25).
-    let (lo, hi) = of(1, plan_3d::Material::WindowFrame).unwrap().bounds().unwrap();
+    let (lo, hi) = of(1, plan_3d::Material::WindowFrame)
+        .unwrap()
+        .bounds()
+        .unwrap();
     assert!((hi[0] - lo[0] - 2.75).abs() < 1e-4);
     assert!((hi[1] - lo[1] - 4.5).abs() < 1e-4);
     assert!((hi[2] - lo[2] - 0.25).abs() < 1e-4);
@@ -461,7 +464,10 @@ fn meshes_are_plates_with_details_and_discs() {
     assert!((lo[2] + 2.5).abs() < 1e-4 && (hi[2] + 2.25).abs() < 1e-4);
 
     // Ceiling disc: 12" across, hanging from the ceiling.
-    let (lo, hi) = of(2, plan_3d::Material::WindowFrame).unwrap().bounds().unwrap();
+    let (lo, hi) = of(2, plan_3d::Material::WindowFrame)
+        .unwrap()
+        .bounds()
+        .unwrap();
     assert!((hi[0] - lo[0] - 12.0).abs() < 1e-4);
     assert!((hi[1] - 109.125).abs() < 1e-4);
 }
@@ -474,7 +480,12 @@ fn fixture_meshes_exist_for_cans_pendants_fans_and_jacks() {
     let pendant = layer.add(place_free(DeviceKind::PendantLight, Point::new(80.0, 40.0)));
     let fan = layer.add(place_free(DeviceKind::CeilingFan, Point::new(120.0, 40.0)));
     let jack = layer.add(place_on_wall(DeviceKind::TvJack, &w, 50.0, WallSide::Left));
-    let sconce = layer.add(place_on_wall(DeviceKind::WallSconce, &w, 150.0, WallSide::Left));
+    let sconce = layer.add(place_on_wall(
+        DeviceKind::WallSconce,
+        &w,
+        150.0,
+        WallSide::Left,
+    ));
     layer.device_mut(jack).unwrap().finish = "Black".into();
     let ms = meshes(&layer, &[w], 0.0);
     let parts = |id: u64| -> Vec<plan_3d::Material> {
@@ -566,33 +577,63 @@ fn symbol_parts_per_kind() {
     };
     // Duplex: a circle and two slots; quad: the same circle with four.
     let duplex = DeviceKind::Outlet110.symbol();
-    assert_eq!((count_kind(&duplex, is_circle), count_kind(&duplex, is_line)), (1, 2));
+    assert_eq!(
+        (count_kind(&duplex, is_circle), count_kind(&duplex, is_line)),
+        (1, 2)
+    );
     let quad = DeviceKind::Outlet110Quad.symbol();
-    assert_eq!((count_kind(&quad, is_circle), count_kind(&quad, is_line)), (1, 4));
+    assert_eq!(
+        (count_kind(&quad, is_circle), count_kind(&quad, is_line)),
+        (1, 4)
+    );
     // 220: three slots; GFCI: duplex plus tick marks and its label.
     assert_eq!(count_kind(&DeviceKind::Outlet220.symbol(), is_line), 3);
     assert_eq!(texts(DeviceKind::Gfci), ["GFCI"]);
     // Floor outlet: duplex inside a square.
     let floor = DeviceKind::OutletFloor.symbol();
-    assert_eq!((count_kind(&floor, is_circle), count_kind(&floor, is_poly)), (1, 1));
+    assert_eq!(
+        (count_kind(&floor, is_circle), count_kind(&floor, is_poly)),
+        (1, 1)
+    );
     // Switches: S, S3, S4, SD share the stem and S glyph.
     assert!(texts(DeviceKind::Switch).is_empty());
     assert_eq!(texts(DeviceKind::Switch3Way), ["3"]);
     assert_eq!(texts(DeviceKind::Switch4Way), ["4"]);
     assert_eq!(texts(DeviceKind::SwitchDimmer), ["D"]);
-    for k in [DeviceKind::Switch, DeviceKind::Switch3Way, DeviceKind::Switch4Way, DeviceKind::SwitchDimmer] {
+    for k in [
+        DeviceKind::Switch,
+        DeviceKind::Switch3Way,
+        DeviceKind::Switch4Way,
+        DeviceKind::SwitchDimmer,
+    ] {
         let s = k.symbol();
-        assert_eq!((count_kind(&s, is_line), count_kind(&s, is_poly)), (1, 1), "{k:?}");
+        assert_eq!(
+            (count_kind(&s, is_line), count_kind(&s, is_poly)),
+            (1, 1),
+            "{k:?}"
+        );
     }
     // Lights: ceiling = circle and cross, can = ring and dot, pendant likewise.
     let ceiling = DeviceKind::CeilingLight.symbol();
-    assert_eq!((count_kind(&ceiling, is_circle), count_kind(&ceiling, is_line)), (1, 2));
+    assert_eq!(
+        (
+            count_kind(&ceiling, is_circle),
+            count_kind(&ceiling, is_line)
+        ),
+        (1, 2)
+    );
     assert_eq!(count_kind(&DeviceKind::RecessedCan.symbol(), is_circle), 2);
     assert_eq!(count_kind(&DeviceKind::PendantLight.symbol(), is_circle), 2);
-    assert!(matches!(DeviceKind::WallSconce.symbol()[0], Stroke::Arc { .. }));
+    assert!(matches!(
+        DeviceKind::WallSconce.symbol()[0],
+        Stroke::Arc { .. }
+    ));
     // Fan: hub and four blades.
     let fan = DeviceKind::CeilingFan.symbol();
-    assert_eq!((count_kind(&fan, is_circle), count_kind(&fan, is_poly)), (1, 4));
+    assert_eq!(
+        (count_kind(&fan, is_circle), count_kind(&fan, is_poly)),
+        (1, 4)
+    );
     // Detectors, thermostat, doorbell and the low-voltage jacks carry letters.
     assert_eq!(texts(DeviceKind::SmokeDetector), ["SD"]);
     assert_eq!(texts(DeviceKind::CoDetector), ["CO"]);
@@ -601,9 +642,17 @@ fn symbol_parts_per_kind() {
     assert_eq!(texts(DeviceKind::DataJack), ["D"]);
     assert_eq!(texts(DeviceKind::PhoneJack), ["T"]);
     assert_eq!(texts(DeviceKind::TvJack), ["TV"]);
-    for k in [DeviceKind::DataJack, DeviceKind::PhoneJack, DeviceKind::TvJack] {
+    for k in [
+        DeviceKind::DataJack,
+        DeviceKind::PhoneJack,
+        DeviceKind::TvJack,
+    ] {
         let s = k.symbol();
-        assert_eq!((count_kind(&s, is_poly), count_kind(&s, is_text)), (1, 1), "{k:?}");
+        assert_eq!(
+            (count_kind(&s, is_poly), count_kind(&s, is_text)),
+            (1, 1),
+            "{k:?}"
+        );
     }
     assert_eq!(count_kind(&DeviceKind::Panel.symbol(), is_text), 1);
 }
@@ -611,10 +660,23 @@ fn symbol_parts_per_kind() {
 #[test]
 fn default_heights_per_kind() {
     use DeviceKind as K;
-    for k in [K::Outlet110, K::Outlet110Quad, K::Outlet220, K::Gfci, K::DataJack, K::PhoneJack] {
+    for k in [
+        K::Outlet110,
+        K::Outlet110Quad,
+        K::Outlet220,
+        K::Gfci,
+        K::DataJack,
+        K::PhoneJack,
+    ] {
         assert_eq!(k.default_height(), 12.0, "{k:?}");
     }
-    for k in [K::Switch, K::Switch3Way, K::Switch4Way, K::SwitchDimmer, K::Doorbell] {
+    for k in [
+        K::Switch,
+        K::Switch3Way,
+        K::Switch4Way,
+        K::SwitchDimmer,
+        K::Doorbell,
+    ] {
         assert_eq!(k.default_height(), 48.0, "{k:?}");
     }
     assert_eq!(K::OutletFloor.default_height(), 0.0);
@@ -633,7 +695,10 @@ fn a_kind_can_change_within_its_family() {
     assert!(outlets.contains(&K::Outlet110Quad) && outlets.contains(&K::Gfci));
     assert!(!outlets.contains(&K::Switch));
     let switches = K::Switch.family();
-    assert_eq!(switches, [K::Switch, K::Switch3Way, K::Switch4Way, K::SwitchDimmer]);
+    assert_eq!(
+        switches,
+        [K::Switch, K::Switch3Way, K::Switch4Way, K::SwitchDimmer]
+    );
     // A rope light keeps its own length.
     assert_eq!(
         K::RopeLight { length: 30.0 }.family(),
@@ -650,7 +715,10 @@ fn a_three_way_pair_controls_the_light_from_both_ends() {
     let mut layer = ElectricalLayer::default();
     let a = layer.add(place_free(DeviceKind::Switch3Way, Point::new(0.0, 0.0)));
     let b = layer.add(place_free(DeviceKind::Switch3Way, Point::new(200.0, 0.0)));
-    let light = layer.add(place_free(DeviceKind::CeilingLight, Point::new(100.0, 80.0)));
+    let light = layer.add(place_free(
+        DeviceKind::CeilingLight,
+        Point::new(100.0, 80.0),
+    ));
     assert!(connect(&mut layer, a, light));
     assert!(connect(&mut layer, a, b), "the traveler between the pair");
     assert!(!connect(&mut layer, b, a), "already wired");
@@ -697,16 +765,26 @@ fn bending_a_connection_moves_the_arc_midpoint() {
     let after = layer.arc_midpoint(&layer.connections[0]).unwrap();
     assert!(after.dist(target) < 1e-9);
     assert_ne!(before, after);
-    assert_eq!(layer.connection_handle_at(after + Point::new(1.0, 1.0), 3.0), Some(0));
-    assert_eq!(layer.connection_handle_at(Point::new(-500.0, 500.0), 3.0), None);
+    assert_eq!(
+        layer.connection_handle_at(after + Point::new(1.0, 1.0), 3.0),
+        Some(0)
+    );
+    assert_eq!(
+        layer.connection_handle_at(Point::new(-500.0, 500.0), 3.0),
+        None
+    );
     // The stored arc really passes through the handle.
-    let Some(Stroke::Arc { center, radius, .. }) = layer.connection_arc(&layer.connections[0]) else {
+    let Some(Stroke::Arc { center, radius, .. }) = layer.connection_arc(&layer.connections[0])
+    else {
         panic!("a bent connection is an arc");
     };
     assert!((center.dist(after) - radius).abs() < 1e-6);
     // Bending to the chord straightens it; a bad index is refused.
     assert!(layer.bend_connection(0, mid));
-    assert!(matches!(layer.connection_arc(&layer.connections[0]), Some(Stroke::Line { .. })));
+    assert!(matches!(
+        layer.connection_arc(&layer.connections[0]),
+        Some(Stroke::Line { .. })
+    ));
     assert!(!layer.bend_connection(5, mid));
 }
 
@@ -743,10 +821,15 @@ fn outlets_on_the_40x30_shell_follow_the_nec_rules() {
     // 12' rule: along every wall space, no gap over 12' between outlets and
     // no point over 6' from one at the space ends.
     for w in &floor.walls {
-        let door = floor.openings_on(w.id).find(|o| o.kind == plan_core::OpeningKind::Door);
+        let door = floor
+            .openings_on(w.id)
+            .find(|o| o.kind == plan_core::OpeningKind::Door);
         let half = 3.25;
         let spaces = match door {
-            Some(o) => vec![(half, o.start_offset()), (o.end_offset(), w.length() - half)],
+            Some(o) => vec![
+                (half, o.start_offset()),
+                (o.end_offset(), w.length() - half),
+            ],
             None => vec![(half, w.length() - half)],
         };
         let here: Vec<f64> = devices
@@ -759,26 +842,48 @@ fn outlets_on_the_40x30_shell_follow_the_nec_rules() {
                 continue;
             }
             let mut stops = vec![a];
-            let mut inside: Vec<f64> = here.iter().copied().filter(|t| *t >= a && *t <= b).collect();
+            let mut inside: Vec<f64> = here
+                .iter()
+                .copied()
+                .filter(|t| *t >= a && *t <= b)
+                .collect();
             inside.sort_by(f64::total_cmp);
             stops.extend(inside);
             stops.push(b);
             assert!(stops.len() > 2, "wall {} space {a}..{b}", w.id);
             for (i, pair) in stops.windows(2).enumerate() {
-                let limit = if i == 0 || i == stops.len() - 2 { 72.0 } else { 144.0 };
-                assert!(pair[1] - pair[0] <= limit + 1e-6, "wall {} gap {pair:?}", w.id);
+                let limit = if i == 0 || i == stops.len() - 2 {
+                    72.0
+                } else {
+                    144.0
+                };
+                assert!(
+                    pair[1] - pair[0] <= limit + 1e-6,
+                    "wall {} gap {pair:?}",
+                    w.id
+                );
             }
         }
     }
     // Outlets stay a hand clear of the door jambs.
     for d in devices.iter().filter(|d| d.wall_id == Some(1)) {
         let t = offset_on(&floor, d);
-        assert!((t - 82.0).abs() >= 6.0 && (t - 118.0).abs() >= 6.0, "at {t}");
+        assert!(
+            (t - 82.0).abs() >= 6.0 && (t - 118.0).abs() >= 6.0,
+            "at {t}"
+        );
     }
 
     // Kitchen: 42" GFCI counter outlets at most 4' apart on every wall.
-    let kitchen = auto_place_outlets(&floor, &rooms, &[(label.clone(), RoomFunction::Kitchen)], &opts);
-    assert!(kitchen.iter().all(|d| d.kind == DeviceKind::Gfci && d.height == 42.0));
+    let kitchen = auto_place_outlets(
+        &floor,
+        &rooms,
+        &[(label.clone(), RoomFunction::Kitchen)],
+        &opts,
+    );
+    assert!(kitchen
+        .iter()
+        .all(|d| d.kind == DeviceKind::Gfci && d.height == 42.0));
     for w in &floor.walls {
         let mut here: Vec<f64> = kitchen
             .iter()
@@ -797,6 +902,8 @@ fn outlets_on_the_40x30_shell_follow_the_nec_rules() {
 
     // Bath: GFCI at the usual 12".
     let bath = auto_place_outlets(&floor, &rooms, &[(label, RoomFunction::Bath)], &opts);
-    assert!(bath.iter().all(|d| d.kind == DeviceKind::Gfci && d.height == 12.0));
+    assert!(bath
+        .iter()
+        .all(|d| d.kind == DeviceKind::Gfci && d.height == 12.0));
     assert_eq!(bath.len(), devices.len());
 }

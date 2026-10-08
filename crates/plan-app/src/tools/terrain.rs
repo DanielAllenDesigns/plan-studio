@@ -49,10 +49,10 @@ use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::terrain::{ObjectDialog, TerrainDialog};
 use crate::dialogs::Outcome;
 use crate::editor::site_view::{
-    auto_building_pad, build_surface_with_progress, draw_polyline, edit_terrain, ensure_landscape_layers, hit_points,
-    hit_terrain, load_terrain, move_terrain_element, object_at, place_north_pointer,
-    place_scale_bar, remove_terrain_element, replace_object, terrain_key, TerrainHit,
-    TerrainObject, TerrainRecord,
+    auto_building_pad, build_surface_with_progress, draw_polyline, edit_terrain,
+    ensure_landscape_layers, hit_points, hit_terrain, load_terrain, move_terrain_element,
+    object_at, place_north_pointer, place_scale_bar, remove_terrain_element, replace_object,
+    terrain_key, TerrainHit, TerrainObject, TerrainRecord,
 };
 use crate::editor::tempdim::EditField;
 use crate::editor::{Camera, EditorContext};
@@ -2541,8 +2541,12 @@ mod tests {
             });
         });
         build_terrain_now(&mut cx).unwrap();
-        let z = crate::editor::site_view::terrain_elevation_at(&cx.project, Point::new(600.0, 480.0))
-            .unwrap();
-        assert!((z + 6.0).abs() < 0.5, "pad at the first floor (0) less 6\": {z}");
+        let z =
+            crate::editor::site_view::terrain_elevation_at(&cx.project, Point::new(600.0, 480.0))
+                .unwrap();
+        assert!(
+            (z + 6.0).abs() < 0.5,
+            "pad at the first floor (0) less 6\": {z}"
+        );
     }
 }

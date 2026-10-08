@@ -471,20 +471,38 @@ pub fn set_active_layer_set(cx: &mut EditorContext, name: &str) -> bool {
 /// Turns a layer's display on or off (the Disp checkbox).
 #[cfg(test)]
 pub fn set_layer_display(cx: &mut EditorContext, name: &str, on: bool) -> bool {
-    edit_layers(cx, &[name.to_string()], LayerEdit::Display(on), false, false) > 0
+    edit_layers(
+        cx,
+        &[name.to_string()],
+        LayerEdit::Display(on),
+        false,
+        false,
+    ) > 0
 }
 
 /// Locks or unlocks a layer (the Lock checkbox).
 #[cfg(test)]
 pub fn set_layer_locked(cx: &mut EditorContext, name: &str, locked: bool) -> bool {
-    edit_layers(cx, &[name.to_string()], LayerEdit::Locked(locked), false, false) > 0
+    edit_layers(
+        cx,
+        &[name.to_string()],
+        LayerEdit::Locked(locked),
+        false,
+        false,
+    ) > 0
 }
 
 /// Turns the "Ref" box of a layer on or off: whether its objects show on a
 /// reference floor (LAY-10).
 #[cfg(test)]
 pub fn set_layer_reference(cx: &mut EditorContext, name: &str, on: bool) -> bool {
-    edit_layers(cx, &[name.to_string()], LayerEdit::Reference(on), false, false) > 0
+    edit_layers(
+        cx,
+        &[name.to_string()],
+        LayerEdit::Reference(on),
+        false,
+        false,
+    ) > 0
 }
 
 /// Adds a layer with a fresh name; returns the name.
@@ -559,8 +577,14 @@ pub enum BrowserItem {
     /// Index into `Project::plan_views`.
     PlanView(usize),
     Camera(plan_core::Id),
-    Schedule { floor: usize, id: plan_core::Id },
-    CadDetail { floor: usize, group: plan_core::Id },
+    Schedule {
+        floor: usize,
+        id: plan_core::Id,
+    },
+    CadDetail {
+        floor: usize,
+        group: plan_core::Id,
+    },
     /// Index into the layout's pages.
     Page(usize),
 }
@@ -604,7 +628,10 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
                 s.title.clone()
             };
             schedules.push(entry(
-                BrowserItem::Schedule { floor: fi, id: s.id },
+                BrowserItem::Schedule {
+                    floor: fi,
+                    id: s.id,
+                },
                 tag(f, title),
             ));
         }
@@ -885,7 +912,11 @@ fn plan_view_rows(ui: &mut egui::Ui, cx: &mut EditorContext, rows: &[BrowserEntr
         }
         if let Some(p) = r.dnd_hover_payload::<PlanViewDrag>() {
             if p.0 != i {
-                let y = if p.0 < i { r.rect.bottom() } else { r.rect.top() };
+                let y = if p.0 < i {
+                    r.rect.bottom()
+                } else {
+                    r.rect.top()
+                };
                 ui.painter().hline(
                     r.rect.x_range(),
                     y,
@@ -1255,8 +1286,20 @@ mod tests {
         let text = vec!["Text".to_string()];
         edit_layers(&mut cx, &text, LayerEdit::Color([1, 2, 3]), false, true);
         edit_layers(&mut cx, &text, LayerEdit::LineWeight(35), false, true);
-        edit_layers(&mut cx, &text, LayerEdit::LineStyle(LineStyle::Dashed), false, false);
-        edit_layers(&mut cx, &text, LayerEdit::TextStyle("Arial".into()), false, false);
+        edit_layers(
+            &mut cx,
+            &text,
+            LayerEdit::LineStyle(LineStyle::Dashed),
+            false,
+            false,
+        );
+        edit_layers(
+            &mut cx,
+            &text,
+            LayerEdit::TextStyle("Arial".into()),
+            false,
+            false,
+        );
         let l = cx.layers().get("Text").unwrap();
         assert_eq!(l.color, [1, 2, 3]);
         assert_eq!(l.line_weight, 35);
@@ -1266,7 +1309,16 @@ mod tests {
         assert_ne!(cx.project.layers.get("Text").unwrap().color, [1, 2, 3]);
         assert!(set_layer_reference(&mut cx, "Text", false));
         assert!(!cx.layers().shows_in_reference("Text"));
-        assert_eq!(edit_layers(&mut cx, &["Nope".to_string()], LayerEdit::Display(false), false, false), 0);
+        assert_eq!(
+            edit_layers(
+                &mut cx,
+                &["Nope".to_string()],
+                LayerEdit::Display(false),
+                false,
+                false
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1296,12 +1348,19 @@ mod tests {
         let eff = back.layer_sets.effective_for("Second", &back.layers);
         assert_eq!(eff.get("Doors").unwrap().color, [7, 7, 7]);
         assert_ne!(
-            back.layer_sets.effective_for("Third", &back.layers).get("Doors").unwrap().color,
+            back.layer_sets
+                .effective_for("Third", &back.layers)
+                .get("Doors")
+                .unwrap()
+                .color,
             [7, 7, 7]
         );
         // Modify All Layer Sets reaches every set.
         let rooms = vec!["Rooms".to_string()];
-        assert_eq!(edit_layers(&mut cx, &rooms, LayerEdit::Color([5, 6, 7]), true, false), 3);
+        assert_eq!(
+            edit_layers(&mut cx, &rooms, LayerEdit::Color([5, 6, 7]), true, false),
+            3
+        );
         for set in ["Default Set", "Second", "Third"] {
             let eff = cx.project.layer_sets.effective_for(set, &cx.project.layers);
             assert_eq!(eff.get("Rooms").unwrap().color, [5, 6, 7], "{set}");
@@ -1405,7 +1464,13 @@ mod tests {
         use plan_core::cad::CadItem;
         let mut cx = cx();
         cx.project.cameras.clear();
-        cx.project.add_camera(plan_core::CameraObject::new(plan_core::camera::CameraKind::FullCamera, Point::new(10.0, 10.0), 0.0, "", 0));
+        cx.project.add_camera(plan_core::CameraObject::new(
+            plan_core::camera::CameraKind::FullCamera,
+            Point::new(10.0, 10.0),
+            0.0,
+            "",
+            0,
+        ));
         // A schedule on the first floor and a named CAD block.
         crate::editor::schedule_view::add(
             &mut cx,
@@ -1424,19 +1489,31 @@ mod tests {
                 )
             })
             .collect();
-        let refs: Vec<_> = ids.iter().map(|i| plan_core::groups::ObjectRef::Cad(*i)).collect();
+        let refs: Vec<_> = ids
+            .iter()
+            .map(|i| plan_core::groups::ObjectRef::Cad(*i))
+            .collect();
         let g = cx.project.make_group(0, &refs).unwrap();
-        cx.project.floors[0].cad_blocks.push(plan_core::cad::CadBlockInfo {
-            group: g,
-            name: "Footing Detail".into(),
-            insertion: None,
-            backoff: None,
-        });
+        cx.project.floors[0]
+            .cad_blocks
+            .push(plan_core::cad::CadBlockInfo {
+                group: g,
+                name: "Footing Detail".into(),
+                insertion: None,
+                backoff: None,
+            });
         let nodes = browser_nodes(&cx);
         let titles: Vec<&str> = nodes.iter().map(|(n, _)| n.title()).collect();
         assert_eq!(
             titles,
-            ["Floors", "Plan Views", "Cameras", "Schedules", "CAD Details", "Layout"]
+            [
+                "Floors",
+                "Plan Views",
+                "Cameras",
+                "Schedules",
+                "CAD Details",
+                "Layout"
+            ]
         );
         let rows = |n: BrowserNode| nodes.iter().find(|(k, _)| *k == n).unwrap().1.clone();
         assert_eq!(rows(BrowserNode::Floors).len(), cx.project.floors.len());
@@ -1444,7 +1521,10 @@ mod tests {
         assert_eq!(rows(BrowserNode::Cameras).len(), 1);
         let sched = rows(BrowserNode::Schedules);
         assert_eq!(sched.len(), 1);
-        assert!(matches!(sched[0].item, BrowserItem::Schedule { floor: 0, .. }));
+        assert!(matches!(
+            sched[0].item,
+            BrowserItem::Schedule { floor: 0, .. }
+        ));
         let det = rows(BrowserNode::CadDetails);
         assert_eq!(det.len(), 1);
         assert_eq!(det[0].label, "Footing Detail");
@@ -1470,16 +1550,24 @@ mod tests {
     #[test]
     fn cameras_rename_and_delete_with_undo() {
         let mut cx = cx();
-        let id = cx
-            .project
-            .add_camera(plan_core::CameraObject::new(plan_core::camera::CameraKind::FullCamera, Point::new(5.0, 5.0), 0.0, "", 0));
+        let id = cx.project.add_camera(plan_core::CameraObject::new(
+            plan_core::camera::CameraKind::FullCamera,
+            Point::new(5.0, 5.0),
+            0.0,
+            "",
+            0,
+        ));
         assert!(rename_camera(&mut cx, id, "  Living Room  "));
         assert_eq!(cx.project.camera(id).unwrap().name, "Living Room");
         assert_eq!(cx.undo_label(), Some("Rename Camera"));
         assert!(!rename_camera(&mut cx, id, "   "));
         assert!(!rename_camera(&mut cx, 9999, "X"));
         let rows = browser_nodes(&cx);
-        let cams = &rows.iter().find(|(n, _)| *n == BrowserNode::Cameras).unwrap().1;
+        let cams = &rows
+            .iter()
+            .find(|(n, _)| *n == BrowserNode::Cameras)
+            .unwrap()
+            .1;
         assert_eq!(cams[0].label, "Living Room");
         cx.selection.set(ObjectRef::Camera(id));
         assert!(delete_camera(&mut cx, id));
@@ -1511,7 +1599,8 @@ mod tests {
         // The Project Browser draws every node, including the new ones.
         let mut st = DockState::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::SidePanel::right("dock").show(ctx, |ui| show(ui, Dock::Project, &mut cx, &mut st));
+            egui::SidePanel::right("dock")
+                .show(ctx, |ui| show(ui, Dock::Project, &mut cx, &mut st));
         });
     }
 }

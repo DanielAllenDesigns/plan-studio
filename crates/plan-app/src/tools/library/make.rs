@@ -12,9 +12,7 @@ use plan_core::cad::{CadItem, TEXT_WIDTH_FACTOR};
 use plan_core::geometry::Point;
 use plan_core::PlacedSymbol;
 use plan_import::{ImportedModel, ModelOptions};
-use plan_library::{
-    rules, CatalogItem, ItemKind, Model3d, ModelPart, Placement, Stroke, Symbol2d,
-};
+use plan_library::{rules, CatalogItem, ItemKind, Model3d, ModelPart, Placement, Stroke, Symbol2d};
 use std::f64::consts::PI;
 
 // ----- 3D conversions -----
@@ -151,7 +149,8 @@ fn cad_stroke(item: &CadItem) -> Option<Stroke> {
             center: *center,
             radius: *radius,
             start_deg: start_angle.to_degrees(),
-            end_deg: start_angle.to_degrees() + (end_angle - start_angle).rem_euclid(2.0 * PI).to_degrees(),
+            end_deg: start_angle.to_degrees()
+                + (end_angle - start_angle).rem_euclid(2.0 * PI).to_degrees(),
         },
         CadItem::Circle { center, radius } => Stroke::Circle {
             center: *center,
@@ -184,12 +183,7 @@ fn text_strokes(pos: Point, text: &str, height: f64, angle: f64) -> Vec<Stroke> 
 
 // ----- the item makers -----
 
-fn finish(
-    mut item: CatalogItem,
-    id: &str,
-    name: &str,
-    folder: &[String],
-) -> CatalogItem {
+fn finish(mut item: CatalogItem, id: &str, name: &str, folder: &[String]) -> CatalogItem {
     item.id = id.to_string();
     item.name = name.to_string();
     item.category = folder.to_vec();
@@ -220,8 +214,8 @@ pub fn item_from_symbol(
     let mut local = sym.clone();
     local.position = Point::ZERO;
     local.angle = 0.0;
-    let strokes = placed_symbol_strokes(&local)
-        .ok_or_else(|| "The symbol has no drawing".to_string())?;
+    let strokes =
+        placed_symbol_strokes(&local).ok_or_else(|| "The symbol has no drawing".to_string())?;
     // Free-standing symbols are drawn about their center.
     let strokes = if src.placement == Placement::WallMounted {
         strokes
@@ -288,9 +282,11 @@ pub fn item_from_cabinet(
     let meshes = plan_cabinets::meshes(&flat);
     // Scene frame: back-left corner at the origin, front towards -z. Turn it
     // to front +z and center it on x.
-    let model = model_from_meshes(&meshes)
-        .rotated_y(180.0)
-        .translated([(cab.width * 0.5) as f32, 0.0, 0.0]);
+    let model = model_from_meshes(&meshes).rotated_y(180.0).translated([
+        (cab.width * 0.5) as f32,
+        0.0,
+        0.0,
+    ]);
     let outline: Vec<Point> = saved
         .footprint_local()
         .into_iter()
@@ -357,7 +353,10 @@ pub fn placed_cad(item: &CadItem, angle: f64, to: Point) -> CadItem {
     let (s, c) = angle.sin_cos();
     let rot = |p: &Point| Point::new(p.x * c - p.y * s + to.x, p.x * s + p.y * c + to.y);
     match item {
-        CadItem::Line { a, b } => CadItem::Line { a: rot(a), b: rot(b) },
+        CadItem::Line { a, b } => CadItem::Line {
+            a: rot(a),
+            b: rot(b),
+        },
         CadItem::Arc {
             center,
             radius,
@@ -409,7 +408,10 @@ pub fn item_from_cad(
     });
     let bounds = plan_library::Bounds::from_points(pts).ok_or("There is nothing to save")?;
     let c = bounds.center();
-    let local: Vec<CadItem> = items.iter().map(|i| shifted(i, Point::new(-c.x, -c.y))).collect();
+    let local: Vec<CadItem> = items
+        .iter()
+        .map(|i| shifted(i, Point::new(-c.x, -c.y)))
+        .collect();
     let all_text = local.iter().all(|i| matches!(i, CadItem::Text { .. }));
     let mut strokes = Vec::new();
     for i in &local {
@@ -423,7 +425,11 @@ pub fn item_from_cad(
             other => strokes.extend(cad_stroke(other)),
         }
     }
-    let kind = if all_text { ItemKind::Text } else { ItemKind::CadBlock };
+    let kind = if all_text {
+        ItemKind::Text
+    } else {
+        ItemKind::CadBlock
+    };
     let tag = if all_text { "text" } else { "cad" };
     let payload = serde_json::to_value(&local).map_err(|e| e.to_string())?;
     let mut item = CatalogItem::new(id, name, Placement::FreeStanding, Symbol2d::new(strokes))
@@ -583,23 +589,34 @@ mod tests {
         cab.position = Point::new(50.0, 80.0);
         cab.angle = 0.5;
         cab.id = 9;
-        let (item, model) = item_from_cabinet(&cab, "user.cabinet.1", &folder(&["User", "Cabinets"]))
-            .unwrap();
+        let (item, model) =
+            item_from_cabinet(&cab, "user.cabinet.1", &folder(&["User", "Cabinets"])).unwrap();
         assert_eq!(item.kind, ItemKind::Cabinet);
         assert_eq!((item.width, item.depth), (36.0, cab.depth));
         let saved: Cabinet = serde_json::from_value(item.payload.clone().unwrap()).unwrap();
-        assert_eq!((saved.id, saved.angle, saved.position), (0, 0.0, Point::ZERO));
+        assert_eq!(
+            (saved.id, saved.angle, saved.position),
+            (0, 0.0, Point::ZERO)
+        );
         // The model is centered on x and its front is +z.
         let (lo, hi) = model.bounds().unwrap();
         assert!(((lo[0] + hi[0]) * 0.5).abs() < 0.5, "{lo:?} {hi:?}");
-        assert!(lo[2] > -1.0 && hi[2] > cab.depth as f32 - 1.0, "{lo:?} {hi:?}");
+        assert!(
+            lo[2] > -1.0 && hi[2] > cab.depth as f32 - 1.0,
+            "{lo:?} {hi:?}"
+        );
         let b = item.symbol.bounds().unwrap();
         assert!((b.min.x + 18.0).abs() < 1e-9 && b.min.y.abs() < 1e-9);
     }
 
     #[test]
     fn materials_are_swatches() {
-        let (it, m) = item_from_material("Slate", [60, 70, 80], "user.material.1", &folder(&["User", "Materials"]));
+        let (it, m) = item_from_material(
+            "Slate",
+            [60, 70, 80],
+            "user.material.1",
+            &folder(&["User", "Materials"]),
+        );
         assert_eq!(it.kind, ItemKind::Material);
         assert!(it.tags.contains(&"material:Slate".to_string()));
         assert_eq!(m.triangle_count(), 12);
@@ -608,11 +625,25 @@ mod tests {
     #[test]
     fn model_items_take_their_size_and_a_placement_from_the_category() {
         let m = Model3d::box_model(20.0, 10.0, 60.0, None);
-        let it = item_from_model(&m, "user.model.1", "Pendant", &folder(&["User", "Lighting"]), None).unwrap();
+        let it = item_from_model(
+            &m,
+            "user.model.1",
+            "Pendant",
+            &folder(&["User", "Lighting"]),
+            None,
+        )
+        .unwrap();
         assert_eq!((it.width, it.depth, it.height), (20.0, 10.0, 60.0));
         assert_eq!(it.kind, ItemKind::Model);
         assert_eq!(it.placement, Placement::Ceiling);
-        let fixed = item_from_model(&m, "user.model.2", "Thing", &folder(&["User"]), Some(Placement::WallMounted)).unwrap();
+        let fixed = item_from_model(
+            &m,
+            "user.model.2",
+            "Thing",
+            &folder(&["User"]),
+            Some(Placement::WallMounted),
+        )
+        .unwrap();
         assert_eq!(fixed.placement, Placement::WallMounted);
         assert!(item_from_model(&Model3d::default(), "x", "x", &folder(&["User"]), None).is_err());
     }

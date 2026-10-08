@@ -709,4 +709,3 @@ fn casing_drawn_in_plan_reaches_the_page() {
     let (cased, _) = stroke_count(&p);
     assert!(cased > plain, "{cased} vs {plain}");
 }
-

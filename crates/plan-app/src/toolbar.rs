@@ -1887,11 +1887,7 @@ pub fn full_camera() -> Flyout {
                 "Auto Back-Clipped Elevations",
                 V::AutoBackclipped,
             ),
-            camera_tool(
-                "cross_section",
-                "Auto Interior Elevations",
-                V::AutoInterior,
-            ),
+            camera_tool("cross_section", "Auto Interior Elevations", V::AutoInterior),
         ],
     )
 }

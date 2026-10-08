@@ -498,13 +498,7 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     );
     inert(
         ui,
-        &[
-            "Arc Creation Modes>",
-            "-",
-            "Edit Area>",
-            "Stretch CAD",
-            "-",
-        ],
+        &["Arc Creation Modes>", "-", "Edit Area>", "Stretch CAD", "-"],
     );
     live(
         ui,

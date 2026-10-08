@@ -104,7 +104,11 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 .unwrap_or((o.start_offset(), o.end_offset()));
             let resize = resize_cursor(w.end.sub(w.start));
             if o.start_offset() <= unit_lo + 1e-9 {
-                out.push(h(HandleKind::ResizeStart, w.point_at(o.start_offset()), resize));
+                out.push(h(
+                    HandleKind::ResizeStart,
+                    w.point_at(o.start_offset()),
+                    resize,
+                ));
             }
             if o.end_offset() >= unit_hi - 1e-9 {
                 out.push(h(HandleKind::ResizeEnd, w.point_at(o.end_offset()), resize));

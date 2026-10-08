@@ -52,19 +52,41 @@ fn mentions(words: &[&str], text: &str) -> bool {
 /// wall; small appliances rest on the counter; the rest stands on the floor.
 pub fn placement_for_category(category: &[String], name: &str) -> Placement {
     let text = format!("{} {}", category.join(" "), name);
-    if mentions(&["ceiling", "chandelier", "pendant", "smoke", "ceiling fan"], &text)
-        || (mentions(&["light", "fan"], &text) && !mentions(&["switch", "floor", "table", "lamp", "sconce", "wall"], &text))
+    if mentions(
+        &["ceiling", "chandelier", "pendant", "smoke", "ceiling fan"],
+        &text,
+    ) || (mentions(&["light", "fan"], &text)
+        && !mentions(
+            &["switch", "floor", "table", "lamp", "sconce", "wall"],
+            &text,
+        ))
     {
         Placement::Ceiling
     } else if mentions(
         &[
-            "toilet", "sink", "lavatory", "tub", "shower", "outlet", "receptacle", "switch",
-            "mirror", "sconce", "thermostat", "vent", "register", "plumbing", "wall",
+            "toilet",
+            "sink",
+            "lavatory",
+            "tub",
+            "shower",
+            "outlet",
+            "receptacle",
+            "switch",
+            "mirror",
+            "sconce",
+            "thermostat",
+            "vent",
+            "register",
+            "plumbing",
+            "wall",
         ],
         &text,
     ) {
         Placement::WallMounted
-    } else if mentions(&["countertop", "microwave", "toaster", "coffee", "faucet"], &text) {
+    } else if mentions(
+        &["countertop", "microwave", "toaster", "coffee", "faucet"],
+        &text,
+    ) {
         Placement::Countertop
     } else {
         Placement::FreeStanding
@@ -81,7 +103,8 @@ pub fn default_layer(item: &CatalogItem) -> String {
     let text = format!("{} {}", item.category.join(" "), item.name);
     match item.kind {
         ItemKind::Cabinet => {
-            if item.placement == Placement::WallMounted || mentions(&["wall cabinet", "upper"], &text)
+            if item.placement == Placement::WallMounted
+                || mentions(&["wall cabinet", "upper"], &text)
             {
                 "Cabinets, Wall"
             } else {

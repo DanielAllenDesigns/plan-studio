@@ -76,10 +76,7 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
         ],
     ),
     ("Roofs", &[("Roof Defaults", Leaf::RoofDefaults)]),
-    (
-        "Cabinets",
-        &[("Cabinet Defaults", Leaf::CabinetDefaults)],
-    ),
+    ("Cabinets", &[("Cabinet Defaults", Leaf::CabinetDefaults)]),
     ("Framing", &[("Framing Defaults", Leaf::FramingDefaults)]),
     (
         "Preferences",

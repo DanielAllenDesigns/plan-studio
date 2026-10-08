@@ -253,7 +253,13 @@ impl DeviceKind {
                     || (std::mem::discriminant(k) == std::mem::discriminant(self))
             })
             // Keep the rope light's own length; the others are zero-sized.
-            .map(|k| if matches!(k, DeviceKind::RopeLight { .. }) { *self } else { k })
+            .map(|k| {
+                if matches!(k, DeviceKind::RopeLight { .. }) {
+                    *self
+                } else {
+                    k
+                }
+            })
             .collect()
     }
 

@@ -636,7 +636,11 @@ mod tests {
         let mut shelf = first_of(Placement::FreeStanding).clone();
         shelf.auto_rotate = Some(true);
         let s = placement_for(&cx, &shelf, &p);
-        assert!((s.position.y - 3.0).abs() < 1e-9 && s.angle.abs() < 1e-9, "{:?}", s.position);
+        assert!(
+            (s.position.y - 3.0).abs() < 1e-9 && s.angle.abs() < 1e-9,
+            "{:?}",
+            s.position
+        );
         // Without the option it just centers on the click.
         shelf.auto_rotate = None;
         let s = placement_for(&cx, &shelf, &p);

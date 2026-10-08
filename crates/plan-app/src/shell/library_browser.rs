@@ -620,10 +620,12 @@ fn result_cell(
     is_active: bool,
     user: &UserUi,
 ) -> (Option<LibraryEvent>, Option<UserAction>) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(PREVIEW_PX + 8.0), Sense::click_and_drag());
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::splat(PREVIEW_PX + 8.0), Sense::click_and_drag());
     let visuals = ui.visuals();
     if is_active {
-        ui.painter().rect_filled(rect, 3.0, visuals.selection.bg_fill);
+        ui.painter()
+            .rect_filled(rect, 3.0, visuals.selection.bg_fill);
     } else if resp.hovered() {
         ui.painter()
             .rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
@@ -754,7 +756,10 @@ mod tests {
         assert_eq!(user.count, 0);
         store::create_folder(&["User".into(), "Mine".into()]).unwrap();
         st.sync_user_items();
-        assert!(st.tree.child("User").unwrap().child("Mine").is_some(), "empty folders show");
+        assert!(
+            st.tree.child("User").unwrap().child("Mine").is_some(),
+            "empty folders show"
+        );
 
         let m = Model3d::box_model(30.0, 20.0, 40.0, None);
         let id = store::new_id(ItemKind::Model);
@@ -769,7 +774,10 @@ mod tests {
         store::add(item, Some(&m)).unwrap();
         st.sync_user_items();
         st.user.refresh();
-        assert_eq!(st.tree.child("User").unwrap().child("Mine").unwrap().count, 1);
+        assert_eq!(
+            st.tree.child("User").unwrap().child("Mine").unwrap().count,
+            1
+        );
 
         // The folder lists its items; nothing else does.
         st.category = vec!["User".into(), "Mine".into()];
@@ -785,14 +793,20 @@ mod tests {
         st.user.filter.kinds.clear();
 
         // Favorites and recents are views of their own.
-        assert!(st.user.perform(UserAction::ToggleFavorite(id.clone())).is_some());
+        assert!(st
+            .user
+            .perform(UserAction::ToggleFavorite(id.clone()))
+            .is_some());
         st.user.view = View::Favorites;
         let ids: Vec<&str> = st.results().iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, [id.as_str()]);
         st.user.view = View::Recent;
         assert!(st.results().is_empty());
         assert!(st.activate(&id));
-        crate::tools::library::set_active_item(&mut EditorContext::new(crate::plan_defaults::embedded()), &id);
+        crate::tools::library::set_active_item(
+            &mut EditorContext::new(crate::plan_defaults::embedded()),
+            &id,
+        );
         st.user.refresh();
         assert_eq!(st.results().len(), 1, "an activated item is recent");
         st.user.view = View::Category;
@@ -808,7 +822,10 @@ mod tests {
         // Deleting through an action takes it out of the tree counts.
         assert!(store::delete(&id).unwrap());
         st.sync_user_items();
-        assert_eq!(st.tree.child("User").unwrap().child("Mine").unwrap().count, 0);
+        assert_eq!(
+            st.tree.child("User").unwrap().child("Mine").unwrap().count,
+            0
+        );
         crate::tools::images::set_user_library_path(None);
     }
 

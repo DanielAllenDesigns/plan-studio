@@ -69,9 +69,9 @@ pub use defaults::{
 };
 pub use dimension::{
     align_dimensions, auto_exterior_dimensions, auto_exterior_set, auto_nkba_dimensions,
-    distribute_dimensions, AutoGroup, AutoString,
-    DimFormat, Dimension, DimensionKind, ExteriorSetup, LocateGroup, NkbaItem, NkbaKind,
-    NkbaSetup, ObjectLocate, OpeningLocate, WallLocate,
+    distribute_dimensions, AutoGroup, AutoString, DimFormat, Dimension, DimensionKind,
+    ExteriorSetup, LocateGroup, NkbaItem, NkbaKind, NkbaSetup, ObjectLocate, OpeningLocate,
+    WallLocate,
 };
 pub use export::dxf::{write_dxf, DxfAnnotation, DxfExport};
 pub use extras::{

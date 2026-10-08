@@ -35,8 +35,9 @@ pub use defaults::{default_header_table, FramingDefaults, HeaderRow};
 pub use detail::{wall_detail, Stroke};
 pub use floor::{frame_floor, frame_floor_holes, JoistDirection};
 pub use layout::{
-    frame_floor_directed, frame_wall_with_marker, frame_wall_with_marker_joined, layout_trusses, BearingLine,
-    JoistDirection as JoistDirectionLine, ReferenceMarker, RoofTrussDirection, TrussBase,
+    frame_floor_directed, frame_wall_with_marker, frame_wall_with_marker_joined, layout_trusses,
+    BearingLine, JoistDirection as JoistDirectionLine, ReferenceMarker, RoofTrussDirection,
+    TrussBase,
 };
 pub use lumber::{
     format_inches, Lumber, TWO_BY_EIGHT, TWO_BY_FOUR, TWO_BY_SIX, TWO_BY_TEN, TWO_BY_TWELVE,
@@ -46,9 +47,7 @@ pub use manual::{
     FramingMaterial, FramingMember, LumberSize, MaterialList, MaterialRow,
     MemberKind as ManualMemberKind, OrientedBox,
 };
-pub use member::{
-    Birdsmouth, Member, MemberCuts, MemberKind, TailCut, Transform3, Vec3,
-};
+pub use member::{Birdsmouth, Member, MemberCuts, MemberKind, TailCut, Transform3, Vec3};
 pub use roof::{
     frame_roof, frame_roof_eaves, roof_framing_takeoff, roof_plan_symbols, truss_id, EaveSpec,
     OverhangCut, RoofFramingDefaults,

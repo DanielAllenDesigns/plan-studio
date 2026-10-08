@@ -149,7 +149,13 @@ pub fn take_request() -> Option<UiRequest> {
 fn model_file_name(id: &str) -> String {
     let safe: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("{MODEL_DIR}{safe}.psm")
 }
@@ -331,15 +337,22 @@ fn folder_or_default(folder: Option<&[String]>, kind: ItemKind) -> Vec<String> {
 }
 
 /// Saves a placed symbol (its drawing, size and 3D model) as a library item.
-pub fn add_symbol(sym: &PlacedSymbol, folder: Option<&[String]>) -> Result<Arc<CatalogItem>, String> {
-    let kind = crate::tools::library::find_item(&sym.catalog_id).map_or(ItemKind::Symbol, |i| i.kind);
+pub fn add_symbol(
+    sym: &PlacedSymbol,
+    folder: Option<&[String]>,
+) -> Result<Arc<CatalogItem>, String> {
+    let kind =
+        crate::tools::library::find_item(&sym.catalog_id).map_or(ItemKind::Symbol, |i| i.kind);
     let id = new_id(kind);
     let (item, model) = make::item_from_symbol(sym, &id, &folder_or_default(folder, kind))?;
     add(item, model.as_ref())
 }
 
 /// Copies a library item (a built-in one, say) into the user catalog.
-pub fn add_item_copy(src: &CatalogItem, folder: Option<&[String]>) -> Result<Arc<CatalogItem>, String> {
+pub fn add_item_copy(
+    src: &CatalogItem,
+    folder: Option<&[String]>,
+) -> Result<Arc<CatalogItem>, String> {
     let id = new_id(src.kind);
     let (item, model) = make::item_from_item(src, &id, &folder_or_default(folder, src.kind))?;
     add(item, model.as_ref())
@@ -348,24 +361,41 @@ pub fn add_item_copy(src: &CatalogItem, folder: Option<&[String]>) -> Result<Arc
 /// Saves a cabinet.
 pub fn add_cabinet(cab: &Cabinet, folder: Option<&[String]>) -> Result<Arc<CatalogItem>, String> {
     let id = new_id(ItemKind::Cabinet);
-    let (item, model) = make::item_from_cabinet(cab, &id, &folder_or_default(folder, ItemKind::Cabinet))?;
+    let (item, model) =
+        make::item_from_cabinet(cab, &id, &folder_or_default(folder, ItemKind::Cabinet))?;
     add(item, Some(&model))
 }
 
 /// Saves CAD items as a block (or a text item when all are text).
-pub fn add_cad(items_: &[CadItem], name: &str, folder: Option<&[String]>) -> Result<Arc<CatalogItem>, String> {
+pub fn add_cad(
+    items_: &[CadItem],
+    name: &str,
+    folder: Option<&[String]>,
+) -> Result<Arc<CatalogItem>, String> {
     let all_text = items_.iter().all(|i| matches!(i, CadItem::Text { .. }));
-    let kind = if all_text { ItemKind::Text } else { ItemKind::CadBlock };
+    let kind = if all_text {
+        ItemKind::Text
+    } else {
+        ItemKind::CadBlock
+    };
     let id = new_id(kind);
     let item = make::item_from_cad(items_, &id, name, &folder_or_default(folder, kind))?;
     add(item, None)
 }
 
 /// Saves a material as a swatch.
-pub fn add_material(name: &str, color: [u8; 3], folder: Option<&[String]>) -> Result<Arc<CatalogItem>, String> {
+pub fn add_material(
+    name: &str,
+    color: [u8; 3],
+    folder: Option<&[String]>,
+) -> Result<Arc<CatalogItem>, String> {
     let id = new_id(ItemKind::Material);
-    let (item, model) =
-        make::item_from_material(name, color, &id, &folder_or_default(folder, ItemKind::Material));
+    let (item, model) = make::item_from_material(
+        name,
+        color,
+        &id,
+        &folder_or_default(folder, ItemKind::Material),
+    );
     add(item, Some(&model))
 }
 
@@ -379,7 +409,9 @@ pub fn add_selection(cx: &EditorContext, folder: Option<&[String]>) -> Result<Ve
     for obj in &cx.selection.items {
         match *obj {
             ObjectRef::Symbol(id) => {
-                let Some(sym) = floor.symbol(id) else { continue };
+                let Some(sym) = floor.symbol(id) else {
+                    continue;
+                };
                 match add_symbol(sym, folder) {
                     Ok(i) => names.push(i.name.clone()),
                     Err(e) => last_err = Some(e),
@@ -418,16 +450,19 @@ pub fn add_selection(cx: &EditorContext, folder: Option<&[String]>) -> Result<Ve
             CadItem::Text { text, .. } => text.chars().take(24).collect::<String>(),
             _ => String::new(),
         };
-        let name = if name.trim().is_empty() { "Text".to_string() } else { name };
+        let name = if name.trim().is_empty() {
+            "Text".to_string()
+        } else {
+            name
+        };
         match add_cad(&[t], &name, folder) {
             Ok(i) => names.push(i.name.clone()),
             Err(e) => last_err = Some(e),
         }
     }
     if names.is_empty() {
-        return Err(last_err.unwrap_or_else(|| {
-            "Select a symbol, cabinet, CAD object or text first".to_string()
-        }));
+        return Err(last_err
+            .unwrap_or_else(|| "Select a symbol, cabinet, CAD object or text first".to_string()));
     }
     Ok(names)
 }
@@ -475,7 +510,10 @@ pub fn import_defaults(path: &Path) -> ModelImport {
 }
 
 /// Reads the model file at `path` (and its `.mtl` / `.bin` neighbors).
-pub fn parse_model_file(path: &Path, opts: &ModelOptions) -> Result<plan_import::ImportedModel, String> {
+pub fn parse_model_file(
+    path: &Path,
+    opts: &ModelOptions,
+) -> Result<plan_import::ImportedModel, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -655,12 +693,20 @@ pub fn placed_meshes(sym: &PlacedSymbol, floor_elevation: f64) -> Option<Vec<pla
     if meshes.is_empty() {
         return None;
     }
-    let fitted =
-        plan_3d::import::fit_meshes_to_box(&meshes, sym.width as f32, sym.depth as f32, sym.height as f32);
+    let fitted = plan_3d::import::fit_meshes_to_box(
+        &meshes,
+        sym.width as f32,
+        sym.depth as f32,
+        sym.height as f32,
+    );
     // The model origin is an offset in the symbol's own axes (x right, plan
     // y forward, up), turned with the symbol.
     let a = sym.angle.to_radians();
-    let (ox, oy, oz) = (item.model_origin[0], item.model_origin[1], item.model_origin[2]);
+    let (ox, oy, oz) = (
+        item.model_origin[0],
+        item.model_origin[1],
+        item.model_origin[2],
+    );
     let dx = ox * a.cos() - oz * a.sin();
     let dy = ox * a.sin() + oz * a.cos();
     let origin = [
@@ -732,7 +778,10 @@ fn replace_cabinet(cx: &mut EditorContext, id: Id, item: &CatalogItem) -> bool {
     let fl = cx.floor;
     if placed::replace_cabinet(&mut cx.project, fl, &new_cab) {
         cx.mark_dirty();
-        cx.status = format!("Replaced the cabinet with {} (kept {kept} insert(s))", item.name);
+        cx.status = format!(
+            "Replaced the cabinet with {} (kept {kept} insert(s))",
+            item.name
+        );
         true
     } else {
         cx.cancel_change();
@@ -751,7 +800,13 @@ fn replace_device(cx: &mut EditorContext, id: Id, item: &CatalogItem) -> bool {
     else {
         return false;
     };
-    let mut sym = PlacedSymbol::new(item.id.clone(), dev.position, item.width, item.depth, item.height);
+    let mut sym = PlacedSymbol::new(
+        item.id.clone(),
+        dev.position,
+        item.width,
+        item.depth,
+        item.height,
+    );
     sym.angle = (dev.angle.to_degrees() - 90.0).rem_euclid(360.0);
     sym.elevation = dev.height;
     sym.layer = layer_of(item);
@@ -813,7 +868,10 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             cx.status = match rfd::FileDialog::new()
                 .set_title("Export Library")
                 .set_file_name("plan-studio-library.calibz")
-                .add_filter("Plan Studio library (Chief Architect cannot open it)", &["calibz"])
+                .add_filter(
+                    "Plan Studio library (Chief Architect cannot open it)",
+                    &["calibz"],
+                )
                 .save_file()
             {
                 Some(path) => match export_library_to(&path) {
@@ -859,7 +917,10 @@ mod tests {
     fn box_item(name: &str, f: &[&str]) -> (CatalogItem, Model3d) {
         let m = Model3d::box_model(30.0, 20.0, 40.0, Some([200, 30, 30]));
         let id = new_id(ItemKind::Model);
-        (make::item_from_model(&m, &id, name, &folder(f), None).unwrap(), m)
+        (
+            make::item_from_model(&m, &id, name, &folder(f), None).unwrap(),
+            m,
+        )
     }
 
     #[test]
@@ -868,14 +929,20 @@ mod tests {
         let (item, model) = box_item("Ottoman", &["User", "Furniture"]);
         let id = item.id.clone();
         let added = add(item, Some(&model)).unwrap();
-        assert_eq!(added.model3d.as_deref(), Some(model_file_name(&id).as_str()));
+        assert_eq!(
+            added.model3d.as_deref(),
+            Some(model_file_name(&id).as_str())
+        );
         assert!(dir.join(added.model3d.as_ref().unwrap()).exists());
 
         // A fresh load (as after a restart) sees it, model included.
         images::set_user_library_path(Some(Some(dir.join("user-library.json"))));
         forget_cache();
         let back = self::item(&id).expect("persisted");
-        assert_eq!((back.name.as_str(), back.kind), ("Ottoman", ItemKind::Model));
+        assert_eq!(
+            (back.name.as_str(), back.kind),
+            ("Ottoman", ItemKind::Model)
+        );
         assert_eq!(*model_of(&back).unwrap(), model);
 
         rename(&id, "Pouf").unwrap();
@@ -883,14 +950,20 @@ mod tests {
         let copy = duplicate(&id).unwrap();
         assert_eq!(self::item(&copy).unwrap().name, "Pouf copy");
         move_to(&copy, &folder(&["User", "Other"])).unwrap();
-        assert_eq!(self::item(&copy).unwrap().category, folder(&["User", "Other"]));
+        assert_eq!(
+            self::item(&copy).unwrap().category,
+            folder(&["User", "Other"])
+        );
         // The copy shares the model file, so deleting the original keeps it.
         assert!(delete(&id).unwrap());
         assert!(self::item(&id).is_none());
         assert!(model_of(&self::item(&copy).unwrap()).is_some());
         assert!(dir.join(model_file_name(&id)).exists());
         assert!(delete(&copy).unwrap());
-        assert!(!dir.join(model_file_name(&id)).exists(), "orphaned model removed");
+        assert!(
+            !dir.join(model_file_name(&id)).exists(),
+            "orphaned model removed"
+        );
         assert!(!delete(&copy).unwrap());
         images::set_user_library_path(None);
         let _ = std::fs::remove_dir_all(dir);
@@ -913,8 +986,14 @@ mod tests {
         assert!(m.is_favorite(&id));
         assert_eq!(m.recent, ["core.something".to_string(), id.clone()]);
         assert!(folders().contains(&folder(&["User", "Kitchen"])));
-        assert_eq!(rename_folder(&folder(&["User", "Kitchen"]), "Cooking").unwrap(), 1);
-        assert_eq!(self::item(&id).unwrap().category, folder(&["User", "Cooking"]));
+        assert_eq!(
+            rename_folder(&folder(&["User", "Kitchen"]), "Cooking").unwrap(),
+            1
+        );
+        assert_eq!(
+            self::item(&id).unwrap().category,
+            folder(&["User", "Cooking"])
+        );
         assert!(folders().contains(&folder(&["User", "Cooking"])));
         assert_eq!(delete_folder(&folder(&["User", "Cooking"])).unwrap(), 1);
         assert!(self::item(&id).is_none());
@@ -933,7 +1012,12 @@ mod tests {
         let (b, mb) = box_item("Table", &["User", "Furniture", "Dining"]);
         let bid = b.id.clone();
         add(b, Some(&mb)).unwrap();
-        let (mat, mm) = make::item_from_material("Slate", [1, 2, 3], &new_id(ItemKind::Material), &folder(&["User", "Materials"]));
+        let (mat, mm) = make::item_from_material(
+            "Slate",
+            [1, 2, 3],
+            &new_id(ItemKind::Material),
+            &folder(&["User", "Materials"]),
+        );
         let mid = mat.id.clone();
         add(mat, Some(&mm)).unwrap();
         create_folder(&folder(&["User", "Empty"])).unwrap();
@@ -960,7 +1044,9 @@ mod tests {
         assert_eq!(import_bytes(&zip).unwrap(), 3);
         assert_eq!(items().len(), 3);
         // Foreign files are refused with a reason.
-        assert!(import_bytes(b"SQLite format 3\0.....................").unwrap_err().contains("Chief"));
+        assert!(import_bytes(b"SQLite format 3\0.....................")
+            .unwrap_err()
+            .contains("Chief"));
         images::set_user_library_path(None);
     }
 
@@ -1032,7 +1118,10 @@ mod tests {
         // x spans 100 +- 30; scene z = -plan y, depth 20 in front (-z).
         assert!((lo[0] - 70.0).abs() < 1e-3 && (hi[0] - 130.0).abs() < 1e-3);
         assert!((hi[1] - 40.0).abs() < 1e-3);
-        assert!((hi[2] + 200.0).abs() < 1e-3 && (lo[2] + 220.0).abs() < 1e-3, "{lo:?} {hi:?}");
+        assert!(
+            (hi[2] + 200.0).abs() < 1e-3 && (lo[2] + 220.0).abs() < 1e-3,
+            "{lo:?} {hi:?}"
+        );
 
         let mut item = self::item(&id).unwrap().as_ref().clone();
         item.model_origin = [10.0, 5.0, 0.0];
@@ -1071,15 +1160,44 @@ mod tests {
             .all_items()
             .find(|i| i.placement == Placement::FreeStanding && !i.symbol.is_empty())
             .unwrap();
-        let mut sym = PlacedSymbol::new(src.id.clone(), Point::new(100.0, 100.0), src.width * 2.0, src.depth * 2.0, src.height);
+        let mut sym = PlacedSymbol::new(
+            src.id.clone(),
+            Point::new(100.0, 100.0),
+            src.width * 2.0,
+            src.depth * 2.0,
+            src.height,
+        );
         sym.label = "Big Thing".into();
         let sid = cx.project.add_symbol(0, sym);
         let mut cab = Cabinet::base(30.0);
         cab.position = Point::new(10.0, 10.0);
         let cid = placed::add_cabinet(&mut cx.project, 0, cab).unwrap();
-        let l1 = cx.project.add_cad(0, "CAD, Default", CadItem::Line { a: Point::new(0.0, 0.0), b: Point::new(10.0, 0.0) });
-        let l2 = cx.project.add_cad(0, "CAD, Default", CadItem::Circle { center: Point::new(5.0, 5.0), radius: 3.0 });
-        let t = cx.project.add_cad(0, "Text", CadItem::Text { pos: Point::new(0.0, 0.0), text: "Hello there".into(), height: 3.0, angle: 0.0 });
+        let l1 = cx.project.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Line {
+                a: Point::new(0.0, 0.0),
+                b: Point::new(10.0, 0.0),
+            },
+        );
+        let l2 = cx.project.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Circle {
+                center: Point::new(5.0, 5.0),
+                radius: 3.0,
+            },
+        );
+        let t = cx.project.add_cad(
+            0,
+            "Text",
+            CadItem::Text {
+                pos: Point::new(0.0, 0.0),
+                text: "Hello there".into(),
+                height: 3.0,
+                angle: 0.0,
+            },
+        );
         cx.selection.items = vec![
             ObjectRef::Symbol(sid),
             ObjectRef::Cabinet(cid),
@@ -1092,14 +1210,21 @@ mod tests {
         assert!(names.contains(&"Big Thing".to_string()));
         let all = items();
         let sym_item = all.iter().find(|i| i.name == "Big Thing").unwrap();
-        assert_eq!((sym_item.width, sym_item.depth), (src.width * 2.0, src.depth * 2.0));
+        assert_eq!(
+            (sym_item.width, sym_item.depth),
+            (src.width * 2.0, src.depth * 2.0)
+        );
         assert_eq!(sym_item.category, default_folder(ItemKind::Symbol));
         // The copy's drawing is scaled with the placed size.
         let want = src.symbol.bounds().unwrap().width() * 2.0;
         assert!((sym_item.symbol.bounds().unwrap().width() - want).abs() < 0.5);
-        assert!(all.iter().any(|i| i.kind == ItemKind::Cabinet && i.model3d.is_some()));
+        assert!(all
+            .iter()
+            .any(|i| i.kind == ItemKind::Cabinet && i.model3d.is_some()));
         assert!(all.iter().any(|i| i.kind == ItemKind::CadBlock));
-        assert!(all.iter().any(|i| i.kind == ItemKind::Text && i.name.starts_with("Hello")));
+        assert!(all
+            .iter()
+            .any(|i| i.kind == ItemKind::Text && i.name.starts_with("Hello")));
 
         // Nothing selected: a clear message.
         cx.selection.items.clear();
@@ -1118,7 +1243,13 @@ mod tests {
         cab.cutouts = Vec::new();
         let item = add_cabinet(&cab, None).unwrap();
         let sym = {
-            let mut s = PlacedSymbol::new(item.id.clone(), Point::new(100.0, 3.0), item.width, item.depth, item.height);
+            let mut s = PlacedSymbol::new(
+                item.id.clone(),
+                Point::new(100.0, 3.0),
+                item.width,
+                item.depth,
+                item.height,
+            );
             s.angle = 0.0;
             s
         };
@@ -1128,15 +1259,27 @@ mod tests {
         };
         let placed_cab = placed::cabinet_by_id(cx.floor(), id).unwrap();
         // Back-center at x = 100: the back-left corner is half a width left.
-        assert!((placed_cab.position.x - 85.0).abs() < 1e-9 && (placed_cab.position.y - 3.0).abs() < 1e-9);
+        assert!(
+            (placed_cab.position.x - 85.0).abs() < 1e-9
+                && (placed_cab.position.y - 3.0).abs() < 1e-9
+        );
 
         let block = add_cad(
-            &[CadItem::Line { a: Point::new(0.0, 0.0), b: Point::new(20.0, 0.0) }],
+            &[CadItem::Line {
+                a: Point::new(0.0, 0.0),
+                b: Point::new(20.0, 0.0),
+            }],
             "Bar",
             None,
         )
         .unwrap();
-        let mut s2 = PlacedSymbol::new(block.id.clone(), Point::new(50.0, 40.0), block.width, block.depth, 0.0);
+        let mut s2 = PlacedSymbol::new(
+            block.id.clone(),
+            Point::new(50.0, 40.0),
+            block.width,
+            block.depth,
+            0.0,
+        );
         s2.angle = 90.0;
         let r = place_payload(&mut cx, &block, &s2);
         assert!(matches!(r, Some(ObjectRef::Cad(_))));
@@ -1175,7 +1318,11 @@ mod tests {
         crate::tools::library::set_active_item(&mut cx, &item.id);
         assert!(replace_other(&mut cx, ObjectRef::Cabinet(id)));
         let got = placed::cabinet_by_id(cx.floor(), id).unwrap();
-        assert_eq!((got.width, got.height), (36.0, 40.0), "the library cabinet's size");
+        assert_eq!(
+            (got.width, got.height),
+            (36.0, 40.0),
+            "the library cabinet's size"
+        );
         assert_eq!(got.position, Point::new(30.0, 3.0));
         assert_eq!(got.appliance.as_deref(), Some("Dishwasher"), "inserts stay");
         assert_eq!(got.label, "DW");
@@ -1183,7 +1330,10 @@ mod tests {
         assert_eq!(placed::cabinet_by_id(cx.floor(), id).unwrap().width, 24.0);
 
         // A plain symbol is refused for a cabinet.
-        let plain = crate::tools::library::library_catalog().all_items().next().unwrap();
+        let plain = crate::tools::library::library_catalog()
+            .all_items()
+            .next()
+            .unwrap();
         crate::tools::library::set_active_item(&mut cx, &plain.id);
         assert!(!replace_other(&mut cx, ObjectRef::Cabinet(id)));
         assert!(cx.status.contains("cabinet"));
@@ -1207,7 +1357,9 @@ mod tests {
         crate::editor::site_view::save_electrical(&mut cx.project, 0, &layer);
         crate::tools::library::set_active_item(&mut cx, &plain.id);
         assert!(replace_other(&mut cx, ObjectRef::Device(did)));
-        assert!(crate::editor::site_view::load_electrical(cx.floor()).device(did).is_none());
+        assert!(crate::editor::site_view::load_electrical(cx.floor())
+            .device(did)
+            .is_none());
         let s = cx.floor().symbols.last().unwrap();
         assert_eq!(s.catalog_id, plain.id);
         assert_eq!(s.elevation, 16.0);
@@ -1216,7 +1368,10 @@ mod tests {
 
     #[test]
     fn symbol_stroke_helper_is_available_for_the_browser() {
-        let _ = Symbol2d::new(vec![Stroke::Circle { center: Point::ZERO, radius: 1.0 }]);
+        let _ = Symbol2d::new(vec![Stroke::Circle {
+            center: Point::ZERO,
+            radius: 1.0,
+        }]);
     }
 }
 
@@ -1279,8 +1434,16 @@ pub(crate) mod tests_support {
                     | *c.get(2).unwrap_or(&0) as u32;
                 s.push(T[(n >> 18) as usize & 63] as char);
                 s.push(T[(n >> 12) as usize & 63] as char);
-                s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-                s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+                s.push(if c.len() > 1 {
+                    T[(n >> 6) as usize & 63] as char
+                } else {
+                    '='
+                });
+                s.push(if c.len() > 2 {
+                    T[n as usize & 63] as char
+                } else {
+                    '='
+                });
             }
             s
         };

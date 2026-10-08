@@ -395,7 +395,11 @@ fn rafters(
                 origin = add(origin, scale(axis_x, -ext));
                 length += ext;
                 let heel_at = (eave_spec.overhang.max(0.0) / cs
-                    - if cut == TailCut::Plumb { 0.0 } else { 2.0 * hd * rise })
+                    - if cut == TailCut::Plumb {
+                        0.0
+                    } else {
+                        2.0 * hd * rise
+                    })
                 .max(0.0);
                 let heel_height = (d.birdsmouth_seat * rise).min(d.rafter.depth / 3.0 / cs);
                 cuts = MemberCuts {
@@ -1015,7 +1019,11 @@ mod tests {
                 assert_eq!(a.cuts.tail, Some(cut));
                 assert_eq!(a.cuts.pitch_in_12, 8.0);
                 // A plumb cut leaves the bottom corner out past the eave line.
-                let ext = if cut == TailCut::Plumb { 2.0 * hd * rise } else { 0.0 };
+                let ext = if cut == TailCut::Plumb {
+                    2.0 * hd * rise
+                } else {
+                    0.0
+                };
                 assert!((a.length - b.length - ext).abs() < 1e-6, "{cut:?}");
                 // The top corner stays on the plane's eave edge.
                 let top_x = if cut == TailCut::Plumb { ext } else { 0.0 };
@@ -1026,13 +1034,24 @@ mod tests {
                 let bm = a.cuts.birdsmouth.expect("birdsmouth");
                 let d_pt = local_plan(a, bm.heel_at, -hd);
                 let run = d_pt.dist(a_top);
-                assert!((run - 16.0).abs() < 1e-6, "{cut:?}: heel {run}\" in from the eave");
+                assert!(
+                    (run - 16.0).abs() < 1e-6,
+                    "{cut:?}: heel {run}\" in from the eave"
+                );
                 // The seat is level and as long as the plate's 3 1/2": the
                 // heel's top corner and the seat's far end are at one height.
-                let c_h = local_height(a, bm.heel_at + bm.heel_height * sn, -hd + bm.heel_height * cs);
+                let c_h = local_height(
+                    a,
+                    bm.heel_at + bm.heel_height * sn,
+                    -hd + bm.heel_height * cs,
+                );
                 let e_h = local_height(a, bm.heel_at + bm.heel_height / sn, -hd);
                 assert!((c_h - e_h).abs() < 1e-6);
-                let c_pt = local_plan(a, bm.heel_at + bm.heel_height * sn, -hd + bm.heel_height * cs);
+                let c_pt = local_plan(
+                    a,
+                    bm.heel_at + bm.heel_height * sn,
+                    -hd + bm.heel_height * cs,
+                );
                 assert!(c_pt.dist(d_pt) < 1e-6, "the heel cut is plumb");
                 let e_pt = local_plan(a, bm.heel_at + bm.heel_height / sn, -hd);
                 assert!((e_pt.dist(d_pt) - 3.5).abs() < 1e-6, "3 1/2\" seat");
@@ -1083,7 +1102,10 @@ mod tests {
             let p = |i: u32| mesh.vertices[i as usize].position.map(f64::from);
             vol += dot(p(tri[0]), crate::member::cross(p(tri[1]), p(tri[2]))) / 6.0;
         }
-        assert!((vol - area(&prof) * r.lumber.thickness).abs() < 1e-3 * vol, "{vol}");
+        assert!(
+            (vol - area(&prof) * r.lumber.thickness).abs() < 1e-3 * vol,
+            "{vol}"
+        );
         // A member without cuts keeps the 12-triangle box.
         let plain = m.iter().find(|m| m.cuts.is_empty()).unwrap();
         assert_eq!(plain.mesh().triangle_count(), 12);
@@ -1098,6 +1120,9 @@ mod tests {
         let r = m.iter().find(|m| !m.cuts.is_empty()).unwrap();
         assert_eq!(r.cuts.tail, Some(TailCut::Plumb));
         let t = roof_framing_takeoff(&m);
-        assert!(t.cuts.iter().any(|c| c.member == "rafter" && c.size == "2x8"));
+        assert!(t
+            .cuts
+            .iter()
+            .any(|c| c.member == "rafter" && c.size == "2x8"));
     }
 }

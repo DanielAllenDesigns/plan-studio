@@ -532,7 +532,10 @@ fn a_curved_wall_is_cut_by_the_roof_facet_by_facet() {
     p.floors[0].walls[0].curve = Some(plan_core::WallCurve { bulge: 20.0 });
     let scene = build_scene(&p);
     let top = max_y(&of(&scene, ids[0]));
-    assert!(top < 40.0, "the curved wall stops under the low roof: {top}");
+    assert!(
+        top < 40.0,
+        "the curved wall stops under the low roof: {top}"
+    );
     assert!(top > 5.0);
     // Without the roof it is the full 96" high.
     let (mut q, qids) = house();

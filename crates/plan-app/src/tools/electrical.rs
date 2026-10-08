@@ -37,10 +37,10 @@ use crate::editor::site_view::{
 };
 use crate::editor::{Camera, EditorContext};
 use eframe::egui::{self, Key, Pos2, Shape};
-use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
-use plan_core::{Floor, Id};
 use plan_core::geometry::point_in_polygon;
+use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
 use plan_core::OpeningKind;
+use plan_core::{Floor, Id};
 use plan_electrical::{
     auto_place_outlets, auto_place_room_light, auto_place_switch, connect_in, place_free,
     place_on_wall, AutoOutletOptions, Device, DeviceKind, RoomFunction, WallSide,
@@ -415,7 +415,11 @@ pub fn auto_place_floor_switches(cx: &mut EditorContext) -> usize {
     let mut added: Vec<(usize, Vec<Device>)> = Vec::new(); // room index, new switches
     for (ri, room) in rooms.iter().enumerate() {
         let mut here: Vec<Device> = Vec::new();
-        for o in floor.openings.iter().filter(|o| o.kind == OpeningKind::Door) {
+        for o in floor
+            .openings
+            .iter()
+            .filter(|o| o.kind == OpeningKind::Door)
+        {
             let Some(wall) = floor.wall(o.wall_id) else {
                 continue;
             };
@@ -600,9 +604,10 @@ impl ElectricalTool {
         // 4-way switches wire together as a pair.
         let hit_switch = layer.device(hit).is_some_and(|d| d.kind.is_switch());
         let pair = hit_switch
-            && layer.device(from).zip(layer.device(hit)).is_some_and(|(a, b)| {
-                is_traveler(a.kind) && is_traveler(b.kind)
-            })
+            && layer
+                .device(from)
+                .zip(layer.device(hit))
+                .is_some_and(|(a, b)| is_traveler(a.kind) && is_traveler(b.kind))
             && !layer
                 .connections
                 .iter()
@@ -630,7 +635,12 @@ impl ElectricalTool {
     }
 
     /// A press on the bend handle at the midpoint of a connection arc.
-    fn start_bend(&mut self, cx: &EditorContext, layer: &plan_electrical::ElectricalLayer, p: Point) -> bool {
+    fn start_bend(
+        &mut self,
+        cx: &EditorContext,
+        layer: &plan_electrical::ElectricalLayer,
+        p: Point,
+    ) -> bool {
         let tol = cx.pick_tol().max(BEND_PICK);
         let near_selection = |i: usize| {
             let c = &layer.connections[i];
@@ -1477,10 +1487,16 @@ mod tests {
             let ds = devices(&cx);
             assert_eq!(ds.len(), 1, "{v:?}");
             let d = &ds[0];
-            assert_eq!(std::mem::discriminant(&d.kind), std::mem::discriminant(&kind));
+            assert_eq!(
+                std::mem::discriminant(&d.kind),
+                std::mem::discriminant(&kind)
+            );
             assert_eq!(d.height, kind.default_height(), "{v:?}");
             assert_eq!(d.wall_id.is_some(), kind.is_wall_mounted(), "{v:?}");
-            assert_eq!(cx.undo().as_deref(), Some(format!("Place {}", kind.name()).as_str()));
+            assert_eq!(
+                cx.undo().as_deref(),
+                Some(format!("Place {}", kind.name()).as_str())
+            );
         }
         assert_eq!(placed, 22);
         // The flyout names are unique and Chief-like.
@@ -1500,11 +1516,19 @@ mod tests {
         let mut t = tool(ElecVariant::Connection);
         click(&mut t, &mut cx, 30.0, 2.25);
         click(&mut t, &mut cx, 60.0, 40.0);
-        assert!(t.connect_from.is_some(), "the run continues from the switch");
+        assert!(
+            t.connect_from.is_some(),
+            "the run continues from the switch"
+        );
         click(&mut t, &mut cx, 160.0, 100.0);
         let layer = load_electrical(cx.floor());
         assert_eq!(layer.connections.len(), 2);
-        let sw = layer.devices.iter().find(|d| d.kind.is_switch()).unwrap().id;
+        let sw = layer
+            .devices
+            .iter()
+            .find(|d| d.kind.is_switch())
+            .unwrap()
+            .id;
         assert!(layer
             .devices
             .iter()
@@ -1539,7 +1563,11 @@ mod tests {
             .collect();
         assert_eq!(ids.len(), 2);
         let layer = load_electrical(cx.floor());
-        assert_eq!(layer.connections.len(), 2, "one arc to the light, one traveler");
+        assert_eq!(
+            layer.connections.len(),
+            2,
+            "one arc to the light, one traveler"
+        );
         let light = layer.devices.iter().find(|d| d.kind.is_light()).unwrap();
         let mut by = light.switched_by.clone();
         by.sort();
@@ -1608,12 +1636,23 @@ mod tests {
         let r = click(&mut t, &mut cx, 10.0, 10.0);
         assert_eq!(r.commit.as_deref(), Some("Auto Place Switches"));
         let layer = load_electrical(cx.floor());
-        let switches: Vec<_> = layer.devices.iter().filter(|d| d.kind.is_switch()).collect();
+        let switches: Vec<_> = layer
+            .devices
+            .iter()
+            .filter(|d| d.kind.is_switch())
+            .collect();
         assert_eq!(switches.len(), 1);
         let s = switches[0];
-        assert_eq!((s.kind, s.height, s.wall_id), (DeviceKind::Switch, 48.0, Some(ids[0])));
+        assert_eq!(
+            (s.kind, s.height, s.wall_id),
+            (DeviceKind::Switch, 48.0, Some(ids[0]))
+        );
         // Beside the latch-side jamb (door spans 102..138): 6" past 138 is 144.
-        assert!((s.position.x - 144.0).abs() < 1e-6 || (s.position.x - 96.0).abs() < 1e-6, "{}", s.position.x);
+        assert!(
+            (s.position.x - 144.0).abs() < 1e-6 || (s.position.x - 96.0).abs() < 1e-6,
+            "{}",
+            s.position.x
+        );
         assert!(s.position.y > 0.0, "on the room side");
         let light = layer.devices.iter().find(|d| d.kind.is_light()).unwrap();
         assert_eq!(light.position, Point::new(120.0, 72.0));
@@ -1671,10 +1710,16 @@ mod tests {
         draft.kind = DeviceKind::SwitchDimmer;
         *t.applied.borrow_mut() = Some(draft);
         let r = t.pointer_move(&mut cx, p);
-        assert_eq!(r.commit.as_deref(), Some("Electrical Service Specification"));
+        assert_eq!(
+            r.commit.as_deref(),
+            Some("Electrical Service Specification")
+        );
         let layer = load_electrical(cx.floor());
         assert_eq!(layer.connections.len(), 1);
-        assert!(layer.devices.iter().any(|d| d.kind == DeviceKind::SwitchDimmer));
+        assert!(layer
+            .devices
+            .iter()
+            .any(|d| d.kind == DeviceKind::SwitchDimmer));
         assert_eq!(layer.device(light).unwrap().switched_by.len(), 1);
     }
 }

@@ -73,25 +73,41 @@ const DOORS: &[Case] = &[
         "Hinged Door",
         OpeningStyle::Hinged,
         36.0,
-        &[(PartKind::Jamb, 2), (PartKind::Leaf, 1), (PartKind::Swing, 1)],
+        &[
+            (PartKind::Jamb, 2),
+            (PartKind::Leaf, 1),
+            (PartKind::Swing, 1),
+        ],
     ),
     (
         "Double Door",
         OpeningStyle::DoubleDoor,
         60.0,
-        &[(PartKind::Jamb, 2), (PartKind::Leaf, 2), (PartKind::Swing, 2)],
+        &[
+            (PartKind::Jamb, 2),
+            (PartKind::Leaf, 2),
+            (PartKind::Swing, 2),
+        ],
     ),
     (
         "Doorway",
         OpeningStyle::Doorway,
         36.0,
-        &[(PartKind::Jamb, 2), (PartKind::Leaf, 0), (PartKind::Swing, 0)],
+        &[
+            (PartKind::Jamb, 2),
+            (PartKind::Leaf, 0),
+            (PartKind::Swing, 0),
+        ],
     ),
     (
         "Sliding Door",
         OpeningStyle::Sliding,
         72.0,
-        &[(PartKind::Leaf, 2), (PartKind::Arrow, 1), (PartKind::Swing, 0)],
+        &[
+            (PartKind::Leaf, 2),
+            (PartKind::Arrow, 1),
+            (PartKind::Swing, 0),
+        ],
     ),
     (
         "Pocket Door",
@@ -276,9 +292,8 @@ fn the_two_key_chief_hotkeys_pick_the_door_flavors() {
         }
         out
     };
-    let tool = |style| {
-        Action::SetTool(crate::tools::opening::OpeningVariant::door(style).tool_id())
-    };
+    let tool =
+        |style| Action::SetTool(crate::tools::opening::OpeningVariant::door(style).tool_id());
     assert_eq!(press([Key::D, Key::W]), vec![tool(OpeningStyle::Doorway)]);
     assert_eq!(press([Key::S, Key::D]), vec![tool(OpeningStyle::Sliding)]);
     assert_eq!(press([Key::D, Key::P]), vec![tool(OpeningStyle::Pocket)]);
@@ -539,10 +554,7 @@ fn typing_a_number_while_a_jamb_is_dragged_sets_the_width() {
     sim.down(from.x, from.y);
     // Move past the drag threshold, then type 5'.
     let ev = PointerEvent::at(&sim.app.cx, Point::new(from.x + 30.0, from.y)).with_down(true);
-    sim.app
-        .tools
-        .active_mut()
-        .pointer_move(&mut sim.app.cx, ev);
+    sim.app.tools.active_mut().pointer_move(&mut sim.app.cx, ev);
     assert!(sim.app.cx.typed_input.is_armed());
     for ch in ["6", "0"] {
         let r = sim.key(KeyEvent::text(ch));
@@ -565,10 +577,7 @@ fn typing_a_number_while_an_opening_slides_sets_the_gap_to_the_nearer_side() {
     sim.move_to(from.x, from.y);
     sim.down(from.x, from.y);
     let ev = PointerEvent::at(&sim.app.cx, Point::new(from.x + 20.0, from.y)).with_down(true);
-    sim.app
-        .tools
-        .active_mut()
-        .pointer_move(&mut sim.app.cx, ev);
+    sim.app.tools.active_mut().pointer_move(&mut sim.app.cx, ev);
     assert!(sim.app.cx.typed_input.is_armed());
     for ch in ["3", "0"] {
         sim.key(KeyEvent::text(ch));
@@ -591,7 +600,10 @@ fn two_adjacent_windows_mull_into_one_unit_and_unmull_splits_it() {
     sim.app.cx.selection.set(ObjectRef::Opening(a));
     sim.app.cx.selection.toggle(ObjectRef::Opening(b));
     sim.app.cx.run_custom(crate::editor::opening_edit::MULL);
-    assert_eq!(opening(&sim, a).end_offset(), opening(&sim, b).start_offset());
+    assert_eq!(
+        opening(&sim, a).end_offset(),
+        opening(&sim, b).start_offset()
+    );
     assert!(opening(&sim, a).mull_group.is_some());
     assert_eq!(sim.app.cx.undo_label(), Some("Mull Windows"));
     // One width for the unit shows in the dimensions.
@@ -609,7 +621,10 @@ fn two_adjacent_windows_mull_into_one_unit_and_unmull_splits_it() {
     assert_eq!(unit, opening(&sim, a).width + opening(&sim, b).width);
     // Dragging one moves both.
     let from = handle(&sim, HandleKind::PerpendicularMove);
-    let (sa, sb) = (opening(&sim, a).start_offset(), opening(&sim, b).start_offset());
+    let (sa, sb) = (
+        opening(&sim, a).start_offset(),
+        opening(&sim, b).start_offset(),
+    );
     sim.drag((from.x, from.y), (from.x + 40.0, from.y));
     assert!((opening(&sim, a).start_offset() - (sa + 40.0)).abs() < 1.0);
     assert!((opening(&sim, b).start_offset() - (sb + 40.0)).abs() < 1.0);

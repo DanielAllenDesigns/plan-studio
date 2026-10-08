@@ -1015,7 +1015,11 @@ pub fn appliance_of_catalog(catalog_id: &str) -> Option<&'static str> {
 /// bay takes an oven and the other way round.
 fn bay_takes(bay: &str, appliance: &str) -> bool {
     let (b, a) = (bay.to_ascii_lowercase(), appliance.to_ascii_lowercase());
-    b == a || matches!((b.as_str(), a.as_str()), ("range", "oven") | ("oven", "range"))
+    b == a
+        || matches!(
+            (b.as_str(), a.as_str()),
+            ("range", "oven") | ("oven", "range")
+        )
 }
 
 /// Snaps an appliance symbol dropped within `reach` of a matching bay (a
@@ -1954,7 +1958,11 @@ mod tests {
         // 10" off to the side and a little in front.
         let mut s = dishwasher_symbol(Point::new(70.0, 20.0), 12.0);
         assert!(snap_symbol_to_bay(cx.floor(), &mut s, BAY_SNAP_REACH));
-        assert!(s.position.dist(Point::new(60.0, 3.0)) < 1e-9, "{:?}", s.position);
+        assert!(
+            s.position.dist(Point::new(60.0, 3.0)) < 1e-9,
+            "{:?}",
+            s.position
+        );
         assert_eq!((s.angle, s.elevation), (0.0, 0.0));
         assert!(s.width <= 22.5, "{}", s.width);
         // Out of reach it stays where it was dropped.
@@ -1970,9 +1978,18 @@ mod tests {
             70.0,
         );
         assert!(!snap_symbol_to_bay(cx.floor(), &mut fridge, BAY_SNAP_REACH));
-        let mut stool = PlacedSymbol::new("core.furniture.stool", Point::new(60.0, 10.0), 12.0, 12.0, 24.0);
+        let mut stool = PlacedSymbol::new(
+            "core.furniture.stool",
+            Point::new(60.0, 10.0),
+            12.0,
+            12.0,
+            24.0,
+        );
         assert!(!snap_symbol_to_bay(cx.floor(), &mut stool, BAY_SNAP_REACH));
-        assert_eq!(appliance_of_catalog("core.appliances.range_30"), Some("Range"));
+        assert_eq!(
+            appliance_of_catalog("core.appliances.range_30"),
+            Some("Range")
+        );
     }
 
     #[test]
@@ -1996,9 +2013,19 @@ mod tests {
         assert!(fridge.position.dist(Point::new(18.0, 3.0)) < 1e-9);
         assert_eq!(fridge.angle, 0.0);
         assert!(fridge.depth <= 25.0 && fridge.width <= 34.5);
-        let mut range = PlacedSymbol::new("core.appliances.range_30", Point::new(120.0, 25.0), 30.0, 26.0, 36.0);
+        let mut range = PlacedSymbol::new(
+            "core.appliances.range_30",
+            Point::new(120.0, 25.0),
+            30.0,
+            26.0,
+            36.0,
+        );
         assert!(snap_symbol_to_bay(cx.floor(), &mut range, BAY_SNAP_REACH));
-        assert!(range.position.dist(Point::new(115.0, 3.0)) < 1e-9, "{:?}", range.position);
+        assert!(
+            range.position.dist(Point::new(115.0, 3.0)) < 1e-9,
+            "{:?}",
+            range.position
+        );
     }
 
     #[test]
@@ -2021,7 +2048,10 @@ mod tests {
         assert!((b.height - 21.0).abs() < 1e-9, "{}", b.height);
         assert_eq!(refresh_backsplashes(&mut cx), 0);
         // Edits keep it fitted.
-        let mut w = load_cabinets(cx.floor()).into_iter().find(|c| c.kind == CabinetKind::Wall).unwrap();
+        let mut w = load_cabinets(cx.floor())
+            .into_iter()
+            .find(|c| c.kind == CabinetKind::Wall)
+            .unwrap();
         w.elevation = 60.0;
         replace_cabinet(&mut cx.project, 0, &w);
         rejoin_if_enabled(&mut cx);

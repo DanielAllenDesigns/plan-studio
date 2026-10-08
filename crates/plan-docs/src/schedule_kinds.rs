@@ -553,10 +553,7 @@ fn framing(project: &Project) -> Vec<Entry> {
                 ("size", size),
                 ("length", fmt_ft_in(length)),
                 ("qty", qty.to_string()),
-                (
-                    "linear",
-                    format!("{:.1}", length * f64::from(qty) / 12.0),
-                ),
+                ("linear", format!("{:.1}", length * f64::from(qty) / 12.0)),
                 ("board_feet", format!("{board:.1}")),
                 ("floor", f.name.clone()),
             ];
@@ -1309,7 +1306,11 @@ mod tests {
             .find(|o| o.kind == OpeningKind::Door)
             .unwrap()
             .id;
-        let o = p.floors[0].openings.iter_mut().find(|o| o.id == id).unwrap();
+        let o = p.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == id)
+            .unwrap();
         o.style = plan_core::OpeningStyle::Sliding;
         o.width = 72.0;
         o.height = 80.0;
@@ -1330,7 +1331,10 @@ mod tests {
             .expect("the sliding door is listed");
         assert_eq!(row[li], "6068");
         // Hidden by default, so existing schedules keep their columns.
-        assert_eq!(table(&p, &def(ScheduleKind::Door), 0, None).columns.len(), 7);
+        assert_eq!(
+            table(&p, &def(ScheduleKind::Door), 0, None).columns.len(),
+            7
+        );
         // The window schedule has them too.
         assert!(def(ScheduleKind::Window)
             .columns

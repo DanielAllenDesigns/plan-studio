@@ -204,7 +204,10 @@ mod tests {
         // Doll House hides; pictures take the nearest non-structural material.
         for rgb in [[250, 250, 248], [100, 120, 90], [150, 150, 150]] {
             let m = nearest_material(rgb);
-            assert!(!matches!(m, Material::Floor | Material::Ceiling | Material::Roof));
+            assert!(!matches!(
+                m,
+                Material::Floor | Material::Ceiling | Material::Roof
+            ));
         }
         assert!(nearest_material([0, 0, 255]).color()[3] >= 1.0);
     }

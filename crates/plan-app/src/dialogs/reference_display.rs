@@ -116,9 +116,7 @@ pub fn reference_walls(cx: &EditorContext) -> Vec<&Wall> {
         .walls
         .iter()
         .filter(|w| {
-            !w.flags.invisible
-                && layers.is_visible(&w.layer)
-                && layers.shows_in_reference(&w.layer)
+            !w.flags.invisible && layers.is_visible(&w.layer) && layers.shows_in_reference(&w.layer)
         })
         .collect()
 }

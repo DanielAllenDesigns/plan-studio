@@ -232,7 +232,10 @@ fn link(
     };
     // A switch only wires to another switch as a 3-way / 4-way traveler pair.
     let traveler = |k: crate::DeviceKind| {
-        matches!(k, crate::DeviceKind::Switch3Way | crate::DeviceKind::Switch4Way)
+        matches!(
+            k,
+            crate::DeviceKind::Switch3Way | crate::DeviceKind::Switch4Way
+        )
     };
     if to.kind.is_switch() && !(traveler(from.kind) && traveler(to.kind)) {
         return false;

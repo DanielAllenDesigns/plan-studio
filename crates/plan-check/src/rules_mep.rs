@@ -73,7 +73,8 @@ fn in_room(ctx: &Ctx, i: usize, p: Point) -> bool {
         return false;
     }
     point_in_polygon(p, poly)
-        || (0..poly.len()).any(|k| dist_to_segment(p, poly[k], poly[(k + 1) % poly.len()]) <= ON_EDGE)
+        || (0..poly.len())
+            .any(|k| dist_to_segment(p, poly[k], poly[(k + 1) % poly.len()]) <= ON_EDGE)
 }
 
 fn perimeter(poly: &[Point]) -> f64 {
@@ -150,7 +151,9 @@ pub(crate) fn electrical(ctx: &Ctx, out: &mut Vec<Finding>) {
             && (crate::ctx::is_habitable(t) || crate::ctx::is_hall(t))
             && !t.is_empty()
         {
-            let wanted = (perimeter(&room.polygon) / RECEPTACLE_RUN - EPS).ceil().max(1.0) as usize;
+            let wanted = (perimeter(&room.polygon) / RECEPTACLE_RUN - EPS)
+                .ceil()
+                .max(1.0) as usize;
             let have = here(&|k| is_receptacle(k)).len();
             if have < wanted {
                 out.push(
@@ -204,7 +207,11 @@ impl Piece {
         let t = o.get("transform")?;
         let vec3 = |name: &str| -> Option<[f64; 3]> {
             let a = t.get(name)?.as_array()?;
-            Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+            Some([
+                a.first()?.as_f64()?,
+                a.get(1)?.as_f64()?,
+                a.get(2)?.as_f64()?,
+            ])
         };
         let (origin, axis) = (vec3("origin")?, vec3("axis_x")?);
         Some(Piece {
@@ -258,7 +265,12 @@ fn joist_limit(depth: f64) -> f64 {
 
 /// IRC R602.7 headers over exterior-wall openings and R502.3 floor joist spans.
 pub(crate) fn framing(ctx: &Ctx, out: &mut Vec<Finding>) {
-    let pieces: Vec<Piece> = ctx.floor.framing.iter().filter_map(Piece::from_value).collect();
+    let pieces: Vec<Piece> = ctx
+        .floor
+        .framing
+        .iter()
+        .filter_map(Piece::from_value)
+        .collect();
     if pieces.is_empty() {
         return;
     }

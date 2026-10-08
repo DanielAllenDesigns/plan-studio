@@ -202,15 +202,39 @@ mod tests {
 
     fn lib() -> Library {
         let mut mine = Catalog::new("User Library");
-        mine.items.push(item("u.sofa", "Modern Sofa", ItemKind::Symbol, 84.0, 36.0, &["couch"]));
-        mine.items.push(item("u.base", "Base 24", ItemKind::Cabinet, 24.0, 24.0, &[]));
-        let mut trad = item("u.chair", "Wing Chair", ItemKind::Symbol, 30.0, 32.0, &["traditional"]);
+        mine.items.push(item(
+            "u.sofa",
+            "Modern Sofa",
+            ItemKind::Symbol,
+            84.0,
+            36.0,
+            &["couch"],
+        ));
+        mine.items.push(item(
+            "u.base",
+            "Base 24",
+            ItemKind::Cabinet,
+            24.0,
+            24.0,
+            &[],
+        ));
+        let mut trad = item(
+            "u.chair",
+            "Wing Chair",
+            ItemKind::Symbol,
+            30.0,
+            32.0,
+            &["traditional"],
+        );
         trad.style = Some("Traditional".into());
         trad.manufacturer = Some("Hickory Co".into());
         mine.items.push(trad);
-        mine.items.push(item("u.tile", "Slate", ItemKind::Material, 12.0, 12.0, &[]));
+        mine.items
+            .push(item("u.tile", "Slate", ItemKind::Material, 12.0, 12.0, &[]));
         let mut other = Catalog::new("Other");
-        other.items.push(item("o.lamp", "Lamp", ItemKind::Fixture, 14.0, 14.0, &[]));
+        other
+            .items
+            .push(item("o.lamp", "Lamp", ItemKind::Fixture, 14.0, 14.0, &[]));
         let mut l = Library::default();
         l.add(mine);
         l.add(other);

@@ -331,10 +331,34 @@ fn cuboid(x: (f32, f32), y: (f32, f32), z: (f32, f32), material: Material, id: u
 fn material_labels_name_the_cladding_with_a_leader() {
     let scene = Scene {
         meshes: vec![
-            cuboid((0.0, 120.0), (0.0, 108.0), (-10.0, 0.0), Material::Siding, 1),
-            cuboid((140.0, 260.0), (0.0, 108.0), (-10.0, 0.0), Material::Brick, 2),
-            cuboid((0.0, 260.0), (108.0, 140.0), (-10.0, 0.0), Material::Roof, 3),
-            cuboid((60.0, 90.0), (20.0, 60.0), (-1.0, 0.0), Material::WindowGlass, 4),
+            cuboid(
+                (0.0, 120.0),
+                (0.0, 108.0),
+                (-10.0, 0.0),
+                Material::Siding,
+                1,
+            ),
+            cuboid(
+                (140.0, 260.0),
+                (0.0, 108.0),
+                (-10.0, 0.0),
+                Material::Brick,
+                2,
+            ),
+            cuboid(
+                (0.0, 260.0),
+                (108.0, 140.0),
+                (-10.0, 0.0),
+                Material::Roof,
+                3,
+            ),
+            cuboid(
+                (60.0, 90.0),
+                (20.0, 60.0),
+                (-1.0, 0.0),
+                Material::WindowGlass,
+                4,
+            ),
         ],
     };
     let p = Project::new("labels");
@@ -371,7 +395,13 @@ fn material_labels_name_the_cladding_with_a_leader() {
         .unwrap();
     assert!(label_x > on.bounds.0.x + 200.0);
     // Each label sits at the height of the region it names (the siding wall is lower than the roof).
-    let y = |name: &str| on.texts.iter().find(|(_, t)| t == name).map(|(p, _)| p.y).unwrap();
+    let y = |name: &str| {
+        on.texts
+            .iter()
+            .find(|(_, t)| t == name)
+            .map(|(p, _)| p.y)
+            .unwrap()
+    };
     assert!(y("ROOFING") > y("SIDING"));
 }
 

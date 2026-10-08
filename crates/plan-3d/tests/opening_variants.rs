@@ -107,7 +107,11 @@ fn sliding_panels_alternate_between_two_tracks() {
         .meshes
         .iter()
         .filter(|m| m.object_id == Some(id) && m.material == Material::Glass)
-        .flat_map(|m| m.vertices.iter().map(|v| (v.position[2] * 100.0).round() as i64))
+        .flat_map(|m| {
+            m.vertices
+                .iter()
+                .map(|v| (v.position[2] * 100.0).round() as i64)
+        })
         .collect();
     planes.sort_unstable();
     planes.dedup();

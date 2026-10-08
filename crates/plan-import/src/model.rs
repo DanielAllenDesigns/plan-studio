@@ -131,7 +131,10 @@ impl ImportedModel {
             let mut positions = Vec::new();
             let mut indices = Vec::new();
             for t in part.indices.as_chunks::<3>().0 {
-                if t.iter().any(|&i| i as usize >= n) || t[0] == t[1] || t[1] == t[2] || t[0] == t[2]
+                if t.iter().any(|&i| i as usize >= n)
+                    || t[0] == t[1]
+                    || t[1] == t[2]
+                    || t[0] == t[2]
                 {
                     continue;
                 }

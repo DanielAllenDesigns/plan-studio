@@ -727,9 +727,19 @@ fn take_off(
     // The site's cut and fill (graded pads), in cubic yards.
     if range.contains(&0) || scope == MaterialsScope::AllFloors {
         let (cut, fill) = crate::terrain_report::soil_yards(project);
-        for (item, qty) in [("Soil cut (excavation)", cut), ("Soil fill (backfill)", fill)] {
+        for (item, qty) in [
+            ("Soil cut (excavation)", cut),
+            ("Soil fill (backfill)", fill),
+        ] {
             if qty > 0.0 {
-                out.push(MaterialLine::new("Landscaping", item, item, "", qty, "cu yd"));
+                out.push(MaterialLine::new(
+                    "Landscaping",
+                    item,
+                    item,
+                    "",
+                    qty,
+                    "cu yd",
+                ));
             }
         }
     }

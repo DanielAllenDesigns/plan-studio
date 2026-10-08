@@ -268,8 +268,8 @@ impl Model3d {
         let mut parts = Vec::new();
         for _ in 0..count.min(1 << 16) {
             let n = r.u32().ok_or_else(|| bad("truncated"))? as usize;
-            let name = String::from_utf8_lossy(r.take(n).ok_or_else(|| bad("truncated"))?)
-                .into_owned();
+            let name =
+                String::from_utf8_lossy(r.take(n).ok_or_else(|| bad("truncated"))?).into_owned();
             let c = r.take(4).ok_or_else(|| bad("truncated"))?;
             let color = (c[0] == 1).then_some([c[1], c[2], c[3]]);
             let nv = r.u32().ok_or_else(|| bad("truncated"))? as usize;
@@ -277,7 +277,9 @@ impl Model3d {
                 .take(nv.checked_mul(12).ok_or_else(|| bad("size"))?)
                 .ok_or_else(|| bad("truncated"))?;
             let positions: Vec<[f32; 3]> = raw
-                .as_chunks::<12>().0.iter()
+                .as_chunks::<12>()
+                .0
+                .iter()
                 .map(|b| {
                     let f = |k: usize| f32::from_le_bytes([b[k], b[k + 1], b[k + 2], b[k + 3]]);
                     [f(0), f(4), f(8)]
@@ -288,7 +290,9 @@ impl Model3d {
                 .take(ni.checked_mul(4).ok_or_else(|| bad("size"))?)
                 .ok_or_else(|| bad("truncated"))?;
             let indices: Vec<u32> = raw
-                .as_chunks::<4>().0.iter()
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
             parts.push(ModelPart {
@@ -398,7 +402,9 @@ mod tests {
     fn rotation_turns_about_the_vertical_axis() {
         let m = Model3d::box_model(10.0, 4.0, 2.0, None).rotated_y(90.0);
         let e = m.extent().unwrap();
-        assert!((e[0] - 4.0).abs() < 1e-4 && (e[2] - 10.0).abs() < 1e-4 && (e[1] - 2.0).abs() < 1e-4);
+        assert!(
+            (e[0] - 4.0).abs() < 1e-4 && (e[2] - 10.0).abs() < 1e-4 && (e[1] - 2.0).abs() < 1e-4
+        );
     }
 
     #[test]

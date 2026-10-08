@@ -312,7 +312,10 @@ f 1 2 6 5
         assert_eq!(m.triangle_count(), 2);
         // Z up: the 10 x 20 sheet lies flat; y (up) is 0, z spans -40..0.
         let (lo, hi) = m.bounds().unwrap();
-        assert_eq!((hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), (20.0, 0.0, 40.0));
+        assert_eq!(
+            (hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]),
+            (20.0, 0.0, 40.0)
+        );
     }
 
     #[test]
@@ -345,7 +348,12 @@ f 1 2 6 5
     fn bad_files_are_errors() {
         assert!(parse_obj("", None, &ModelOptions::default()).is_err());
         assert!(parse_obj("v 1 2\n", None, &ModelOptions::default()).is_err());
-        assert!(parse_obj("v 0 0 0\nv 1 0 0\nf 1 2 3\n", None, &ModelOptions::default()).is_err());
+        assert!(parse_obj(
+            "v 0 0 0\nv 1 0 0\nf 1 2 3\n",
+            None,
+            &ModelOptions::default()
+        )
+        .is_err());
         // A face that points past the vertex list is skipped.
         let r = parse_obj(
             "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\nf 1 2 9\n",

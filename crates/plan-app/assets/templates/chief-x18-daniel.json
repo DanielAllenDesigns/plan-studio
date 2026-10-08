@@ -1,0 +1,818 @@
+{
+  "name": "Chief X18 (Daniel)",
+  "exterior_wall": {
+    "wall_type": "Stucco-6",
+    "height": 109.125,
+    "roof": {
+      "pitch_in_12": 8.0,
+      "overhang": 16.0,
+      "kind": "Hip"
+    }
+  },
+  "interior_wall": {
+    "wall_type": "Interior-4",
+    "height": 109.125,
+    "roof": {
+      "pitch_in_12": 8.0,
+      "overhang": 16.0,
+      "kind": "Hip"
+    }
+  },
+  "foundation_wall": {
+    "wall_type": "Foundation-8",
+    "height": 48.0,
+    "roof": {
+      "pitch_in_12": 8.0,
+      "overhang": 16.0,
+      "kind": "Hip"
+    }
+  },
+  "wall_types": [
+    {
+      "name": "Stucco-6",
+      "layers": [
+        {
+          "name": "Stucco",
+          "thickness": 1.0625,
+          "is_main": false,
+          "material": "Sand Finish - Eggshell"
+        },
+        {
+          "name": "Sheathing",
+          "thickness": 0.5625,
+          "is_main": false,
+          "material": "OSB-Hrz + Housewrap"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Siding-6",
+      "layers": [
+        {
+          "name": "Siding",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Siding"
+        },
+        {
+          "name": "Sheathing",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "OSB-Hrz"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Brick-6",
+      "layers": [
+        {
+          "name": "Brick",
+          "thickness": 3.625,
+          "is_main": false,
+          "material": "Brick"
+        },
+        {
+          "name": "Air Space",
+          "thickness": 1.0,
+          "is_main": false,
+          "material": "Air"
+        },
+        {
+          "name": "Sheathing",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "OSB-Hrz"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Foundation-8",
+      "layers": [
+        {
+          "name": "Concrete",
+          "thickness": 8.0,
+          "is_main": true,
+          "material": "Concrete"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "stone-6",
+      "layers": [
+        {
+          "name": "Stone",
+          "thickness": 1.5,
+          "is_main": false,
+          "material": "Stone Veneer"
+        },
+        {
+          "name": "Sheathing",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "OSB-Hrz"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Interior-4",
+      "layers": [
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        },
+        {
+          "name": "Framing",
+          "thickness": 3.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Interior"
+    },
+    {
+      "name": "Interior-6",
+      "layers": [
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Interior"
+    }
+  ],
+  "interior_door": {
+    "width": 30.0,
+    "height": 96.0,
+    "thickness": 1.375,
+    "style": "Door P04",
+    "casing_width": 3.5,
+    "casing_depth": 0.75,
+    "reveal": 0.25,
+    "jamb_width": 0.75,
+    "swing_angle": 90.0,
+    "sill_height": 0.0
+  },
+  "exterior_door": {
+    "width": 36.0,
+    "height": 96.0,
+    "thickness": 1.75,
+    "style": "Door P04",
+    "casing_width": 3.25,
+    "casing_depth": 1.0,
+    "reveal": 0.25,
+    "jamb_width": 0.75,
+    "swing_angle": 90.0,
+    "sill_height": 0.0
+  },
+  "window": {
+    "width": 32.0,
+    "height": 72.0,
+    "sill_height": 24.0,
+    "window_type": "Single Casement",
+    "frame_width": 0.75,
+    "sash_width": 1.5,
+    "lites_across": 1,
+    "lites_vertical": 1,
+    "egress": true,
+    "tempered": true
+  },
+  "cabinets": {
+    "base": {
+      "width": 24.0,
+      "depth": 24.0,
+      "height": 36.0,
+      "countertop_thickness": 1.5,
+      "countertop_overhang": 1.0,
+      "toe_kick_height": 4.0,
+      "toe_kick_depth": 3.0,
+      "door_style": "Lincoln Door",
+      "drawer_style": "Lincoln Flat Panel Drawer",
+      "handle": "Knob"
+    },
+    "wall": {
+      "width": 24.0,
+      "depth": 12.0,
+      "height": 30.0,
+      "elevation": 54.0
+    },
+    "full_height": {
+      "width": 24.0,
+      "depth": 24.0,
+      "height": 84.0
+    }
+  },
+  "dimensions": {
+    "set_name": "1/4\" Scale Dimension Defaults",
+    "smallest_fraction": 8,
+    "unit_indicators": true,
+    "trailing_zeroes": true,
+    "fraction_style": "Diagonal",
+    "fraction_text_size_pct": 60,
+    "text_above_line": true,
+    "leader_style": "Square Corner",
+    "arrow_size": 2.25,
+    "extension_gap": 3.0,
+    "extension_past": 3.0,
+    "auto_exterior_offset": 32.0,
+    "auto_line_separation": 18.0,
+    "locate_openings_centers": true
+  },
+  "rooms": {
+    "ceiling_height": 109.125,
+    "floor_finish_thickness": 0.75,
+    "ceiling_finish_thickness": 0.625,
+    "room_types": [
+      {
+        "name": "Attic",
+        "function": "Utility",
+        "include_in_living_area": false,
+        "conditioned": false,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Balcony",
+        "function": "Deck",
+        "include_in_living_area": false,
+        "conditioned": false,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Bath",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Bedroom",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Bedroom #2",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Bedroom #3",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Bedroom #4",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Bedroom #5",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Bonus Room",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Breakfast",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Closet",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Courtyard",
+        "function": "Standard",
+        "include_in_living_area": false,
+        "conditioned": false,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Crawl Space",
+        "function": "Utility",
+        "include_in_living_area": false,
+        "conditioned": false,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Deck",
+        "function": "Deck",
+        "include_in_living_area": false,
+        "conditioned": false,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Den",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Dinette",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Dining",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Dining Room",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Dressing Room",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Entry",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Family Room",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Flat Roof",
+        "function": "Utility",
+        "include_in_living_area": false,
+        "conditioned": false,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Foyer",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Garage",
+        "function": "Garage",
+        "include_in_living_area": false,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Great Room",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Hall",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Kitchen",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Laundry",
+        "function": "Utility",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Library",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Living",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Loft",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Master Bath",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Master Bedroom",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Mechanical",
+        "function": "Utility",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Mud Room",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Nook",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Office",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Open Below",
+        "function": "Open Below",
+        "include_in_living_area": false,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Pantry",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Porch",
+        "function": "Porch",
+        "include_in_living_area": false,
+        "conditioned": false,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Powder Room",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Slab",
+        "function": "Utility",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Storage",
+        "function": "Utility",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Study",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Unspecified",
+        "function": "Standard",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      },
+      {
+        "name": "Utility",
+        "function": "Utility",
+        "include_in_living_area": true,
+        "conditioned": true,
+        "default_floor_finish": ""
+      }
+    ]
+  },
+  "layers": {
+    "name": "Floor Plan",
+    "layers": [
+      {
+        "name": "Walls, Normal",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "line_weight": 50
+      },
+      {
+        "name": "Walls, Invisible",
+        "display": true,
+        "locked": false,
+        "color": [
+          150,
+          150,
+          150
+        ],
+        "line_weight": 13
+      },
+      {
+        "name": "Doors",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          70,
+          200
+        ],
+        "line_weight": 25
+      },
+      {
+        "name": "Windows",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          130,
+          210
+        ],
+        "line_weight": 25
+      },
+      {
+        "name": "Rooms",
+        "display": true,
+        "locked": false,
+        "color": [
+          120,
+          120,
+          120
+        ],
+        "line_weight": 13
+      },
+      {
+        "name": "Room Labels",
+        "display": true,
+        "locked": false,
+        "color": [
+          60,
+          60,
+          60
+        ],
+        "line_weight": 18
+      },
+      {
+        "name": "Dimensions, Manual",
+        "display": true,
+        "locked": false,
+        "color": [
+          180,
+          0,
+          0
+        ],
+        "line_weight": 18
+      },
+      {
+        "name": "Dimensions, Automatic",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          128,
+          0
+        ],
+        "line_weight": 18
+      },
+      {
+        "name": "Text",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "line_weight": 18
+      },
+      {
+        "name": "CAD, Default",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "line_weight": 25
+      },
+      {
+        "name": "Cabinets, Base",
+        "display": true,
+        "locked": false,
+        "color": [
+          139,
+          90,
+          43
+        ],
+        "line_weight": 25
+      },
+      {
+        "name": "Cabinets, Wall",
+        "display": true,
+        "locked": false,
+        "color": [
+          170,
+          125,
+          75
+        ],
+        "line_weight": 18
+      },
+      {
+        "name": "Electrical",
+        "display": true,
+        "locked": false,
+        "color": [
+          200,
+          120,
+          0
+        ],
+        "line_weight": 18
+      },
+      {
+        "name": "Stairs",
+        "display": true,
+        "locked": false,
+        "color": [
+          90,
+          90,
+          90
+        ],
+        "line_weight": 25
+      },
+      {
+        "name": "Roof Planes",
+        "display": true,
+        "locked": false,
+        "color": [
+          128,
+          0,
+          128
+        ],
+        "line_weight": 25
+      },
+      {
+        "name": "Framing",
+        "display": true,
+        "locked": false,
+        "color": [
+          180,
+          140,
+          60
+        ],
+        "line_weight": 18
+      }
+    ]
+  },
+  "text": {
+    "font": "Arial",
+    "height": 6.0,
+    "label_style_height": 4.5
+  },
+  "grid": {
+    "spacing": 12.0,
+    "snap": 1.0,
+    "angle_snap_deg": 15.0
+  },
+  "units": {
+    "imperial": true
+  }
+}

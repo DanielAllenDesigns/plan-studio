@@ -1,0 +1,387 @@
+# Parity spec: Cabinets, Stairs, Framing, Terrain, Library, Electrical (Chief X18)
+
+Scope: the six "object families" that share the Library Browser and the
+Default Settings tree. Cabinet fields are quoted from `docs/chief-x18-dialogs.md`
+(Cabinet Specification, captured 2026-10-07). Stairs, framing, terrain, library
+and electrical behavior is from the Chief X18 Reference Manual as remembered;
+the dialogs for these were not captured ("Still to capture" in the dialogs doc).
+Lines marked "(verify in Chief)" need checking in the application.
+
+Code read: `plan-cabinets`, `plan-stairs`, `plan-framing` (each a 1-line
+placeholder crate, `Cargo.toml` only), `plan-library/src/*` (catalog, search,
+tree, 1,057-line starter catalog), `plan-docs/src/materials.rs`, `plan-core`
+layers. `plan-app` depends only on `plan-core` and does not use `plan-library`
+yet. There is no terrain code anywhere.
+
+## A. Cabinets
+
+CB-1. Cabinet tools (Build > Cabinet, flyout): Base Cabinet (Shift+T), Wall
+Cabinet (Cmd+T), Full Height, Soffit (T), Shelf, Partition, Base/Wall/Full-
+Height Filler, Custom Countertop, Custom Backsplash, Custom Counter Hole.
+
+CB-2. **Placement**: select the tool, move the cursor; a ghost cabinet follows
+at the default width/depth, then **click** to place. The tool stays active for
+repeated placement until Select Objects or Esc.
+
+CB-3. **Auto-rotation against walls**: when the ghost is near a wall its back
+rotates to face that wall and the cabinet snaps flush to the wall's interior
+surface; near a corner it picks the wall the cursor is closer to. Cabinets away
+from walls keep the angle set by the tool (0 degrees).
+
+CB-4. **Neighbor alignment ("bumping")**: a cabinet moved or placed next to
+another cabinet snaps to the neighbor's side (zero gap) and aligns its back/
+front line with it. Edit > Snap Settings > Bumping/Pushing controls whether a
+moved cabinet is stopped by walls and other cabinets or pushes them.
+
+CB-5. **Fill between**: placing a base cabinet in a gap bounded by walls or other
+cabinets can auto-size its width to fill the gap (width stays at the nearest
+standard increment unless auto-fill is chosen). (verify in Chief for the
+modifier and Preferences > Behaviors name)
+
+CB-6. Default sizes: Base 24" W x 24" D x 36" H (36" includes countertop);
+Wall cabinet 12" D x 30" H with bottom at 54" above finished floor; Full Height
+24" D x 84" H; Elevation reference "From Finished Floor" (`chief-x18-dialogs.md`).
+
+CB-7. **Cabinet Specification** tabs: General, Box Construction, Front/Sides/
+Back, Door/Drawer, Accessories, Opening Indicators, Moldings, Layer, Fill Style,
+Materials, Label, Components, Object Information, Schedule. Preview with plan/
+front/side/perspective buttons. Field list as captured: Cabinet Style Type
+(Standard) and Treat As Filler; Size and Position; Countertop; Backsplash; Toe
+Kick; Box Construction (Framed/Frameless, overlay type); Door/Drawer; Accessories;
+Moldings.
+
+CB-8. **Resize handles** on a selected cabinet: left and right handles change
+width (the cabinet grows from the dragged side), front handle changes depth,
+corner handles resize both, a centre move handle, and a rotate handle. Resize
+snaps to adjacent cabinets/walls. Width changes can be typed as a temporary
+dimension. Edit Behaviors > Resize chooses whether adjacent cabinets follow.
+
+CB-9. Moving a cabinet by dragging keeps its rotation until it bumps a wall
+(CB-3), where it re-rotates; Ctrl while dragging disables the auto-rotation.
+(verify in Chief for the modifier)
+
+CB-10. **Front/Sides/Back face editing**: each of the six faces (Front, Left,
+Right, Back, Top, Bottom) has a Side Type (Custom Face, Door, Drawer, Panel,
+Open, ...) and a tree of Face Items (Layout Vertical/Horizontal, Door, Drawer,
+Separation, Shelf, Appliance, Empty) with Add New, Delete, Move Up/Down, Split
+Vertical/Horizontal, Equalize, plus Item Height/Width/Reveal, Lock from Auto-
+Resize, Shelves and Appliance specify fields (captured).
+
+CB-11. Splitting a face item recomputes sibling heights/widths automatically
+unless an item is locked; "Equalize" divides evenly.
+
+CB-12. **Door/Drawer** styles, handle, hinge and drawer front come from the
+Library (Main Style with Library... and Edit...); Door Panel thickness 3/4";
+handle offsets from top/edge (captured).
+
+CB-13. **Auto labels**: each cabinet carries a Label (Label tab) shown in plan,
+composed from cabinet type and size (for example B24 for base 24", W3030 for wall
+30x30; verify format in Chief) and used as the schedule number. Labels are text-
+style driven and rotate with the cabinet; they can be hidden per cabinet.
+
+CB-14. **Countertops auto-join**: base cabinets with ☑ Countertop whose sides
+touch merge into one continuous countertop slab; overhangs apply only to free
+edges; Corner Treatment (None/Clipped/Rounded) applies at outside corners. Gaps
+between cabinets break the joined top.
+
+CB-15. **Custom Countertop**: draw a polyline countertop (island, peninsula,
+vanity) independent of cabinets; has thickness, overhang, edge, and holes for
+sinks/cooktops. Custom Backsplash and Counter Hole are siblings.
+
+CB-16. **Appliances and fixtures in cabinets**: dragging or placing a library
+appliance (range, dishwasher, sink, cooktop, microwave) over a cabinet inserts it
+into the cabinet: the face item becomes an Appliance item (Reverse Appliance
+option), a cut-out is made in the countertop for sinks/cooktops, and the
+appliance bottom aligns to the cabinet.
+
+CB-17. **Soffit tool**: draws a soffit box above cabinets or along a wall (click
+two corners / polyline); height set by dialog; fills the gap between wall
+cabinets and ceiling.
+
+CB-18. **Shelf** and **Partition** tools: place a horizontal shelf or vertical
+partition panel as cabinet-like objects with thickness and elevation; they snap
+to walls.
+
+CB-19. **Fillers**: thin cabinet-like strips (3" typical) auto-placed with Treat
+As Filler; used to close gaps at corners.
+
+CB-20. Cabinet defaults live in Default Settings > Cabinets with separate sets
+for Base, Wall, Full Height, etc.; the Default Sets let a style (e.g., "Lincoln
+Flat Panel") apply across all.
+
+CB-21. Cabinet Schedule: columns number, type, width, depth, height, style,
+count; appears via Tools > Schedules > Cabinet.
+
+## B. Stairs
+
+CB-22. Stair tools (Build > Stairs): Draw Stairs (Shift+Y), Straight Stairs,
+L-Shaped, U-Shaped, Curve to Left, Curve to Right, Landing, Draw Ramp; related
+Auto Stairwell, Flare/Curve Stairs, Add/Remove Stair Breakline.
+
+CB-23. **Draw Stairs**: click-drag in plan from the bottom of the run to the top;
+drag length plus floor height sets the number of risers (riser height tends to
+7 3/4" default, tread 10"); an arrow shows the up direction and a number shows
+the risers. Default width 36" (verify values in Chief).
+
+CB-24. Stair width, riser height, tread depth, nosing, stringer sizes and
+number of treads are interrelated: changing the number of risers recomputes riser
+height from the floor-to-floor height; changing riser height recomputes risers.
+Total rise equals the platform-to-platform height of the floors it connects.
+
+CB-25. **Straight, L-shaped, U-shaped** stairs: the shape tool places the
+correct run + landing (L: 90 degree turn on a landing; U: 180 degree with a landing
+or winders). Landing size follows stair width.
+
+CB-26. **Curve to Left/Right** and **Flare/Curve Stairs**: curved stairs bend
+the run along an arc with a radius set in the dialog; Flare widens the bottom
+tread(s) into an apron. Winder variants exist per corner.
+
+CB-27. **Landings**: Landing tool draws a rectangular platform; landings join
+runs; elevation of a landing is derived from the run risers below it.
+
+CB-28. **Edit handles** on a selected stair: move, rotate, width handles at the
+sides, length handle at the top end, handles at landings, and a "break line"
+handle for the stair break symbol. Dragging the end changes the number of treads
+while keeping riser height within code (7 3/4" max suggested).
+
+CB-29. **Auto stairwell**: when a stair rises to an upper floor, Chief cuts a
+stairwell hole in the upper floor platform where the stair passes through (ceiling
+height of stairwell clear headroom ≥ 6'8" verified by the "Stairs" check) and
+creates guard railings around the open edges. (verify in Chief for the exact
+option names: "Auto Stairwell" menu command)
+
+CB-30. The auto-generated stairwell is a **room** of function Stairwell/Open
+Below with its own label ("STAIRWELL" or "Open to Below"). (verify in Chief)
+
+CB-31. **Railings and balusters** are automatic on open stair sides (Left/Right
+Railing options in the Stair dialog); newels, balusters and rail profile come
+from Rail Style/Newels/Balusters tabs shared with railings and decks.
+
+CB-32. **Stair Specification** tabs: General (width, risers/treads, stair type,
+turn direction), Structure (stringers, treads, risers, nosing), Railing, Landing,
+Materials, Label, Components, Schedule. (verify tab list)
+
+CB-33. Stairs show in plan with tread lines, the up arrow with "UP"/"DN" text,
+a break line where the cut plane occurs, and dashed hidden treads on other floors
+when Reference Display is on. In 3D they are full geometry with railings.
+
+CB-34. **Ramps**: Draw Ramp makes a sloped surface with slope check against the
+1:12 ADA rule shown in the dialog (verify in Chief).
+
+## C. Framing
+
+CB-35. Framing tools: Build Framing (Shift+Cmd+S), Build All Framing, General
+Framing, Post, Post with Footing, Blocking, Framing Reference Marker; floor/
+ceiling framing (Joist, Joist Blocking, Joist Direction, Floor/Ceiling Beam,
+Floor/Ceiling Truss, Bearing Line); roof framing (see `roofs.md` RF-52..57).
+
+CB-36. **Build Framing dialog**: tabs/checkboxes for Floor Framing, Wall Framing,
+Ceiling Framing, Roof Framing, Foundation framing and Structural Rebuild. Each
+group has Auto Rebuild on/off. Framing is generated from the wall layers, floor
+and ceiling platform definitions and the bearing lines.
+
+CB-37. **Auto rebuild**: when on, any wall/floor/roof change that affects
+framing rebuilds the *auto* members. Members edited manually are marked manual
+and kept (Retain Wall Framing option in the wall dialog, captured).
+
+CB-38. **Wall framing** produces studs, plates (bottom, double top), headers,
+king/jack/trimmer studs, cripples, sills and corner/T-intersection backing by
+the framing defaults (2x6 at 16" o.c. exterior, 2x4 interior). Stud layout starts
+at a **Framing Reference Marker** or the wall start (Use Framing Reference
+option, captured). Rollout offset and Reverse Rollout are wall options.
+
+CB-39. **Floor framing**: joists at spacing (16" typical) spanning the shorter
+direction between bearing lines, with rim joist (Automatic/Double/Single, wall
+option), blocking and header at stair holes. **Joist Direction** tool overrides.
+
+CB-40. **Wall detail views**: right-click a wall > Wall Detail (or View Wall
+Detail from Exterior) opens an elevation-style framing view of the wall with
+members dimensioned. **Cross Section** views also show framing.
+
+CB-41. **Framing Schedule** lists framing members by size, length and count;
+**Materials List** (Tools > Materials List > Create) aggregates framing, sheathing,
+drywall, roofing, doors/windows, cabinets, with waste factors and optional costs;
+exports to CSV/PDF.
+
+CB-42. Structural calculation tools (Calculate Structural Materials for Deck)
+size beams and joists to span tables; out of scope until Phase 3 (verify in
+Chief).
+
+## D. Terrain
+
+CB-43. Workflow: **Create Terrain Perimeter** (draw closed polyline around the
+lot; dialog sets name/elevation), add **elevation data**, **Build Terrain**
+(Terrain menu) generates a surface mesh from the perimeter and data, with the
+building's foundation fitted automatically.
+
+CB-44. **Elevation Data tools**: Elevation Line (polyline contour with a height),
+Elevation Point (spot height), Elevation Region (polygon at one height), Elevation
+Spline, and Terrain Break (a crease line in the surface).
+
+CB-45. **Terrain modifiers**: Hill, Valley, Raised Region, Lowered Region, Flat
+Region (Cut/Fill) - polygonal or spline areas that add or remove height. The Flat
+Region (Cut/Fill) around a building makes a level pad.
+
+CB-46. **Terrain features**: Rectangular, Kidney, Spline features and Terrain
+Hole - overlays with their own materials and heights (pond, patio, planter).
+
+CB-47. **Make Terrain Hole Around Building(s)** cuts the terrain at the
+foundation perimeter so the basement is visible; Place/Remove Terrain Elevation
+Reference Point sets the datum.
+
+CB-48. **Roads, Driveways, Sidewalks**: polyline/spline surfaces that follow the
+terrain with width, thickness, material and curb options; Driveway polyline and
+spline variants; Stepping Stone. They project onto terrain height in 3D.
+
+CB-49. **Garden Beds, Grass Regions, Water Features**: polygonal/spline regions
+with fill and 3D material; Water Feature has depth.
+
+CB-50. **Plants and Sprinklers**: Plant tool places a library plant (symbol +
+3D model) at a click with auto elevation from terrain and a growth size; Sprinkler
+tool places heads with radius/arc spray shown in plan.
+
+CB-51. **Terrain Specification** (Terrain > Terrain Specification): elevation
+(sea level or relative), terrain type (Contour, Elevation Point), grid spacing,
+contour interval, materials (grass, dirt), display of contours in plan.
+(verify in Chief)
+
+CB-52. Terrain is a view attribute: contours/elevation data are drawn in plan on
+the Terrain layer; the 3D view shows the surface when the camera's Display
+options include terrain.
+
+## E. Library Browser
+
+CB-53. **Library Browser** (Cmd+L, right-edge toggle) docks in a side panel: a
+category **tree**, a search field, a results grid with previews, and a preview
+pane; panel remembers expanded nodes. Core Catalog, Bonus catalogs, Manufacturer
+catalogs and User Library are separate roots.
+
+CB-54. **Search** matches names and keywords (and tags) with all search terms,
+ranks by relevance, and supports filters: by Type (Cabinets, Doors, Windows,
+Furniture, Fixtures, Plants...), Style, Manufacturer, and "Show only library
+items in the current plan". (verify filter list in Chief)
+
+CB-55. **Placing a symbol**: select an item, then **click in plan** to place a
+copy (or drag from the browser into plan). The tool stays active for repeats.
+The item is created on its default layer, with its default elevation and size.
+
+CB-56. **Auto-rotate to walls**: wall-mounted items (toilet, sink, wall-hung
+fixtures, appliances) rotate to face away from the nearest wall and snap flush
+when within a snap distance; free-standing items keep the angle; ceiling items
+center on cursor. Placement type is part of the catalog item.
+
+CB-57. **Replace From Library**: select one or more placed objects, pick a
+library item, then Replace: the new object takes the old one's position,
+rotation and (optionally) size, and keeps connections (electrical, cabinet
+inserts). (verify in Chief)
+
+CB-58. **User Library / User Catalog**: any selected object can be added to the
+user library ("Add to Library"); user items persist across plans and can be
+shared as `.calib` files.
+
+CB-59. **Import** (Library > Import Library, .calib/.calibz): adds a catalog
+archive to the Library Browser (Core, Bonus, Manufacturer). Get Additional
+Content downloads catalogs; Update Library Catalogs refreshes. Installing
+core content requires an internet connection. (X18 menu items, captured)
+
+CB-60. Library items carry: 2D plan symbol, 3D model (with materials), default
+size/elevation, placement type, layer, manufacturer data, keywords; edited via
+Symbol Specification (Tools > Symbol).
+
+CB-61. **Library Browser display**: toggle between list and thumbnail views,
+"Favorites/Recents"; double-click on a library item in the browser may open
+its preview/edit dialog.
+
+## F. Electrical
+
+CB-62. Electrical tools: 110V Outlet (E,O), 220V Outlet, GFCI Outlet, Light
+(E,L), Rope Light, Switch (E,S), Electrical Connection (E,C), Auto Place Outlets
+(E,A,O).
+
+CB-63. **Outlet placement**: click on a wall; the outlet snaps to the nearest
+wall and rotates its symbol to face into the room; default height 12" above
+finished floor (outlets) and 48" (switches), Custom heights from Electrical
+Defaults.
+
+CB-64. **Auto Place Outlets**: places outlets along walls using the electrical
+code rule of thumb: no point along the wall is more than **6 feet** from an
+outlet, so outlets are at most **12 feet** apart; every wall wider than **2 feet**
+gets an outlet; outlets are kept at least **2 feet** (verify in Chief; may be
+1 foot) clear of door/window openings. Kitchen counters get an outlet at least
+every **4 feet** of counter, bathrooms get GFCI outlets near the sink,
+garages/exterior doors get exterior/GFCI outlets.
+
+CB-65. **Switch placement**: click near a door's latch side to place a switch
+on the wall about **48"** above the floor; Chief can auto-connect the switch to
+the room's lights when placed in the same room.
+
+CB-66. **Light**: ceiling lights placed by click (ceiling, recessed, pendant,
+wall sconce from the library); lights have lumens and a fixture type. Add Lights
+in 3D uses these fixtures.
+
+CB-67. **Connect Electrical**: click-drag from a switch (or outlet) to a light
+(or fixture) creates a **connection arc** (dashed curved line); click-drag the
+arc midpoint bends it; the arc is an object on layer "Electrical Connection".
+Connections define switch-controlled loads and are listed in the Electrical
+Schedule.
+
+CB-68. **Electrical Schedule** counts outlets, switches and lights by type per
+room/floor; Auto Place Outlets results are editable afterward (outlets are normal
+objects).
+
+## G. Plan Studio today
+
+- Cabinets, stairs, framing: empty crates. The layer set has "Cabinets, Base",
+  "Cabinets, Wall", "Stairs", "Framing", "Electrical" names only.
+- `plan-library`: `Catalog` JSON format, `CatalogItem` (id, name, category path,
+  width/depth/height/elevation, `Placement` {WallMounted, FreeStanding, Ceiling,
+  Countertop}, tags, `Symbol2d` stroke list, optional `model3d` path,
+  manufacturer), `Library::search` (multi-term, ranked: name over tag over
+  category, whole word over prefix over substring) and `tree()` with counts. A
+  1,057-line starter catalog covers plumbing, appliances, cabinets (base, wall,
+  islands), furniture, etc.
+- Not present: any UI use of the library, placing items, auto-rotation, replace,
+  user library, `.calib` import, filters, 3D models.
+- Terrain, plants, sprinklers, electrical: nothing. `materials_list` takes off
+  studs, plates, drywall, sheathing, siding, flooring, ceiling drywall, doors and
+  windows only.
+
+## H. Gap table
+
+| Chief behavior | Plan Studio today | Severity | Suggested implementation |
+|---|---|---|---|
+| CB-2, CB-3 Click-to-place cabinets with auto-rotation to nearest wall | No cabinet object or tool | Critical | `Cabinet` struct in plan-cabinets (pos, rotation, w/d/h, type, elevation, faces); tool using `joins` wall faces for nearest-wall snap |
+| CB-4 Bumping/Pushing to neighbors | No snap system for objects | High | Neighbor-edge snapping + Bumping/Pushing setting in snap settings |
+| CB-5 Auto-fill width between walls/cabinets | Missing | Med | Compute gap by ray to walls/cabinets on both sides; offer on click with modifier |
+| CB-7 Cabinet Specification dialog (14 tabs) | Dialogs doc only | High | Build on shared frame; start with General, Box, Front/Sides/Back |
+| CB-8, CB-9 Resize/rotate handles and temp dimensions | Missing | High | Reuse handle framework from wall editing; width/depth snaps |
+| CB-10, CB-11 Face item tree (layout/door/drawer/shelf/appliance), Equalize | Missing | Critical | Recursive `FaceItem` enum with auto-resize solver; 3D generator for doors/drawers |
+| CB-13 Auto labels (B24, W3030...) | None | Med | Label formatter from type and size; schedule number |
+| CB-14, CB-15 Countertop auto-join and Custom Countertop | None | High | Merge touching top rectangles into polygon with `i_overlay`; offset overhang; polyline tool |
+| CB-16 Appliances inserted into cabinets, counter cut-outs | Library has Countertop placement flag only | High | Drop-on-cabinet logic converting face to Appliance item; boolean cut on counter |
+| CB-17..CB-19 Soffit, Shelf, Partition, Fillers | Toolbar placeholders | Med | Simple extruded objects with spec dialogs |
+| CB-21 Cabinet Schedule | Schedules for door/window/room/wall only | Med | Add `cabinet_schedule` in plan-docs |
+| CB-22..CB-25 Draw Stairs + riser/tread solver, L/U shapes | plan-stairs empty | Critical | `Stair` object, rise/run solver (7 3/4" / 10" defaults), run builders; plan symbol |
+| CB-26 Curved stairs, flare, winders | Missing | Med | Arc run generator after straight/L/U |
+| CB-27, CB-28 Landings and edit handles | Missing | High | Landing object; handle set for width/length/rotate |
+| CB-29, CB-30 Auto stairwell hole, guard rails, stairwell room | Missing | High | Cut floor platform on upper floor; generate railing; link with `RoomFunction::OpenBelow` (rooms-floors.md R-40) |
+| CB-31 Railings from Rail Style; baluster/newel | Toolbar entries are stubs | High | Railing object shared by stairs, decks, balconies |
+| CB-34 Ramps with slope check | Missing | Low | Slope check against 1:12 |
+| CB-36, CB-37 Build Framing dialog, auto rebuild, manual retention | plan-framing empty; `materials_list` approximates studs | High | Real member model: plates, studs, headers; auto/manual flag |
+| CB-38 Stud layout from Framing Reference Marker, rollout | Studs counted by formula only | High | Layout generator keyed to reference marker; kings/jacks per opening |
+| CB-39 Floor framing, joist direction, rim joist | Missing | High | Joist generator per room/bearing lines |
+| CB-40 Wall detail views | Missing | Med | 2D elevation generator from wall framing; depends on plan-elevation |
+| CB-41 Framing schedule and full Materials List with waste, cost, roofing | Basic take-off, CSV export | Med | Extend `MaterialLine` with waste factor, unit price, roof/framing/cabinet lines; PDF export |
+| CB-43..CB-47 Terrain perimeter, elevation data, Build Terrain, modifiers, hole around building | No terrain code | Critical | New `plan-terrain` module: contour/point interpolation (TIN via Delaunay), mesh builder, building pad cut/fill |
+| CB-48, CB-49 Roads, driveways, sidewalks, garden beds, grass | Missing | Med | Polyline/spline surface objects draped on terrain mesh |
+| CB-50 Plants and sprinklers | Library has no plants | Med | Add plants category and terrain-elevation placement |
+| CB-53, CB-54 Library Browser panel with tree/search/filters/preview | Crate API only (tree, search); no panel | Critical | egui side panel using `Library::tree` and `search`; add Type/Manufacturer filter |
+| CB-55, CB-56 Click-to-place symbols with auto-rotate to walls | `Placement` enum exists; no placement code | Critical | Tool using nearest wall normal; origin convention already defined (back-center) |
+| CB-57 Replace From Library | Missing | Med | Command preserving transform and linked objects |
+| CB-58 User library, Add to Library | Missing | High | Writeable user `Catalog` JSON in app data dir |
+| CB-59 Import .calib/.calibz, Get Additional Content | `plan-import` empty; format is JSON | High | `.calib` is a proprietary archive: implement clean-room reader only if format documented; otherwise support Plan Studio JSON catalogs and glTF |
+| CB-60 3D models in library items | `model3d` field reserved, unused | High | glTF loading via plan-3d; render in 3D and in plan symbol |
+| CB-62, CB-63 Outlet/switch/light tools with wall snap, heights | Toolbar stubs | High | Electrical objects (wall-hosted) with height defaults |
+| CB-64 Auto Place Outlets (12' spacing, 2' from openings, kitchen 4', GFCI wet rooms) | Missing | High | Rule engine over walls, openings and room types; unit tests per rule |
+| CB-65 Switch placement near door, auto-connect to room lights | Missing | Med | Latch-side detection from door swing; connect to lights in same room |
+| CB-67 Electrical Connection arcs | Missing | Med | Connection object with Bezier arc; electrical schedule |

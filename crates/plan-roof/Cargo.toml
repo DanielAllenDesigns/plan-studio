@@ -1,0 +1,11 @@
+[package]
+name = "plan-roof"
+description = "Plan Studio: plan-roof (see README)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+plan-core = { path = "../plan-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

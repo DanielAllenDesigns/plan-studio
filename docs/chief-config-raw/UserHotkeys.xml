@@ -1,0 +1,11430 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<UserHotkeys xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="UserHotkeys.xsd">
+
+  <product>
+    <name>Chief Architect Premier X18</name>
+    <productVersion>28.1.1.6</productVersion>
+    <fileVersion>4122</fileVersion>
+  </product>
+
+  <command>
+    <id>0</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>100</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>101</id>
+    <keyCodes>Ctrl+N</keyCodes>
+  </command>
+
+  <command>
+    <id>102</id>
+    <keyCodes>Ctrl+O</keyCodes>
+  </command>
+
+  <command>
+    <id>103</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>104</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>105</id>
+    <keyCodes>Ctrl+S</keyCodes>
+  </command>
+
+  <command>
+    <id>106</id>
+    <keyCodes>Shift+F4</keyCodes>
+  </command>
+
+  <command>
+    <id>108</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>109</id>
+    <keyCodes>Ctrl+P</keyCodes>
+  </command>
+
+  <command>
+    <id>110</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>111</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>112</id>
+    <keyCodes>S, L</keyCodes>
+  </command>
+
+  <command>
+    <id>113</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>114</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>115</id>
+    <keyCodes>Ctrl+W</keyCodes>
+  </command>
+
+  <command>
+    <id>117</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>118</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>119</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>120</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>121</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>122</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>124</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>125</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>126</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>127</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>128</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>129</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>131</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>135</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>136</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>138</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>144</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>149</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>152</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>153</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>162</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>163</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>164</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>165</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>167</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>171</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>172</id>
+    <keyCodes>Meta+Ctrl+Alt+4</keyCodes>
+  </command>
+
+  <command>
+    <id>177</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>183</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>184</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>191</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>192</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>193</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>194</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>195</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>196</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>197</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>199</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>200</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>201</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>202</id>
+    <keyCodes>W</keyCodes>
+  </command>
+
+  <command>
+    <id>203</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>204</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>205</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>206</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>207</id>
+    <keyCodes>K</keyCodes>
+  </command>
+
+  <command>
+    <id>208</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>209</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>210</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>211</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>212</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>213</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>214</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>215</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>216</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>217</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>218</id>
+    <keyCodes>Shift+P</keyCodes>
+  </command>
+
+  <command>
+    <id>219</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>220</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>221</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>222</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>223</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>224</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+P</keyCodes>
+  </command>
+
+  <command>
+    <id>227</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>228</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+U</keyCodes>
+  </command>
+
+  <command>
+    <id>229</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>230</id>
+    <keyCodes>Q</keyCodes>
+  </command>
+
+  <command>
+    <id>231</id>
+    <keyCodes>2</keyCodes>
+  </command>
+
+  <command>
+    <id>232</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+O</keyCodes>
+  </command>
+
+  <command>
+    <id>233</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>234</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>235</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>236</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>237</id>
+    <keyCodes>Ctrl+D</keyCodes>
+  </command>
+
+  <command>
+    <id>238</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>239</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>240</id>
+    <keyCodes>Meta+Z</keyCodes>
+  </command>
+
+  <command>
+    <id>241</id>
+    <keyCodes>Meta+A</keyCodes>
+  </command>
+
+  <command>
+    <id>242</id>
+    <keyCodes>M, C</keyCodes>
+  </command>
+
+  <command>
+    <id>243</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>244</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>245</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>246</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>247</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>248</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>249</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>250</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>256</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>258</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>259</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>262</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>263</id>
+    <keyCodes>Shift+F3</keyCodes>
+  </command>
+
+  <command>
+    <id>264</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>265</id>
+    <keyCodes>P, P, M</keyCodes>
+  </command>
+
+  <command>
+    <id>267</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>268</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>269</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>270</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>271</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>272</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>273</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>274</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>275</id>
+    <keyCodes>3</keyCodes>
+  </command>
+
+  <command>
+    <id>276</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>277</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>278</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>279</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>280</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>281</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>282</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>283</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>284</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>285</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>286</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>287</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>288</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>289</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>290</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>291</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>292</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>293</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>294</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>295</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>296</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>297</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>298</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>300</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>301</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>303</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>305</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>308</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>309</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>310</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>311</id>
+    <keyCodes>Meta+Ctrl+Alt+L</keyCodes>
+  </command>
+
+  <command>
+    <id>312</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>314</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>315</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>316</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>317</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>321</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>322</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+H</keyCodes>
+  </command>
+
+  <command>
+    <id>323</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>326</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>327</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>328</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>329</id>
+    <keyCodes>Meta+Ctrl+Alt+Z</keyCodes>
+  </command>
+
+  <command>
+    <id>330</id>
+    <keyCodes>Shift+T</keyCodes>
+  </command>
+
+  <command>
+    <id>331</id>
+    <keyCodes>Meta+Ctrl+Alt+X</keyCodes>
+  </command>
+
+  <command>
+    <id>332</id>
+    <keyCodes>Ctrl+T</keyCodes>
+  </command>
+
+  <command>
+    <id>333</id>
+    <keyCodes>Meta+Ctrl+Alt+Y</keyCodes>
+  </command>
+
+  <command>
+    <id>334</id>
+    <keyCodes>T</keyCodes>
+  </command>
+
+  <command>
+    <id>335</id>
+    <keyCodes>D, H</keyCodes>
+  </command>
+
+  <command>
+    <id>336</id>
+    <keyCodes>S, D</keyCodes>
+  </command>
+
+  <command>
+    <id>337</id>
+    <keyCodes>D, P</keyCodes>
+  </command>
+
+  <command>
+    <id>338</id>
+    <keyCodes>Meta+Ctrl+Alt+O</keyCodes>
+  </command>
+
+  <command>
+    <id>339</id>
+    <keyCodes>G, D</keyCodes>
+  </command>
+
+  <command>
+    <id>341</id>
+    <keyCodes>Shift+W</keyCodes>
+  </command>
+
+  <command>
+    <id>342</id>
+    <keyCodes>Meta+Ctrl+Alt+S</keyCodes>
+  </command>
+
+  <command>
+    <id>343</id>
+    <keyCodes>Meta+Ctrl+Alt+U</keyCodes>
+  </command>
+
+  <command>
+    <id>344</id>
+    <keyCodes>Meta+Ctrl+Alt+T</keyCodes>
+  </command>
+
+  <command>
+    <id>345</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>346</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>347</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>349</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>350</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>351</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>352</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>354</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>355</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>356</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>357</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>358</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>359</id>
+    <keyCodes>Space</keyCodes>
+  </command>
+
+  <command>
+    <id>360</id>
+    <keyCodes>Shift+Q</keyCodes>
+  </command>
+
+  <command>
+    <id>361</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>362</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>363</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>365</id>
+    <keyCodes>Ctrl+Q</keyCodes>
+  </command>
+
+  <command>
+    <id>367</id>
+    <keyCodes>Ctrl+B</keyCodes>
+  </command>
+
+  <command>
+    <id>368</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>369</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>370</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>371</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>372</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>373</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>374</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>376</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>377</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>378</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>379</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>380</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+N</keyCodes>
+  </command>
+
+  <command>
+    <id>381</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>382</id>
+    <keyCodes>Ctrl+Shift+S</keyCodes>
+  </command>
+
+  <command>
+    <id>383</id>
+    <keyCodes>Meta+Ctrl+Alt+R</keyCodes>
+  </command>
+
+  <command>
+    <id>384</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>385</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>386</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>387</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>388</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>389</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>390</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>391</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>392</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+W</keyCodes>
+  </command>
+
+  <command>
+    <id>393</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+G</keyCodes>
+  </command>
+
+  <command>
+    <id>394</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>395</id>
+    <keyCodes>Shift+K</keyCodes>
+  </command>
+
+  <command>
+    <id>396</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>397</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>398</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>399</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>400</id>
+    <keyCodes>F5</keyCodes>
+  </command>
+
+  <command>
+    <id>401</id>
+    <keyCodes>Shift+Z</keyCodes>
+  </command>
+
+  <command>
+    <id>402</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>403</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>404</id>
+    <keyCodes>Meta+F</keyCodes>
+  </command>
+
+  <command>
+    <id>405</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>406</id>
+    <keyCodes>`</keyCodes>
+  </command>
+
+  <command>
+    <id>409</id>
+    <keyCodes>Shift+V</keyCodes>
+  </command>
+
+  <command>
+    <id>410</id>
+    <keyCodes>F9</keyCodes>
+  </command>
+
+  <command>
+    <id>411</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>412</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>413</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>415</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>419</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>422</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>423</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>424</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+S</keyCodes>
+  </command>
+
+  <command>
+    <id>426</id>
+    <keyCodes>Ctrl+1</keyCodes>
+  </command>
+
+  <command>
+    <id>427</id>
+    <keyCodes>F8</keyCodes>
+  </command>
+
+  <command>
+    <id>428</id>
+    <keyCodes>Meta+Ctrl+Alt+H</keyCodes>
+  </command>
+
+  <command>
+    <id>430</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>431</id>
+    <keyCodes>Shift+J</keyCodes>
+  </command>
+
+  <command>
+    <id>432</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>434</id>
+    <keyCodes>F7</keyCodes>
+  </command>
+
+  <command>
+    <id>435</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+R</keyCodes>
+  </command>
+
+  <command>
+    <id>436</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+Z</keyCodes>
+  </command>
+
+  <command>
+    <id>437</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>438</id>
+    <keyCodes>Ctrl+L</keyCodes>
+  </command>
+
+  <command>
+    <id>439</id>
+    <keyCodes>~</keyCodes>
+  </command>
+
+  <command>
+    <id>440</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>441</id>
+    <keyCodes>Meta+Ctrl+Alt+3</keyCodes>
+  </command>
+
+  <command>
+    <id>443</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>444</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>445</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>446</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>447</id>
+    <keyCodes>Meta+Ctrl+Alt+5</keyCodes>
+  </command>
+
+  <command>
+    <id>448</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>449</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>450</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>451</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>453</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>454</id>
+    <keyCodes>Meta+Ctrl+Alt+M</keyCodes>
+  </command>
+
+  <command>
+    <id>456</id>
+    <keyCodes>D, I</keyCodes>
+  </command>
+
+  <command>
+    <id>457</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>459</id>
+    <keyCodes>Meta+Ctrl+Alt+A</keyCodes>
+  </command>
+
+  <command>
+    <id>460</id>
+    <keyCodes>Y</keyCodes>
+  </command>
+
+  <command>
+    <id>461</id>
+    <keyCodes>Meta+Ctrl+Alt+K</keyCodes>
+  </command>
+
+  <command>
+    <id>462</id>
+    <keyCodes>E, O</keyCodes>
+  </command>
+
+  <command>
+    <id>463</id>
+    <keyCodes>Meta+Ctrl+Alt+7</keyCodes>
+  </command>
+
+  <command>
+    <id>464</id>
+    <keyCodes>E, L</keyCodes>
+  </command>
+
+  <command>
+    <id>465</id>
+    <keyCodes>E, S</keyCodes>
+  </command>
+
+  <command>
+    <id>468</id>
+    <keyCodes>E, C</keyCodes>
+  </command>
+
+  <command>
+    <id>470</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>471</id>
+    <keyCodes>V</keyCodes>
+  </command>
+
+  <command>
+    <id>472</id>
+    <keyCodes>I</keyCodes>
+  </command>
+
+  <command>
+    <id>473</id>
+    <keyCodes>O</keyCodes>
+  </command>
+
+  <command>
+    <id>474</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>475</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>477</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>478</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>479</id>
+    <keyCodes>F12</keyCodes>
+  </command>
+
+  <command>
+    <id>480</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>481</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>482</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>484</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>485</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>486</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>487</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>488</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>489</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>490</id>
+    <keyCodes>F</keyCodes>
+  </command>
+
+  <command>
+    <id>491</id>
+    <keyCodes>B</keyCodes>
+  </command>
+
+  <command>
+    <id>492</id>
+    <keyCodes>L</keyCodes>
+  </command>
+
+  <command>
+    <id>493</id>
+    <keyCodes>R</keyCodes>
+  </command>
+
+  <command>
+    <id>494</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>495</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>496</id>
+    <keyCodes>U</keyCodes>
+  </command>
+
+  <command>
+    <id>497</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>499</id>
+    <keyCodes>Shift+F8</keyCodes>
+  </command>
+
+  <command>
+    <id>500</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>503</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+B</keyCodes>
+  </command>
+
+  <command>
+    <id>504</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>505</id>
+    <keyCodes>Shift+F11</keyCodes>
+  </command>
+
+  <command>
+    <id>507</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>508</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>509</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>510</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>511</id>
+    <keyCodes>Ctrl+Shift+R</keyCodes>
+  </command>
+
+  <command>
+    <id>512</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>514</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>515</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>516</id>
+    <keyCodes>Ctrl+Shift+T</keyCodes>
+  </command>
+
+  <command>
+    <id>517</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>518</id>
+    <keyCodes>Ctrl+Shift+Y</keyCodes>
+  </command>
+
+  <command>
+    <id>519</id>
+    <keyCodes>Ctrl+Shift+U</keyCodes>
+  </command>
+
+  <command>
+    <id>520</id>
+    <keyCodes>Ctrl+Shift+I</keyCodes>
+  </command>
+
+  <command>
+    <id>521</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>524</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>528</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>530</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>534</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>541</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>542</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>543</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>544</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+E</keyCodes>
+  </command>
+
+  <command>
+    <id>545</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+F</keyCodes>
+  </command>
+
+  <command>
+    <id>546</id>
+    <keyCodes>Shift+Y</keyCodes>
+  </command>
+
+  <command>
+    <id>547</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>548</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>549</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>550</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>554</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>555</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>557</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>559</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>562</id>
+    <keyCodes>Meta+Ctrl+Alt+N</keyCodes>
+  </command>
+
+  <command>
+    <id>564</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>565</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>566</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>568</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>569</id>
+    <keyCodes>Ctrl+M</keyCodes>
+  </command>
+
+  <command>
+    <id>570</id>
+    <keyCodes>Shift+C</keyCodes>
+  </command>
+
+  <command>
+    <id>573</id>
+    <keyCodes>Ctrl+Shift+P</keyCodes>
+  </command>
+
+  <command>
+    <id>574</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>575</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>576</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>577</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>578</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>579</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>580</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>581</id>
+    <keyCodes>D, D</keyCodes>
+  </command>
+
+  <command>
+    <id>582</id>
+    <keyCodes>C, S</keyCodes>
+  </command>
+
+  <command>
+    <id>585</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>586</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>590</id>
+    <keyCodes>-</keyCodes>
+  </command>
+
+  <command>
+    <id>591</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>592</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>593</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>594</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>595</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>596</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>598</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>599</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>600</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>603</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>604</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>608</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>609</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>610</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>611</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>613</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>616</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>618</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>619</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>620</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>621</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>624</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>626</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>633</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>641</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>642</id>
+    <keyCodes>E, A, O</keyCodes>
+  </command>
+
+  <command>
+    <id>643</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>644</id>
+    <keyCodes>Ctrl+Space</keyCodes>
+  </command>
+
+  <command>
+    <id>645</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>646</id>
+    <keyCodes>Ctrl+H</keyCodes>
+  </command>
+
+  <command>
+    <id>647</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>648</id>
+    <keyCodes>Shift+A</keyCodes>
+  </command>
+
+  <command>
+    <id>649</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>650</id>
+    <keyCodes>Tab</keyCodes>
+  </command>
+
+  <command>
+    <id>651</id>
+    <keyCodes>Ctrl+E</keyCodes>
+  </command>
+
+  <command>
+    <id>652</id>
+    <keyCodes>Ctrl+Alt+C</keyCodes>
+  </command>
+
+  <command>
+    <id>654</id>
+    <keyCodes>Del</keyCodes>
+  </command>
+
+  <command>
+    <id>655</id>
+    <keyCodes>Ctrl+Z</keyCodes>
+  </command>
+
+  <command>
+    <id>656</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>657</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>658</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>659</id>
+    <keyCodes>D, E</keyCodes>
+  </command>
+
+  <command>
+    <id>661</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>662</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>663</id>
+    <keyCodes>C, C</keyCodes>
+  </command>
+
+  <command>
+    <id>664</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>665</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>666</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>667</id>
+    <keyCodes>Ctrl+Y</keyCodes>
+  </command>
+
+  <command>
+    <id>668</id>
+    <keyCodes>Ctrl+F3</keyCodes>
+  </command>
+
+  <command>
+    <id>669</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>670</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>671</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>672</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>673</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>674</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>675</id>
+    <keyCodes>M, A</keyCodes>
+  </command>
+
+  <command>
+    <id>676</id>
+    <keyCodes>Ctrl+K</keyCodes>
+  </command>
+
+  <command>
+    <id>677</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>678</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>680</id>
+    <keyCodes>Shift+X</keyCodes>
+  </command>
+
+  <command>
+    <id>681</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+I</keyCodes>
+  </command>
+
+  <command>
+    <id>682</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+J</keyCodes>
+  </command>
+
+  <command>
+    <id>683</id>
+    <keyCodes>Ctrl+F</keyCodes>
+  </command>
+
+  <command>
+    <id>684</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+K</keyCodes>
+  </command>
+
+  <command>
+    <id>685</id>
+    <keyCodes>Ctrl+Shift+G</keyCodes>
+  </command>
+
+  <command>
+    <id>686</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>687</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>689</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>690</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>691</id>
+    <keyCodes>Meta+Ctrl+Alt+F</keyCodes>
+  </command>
+
+  <command>
+    <id>692</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>693</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>694</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>695</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>696</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>697</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>698</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>700</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>701</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>702</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>703</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>704</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>705</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>706</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>707</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>708</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>709</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>710</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>712</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>713</id>
+    <keyCodes>Ctrl+U</keyCodes>
+  </command>
+
+  <command>
+    <id>714</id>
+    <keyCodes>Shift+G</keyCodes>
+  </command>
+
+  <command>
+    <id>715</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>716</id>
+    <keyCodes>Shift+H</keyCodes>
+  </command>
+
+  <command>
+    <id>717</id>
+    <keyCodes>Shift+F12</keyCodes>
+  </command>
+
+  <command>
+    <id>718</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>719</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>720</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>721</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>723</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+T</keyCodes>
+  </command>
+
+  <command>
+    <id>724</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>725</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>727</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>728</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>729</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>730</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>731</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>732</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>733</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>734</id>
+    <keyCodes>Meta+Ctrl+Alt+G</keyCodes>
+  </command>
+
+  <command>
+    <id>736</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>738</id>
+    <keyCodes>Meta+Ctrl+Alt+V</keyCodes>
+  </command>
+
+  <command>
+    <id>739</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>741</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>742</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>743</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>744</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>745</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>746</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>748</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>750</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>751</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>752</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>753</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>754</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>755</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>756</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>757</id>
+    <keyCodes>Meta+Ctrl+Alt+B</keyCodes>
+  </command>
+
+  <command>
+    <id>759</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>760</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>761</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>762</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>763</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>764</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>765</id>
+    <keyCodes>Meta+Ctrl+Alt+D</keyCodes>
+  </command>
+
+  <command>
+    <id>766</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>767</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>768</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>769</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>770</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>771</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>772</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>773</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>774</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>775</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>776</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>777</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>778</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>779</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>780</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>781</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>782</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>783</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>784</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>785</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>786</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>787</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>788</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>789</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>790</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>791</id>
+    <keyCodes>Meta+Ctrl+Alt+6</keyCodes>
+  </command>
+
+  <command>
+    <id>792</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>793</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>794</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>795</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>796</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>797</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>798</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>800</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>801</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>802</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>805</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>807</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>809</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>812</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>814</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>816</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>817</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>818</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>820</id>
+    <keyCodes>Alt+O</keyCodes>
+  </command>
+
+  <command>
+    <id>821</id>
+    <keyCodes>Alt+P</keyCodes>
+  </command>
+
+  <command>
+    <id>822</id>
+    <keyCodes>Alt+D</keyCodes>
+  </command>
+
+  <command>
+    <id>823</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>824</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>825</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>827</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>828</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>829</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>830</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>831</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>832</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>833</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>834</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>835</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>836</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>837</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>838</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>839</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>840</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>841</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>842</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>843</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>844</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>845</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>846</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>848</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>849</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>850</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>851</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>852</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>853</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>854</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>855</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>856</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>857</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>858</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>859</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>860</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>861</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>862</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>863</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>864</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>865</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>866</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>867</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>868</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>873</id>
+    <keyCodes>J</keyCodes>
+  </command>
+
+  <command>
+    <id>875</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>880</id>
+    <keyCodes>Ctrl+F9</keyCodes>
+  </command>
+
+  <command>
+    <id>918</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>1062</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>1073</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>1718</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>1719</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2000</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2001</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2002</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2003</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2004</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2005</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2006</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2007</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2008</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2009</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2010</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2011</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2012</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2013</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2014</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2015</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2016</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2017</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2018</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2019</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2020</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2021</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2022</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2023</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2024</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2025</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2026</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2027</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2028</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2029</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2030</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2031</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2032</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2033</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2034</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2035</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2036</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2037</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2038</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2039</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2040</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2041</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2042</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2043</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2044</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2045</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2046</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2047</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2048</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>2049</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4001</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4005</id>
+    <keyCodes>Shift+F6</keyCodes>
+  </command>
+
+  <command>
+    <id>4100</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4101</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4102</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4103</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4104</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4105</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4106</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4107</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4108</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4109</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4110</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4111</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4112</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4113</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4114</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4115</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4116</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4117</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4118</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4119</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4120</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4121</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4122</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4123</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4124</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4125</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4126</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4127</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4128</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4129</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4130</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4131</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4132</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4133</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4134</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4135</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4136</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4137</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4138</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4139</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4140</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4141</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4142</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4143</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4144</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4145</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4146</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4147</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4148</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4149</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4150</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4151</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4152</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4153</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4154</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4155</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4156</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4157</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4158</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4159</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4160</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4161</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4162</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4163</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4164</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4165</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4166</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4167</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4168</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4169</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4170</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4171</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4172</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4173</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4174</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4175</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4176</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4177</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4178</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4179</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4180</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4181</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4182</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4183</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4184</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4185</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4186</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4187</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4188</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4189</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4190</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4191</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4192</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4193</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4194</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4195</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4196</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4197</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4198</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4199</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4200</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4201</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4202</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4203</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4204</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4205</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4206</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4207</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4208</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4209</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4210</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4211</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4212</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4213</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4214</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4215</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4216</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4217</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4218</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4219</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4220</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4221</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4222</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4223</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4224</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4225</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4226</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4227</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4228</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4229</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4230</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4231</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4232</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4233</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4234</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4235</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4236</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4237</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4238</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4239</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4240</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4241</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4242</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4243</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4244</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4245</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4246</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4247</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4248</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4249</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4250</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4251</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4252</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4253</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4254</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4255</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4256</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4257</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4258</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4259</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4260</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4261</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4262</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4263</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4264</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4265</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4266</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4267</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4268</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4269</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4270</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4271</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4272</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4273</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4274</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4275</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4276</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4277</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4278</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4279</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4280</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4281</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4282</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4283</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4284</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4285</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4286</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4287</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4288</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4289</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4290</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4291</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4292</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4293</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4294</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4295</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4296</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4297</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4298</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4299</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4300</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4301</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4302</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4303</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4304</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4305</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4306</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4307</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4308</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4309</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4310</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4311</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4312</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4313</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4314</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4315</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4316</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4317</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4318</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4319</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4320</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4321</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4322</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4323</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4324</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4325</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4326</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4327</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4328</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4329</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4330</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4331</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4332</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4333</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4334</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4335</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4336</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4337</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4338</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4339</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4340</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4341</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4342</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4343</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4344</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4345</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4346</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4347</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4348</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4349</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4350</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4351</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4352</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4353</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4354</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4355</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4356</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4357</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4358</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4359</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4360</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4361</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4362</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4363</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4364</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4365</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4366</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4367</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4368</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4369</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4370</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4371</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4372</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4373</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4374</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4375</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4376</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4377</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4378</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4379</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4380</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4381</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4382</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4383</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4384</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4385</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4386</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4387</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4388</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4389</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4390</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4391</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4392</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4393</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4394</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4395</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4396</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4397</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4398</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4399</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4400</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4401</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4402</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4403</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4404</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4405</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4406</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4407</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4408</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4409</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4410</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4411</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4412</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4413</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4414</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4415</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4416</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4417</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4418</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4419</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4420</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4421</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4422</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4423</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4424</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4425</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4426</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4427</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4428</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4429</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4430</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4431</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4432</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4433</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4434</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4435</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4436</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4437</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4438</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4439</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4440</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4441</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4442</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4443</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4444</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4445</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4446</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4447</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4448</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4449</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4450</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4451</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4452</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4453</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4454</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4455</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4456</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4457</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4458</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4459</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4460</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4461</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4462</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4463</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4464</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4465</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4466</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4467</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4468</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4469</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4470</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4471</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4472</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4473</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4474</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4475</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4476</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4477</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4478</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4479</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4480</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4481</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4482</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4483</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4484</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4485</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4486</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4487</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4488</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4489</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4490</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4491</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4492</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4493</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4494</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4495</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4496</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4497</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4498</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4499</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4500</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4501</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4502</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4503</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4504</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4505</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4506</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4507</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4508</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4509</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4510</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4511</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4512</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4513</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4514</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4515</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4516</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4517</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4518</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4519</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4520</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4521</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4522</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4523</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4524</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4525</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4526</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4527</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4528</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4529</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4530</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4531</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4532</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4533</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4534</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4535</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4536</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4537</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4538</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4539</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4540</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4541</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4542</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4543</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4544</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4545</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4546</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4547</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4548</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4549</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4550</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4551</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4552</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4553</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4554</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4555</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4556</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4557</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4558</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4559</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4560</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4561</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4562</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4563</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4564</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4565</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4566</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4567</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4568</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4569</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4570</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4571</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4572</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4573</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4574</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4575</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4576</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4577</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4578</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4579</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4580</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4581</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4582</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4583</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4584</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4585</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4586</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4587</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4588</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4589</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4590</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4591</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4592</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4593</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4594</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4595</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4596</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4597</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4598</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>4599</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>15044</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>15045</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>15046</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>15049</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>15050</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>15054</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20001</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20002</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20003</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20004</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20005</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20008</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20009</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20010</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20011</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20012</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20013</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20014</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20015</id>
+    <keyCodes>D, T, M</keyCodes>
+  </command>
+
+  <command>
+    <id>20016</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20018</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20019</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20022</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20023</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20024</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20025</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20026</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20027</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20028</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20029</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20030</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20031</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20032</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20033</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20034</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20035</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20036</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20038</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20039</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20040</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+X</keyCodes>
+  </command>
+
+  <command>
+    <id>20041</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20042</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20043</id>
+    <keyCodes>H</keyCodes>
+  </command>
+
+  <command>
+    <id>20044</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20045</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20046</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20047</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+L</keyCodes>
+  </command>
+
+  <command>
+    <id>20048</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+M</keyCodes>
+  </command>
+
+  <command>
+    <id>20049</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20050</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20051</id>
+    <keyCodes>D, W</keyCodes>
+  </command>
+
+  <command>
+    <id>20052</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20054</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20055</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20056</id>
+    <keyCodes>Shift+M</keyCodes>
+  </command>
+
+  <command>
+    <id>20057</id>
+    <keyCodes>Shift+N</keyCodes>
+  </command>
+
+  <command>
+    <id>20059</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20060</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20061</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20062</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20063</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20064</id>
+    <keyCodes>Alt+F3</keyCodes>
+  </command>
+
+  <command>
+    <id>20065</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20066</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20067</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20068</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20069</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20070</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20073</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20074</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20075</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20076</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20077</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20078</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20079</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20080</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20081</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20082</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20083</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20084</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20085</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20086</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20087</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20088</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20089</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20090</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20092</id>
+    <keyCodes>Alt+A</keyCodes>
+  </command>
+
+  <command>
+    <id>20093</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20094</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20095</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20096</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20097</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20098</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20099</id>
+    <keyCodes>[</keyCodes>
+  </command>
+
+  <command>
+    <id>20100</id>
+    <keyCodes>]</keyCodes>
+  </command>
+
+  <command>
+    <id>20101</id>
+    <keyCodes>\</keyCodes>
+  </command>
+
+  <command>
+    <id>20102</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20103</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20104</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20105</id>
+    <keyCodes>Alt+F2</keyCodes>
+  </command>
+
+  <command>
+    <id>20107</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20108</id>
+    <keyCodes>Shift+F9</keyCodes>
+  </command>
+
+  <command>
+    <id>20109</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20110</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20111</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20113</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20114</id>
+    <keyCodes>X, C</keyCodes>
+  </command>
+
+  <command>
+    <id>20115</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20116</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20117</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20118</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20120</id>
+    <keyCodes>F11</keyCodes>
+  </command>
+
+  <command>
+    <id>20121</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20122</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20123</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20124</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20125</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20127</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20128</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20130</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20131</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20132</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20134</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20136</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20137</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20138</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20139</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20141</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20142</id>
+    <keyCodes>Shift+Esc</keyCodes>
+  </command>
+
+  <command>
+    <id>20143</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20144</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20145</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20146</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20147</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20148</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20149</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20150</id>
+    <keyCodes>Ctrl+Alt+S</keyCodes>
+  </command>
+
+  <command>
+    <id>20151</id>
+    <keyCodes>Esc</keyCodes>
+  </command>
+
+  <command>
+    <id>20153</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20154</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20155</id>
+    <keyCodes>Meta+Ctrl+Alt+0</keyCodes>
+  </command>
+
+  <command>
+    <id>20156</id>
+    <keyCodes>Meta+Ctrl+Alt+2</keyCodes>
+  </command>
+
+  <command>
+    <id>20157</id>
+    <keyCodes>Meta+Ctrl+Alt+1</keyCodes>
+  </command>
+
+  <command>
+    <id>20158</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20159</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20160</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20165</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20166</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20167</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20168</id>
+    <keyCodes>Alt+Q</keyCodes>
+  </command>
+
+  <command>
+    <id>20169</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20170</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20171</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20172</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20173</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20174</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20175</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20177</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20178</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20179</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20180</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20181</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20182</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20183</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20184</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20185</id>
+    <keyCodes>Alt+T</keyCodes>
+  </command>
+
+  <command>
+    <id>20186</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20187</id>
+    <keyCodes>Alt+Shift+O</keyCodes>
+  </command>
+
+  <command>
+    <id>20188</id>
+    <keyCodes>Alt+Shift+T</keyCodes>
+  </command>
+
+  <command>
+    <id>20189</id>
+    <keyCodes>Alt+Shift+D</keyCodes>
+  </command>
+
+  <command>
+    <id>20190</id>
+    <keyCodes>Alt+Shift+P</keyCodes>
+  </command>
+
+  <command>
+    <id>20193</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20194</id>
+    <keyCodes>Ctrl+X</keyCodes>
+  </command>
+
+  <command>
+    <id>20195</id>
+    <keyCodes>Ctrl+C</keyCodes>
+  </command>
+
+  <command>
+    <id>20196</id>
+    <keyCodes>Ctrl+V</keyCodes>
+  </command>
+
+  <command>
+    <id>20199</id>
+    <keyCodes>Ctrl+Alt+V</keyCodes>
+  </command>
+
+  <command>
+    <id>20200</id>
+    <keyCodes>Alt+Shift+V</keyCodes>
+  </command>
+
+  <command>
+    <id>20201</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20202</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20203</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20204</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20205</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20206</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20207</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20208</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20209</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20210</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20211</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20212</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20213</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20214</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20215</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20216</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20217</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20218</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20219</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20220</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20221</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20222</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20223</id>
+    <keyCodes>1</keyCodes>
+  </command>
+
+  <command>
+    <id>20224</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20227</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20229</id>
+    <keyCodes>Alt+L</keyCodes>
+  </command>
+
+  <command>
+    <id>20231</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20233</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20237</id>
+    <keyCodes>Meta+Ctrl+Alt+J</keyCodes>
+  </command>
+
+  <command>
+    <id>20238</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20239</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20240</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20241</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20242</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20243</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20244</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20246</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20248</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20249</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+!</keyCodes>
+  </command>
+
+  <command>
+    <id>20250</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20252</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20253</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20255</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20256</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20257</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20258</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20259</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20260</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20261</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20262</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20263</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20264</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20265</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20266</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20267</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20268</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20269</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20270</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20271</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20272</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20273</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20274</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20275</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20276</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20277</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20278</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20292</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20293</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20294</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20295</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20296</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20297</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20300</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20301</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20302</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20305</id>
+    <keyCodes>Meta+Ctrl+Alt+I</keyCodes>
+  </command>
+
+  <command>
+    <id>20306</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20307</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20308</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20309</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20310</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20311</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20312</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20313</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20314</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20315</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+C</keyCodes>
+  </command>
+
+  <command>
+    <id>20316</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+D</keyCodes>
+  </command>
+
+  <command>
+    <id>20317</id>
+    <keyCodes>Meta+Ctrl+Alt+W</keyCodes>
+  </command>
+
+  <command>
+    <id>20318</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20319</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20320</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20324</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20325</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20326</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20328</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20329</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20330</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20331</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20332</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20333</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20336</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20337</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20339</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20340</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20341</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20342</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20343</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20344</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20345</id>
+    <keyCodes>Meta+Ctrl+Alt+P</keyCodes>
+  </command>
+
+  <command>
+    <id>20346</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20347</id>
+    <keyCodes>Meta+Ctrl+Alt+Q</keyCodes>
+  </command>
+
+  <command>
+    <id>20348</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20350</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20351</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20352</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20353</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20355</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20356</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20357</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+Y</keyCodes>
+  </command>
+
+  <command>
+    <id>20358</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20359</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20360</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20361</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20362</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20363</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20364</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20365</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20368</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20369</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20370</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20371</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20372</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20373</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20374</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20376</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20377</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20378</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20379</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20380</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20381</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20382</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20383</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20384</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20396</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20397</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20398</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20399</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20400</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>20401</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>21000</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>22990</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>22992</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>22993</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>22994</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>22995</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>22996</id>
+    <keyCodes>Meta+Ctrl+Alt+C</keyCodes>
+  </command>
+
+  <command>
+    <id>22997</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>22998</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>22999</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23001</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23002</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23003</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23004</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23005</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23006</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23007</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23008</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23009</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23010</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23011</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23012</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23013</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23014</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23015</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23016</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23017</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23018</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23019</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23020</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23021</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23022</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23023</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23024</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23025</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23026</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23027</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23028</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23029</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23030</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23031</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23032</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23033</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23034</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23035</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23036</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23037</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23038</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23039</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23040</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23041</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23042</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23043</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23044</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23045</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23046</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23047</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23048</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23049</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23050</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23051</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23052</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23053</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23054</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23055</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23056</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23057</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23058</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23059</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23060</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23061</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23062</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23063</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23064</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23065</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23066</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23067</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23068</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23069</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23070</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23071</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23072</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23073</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23074</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23075</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23076</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23077</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23078</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23079</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23080</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23081</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23082</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23083</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23084</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23085</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23086</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23087</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23088</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23089</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23090</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23091</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23092</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23093</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23094</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23095</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23096</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23097</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23098</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23099</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23100</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23101</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23102</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23103</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23104</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23105</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23106</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23107</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23108</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23109</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23110</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23111</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23112</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23113</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23114</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23115</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23116</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23117</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23118</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23119</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23120</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23121</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23122</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23123</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23124</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23125</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23126</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23127</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23128</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23129</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23130</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23131</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23132</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23133</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23134</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23135</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23136</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23137</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23138</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23139</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23140</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23141</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23142</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23143</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23144</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23145</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23146</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23147</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23148</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23149</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23150</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23151</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23152</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23153</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23154</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23155</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23156</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23157</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23158</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23159</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23160</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23161</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23162</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23163</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23164</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23165</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23166</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23167</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23168</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23169</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23170</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23171</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23172</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23173</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23174</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23175</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23176</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23177</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23178</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23179</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23180</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23181</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23182</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23183</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23184</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23185</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23186</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23187</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23188</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23189</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23190</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23191</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23192</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23193</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23194</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23195</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23196</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23197</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23198</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23199</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23200</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23201</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23202</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23203</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23204</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23205</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23206</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23207</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23208</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23209</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23210</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23211</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23212</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23213</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23214</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23215</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23216</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23217</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23218</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23219</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23220</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23221</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23222</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23223</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23224</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23225</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23226</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23227</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23228</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23229</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23230</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23231</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23232</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23233</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23234</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23235</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23236</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23237</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23238</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23239</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23240</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23241</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23242</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23243</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23244</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23245</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23246</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23247</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23248</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23249</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23250</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23251</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23252</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23253</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23254</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23255</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23256</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23257</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23258</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23259</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23260</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23261</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23262</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23263</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23264</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23265</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23266</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23267</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23268</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23269</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23270</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23271</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23272</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23273</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23274</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23275</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23276</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23277</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23278</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23279</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23280</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23281</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23282</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23283</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23284</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23285</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23286</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23287</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23288</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23289</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23290</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23291</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23292</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23293</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23294</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23295</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23296</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23297</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23298</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23299</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23300</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23301</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23302</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23303</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23304</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23305</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23306</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23307</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23308</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23309</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23310</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23311</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23312</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23313</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23314</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23315</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23316</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23317</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23318</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23319</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23320</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23321</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23322</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23323</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23324</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23325</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23326</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23327</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23328</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23329</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23330</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23331</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23332</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23333</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23334</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23335</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23336</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23337</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23338</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23339</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23340</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23341</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23342</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23343</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23344</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23345</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23346</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23347</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23348</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23349</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23350</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23351</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23352</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23353</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23354</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23355</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23356</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23357</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23358</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23359</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23360</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23361</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23362</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23363</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23364</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23365</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23366</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23367</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23368</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23369</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23370</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23371</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23372</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23373</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23374</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23375</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23376</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23377</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23378</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23379</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23380</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23381</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23382</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23383</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23384</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23385</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23386</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23387</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23388</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23389</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23390</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23391</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23392</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23393</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23394</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23395</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23396</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23397</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23398</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23399</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23400</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23401</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23403</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23406</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23408</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23411</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23413</id>
+    <keyCodes>Ctrl+R</keyCodes>
+  </command>
+
+  <command>
+    <id>23415</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23422</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23424</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23425</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23426</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23427</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23428</id>
+    <keyCodes>Ctrl+A</keyCodes>
+  </command>
+
+  <command>
+    <id>23429</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23430</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23431</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23432</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23434</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23435</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23436</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23437</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23438</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23439</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23440</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23441</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23442</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23443</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23444</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23445</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23446</id>
+    <keyCodes>C, P, P</keyCodes>
+  </command>
+
+  <command>
+    <id>23447</id>
+    <keyCodes>E, M</keyCodes>
+  </command>
+
+  <command>
+    <id>23448</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23449</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23450</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23452</id>
+    <keyCodes>M, M, U</keyCodes>
+  </command>
+
+  <command>
+    <id>23453</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23454</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23455</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23456</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23457</id>
+    <keyCodes>A, W, A</keyCodes>
+  </command>
+
+  <command>
+    <id>23458</id>
+    <keyCodes>A, W, B</keyCodes>
+  </command>
+
+  <command>
+    <id>23460</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23461</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23462</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23463</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23464</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23466</id>
+    <keyCodes>Shift+B</keyCodes>
+  </command>
+
+  <command>
+    <id>23467</id>
+    <keyCodes>Shift+L</keyCodes>
+  </command>
+
+  <command>
+    <id>23468</id>
+    <keyCodes>Shift+R</keyCodes>
+  </command>
+
+  <command>
+    <id>23469</id>
+    <keyCodes>Shift+U</keyCodes>
+  </command>
+
+  <command>
+    <id>23470</id>
+    <keyCodes>Shift+D</keyCodes>
+  </command>
+
+  <command>
+    <id>23471</id>
+    <keyCodes>Shift+I</keyCodes>
+  </command>
+
+  <command>
+    <id>23472</id>
+    <keyCodes>Shift+O</keyCodes>
+  </command>
+
+  <command>
+    <id>23474</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23475</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23476</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23477</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23478</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23479</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23482</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23483</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23486</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23487</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23489</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23490</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23492</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23493</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23494</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23496</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23497</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23498</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23499</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23500</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23601</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23602</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23604</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23605</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23625</id>
+    <keyCodes>Meta+Ctrl+Alt+E</keyCodes>
+  </command>
+
+  <command>
+    <id>23626</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23627</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23628</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23629</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23630</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23631</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23632</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23633</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23634</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23635</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23636</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23637</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23638</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23639</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23640</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23641</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23642</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23643</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23644</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23645</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23646</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23647</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23648</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23649</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23650</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23651</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23652</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23653</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23656</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23657</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23658</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23659</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23660</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23661</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23663</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23664</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23665</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23666</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23667</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23668</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23669</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23670</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23671</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23674</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23676</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23678</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23679</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23680</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23681</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23682</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23683</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23684</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23685</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23687</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23688</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23689</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23691</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23693</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23694</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23695</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23696</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23697</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23698</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23699</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23700</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23701</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23702</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23704</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23707</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23708</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23709</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23710</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23711</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23712</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23713</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+A</keyCodes>
+  </command>
+
+  <command>
+    <id>23714</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23715</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23716</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23717</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23719</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23722</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23723</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23727</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23729</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23730</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23732</id>
+    <keyCodes>Meta+Ctrl+Alt+Shift+V</keyCodes>
+  </command>
+
+  <command>
+    <id>23733</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23734</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23735</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23736</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23737</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23739</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23740</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23741</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23742</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23743</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23746</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23747</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23750</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23751</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23752</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23754</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23755</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23756</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23757</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23759</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23760</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23761</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23762</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23764</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23765</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23769</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23770</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23771</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23772</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23773</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23774</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23775</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23777</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23795</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23797</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23805</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23806</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23808</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23809</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23810</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23811</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23812</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23813</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23814</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23815</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23816</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23817</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23818</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23819</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23820</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23821</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23823</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23824</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23826</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23827</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23828</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23829</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23830</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23833</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23836</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23837</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23838</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23839</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23840</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23841</id>
+    <keyCodes>Ctrl+O</keyCodes>
+  </command>
+
+  <command>
+    <id>23842</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23843</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23844</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23846</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23848</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23849</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23850</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23851</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23853</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23854</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23856</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23857</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23858</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23859</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23860</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23863</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23864</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23865</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23866</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23867</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23868</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23869</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23871</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23874</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23875</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23876</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23877</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23878</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23879</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23880</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23881</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23882</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23883</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23884</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23886</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23887</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23889</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23890</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23891</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23892</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23894</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23895</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23896</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23897</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23898</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23899</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23902</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23903</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23906</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23907</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23908</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23912</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23913</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23916</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23917</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23918</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23919</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23920</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23921</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23922</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23924</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23925</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23926</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23927</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23929</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23930</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23931</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23932</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23933</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23934</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23935</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23937</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23938</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23947</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23948</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23949</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23951</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23952</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23953</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23954</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23956</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23957</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23958</id>
+    <keyCodes>Ctrl+N</keyCodes>
+  </command>
+
+  <command>
+    <id>23959</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23961</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23962</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23963</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23964</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23966</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23967</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23968</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23970</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23971</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23972</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23973</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23977</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23978</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23979</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23981</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23984</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23985</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23987</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23988</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23990</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23991</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23992</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23993</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23994</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23995</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23996</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23997</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23998</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>23999</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24000</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24001</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24002</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24003</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24004</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24005</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24006</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24007</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24010</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24011</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24013</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24014</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24015</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24017</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24018</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24020</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24021</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24022</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24023</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24024</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24025</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24027</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24030</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24131</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24132</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24133</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24134</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24135</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24142</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24144</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24147</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24148</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24149</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24150</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24151</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24152</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24155</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24156</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24157</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24158</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24159</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24160</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>24161</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25015</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25016</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25017</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25018</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25019</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25020</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25021</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25022</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25023</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25024</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25025</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25026</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25027</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25028</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25029</id>
+    <keyCodes/>
+  </command>
+
+  <command>
+    <id>25030</id>
+    <keyCodes/>
+  </command>
+
+</UserHotkeys>

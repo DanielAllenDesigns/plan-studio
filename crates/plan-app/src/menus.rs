@@ -91,7 +91,26 @@ fn live(
 
 fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     live(ui, "New Plan", "\u{2318}N", false, Action::FileNew, out);
-    inert(ui, &["New Layout", "Templates>", "-"]);
+    inert(ui, &["New Layout"]);
+    ui.menu_button("Templates", |ui| {
+        live(
+            ui,
+            "Save Current Defaults as My Template\u{2026}",
+            "",
+            false,
+            Action::SaveTemplate,
+            out,
+        );
+        live(
+            ui,
+            "Reset to Chief X18 Template",
+            "",
+            false,
+            Action::ResetTemplate,
+            out,
+        );
+    });
+    inert(ui, &["-"]);
     live(
         ui,
         "Open Plan\u{2026}",
@@ -177,7 +196,19 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "Find/Replace Text\u{2026}",
             "Replace Fonts\u{2026}",
             "-",
-            "Default Settings\u{2026}",
+        ],
+    );
+    live(
+        ui,
+        "Default Settings\u{2026}",
+        "",
+        false,
+        Action::DefaultSettings,
+        out,
+    );
+    inert(
+        ui,
+        &[
             "Reset to Defaults\u{2026}",
             "-",
             "AutoFill>",

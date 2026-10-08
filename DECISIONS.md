@@ -7,3 +7,10 @@ answers; each item notes the assumption currently built into the code.
 |---|---|---|---|
 | 1 | License stays MIT, or switch to Apache-2.0 / GPL for stronger copyleft? | MIT | 2026-10-07 |
 | 2 | App name: "Plan Studio" is a working title. Keep it, or pick a brand name? | Plan Studio | 2026-10-07 |
+
+## Queued work (not decisions, just the running order)
+
+1. Hotkeys: bind Chief's full hotkey table (all chords) plus Daniel's custom
+   hotkeys from his Chief data folder; add Tools ▸ Customize Hotkeys dialog.
+2. Round 2 editing engine from docs/parity/select-and-edit.md and walls.md.
+3. 3D view integration (plan-view3d) with Chief's camera tools.

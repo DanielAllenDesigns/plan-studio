@@ -3,13 +3,12 @@
 //! The canvas default is a low-glare warm gray so the main drawing area is
 //! comfortable for people who are sensitive to light and brightness.
 
-use eframe::egui::{self, Color32};
+use eframe::egui::{self, Color32, Stroke};
 use std::path::PathBuf;
 
 /// Panel gray used by the dark Chief-like chrome (before brightness scaling).
 const PANEL_GRAY: Color32 = Color32::from_rgb(0x3A, 0x3A, 0x3A);
 const HOVER_GRAY: Color32 = Color32::from_rgb(0x4A, 0x4A, 0x4A);
-const ACTIVE_GRAY: Color32 = Color32::from_rgb(0x5A, 0x5A, 0x5A);
 
 pub const BRIGHTNESS_MIN: f32 = 0.6;
 pub const BRIGHTNESS_MAX: f32 = 1.0;
@@ -230,7 +229,19 @@ pub fn scale(c: Color32, b: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(m(c.r()), m(c.g()), m(c.b()), c.a())
 }
 
-/// Dark, Chief-like chrome with panel fills and text scaled by `brightness`.
+/// UI text: near-white for readability (light-sensitive, low-vision friendly).
+pub const UI_TEXT: Color32 = Color32::from_rgb(0xF2, 0xF2, 0xF2);
+/// Widget outlines.
+pub const UI_OUTLINE: Color32 = Color32::from_rgb(0x6A, 0x6A, 0x6A);
+/// Selected / active highlight (text on it is white).
+pub const UI_ACCENT: Color32 = Color32::from_rgb(0x4D, 0x8E, 0xDC);
+/// egui grays disabled and weak text by averaging it with this color. With
+/// `UI_TEXT` the result is #B9 or lighter, so disabled text stays readable.
+const UI_FADE_TARGET: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
+
+/// Dark, Chief-like chrome with panel fills and text scaled by `brightness`
+/// (1.0 gives exactly the colors above; lower values dim proportionally).
+/// Text is 15 px body / 18 px headings.
 pub fn apply_chrome(ctx: &egui::Context, brightness: f32) {
     let b = brightness.clamp(BRIGHTNESS_MIN, BRIGHTNESS_MAX);
     let mut v = egui::Visuals::dark();
@@ -238,14 +249,20 @@ pub fn apply_chrome(ctx: &egui::Context, brightness: f32) {
     v.window_fill = scale(PANEL_GRAY, b);
     v.extreme_bg_color = scale(v.extreme_bg_color, b);
     v.faint_bg_color = scale(v.faint_bg_color, b);
+    v.override_text_color = Some(scale(UI_TEXT, b));
+    v.selection.bg_fill = scale(UI_ACCENT, b);
+    v.selection.stroke = Stroke::new(1.0_f32, scale(Color32::WHITE, b));
+    v.window_stroke = Stroke::new(1.0_f32, scale(UI_OUTLINE, b));
     for (w, c) in [
         (&mut v.widgets.inactive, PANEL_GRAY),
         (&mut v.widgets.hovered, HOVER_GRAY),
-        (&mut v.widgets.active, ACTIVE_GRAY),
+        (&mut v.widgets.active, UI_ACCENT),
     ] {
         w.bg_fill = scale(c, b);
         w.weak_bg_fill = scale(c, b);
     }
+    // Disabled and weak text is the text color averaged with this fill.
+    v.widgets.noninteractive.weak_bg_fill = scale(UI_FADE_TARGET, b);
     let w = &mut v.widgets;
     for state in [
         &mut w.noninteractive,
@@ -254,9 +271,25 @@ pub fn apply_chrome(ctx: &egui::Context, brightness: f32) {
         &mut w.active,
         &mut w.open,
     ] {
-        state.fg_stroke.color = scale(state.fg_stroke.color, b);
+        state.fg_stroke.color = scale(UI_TEXT, b);
+        state.bg_stroke.color = scale(UI_OUTLINE, b);
     }
+    w.active.fg_stroke.color = scale(Color32::WHITE, b);
     ctx.set_visuals(v);
+    ctx.style_mut(|s| {
+        use egui::TextStyle::{Body, Button, Heading, Monospace, Small};
+        for (style, size) in [
+            (Small, 11.0),
+            (Body, 15.0),
+            (Button, 15.0),
+            (Monospace, 15.0),
+            (Heading, 18.0),
+        ] {
+            if let Some(f) = s.text_styles.get_mut(&style) {
+                f.size = size;
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -285,5 +318,24 @@ mod tests {
         for t in CanvasTheme::ALL {
             assert_eq!(CanvasTheme::from_key(t.key()), Some(t));
         }
+    }
+
+    #[test]
+    fn chrome_text_is_near_white_and_disabled_text_stays_readable() {
+        let ctx = egui::Context::default();
+        apply_chrome(&ctx, 1.0);
+        let style = ctx.style();
+        let v = &style.visuals;
+        assert_eq!(v.text_color(), UI_TEXT);
+        let disabled = v.gray_out(v.text_color());
+        assert!(disabled.r() >= 0xB8 && disabled.g() >= 0xB8 && disabled.b() >= 0xB8);
+        assert_eq!(v.panel_fill, PANEL_GRAY);
+        assert_eq!(v.widgets.noninteractive.bg_stroke.color, UI_OUTLINE);
+        assert_eq!(v.selection.bg_fill, UI_ACCENT);
+        assert_eq!(style.text_styles[&egui::TextStyle::Body].size, 15.0);
+        assert_eq!(style.text_styles[&egui::TextStyle::Heading].size, 18.0);
+        // Dimming is proportional.
+        apply_chrome(&ctx, 0.6);
+        assert!(ctx.style().visuals.text_color().r() < 0xF2);
     }
 }

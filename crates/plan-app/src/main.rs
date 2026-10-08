@@ -2,19 +2,24 @@
 //!
 //! World units are inches with Y up; the camera flips Y when mapping to screen.
 
+mod dialogs;
 mod icons;
 mod menus;
+mod plan_defaults;
 mod theme;
 mod toolbar;
 
+use dialogs::{
+    DefaultsDialog, DefaultsEntry, DefaultsOutcome, OpeningDialog, OpeningExtras, OpeningTarget,
+    Outcome, WallDialog, WallExtras, WallTarget,
+};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
-use plan_core::units::fmt_ft_in;
 use plan_core::{
-    detect_rooms, Floor, Id, OpeningKind, Project, Room, Wall, WallKind, DEFAULT_CEILING_HEIGHT,
-    DEFAULT_EXTERIOR_THICKNESS, DEFAULT_INTERIOR_THICKNESS,
+    detect_rooms, Floor, Id, Opening, OpeningKind, PlanDefaults, Project, Room, Wall, WallKind,
+    DEFAULT_WALL_LAYER,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use theme::{AppSettings, CanvasTheme, Palette};
 use toolbar::{Action, BarState, Dock, Hotkeys, Tool, Toolbars, ViewFlag};
@@ -75,6 +80,19 @@ impl Camera {
     }
 }
 
+/// The specification dialog that is open, if any (one at a time).
+enum ActiveDialog {
+    Wall(Box<WallDialog>),
+    Opening(Box<OpeningDialog>),
+}
+
+/// Settings the model has no fields for yet, kept for the session only.
+#[derive(Default)]
+struct SessionExtras {
+    walls: HashMap<Id, WallExtras>,
+    openings: HashMap<Id, OpeningExtras>,
+}
+
 struct PlanApp {
     project: Project,
     floor: usize,
@@ -93,11 +111,9 @@ struct PlanApp {
     /// The brightness the egui visuals were last built for.
     applied_brightness: f32,
     show_about: bool,
-    exterior_thickness: f64,
-    interior_thickness: f64,
-    wall_height: f64,
-    grid_in: f64,
-    snap_in: f64,
+    /// Wall types, wall/door/window defaults, grid, dimension format, ...
+    /// (see `plan_defaults.rs` for where they are loaded from).
+    defaults: PlanDefaults,
     selected: Option<Id>,
     pending_start: Option<Point>,
     rooms: Vec<Room>,
@@ -106,12 +122,15 @@ struct PlanApp {
     snapped: Option<Point>,
     hover_wall: Option<Id>,
     message: String,
+    dialog: Option<ActiveDialog>,
+    defaults_dialog: Option<DefaultsDialog>,
+    extras: SessionExtras,
 }
 
 impl PlanApp {
-    fn new(settings: AppSettings) -> Self {
+    fn new(settings: AppSettings, defaults: PlanDefaults, note: Option<String>) -> Self {
         Self {
-            project: Project::new("Untitled"),
+            project: Project::from_defaults("Untitled", &defaults),
             floor: 0,
             path: None,
             camera: Camera::default_view(),
@@ -126,11 +145,7 @@ impl PlanApp {
             saved_settings: settings,
             applied_brightness: settings.brightness,
             show_about: false,
-            exterior_thickness: DEFAULT_EXTERIOR_THICKNESS,
-            interior_thickness: DEFAULT_INTERIOR_THICKNESS,
-            wall_height: DEFAULT_CEILING_HEIGHT,
-            grid_in: 12.0,
-            snap_in: 1.0,
+            defaults,
             selected: None,
             pending_start: None,
             rooms: Vec::new(),
@@ -138,7 +153,10 @@ impl PlanApp {
             cursor_world: None,
             snapped: None,
             hover_wall: None,
-            message: String::new(),
+            message: note.unwrap_or_default(),
+            dialog: None,
+            defaults_dialog: None,
+            extras: SessionExtras::default(),
         }
     }
 
@@ -225,6 +243,8 @@ impl PlanApp {
             Action::FileOpen => self.open_project(),
             Action::FileSave => self.save_project(),
             Action::FileSaveAs => self.save_project_as(),
+            Action::SaveTemplate => self.save_template(),
+            Action::ResetTemplate => self.reset_template(),
             Action::ZoomIn => self.zoom_about_center(ZOOM_STEP),
             Action::ZoomOut => self.zoom_about_center(1.0 / ZOOM_STEP),
             Action::UndoZoom => {
@@ -255,6 +275,11 @@ impl PlanApp {
             Action::Quit => {}
             Action::SetTheme(t) => self.settings.theme = t,
             Action::ShowAbout => self.show_about = true,
+            Action::DefaultSettings => {
+                if self.defaults_dialog.is_none() {
+                    self.defaults_dialog = Some(DefaultsDialog::new());
+                }
+            }
             Action::NotImplemented(name) => {
                 self.message = format!("Not yet implemented: {name}");
             }
@@ -284,7 +309,7 @@ impl PlanApp {
     // ----- file operations -----
 
     fn new_project(&mut self) {
-        self.project = Project::new("Untitled");
+        self.project = Project::from_defaults("Untitled", &self.defaults);
         self.path = None;
         self.reset_view_state();
         self.message = "New project".into();
@@ -349,6 +374,39 @@ impl PlanApp {
         }
     }
 
+    /// File > Templates > Save Current Defaults as My Template.
+    fn save_template(&mut self) {
+        self.message = match plan_defaults::save_user(&self.defaults) {
+            Ok(path) => format!("Saved your template to {}", path.display()),
+            Err(e) => format!("Could not save the template: {e}"),
+        };
+    }
+
+    /// File > Templates > Reset to Chief X18 Template.
+    fn reset_template(&mut self) {
+        self.defaults = plan_defaults::embedded();
+        // Forget the per-session edits of the default dialogs so they show
+        // the template's values again.
+        for key in [
+            WallTarget::DefaultExterior.key(),
+            WallTarget::DefaultInterior.key(),
+            WallTarget::DefaultFoundation.key(),
+        ] {
+            self.extras.walls.remove(&key);
+        }
+        for target in [
+            OpeningTarget::DefaultDoor,
+            OpeningTarget::DefaultExteriorDoor,
+            OpeningTarget::DefaultWindow,
+        ] {
+            self.extras.openings.remove(&target.key());
+        }
+        self.message = match plan_defaults::clear_user() {
+            Ok(()) => "Reset to the Chief X18 template".into(),
+            Err(e) => format!("Reset, but could not remove your saved template: {e}"),
+        };
+    }
+
     // ----- model edits -----
 
     fn delete_selected(&mut self) {
@@ -360,9 +418,18 @@ impl PlanApp {
 
     fn current_thickness(&self) -> f64 {
         match self.wall_kind() {
-            WallKind::Exterior => self.exterior_thickness,
-            WallKind::Interior => self.interior_thickness,
+            WallKind::Exterior => self.defaults.exterior_thickness(),
+            WallKind::Interior => self.defaults.interior_thickness(),
         }
+    }
+
+    fn default_height(&self, kind: WallKind) -> f64 {
+        self.defaults.walls_for(kind).height
+    }
+
+    /// Dimension text in the active dimension defaults' format.
+    fn fmt_dim(&self, inches: f64) -> String {
+        self.defaults.dim_format().fmt_len(inches)
     }
 
     /// Nearest wall whose centerline is within the pick radius of `p`.
@@ -392,15 +459,21 @@ impl PlanApp {
         if let Some(e) = endpoint {
             return e;
         }
-        let grid = snap_to_grid(raw, self.snap_in);
+        let snap = self.defaults.grid.snap;
+        let grid = snap_to_grid(raw, snap);
         match self.pending_start {
-            Some(start) if !alt => angle_snap(start, raw, self.snap_in).unwrap_or(grid),
+            Some(start) if !alt => {
+                angle_snap(start, raw, snap, self.defaults.grid.angle_snap_deg).unwrap_or(grid)
+            }
             _ => grid,
         }
     }
 
     /// Applies hotkeys (see `toolbar::BINDINGS`) plus Esc and Delete.
     fn handle_keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if self.dialog.is_some() || self.defaults_dialog.is_some() {
+            return;
+        }
         actions.extend(self.hotkeys.poll(ctx));
         if ctx.wants_keyboard_input() {
             return;
@@ -525,23 +598,37 @@ impl PlanApp {
                 ui.heading("Properties");
                 ui.separator();
                 ui.label("Default walls");
-                inch_drag(
+                let d = &mut self.defaults;
+                wall_type_combo(
                     ui,
-                    "Exterior thickness",
-                    &mut self.exterior_thickness,
-                    1.0..=24.0,
+                    "Exterior wall",
+                    &mut d.exterior_wall.wall_type,
+                    &d.wall_types,
+                    WallKind::Exterior,
                 );
                 inch_drag(
                     ui,
-                    "Interior thickness",
-                    &mut self.interior_thickness,
-                    1.0..=24.0,
+                    "Exterior height",
+                    &mut d.exterior_wall.height,
+                    24.0..=240.0,
                 );
-                inch_drag(ui, "Wall height", &mut self.wall_height, 24.0..=240.0);
+                wall_type_combo(
+                    ui,
+                    "Interior wall",
+                    &mut d.interior_wall.wall_type,
+                    &d.wall_types,
+                    WallKind::Interior,
+                );
+                inch_drag(
+                    ui,
+                    "Interior height",
+                    &mut d.interior_wall.height,
+                    24.0..=240.0,
+                );
                 ui.separator();
                 ui.label("Grid");
-                inch_drag(ui, "Grid spacing", &mut self.grid_in, 1.0..=240.0);
-                inch_drag(ui, "Snap spacing", &mut self.snap_in, 0.25..=48.0);
+                inch_drag(ui, "Grid spacing", &mut d.grid.spacing, 1.0..=240.0);
+                inch_drag(ui, "Snap spacing", &mut d.grid.snap, 0.25..=48.0);
                 ui.separator();
                 ui.label("Display");
                 ui.horizontal(|ui| {
@@ -581,6 +668,7 @@ impl PlanApp {
             return;
         };
         let (len, kind, mut thickness) = (wall.length(), wall.kind, wall.thickness);
+        let fmt = self.defaults.dim_format();
         let openings: Vec<(Id, OpeningKind, f64, f64)> = self
             .floor()
             .openings_on(id)
@@ -588,7 +676,7 @@ impl PlanApp {
             .collect();
 
         ui.label("Selected wall");
-        ui.label(format!("Length: {}", fmt_ft_in(len)));
+        ui.label(format!("Length: {}", fmt.fmt_len(len)));
         ui.label(format!(
             "Kind: {}",
             if kind == WallKind::Exterior {
@@ -604,8 +692,18 @@ impl PlanApp {
             }
             self.rooms_dirty = true;
         }
-        if ui.button("Delete wall").clicked() {
-            self.delete_selected();
+        let mut open_wall_spec = false;
+        let mut open_opening_spec = None;
+        ui.horizontal(|ui| {
+            open_wall_spec = ui.button("Open Specification\u{2026}").clicked();
+            if ui.button("Delete wall").clicked() {
+                self.delete_selected();
+            }
+        });
+        if open_wall_spec {
+            self.open_wall_dialog(id);
+        }
+        if self.selected != Some(id) {
             return;
         }
         ui.label("Openings");
@@ -622,9 +720,16 @@ impl PlanApp {
                 };
                 ui.label(format!(
                     "{name} {} @ {}",
-                    fmt_ft_in(width),
-                    fmt_ft_in(center)
+                    fmt.fmt_len(width),
+                    fmt.fmt_len(center)
                 ));
+                if ui
+                    .small_button("\u{2026}")
+                    .on_hover_text("Open Specification")
+                    .clicked()
+                {
+                    open_opening_spec = Some(oid);
+                }
                 if ui.small_button("✕").clicked() {
                     remove = Some(oid);
                 }
@@ -632,6 +737,9 @@ impl PlanApp {
         }
         if let Some(oid) = remove {
             self.project.remove_opening(self.floor, oid);
+        }
+        if let Some(oid) = open_opening_spec {
+            self.open_opening_dialog(oid);
         }
     }
 
@@ -643,9 +751,11 @@ impl PlanApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     match self.cursor_world {
-                        Some(p) => {
-                            ui.monospace(format!("X: {}  Y: {}", fmt_ft_in(p.x), fmt_ft_in(p.y)))
-                        }
+                        Some(p) => ui.monospace(format!(
+                            "X: {}  Y: {}",
+                            self.fmt_dim(p.x),
+                            self.fmt_dim(p.y)
+                        )),
                         None => ui.monospace("X: --  Y: --"),
                     };
                     if let Some(prefix) = self.hotkeys.pending_label() {
@@ -654,7 +764,7 @@ impl PlanApp {
                     }
                     if let (Some(start), Some(end)) = (self.pending_start, self.snapped) {
                         ui.separator();
-                        ui.label(format!("Length: {}", fmt_ft_in(start.dist(end))));
+                        ui.label(format!("Length: {}", self.fmt_dim(start.dist(end))));
                     }
                     ui.separator();
                     ui.label(self.tool_hint());
@@ -694,13 +804,20 @@ impl PlanApp {
             }
         }
 
-        if resp.clicked_by(egui::PointerButton::Primary) {
-            if let Some(raw) = new_cursor {
-                self.handle_click(raw);
+        // Clicks are ignored while a specification dialog is open.
+        if self.dialog.is_none() {
+            if resp.double_clicked_by(egui::PointerButton::Primary) && self.tool == Tool::Select {
+                if let Some(raw) = new_cursor {
+                    self.handle_double_click(raw);
+                }
+            } else if resp.clicked_by(egui::PointerButton::Primary) {
+                if let Some(raw) = new_cursor {
+                    self.handle_click(raw);
+                }
             }
-        }
-        if resp.clicked_by(egui::PointerButton::Secondary) {
-            self.pending_start = None;
+            if resp.clicked_by(egui::PointerButton::Secondary) {
+                self.pending_start = None;
+            }
         }
 
         self.draw(&painter, rect);
@@ -722,6 +839,246 @@ impl PlanApp {
         }
     }
 
+    // ----- specification dialogs -----
+
+    /// The opening under `p`: inside its extent along the wall and the wall
+    /// thickness (plus a couple of pixels of slop).
+    fn hit_opening(&self, p: Point) -> Option<Id> {
+        let slop = PICK_RADIUS_PX * 0.5 / self.camera.px_per_in;
+        let floor = self.floor();
+        for w in &floor.walls {
+            let perp = p.sub(w.start).dot(w.normal()).abs();
+            if perp > w.thickness * 0.5 + slop {
+                continue;
+            }
+            let (t, _) = project_on_segment(p, w.start, w.end);
+            let along = t * w.length();
+            if let Some(o) = floor
+                .openings_on(w.id)
+                .find(|o| along >= o.start_offset() && along <= o.end_offset())
+            {
+                return Some(o.id);
+            }
+        }
+        None
+    }
+
+    fn handle_double_click(&mut self, raw: Point) {
+        if let Some(oid) = self.hit_opening(raw) {
+            self.open_opening_dialog(oid);
+        } else if let Some(wid) = self.nearest_wall(raw) {
+            self.selected = Some(wid);
+            self.open_wall_dialog(wid);
+        }
+    }
+
+    fn open_wall_dialog(&mut self, id: Id) {
+        let Some(wall) = self.floor().wall(id).cloned() else {
+            return;
+        };
+        let openings: Vec<Opening> = self.floor().openings_on(id).cloned().collect();
+        let extras = self.extras.walls.get(&id).cloned().unwrap_or_default();
+        let default_height = self.default_height(wall.kind);
+        self.dialog = Some(ActiveDialog::Wall(Box::new(WallDialog::new(
+            WallTarget::Wall(id),
+            wall,
+            openings,
+            extras,
+            default_height,
+            self.defaults.wall_types.clone(),
+        ))));
+    }
+
+    fn open_opening_dialog(&mut self, id: Id) {
+        let floor = self.floor();
+        let Some(opening) = floor.openings.iter().find(|o| o.id == id).cloned() else {
+            return;
+        };
+        let Some(wall) = floor.wall(opening.wall_id).cloned() else {
+            return;
+        };
+        let others: Vec<Opening> = floor
+            .openings_on(wall.id)
+            .filter(|o| o.id != id)
+            .cloned()
+            .collect();
+        self.selected = Some(wall.id);
+        let extras = self.extras.openings.get(&id).cloned().unwrap_or_default();
+        self.dialog = Some(ActiveDialog::Opening(Box::new(OpeningDialog::for_opening(
+            opening, &wall, others, extras,
+        ))));
+    }
+
+    /// The extras a default door or window dialog starts from: the ones kept
+    /// this session, else the values in the plan defaults.
+    fn default_opening_extras(&self, target: OpeningTarget) -> OpeningExtras {
+        if let Some(e) = self.extras.openings.get(&target.key()) {
+            return e.clone();
+        }
+        match target {
+            OpeningTarget::DefaultWindow => {
+                OpeningExtras::from_window_defaults(&self.defaults.window)
+            }
+            OpeningTarget::DefaultExteriorDoor => {
+                OpeningExtras::from_door_defaults(&self.defaults.exterior_door, true)
+            }
+            _ => OpeningExtras::from_door_defaults(&self.defaults.interior_door, false),
+        }
+    }
+
+    fn open_defaults_entry(&mut self, entry: DefaultsEntry) {
+        let wall_dialog = |target: WallTarget, app: &Self| {
+            let w = match target {
+                WallTarget::DefaultInterior => &app.defaults.interior_wall,
+                WallTarget::DefaultFoundation => &app.defaults.foundation_wall,
+                _ => &app.defaults.exterior_wall,
+            };
+            let thickness = match target {
+                WallTarget::DefaultInterior => app.defaults.interior_thickness(),
+                WallTarget::DefaultFoundation => app.defaults.foundation_thickness(),
+                _ => app.defaults.exterior_thickness(),
+            };
+            let extras = app.extras.walls.get(&target.key()).cloned();
+            ActiveDialog::Wall(Box::new(WallDialog::for_default(
+                target,
+                thickness,
+                w.height,
+                extras.unwrap_or_default(),
+                app.defaults.wall_types.clone(),
+                &w.wall_type,
+            )))
+        };
+        let opening_dialog = |target: OpeningTarget, template: Opening, app: &Self| {
+            ActiveDialog::Opening(Box::new(OpeningDialog::for_default(
+                target,
+                template,
+                app.default_opening_extras(target),
+            )))
+        };
+        self.dialog = match entry {
+            DefaultsEntry::ExteriorWall => Some(wall_dialog(WallTarget::DefaultExterior, self)),
+            DefaultsEntry::InteriorWall => Some(wall_dialog(WallTarget::DefaultInterior, self)),
+            DefaultsEntry::FoundationWall => Some(wall_dialog(WallTarget::DefaultFoundation, self)),
+            DefaultsEntry::InteriorDoor => Some(opening_dialog(
+                OpeningTarget::DefaultDoor,
+                plan_defaults::door_template(&self.defaults, false),
+                self,
+            )),
+            DefaultsEntry::ExteriorDoor => Some(opening_dialog(
+                OpeningTarget::DefaultExteriorDoor,
+                plan_defaults::door_template(&self.defaults, true),
+                self,
+            )),
+            DefaultsEntry::Window => Some(opening_dialog(
+                OpeningTarget::DefaultWindow,
+                plan_defaults::window_template(&self.defaults),
+                self,
+            )),
+            DefaultsEntry::Dimensions | DefaultsEntry::RoomTypes => {
+                self.message = "Coming in a later phase".into();
+                None
+            }
+        };
+    }
+
+    /// Shows the open dialogs and applies an OK.
+    fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(mut dialog) = self.dialog.take() {
+            let outcome = match &mut dialog {
+                ActiveDialog::Wall(d) => d.show(ctx),
+                ActiveDialog::Opening(d) => d.show(ctx),
+            };
+            match outcome {
+                Outcome::Open => self.dialog = Some(dialog),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    match &dialog {
+                        ActiveDialog::Wall(d) => self.apply_wall_dialog(d),
+                        ActiveDialog::Opening(d) => self.apply_opening_dialog(d),
+                    }
+                    self.rooms_dirty = true;
+                }
+            }
+        }
+        if let Some(mut defaults) = self.defaults_dialog.take() {
+            match defaults.show(ctx, self.dialog.is_none()) {
+                DefaultsOutcome::Open => {}
+                DefaultsOutcome::Edit(entry) => self.open_defaults_entry(entry),
+                DefaultsOutcome::Close => return,
+            }
+            self.defaults_dialog = Some(defaults);
+        }
+    }
+
+    fn apply_wall_dialog(&mut self, d: &WallDialog) {
+        let draft = d.draft();
+        match d.target() {
+            WallTarget::Wall(id) => {
+                let floor = &mut self.project.floors[self.floor];
+                if let Some(w) = floor.wall_mut(id) {
+                    *w = draft.clone();
+                }
+                for adjusted in d.adjusted_openings() {
+                    if let Some(o) = floor.openings.iter_mut().find(|o| o.id == adjusted.id) {
+                        o.center_offset = adjusted.center_offset;
+                    }
+                }
+            }
+            WallTarget::DefaultExterior
+            | WallTarget::DefaultInterior
+            | WallTarget::DefaultFoundation => {
+                let kind = if d.target() == WallTarget::DefaultInterior {
+                    WallKind::Interior
+                } else {
+                    WallKind::Exterior
+                };
+                let name = plan_defaults::resolve_wall_type(
+                    &mut self.defaults,
+                    kind,
+                    d.picked_type(),
+                    draft.thickness,
+                );
+                let w = match d.target() {
+                    WallTarget::DefaultInterior => &mut self.defaults.interior_wall,
+                    WallTarget::DefaultFoundation => &mut self.defaults.foundation_wall,
+                    _ => &mut self.defaults.exterior_wall,
+                };
+                w.wall_type = name;
+                w.height = draft.height;
+            }
+        }
+        self.extras
+            .walls
+            .insert(d.target().key(), d.extras().clone());
+    }
+
+    fn apply_opening_dialog(&mut self, d: &OpeningDialog) {
+        let draft = d.draft().clone();
+        match d.target() {
+            OpeningTarget::Placed(id) => {
+                let floor = &mut self.project.floors[self.floor];
+                if let Some(o) = floor.openings.iter_mut().find(|o| o.id == id) {
+                    *o = draft;
+                }
+            }
+            OpeningTarget::DefaultDoor => {
+                let base = &self.defaults.interior_door;
+                self.defaults.interior_door = d.extras().to_door_defaults(&draft, base, false);
+            }
+            OpeningTarget::DefaultExteriorDoor => {
+                let base = &self.defaults.exterior_door;
+                self.defaults.exterior_door = d.extras().to_door_defaults(&draft, base, true);
+            }
+            OpeningTarget::DefaultWindow => {
+                let base = &self.defaults.window;
+                self.defaults.window = d.extras().to_window_defaults(&draft, base);
+            }
+        }
+        self.extras
+            .openings
+            .insert(d.target().key(), d.extras().clone());
+    }
+
     fn handle_click(&mut self, raw: Point) {
         match self.tool {
             Tool::Select => self.selected = self.nearest_wall(raw),
@@ -736,7 +1093,7 @@ impl PlanApp {
                             start,
                             p,
                             self.current_thickness(),
-                            self.wall_height,
+                            self.default_height(kind),
                             kind,
                         );
                         self.selected = Some(id);
@@ -760,8 +1117,33 @@ impl PlanApp {
                 } else {
                     OpeningKind::Window
                 };
-                match self.project.add_opening(self.floor, wid, offset, kind) {
-                    Some(_) => {
+                // Doors in exterior walls use the exterior door defaults.
+                let (target, template) = if kind == OpeningKind::Window {
+                    (
+                        OpeningTarget::DefaultWindow,
+                        plan_defaults::window_template(&self.defaults),
+                    )
+                } else if wall.kind == WallKind::Exterior {
+                    (
+                        OpeningTarget::DefaultExteriorDoor,
+                        plan_defaults::door_template(&self.defaults, true),
+                    )
+                } else {
+                    (
+                        OpeningTarget::DefaultDoor,
+                        plan_defaults::door_template(&self.defaults, false),
+                    )
+                };
+                let extras = self.default_opening_extras(target);
+                match dialogs::place_from_template(
+                    &mut self.project,
+                    self.floor,
+                    wid,
+                    offset,
+                    &template,
+                ) {
+                    Some(id) => {
+                        self.extras.openings.insert(id, extras);
                         self.selected = Some(wid);
                         self.message.clear();
                     }
@@ -817,7 +1199,7 @@ impl PlanApp {
 
     fn draw_grid(&self, painter: &egui::Painter, rect: Rect, pal: &Palette) {
         let cam = self.camera;
-        let mut spacing = self.grid_in.max(0.25);
+        let mut spacing = self.defaults.grid.spacing.max(0.25);
         while spacing * cam.px_per_in < 8.0 {
             spacing *= 5.0;
         }
@@ -983,8 +1365,9 @@ impl PlanApp {
                     start,
                     end: snapped,
                     thickness: self.current_thickness(),
-                    height: self.wall_height,
+                    height: self.default_height(self.wall_kind()),
                     kind: self.wall_kind(),
+                    layer: DEFAULT_WALL_LAYER.to_string(),
                 };
                 painter.add(Shape::convex_polygon(
                     self.quad(rect, ghost.footprint()),
@@ -998,7 +1381,7 @@ impl PlanApp {
                         self.camera.world_to_screen(rect, mid)
                             + Vec2::new(0.0, -8.0) * ghost.normal().y.signum() as f32,
                         Align2::CENTER_CENTER,
-                        fmt_ft_in(len),
+                        self.fmt_dim(len),
                         FontId::proportional(13.0),
                         pal.dimension_text,
                     );
@@ -1074,11 +1457,40 @@ impl eframe::App for PlanApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| self.canvas(ctx, ui));
         self.about_window(ctx);
+        self.dialogs(ctx);
         self.sync_settings(ctx);
         if self.rooms_dirty {
             ctx.request_repaint();
         }
     }
+}
+
+/// A combo box of the wall types of `kind`, with the thickness of each.
+fn wall_type_combo(
+    ui: &mut egui::Ui,
+    label: &str,
+    current: &mut String,
+    types: &[plan_core::WallTypeDef],
+    kind: WallKind,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let shown = types
+            .iter()
+            .find(|t| t.name == *current)
+            .map_or_else(|| current.clone(), type_label);
+        egui::ComboBox::from_id_salt(("default_wall_type", label))
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                for t in types.iter().filter(|t| t.kind == kind) {
+                    ui.selectable_value(current, t.name.clone(), type_label(t));
+                }
+            });
+    });
+}
+
+fn type_label(t: &plan_core::WallTypeDef) -> String {
+    format!("{} ({})", t.name, dialogs::fmt_short(t.thickness()))
 }
 
 /// DragValue row in inches; returns true if the value changed.
@@ -1108,14 +1520,14 @@ fn snap_to_grid(p: Point, step: f64) -> Point {
     Point::new((p.x / step).round() * step, (p.y / step).round() * step)
 }
 
-/// Snap `p` to a 15 degree angle from `start`, then re-snap the length to `step`.
-fn angle_snap(start: Point, p: Point, step: f64) -> Option<Point> {
+/// Snap `p` to a multiple of `increment_deg` from `start`, then re-snap the length to `step`.
+fn angle_snap(start: Point, p: Point, step: f64, increment_deg: f64) -> Option<Point> {
     let v = p.sub(start);
     let len = v.length();
     if len < 1e-6 {
         return None;
     }
-    let inc = 15f64.to_radians();
+    let inc = increment_deg.max(1.0).to_radians();
     let a = (v.angle() / inc).round() * inc;
     let len = if step > 0.0 {
         (len / step).round() * step
@@ -1139,7 +1551,71 @@ fn main() -> eframe::Result {
             icons::install(&cc.egui_ctx);
             let settings = AppSettings::load();
             theme::apply_chrome(&cc.egui_ctx, settings.brightness);
-            Ok(Box::new(PlanApp::new(settings)))
+            let (defaults, note) = plan_defaults::load();
+            Ok(Box::new(PlanApp::new(settings, defaults, note)))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> PlanApp {
+        PlanApp::new(AppSettings::default(), plan_defaults::embedded(), None)
+    }
+
+    #[test]
+    fn app_starts_from_the_chief_template() {
+        let mut a = app();
+        assert_eq!(a.project.floors[0].ceiling_height, 109.125);
+        a.tool = Tool::Wall {
+            kind: WallKind::Exterior,
+        };
+        assert_eq!(a.current_thickness(), 7.625);
+        a.tool = Tool::Wall {
+            kind: WallKind::Interior,
+        };
+        assert_eq!(a.current_thickness(), 4.5);
+        assert_eq!(a.default_height(WallKind::Exterior), 109.125);
+        assert_eq!(a.defaults.grid.snap, 1.0);
+        // Dimension text uses the 1/8" smallest fraction from the defaults.
+        assert_eq!(a.fmt_dim(10.1875), "0'-10 1/4\"");
+    }
+
+    #[test]
+    fn new_project_uses_the_defaults() {
+        let mut a = app();
+        a.defaults.rooms.ceiling_height = 120.0;
+        a.new_project();
+        assert_eq!(a.project.floors[0].ceiling_height, 120.0);
+    }
+
+    #[test]
+    fn doors_in_exterior_walls_use_the_exterior_door_defaults() {
+        let mut a = app();
+        let w = a.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            7.625,
+            109.125,
+            WallKind::Exterior,
+        );
+        a.tool = Tool::Door;
+        a.cursor_world = Some(Point::new(120.0, 0.0));
+        a.handle_click(Point::new(120.0, 0.0));
+        let o = a.project.floors[0].openings_on(w).next().unwrap();
+        assert_eq!((o.width, o.height), (36.0, 96.0));
+        // Windows come from the window defaults, with their extras recorded.
+        a.tool = Tool::Window;
+        a.handle_click(Point::new(40.0, 0.0));
+        let win = a.project.floors[0]
+            .openings
+            .iter()
+            .find(|o| o.kind == OpeningKind::Window)
+            .unwrap();
+        assert_eq!((win.width, win.height, win.sill_height), (32.0, 72.0, 24.0));
+        assert!(a.extras.openings.contains_key(&win.id));
+    }
 }

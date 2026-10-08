@@ -10,7 +10,8 @@ Controls:
 - Tools: see Hotkeys below. Esc cancels a wall in progress, otherwise returns to Select.
 - View bar: Zoom In/Out, Undo Zoom, Fill Window, Pan Window (left-drag pans; Esc or Select returns), and display toggles. Crosshairs draws cursor crosshairs; Temporary Dimensions (on by default) shows the live length while drawing walls. The floor arrows in row 1 switch floors.
 - Wall tool: click to place points (continuous chain). Snaps to endpoints, the snap grid and 15 degree angles; hold Alt to skip angle snap. Esc or right-click ends the chain.
-- Door/Window: click on a wall. Select: click a wall; Delete/Backspace removes it.
+- Door/Window: click on a wall. New openings take their size from the Default Settings door/window templates. Select: click a wall; Delete/Backspace removes it.
+- Specification dialogs: double-click a wall (Wall Specification) or an opening (Door/Window Specification) with the Select tool, or use "Open Specification..." / the "..." button in the Properties panel. Canvas clicks and hotkeys are ignored while a dialog is open.
 - View: scroll or pinch to zoom at the cursor; middle- or right-drag to pan.
 - Files are `.psplan` JSON.
 
@@ -41,3 +42,26 @@ Active whenever no text field has focus. The whole table lives in `toolbar::BIND
 ## Themes and brightness
 
 The canvas has four themes, chosen in View > Canvas Theme or the Theme box in the Properties panel: Low Glare (default, a warm mid-gray with no pure whites, for light-sensitive users), Paper, Dark and High Contrast. View > UI Brightness (0.6 to 1.0) dims the panels, text and toolbar icons without touching the OS display. Both settings are saved to `~/.plan-studio/settings.json`.
+
+## Specification dialogs
+
+`dialogs.rs` is the Chief-style dialog frame (spec: `docs/chief-x18-dialogs.md`): a 150 px vertical tab list, the active tab's panel, a 220 px preview drawn with the painter, and Help / Cancel / OK along the bottom. Section headings are a label plus a rule. Length fields are text boxes that show feet-inches and parse as you type (red and OK blocked when the text does not parse); angles are degrees. The dialog edits a cloned draft: OK (or Enter) writes it back and marks rooms dirty, Cancel or Escape discards it. Tabs and controls the model cannot store yet are listed but disabled.
+
+- Wall Specification (`dialogs/wall.rs`): General (thickness, length, angle, lock Start/Center/End, options), Structure (default top height, wall height), Wall Types (the plan defaults' wall types, each with its layer stack drawn from the definition), Layer, Label. Changing the length moves the end point (Start lock), the start point (End lock) or both (Center lock); openings keep their place on the wall and OK is blocked if the wall becomes too short for them. The angle rotates about the start point; walls joined at the ends are not moved.
+- Door and Window Specification (`dialogs/opening.rs`): General (style/type, width, height, floor to top/bottom, position along the wall with "Center on wall", clamped like `Project::add_opening`), Options (door swing hinge side, egress, tempered glass), Casing, Jamb or Frame, Lites, Label, with an elevation sketch and a plan sketch.
+- Default Settings (Edit > Default Settings... or the toolbar button, `dialogs/defaults.rs`): a searchable tree. Exterior, Interior and Foundation Wall edit the three wall defaults (wall type and height; a custom thickness adds a `Custom-<n>` wall type); Interior Door, Exterior Door and Window edit the templates new openings are placed from; the other leaves say "Coming in a later phase".
+
+Wall and opening settings the model has no fields for (invisible, no room definition, no locate, door style, window type, lites, casing, jamb, label options) live in memory for the session only; those controls say so in a tooltip.
+
+## Templates and defaults
+
+Plan Studio starts the way Chief Architect starts from a template plan. The defaults live in `plan_core::PlanDefaults` (`crates/plan-core/src/defaults.rs`): wall types and the exterior/interior/foundation wall defaults, interior and exterior door, window and cabinet defaults, the 1/4" scale dimension defaults, room types, the layer set, text, grid and units. `PlanDefaults::chief_x18_daniel()` holds the values captured from Daniel's Chief X18 template (`docs/chief-x18-dialogs.md`); it ships as `assets/templates/chief-x18-daniel.json`, embedded in the binary (a unit test keeps the file and the code identical).
+
+- On startup the app loads `~/.plan-studio/defaults.json` if it exists, else the embedded template. A file that cannot be read is reported in the status bar and the template is used. Keys missing from the file fall back to the template's values.
+- File > New Plan creates `Project::from_defaults`: the template's ceiling height and layer set.
+- New walls take the exterior or interior wall type thickness and height. New doors take the interior door defaults, or the exterior door defaults when the host wall is an exterior wall; new windows take the window defaults. The Properties panel, the Default Settings dialog (Edit > Default Settings...) and the Wall Types tab edit these same values.
+- Grid spacing, snap and the angle snap come from the defaults. Dimension text (the live wall length, status bar coordinates, the Properties panel) is rounded to the dimension defaults' smallest fraction (1/8" in the Chief template).
+- File > Templates > Save Current Defaults as My Template... writes the current defaults to `~/.plan-studio/defaults.json`. File > Templates > Reset to Chief X18 Template restores the embedded values and removes that file.
+
+Not stored in the defaults yet: muntin width, label options and the door's second casing (an exterior door keeps the exterior casing values, an interior door the interior ones); the sash width is kept as read from the template.
+

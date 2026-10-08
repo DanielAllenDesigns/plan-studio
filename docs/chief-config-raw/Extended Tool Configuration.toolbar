@@ -1,0 +1,66 @@
+Chief Toolbar File: 9.0
+Chief Architect Premier	  30
+000000ff00000000fd00000000000000000000000000000004000000040000000800000008fc0000000800000002000000030000001e00460069006c00650020004d0061006e006100670065006d0065006e00740100000000ffffffff0000000000000000000000140050006c0061006e002000530065007400750070010000011affffffff00000000000000000000001800430061006d00650072006100200054006f006f006c00730100000360ffffffff00000000000000000000000200000004000000120052006100790020005400720061006300650000000000ffffffff0000000000000000000000220041006e006e006f0074006100740069006f006e00730020002600200043004100440100000000ffffffff00000000000000000000000e005400650072007200610069006e01000002f3ffffffff00000000000000000000001800540069006d006500200054007200610063006b006500720100000410ffffffff0000000000000000000000020000000300000026004100720063006800690074006500630074007500720061006c00200054006f006f006c00730100000000ffffffff0000000000000000000000200053006100760065006400200050006c0061006e0020005600690065007700730100000000ffffffff00000000000000000000001a0046006c006f006f0072002000550070002f0044006f0077006e01000003bcffffffff000000000000000000000002000000010000000c004c00610079006f007500740000000000ffffffff00000000000000000000000200000001000000320054006f007500630068002000530063007200650065006e00200051007500690063006b00200041006300630065007300730000000000ffffffff000000000000000000000003000000010000000800450064006900740100000000ffffffff0000000000000000000000010000000300000008005a006f006f006d0300000000ffffffff0000000000000000000000180054006f00670067006c00650020004d006f00640065007303000000dcffffffff00000000000000000000002200530065006c0065006300740069006f006e00200054006f00670067006c0065007303000001ecffffffff0000000000000000000000010000000400000012005200650073006f007500720063006500730300000000ffffffff0000000000000000000000180053006e0061007000200054006f00670067006c00650073030000005affffffff0000000000000000000000240041007200630020004300720065006100740069006f006e0020004d006f00640065007303000001d2ffffffff00000000000000000000001400450064006900740020004d006f0064006500730300000260ffffffff0000000000000000
+Annotations & CAD	
+   0    1    3    6   14 
+20220  388  423  389 20249  760  398  399  549  547  283  214  814  409  768  687 
+Arc Creation Modes	
+   0    1    3    6   14 
+ 204 20110 23431 20109 20111 
+Architectural Tools	
+   0    1    3 
+ 359 20221 20218  796  376  377  386  387  385  543  378  379 20159 20158  542  358 20183 
+Camera Tools	
+   0    1    3   14 
+ 709  710  825  440  759  873  724  391 23454 20041 23466  481  422 24027 
+Edit	
+   0    1    3    6   14 
+
+Edit Modes	
+   0    1    3    6   14 
+20114 20116 20113 20115 
+File Management	
+   0    1    3    4    6    9   14 
+ 101  102  105  109  112  655  667 20090  439  803 
+Floor Up/Down	
+   0    1    3 
+ 240  685  241 
+Layout	
+   6 
+ 359 20029  212 20137 20130 20356 20138 20035 20034 20300 20301 20016  162  509 20056  686 20057 
+Plan Setup	
+   0    1    3    6   14 
+ 327  406 20181 20186  707  708 20122 
+Ray Trace	
+   9 
+ 559  114  113  817 20252 20336 20337 
+Resources	
+   0    1    3    4    6    9   14 
+ 438 20059  918 
+Saved Plan Views	
+   0    1    3   14 
+20351 20329 20330 20332 23818 
+Selection Toggles	
+   0    1    3    6   14 
+20242 20241 20240 
+Snap Toggles	
+   0    1    3    6   14 
+ 505  507  880 20120 20094 20095 20096 20097 20098 20102 20103 20099 20100 20101 
+Terrain	
+   0    1    3 
+ 839  828 20030  829 20219 20215 20127 
+Time Tracker	
+   0    1    3    4    6    9   14 
+23641  550  778  569  576 20351 23887  575 20068 20066 20067 
+Toggle Modes	
+   0    1    3    6   14 
+ 410  474  427 20064 20063 20105 20093  499  700 20108 
+Touch Screen Quick Access	
+
+ 359  710  825  724 
+Zoom	
+   0    1    3    4    6    9   14 
+ 401  590  403  402 23806 20136  404 20043 
+
+Buttons
+ 101 &New Plan 102 &Open Plan... 105 &Save 109 &Print... 112 Sen&d to Layout... 113 Export &Picture (BMP,JPG,PNG)... 114 Print Image... 162 Update Layout Views 204 Arc About &Center 212 &Edit Layout Lines 214 Plan &Footprint 240 &Down One Floor 241 &Up One Floor 283 Spli&ne 327 Layer Set &Management... 358 Slab Tools 359 Select Objects 376 Door Tools 377 Window Tools 378 Roof Tools 379 General Framing Tools 385 Stair Tools 386 Cabinet Tools 387 Electrical Tools 388 Dimension Tools 389 Text Tools 391 Camera View Lighting Tools 398 Line Tools 399 Arc Tools 401 &Zoom 402 &Undo Zoom 403 Zoom &Out 404 &Fill Window 406 Display Options... 409 CAD D&etail Management... 410 &Reference Display 422 &Adjust Material Definition 423 Automatic Dimension Tools 427 &Color 438 &Library Browser 439 Preferences... 440 Camera View Options 474 Cross&hairs 481 Delete Sur&face 499 Connect CAD Se&gments 505 &Object Snaps 507 &Angle Snaps 509 Re&ferenced Plans/Layouts... 542 Trim Tools 543 Floor Tools 547 Box Tools 549 Circle Tools 550 Materials List Tools 559 Sa&ve Thumbnail Image 569 Master &List 575 Update &to Master List 576 Update &from Master List 590 Zoom &In 655 &Undo 667 &Redo 685 &Change Floor/Reference... 686 Change Layout &Page... 687 Current CAD La&yer... 700 &Arc Centers and Ends 707 Default Sets 708 Active &Defaults... 709 Orthographic View Tools 710 Camera View Tools 724 Rendering Techniques 759 Walkthrough Tools 760 Point Tools 768 CAD Detail From &View 778 Schedule Tools 796 Curved Wall Tools 803 Launch &Help... 814 A&uto Detail 817 Adjust Image Properties... 825 Move Camera With Mouse 828 Terrain Elevation Tools 829 Terrain Feature Tools 839 Terrain Tools 873 CPU Ra&y Trace... 880 &Grid Snaps 918 Active Layer &Display Options20016 Layout Page &Table20029 &Edit Page Information...20030 Terrain Modifier Tools20034 Exchange With &Next Page20035 Exchange With Pre&vious Page20041 Material &Eyedropper20043 Pan &Window20056 Page &Down20057 Page &Up20059 Project &Browser20063 Line &Weights20064 Drawing &Sheet20066 &Start Time Logging20067 St&op Time Logging20068 &View Time Log...20090 Check Spelling...20093 Temporary &Dimensions20094 &Endpoint20095 &Midpoint20096 &Center20097 &Quadrant20098 O&n Object20099 &Tangent Extensions20100 Perpen&dicular Extensions20101 O&rthogonal Extensions20102 &Points/Markers20103 &Intersections20105 Print Previe&w20108 Reference &Grid20109 Start/End/&On Arc20110 Center/&Radius/End Arc20111 Start/&Tangent/End Arc20113 &Default [ALT+Z or ALT+/ or Left Button]20114 &Concentric [C or , or X1 Button]20115 &Resize [X or . or X2 Button]20116 &Fillet [F]20120 &Bumping/Pushing20122 Default Sett&ings...20127 Plant Tools20130 &Insert Page After20136 Fill Window &Building Only20137 &Insert Page Before20138 De&lete Page20158 Roof Framing Tools20159 Floor/Ceiling Framing Tools20181 Active Layer Set Control20183 3D Solid Tools20186 Active Default Set Control20215 Terrain Wall and Curb Tools20218 Railing and Deck Tools20219 Fencing Tools20220 Active Dimension Defaults Control20221 Straight Wall Tools20240 Select Objects By Center20241 Select Contained Objects20242 Select Intersected Objects20249 &Revision Cloud20252 Adjust Effects...20300 Add Layout &Revision...20301 Layout Re&vision Table20329 &Save Active View20330 Save Active View &As...20332 Saved Plan View Control20336 Pause Ray Trace20337 Start/Resume Ray Trace20351 &Edit Active View...20356 &Duplicate Page23431 &Free Form Arc23454 &Material Painter...23466 Object &Eyedropper23641 Structural Member Reporting Control23806 Fill Window &Selected Objects23818 Re&ferenced Plans/Layouts...23887 Generate a &Report24027 Interactive Material Editor

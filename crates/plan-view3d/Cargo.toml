@@ -1,0 +1,11 @@
+[package]
+name = "plan-view3d"
+description = "Plan Studio: egui/glow 3D viewport for plan-3d scenes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+plan-core = { path = "../plan-core" }
+plan-3d = { path = "../plan-3d" }
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }

@@ -2197,6 +2197,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "plan-3d"
+version = "0.1.0"
+dependencies = [
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plan-app"
 version = "0.1.0"
 dependencies = [
@@ -2208,11 +2217,105 @@ dependencies = [
 ]
 
 [[package]]
+name = "plan-cabinets"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-config"
+version = "0.1.0"
+dependencies = [
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plan-core"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "plan-docs"
+version = "0.1.0"
+dependencies = [
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-elevation"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-framing"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-import"
+version = "0.1.0"
+dependencies = [
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-library"
+version = "0.1.0"
+dependencies = [
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-roof"
+version = "0.1.0"
+dependencies = [
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-stairs"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-view3d"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "plan-3d",
+ "plan-core",
 ]
 
 [[package]]

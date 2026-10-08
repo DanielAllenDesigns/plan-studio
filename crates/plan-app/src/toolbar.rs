@@ -90,6 +90,10 @@ pub enum Action {
     FileOpen,
     FileSave,
     FileSaveAs,
+    /// File > Templates > Save Current Defaults as My Template...
+    SaveTemplate,
+    /// File > Templates > Reset to Chief X18 Template
+    ResetTemplate,
     Quit,
     ZoomIn,
     ZoomOut,
@@ -102,6 +106,8 @@ pub enum Action {
     ToggleDock(Dock),
     SetTheme(CanvasTheme),
     ShowAbout,
+    /// Edit > Default Settings...
+    DefaultSettings,
     NotImplemented(&'static str),
 }
 
@@ -1246,7 +1252,11 @@ fn row1_slots() -> Vec<Slot> {
         Slot::ViewSelector,
         Sep,
         button("display_options", "Display Options"),
-        button("default_settings", "Default Settings"),
+        Slot::Button(item(
+            "default_settings",
+            "Default Settings",
+            Action::DefaultSettings,
+        )),
         button("plan_database", "Plan Database"),
         button("floor_defaults", "Floor Defaults"),
         Sep,
@@ -1546,11 +1556,14 @@ fn tooltip(it: &Item) -> String {
     }
 }
 
-/// Image tint: full brightness scaled by the UI brightness, or the 35 % dim.
+/// Alpha of disabled icons (45 %).
+const DIMMED_ALPHA: u8 = 115;
+
+/// Image tint: full white scaled by the UI brightness, or white at 45 % alpha.
 fn icon_tint(dimmed: bool, brightness: f32) -> Color32 {
     if dimmed {
-        let g = (90.0 * brightness).round() as u8;
-        Color32::from_rgba_premultiplied(g, g, g, 90)
+        let g = (DIMMED_ALPHA as f32 * brightness).round() as u8;
+        Color32::from_rgba_premultiplied(g, g, g, DIMMED_ALPHA)
     } else {
         scale(Color32::WHITE, brightness)
     }
@@ -1657,9 +1670,9 @@ fn show_flyout(
     }
     let c = arrow_zone.center();
     let tint = if dimmed {
-        Color32::from_white_alpha(90)
+        Color32::from_white_alpha(DIMMED_ALPHA)
     } else {
-        scale(Color32::from_gray(0xC8), state.brightness)
+        scale(Color32::WHITE, state.brightness)
     };
     ui.painter().add(Shape::convex_polygon(
         vec![

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/plan-core", "crates/plan-app"]
+members = ["crates/plan-core", "crates/plan-app", "crates/plan-3d", "crates/plan-roof", "crates/plan-docs", "crates/plan-library", "crates/plan-view3d", "crates/plan-stairs", "crates/plan-cabinets", "crates/plan-framing", "crates/plan-import", "crates/plan-elevation", "crates/plan-config"]
 
 [workspace.package]
 version = "0.1.0"

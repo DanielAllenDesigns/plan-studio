@@ -180,6 +180,7 @@ mod tests {
             thickness: 4.5,
             height: 109.125,
             kind: WallKind::Interior,
+            layer: "Walls, Normal".into(),
         }
     }
 

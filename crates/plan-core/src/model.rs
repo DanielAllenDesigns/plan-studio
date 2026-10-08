@@ -2,7 +2,11 @@
 //! walls, openings, floors and later cabinets/roofs/stairs live here once, and
 //! the 2D plan, 3D view, elevations and schedules are all generated from it.
 
-use crate::geometry::Point;
+use crate::cad::{CadItem, CadObject};
+use crate::dimension::Dimension;
+use crate::geometry::{point_in_polygon, Point};
+use crate::layers::LayerSet;
+use crate::rooms::Room;
 use serde::{Deserialize, Serialize};
 
 pub type Id = u64;
@@ -20,6 +24,20 @@ pub enum WallKind {
     Interior,
 }
 
+/// Layer new walls are placed on.
+pub const DEFAULT_WALL_LAYER: &str = "Walls, Normal";
+
+fn default_wall_layer() -> String {
+    DEFAULT_WALL_LAYER.to_string()
+}
+
+/// Which end of a wall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallEnd {
+    Start,
+    End,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Wall {
     pub id: Id,
@@ -30,6 +48,9 @@ pub struct Wall {
     pub thickness: f64,
     pub height: f64,
     pub kind: WallKind,
+    /// Layer name; see [`LayerSet`]. Defaults to "Walls, Normal".
+    #[serde(default = "default_wall_layer")]
+    pub layer: String,
 }
 
 impl Wall {
@@ -115,6 +136,15 @@ impl Opening {
     }
 }
 
+/// A room's user-assigned name. Rooms are derived from walls, so a name is
+/// attached to a point inside the room instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoomName {
+    pub anchor: Point,
+    pub name: String,
+    pub room_type: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Floor {
     pub name: String,
@@ -123,6 +153,12 @@ pub struct Floor {
     pub ceiling_height: f64,
     pub walls: Vec<Wall>,
     pub openings: Vec<Opening>,
+    #[serde(default)]
+    pub dimensions: Vec<Dimension>,
+    #[serde(default)]
+    pub cad: Vec<CadObject>,
+    #[serde(default)]
+    pub room_names: Vec<RoomName>,
 }
 
 impl Floor {
@@ -133,6 +169,9 @@ impl Floor {
             ceiling_height: DEFAULT_CEILING_HEIGHT,
             walls: Vec::new(),
             openings: Vec::new(),
+            dimensions: Vec::new(),
+            cad: Vec::new(),
+            room_names: Vec::new(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -151,6 +190,8 @@ pub struct Project {
     pub name: String,
     pub floors: Vec<Floor>,
     next_id: Id,
+    #[serde(default = "LayerSet::default_floor_plan")]
+    pub layers: LayerSet,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -162,6 +203,7 @@ impl Project {
             name: name.into(),
             floors: vec![Floor::new("1st Floor", 0.0)],
             next_id: 1,
+            layers: LayerSet::default_floor_plan(),
         }
     }
 
@@ -188,8 +230,93 @@ impl Project {
             thickness,
             height,
             kind,
+            layer: default_wall_layer(),
         });
         id
+    }
+
+    /// Move one end of a wall. Openings keep their distance from the wall
+    /// start, so callers may want to re-validate them afterwards.
+    /// Returns `false` if the wall does not exist.
+    pub fn move_wall_endpoint(
+        &mut self,
+        floor: usize,
+        id: Id,
+        which_end: WallEnd,
+        new_pos: Point,
+    ) -> bool {
+        match self.floors[floor].wall_mut(id) {
+            Some(w) => {
+                match which_end {
+                    WallEnd::Start => w.start = new_pos,
+                    WallEnd::End => w.end = new_pos,
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Move a whole wall by `delta`. Returns `false` if the wall does not exist.
+    pub fn translate_wall(&mut self, floor: usize, id: Id, delta: Point) -> bool {
+        match self.floors[floor].wall_mut(id) {
+            Some(w) => {
+                w.start = w.start.add(delta);
+                w.end = w.end.add(delta);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Add a dimension (its `id` is replaced with a fresh one) and return the id.
+    pub fn add_dimension(&mut self, floor: usize, mut dim: Dimension) -> Id {
+        let id = self.alloc_id();
+        dim.id = id;
+        self.floors[floor].dimensions.push(dim);
+        id
+    }
+
+    pub fn remove_dimension(&mut self, floor: usize, id: Id) {
+        self.floors[floor].dimensions.retain(|d| d.id != id);
+    }
+
+    /// Add a CAD item on `layer` and return its id.
+    pub fn add_cad(&mut self, floor: usize, layer: impl Into<String>, item: CadItem) -> Id {
+        let id = self.alloc_id();
+        self.floors[floor].cad.push(CadObject {
+            id,
+            layer: layer.into(),
+            item,
+        });
+        id
+    }
+
+    pub fn remove_cad(&mut self, floor: usize, id: Id) {
+        self.floors[floor].cad.retain(|c| c.id != id);
+    }
+
+    /// Name the room containing `anchor`. Any existing name whose anchor lies
+    /// in the same detected room (from `rooms`) is replaced. If `anchor` is
+    /// not inside any room, names anchored within 1" of it are replaced.
+    pub fn set_room_name(
+        &mut self,
+        floor: usize,
+        anchor: Point,
+        name: impl Into<String>,
+        room_type: impl Into<String>,
+        rooms: &[Room],
+    ) {
+        let names = &mut self.floors[floor].room_names;
+        match rooms.iter().find(|r| point_in_polygon(anchor, &r.polygon)) {
+            Some(room) => names.retain(|n| !point_in_polygon(n.anchor, &room.polygon)),
+            None => names.retain(|n| n.anchor.dist(anchor) > 1.0),
+        }
+        names.push(RoomName {
+            anchor,
+            name: name.into(),
+            room_type: room_type.into(),
+        });
     }
 
     /// Remove a wall and every opening hosted in it.
@@ -297,5 +424,106 @@ mod tests {
         let q = Project::from_json(&s).unwrap();
         assert_eq!(q.floors[0].walls.len(), 1);
         assert_eq!(q.name, "rt");
+    }
+
+    #[test]
+    fn old_json_without_new_fields_still_loads() {
+        let old = r#"{
+            "name": "legacy",
+            "floors": [{
+                "name": "1st Floor",
+                "elevation": 0.0,
+                "ceiling_height": 109.125,
+                "walls": [{
+                    "id": 1,
+                    "start": {"x": 0.0, "y": 0.0},
+                    "end": {"x": 100.0, "y": 0.0},
+                    "thickness": 6.5,
+                    "height": 109.125,
+                    "kind": "Exterior"
+                }],
+                "openings": []
+            }],
+            "next_id": 2
+        }"#;
+        let p = Project::from_json(old).unwrap();
+        assert_eq!(p.floors[0].walls[0].layer, "Walls, Normal");
+        assert!(p.floors[0].dimensions.is_empty());
+        assert!(p.floors[0].cad.is_empty());
+        assert!(p.floors[0].room_names.is_empty());
+        assert!(p.layers.get("Doors").is_some());
+        // And the new format round-trips.
+        let q = Project::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(q.layers, p.layers);
+    }
+
+    #[test]
+    fn edit_helpers() {
+        use crate::cad::CadItem;
+        use crate::dimension::{Dimension, DimensionKind};
+        let mut p = Project::new("e");
+        let w = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(100.0, 0.0),
+            4.5,
+            109.125,
+            WallKind::Interior,
+        );
+        assert!(p.move_wall_endpoint(0, w, WallEnd::End, Point::new(150.0, 0.0)));
+        assert!((p.floors[0].walls[0].length() - 150.0).abs() < 1e-9);
+        assert!(p.translate_wall(0, w, Point::new(10.0, 20.0)));
+        assert_eq!(p.floors[0].walls[0].start, Point::new(10.0, 20.0));
+        assert!(!p.translate_wall(0, 999, Point::ZERO));
+
+        let d = p.add_dimension(
+            0,
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::ZERO,
+                Point::new(10.0, 0.0),
+                6.0,
+            ),
+        );
+        assert_eq!(p.floors[0].dimensions[0].id, d);
+        p.remove_dimension(0, d);
+        assert!(p.floors[0].dimensions.is_empty());
+
+        let c = p.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Line {
+                a: Point::ZERO,
+                b: Point::new(5.0, 5.0),
+            },
+        );
+        assert_eq!(p.floors[0].cad[0].id, c);
+        p.remove_cad(0, c);
+        assert!(p.floors[0].cad.is_empty());
+    }
+
+    #[test]
+    fn room_names_replace_within_same_room() {
+        let room = Room {
+            polygon: vec![
+                Point::new(0.0, 0.0),
+                Point::new(100.0, 0.0),
+                Point::new(100.0, 100.0),
+                Point::new(0.0, 100.0),
+            ],
+            area_sq_in: 10_000.0,
+            centroid: Point::new(50.0, 50.0),
+            label: "Room 1".into(),
+        };
+        let rooms = [room];
+        let mut p = Project::new("r");
+        p.set_room_name(0, Point::new(10.0, 10.0), "Kitchen", "Kitchen", &rooms);
+        p.set_room_name(0, Point::new(90.0, 90.0), "Pantry", "Pantry", &rooms);
+        assert_eq!(p.floors[0].room_names.len(), 1);
+        assert_eq!(p.floors[0].room_names[0].name, "Pantry");
+        // A point outside every room adds a separate name.
+        p.set_room_name(0, Point::new(500.0, 500.0), "Yard", "Other", &rooms);
+        assert_eq!(p.floors[0].room_names.len(), 2);
     }
 }

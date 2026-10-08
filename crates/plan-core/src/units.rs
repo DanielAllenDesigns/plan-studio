@@ -10,17 +10,23 @@ pub fn sq_in_to_sq_ft(a: f64) -> f64 {
 
 /// Format inches as architectural feet-inches, e.g. `12'-6 1/2"`, rounded to 1/16".
 pub fn fmt_ft_in(inches: f64) -> String {
+    fmt_ft_in_frac(inches, 16)
+}
+
+/// Like [`fmt_ft_in`] but rounded to `1/denom"` (e.g. 8 or 16). A `denom` of 0 is treated as 1.
+pub fn fmt_ft_in_frac(inches: f64, denom: u32) -> String {
+    let denom = i64::from(denom.max(1));
     let sign = if inches < 0.0 { "-" } else { "" };
-    let total_16ths = (inches.abs() * 16.0).round() as i64;
-    let feet = total_16ths / (12 * 16);
-    let rem = total_16ths % (12 * 16);
-    let whole_in = rem / 16;
-    let frac = rem % 16;
+    let total = (inches.abs() * denom as f64).round() as i64;
+    let feet = total / (12 * denom);
+    let rem = total % (12 * denom);
+    let whole_in = rem / denom;
+    let frac = rem % denom;
     let mut s = format!("{sign}{feet}'-{whole_in}");
     if frac != 0 {
         let mut n = frac;
-        let mut d = 16;
-        while n % 2 == 0 {
+        let mut d = denom;
+        while n % 2 == 0 && d % 2 == 0 {
             n /= 2;
             d /= 2;
         }

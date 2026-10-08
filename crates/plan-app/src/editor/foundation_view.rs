@@ -11,10 +11,12 @@
 //!
 //! # Selection
 //!
-//! The Select tool selects `ObjectRef::Foundation(id)` ([`pick`] finds it,
-//! [`in_rect_or_touching`] box-selects, [`translate_ids`] moves,
-//! [`delete_ids`] deletes). The foundation tools keep their own selection
-//! here ([`selected`], [`select`]) while they are active.
+//! The Select tool and the foundation tools share `cx.selection`: an object is
+//! `ObjectRef::Foundation(id)` ([`pick`] finds it, [`in_rect_or_touching`]
+//! box-selects, [`translate_ids`] moves, [`delete_ids`] deletes, [`selected`]
+//! and [`select`] read and write the selection for the tools). Slabs, slab
+//! holes and platform holes have vertex handles ([`outline_points`],
+//! [`move_vertex`]).
 //!
 //! # Drawing
 //!
@@ -30,7 +32,6 @@ use plan_core::foundation::{
 };
 use plan_core::geometry::{dist_to_segment, point_in_polygon, polygon_area, Point};
 use plan_core::{Id, Layer, LayerSet, LineStyle, Project};
-use std::cell::Cell;
 
 pub use foundation::{Footing, Pier};
 
@@ -150,9 +151,7 @@ pub fn delete(cx: &mut EditorContext, r: FoundationRef) -> bool {
     edit(cx, &format!("Delete {}", r.name()), |l| {
         l.remove(r);
     });
-    if selected() == Some(r) {
-        clear_selection();
-    }
+    forget(cx, &[r.id()]);
     true
 }
 
@@ -183,9 +182,7 @@ pub fn delete_ids(cx: &mut EditorContext, ids: &[Id]) -> usize {
             l.remove(*r);
         }
     });
-    if selected().is_some_and(|s| refs.contains(&s)) {
-        clear_selection();
-    }
+    forget(cx, ids);
     refs.len()
 }
 
@@ -207,6 +204,35 @@ pub fn translate_ids(cx: &mut EditorContext, ids: &[Id], d: Point) -> usize {
     n
 }
 
+/// The outline of a slab, slab hole or platform hole: the objects whose
+/// corners can be dragged. `None` for pads and piers.
+pub fn outline_points(layer: &FoundationLayer, r: FoundationRef) -> Option<Vec<Point>> {
+    match r {
+        FoundationRef::Slab(i) => layer.slab(i).map(|s| s.outline.clone()),
+        FoundationRef::SlabHole(i) => layer.hole(i).map(|h| h.outline.clone()),
+        FoundationRef::PlatformHole(i) => layer.platform_hole(i).map(|h| h.outline.clone()),
+        FoundationRef::Pad(_) | FoundationRef::Pier(_) => None,
+    }
+}
+
+/// Moves corner `i` of the outline of `r` to `to`. Returns whether it moved
+/// (the object has an outline with that corner).
+pub fn move_vertex_in(layer: &mut FoundationLayer, r: FoundationRef, i: usize, to: Point) -> bool {
+    let outline = match r {
+        FoundationRef::Slab(id) => layer.slab_mut(id).map(|s| &mut s.outline),
+        FoundationRef::SlabHole(id) => layer.hole_mut(id).map(|h| &mut h.outline),
+        FoundationRef::PlatformHole(id) => layer.platform_hole_mut(id).map(|h| &mut h.outline),
+        FoundationRef::Pad(_) | FoundationRef::Pier(_) => None,
+    };
+    match outline.and_then(|o| o.get_mut(i)) {
+        Some(v) => {
+            *v = to;
+            true
+        }
+        None => false,
+    }
+}
+
 /// Does the active floor have the object?
 pub fn exists(cx: &EditorContext, r: FoundationRef) -> bool {
     load(cx).find(r.id()) == Some(r)
@@ -216,21 +242,33 @@ pub fn exists(cx: &EditorContext, r: FoundationRef) -> bool {
 // Selection
 // ===================================================================
 
-thread_local! {
-    static SELECTED: Cell<Option<FoundationRef>> = const { Cell::new(None) };
+/// The selected foundation object, if exactly the objects of this module
+/// are selected and one of them still exists.
+pub fn selected(cx: &EditorContext) -> Option<FoundationRef> {
+    let layer = load(cx);
+    cx.selection.items.iter().find_map(|o| match o {
+        super::ObjectRef::Foundation(id) => layer.find(*id),
+        _ => None,
+    })
 }
 
-/// The selected foundation object, if any.
-pub fn selected() -> Option<FoundationRef> {
-    SELECTED.with(Cell::get)
+/// Selects `r` alone.
+pub fn select(cx: &mut EditorContext, r: FoundationRef) {
+    cx.selection.set(super::ObjectRef::Foundation(r.id()));
 }
 
-pub fn select(r: FoundationRef) {
-    SELECTED.with(|s| s.set(Some(r)));
+/// Drops the foundation objects from the selection.
+pub fn clear_selection(cx: &mut EditorContext) {
+    cx.selection
+        .items
+        .retain(|o| !matches!(o, super::ObjectRef::Foundation(_)));
 }
 
-pub fn clear_selection() {
-    SELECTED.with(|s| s.set(None));
+/// Drops the objects with these ids from the selection.
+fn forget(cx: &mut EditorContext, ids: &[Id]) {
+    cx.selection
+        .items
+        .retain(|o| !matches!(o, super::ObjectRef::Foundation(i) if ids.contains(i)));
 }
 
 // ===================================================================
@@ -667,12 +705,15 @@ fn draw_selection(
     cx: &EditorContext,
     layer: &FoundationLayer,
 ) {
-    let mut refs: Vec<FoundationRef> = selected().into_iter().collect();
-    for o in &cx.selection.items {
-        if let super::ObjectRef::Foundation(id) = o {
-            refs.extend(layer.find(*id).filter(|r| !refs.contains(r)));
-        }
-    }
+    let refs: Vec<FoundationRef> = cx
+        .selection
+        .items
+        .iter()
+        .filter_map(|o| match o {
+            super::ObjectRef::Foundation(id) => layer.find(*id),
+            _ => None,
+        })
+        .collect();
     let stroke = Stroke::new(2.6_f32, cx.palette.selection);
     for r in refs {
         draw_selected(painter, cam, layer, r, stroke);
@@ -852,10 +893,10 @@ mod tests {
         assert!(move_by(&mut cx, r, Point::new(10.0, -20.0)));
         assert_eq!(load(&cx).pad(pad).unwrap().center, Point::new(110.0, 80.0));
         assert_eq!(cx.undo_label(), Some("Move Square Pad"));
-        select(r);
+        select(&mut cx, r);
         assert!(delete(&mut cx, r));
         assert!(load(&cx).is_empty());
-        assert_eq!(selected(), None);
+        assert_eq!(selected(&cx), None);
         assert_eq!(cx.undo().as_deref(), Some("Delete Square Pad"));
         assert!(exists(&cx, r));
         assert_eq!(cx.undo().as_deref(), Some("Move Square Pad"));

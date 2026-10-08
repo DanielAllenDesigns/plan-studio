@@ -73,7 +73,7 @@ and the name stays with the piece that holds the point.
 | Exchange With Floor Below | `Ctrl+Alt+Shift+Cmd+M` | The same with the floor below. |
 | Rebuild Walls/Floors/Ceilings | `F12` | Restacks the floors and recomputes derived geometry. |
 | Floor Material Region | | (planned) |
-| Hole in Floor Platform, Hole in Ceiling Platform | | (planned) |
+| Hole in Floor Platform, Hole in Ceiling Platform | | Work: draw a polygon, and the floor or ceiling platform is cut there in 3D (chapter 16). |
 
 Each of these is one undo step, and none of them needs a canvas click.
 
@@ -96,7 +96,9 @@ the selection. The Project Browser lists the floors, and clicking one switches t
 - Floors are listed bottom to top and have a **kind**: Foundation, Normal or
   Attic. New Normal floors are named "1st Floor", "2nd Floor", "3rd Floor" and so on.
 - A floor has a finished-floor elevation, a ceiling height (109 1/8" by default),
-  and its own walls, openings, dimensions, CAD, symbols, cabinets, stairs and groups.
+  and its own walls, openings, dimensions, CAD, symbols, cabinets, stairs, groups, roof
+  records, electrical devices, framing and slab objects (the last four live in typed slots of the
+  floor, chapter 12.2).
 - The default floor platform thickness is 10 1/4" (`FLOOR_PLATFORM_THICKNESS`).
   Floor-to-floor rise is the ceiling height plus that platform.
 
@@ -110,18 +112,18 @@ uses the shared frame with an interior plan preview and a live cross-section.
 | General | Works |
 | Structure | Works |
 | Deck | (disabled) |
-| Moldings | Works (session only) |
+| Moldings | Works (the Base and Crown profile names are stored) |
 | Wall Covering | Works (session only) |
-| Fill Style | Works (session only) |
-| Materials | Works (session only) |
-| Label | Works (session only) |
+| Fill Style | Works (stored) |
+| Materials | Works (finish names are stored) |
+| Label | Works (the display switches are stored) |
 | Components | Read-only summary |
 | Object Information | Read-only |
 | Schedule | Read-only |
 
 OK writes the changes as one undo step. Fields stored with the plan are marked
-below; the rest are (session only), meaning kept in memory per room until the
-model grows those fields.
+below, and old files load with the defaults for every field they lack. The rest are
+(session only), meaning kept in memory per room.
 
 ### General
 
@@ -134,7 +136,7 @@ model grows those fields.
 - **Living Area**: Include in Total Living Area Calculation, Exclude, or Use Default
   (follows the room type). Stored. Garage, Deck, Porch and similar types are
   excluded by default.
-- **Conditioned Room**: Conditioned, Unconditioned or Use Default (session only).
+- **Conditioned Room**: Conditioned, Unconditioned or Use Default. Stored.
 - The dialog also shows the room's Interior Area, Standard Area, perimeter and
   the plan's Total Living Area across all floors.
 
@@ -145,21 +147,21 @@ model grows those fields.
 - **Rough Ceiling Height** for dropped ceilings (stored).
 - **Finish** thicknesses for floor and ceiling (stored finish names; thickness session only).
 - **Platforms**: Floor Under This Room, Ceiling Over This Room (stored), Roof Over This Room (session only).
-- **Stem Wall** with its height (session only).
+- **Stem Wall** with its height. Stored (a room with a stem wall keeps its height; turning it off clears it).
 - The preview draws the room cross-section with the CEILING and FLOOR dimensions.
 
 ### Moldings, Wall Covering, Fill Style, Materials
 
-Moldings: Base and Crown profile names. Wall Covering: Interior Wall Covering.
-Fill Style: Pattern (None, Solid, Hatch, Cross Hatch, Grid) and Color; the pattern
-is drawn in plan. Materials: Floor Finish and Ceiling Finish (stored by name).
-Other material surfaces are (planned).
+Moldings: Base and Crown profile names; a profile you name is stored on the room with a default height
+(5 1/4" base, 3 1/2" crown), and clearing the name removes it. Wall Covering: Interior Wall Covering (session
+only). Fill Style: Pattern (None, Solid, Hatch, Cross Hatch, Grid) and Color; stored on the room and drawn in
+plan. Materials: Floor Finish and Ceiling Finish (stored by name). Other material surfaces are (planned).
 
 ### Label
 
 Display in All Views: Interior Dimensions, Interior Area, Standard Area, Display in
 Plan View. Appearance: Text Style (disabled). The defaults show dimensions and
-interior area.
+interior area. The label options are stored on the room.
 
 ### Components, Object Information, Schedule
 
@@ -235,10 +237,13 @@ there is no settings dialog for them yet.
 
 - Rooms are traced from centerlines and offset inward for the interior polygon.
 - Nested rooms do not yet cut a hole in the enclosing room's area.
-- Room Specification values beyond the name, type, living-area flag, heights and
-  finishes are kept for the session only.
-- Floor Defaults, Hole in Floor Platform and Attic floors from
-  Build Roof are (planned).
+- Room Specification values beyond the name, type, living-area flag, heights, finishes, conditioned
+  setting, stem wall, base and crown moldings, fill and label options (all stored with the plan) are kept
+  for the session only: Wall Covering, Roof Over This Room, the Absolute/Relative toggles and the finish
+  thicknesses.
+- Floor Defaults, Floor Material Region and Attic floors from Build Roof are (planned).
+- Slabs, slab holes, pads, piers and the holes in the floor and ceiling platforms are objects of their
+  own, not part of Build Foundation; see chapter 16.
 
 ## 4.10 Room Types (Edit > Default Settings)
 

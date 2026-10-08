@@ -21,8 +21,13 @@
 //! * **Ceiling Plane** (RF-45): like Roof Plane, a vaulted ceiling plane on
 //!   layer "Ceiling Planes";
 //! * **Auto Dormer** (RF-48): click a plane, set the dimensions in the
-//!   Dormer Specification; **Explode Dormer** (RF-51) turns a dormer into
-//!   plain planes (its walls are not kept);
+//!   Dormer Specification; **Auto Floating Dormer** (RF-49) is the same
+//!   without the hole in the roof under it; **Explode Dormer** (RF-51) turns
+//!   a dormer into plain planes (its walls are not kept: a wall cannot start
+//!   at the roof surface yet);
+//! * **Join Roof Planes** (RF-41): click an edge of the first plane (or
+//!   select a plane and start from the Edit toolbar), then click the second
+//!   plane: the edge is extended or trimmed to the line where they meet;
 //! * **Roof Return** (RF-27): click an eave corner (Shift: half return,
 //!   Alt: boxed return);
 //! * **Delete Roof Planes** (RF-40) and **Rebuild Roofs** as palette buttons.
@@ -31,9 +36,8 @@
 //! painter's egui context); what OK/buttons ask for is queued and applied on
 //! the tool's next event, since drawing has no mutable access to the plan.
 //!
-//! Deferred: Join Roof Planes (RF-41), Dutch gable, knee wall and other
-//! directives beyond Hip/Gable/Shed (RF-21..RF-25), Build Ceiling Planes
-//! (RF-46), framing (RF-52..).
+//! Deferred: Dutch gable, knee wall and other directives beyond
+//! Hip/Gable/Shed/Extend Slope Downward (RF-21..RF-25), framing (RF-52..).
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::roof::{BuildRoofDialog, DormerDialog, RoofPlaneDialog};
@@ -55,7 +59,7 @@ const MIN_BASELINE: f64 = 12.0;
 /// Holes are at least this big on each side, inches.
 const MIN_HOLE: f64 = 6.0;
 /// Length of the roof returns the Roof Return mode makes, inches.
-const RETURN_LENGTH: f64 = 24.0;
+const RETURN_LENGTH: f64 = roof_view::AUTO_RETURN_LENGTH;
 /// Pitch of a new ceiling plane when no roof has been built, rise per 12.
 const CEILING_PITCH: f64 = 4.0;
 
@@ -70,13 +74,14 @@ pub enum RoofMode {
     Skylight,
     Join,
     Dormer,
+    FloatingDormer,
     Ceiling,
     Explode,
     Return,
 }
 
 impl RoofMode {
-    const ALL: [RoofMode; 11] = [
+    const ALL: [RoofMode; 12] = [
         RoofMode::Plane,
         RoofMode::Edit,
         RoofMode::Build,
@@ -86,6 +91,7 @@ impl RoofMode {
         RoofMode::Skylight,
         RoofMode::Join,
         RoofMode::Dormer,
+        RoofMode::FloatingDormer,
         RoofMode::Explode,
         RoofMode::Return,
     ];
@@ -101,6 +107,7 @@ impl RoofMode {
             RoofMode::Skylight => "Skylight",
             RoofMode::Join => "Join Roof Planes",
             RoofMode::Dormer => "Auto Dormer",
+            RoofMode::FloatingDormer => "Auto Floating Dormer",
             RoofMode::Ceiling => "Ceiling Plane",
             RoofMode::Explode => "Explode Dormer",
             RoofMode::Return => "Roof Return",
@@ -123,8 +130,13 @@ impl RoofMode {
             RoofMode::Skylight => {
                 "Skylight: press and drag a rectangle inside a roof plane, or click for 24 x 48"
             }
-            RoofMode::Join => "Join Roof Planes: click the first plane, then the second",
+            RoofMode::Join => {
+                "Join Roof Planes: click an edge of the first plane, then click the second plane"
+            }
             RoofMode::Dormer => "Auto Dormer: click a roof plane, then set the dormer",
+            RoofMode::FloatingDormer => {
+                "Auto Floating Dormer: click a roof plane; the roof is not cut under the dormer"
+            }
             RoofMode::Ceiling => {
                 "Ceiling Plane: press and drag the baseline, then click toward the high side; Esc cancels"
             }
@@ -136,6 +148,10 @@ impl RoofMode {
     }
 }
 
+/// The open Dormer Specification: the main plane, the dormer being edited if
+/// any, whether a new dormer floats, and the dialog.
+type DormerSlot = (Id, Option<Id>, bool, DormerDialog);
+
 /// What the palette and dialogs ask for.
 enum Cmd {
     OpenBuild,
@@ -145,8 +161,9 @@ enum Cmd {
     Rebuild,
     OpenPlane(Id),
     DeletePlane(Id),
-    /// Dormer dialog OK: the plane, the dormer being edited if any, its size.
-    ApplyDormer(Id, Option<Id>, DormerSpec),
+    /// Dormer dialog OK: the plane, the dormer being edited if any, its size,
+    /// and whether a new dormer is a floating one.
+    ApplyDormer(Id, Option<Id>, DormerSpec, bool),
 }
 
 enum Gesture {
@@ -184,14 +201,16 @@ pub struct RoofTool {
     cmds: RefCell<Vec<Cmd>>,
     build_dialog: RefCell<Option<BuildRoofDialog>>,
     plane_dialog: RefCell<Option<(Id, RoofPlaneDialog)>>,
-    /// Auto Dormer: the plane, the dormer being edited if any, the dialog.
-    dormer_dialog: RefCell<Option<(Id, Option<Id>, DormerDialog)>>,
+    /// Auto Dormer: the plane, the dormer being edited if any, whether a new
+    /// dormer floats, the dialog.
+    dormer_dialog: RefCell<Option<DormerSlot>>,
     /// The palette changed mode: forget the gesture at the next event.
     reset: Cell<bool>,
     selected: Option<Id>,
     gesture: GestureSlot,
     hover: Option<Point>,
-    join_first: Option<Id>,
+    /// Join Roof Planes: the first plane and its picked edge.
+    join_first: Option<(Id, usize)>,
 }
 
 /// `Gesture` with a `Default` of `None`.
@@ -251,7 +270,9 @@ impl RoofTool {
                     None
                 }
                 Cmd::DeletePlane(id) => self.delete_plane(cx, id),
-                Cmd::ApplyDormer(main, edit, spec) => self.apply_dormer(cx, main, edit, spec),
+                Cmd::ApplyDormer(main, edit, spec, floating) => {
+                    self.apply_dormer(cx, main, edit, spec, floating)
+                }
             };
             label = l.or(label);
         }
@@ -390,7 +411,8 @@ impl RoofTool {
                 .collect();
             *self.plane_dialog.borrow_mut() = Some((id, RoofPlaneDialog::new(rec, layers)));
         } else if let Some(d) = set.dormer(id) {
-            *self.dormer_dialog.borrow_mut() = Some((d.main, Some(id), DormerDialog::new(d.spec)));
+            *self.dormer_dialog.borrow_mut() =
+                Some((d.main, Some(id), d.floating, DormerDialog::new(d.spec)));
         }
     }
 
@@ -415,15 +437,21 @@ impl RoofTool {
         main: Id,
         edit: Option<Id>,
         spec: DormerSpec,
+        floating: bool,
     ) -> Option<String> {
         let fi = cx.floor;
-        let label = if edit.is_some() {
-            "Dormer Specification"
-        } else {
-            "Auto Dormer"
+        let label = match (edit.is_some(), floating) {
+            (true, _) => "Dormer Specification",
+            (false, true) => "Auto Floating Dormer",
+            (false, false) => "Auto Dormer",
         };
         cx.begin_change(label);
-        match roof_view::apply_dormer(&mut cx.project, fi, main, edit, spec) {
+        let done = if floating && edit.is_none() {
+            roof_view::apply_floating_dormer(&mut cx.project, fi, main, edit, spec)
+        } else {
+            roof_view::apply_dormer(&mut cx.project, fi, main, edit, spec)
+        };
+        match done {
             Ok(id) => {
                 self.selected = Some(id);
                 cx.mark_dirty();
@@ -432,7 +460,7 @@ impl RoofTool {
             }
             Err(e) => {
                 cx.cancel_change();
-                cx.status = format!("Auto Dormer: {e}");
+                cx.status = format!("{label}: {e}");
                 None
             }
         }
@@ -645,6 +673,54 @@ impl RoofTool {
         }
     }
 
+    /// Join Roof Planes (RF-41). The first click picks an edge of the first
+    /// plane (of the plane selected on the Edit toolbar when it has one near
+    /// the click); the second click on another plane joins the edge to it.
+    /// Returns whether a change was made.
+    fn join_click(&mut self, cx: &mut EditorContext, at: Point) -> bool {
+        let set = load(cx.floor());
+        let Some((a, edge)) = self.join_first else {
+            let tol = cx.pick_tol() * 2.0;
+            let preferred = match cx.selection.single() {
+                Some(crate::editor::ObjectRef::RoofPlane(id)) if set.plane(id).is_some() => {
+                    Some(id)
+                }
+                _ => None,
+            };
+            let found = preferred
+                .and_then(|id| roof_view::edge_near(&set, at, tol, Some(id)))
+                .or_else(|| roof_view::edge_near(&set, at, tol, None));
+            match found {
+                Some((id, e)) => {
+                    self.join_first = Some((id, e));
+                    self.selected = Some(id);
+                    cx.status = "Join Roof Planes: now click the plane to join to".into();
+                }
+                None => cx.status = "Join Roof Planes: click an edge of the first plane".into(),
+            }
+            return false;
+        };
+        let Some(b) = set.plane_at(at).filter(|b| *b != a) else {
+            cx.status = "Join Roof Planes: click a different roof plane".into();
+            return false;
+        };
+        self.join_first = None;
+        let fi = cx.floor;
+        cx.begin_change("Join Roof Planes");
+        match roof_view::join_planes_record(&mut cx.project, fi, a, edge, b) {
+            Ok(()) => {
+                cx.mark_dirty();
+                cx.status = "Roof planes joined".into();
+                true
+            }
+            Err(e) => {
+                cx.cancel_change();
+                cx.status = format!("Join Roof Planes: {e}");
+                false
+            }
+        }
+    }
+
     /// Auto Roof Return (RF-27) at the eave corner near `at`.
     fn roof_return(&mut self, cx: &mut EditorContext, at: Point, kind: ReturnKind) -> bool {
         let fi = cx.floor;
@@ -849,29 +925,20 @@ impl Tool for RoofTool {
                 };
             }
             RoofMode::Join => {
-                let set = load(cx.floor());
-                match (set.plane_at(p.world), self.join_first) {
-                    (None, _) => cx.status = "Click a roof plane".into(),
-                    (Some(a), None) => {
-                        self.join_first = Some(a);
-                        cx.status = "Join Roof Planes: now click the second plane".into();
-                    }
-                    (Some(b), Some(a)) => {
-                        self.join_first = None;
-                        cx.status =
-                            format!("Join Roof Planes (planes {a} and {b}): not implemented yet");
-                    }
+                if self.join_click(cx, p.world) {
+                    res = ToolResult::committed("Join Roof Planes");
                 }
             }
-            RoofMode::Dormer => {
+            RoofMode::Dormer | RoofMode::FloatingDormer => {
+                let floating = mode == RoofMode::FloatingDormer;
                 let set = load(cx.floor());
                 match set.plane_at(p.world) {
                     Some(id) => {
                         let spec = roof_view::dormer_spec_at(&set, id, p.world);
                         *self.dormer_dialog.borrow_mut() =
-                            Some((id, None, DormerDialog::new(spec)));
+                            Some((id, None, floating, DormerDialog::new(spec)));
                     }
-                    None => cx.status = "Auto Dormer: click inside a roof plane".into(),
+                    None => cx.status = format!("{}: click inside a roof plane", mode.label()),
                 }
             }
             RoofMode::Explode => {
@@ -1052,6 +1119,18 @@ impl Tool for RoofTool {
             }
             _ => {}
         }
+        if let Some((id, edge)) = self.join_first {
+            if let Some(rec) = load(cx.floor()).plane(id) {
+                let poly = rec.plan_polygon();
+                let n = poly.len();
+                if edge < n {
+                    painter.line_segment(
+                        [scr(poly[edge]), scr(poly[(edge + 1) % n])],
+                        Stroke::new(4.5_f32, accent),
+                    );
+                }
+            }
+        }
         if let Some(id) = self.selected {
             let set = load(cx.floor());
             for (rid, _, polys) in set.pick_polys() {
@@ -1137,19 +1216,19 @@ impl RoofTool {
             ctx.request_repaint();
         }
         let mut dormer_done = None;
-        if let Some((main, edit, d)) = self.dormer_dialog.borrow_mut().as_mut() {
+        if let Some((main, edit, floating, d)) = self.dormer_dialog.borrow_mut().as_mut() {
             match d.show(ctx) {
-                Outcome::Ok => dormer_done = Some(Some((*main, *edit, d.spec()))),
+                Outcome::Ok => dormer_done = Some(Some((*main, *edit, d.spec(), *floating))),
                 Outcome::Cancel => dormer_done = Some(None),
                 Outcome::Open => {}
             }
         }
         if let Some(done) = dormer_done {
             *self.dormer_dialog.borrow_mut() = None;
-            if let Some((main, edit, spec)) = done {
+            if let Some((main, edit, spec, floating)) = done {
                 self.cmds
                     .borrow_mut()
-                    .push(Cmd::ApplyDormer(main, edit, spec));
+                    .push(Cmd::ApplyDormer(main, edit, spec, floating));
             }
             ctx.request_repaint();
         }
@@ -1593,15 +1672,159 @@ mod tests {
         assert!(!t.key(&mut cx, KeyEvent::escape()).consumed);
     }
 
+    /// Two manual planes facing each other across a gap: the south one (y 0
+    /// to 100) and the north one (y 360 down to 260), both 8:12 from the same
+    /// eave height, so they meet in a ridge at y = 180.
+    fn facing_planes(cx: &mut EditorContext) -> (Id, Id) {
+        let fi = cx.floor;
+        let mut set = load(cx.floor());
+        let ids = [cx.project.alloc_id(), cx.project.alloc_id()];
+        for (id, a, b, toward) in [
+            (
+                ids[0],
+                Point::new(0.0, 0.0),
+                Point::new(480.0, 0.0),
+                Point::new(240.0, 100.0),
+            ),
+            (
+                ids[1],
+                Point::new(480.0, 360.0),
+                Point::new(0.0, 360.0),
+                Point::new(240.0, 260.0),
+            ),
+        ] {
+            let (base, poly) = manual_plane_geometry(a, b, toward, 100.0, 8.0).unwrap();
+            set.planes.push(RoofPlaneRecord::new(id, poly, 8.0, base));
+        }
+        store(&mut cx.project, fi, &mut set);
+        cx.mark_dirty();
+        cx.refresh();
+        (ids[0], ids[1])
+    }
+
     #[test]
-    fn join_is_a_placeholder() {
+    fn join_roof_planes_extends_an_edge_to_the_other_plane() {
+        let mut cx = new_cx();
+        let mut t = RoofTool::default();
+        let (a, b) = facing_planes(&mut cx);
+        t.set_mode(RoofMode::Join);
+        // A click away from every edge only asks for one.
+        click(&mut t, &mut cx, 240.0, 40.0);
+        assert!(t.join_first.is_none());
+        assert!(cx.status.contains("edge"), "{}", cx.status);
+        // The first click picks the top edge (index 2) of the south plane.
+        click(&mut t, &mut cx, 240.0, 100.0);
+        assert_eq!(t.join_first, Some((a, 2)));
+        // A click outside every plane keeps the pick.
+        click(&mut t, &mut cx, 700.0, 700.0);
+        assert_eq!(t.join_first, Some((a, 2)));
+        // The second click on the other plane joins them, as one undo step.
+        click(&mut t, &mut cx, 240.0, 300.0);
+        assert!(t.join_first.is_none());
+        assert_eq!(cx.undo_label(), Some("Join Roof Planes"), "{}", cx.status);
+        let set = load(cx.floor());
+        let top = set.plane(a).unwrap().plan_polygon();
+        assert!((top[2].y - 180.0).abs() < 1e-6 && (top[3].y - 180.0).abs() < 1e-6);
+        assert!(!set.plane(a).unwrap().auto);
+        cx.undo();
+        let top = load(cx.floor()).plane(a).unwrap().plan_polygon();
+        assert!((top[2].y - 100.0).abs() < 1e-6);
+        assert!(load(cx.floor()).plane(b).is_some());
+    }
+
+    #[test]
+    fn join_starts_from_the_plane_selected_on_the_edit_toolbar() {
+        let mut cx = new_cx();
+        let mut t = RoofTool::default();
+        let (a, _) = facing_planes(&mut cx);
+        // The Edit toolbar offers the command for a selected plane...
+        cx.selection.set(crate::editor::ObjectRef::RoofPlane(a));
+        let actions = cx.extra_edit_actions();
+        assert!(actions.iter().any(|x| x.label == "Join Roof Planes"));
+        // ...and the tool prefers that plane's edges.
+        t.set_mode(RoofMode::Join);
+        click(&mut t, &mut cx, 5.0, 50.0);
+        assert_eq!(t.join_first, Some((a, 3)));
+    }
+
+    #[test]
+    fn parallel_planes_refuse_to_join() {
+        let mut cx = new_cx();
+        let mut t = RoofTool::default();
+        let (a, b) = facing_planes(&mut cx);
+        // Make the north plane parallel to the south one.
+        let fi = cx.floor;
+        let mut set = load(cx.floor());
+        let base = set.plane(a).unwrap().clone();
+        let rec = set.plane_mut(b).unwrap();
+        rec.polygon3d = base
+            .polygon3d
+            .iter()
+            .map(|v| [v[0], v[1], v[2] - 360.0])
+            .collect();
+        store(&mut cx.project, fi, &mut set);
+        cx.mark_dirty();
+        cx.refresh();
+        t.set_mode(RoofMode::Join);
+        click(&mut t, &mut cx, 240.0, 100.0);
+        assert_eq!(t.join_first, Some((a, 2)));
+        click(&mut t, &mut cx, 240.0, 400.0);
+        assert!(cx.status.contains("Join Roof Planes"), "{}", cx.status);
+        assert!(cx.status.contains("cannot be joined"), "{}", cx.status);
+        assert_ne!(cx.undo_label(), Some("Join Roof Planes"));
+    }
+
+    #[test]
+    fn auto_floating_dormer_does_not_cut_the_roof() {
         let mut cx = new_cx();
         let mut t = RoofTool::default();
         with_plane(&mut cx, &mut t);
-        t.set_mode(RoofMode::Join);
-        click(&mut t, &mut cx, 120.0, 60.0);
-        click(&mut t, &mut cx, 120.0, 90.0);
-        assert!(cx.status.contains("not implemented"));
+        // Floating mode opens the same dialog on a plane click.
+        t.set_mode(RoofMode::FloatingDormer);
+        click(&mut t, &mut cx, 120.0, 40.0);
+        assert!(matches!(
+            t.dormer_dialog.borrow().as_ref(),
+            Some((_, None, true, _))
+        ));
+        let spec = t.dormer_dialog.borrow().as_ref().unwrap().3.spec();
+        *t.dormer_dialog.borrow_mut() = None;
+        make_dormer_as(&mut t, &mut cx, spec, true);
+        assert_eq!(
+            cx.undo_label(),
+            Some("Auto Floating Dormer"),
+            "{}",
+            cx.status
+        );
+        let set = load(cx.floor());
+        assert_eq!(set.dormers.len(), 1);
+        assert!(set.dormers[0].floating);
+        let main = set.planes[0].id;
+        let tris = |cx: &EditorContext| -> usize {
+            roof_view::roof_meshes(&cx.project)
+                .iter()
+                .filter(|m| m.object_id == Some(main))
+                .map(plan_3d::Mesh::triangle_count)
+                .sum()
+        };
+        let floating = tris(&cx);
+        // The same dormer, not floating, cuts the plane: more triangles.
+        cx.undo();
+        make_dormer(&mut t, &mut cx, spec);
+        let cut = tris(&cx);
+        assert!(cut > floating, "{cut} vs {floating}");
+        assert!(!load(cx.floor()).dormers[0].floating);
+        // The flag survives a save and a specification edit.
+        cx.undo();
+        make_dormer_as(&mut t, &mut cx, spec, true);
+        let json = serde_json::to_string(&cx.project).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert!(load(&back.floors[0]).dormers[0].floating);
+        let id = load(cx.floor()).dormers[0].id;
+        roof_view::apply_dormer(&mut cx.project, 0, main, Some(id), spec).unwrap();
+        assert!(load(cx.floor()).dormers[0].floating);
+        // Exploding it leaves the main plane uncut.
+        roof_view::explode_dormer_record(&mut cx.project, 0, id).unwrap();
+        assert!(load(cx.floor()).plane(main).unwrap().holes.is_empty());
     }
 
     fn roof_tris(cx: &EditorContext) -> usize {
@@ -1613,8 +1836,14 @@ mod tests {
 
     /// A dormer made the way the dialog's OK does.
     fn make_dormer(t: &mut RoofTool, cx: &mut EditorContext, spec: DormerSpec) {
+        make_dormer_as(t, cx, spec, false);
+    }
+
+    fn make_dormer_as(t: &mut RoofTool, cx: &mut EditorContext, spec: DormerSpec, floating: bool) {
         let main = load(cx.floor()).planes[0].id;
-        t.cmds.borrow_mut().push(Cmd::ApplyDormer(main, None, spec));
+        t.cmds
+            .borrow_mut()
+            .push(Cmd::ApplyDormer(main, None, spec, floating));
         let p = PointerEvent::at(cx, Point::new(1.0, 1.0));
         t.pointer_move(cx, p);
     }
@@ -1631,7 +1860,7 @@ mod tests {
         assert!(t.dormer_dialog.borrow().is_some());
         let spec = {
             let g = t.dormer_dialog.borrow();
-            g.as_ref().unwrap().2.spec()
+            g.as_ref().unwrap().3.spec()
         };
         assert!((spec.position_along_eave - 120.0).abs() < 1e-6);
         assert!((spec.setback_from_eave - 40.0).abs() < 1e-6);

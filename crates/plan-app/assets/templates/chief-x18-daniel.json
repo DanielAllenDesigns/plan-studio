@@ -27,6 +27,20 @@
       "kind": "Hip"
     }
   },
+  "wall_variants": {
+    "pony_upper_type": "Stucco-6",
+    "pony_lower_type": "Foundation-8",
+    "pony_split_height": 36.0,
+    "half_wall_height": 36.0,
+    "glass_type": "Glass-1",
+    "railing_type": "Railing-4",
+    "railing_height": 36.0,
+    "deck_railing_type": "Deck Railing-4",
+    "deck_edge_type": "Deck Edge-2",
+    "deck_edge_height": 9.25,
+    "fencing_type": "Fence-Wood-2",
+    "fencing_height": 72.0
+  },
   "wall_types": [
     {
       "name": "Stucco-6",
@@ -350,8 +364,499 @@
     "extension_past": 3.0,
     "auto_exterior_offset": 32.0,
     "auto_line_separation": 18.0,
-    "locate_openings_centers": true
+    "locate_openings_centers": true,
+    "text_style": "",
+    "extension_toward": 0.0,
+    "extension_proximity": 0.0,
+    "baseline_separation": 0.0,
+    "reach": 0.0,
+    "decimals": 0,
+    "arrow_style": ""
   },
+  "dimension_sets": [
+    {
+      "name": "1\" Scale",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "1\" Scale Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "1/2\" Scale",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "1/2\" Scale Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "1/4\" Scale",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "1/4\" Scale Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "1/8\" Scale",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "1/8\" Scale Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "Electrical",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "Electrical Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "Foundation",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "Foundation Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "Framing",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "Framing Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "HVAC",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "HVAC Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "Kitchen and Bath",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "Kitchen and Bath Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "Legacy NKBA",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "Legacy NKBA Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "NKBA",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "NKBA Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "Plot Plan",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "Plot Plan Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    },
+    {
+      "name": "Roof",
+      "format": {
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "length": {
+          "unit": "FeetInches",
+          "fraction_denominator": 8,
+          "decimals": 2,
+          "unit_indicators": true,
+          "trailing_zeroes": true
+        }
+      },
+      "auto": {
+        "set_name": "Roof Dimension Defaults",
+        "smallest_fraction": 8,
+        "unit_indicators": true,
+        "trailing_zeroes": true,
+        "fraction_style": "Diagonal",
+        "fraction_text_size_pct": 60,
+        "text_above_line": true,
+        "leader_style": "Square Corner",
+        "arrow_size": 2.25,
+        "extension_gap": 3.0,
+        "extension_past": 3.0,
+        "auto_exterior_offset": 32.0,
+        "auto_line_separation": 18.0,
+        "locate_openings_centers": true,
+        "text_style": "",
+        "extension_toward": 0.0,
+        "extension_proximity": 0.0,
+        "baseline_separation": 0.0,
+        "reach": 0.0,
+        "decimals": 0,
+        "arrow_style": ""
+      }
+    }
+  ],
+  "active_dimension_set": "1/4\" Scale",
   "rooms": {
     "ceiling_height": 109.125,
     "floor_finish_thickness": 0.75,
@@ -693,7 +1198,9 @@
           0,
           0
         ],
-        "line_weight": 50
+        "line_weight": 50,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Walls, Invisible",
@@ -704,7 +1211,9 @@
           150,
           150
         ],
-        "line_weight": 13
+        "line_weight": 13,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Doors",
@@ -715,7 +1224,9 @@
           70,
           200
         ],
-        "line_weight": 25
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Windows",
@@ -726,7 +1237,9 @@
           130,
           210
         ],
-        "line_weight": 25
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Rooms",
@@ -737,7 +1250,9 @@
           120,
           120
         ],
-        "line_weight": 13
+        "line_weight": 13,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Room Labels",
@@ -748,7 +1263,9 @@
           60,
           60
         ],
-        "line_weight": 18
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Dimensions, Manual",
@@ -759,7 +1276,9 @@
           0,
           0
         ],
-        "line_weight": 18
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Dimensions, Automatic",
@@ -770,7 +1289,9 @@
           128,
           0
         ],
-        "line_weight": 18
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Text",
@@ -781,7 +1302,9 @@
           0,
           0
         ],
-        "line_weight": 18
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "CAD, Default",
@@ -792,7 +1315,9 @@
           0,
           0
         ],
-        "line_weight": 25
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Cabinets, Base",
@@ -803,7 +1328,9 @@
           90,
           43
         ],
-        "line_weight": 25
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Cabinets, Wall",
@@ -814,7 +1341,9 @@
           125,
           75
         ],
-        "line_weight": 18
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Electrical",
@@ -825,7 +1354,9 @@
           120,
           0
         ],
-        "line_weight": 18
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Stairs",
@@ -836,7 +1367,9 @@
           90,
           90
         ],
-        "line_weight": 25
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Roof Planes",
@@ -847,7 +1380,9 @@
           0,
           128
         ],
-        "line_weight": 25
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
       },
       {
         "name": "Framing",
@@ -858,7 +1393,257 @@
           140,
           60
         ],
-        "line_weight": 18
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
+      }
+    ]
+  },
+  "layer_sets": {
+    "sets": [
+      {
+        "name": "Default Set",
+        "states": [
+          {
+            "layer": "Walls, Normal",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Walls, Invisible",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Doors",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Windows",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Rooms",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Room Labels",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Dimensions, Manual",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Dimensions, Automatic",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Text",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "CAD, Default",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Cabinets, Base",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Cabinets, Wall",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Electrical",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Stairs",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Roof Planes",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Framing",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          }
+        ]
+      }
+    ],
+    "active": "Default Set"
+  },
+  "text_styles": {
+    "styles": [
+      {
+        "name": "Default Text Style",
+        "font": "Arial",
+        "height_in": 6.0,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 9.0
+      },
+      {
+        "name": "1/4\" Text Style",
+        "font": "Arial",
+        "height_in": 6.0,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 9.0
+      },
+      {
+        "name": "Room Label Style",
+        "font": "Arial",
+        "height_in": 6.0,
+        "bold": true,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 9.0
+      },
+      {
+        "name": "Schedule Style",
+        "font": "Arial",
+        "height_in": 4.5,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 6.75
+      },
+      {
+        "name": "Default Label Style",
+        "font": "Arial",
+        "height_in": 4.5,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 6.75
+      },
+      {
+        "name": "Dimension Text Style",
+        "font": "Arial",
+        "height_in": 4.5,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 6.75
       }
     ]
   },
@@ -875,18 +1660,14 @@
   "units": {
     "imperial": true
   },
-  "wall_variants": {
-    "pony_upper_type": "Stucco-6",
-    "pony_lower_type": "Foundation-8",
-    "pony_split_height": 36.0,
-    "half_wall_height": 36.0,
-    "glass_type": "Glass-1",
-    "railing_type": "Railing-4",
-    "railing_height": 36.0,
-    "deck_railing_type": "Deck Railing-4",
-    "deck_edge_type": "Deck Edge-2",
-    "deck_edge_height": 9.25,
-    "fencing_type": "Fence-Wood-2",
-    "fencing_height": 72.0
+  "walls_connect": {
+    "split_on_tee": true,
+    "connect_distance_min": 6.0
+  },
+  "editing": {
+    "angle_snap_deg": 15.0,
+    "snap_distance_px": 10.0,
+    "bumping": true,
+    "bumping_distance": 5.0
   }
 }

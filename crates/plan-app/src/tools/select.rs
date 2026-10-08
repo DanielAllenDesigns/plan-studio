@@ -22,13 +22,14 @@ use crate::editor::rooms_edit;
 use crate::editor::selection::{extra_in_rect, hit_test_cx, layer_of};
 use crate::editor::snap::snap_to_grid;
 use crate::editor::stairs_view::{self, StairHandleKind};
-use crate::editor::{placed, roof_view, site_view, tempdim};
+use crate::editor::{foundation_view, framing_view, placed, roof_view, site_view, tempdim};
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, EditorRequest, ObjectRef};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use crate::toolbar::ViewFlag;
 use crate::tools::camera::{self as camera_tool, CamHandle};
 use eframe::egui::{self, Key, Pos2, Rect, Shape, Stroke};
 use plan_core::cad::CadItem;
+use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::{
     dist_to_segment, point_in_polygon, project_on_segment, segment_intersection, Point,
 };
@@ -59,6 +60,12 @@ enum Op {
     DeviceMove(Id),
     RoofMove(Id),
     RoofVertex(Id, usize),
+    /// Corner `n` of a slab, slab hole or platform hole.
+    FoundationVertex(Id, usize),
+    /// One end (`true`: the second point) of a framing member or layout line.
+    FramingEnd(Id, bool),
+    /// Corner `n` of a Truss Base.
+    FramingVertex(Id, usize),
     Camera(Id, CamHandle),
 }
 
@@ -78,6 +85,9 @@ impl Op {
             Op::DeviceMove(_) => "Move Device",
             Op::RoofMove(_) => "Move Roof Plane",
             Op::RoofVertex(..) => "Reshape Roof Plane",
+            Op::FoundationVertex(..) => "Reshape Foundation Object",
+            Op::FramingEnd(..) => "Stretch Framing",
+            Op::FramingVertex(..) => "Reshape Truss Base",
             Op::Camera(..) => "Edit Camera",
         }
     }
@@ -367,6 +377,10 @@ impl SelectTool {
             (ObjectRef::Device(id), HandleKind::Move) => Op::DeviceMove(id),
             (ObjectRef::RoofPlane(id), HandleKind::Move) => Op::RoofMove(id),
             (ObjectRef::RoofPlane(id), HandleKind::Reshape(i)) => Op::RoofVertex(id, i),
+            (ObjectRef::Foundation(id), HandleKind::Reshape(i)) => Op::FoundationVertex(id, i),
+            (ObjectRef::Framing(id), HandleKind::ResizeStart) => Op::FramingEnd(id, false),
+            (ObjectRef::Framing(id), HandleKind::ResizeEnd) => Op::FramingEnd(id, true),
+            (ObjectRef::Framing(id), HandleKind::Reshape(i)) => Op::FramingVertex(id, i),
             (ObjectRef::Wall(id), HandleKind::ResizeStart) => Op::WallEnd(id, WallEnd::Start),
             (ObjectRef::Wall(id), HandleKind::ResizeEnd) => Op::WallEnd(id, WallEnd::End),
             (ObjectRef::Wall(id), HandleKind::PerpendicularMove) => Op::WallMove(id),
@@ -547,6 +561,30 @@ impl SelectTool {
                     r.move_vertex(i, to);
                     roof_view::store(&mut cx.project, fl, &mut set);
                 }
+            }
+            Op::FoundationVertex(id, i) => {
+                let to = cx.snap_at(p.world, None, alt, &[]).point;
+                let mut layer = FoundationLayer::load(&a.original.floors[fl]);
+                if let Some(r) = layer.find(id) {
+                    if foundation_view::move_vertex_in(&mut layer, r, i, to) {
+                        foundation_view::save(&mut cx.project, fl, &layer);
+                    }
+                }
+            }
+            Op::FramingEnd(id, at_end) => {
+                let other = framing_view::find(&a.original.floors[fl], id)
+                    .and_then(|r| r.line_ends())
+                    .map(|(s, e)| if at_end { s } else { e });
+                if let Some(fixed) = other {
+                    let to = cx.snap_at(p.world, Some(fixed), alt, &[]).point;
+                    if to.dist(fixed) >= framing_view::MIN_MEMBER {
+                        framing_view::move_end_in(&mut cx.project.floors[fl], id, at_end, to);
+                    }
+                }
+            }
+            Op::FramingVertex(id, i) => {
+                let to = cx.snap_at(p.world, None, alt, &[]).point;
+                framing_view::move_vertex_in(&mut cx.project.floors[fl], id, i, to);
             }
             Op::Camera(id, h) => {
                 if let Some(orig) = a.original.camera(id).cloned() {
@@ -1397,5 +1435,157 @@ mod tests {
         // Delete removes it.
         t.key(&mut cx, KeyEvent::key(Key::Delete));
         assert!(roof_view::load(cx.floor()).ceilings.is_empty());
+    }
+
+    #[test]
+    fn select_picks_stretches_moves_and_deletes_framing() {
+        use crate::editor::framing_view::{self, Record};
+        use plan_framing::{FramingMember, ManualMemberKind};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let m = framing_view::new_member(
+            cx.floor(),
+            ManualMemberKind::Joist,
+            Point::new(0.0, 48.0),
+            Point::new(192.0, 48.0),
+        );
+        let id = framing_view::add_record(&mut cx, "Place Joist", |id| {
+            Record::Manual(FramingMember { id, ..m })
+        });
+        cx.selection.clear();
+        cx.refresh();
+        let mut t = SelectTool::default();
+        // A click selects it as a Framing object on its framing layer.
+        let p = ev(&cx, 96.0, 48.0);
+        t.pointer_down(&mut cx, p.with_down(true));
+        t.pointer_up(&mut cx, p);
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Framing(id)));
+        assert!(ObjectRef::Framing(id).exists(cx.floor()));
+        assert_eq!(
+            layer_of(cx.floor(), ObjectRef::Framing(id)).as_deref(),
+            Some("Framing, Floor Joists")
+        );
+        // The tools share the selection with framing_view.
+        assert_eq!(framing_view::selected(&cx), vec![id]);
+        // It has an end handle at each end.
+        let hs = handles::handles_for(&cx, cx.px_per_in);
+        assert_eq!(hs.len(), 2);
+        assert_eq!(hs[1].kind, HandleKind::ResizeEnd);
+        assert_eq!(hs[1].pos, Point::new(192.0, 48.0));
+        // Dragging the end handle stretches the joist, as one undo step.
+        drag(&mut t, &mut cx, (192.0, 48.0), (264.0, 48.0));
+        let len = |cx: &EditorContext| match framing_view::find(cx.floor(), id) {
+            Some(Record::Manual(m)) => m.plan_length(),
+            other => panic!("{other:?}"),
+        };
+        assert!((len(&cx) - 264.0).abs() < 1e-6, "{}", len(&cx));
+        assert_eq!(cx.undo_label(), Some("Stretch Framing"));
+        // Dragging the body moves it.
+        drag(&mut t, &mut cx, (120.0, 48.0), (120.0, 96.0));
+        let Some(Record::Manual(m)) = framing_view::find(cx.floor(), id) else {
+            panic!("the joist is gone");
+        };
+        assert!((m.start.y - 96.0).abs() < 1e-6 && (m.end.y - 96.0).abs() < 1e-6);
+        assert_eq!(cx.undo_label(), Some("Move Objects"));
+        // Double-click asks for the specification.
+        cx.requests.clear();
+        let at = ev(&cx, 120.0, 96.0);
+        assert!(t.double_click(&mut cx, at).consumed);
+        assert!(cx
+            .requests
+            .iter()
+            .any(|r| matches!(r, EditorRequest::OpenSpec(ObjectRef::Framing(i)) if *i == id)));
+        // Box select finds it; Delete removes it and undo brings it back.
+        let boxed = objects_in_rect(&cx, Point::new(-10.0, 0.0), Point::new(400.0, 200.0));
+        assert!(boxed.contains(&ObjectRef::Framing(id)));
+        assert!(t.key(&mut cx, KeyEvent::key(Key::Delete)).consumed);
+        assert!(framing_view::find(cx.floor(), id).is_none());
+        assert!(cx.selection.is_empty());
+        assert_eq!(cx.undo().as_deref(), Some("Delete Framing"));
+        assert!(framing_view::find(cx.floor(), id).is_some());
+    }
+
+    #[test]
+    fn truss_base_corners_and_posts_in_the_selection() {
+        use crate::editor::framing_view::{self, Record};
+        use plan_framing::{FramingMember, ManualMemberKind, TrussBase};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let base = framing_view::add_record(&mut cx, "Place Truss Base", |id| Record::TrussBase {
+            id,
+            base: TrussBase::new(
+                vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(240.0, 0.0),
+                    Point::new(240.0, 144.0),
+                    Point::new(0.0, 144.0),
+                ],
+                109.0,
+            ),
+        });
+        let post = framing_view::new_member(
+            cx.floor(),
+            ManualMemberKind::Post,
+            Point::new(300.0, 72.0),
+            Point::new(300.0, 72.0),
+        );
+        let post_id = framing_view::add_record(&mut cx, "Place Post", |id| {
+            Record::Manual(FramingMember { id, ..post })
+        });
+        cx.selection.set(ObjectRef::Framing(base));
+        cx.refresh();
+        // One corner handle per base corner; a post has none.
+        let hs = handles::handles_for(&cx, cx.px_per_in);
+        assert_eq!(hs.len(), 4);
+        assert!(hs.iter().all(|h| matches!(h.kind, HandleKind::Reshape(_))));
+        let mut t = SelectTool::default();
+        drag(&mut t, &mut cx, (240.0, 144.0), (288.0, 168.0));
+        let Some(Record::TrussBase { base: b, .. }) = framing_view::find(cx.floor(), base) else {
+            panic!("the base is gone");
+        };
+        assert_eq!(b.points[2], Point::new(288.0, 168.0));
+        assert_eq!(cx.undo_label(), Some("Reshape Truss Base"));
+        cx.selection.set(ObjectRef::Framing(post_id));
+        assert!(handles::handles_for(&cx, cx.px_per_in).is_empty());
+    }
+
+    #[test]
+    fn slab_corners_are_dragged_with_handles() {
+        use plan_core::foundation::rect_outline;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let slab = foundation_view::add_slab(
+            &mut cx,
+            rect_outline(Point::new(0.0, 0.0), Point::new(240.0, 180.0)),
+            false,
+        );
+        let hole = foundation_view::add_platform_hole(
+            &mut cx,
+            rect_outline(Point::new(60.0, 60.0), Point::new(108.0, 108.0)),
+            plan_core::foundation::PlatformKind::Floor,
+        );
+        cx.selection.set(ObjectRef::Foundation(slab));
+        cx.refresh();
+        let hs = handles::handles_for(&cx, cx.px_per_in);
+        assert_eq!(hs.len(), 4);
+        let corner = hs[2].pos;
+        let mut t = SelectTool::default();
+        drag(
+            &mut t,
+            &mut cx,
+            (corner.x, corner.y),
+            (corner.x + 48.0, corner.y + 24.0),
+        );
+        let moved = foundation_view::load(&cx).slab(slab).unwrap().outline[2];
+        assert!(
+            (moved.x - corner.x - 48.0).abs() < 1e-6 && (moved.y - corner.y - 24.0).abs() < 1e-6,
+            "{moved:?}"
+        );
+        assert_eq!(cx.undo_label(), Some("Reshape Foundation Object"));
+        cx.undo();
+        assert_eq!(
+            foundation_view::load(&cx).slab(slab).unwrap().outline[2],
+            corner
+        );
+        // Platform holes have corner handles too.
+        cx.selection.set(ObjectRef::Foundation(hole));
+        assert_eq!(handles::handles_for(&cx, cx.px_per_in).len(), 4);
     }
 }

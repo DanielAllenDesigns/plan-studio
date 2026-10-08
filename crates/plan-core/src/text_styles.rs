@@ -55,6 +55,18 @@ impl TextStyle {
         }
     }
 
+    /// The same style in another font (`Avenir`).
+    pub fn with_font(mut self, font: impl Into<String>) -> Self {
+        self.font = font.into();
+        self
+    }
+
+    /// The same style with italic set or cleared.
+    pub fn with_italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
+        self
+    }
+
     /// Plan character height when drawn at `inches_per_foot` paper scale
     /// (0.25 for 1/4" scale).
     pub fn height_for_scale(&self, inches_per_foot: f64) -> f64 {

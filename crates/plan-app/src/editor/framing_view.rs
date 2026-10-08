@@ -38,7 +38,7 @@
 //! outline of each piece of lumber. 3D meshes of the manual members come from
 //! [`manual_framing_meshes`]; DXF export adds them from [`floor_dxf`].
 
-use super::{Camera, EditorContext};
+use super::{Camera, EditorContext, ObjectRef};
 use crate::editor::roof_view;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Shape, Stroke};
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
@@ -53,7 +53,6 @@ use plan_framing::{
 use plan_roof::{Roof, RoofPlane, DEFAULT_FASCIA_HEIGHT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::cell::RefCell;
 
 /// The layer framing is drawn on.
 pub const LAYER: &str = "Framing";
@@ -670,6 +669,81 @@ impl Record {
         }
     }
 
+    /// The points that bound the record in plan (box selection).
+    pub fn extent(&self) -> Vec<Point> {
+        match self {
+            Record::Manual(m) | Record::Built(m) => {
+                let o = member_outline(m);
+                if o.is_empty() {
+                    vec![m.start, m.end]
+                } else {
+                    o
+                }
+            }
+            Record::JoistDirection { dir, .. } => vec![dir.line.0, dir.line.1],
+            Record::TrussDirection { dir, .. } => vec![dir.line.0, dir.line.1],
+            Record::BearingLine { line, .. } => vec![line.line.0, line.line.1],
+            Record::Marker { marker, .. } => vec![marker.point],
+            Record::TrussBase { base, .. } => base.points.clone(),
+        }
+    }
+
+    /// The two end points of a record drawn as a line: members that run from
+    /// start to end (not posts) and the direction and bearing lines.
+    pub fn line_ends(&self) -> Option<(Point, Point)> {
+        match self {
+            Record::Manual(m) | Record::Built(m)
+                if m.kind.is_physical() && !m.kind.is_vertical() =>
+            {
+                Some((m.start, m.end))
+            }
+            Record::JoistDirection { dir, .. } => Some(dir.line),
+            Record::TrussDirection { dir, .. } => Some(dir.line),
+            Record::BearingLine { line, .. } => Some(line.line),
+            _ => None,
+        }
+    }
+
+    /// Moves one end of a line record to `to` (`at_end`: the second point).
+    /// Returns whether the record has ends to move.
+    fn set_end(&mut self, at_end: bool, to: Point) -> bool {
+        let slot = match self {
+            Record::Manual(m) | Record::Built(m)
+                if m.kind.is_physical() && !m.kind.is_vertical() =>
+            {
+                if at_end {
+                    &mut m.end
+                } else {
+                    &mut m.start
+                }
+            }
+            Record::JoistDirection { dir, .. } => {
+                if at_end {
+                    &mut dir.line.1
+                } else {
+                    &mut dir.line.0
+                }
+            }
+            Record::TrussDirection { dir, .. } => {
+                if at_end {
+                    &mut dir.line.1
+                } else {
+                    &mut dir.line.0
+                }
+            }
+            Record::BearingLine { line, .. } => {
+                if at_end {
+                    &mut line.line.1
+                } else {
+                    &mut line.line.0
+                }
+            }
+            _ => return false,
+        };
+        *slot = to;
+        true
+    }
+
     /// Whether `p` is on the record, within `tol` inches.
     pub fn hit(&self, p: Point, tol: f64) -> bool {
         match self {
@@ -853,11 +927,9 @@ pub fn delete_records(cx: &mut EditorContext, ids: &[Id]) -> usize {
     }
     cx.begin_change("Delete Framing");
     store_records(cx.floor_mut(), &records);
-    let kept: Vec<Id> = selected()
-        .into_iter()
-        .filter(|i| !ids.contains(i))
-        .collect();
-    select(kept);
+    cx.selection
+        .items
+        .retain(|o| !matches!(o, ObjectRef::Framing(i) if ids.contains(i)));
     cx.mark_dirty();
     cx.refresh();
     n
@@ -883,6 +955,61 @@ pub fn move_records(cx: &mut EditorContext, ids: &[Id], delta: Point) -> usize {
     cx.mark_dirty();
     cx.refresh();
     n
+}
+
+/// Translates the records `ids` of `floor` by `d` without opening an undo
+/// step (group drags and nudges inside the caller's step). Returns how many
+/// moved.
+pub fn translate_in(floor: &mut Floor, ids: &[Id], d: Point) -> usize {
+    let mut records = load_records(floor);
+    let mut n = 0;
+    for r in records.iter_mut().filter(|r| ids.contains(&r.id())) {
+        r.translate(d);
+        n += 1;
+    }
+    if n > 0 {
+        store_records(floor, &records);
+    }
+    n
+}
+
+/// Moves one end of the line record `id` of `floor` to `to` (an end handle
+/// drag; the caller owns the undo step). A moved member becomes a manual
+/// one, so a rebuild keeps it.
+pub fn move_end_in(floor: &mut Floor, id: Id, at_end: bool, to: Point) -> bool {
+    let mut records = load_records(floor);
+    let Some(slot) = records.iter_mut().find(|r| r.id() == id) else {
+        return false;
+    };
+    if !slot.set_end(at_end, to) {
+        return false;
+    }
+    let promoted = match &*slot {
+        Record::Built(m) => Some(Record::Manual(m.clone())),
+        _ => None,
+    };
+    if let Some(p) = promoted {
+        *slot = p;
+    }
+    store_records(floor, &records);
+    true
+}
+
+/// Moves corner `i` of the Truss Base `id` of `floor` to `to` (a vertex
+/// handle drag; the caller owns the undo step).
+pub fn move_vertex_in(floor: &mut Floor, id: Id, i: usize, to: Point) -> bool {
+    let mut records = load_records(floor);
+    let moved = records
+        .iter_mut()
+        .find(|r| r.id() == id)
+        .is_some_and(|r| match r {
+            Record::TrussBase { base, .. } => base.points.get_mut(i).map(|v| *v = to).is_some(),
+            _ => false,
+        });
+    if moved {
+        store_records(floor, &records);
+    }
+    moved
 }
 
 /// Applies the Framing Member Specification: the draft replaces the member
@@ -918,20 +1045,23 @@ pub fn pick(floor: &Floor, p: Point, tol: f64) -> Option<Id> {
         .map(Record::id)
 }
 
-// ----- selection (thread-local: `ObjectRef` has no framing variant) -----
-
-thread_local! {
-    static SELECTED: RefCell<Vec<Id>> = const { RefCell::new(Vec::new()) };
-}
+// ----- selection (`ObjectRef::Framing` in `cx.selection`) -----
 
 /// The selected manual records.
-pub fn selected() -> Vec<Id> {
-    SELECTED.with(|s| s.borrow().clone())
+pub fn selected(cx: &EditorContext) -> Vec<Id> {
+    cx.selection
+        .items
+        .iter()
+        .filter_map(|o| match o {
+            ObjectRef::Framing(id) => Some(*id),
+            _ => None,
+        })
+        .collect()
 }
 
-/// Replaces the selection.
-pub fn select(ids: Vec<Id>) {
-    SELECTED.with(|s| *s.borrow_mut() = ids);
+/// Replaces the selection with these records.
+pub fn select(cx: &mut EditorContext, ids: Vec<Id>) {
+    cx.selection.items = ids.into_iter().map(ObjectRef::Framing).collect();
 }
 
 // ----- geometry -----
@@ -1134,7 +1264,7 @@ pub fn draw_manual(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     if records.is_empty() {
         return;
     }
-    let picked = selected();
+    let picked = selected(cx);
     for r in &records {
         if !cx.layers().is_visible(r.layer()) {
             continue;

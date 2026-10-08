@@ -5,7 +5,8 @@
 //! [`extra_in_rect`] ask the view module that owns the kind.
 
 use super::{
-    foundation_view, placed, roof_view, rooms_edit, site_view, stairs_view, EditorContext,
+    foundation_view, framing_view, placed, roof_view, rooms_edit, site_view, stairs_view,
+    EditorContext,
 };
 use crate::tools::camera as camera_tool;
 use plan_core::cad::CadItem;
@@ -40,6 +41,9 @@ pub enum ObjectRef {
     /// A slab, slab hole, pad, pier or platform hole
     /// (`FoundationLayer::find(id)` tells which).
     Foundation(Id),
+    /// A manually placed framing object: a member or a layout line
+    /// (`framing_view::Record`).
+    Framing(Id),
 }
 
 impl ObjectRef {
@@ -56,7 +60,8 @@ impl ObjectRef {
             | ObjectRef::Camera(i)
             | ObjectRef::Text(i)
             | ObjectRef::Device(i)
-            | ObjectRef::Foundation(i) => i,
+            | ObjectRef::Foundation(i)
+            | ObjectRef::Framing(i) => i,
             ObjectRef::Room(i) => i as Id,
             ObjectRef::Terrain => 0,
         }
@@ -79,6 +84,7 @@ impl ObjectRef {
             ObjectRef::Room(_) => "Room",
             ObjectRef::Terrain => "Terrain",
             ObjectRef::Foundation(_) => "Foundation Object",
+            ObjectRef::Framing(_) => "Framing Object",
         }
     }
 
@@ -97,6 +103,7 @@ impl ObjectRef {
             ObjectRef::RoofPlane(i) => roof_view::exists(floor, i),
             ObjectRef::Device(i) => site_view::load_electrical(floor).device(i).is_some(),
             ObjectRef::Foundation(i) => FoundationLayer::load(floor).find(i).is_some(),
+            ObjectRef::Framing(i) => framing_view::find(floor, i).is_some(),
             ObjectRef::Camera(_) | ObjectRef::Room(_) | ObjectRef::Terrain => false,
         }
     }
@@ -204,6 +211,7 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
             let layer = FoundationLayer::load(floor);
             layer.find(i).and_then(|r| layer.layer_of(r))
         }
+        ObjectRef::Framing(i) => framing_view::find(floor, i).map(|r| r.layer().to_string()),
         ObjectRef::Device(_) => Some(site_view::ELECTRICAL_LAYER.to_string()),
         ObjectRef::Camera(_) => Some(camera_tool::CAMERA_LAYER.to_string()),
         ObjectRef::Terrain => Some(site_view::TERRAIN_LAYER.to_string()),
@@ -410,6 +418,14 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
         }
     }
 
+    // Placed framing members and layout lines (the topmost one).
+    if let Some(id) = framing_view::pick(floor, p, tol) {
+        let r = ObjectRef::Framing(id);
+        if visible(r) {
+            out.push(r);
+        }
+    }
+
     let roofs = roof_view::load(floor);
     let mut interior = None;
     for (id, _, polys) in roofs.pick_polys().iter().rev() {
@@ -501,6 +517,13 @@ pub fn extra_in_rect(cx: &EditorContext, lo: Point, hi: Point, crossing: bool) -
         let o = ObjectRef::Foundation(r.id());
         if usable(o) {
             out.push(o);
+        }
+    }
+    for rec in framing_view::load_records(floor) {
+        let r = ObjectRef::Framing(rec.id());
+        let pts = rec.extent();
+        if !pts.is_empty() && usable(r) && hit(&pts) {
+            out.push(r);
         }
     }
     for c in cx.project.cameras_on(cx.floor) {

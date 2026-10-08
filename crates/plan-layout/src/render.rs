@@ -25,7 +25,13 @@ use plan_docs::{PdfColor, PdfDoc, CHIEF_SHEET_BACKGROUND};
 use plan_elevation::{
     elevation, section, Drawing, EdgeKind, Line2, LineWeight, Options, RegionKind,
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::f64::consts::TAU;
+use std::rc::Rc;
+
+/// Produces the 2D drawing of a camera object for [`BoxSource::Camera`] boxes.
+pub type CameraDrawingFn<'a> = Box<dyn Fn(plan_core::Id) -> Option<Drawing> + 'a>;
 
 /// Everything a layout needs from the rest of the model when it is drawn.
 pub struct LayoutRenderContext<'a> {
@@ -35,6 +41,11 @@ pub struct LayoutRenderContext<'a> {
     /// The 3D scene for elevations and sections; built with `plan_3d::build_scene` when `None`.
     pub scene: Option<&'a Scene>,
     pub macros: MacroContext,
+    /// Draws a camera's elevation or section for [`BoxSource::Camera`] boxes.
+    /// The application supplies it (it knows the camera's render options), so
+    /// this crate does not depend on it. Each camera is asked once per context.
+    pub camera_drawing: Option<CameraDrawingFn<'a>>,
+    camera_cache: RefCell<HashMap<plan_core::Id, Option<Rc<Drawing>>>>,
 }
 
 impl<'a> LayoutRenderContext<'a> {
@@ -53,7 +64,34 @@ impl<'a> LayoutRenderContext<'a> {
                 project_name: project.name.clone(),
                 ..MacroContext::default()
             },
+            camera_drawing: None,
+            camera_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Sets [`camera_drawing`](Self::camera_drawing).
+    pub fn with_camera_drawing(
+        mut self,
+        f: impl Fn(plan_core::Id) -> Option<Drawing> + 'a,
+    ) -> Self {
+        self.camera_drawing = Some(Box::new(f));
+        self.camera_cache.borrow_mut().clear();
+        self
+    }
+
+    /// The drawing of camera `id` from the hook (cached; `None` without a hook
+    /// or when the hook has no drawing for it).
+    pub(crate) fn camera_drawing_for(&self, id: plan_core::Id) -> Option<Rc<Drawing>> {
+        if let Some(hit) = self.camera_cache.borrow().get(&id) {
+            return hit.clone();
+        }
+        let drawn = self
+            .camera_drawing
+            .as_ref()
+            .and_then(|f| f(id))
+            .map(Rc::new);
+        self.camera_cache.borrow_mut().insert(id, drawn.clone());
+        drawn
     }
 }
 
@@ -504,6 +542,11 @@ fn box_prims(b: &LayoutBox, cx: &LayoutRenderContext, scenes: &SceneSource) -> V
                     }
                     draw_drawing(&mut cv, &section(scene, *cut, &opts), &tp, lws);
                 }
+                BoxSource::Camera { camera_id } => {
+                    if let Some(d) = cx.camera_drawing_for(*camera_id) {
+                        draw_drawing(&mut cv, &d, &tp, lws);
+                    }
+                }
                 BoxSource::CadDetail { items, .. } => {
                     let layers = &cx.project.layers;
                     for o in items {
@@ -574,6 +617,7 @@ fn is_scaled(source: &BoxSource) -> bool {
         BoxSource::PlanView { .. }
             | BoxSource::Elevation { .. }
             | BoxSource::Section { .. }
+            | BoxSource::Camera { .. }
             | BoxSource::CadDetail { .. }
     )
 }

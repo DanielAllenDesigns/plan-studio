@@ -8,6 +8,7 @@
 pub mod actions;
 pub mod camera;
 pub mod connect;
+pub mod details_view;
 pub mod dispatch;
 pub mod foundation_view;
 pub mod framing_view;

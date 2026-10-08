@@ -27,10 +27,14 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     draw_rooms(cx, painter, cam);
     // Slabs, pads and piers sit under the walls.
     crate::editor::foundation_view::draw_foundation(cx, painter, cam);
+    // Floor material regions, decks and 3D solids sit under the walls too.
+    crate::editor::details_view::draw_under(cx, painter, cam);
     crate::editor::stairs_view::draw_stairs(cx, painter, cam);
     crate::editor::placed::draw_placed(cx, painter, cam);
     crate::editor::roof_view::draw_roofs(cx, painter, cam);
     draw_walls(cx, painter, cam);
+    // Wall hatching and wall regions, corner trim and moldings over the walls.
+    crate::editor::details_view::draw_over(cx, painter, cam);
     let floor = cx.floor();
     for wall in &floor.walls {
         for o in floor.openings_on(wall.id) {

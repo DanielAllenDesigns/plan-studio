@@ -154,9 +154,12 @@ Change Line/Arc, Convert to Polyline, Make Arc Tangent, Fillet and Chamfer are (
 Every object belongs to one layer. Daniel's template starts with 16 layers (Walls,
 Normal; Walls, Invisible; Doors; Windows; Rooms; Room Labels; Dimensions, Manual;
 Dimensions, Automatic; Text; CAD, Default; Cabinets, Base; Cabinets, Wall; Electrical;
-Stairs; Roof Planes; Framing), each with a color and line weight. Data layers such as
-`Roof Planes, Data`, `Electrical, Data` and `Terrain, Data` are hidden and locked by the
-program; they store roof, electrical and terrain records (see chapters 8 and 9).
+Stairs; Roof Planes; Framing), each with a color and line weight. The tools add layers as they
+need them: `Ceiling Planes`, `Slabs`, `Piers/Pads`, `Floors, Holes`, `Ceilings, Holes`, `Deck Railing`,
+`Fencing` and the manual framing layers (`Framing, Floor Joists`, `Framing, Rafters`, `Framing, Posts`,
+`Framing, Beams`, `Framing, Trusses`). Roof, electrical, terrain and slab data no longer ride on
+hidden `... , Data` layers: they live in typed fields of the plan, as does framing (chapter 12.2), and files
+that still carry those layers are converted when opened.
 
 **Active Layer Display Options** (view bar, View menu, Tools > Layer Settings > Display
 Options...) shows a table with Name, Used (object count), Disp and Lock, plus Color.

@@ -21,7 +21,8 @@
 //!
 //! The objects live in `Floor.framing` through `editor::framing_view`; Build
 //! Framing honors the direction lines, bearing lines, markers and truss bases.
-//! Selection is kept in `framing_view` (`ObjectRef` has no framing variant).
+//! The selection is `ObjectRef::Framing` in `cx.selection`, shared with the
+//! Select tool (which also moves, reshapes and deletes framing objects).
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::framing::FramingMemberDialog;
@@ -255,7 +256,7 @@ impl FramingTool {
                 }),
             }
         };
-        framing_view::select(vec![id]);
+        framing_view::select(cx, vec![id]);
         cx.status = format!("{} placed ({})", v.name(), cx.fmt_dim(a.dist(b)));
         ToolResult::committed(&label)
     }
@@ -274,7 +275,7 @@ impl FramingTool {
             id,
             base: TrussBase::new(pts, elevation),
         });
-        framing_view::select(vec![id]);
+        framing_view::select(cx, vec![id]);
         cx.status = "Truss Base placed".into();
         ToolResult::committed(label)
     }
@@ -294,13 +295,13 @@ impl FramingTool {
                 },
             })
         };
-        framing_view::select(vec![id]);
+        framing_view::select(cx, vec![id]);
         cx.status = format!("{} placed", v.name());
         ToolResult::committed(&label)
     }
 
     fn delete_picked(&mut self, cx: &mut EditorContext) -> ToolResult {
-        let mut ids = framing_view::selected();
+        let mut ids = framing_view::selected(cx);
         if ids.is_empty() {
             if let Some(h) = self.hover {
                 ids.extend(framing_view::pick(cx.floor(), h, cx.pick_tol()));
@@ -322,7 +323,7 @@ impl FramingTool {
         let Some(id) = framing_view::pick(cx.floor(), at, cx.pick_tol()) else {
             return ToolResult::consumed();
         };
-        framing_view::select(vec![id]);
+        framing_view::select(cx, vec![id]);
         match framing_view::find(cx.floor(), id) {
             Some(Record::Manual(m) | Record::Built(m)) => {
                 let layers = cx.project.layers.layers.iter().map(|l| l.name.clone());
@@ -383,7 +384,9 @@ impl Tool for FramingTool {
         self.reset(cx);
         *self.dialog.borrow_mut() = None;
         *self.applied.borrow_mut() = None;
-        framing_view::select(Vec::new());
+        cx.selection
+            .items
+            .retain(|o| !matches!(o, crate::editor::ObjectRef::Framing(_)));
     }
 
     fn frame(&mut self, cx: &mut EditorContext, _ctx: &egui::Context) {
@@ -400,7 +403,7 @@ impl Tool for FramingTool {
         // Shift or Cmd picks; a drag moves the pick.
         if p.modifiers.shift || p.modifiers.command {
             let hit = framing_view::pick(cx.floor(), p.world, cx.pick_tol());
-            let mut sel = framing_view::selected();
+            let mut sel = framing_view::selected(cx);
             match hit {
                 Some(id) if p.modifiers.shift && sel.contains(&id) => sel.retain(|i| *i != id),
                 Some(id) if p.modifiers.shift => sel.push(id),
@@ -408,7 +411,7 @@ impl Tool for FramingTool {
                 None => sel.clear(),
             }
             self.moving = hit.map(|_| p.snapped);
-            framing_view::select(sel);
+            framing_view::select(cx, sel);
             return ToolResult::consumed();
         }
         match self.variant.draw() {
@@ -445,7 +448,7 @@ impl Tool for FramingTool {
             return r;
         }
         if let Some(last) = self.moving {
-            let ids = framing_view::selected();
+            let ids = framing_view::selected(cx);
             let to = p.snapped;
             if framing_view::move_records(cx, &ids, to - last) > 0 {
                 self.moving = Some(to);
@@ -514,8 +517,8 @@ impl Tool for FramingTool {
                 self.reset(cx);
                 return ToolResult::consumed();
             }
-            if !framing_view::selected().is_empty() {
-                framing_view::select(Vec::new());
+            if !framing_view::selected(cx).is_empty() {
+                framing_view::select(cx, Vec::new());
                 return ToolResult::consumed();
             }
             return ToolResult::ignored();
@@ -697,7 +700,7 @@ mod tests {
         assert!((m.elevation_bottom + m.depth + 0.75).abs() < 1e-9);
         assert!(cx.layers().is_visible("Framing, Floor Joists"));
         assert_eq!(cx.undo_label(), Some("Place Joist"));
-        assert!(framing_view::selected().contains(&m.id));
+        assert!(framing_view::selected(&cx).contains(&m.id));
         cx.undo();
         assert!(records(&cx).is_empty());
         cx.redo();
@@ -726,7 +729,7 @@ mod tests {
         assert!(t.start.is_none());
         // The next Esc drops the selection, and an idle Esc leaves the tool.
         assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
-        assert!(framing_view::selected().is_empty());
+        assert!(framing_view::selected(&cx).is_empty());
         assert!(
             !t.key(&mut cx, KeyEvent::escape()).consumed,
             "idle Esc leaves the tool"
@@ -797,12 +800,12 @@ mod tests {
         let mut t = tool(FramingVariant::Joist);
         drag(&mut t, &mut cx, (20.0, 40.0), (200.0, 40.0));
         let id = records(&cx)[0].id();
-        framing_view::select(Vec::new());
+        framing_view::select(&mut cx, Vec::new());
         // Shift-click on the joist picks it, a drag moves it.
         let shift = egui::Modifiers::SHIFT;
         let e = ev(&cx, 100.0, 40.0).with_modifiers(shift);
         t.pointer_down(&mut cx, e);
-        assert_eq!(framing_view::selected(), vec![id]);
+        assert_eq!(framing_view::selected(&cx), vec![id]);
         let e = ev(&cx, 100.0, 70.0).with_modifiers(shift).with_down(true);
         t.pointer_move(&mut cx, e);
         let e = ev(&cx, 100.0, 70.0);

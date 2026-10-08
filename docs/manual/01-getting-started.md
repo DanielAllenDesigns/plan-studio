@@ -162,8 +162,8 @@ Configuration, Space Planning Configuration, Extended Tool Configuration
 
 Select Objects | Wall flyouts (chapter 2) | Door and Window flyouts (3) |
 Cabinet and Electrical flyouts (6, 9) | Stairs and Floor flyouts (7, 4) |
-Roof, Trim, Framing, Slab and 3D Solid flyouts (8; Trim, Slab and 3D Solid are
-planned; of Framing only Build Framing, Build All Framing and Delete Framing work, see 11.11) | Paste Hold Position (planned) | Dimension flyouts (5) |
+Roof, Trim, the three Framing flyouts, Slab and 3D Solid flyouts (8, 11.11, 16; Trim and 3D Solid are
+planned) | Paste Hold Position (planned) | Dimension flyouts (5) |
 Text flyout and Revision Cloud (5) | Points, Lines, Arcs, Circles, Boxes,
 Spline (5) | Auto Detail, Current CAD Layer (planned).
 
@@ -202,7 +202,7 @@ Click a view-bar toggle again to close its dock.
   undoable. Tools > Layer Settings > Display Options opens the same table as a window.
 - **Project Browser**: Plan > Floors (click one to switch floors), **Cameras** (the plan's camera objects; click one to select it, switch to its floor and pan the plan to it; an unnamed camera shows as "Camera n"), **Saved Views** (the plan's saved plan views; click one to activate it, hover for its layer set and floor; the active view is highlighted) and **Layout** (the active layout's sheet size and scale, which View > Drawing Sheet and Print Preview draw, and Create Construction Set...). The layout sheet is kept for the session only; the plan file stores no layouts yet.
 - **Library Browser**: a search field, a category tree and result rows with
-  previews (chapter 6).
+  previews, plus the Chief Architect catalogs of your own Chief install (chapter 6).
 
 ## 1.6 The menus
 
@@ -214,8 +214,8 @@ entry shows its icon, name and hotkey and unbuilt ones are dimmed. Working today
   Chief X18 Template), Open Plan..., Save, Save As..., Export (DXF..., Elevation DXF..., Construction Set
   PDF..., glTF...), Import (Import Drawing (DXF)...), Quit (chapter 12).
 - **Edit**: Undo and Redo (with the step name), Select Objects, Default Settings...
-- **Build**, **CAD**: all the live tools of chapters 2 to 9, Build > Framing (Build Framing, Build All
-  Framing, Delete Framing: chapter 11.11) and CAD > CAD to Walls... (12.4); **Terrain**: Create Terrain Perimeter, Terrain
+- **Build**, **CAD**: all the live tools of chapters 2 to 9 and 16, Build > Framing (Build Framing, Build All
+  Framing, Delete Framing and the manual framing tools: chapter 11.11) and CAD > CAD to Walls... (12.4); **Terrain**: Create Terrain Perimeter, Terrain
   Specification..., Build Terrain, Clear Terrain, Make Terrain Hole Around Building and the submenus.
 - **3D**: Create Orthographic View, Create Perspective View (with Ray Trace...), Rendering Techniques,
   Rebuild 3D, Export > glTF..., 3D View Defaults... (chapter 10).
@@ -272,10 +272,11 @@ How defaults reach a plan:
   `~/.plan-studio/defaults.json`. Reset to Chief X18 Template restores the
   embedded values and deletes that file.
 - File > Templates > **Import Chief Template...** picks a Chief `.plan`, `.tpl` or `.layout` file and seeds your
-  defaults from the names stored in it (wall types, layers and layer sets, text styles, dimension sets, saved
-  plan views, and the per-layer colors and line weights that could be decoded), then saves the result as your
+  defaults from what is stored in it: the names of wall types, layers and layer sets, text styles, dimension sets and
+  saved plan views, the per-layer colors and line weights that could be decoded, and the decoded values (each wall type's real layer stack,
+  the text styles' fonts and heights, the dimension sets' numbers; chapter 12.8). It then saves the result as your
   template. The file is read in place and never copied or changed. The status bar reports how many wall types
-  and layers were added; wall types whose thickness had to be guessed from the name are approximate.
+  and layers were added; the few wall types with no definition in the template have a thickness guessed from the name and are approximate.
 - Edit > Default Settings... opens a searchable tree: Walls (Exterior, Interior,
   Foundation), Doors (Interior, Exterior), Windows, Dimension (Dimensions), Text
   (Text Styles), and Floors and Rooms (Room Types). Double-click a leaf (or press
@@ -333,10 +334,10 @@ readable at any brightness.
 | What | Where |
 |---|---|
 | Your plans | Wherever you save them, as `.psplan` JSON (File > Save As...) |
-| Theme and brightness | `~/.plan-studio/settings.json` |
+| Theme and brightness, and the Chief catalog choice (`chief_catalogs`: on/off and an install-folder override) | `~/.plan-studio/settings.json` |
 | Saved template defaults | `~/.plan-studio/defaults.json` |
 | Hotkey edits | `~/.plan-studio/hotkeys.json` |
-| Chief catalog index (Chief library reader, not used by the editor yet) | `~/.plan-studio/chief-catalog-index.json` |
+| Chief catalog index (file paths, sizes, modification times and catalog UUIDs the Library Browser's Chief nodes use to find your catalogs quickly) | `~/.plan-studio/chief-catalog-index.json` |
 
 The settings folder is found from `HOME`, else `USERPROFILE`, else `HOMEDRIVE` plus
 `HOMEPATH`, so it works on Windows as well. Undo keeps 100 steps.

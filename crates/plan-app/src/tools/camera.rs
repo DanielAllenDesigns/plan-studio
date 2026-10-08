@@ -18,6 +18,16 @@
 //!   `fov_deg`; they are still read that way when `section` is `None` (see
 //!   [`section_line`]) and are converted the first time one is edited
 //!   ([`upgrade_section`]).
+//! * **Wall Elevation** (C-20): click a wall; the camera stands on the clicked
+//!   side and looks at that wall face, cut just in front of the face and
+//!   back-clipped to the wall's thickness. **Auto Elevations / Auto
+//!   Back-Clipped Elevations** (C-21): one click makes (or updates) the four
+//!   North/East/South/West elevation cameras around the building.
+//! * **Walkthrough**: click-click-double-click (or Enter) draws a path; press
+//!   and drag at a node to fix its look direction. The camera keeps the path,
+//!   a height and an optional look direction per node (`CameraObject.path`).
+//! * **Add Lights**: a click places a point light at the default height;
+//!   clicking a light opens Adjust Lights, Delete removes the selected one.
 //! * Camera symbols (C-24) and handles (C-25..C-28): Move, Aim (direction,
 //!   Shift snaps to the Editing angle step, 15 degrees by default, C-27),
 //!   Clip distance, and for sections the two line ends. Tab cycles cameras, Delete removes one (C-29), a
@@ -27,10 +37,10 @@ use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::{Camera, EditorContext};
 use crate::shell::view3d_panel::{camera_defaults, Outbox, ViewRequest};
 use eframe::egui::{self, Color32, Pos2, Shape, Stroke, StrokeKind};
-use plan_core::camera::{DEFAULT_CONE_LENGTH, DEFAULT_FOV_DEG};
+use plan_core::camera::{PlanLight, WalkNode, DEFAULT_CONE_LENGTH, DEFAULT_FOV_DEG};
 use plan_core::extras::SectionLine;
 use plan_core::geometry::{dist_to_segment, Point};
-use plan_core::{CameraKind, CameraObject, EditingDefaults, Id, Layer};
+use plan_core::{CameraKind, CameraObject, EditingDefaults, Id, Layer, Project, Wall};
 use std::sync::Mutex;
 
 /// The layer camera symbols live on (C-24).
@@ -49,6 +59,16 @@ const ARROW_LEN: f64 = 36.0;
 const MIN_CLIP: f64 = 24.0;
 /// Direction used by a Full Camera placed with a click alone (looks up the plan).
 const DEFAULT_DIRECTION_DEG: f64 = 90.0;
+/// A Wall Elevation cuts this far in front of the wall face, inches.
+const WALL_ELEVATION_GAP: f64 = 0.5;
+/// A Wall Elevation reaches this far past the wall's far face, inches.
+const WALL_ELEVATION_REACH: f64 = 2.0;
+/// Auto Elevations stand this far outside the building, inches.
+const AUTO_ELEVATION_MARGIN: f64 = 24.0;
+/// Auto Back-Clipped Elevations draw this much behind the building face, inches.
+const AUTO_BACK_CLIP: f64 = 60.0;
+/// Radius of a light's symbol in the plan, inches.
+const LIGHT_RADIUS: f64 = 9.0;
 
 /// Which camera the tool creates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -65,6 +85,16 @@ pub enum CameraVariant {
     CrossSection,
     /// Back-Clipped Cross Section (C-19).
     BackClippedSection,
+    /// Wall Elevation Camera (C-20): click a wall.
+    WallElevation,
+    /// Auto Elevations (C-21): one click, four exterior elevations.
+    AutoElevation,
+    /// Auto Back-Clipped Elevations: four back-clipped sections outside the building.
+    AutoBackclipped,
+    /// Create Walkthrough Path.
+    Walkthrough,
+    /// Add Lights (C-64).
+    AddLights,
 }
 
 impl CameraVariant {
@@ -76,7 +106,19 @@ impl CameraVariant {
             CameraVariant::DollHouse => "Doll House View",
             CameraVariant::CrossSection => "Cross Section/Elevation Camera",
             CameraVariant::BackClippedSection => "Back-Clipped Cross Section",
+            CameraVariant::WallElevation => "Wall Elevation Camera",
+            CameraVariant::AutoElevation => "Auto Elevations",
+            CameraVariant::AutoBackclipped => "Auto Back-Clipped Elevations",
+            CameraVariant::Walkthrough => "Create Walkthrough Path",
+            CameraVariant::AddLights => "Add Lights",
         }
+    }
+
+    fn is_auto(self) -> bool {
+        matches!(
+            self,
+            CameraVariant::AutoElevation | CameraVariant::AutoBackclipped
+        )
     }
 
     fn is_section(self) -> bool {
@@ -115,9 +157,13 @@ fn take_next_variant() -> Option<CameraVariant> {
 
 // ----- geometry shared with the 3D panel -----
 
-/// Is this a cross section / elevation camera?
+/// Is this a camera placed by a cut line (cross section, wall elevation or
+/// exterior elevation)?
 pub fn is_section(c: &CameraObject) -> bool {
-    matches!(c.kind, CameraKind::CrossSection { .. })
+    matches!(
+        c.kind,
+        CameraKind::CrossSection { .. } | CameraKind::WallElevation | CameraKind::Elevation
+    )
 }
 
 /// Unit vector along the section line (the viewing direction turned 90
@@ -212,6 +258,159 @@ pub fn back_clip(c: &CameraObject) -> Option<f64> {
     }
 }
 
+// ----- elevation cameras made from the plan (C-20, C-21) -----
+
+/// The wall of `floor` whose body (or a pick tolerance beyond it) contains `p`.
+pub fn wall_at(project: &Project, floor: usize, p: Point, tol: f64) -> Option<&Wall> {
+    project
+        .floors
+        .get(floor)?
+        .walls
+        .iter()
+        .map(|w| (dist_to_segment(p, w.start, w.end) - w.thickness * 0.5, w))
+        .filter(|(d, _)| *d <= tol)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, w)| w)
+}
+
+/// A Wall Elevation camera for the face of `wall` that is on the same side as
+/// `toward`: it stands on that side and looks at the wall. Its cut line runs
+/// the length of the wall just in front of the face and the back clip reaches
+/// only through the wall, so the view shows that wall face (with its openings)
+/// and nothing of the rest of the building.
+pub fn wall_elevation(wall: &Wall, toward: Point, floor: usize, name: &str) -> CameraObject {
+    let u = (wall.end - wall.start).normalized();
+    let mut n = u.perp();
+    if (toward - wall.start).dot(n) < 0.0 {
+        n = n * -1.0;
+    }
+    let half = wall.thickness * 0.5;
+    let centre = Point::lerp(wall.start, wall.end, 0.5) + n * (half + WALL_ELEVATION_GAP);
+    let view_deg = (n * -1.0).angle().to_degrees();
+    let reach = wall.thickness + WALL_ELEVATION_GAP + WALL_ELEVATION_REACH;
+    let mut cam = CameraObject::new(CameraKind::WallElevation, centre, view_deg, name, floor);
+    set_section_geometry(
+        &mut cam,
+        centre,
+        view_deg,
+        wall.start.dist(wall.end),
+        Some(reach),
+    );
+    cam
+}
+
+/// Plan bounds `(min, max)` of every wall of every floor.
+pub fn building_bounds(project: &Project) -> Option<(Point, Point)> {
+    let mut it = project
+        .floors
+        .iter()
+        .flat_map(|f| f.walls.iter().flat_map(|w| w.footprint()));
+    let first = it.next()?;
+    Some(it.fold((first, first), |(lo, hi), p| {
+        (
+            Point::new(lo.x.min(p.x), lo.y.min(p.y)),
+            Point::new(hi.x.max(p.x), hi.y.max(p.y)),
+        )
+    }))
+}
+
+/// The four elevation cameras around the building (South, North, West, East,
+/// each standing outside and looking at its face). With `backclipped` they
+/// are Back-Clipped Cross Sections drawing [`AUTO_BACK_CLIP`] behind the face
+/// instead of plain exterior elevations. `None` without walls.
+pub fn auto_elevation_cameras(
+    project: &Project,
+    floor: usize,
+    backclipped: bool,
+) -> Option<Vec<CameraObject>> {
+    let (lo, hi) = building_bounds(project)?;
+    let m = AUTO_ELEVATION_MARGIN;
+    let (cx, cy) = ((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+    // (name, view direction, centre of the cut line, its length)
+    let sides = [
+        (
+            "South",
+            90.0,
+            Point::new(cx, lo.y - m),
+            hi.x - lo.x + 2.0 * m,
+        ),
+        (
+            "North",
+            270.0,
+            Point::new(cx, hi.y + m),
+            hi.x - lo.x + 2.0 * m,
+        ),
+        ("West", 0.0, Point::new(lo.x - m, cy), hi.y - lo.y + 2.0 * m),
+        (
+            "East",
+            180.0,
+            Point::new(hi.x + m, cy),
+            hi.y - lo.y + 2.0 * m,
+        ),
+    ];
+    Some(
+        sides
+            .into_iter()
+            .map(|(side, dir, centre, width)| {
+                let (kind, name) = if backclipped {
+                    (
+                        CameraKind::CrossSection {
+                            back_clip: Some(m + AUTO_BACK_CLIP),
+                        },
+                        format!("{side} Back-Clipped Elevation"),
+                    )
+                } else {
+                    (CameraKind::Elevation, format!("{side} Elevation"))
+                };
+                let back = backclipped.then_some(m + AUTO_BACK_CLIP);
+                let mut cam = CameraObject::new(kind, centre, dir, name, floor);
+                set_section_geometry(&mut cam, centre, dir, width, back);
+                cam
+            })
+            .collect(),
+    )
+}
+
+/// Adds the Auto Elevation cameras to `project`, updating the ones a previous
+/// run made (same name) instead of duplicating them. Returns their ids in
+/// South, North, West, East order; empty without walls.
+pub fn add_auto_elevations(project: &mut Project, floor: usize, backclipped: bool) -> Vec<Id> {
+    let Some(cams) = auto_elevation_cameras(project, floor, backclipped) else {
+        return Vec::new();
+    };
+    ensure_camera_layer(project);
+    cams.into_iter()
+        .map(|cam| {
+            let existing = project
+                .cameras
+                .iter()
+                .find(|c| c.name == cam.name && is_section(c))
+                .map(|c| c.id);
+            match existing {
+                Some(id) => {
+                    project.update_camera(id, |c| {
+                        c.kind = cam.kind;
+                        c.position = cam.position;
+                        c.direction_deg = cam.direction_deg;
+                        c.section = cam.section;
+                        c.floor = cam.floor;
+                    });
+                    id
+                }
+                None => project.add_camera(cam),
+            }
+        })
+        .collect()
+}
+
+fn ensure_camera_layer(project: &mut Project) {
+    if project.layers.get(CAMERA_LAYER).is_none() {
+        project
+            .layers
+            .add(Layer::new(CAMERA_LAYER, [0x2F, 0x6C, 0xB3], 25));
+    }
+}
+
 // ----- handles (C-25..C-28) -----
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -230,7 +429,11 @@ pub enum CamHandle {
 /// The handles of a selected camera with their plan positions.
 pub fn handles_of(c: &CameraObject) -> Vec<(CamHandle, Point)> {
     let d = c.direction();
-    if is_section(c) {
+    if c.kind == CameraKind::Walkthrough {
+        // The whole path moves with the first node; nodes are edited in the
+        // Camera Specification.
+        vec![(CamHandle::Move, c.position)]
+    } else if is_section(c) {
         let (a, b) = section_line(c);
         let mut v = vec![
             (CamHandle::Move, c.position),
@@ -267,7 +470,12 @@ pub fn hit_handle(c: &CameraObject, p: Point, tol: f64) -> Option<CamHandle> {
 
 /// Does `p` touch the camera's symbol (glyph, or the section line)?
 pub fn hit_symbol(c: &CameraObject, p: Point, tol: f64) -> bool {
-    if is_section(c) {
+    if c.kind == CameraKind::Walkthrough {
+        c.position.dist(p) <= tol + 9.0
+            || c.path
+                .windows(2)
+                .any(|w| dist_to_segment(p, w[0], w[1]) <= tol)
+    } else if is_section(c) {
         let (a, b) = section_line(c);
         dist_to_segment(p, a, b) <= tol
     } else {
@@ -298,6 +506,9 @@ pub fn apply_handle_with(c: &mut CameraObject, h: CamHandle, to: Point, snap_deg
                 s.a = s.a + delta;
                 s.b = s.b + delta;
             }
+            for n in &mut c.path {
+                *n = *n + delta;
+            }
         }
         CamHandle::Aim => {
             let v = to - c.position;
@@ -316,14 +527,15 @@ pub fn apply_handle_with(c: &mut CameraObject, h: CamHandle, to: Point, snap_deg
         }
         CamHandle::Clip => {
             let along = ((to - c.position).dot(c.direction())).max(MIN_CLIP);
-            match &mut c.kind {
-                CameraKind::CrossSection { back_clip } => {
+            if is_section(c) {
+                if let CameraKind::CrossSection { back_clip } = &mut c.kind {
                     *back_clip = Some(along);
-                    if let Some(s) = &mut c.section {
-                        s.back_clip = Some(along);
-                    }
                 }
-                _ => c.clip_distance = Some(along),
+                if let Some(s) = &mut c.section {
+                    s.back_clip = Some(along);
+                }
+            } else {
+                c.clip_distance = Some(along);
             }
         }
         CamHandle::EndA | CamHandle::EndB => {
@@ -350,10 +562,30 @@ struct Editing {
     began: bool,
 }
 
+/// A walkthrough path being drawn.
+struct WalkPlacing {
+    nodes: Vec<Point>,
+    /// Fixed look direction per node (set by pressing and dragging at it).
+    looks: Vec<Option<f64>>,
+    /// The pointer is down on the last node (a drag aims it).
+    pressing: bool,
+    /// Where the pointer is, for the rubber band.
+    cursor: Point,
+}
+
+/// A light being dragged.
+struct LightEdit {
+    id: Id,
+    began: bool,
+}
+
 pub struct CameraTool {
     pub variant: CameraVariant,
     placing: Option<Placing>,
     editing: Option<Editing>,
+    walk: Option<WalkPlacing>,
+    selected_light: Option<Id>,
+    light_edit: Option<LightEdit>,
     /// The selected camera. Kept here because the shared selection only keeps
     /// object kinds the model stores per floor.
     selected: Option<Id>,
@@ -373,6 +605,9 @@ impl CameraTool {
             variant: CameraVariant::default(),
             placing: None,
             editing: None,
+            walk: None,
+            selected_light: None,
+            light_edit: None,
             selected: None,
             outbox,
         }
@@ -380,6 +615,18 @@ impl CameraTool {
 
     pub fn selected(&self) -> Option<Id> {
         self.selected
+    }
+
+    /// The selected light (Add Lights).
+    pub fn selected_light(&self) -> Option<Id> {
+        self.selected_light
+    }
+
+    fn reset_gestures(&mut self) {
+        self.placing = None;
+        self.editing = None;
+        self.walk = None;
+        self.light_edit = None;
     }
 
     fn layer_ok(&self, cx: &mut EditorContext) -> bool {
@@ -502,6 +749,133 @@ impl CameraTool {
         }
     }
 
+    /// Wall Elevation (C-20): click a wall.
+    fn click_wall_elevation(&mut self, cx: &mut EditorContext, at: Point) -> ToolResult {
+        let tol = cx.pick_tol();
+        let Some(wall) = wall_at(&cx.project, cx.floor, at, tol).cloned() else {
+            cx.status = "Click a wall to make its elevation".into();
+            return ToolResult::consumed();
+        };
+        if !self.layer_ok(cx) {
+            return ToolResult::consumed();
+        }
+        let name = self.unique_name(cx, "Wall Elevation");
+        let cam = wall_elevation(&wall, at, cx.floor, &name);
+        self.add_camera(cx, cam)
+    }
+
+    /// Auto Elevations and Auto Back-Clipped Elevations (C-21).
+    fn click_auto(&mut self, cx: &mut EditorContext) -> ToolResult {
+        if building_bounds(&cx.project).is_none() {
+            cx.status = "Draw some walls first".into();
+            return ToolResult::consumed();
+        }
+        if !self.layer_ok(cx) {
+            return ToolResult::consumed();
+        }
+        cx.begin_change(self.variant.label());
+        let ids = add_auto_elevations(
+            &mut cx.project,
+            cx.floor,
+            self.variant == CameraVariant::AutoBackclipped,
+        );
+        if let Some(first) = ids.first() {
+            self.select(cx, *first);
+            self.outbox.post(ViewRequest::ShowCamera(*first));
+        }
+        cx.status = format!("{}: {} cameras", self.variant.label(), ids.len());
+        ToolResult {
+            switch_to: Some(ToolId::Select),
+            ..ToolResult::committed(self.variant.label())
+        }
+    }
+
+    /// Adds a node to the walkthrough being drawn (a click on the last node
+    /// is the second half of a double click and is ignored).
+    fn walk_click(&mut self, cx: &mut EditorContext, at: Point) -> ToolResult {
+        let tol = cx.pick_tol();
+        match &mut self.walk {
+            Some(w) => {
+                if w.nodes.last().is_some_and(|l| l.dist(at) <= tol) {
+                    return ToolResult::consumed();
+                }
+                w.nodes.push(at);
+                w.looks.push(None);
+                w.pressing = true;
+                w.cursor = at;
+            }
+            None => {
+                self.walk = Some(WalkPlacing {
+                    nodes: vec![at],
+                    looks: vec![None],
+                    pressing: true,
+                    cursor: at,
+                });
+            }
+        }
+        cx.status = "Walkthrough: click the next node, double-click to finish".into();
+        ToolResult::consumed()
+    }
+
+    /// Finishes the walkthrough path (double click or Enter).
+    fn finish_walk(&mut self, cx: &mut EditorContext) -> ToolResult {
+        let Some(w) = self.walk.take() else {
+            return ToolResult::ignored();
+        };
+        if w.nodes.len() < 2 {
+            cx.status = "A walkthrough needs at least two nodes".into();
+            return ToolResult::consumed();
+        }
+        if !self.layer_ok(cx) {
+            return ToolResult::consumed();
+        }
+        let name = self.unique_name(cx, "Walkthrough");
+        let mut cam =
+            CameraObject::walkthrough(w.nodes, camera_defaults().eye_height, name, cx.floor);
+        for (n, look) in cam.path_nodes.iter_mut().zip(w.looks) {
+            *n = WalkNode {
+                look_deg: look,
+                ..*n
+            };
+        }
+        self.add_camera(cx, cam)
+    }
+
+    fn light_at(&self, cx: &EditorContext, p: Point) -> Option<Id> {
+        let tol = cx.pick_tol() + LIGHT_RADIUS;
+        cx.project
+            .lights()
+            .into_iter()
+            .filter(|l| l.floor == cx.floor && l.position.dist(p) <= tol)
+            .min_by(|a, b| a.position.dist(p).total_cmp(&b.position.dist(p)))
+            .map(|l| l.id)
+    }
+
+    /// Add Lights: a click on a light selects it (and a second click opens
+    /// Adjust Lights); a click elsewhere places a light.
+    fn click_light(&mut self, cx: &mut EditorContext, at: Point, snapped: Point) -> ToolResult {
+        if let Some(id) = self.light_at(cx, at) {
+            self.selected_light = Some(id);
+            self.light_edit = Some(LightEdit { id, began: false });
+            cx.status =
+                "Light selected: drag to move, Delete removes it, double-click to adjust".into();
+            return ToolResult::consumed();
+        }
+        let d = crate::dialogs::camera::light_defaults();
+        let ceiling = cx.floor().ceiling_height;
+        let n = cx.project.lights().len() + 1;
+        let mut light = PlanLight::new(snapped, d.height.unwrap_or((ceiling - 12.0).max(12.0)));
+        light.intensity = d.intensity;
+        light.color = d.color;
+        light.name = format!("Light {n}");
+        cx.begin_change("Add Light");
+        let floor = cx.floor;
+        let id = cx.project.add_light(floor, light);
+        self.selected_light = id;
+        cx.status = "Light added".into();
+        ToolResult::committed("Add Light")
+    }
+
     fn click_overview(&mut self, cx: &mut EditorContext) -> ToolResult {
         let (mode, floor) = match self.variant {
             CameraVariant::FloorOverview => (plan_view3d::CameraMode::Orbit, Some(cx.floor)),
@@ -532,6 +906,15 @@ impl Tool for CameraTool {
                 "Full Camera: press at the eye, drag to aim, release to open the view".into()
             }
             v if v.is_overview() => format!("{}: click in the plan to open the view", v.label()),
+            CameraVariant::WallElevation => {
+                "Wall Elevation: click the wall face you want to see".into()
+            }
+            v if v.is_auto() => format!("{}: click once to make the four elevations", v.label()),
+            CameraVariant::Walkthrough => {
+                "Walkthrough: click each node, double-click to finish; drag at a node to aim it"
+                    .into()
+            }
+            CameraVariant::AddLights => "Add Lights: click to place a light".into(),
             _ => "Cross Section: drag the cut line; the view looks to the left of the drag".into(),
         }
     }
@@ -543,27 +926,30 @@ impl Tool for CameraTool {
     fn set_variant(&mut self, id: ToolId) {
         if let ToolId::CameraVariant(v) = id {
             self.variant = v;
-            self.placing = None;
-            self.editing = None;
+            self.reset_gestures();
         } else if let Some(v) = take_next_variant() {
             self.variant = v;
-            self.placing = None;
-            self.editing = None;
+            self.reset_gestures();
         }
     }
 
     fn activate(&mut self, cx: &mut EditorContext) {
-        self.placing = None;
-        self.editing = None;
+        self.reset_gestures();
         cx.status = self.hint();
     }
 
     fn deactivate(&mut self, _cx: &mut EditorContext) {
-        self.placing = None;
-        self.editing = None;
+        self.reset_gestures();
     }
 
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        // A walkthrough in progress takes every click; Add Lights places lights.
+        if self.walk.is_some() {
+            return self.walk_click(cx, p.snapped);
+        }
+        if self.variant == CameraVariant::AddLights {
+            return self.click_light(cx, p.world, p.snapped);
+        }
         // Handles of the selected camera, then any camera symbol, then place.
         let handle = self
             .selected
@@ -595,6 +981,14 @@ impl Tool for CameraTool {
         if self.variant.is_overview() {
             return self.click_overview(cx);
         }
+        match self.variant {
+            CameraVariant::WallElevation => return self.click_wall_elevation(cx, p.world),
+            CameraVariant::AutoElevation | CameraVariant::AutoBackclipped => {
+                return self.click_auto(cx)
+            }
+            CameraVariant::Walkthrough => return self.walk_click(cx, p.snapped),
+            _ => {}
+        }
         self.placing = Some(Placing {
             start: p.snapped,
             current: p.snapped,
@@ -611,6 +1005,30 @@ impl Tool for CameraTool {
             } else {
                 format!("Direction: {:.0}\u{B0}", v.angle().to_degrees())
             });
+            return ToolResult::consumed();
+        }
+        if let Some(w) = &mut self.walk {
+            w.cursor = p.snapped;
+            if w.pressing && p.down {
+                let far = cx.pick_tol() * 2.0;
+                if let (Some(last), Some(look)) = (w.nodes.last().copied(), w.looks.last_mut()) {
+                    if last.dist(p.world) > far {
+                        *look = Some((p.world - last).angle().to_degrees());
+                    }
+                }
+            }
+            return ToolResult::consumed();
+        }
+        if let Some(le) = &mut self.light_edit {
+            if !p.down {
+                return ToolResult::ignored();
+            }
+            if !le.began {
+                cx.begin_change("Move Light");
+                le.began = true;
+            }
+            let (id, to) = (le.id, p.snapped);
+            cx.project.update_light(id, |l| l.position = to);
             return ToolResult::consumed();
         }
         let Some(ed) = &mut self.editing else {
@@ -647,6 +1065,17 @@ impl Tool for CameraTool {
 
     fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         cx.readout = None;
+        if let Some(w) = &mut self.walk {
+            w.pressing = false;
+            return ToolResult::consumed();
+        }
+        if let Some(le) = self.light_edit.take() {
+            if le.began {
+                cx.mark_dirty();
+                return ToolResult::committed("Move Light");
+            }
+            return ToolResult::consumed();
+        }
         if let Some(ed) = self.editing.take() {
             if ed.began {
                 cx.mark_dirty();
@@ -666,6 +1095,20 @@ impl Tool for CameraTool {
     }
 
     fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if self.walk.is_some() {
+            return self.finish_walk(cx);
+        }
+        if self.variant == CameraVariant::AddLights {
+            return match self.light_at(cx, p.world) {
+                Some(id) => {
+                    self.selected_light = Some(id);
+                    self.light_edit = None;
+                    self.outbox.post(ViewRequest::OpenAdjustLights(Some(id)));
+                    ToolResult::consumed()
+                }
+                None => ToolResult::ignored(),
+            };
+        }
         match self.camera_at(cx, p.world) {
             Some(id) => {
                 self.select(cx, id);
@@ -678,7 +1121,39 @@ impl Tool for CameraTool {
     }
 
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        if self.walk.is_some() {
+            if k.is(egui::Key::Escape) {
+                self.walk = None;
+                return ToolResult::consumed();
+            }
+            if k.is(egui::Key::Enter) {
+                return self.finish_walk(cx);
+            }
+            if k.is(egui::Key::Backspace) || k.is(egui::Key::Delete) {
+                if let Some(w) = &mut self.walk {
+                    w.nodes.pop();
+                    w.looks.pop();
+                    if w.nodes.is_empty() {
+                        self.walk = None;
+                    }
+                }
+                return ToolResult::consumed();
+            }
+        }
+        if (k.is(egui::Key::Delete) || k.is(egui::Key::Backspace)) && self.selected_light.is_some()
+        {
+            if let Some(id) = self.selected_light.take() {
+                if cx.project.light(id).is_some() {
+                    cx.begin_change("Delete Light");
+                    cx.project.remove_light(id);
+                    return ToolResult::committed("Delete Light");
+                }
+            }
+        }
         if k.is(egui::Key::Escape) {
+            if self.light_edit.take().is_some() || self.selected_light.take().is_some() {
+                return ToolResult::consumed();
+            }
             if self.placing.take().is_some() {
                 cx.readout = None;
                 return ToolResult::consumed();
@@ -716,6 +1191,27 @@ impl Tool for CameraTool {
 
     fn draw_overlay(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         draw_camera_symbols(cx, painter, cam, self.selected);
+        if let Some(l) = self.selected_light.and_then(|id| cx.project.light(id)) {
+            if l.floor == cx.floor {
+                let c = cam.world_to_screen(l.position);
+                let r = (LIGHT_RADIUS * cam.px_per_in) as f32 + 4.0;
+                painter.circle_stroke(c, r, Stroke::new(1.5_f32, cx.palette.selection));
+            }
+        }
+        if let Some(w) = &self.walk {
+            let mut pts: Vec<Point> = w.nodes.clone();
+            pts.push(w.cursor);
+            let ghost = Stroke::new(1.5_f32, CAMERA_BLUE);
+            painter.add(Shape::line(polygon(cam, &pts), ghost));
+            for (n, look) in w.nodes.iter().zip(&w.looks) {
+                painter.circle_filled(cam.world_to_screen(*n), 3.5, CAMERA_BLUE);
+                if let Some(d) = look {
+                    let a = d.to_radians();
+                    arrow(painter, cam, *n, Point::new(a.cos(), a.sin()), ghost);
+                }
+            }
+            return;
+        }
         let Some(pl) = &self.placing else { return };
         let a = cam.world_to_screen(pl.start);
         let b = cam.world_to_screen(pl.current);
@@ -761,6 +1257,18 @@ fn polygon(cam: &Camera, pts: &[Point]) -> Vec<Pos2> {
 
 fn draw_one(painter: &egui::Painter, cam: &Camera, c: &CameraObject, selected: bool) {
     let line = Stroke::new(if selected { 2.0_f32 } else { 1.2_f32 }, CAMERA_BLUE);
+    if c.kind == CameraKind::Walkthrough {
+        painter.add(Shape::line(polygon(cam, &c.path), line));
+        for n in &c.path {
+            painter.circle_filled(cam.world_to_screen(*n), 3.0, CAMERA_BLUE);
+        }
+        painter.add(Shape::convex_polygon(
+            polygon(cam, &c.triangle_points()),
+            CAMERA_BLUE,
+            Stroke::new(1.0_f32, Color32::WHITE),
+        ));
+        return;
+    }
     if is_section(c) {
         let (a, b) = section_line(c);
         painter.line_segment([cam.world_to_screen(a), cam.world_to_screen(b)], line);
@@ -803,6 +1311,30 @@ fn draw_one(painter: &egui::Painter, cam: &Camera, c: &CameraObject, selected: b
     ));
 }
 
+/// The plan symbol of a light: a ring with eight rays, grayed when off.
+fn draw_light_symbols(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    for l in cx.project.lights().iter().filter(|l| l.floor == cx.floor) {
+        let ink = Color32::from_rgb(0xC8, 0xA0, 0x20);
+        let ink = if l.enabled {
+            ink
+        } else {
+            ink.gamma_multiply(0.4)
+        };
+        let stroke = Stroke::new(1.2_f32, ink);
+        let c = cam.world_to_screen(l.position);
+        let r = (LIGHT_RADIUS * 0.5 * cam.px_per_in) as f32;
+        painter.circle_stroke(c, r.max(2.5), stroke);
+        for i in 0..8 {
+            let a = f64::from(i) * std::f64::consts::FRAC_PI_4;
+            let d = egui::vec2(a.cos() as f32, -a.sin() as f32);
+            painter.line_segment(
+                [c + d * (r.max(2.5) + 1.5), c + d * (r.max(2.5) * 1.9 + 2.0)],
+                stroke,
+            );
+        }
+    }
+}
+
 /// Draws every camera symbol of the current floor on layer "Cameras" (C-24),
 /// with the handles of `selected` (C-25..C-28). The Camera tool calls this
 /// from its overlay; the plan renderer may call it too so symbols also show
@@ -819,6 +1351,7 @@ pub fn draw_camera_symbols(
     for c in cx.project.cameras_on(cx.floor) {
         draw_one(painter, cam, c, selected == Some(c.id));
     }
+    draw_light_symbols(cx, painter, cam);
     let Some(c) = selected.and_then(|id| cx.project.camera(id)) else {
         return;
     };
@@ -1239,5 +1772,271 @@ mod tests {
         assert!((c.direction_deg - 45.0).abs() < 1e-9);
         apply_handle_with(&mut c, CamHandle::Aim, to, None);
         assert!((c.direction_deg - 38.0).abs() < 1e-6);
+    }
+
+    fn house() -> Project {
+        let mut p = Project::new("House");
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        for i in 0..4 {
+            p.add_wall(
+                0,
+                c[i],
+                c[(i + 1) % 4],
+                6.0,
+                96.0,
+                plan_core::WallKind::Exterior,
+            );
+        }
+        p
+    }
+
+    fn pick(t: &mut CameraTool, v: CameraVariant) {
+        t.set_variant(ToolId::CameraVariant(v));
+    }
+
+    #[test]
+    fn a_wall_elevation_faces_the_clicked_side_of_the_wall() {
+        let (mut cx, mut t, outbox) = setup();
+        cx.project = house();
+        pick(&mut t, CameraVariant::WallElevation);
+        // North side of the south wall (the interior of the house).
+        let res = down(&mut cx, &mut t, Point::new(120.0, 24.0));
+        assert!(!res.consumed || res.commit.is_none(), "{res:?}");
+        // The pick tolerance is small: 24" off the wall's face is a miss.
+        assert!(cx.project.cameras.is_empty());
+        let res = down(&mut cx, &mut t, Point::new(120.0, 2.0));
+        assert_eq!(res.commit.as_deref(), Some("Create Camera"));
+        let c = &cx.project.cameras[0];
+        assert_eq!(c.kind, CameraKind::WallElevation);
+        // The wall runs along +X; its interior normal is +Y, so the camera
+        // looks along -Y (270 degrees) at the wall.
+        let wall_normal = Point::new(0.0, 1.0);
+        assert!(
+            (c.direction().dot(wall_normal) + 1.0).abs() < 1e-9,
+            "{}",
+            c.direction_deg
+        );
+        // The cut line sits just inside the room, the length of the wall, and
+        // the back clip reaches only through the wall.
+        let s = c.section.expect("a cut line");
+        assert!((s.a.y - 3.5).abs() < 1e-9 && (s.b.y - 3.5).abs() < 1e-9);
+        assert!((s.a.dist(s.b) - 240.0).abs() < 1e-9);
+        assert_eq!(
+            s.back_clip,
+            Some(6.0 + WALL_ELEVATION_GAP + WALL_ELEVATION_REACH)
+        );
+        assert!(c.position.dist(Point::new(120.0, 3.5)) < 1e-9);
+        assert_eq!(outbox.take(), vec![ViewRequest::ShowCamera(c.id)]);
+        // The other face of the same wall looks the other way.
+        let far = wall_elevation(
+            &cx.project.floors[0].walls[0],
+            Point::new(120.0, -50.0),
+            0,
+            "x",
+        );
+        assert!((far.direction_deg - 90.0).abs() < 1e-9);
+        assert!((far.position.y + 3.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn auto_elevations_make_four_cameras_and_update_them_on_a_second_run() {
+        let (mut cx, mut t, outbox) = setup();
+        cx.project = house();
+        pick(&mut t, CameraVariant::AutoElevation);
+        let res = down(&mut cx, &mut t, Point::new(-200.0, -200.0));
+        assert_eq!(res.commit.as_deref(), Some("Auto Elevations"));
+        assert_eq!(cx.project.cameras.len(), 4);
+        let by = |name: &str| {
+            cx.project
+                .cameras
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("no {name}"))
+                .clone()
+        };
+        let south = by("South Elevation");
+        assert_eq!(south.kind, CameraKind::Elevation);
+        assert!((south.direction_deg - 90.0).abs() < 1e-9);
+        assert!(
+            south.position.y < -3.0,
+            "outside the building: {:?}",
+            south.position
+        );
+        assert!((by("North Elevation").direction_deg - 270.0).abs() < 1e-9);
+        assert!(by("West Elevation").direction_deg.abs() < 1e-9);
+        assert!((by("East Elevation").direction_deg - 180.0).abs() < 1e-9);
+        assert!(by("East Elevation").position.x > 243.0);
+        assert!(matches!(outbox.take()[..], [ViewRequest::ShowCamera(_)]));
+        // Growing the house and running again moves the cameras, no copies.
+        cx.project.add_wall(
+            0,
+            Point::new(240.0, 192.0),
+            Point::new(480.0, 192.0),
+            6.0,
+            96.0,
+            plan_core::WallKind::Exterior,
+        );
+        pick(&mut t, CameraVariant::AutoElevation);
+        down(&mut cx, &mut t, Point::new(-200.0, -200.0));
+        assert_eq!(cx.project.cameras.len(), 4);
+        assert!(by_name(&cx.project, "East Elevation").position.x > 483.0);
+        // One undo step undoes the whole set.
+        cx.undo();
+        assert_eq!(cx.project.cameras.len(), 4);
+        cx.undo();
+        assert!(cx.project.cameras.is_empty());
+        // Back-clipped elevations are sections with a back clip.
+        pick(&mut t, CameraVariant::AutoBackclipped);
+        down(&mut cx, &mut t, Point::new(-200.0, -200.0));
+        assert_eq!(cx.project.cameras.len(), 4);
+        let c = by_name(&cx.project, "South Back-Clipped Elevation");
+        assert!(matches!(
+            c.kind,
+            CameraKind::CrossSection { back_clip: Some(_) }
+        ));
+        assert_eq!(back_clip(&c), Some(AUTO_ELEVATION_MARGIN + AUTO_BACK_CLIP));
+    }
+
+    fn by_name(p: &Project, name: &str) -> CameraObject {
+        p.cameras.iter().find(|c| c.name == name).unwrap().clone()
+    }
+
+    #[test]
+    fn auto_elevations_need_walls() {
+        let (mut cx, mut t, outbox) = setup();
+        pick(&mut t, CameraVariant::AutoElevation);
+        down(&mut cx, &mut t, Point::new(0.0, 0.0));
+        assert!(cx.project.cameras.is_empty() && outbox.take().is_empty());
+        assert!(cx.status.contains("walls"));
+    }
+
+    #[test]
+    fn the_walkthrough_tool_draws_a_path_with_node_looks() {
+        let (mut cx, mut t, outbox) = setup();
+        pick(&mut t, CameraVariant::Walkthrough);
+        // Click, click-and-drag (aims the second node), then double-click.
+        down(&mut cx, &mut t, Point::new(0.0, 0.0));
+        up(&mut cx, &mut t, Point::new(0.0, 0.0));
+        let press = PointerEvent::at(&cx, Point::new(120.0, 0.0)).with_down(true);
+        t.pointer_down(&mut cx, press);
+        let aim = PointerEvent::at(&cx, Point::new(120.0, 60.0)).with_down(true);
+        t.pointer_move(&mut cx, aim);
+        up(&mut cx, &mut t, Point::new(120.0, 60.0));
+        down(&mut cx, &mut t, Point::new(120.0, 120.0));
+        up(&mut cx, &mut t, Point::new(120.0, 120.0));
+        // The second half of the double click lands on the last node.
+        down(&mut cx, &mut t, Point::new(120.0, 120.0));
+        let res = double(&mut cx, &mut t, Point::new(120.0, 120.0));
+        assert_eq!(res.commit.as_deref(), Some("Create Camera"));
+        assert_eq!(cx.project.cameras.len(), 1);
+        let c = &cx.project.cameras[0];
+        assert_eq!(c.kind, CameraKind::Walkthrough);
+        assert_eq!(
+            c.path,
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(120.0, 0.0),
+                Point::new(120.0, 120.0)
+            ]
+        );
+        assert_eq!(c.position, c.path[0]);
+        assert_eq!(c.path_nodes.len(), 3);
+        assert_eq!(c.path_nodes[0].look_deg, None);
+        assert!((c.path_nodes[1].look_deg.unwrap() - 90.0).abs() < 1e-9);
+        assert_eq!(c.path_nodes[2].height, 66.0);
+        assert!(c.direction_deg.abs() < 1e-9, "faces the first segment");
+        assert_eq!(outbox.take(), vec![ViewRequest::ShowCamera(c.id)]);
+    }
+
+    #[test]
+    fn a_walkthrough_needs_two_nodes_and_escape_cancels() {
+        let (mut cx, mut t, _o) = setup();
+        pick(&mut t, CameraVariant::Walkthrough);
+        down(&mut cx, &mut t, Point::new(0.0, 0.0));
+        up(&mut cx, &mut t, Point::new(0.0, 0.0));
+        let res = t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert!(res.consumed && cx.project.cameras.is_empty());
+        down(&mut cx, &mut t, Point::new(0.0, 0.0));
+        down(&mut cx, &mut t, Point::new(60.0, 0.0));
+        assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
+        assert!(cx.project.cameras.is_empty());
+        // Enter finishes a path, Backspace removes the last node.
+        for p in [(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)] {
+            down(&mut cx, &mut t, Point::new(p.0, p.1));
+            up(&mut cx, &mut t, Point::new(p.0, p.1));
+        }
+        t.key(&mut cx, KeyEvent::key(egui::Key::Backspace));
+        let res = t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert_eq!(res.commit.as_deref(), Some("Create Camera"));
+        assert_eq!(cx.project.cameras[0].path.len(), 2);
+    }
+
+    #[test]
+    fn moving_a_walkthrough_moves_its_whole_path() {
+        let mut c = CameraObject::walkthrough(
+            vec![Point::new(0.0, 0.0), Point::new(100.0, 0.0)],
+            66.0,
+            "W",
+            0,
+        );
+        apply_handle(&mut c, CamHandle::Move, Point::new(10.0, 20.0), false);
+        assert_eq!(
+            c.path,
+            vec![Point::new(10.0, 20.0), Point::new(110.0, 20.0)]
+        );
+        assert!(hit_symbol(&c, Point::new(60.0, 21.0), 2.0));
+        assert!(!hit_symbol(&c, Point::new(60.0, 60.0), 2.0));
+    }
+
+    #[test]
+    fn add_lights_places_selects_moves_and_deletes_lights() {
+        let (mut cx, mut t, outbox) = setup();
+        pick(&mut t, CameraVariant::AddLights);
+        let res = down(&mut cx, &mut t, Point::new(120.0, 96.0));
+        assert_eq!(res.commit.as_deref(), Some("Add Light"));
+        let lights = cx.project.lights();
+        assert_eq!(lights.len(), 1);
+        let l = &lights[0];
+        let ceiling = cx.floor().ceiling_height;
+        assert_eq!(l.position, Point::new(120.0, 96.0));
+        assert!((l.height - (ceiling - 12.0)).abs() < 1e-9);
+        assert!(l.enabled && l.cast_shadows);
+        assert_eq!(t.selected_light(), Some(l.id));
+        // A click on the light selects it instead of adding another.
+        let id = l.id;
+        down(&mut cx, &mut t, Point::new(121.0, 96.0));
+        up(&mut cx, &mut t, Point::new(121.0, 96.0));
+        assert_eq!(cx.project.lights().len(), 1);
+        // Dragging it moves it in one undo step.
+        let press = PointerEvent::at(&cx, Point::new(120.0, 96.0)).with_down(true);
+        t.pointer_down(&mut cx, press);
+        let to = PointerEvent::at(&cx, Point::new(180.0, 96.0)).with_down(true);
+        t.pointer_move(&mut cx, to);
+        let res = up(&mut cx, &mut t, Point::new(180.0, 96.0));
+        assert_eq!(res.commit.as_deref(), Some("Move Light"));
+        assert_eq!(
+            cx.project.light(id).unwrap().position,
+            Point::new(180.0, 96.0)
+        );
+        cx.undo();
+        assert_eq!(
+            cx.project.light(id).unwrap().position,
+            Point::new(120.0, 96.0)
+        );
+        // Double-click opens Adjust Lights on it.
+        double(&mut cx, &mut t, Point::new(120.0, 96.0));
+        assert_eq!(outbox.take(), vec![ViewRequest::OpenAdjustLights(Some(id))]);
+        // Delete removes the selected light.
+        t.selected_light = Some(id);
+        let res = t.key(&mut cx, KeyEvent::key(egui::Key::Delete));
+        assert_eq!(res.commit.as_deref(), Some("Delete Light"));
+        assert!(cx.project.lights().is_empty());
+        cx.undo();
+        assert_eq!(cx.project.lights().len(), 1);
     }
 }

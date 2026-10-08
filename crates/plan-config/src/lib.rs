@@ -18,6 +18,7 @@ mod daniel;
 mod error;
 mod hotkeys;
 mod prefs;
+mod templates;
 mod toolbar;
 mod xml;
 
@@ -34,6 +35,10 @@ pub use hotkeys::{
 };
 pub use prefs::{
     daniel_x18, parse_ini, preferences_from_ini, ChiefPreferences, IniFile, IniSection, SnapPrefs,
+};
+pub use templates::{
+    detect_chief_templates, preferences_file, resolve_template, templates_folder, ChiefTemplates,
+    FALLBACK_LAYOUT_TEMPLATE, FALLBACK_PLAN_TEMPLATE, LAYOUT_TEMPLATE_KEY, PLAN_TEMPLATE_KEY,
 };
 pub use toolbar::{
     clean_label, parse_toolbar, parse_toolbar_named, Placement, ToolbarDef, ToolbarItemDef,

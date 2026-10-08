@@ -16,6 +16,7 @@ pub mod cad;
 pub mod camera;
 mod default_lists;
 mod defaults;
+pub mod details;
 pub mod dimension;
 pub mod electrical;
 pub mod exchange;

@@ -320,6 +320,10 @@ pub struct Floor {
     /// Opaque slab / pad / pier data; see [`crate::foundation::FoundationLayer`].
     #[serde(default)]
     pub foundation: Option<serde_json::Value>,
+    /// Opaque corner trim / moldings / material regions / decks / 3D solids;
+    /// see [`crate::details::DetailsLayer`].
+    #[serde(default)]
+    pub details: Option<serde_json::Value>,
 }
 
 impl Floor {
@@ -342,6 +346,7 @@ impl Floor {
             electrical: None,
             framing: Vec::new(),
             foundation: None,
+            details: None,
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {

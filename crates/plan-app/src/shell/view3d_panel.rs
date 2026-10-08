@@ -20,9 +20,26 @@
 //! * "Ray Trace…" opens the progressive ray tracer dialog (C-51) and
 //!   `3D > Export > glTF…` writes the model with `plan_3d::gltf`.
 //!
+//! * **Vector elevations**: when the active camera is an elevation, section or
+//!   wall elevation camera and the technique is Vector View or Technical
+//!   Illustration, the panel draws the `plan_elevation` [`Drawing`] of the
+//!   camera (`dialogs::camera::render_elevation_with`) instead of the GL scene:
+//!   weighted lines, poche, shadows, hatch and labels, with pan and zoom. The
+//!   drawing is made on a worker thread and remade whenever the project hash,
+//!   the camera, the technique or the Sun Angle changes ([`VectorView`]).
+//! * **Walkthroughs**: the panel plays a walkthrough camera along its path at
+//!   its speed ([`View3dState::play_walkthrough`]) and records the walk as a
+//!   numbered PNG sequence ([`record_walkthrough`]) with the path tracer.
+//! * **Lights and sun**: plan lights and electrical fixtures feed the ray
+//!   tracer's light list; the Sun Angle dialog drives the ray tracer, the GL
+//!   key light and the vector elevations' shadows.
+//!
 //! Roof planes come from `crate::editor::roof_view::roof_meshes`.
 
-use crate::dialogs::camera::{CameraDialog, CameraExtras, RayTraceDialog};
+use crate::dialogs::camera::{
+    elevation_options_with_sun, is_elevation_camera, render_elevation_with, render_lights, sun_dir,
+    AdjustLightsDialog, CameraDialog, CameraExtras, RayTraceDialog,
+};
 use crate::dialogs::Outcome;
 use crate::editor::EditorContext;
 use crate::toolbar::ViewFlag;
@@ -30,9 +47,11 @@ use crate::tools::camera::{self as camera_tool, CameraVariant};
 use crate::tools::{ToolId, ToolSet};
 use eframe::egui;
 use plan_3d::{build_scene, Material, Mesh, Scene, Vertex};
+use plan_core::camera::LIGHTS_LAYER;
 use plan_core::camera::{DEFAULT_EYE_HEIGHT, DEFAULT_FOV_DEG};
 use plan_core::geometry::Point;
 use plan_core::{CameraKind, CameraObject, Id, PlacedSymbol, Project};
+use plan_elevation::{Drawing, EdgeKind, LineWeight, Options, RegionKind, SunDir};
 use plan_materials::{settings as technique_settings, FillMode, RenderingTechnique, ShadingModel};
 use plan_view3d::{standard_views, CameraMode, Lighting, Viewport3d};
 use std::collections::hash_map::DefaultHasher;
@@ -40,6 +59,8 @@ use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Slack in front of a section line so the faces lying on it stay, inches.
@@ -90,6 +111,8 @@ pub enum ViewRequest {
     CameraDeleted(Id),
     /// Open the Camera Specification (C-30).
     OpenCameraSpec(Id),
+    /// Open Adjust Lights, highlighting a light.
+    OpenAdjustLights(Option<Id>),
 }
 
 /// A queue of [`ViewRequest`]s shared between the plan tools and the panel.
@@ -138,6 +161,12 @@ pub enum View3dCommand {
     RayTrace,
     /// 3D > Export > glTF.
     ExportGltf,
+    /// Adjust Lights (C-64).
+    AdjustLights,
+    /// Play the walkthrough camera along its path.
+    PlayWalkthrough,
+    /// Record the walkthrough as a PNG sequence.
+    RecordWalkthrough,
 }
 
 /// Runs a [`View3dCommand`]: the one match arm `main.rs` needs.
@@ -176,6 +205,9 @@ pub fn dispatch(
             state.raytrace.open = true;
         }
         View3dCommand::ExportGltf => export_gltf(cx),
+        View3dCommand::AdjustLights => state.open_adjust_lights(&cx.project, None),
+        View3dCommand::PlayWalkthrough => state.play_walkthrough(cx),
+        View3dCommand::RecordWalkthrough => state.record_walkthrough_dialog(cx),
     }
 }
 
@@ -431,6 +463,9 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
     scene
         .meshes
         .extend(crate::editor::framing_view::manual_framing_meshes(proj));
+    scene
+        .meshes
+        .extend(crate::editor::details_view::detail_meshes(proj));
     scene.meshes.extend(symbol_meshes(proj));
     let mut scene = match &scope.section {
         Some(cut) => clip_scene(&scene, cut),
@@ -565,7 +600,7 @@ pub fn project_hash(p: &Project) -> u64 {
             let _ = write!(HashFmt(&mut h), "{sym:?}");
         }
         // Roof planes are stored as tagged CAD records (`editor::roof_view`).
-        for c in &f.cad {
+        for c in f.cad.iter().filter(|c| c.layer != LIGHTS_LAYER) {
             let _ = write!(HashFmt(&mut h), "{c:?}");
         }
         // Roofs live in the floor's typed `roofs` slot (`editor::roof_view`).
@@ -574,6 +609,10 @@ pub fn project_hash(p: &Project) -> u64 {
         }
         // Slabs, pads and piers live in the typed `foundation` slot.
         if let Some(v) = &f.foundation {
+            let _ = write!(HashFmt(&mut h), "{v:?}");
+        }
+        // Corner boards, moldings, regions, decks and solids (`details`).
+        if let Some(v) = &f.details {
             let _ = write!(HashFmt(&mut h), "{v:?}");
         }
     }
@@ -587,6 +626,550 @@ pub fn vertical_fov(horizontal_deg: f32, aspect: f32) -> f32 {
     (2.0 * (half / aspect.max(0.1)).atan())
         .to_degrees()
         .clamp(10.0, 120.0)
+}
+
+// ----- vector elevations -----
+
+/// Raster size of the depth buffer behind the on-screen vector drawings: the
+/// plan_elevation default is finer than a screen needs and slow to make.
+const VECTOR_RASTER_PX: usize = 1024;
+
+/// Is this a technique that draws elevations as vectors?
+pub fn is_vector_technique(t: RenderingTechnique) -> bool {
+    matches!(
+        t,
+        RenderingTechnique::VectorView | RenderingTechnique::TechnicalIllustration
+    )
+}
+
+/// The drawing a vector elevation shows: the camera's drawing with the plan's
+/// sun (when given) casting the shadows. Technical Illustration always casts
+/// shadows, from the camera's own sun when the plan has none.
+pub fn vector_drawing(
+    project: &Project,
+    cam: &CameraObject,
+    technique: RenderingTechnique,
+    sun: Option<SunDir>,
+    raster_px: usize,
+) -> Drawing {
+    let mut sun = sun;
+    if sun.is_none() && technique == RenderingTechnique::TechnicalIllustration {
+        sun = Some(SunDir {
+            azimuth_deg: cam.render.sun_azimuth_deg,
+            altitude_deg: cam.render.sun_altitude_deg,
+        });
+    }
+    let opts = Options {
+        raster_px,
+        ..elevation_options_with_sun(cam, sun)
+    };
+    render_elevation_with(project, cam, &opts)
+}
+
+/// Splits a ring into trapezoids between horizontal cuts at every vertex
+/// height, filled by the even-odd rule (so the zero-width slits that join
+/// holes to the outer ring fill correctly). Each quad is
+/// `[left-bottom, right-bottom, right-top, left-top]`.
+pub fn trapezoids(ring: &[Point]) -> Vec<[Point; 4]> {
+    let n = ring.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let mut ys: Vec<f64> = ring.iter().map(|p| p.y).collect();
+    ys.sort_by(f64::total_cmp);
+    ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    let at = |a: Point, b: Point, y: f64| a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y);
+    let mut out = Vec::new();
+    for w in ys.windows(2) {
+        let (y0, y1) = (w[0], w[1]);
+        let mid = (y0 + y1) * 0.5;
+        // x at the bottom and top of the slab for every edge crossing it.
+        let mut xs: Vec<(f64, f64, f64)> = (0..n)
+            .filter_map(|i| {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                let (lo, hi) = if a.y < b.y { (a, b) } else { (b, a) };
+                (lo.y <= mid && mid < hi.y && hi.y > lo.y)
+                    .then(|| (at(lo, hi, mid), at(lo, hi, y0), at(lo, hi, y1)))
+            })
+            .collect();
+        xs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for pair in xs.as_chunks::<2>().0 {
+            let (l, r) = (pair[0], pair[1]);
+            out.push([
+                Point::new(l.1, y0),
+                Point::new(r.1, y0),
+                Point::new(r.2, y1),
+                Point::new(l.2, y1),
+            ]);
+        }
+    }
+    out
+}
+
+/// Area of a trapezoid list.
+#[cfg(test)]
+pub fn trapezoid_area(quads: &[[Point; 4]]) -> f64 {
+    quads
+        .iter()
+        .map(|q| plan_core::geometry::polygon_area(q).abs())
+        .sum()
+}
+
+/// A region of the drawing prepared for painting.
+struct PaintRegion {
+    kind: RegionKind,
+    material: Material,
+    quads: Vec<[Point; 4]>,
+}
+
+/// The vector elevation on screen: the latest drawing, the job making the
+/// next one, and the pan and zoom of the view.
+pub struct VectorView {
+    /// Key of the drawing in [`drawing`](Self::drawing).
+    key: u64,
+    drawing: Option<Arc<Drawing>>,
+    regions: Vec<PaintRegion>,
+    /// The job in flight: its key and where it leaves the result.
+    pending: Option<(u64, Arc<Mutex<Option<Drawing>>>)>,
+    /// Screen offset of the drawing's centre from the middle of the view.
+    pan: egui::Vec2,
+    /// 1.0 fits the drawing to the view.
+    zoom: f32,
+    /// Depth buffer size of new drawings (tests lower it).
+    pub raster_px: usize,
+}
+
+impl Default for VectorView {
+    fn default() -> Self {
+        Self {
+            key: 0,
+            drawing: None,
+            regions: Vec::new(),
+            pending: None,
+            pan: egui::Vec2::ZERO,
+            zoom: 1.0,
+            raster_px: VECTOR_RASTER_PX,
+        }
+    }
+}
+
+impl VectorView {
+    /// The drawing on screen, if one has been made.
+    pub fn drawing(&self) -> Option<&Drawing> {
+        self.drawing.as_deref()
+    }
+
+    /// Is a drawing being made?
+    pub fn is_busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    fn install(&mut self, key: u64, d: Drawing) {
+        self.regions = d
+            .regions
+            .iter()
+            .map(|r| PaintRegion {
+                kind: r.kind,
+                material: r.material,
+                quads: trapezoids(&r.polygon),
+            })
+            .collect();
+        self.drawing = Some(Arc::new(d));
+        self.key = key;
+    }
+
+    /// Takes the result of a finished job.
+    fn poll(&mut self) {
+        let done = match &self.pending {
+            Some((key, slot)) => slot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .map(|d| (*key, d)),
+            None => None,
+        };
+        if let Some((key, d)) = done {
+            self.pending = None;
+            self.install(key, d);
+        }
+    }
+
+    /// Does a drawing for `key` still have to be made? (Polls the job in
+    /// flight first, so a finished drawing is taken before answering.)
+    fn needs(&mut self, key: u64) -> bool {
+        self.poll();
+        if self.key == key && self.drawing.is_some() {
+            return false;
+        }
+        !self.pending.as_ref().is_some_and(|(k, _)| *k == key)
+    }
+
+    /// Starts a worker thread making the drawing for `key`; the result is
+    /// taken by the next [`needs`](Self::needs) after it finishes.
+    fn start(&mut self, key: u64, make: impl FnOnce() -> Drawing + Send + 'static) {
+        let slot = Arc::new(Mutex::new(None));
+        let out = Arc::clone(&slot);
+        let spawned = std::thread::Builder::new()
+            .name("vector-elevation".into())
+            .spawn(move || {
+                let d = std::panic::catch_unwind(std::panic::AssertUnwindSafe(make))
+                    .unwrap_or_default();
+                *out.lock().unwrap_or_else(PoisonError::into_inner) = Some(d);
+            });
+        if spawned.is_ok() {
+            self.pending = Some((key, slot));
+        }
+    }
+
+    /// Forces the next [`needs`](Self::needs) to ask for a new drawing.
+    fn invalidate(&mut self) {
+        self.key = 0;
+        self.pending = None;
+    }
+
+    /// Fit transform for a view rectangle: drawing space (Y up) to screen.
+    fn transform(&self, rect: egui::Rect) -> Option<VectorXform> {
+        let d = self.drawing.as_deref()?;
+        let (lo, hi) = drawing_extent(d);
+        let (w, h) = ((hi.x - lo.x).max(1.0), (hi.y - lo.y).max(1.0));
+        let margin = 0.06;
+        let fit = (f64::from(rect.width()) / (w * (1.0 + 2.0 * margin)))
+            .min(f64::from(rect.height()) / (h * (1.0 + 2.0 * margin)));
+        Some(VectorXform {
+            centre: Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5),
+            scale: fit * f64::from(self.zoom),
+            origin: rect.center() + self.pan,
+        })
+    }
+
+    /// Zooms by `factor` keeping the drawing point under `at` fixed.
+    fn zoom_about(&mut self, rect: egui::Rect, at: egui::Pos2, factor: f32) {
+        let Some(before) = self.transform(rect) else {
+            return;
+        };
+        let anchor = before.to_drawing(at);
+        self.zoom = (self.zoom * factor).clamp(0.05, 60.0);
+        if let Some(after) = self.transform(rect) {
+            let now = after.to_screen(anchor);
+            self.pan += at - now;
+        }
+    }
+
+    fn reset_view(&mut self) {
+        self.pan = egui::Vec2::ZERO;
+        self.zoom = 1.0;
+    }
+}
+
+/// Drawing space (inches, Y up) to screen pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct VectorXform {
+    centre: Point,
+    scale: f64,
+    origin: egui::Pos2,
+}
+
+impl VectorXform {
+    pub fn to_screen(self, p: Point) -> egui::Pos2 {
+        egui::pos2(
+            self.origin.x + ((p.x - self.centre.x) * self.scale) as f32,
+            self.origin.y - ((p.y - self.centre.y) * self.scale) as f32,
+        )
+    }
+
+    pub fn to_drawing(self, s: egui::Pos2) -> Point {
+        Point::new(
+            self.centre.x + f64::from(s.x - self.origin.x) / self.scale,
+            self.centre.y - f64::from(s.y - self.origin.y) / self.scale,
+        )
+    }
+}
+
+/// Height of drawing text, inches (the annotations are about this tall).
+const DRAWING_TEXT_IN: f64 = 6.0;
+
+/// Bounds of the lines, regions and text of a drawing.
+pub fn drawing_extent(d: &Drawing) -> (Point, Point) {
+    let (mut lo, mut hi) = d.bounds;
+    let mut grow = |p: Point| {
+        lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+    };
+    for r in &d.regions {
+        r.polygon.iter().for_each(|&p| grow(p));
+    }
+    for (p, t) in &d.texts {
+        grow(*p);
+        grow(Point::new(
+            p.x + 0.6 * DRAWING_TEXT_IN * t.chars().count() as f64,
+            p.y + DRAWING_TEXT_IN,
+        ));
+    }
+    (lo, hi)
+}
+
+fn color32(c: [f32; 4]) -> egui::Color32 {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    egui::Color32::from_rgb(b(c[0]), b(c[1]), b(c[2]))
+}
+
+/// Stroke width in pixels and colour of a line of the drawing.
+fn line_style(
+    kind: EdgeKind,
+    weight: LineWeight,
+    technique: RenderingTechnique,
+) -> (f32, egui::Color32) {
+    let tech = technique == RenderingTechnique::TechnicalIllustration;
+    match (kind, weight) {
+        (EdgeKind::Cut, _) => (if tech { 3.0 } else { 2.4 }, egui::Color32::BLACK),
+        (EdgeKind::Hatch, _) => (0.5, egui::Color32::from_gray(0x70)),
+        (EdgeKind::Annotation, _) => (0.8, egui::Color32::from_gray(0x30)),
+        (_, LineWeight::Heavy) => (if tech { 2.6 } else { 1.8 }, egui::Color32::BLACK),
+        (_, LineWeight::Medium) => (1.1, egui::Color32::from_gray(0x22)),
+        (_, LineWeight::Light) => (0.6, egui::Color32::from_gray(0x55)),
+    }
+}
+
+/// Paints `view`'s drawing into `rect`: filled regions (faces, poche,
+/// shadows), then the lines by weight, then the labels.
+fn paint_vector(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    view: &VectorView,
+    technique: RenderingTechnique,
+) {
+    let (Some(d), Some(xf)) = (view.drawing.as_deref(), view.transform(rect)) else {
+        return;
+    };
+    let tech = technique == RenderingTechnique::TechnicalIllustration;
+    let painter = painter.with_clip_rect(rect);
+    let mut mesh = egui::Mesh::default();
+    for kind in [RegionKind::Face, RegionKind::Cut, RegionKind::Shadow] {
+        for r in view.regions.iter().filter(|r| r.kind == kind) {
+            let color = match kind {
+                RegionKind::Face if tech => color32(r.material.color()),
+                RegionKind::Face => egui::Color32::WHITE,
+                RegionKind::Cut if tech => egui::Color32::from_gray(0x6E),
+                RegionKind::Cut => egui::Color32::from_gray(0x8C),
+                RegionKind::Shadow => egui::Color32::from_black_alpha(80),
+            };
+            for q in &r.quads {
+                let base = mesh.vertices.len() as u32;
+                for p in q {
+                    mesh.colored_vertex(xf.to_screen(*p), color);
+                }
+                mesh.add_triangle(base, base + 1, base + 2);
+                mesh.add_triangle(base, base + 2, base + 3);
+            }
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    let view_rect = rect.expand(4.0);
+    for l in &d.lines {
+        let (a, b) = (xf.to_screen(l.a), xf.to_screen(l.b));
+        if !view_rect.intersects(egui::Rect::from_two_pos(a, b)) {
+            continue;
+        }
+        let (width, color) = line_style(l.kind, l.weight, technique);
+        let stroke = egui::Stroke::new(width, color);
+        if l.is_dashed() {
+            painter.extend(egui::Shape::dashed_line(&[a, b], stroke, 5.0, 3.0));
+        } else {
+            painter.line_segment([a, b], stroke);
+        }
+    }
+    let size = ((DRAWING_TEXT_IN * xf.scale) as f32).clamp(7.0, 26.0);
+    for (at, text) in &d.texts {
+        painter.text(
+            xf.to_screen(*at),
+            egui::Align2::LEFT_BOTTOM,
+            text,
+            egui::FontId::proportional(size),
+            egui::Color32::from_gray(0x20),
+        );
+    }
+}
+
+// ----- walkthroughs -----
+
+/// The walkthrough being played in the 3D view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WalkPlay {
+    pub camera: Id,
+    /// Seconds into the walk.
+    pub t_s: f64,
+    pub playing: bool,
+}
+
+/// Scene-space eye position and viewport yaw of walkthrough camera `c`,
+/// `t_s` seconds into the walk.
+pub fn walk_view(project: &Project, c: &CameraObject, t_s: f64) -> ([f32; 3], f32) {
+    let pose = c.walk_pose_at_time(t_s);
+    let elevation = project.floors.get(c.floor).map_or(0.0, |f| f.elevation);
+    (
+        [
+            pose.position.x as f32,
+            (elevation + pose.eye_height) as f32,
+            -pose.position.y as f32,
+        ],
+        pose.direction_deg.to_radians() as f32 - FRAC_PI_2,
+    )
+}
+
+/// Frame rate of recorded walkthroughs.
+pub const RECORD_FPS: f64 = 12.0;
+
+/// Path-traced settings of a recorded frame: small and quick, since a walk of
+/// a minute is several hundred frames.
+pub fn record_settings() -> plan_render::RenderSettings {
+    plan_render::RenderSettings {
+        width: 640,
+        height: 480,
+        samples: 8,
+        denoise: true,
+        ..plan_render::RenderSettings::default()
+    }
+}
+
+/// The frames of a walkthrough: `max(1, duration * fps)` poses spread evenly
+/// from the first node to the last.
+pub fn walk_frame_count(c: &CameraObject, fps: f64) -> usize {
+    ((c.walk_duration_s() * fps).round() as usize).max(1)
+}
+
+/// Renders walkthrough `cam` as numbered PNG frames (`frame_0001.png`, ...) in
+/// `out_dir` with the path tracer (`plan_view3d` has no offscreen GL target),
+/// plus the `make_video.sh` ffmpeg script. `progress(done, total)` returns
+/// `false` to stop early; the number of frames written is returned.
+#[allow(clippy::too_many_arguments)]
+pub fn record_walkthrough(
+    scene: &Scene,
+    cam: &CameraObject,
+    elevation: f64,
+    lights: &[plan_render::PointLight],
+    env: &plan_render::Environment,
+    settings: &plan_render::RenderSettings,
+    fps: f64,
+    out_dir: &Path,
+    progress: &mut dyn FnMut(usize, usize) -> bool,
+) -> std::io::Result<usize> {
+    std::fs::create_dir_all(out_dir)?;
+    let renderer = plan_render::Renderer::new(scene);
+    let total = walk_frame_count(cam, fps);
+    let aspect = settings.width as f32 / settings.height.max(1) as f32;
+    let fov = vertical_fov(cam.fov_deg as f32, aspect);
+    for i in 0..total {
+        let u = if total > 1 {
+            i as f64 / (total - 1) as f64
+        } else {
+            0.0
+        };
+        let pose = cam.walk_pose(u);
+        let camera = plan_render::Camera::from_plan(
+            pose.position,
+            pose.direction_deg,
+            elevation + pose.eye_height,
+            f64::from(fov),
+        );
+        let image = renderer.render(&camera, env, lights, settings);
+        std::fs::write(
+            out_dir.join(plan_view3d::export::frame_file_name(i + 1)),
+            plan_render::encode_png(&image),
+        )?;
+        if !progress(i + 1, total) {
+            return Ok(i + 1);
+        }
+    }
+    plan_view3d::export::write_ffmpeg_script(out_dir, fps)?;
+    Ok(total)
+}
+
+/// A walkthrough being recorded on a worker thread.
+pub struct Recording {
+    done: Arc<AtomicUsize>,
+    total: usize,
+    cancel: Arc<AtomicBool>,
+    result: Arc<Mutex<Option<Result<usize, String>>>>,
+    pub dir: PathBuf,
+}
+
+impl Recording {
+    /// Starts recording `cam` into `dir`.
+    pub fn start(
+        project: &Project,
+        cam: &CameraObject,
+        sun: Option<plan_render::Sun>,
+        dir: PathBuf,
+    ) -> Self {
+        let scene = build_view_scene(project, &ViewScope::default());
+        let elevation = project.floors.get(cam.floor).map_or(0.0, |f| f.elevation);
+        let lights = render_lights(project);
+        let cam = cam.clone();
+        let total = walk_frame_count(&cam, RECORD_FPS);
+        let done = Arc::new(AtomicUsize::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = Arc::new(Mutex::new(None));
+        let (d2, c2, r2, out) = (
+            Arc::clone(&done),
+            Arc::clone(&cancel),
+            Arc::clone(&result),
+            dir.clone(),
+        );
+        let spawned = std::thread::Builder::new()
+            .name("record-walkthrough".into())
+            .spawn(move || {
+                let env = plan_render::Environment {
+                    sun,
+                    ..plan_render::Environment::default()
+                };
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    record_walkthrough(
+                        &scene,
+                        &cam,
+                        elevation,
+                        &lights,
+                        &env,
+                        &record_settings(),
+                        RECORD_FPS,
+                        &out,
+                        &mut |n, _| {
+                            d2.store(n, Ordering::Relaxed);
+                            !c2.load(Ordering::Relaxed)
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+                }))
+                .unwrap_or_else(|_| Err("The renderer stopped unexpectedly".into()));
+                *r2.lock().unwrap_or_else(PoisonError::into_inner) = Some(res);
+            });
+        if let Err(e) = spawned {
+            *result.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(Err(format!("Could not start the renderer: {e}")));
+        }
+        Self {
+            done,
+            total,
+            cancel,
+            result,
+            dir,
+        }
+    }
+
+    pub fn progress(&self) -> (usize, usize) {
+        (self.done.load(Ordering::Relaxed), self.total)
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// The outcome once the worker has finished.
+    pub fn finished(&self) -> Option<Result<usize, String>> {
+        self.result
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
 }
 
 // ----- state -----
@@ -640,6 +1223,14 @@ pub struct View3dState {
     plan_bounds: Option<(Point, Point)>,
     scene_empty: bool,
     sun_light: Option<[f32; 3]>,
+    /// The vector elevation on screen (Vector View, Technical Illustration).
+    pub vector: VectorView,
+    /// The walkthrough being played, if any.
+    pub walk: Option<WalkPlay>,
+    recording: Option<Recording>,
+    adjust_lights: Option<AdjustLightsDialog>,
+    /// Sheets of camera views sent to layout.
+    pub layout: plan_layout::Layout,
 }
 
 impl Default for View3dState {
@@ -671,6 +1262,11 @@ impl View3dState {
             plan_bounds: None,
             scene_empty: true,
             sun_light: None,
+            vector: VectorView::default(),
+            walk: None,
+            recording: None,
+            adjust_lights: None,
+            layout: plan_layout::Layout::new("Camera Views", plan_docs::SheetSize::ArchC),
         }
     }
 
@@ -692,7 +1288,11 @@ impl View3dState {
                     if self.active_camera == Some(id) {
                         self.active_camera = None;
                     }
+                    if self.walk.is_some_and(|w| w.camera == id) {
+                        self.walk = None;
+                    }
                 }
+                ViewRequest::OpenAdjustLights(focus) => self.open_adjust_lights(project, focus),
                 ViewRequest::OpenCameraSpec(id) => {
                     if let Some(c) = project.camera(id) {
                         let floor = project
@@ -718,6 +1318,7 @@ impl View3dState {
         self.section = None;
         self.slider = None;
         self.active_camera = None;
+        self.walk = None;
         self.setup = Some(Setup::Mode(mode));
     }
 
@@ -731,7 +1332,28 @@ impl View3dState {
         self.slider = None;
         self.scope_floor = None;
         self.section = None;
+        if c.kind != CameraKind::Walkthrough {
+            self.walk = None;
+        }
         match c.kind {
+            CameraKind::Walkthrough => {
+                let pose = c.walk_pose(0.0);
+                self.mode = CameraMode::FullCamera;
+                self.setup = Some(Setup::Camera {
+                    position: pose.position,
+                    direction_deg: pose.direction_deg,
+                    eye_y: elevation + pose.eye_height,
+                    eye_height: pose.eye_height,
+                    fov_deg: c.fov_deg,
+                });
+                if !self.walk.is_some_and(|w| w.camera == id) {
+                    self.walk = Some(WalkPlay {
+                        camera: id,
+                        t_s: 0.0,
+                        playing: false,
+                    });
+                }
+            }
             CameraKind::FullCamera => {
                 self.mode = CameraMode::FullCamera;
                 self.setup = Some(Setup::Camera {
@@ -750,7 +1372,7 @@ impl View3dState {
                 self.mode = CameraMode::DollHouse;
                 self.setup = Some(Setup::Mode(CameraMode::DollHouse));
             }
-            CameraKind::CrossSection { .. } | CameraKind::WallElevation => {
+            CameraKind::CrossSection { .. } | CameraKind::WallElevation | CameraKind::Elevation => {
                 let cut = SectionCut::from_camera(c);
                 self.mode = cut.elevation_mode();
                 self.section = Some(cut);
@@ -767,6 +1389,7 @@ impl View3dState {
         self.section = None;
         self.slider = None;
         self.active_camera = None;
+        self.walk = None;
         if let Some(vp) = &mut self.viewport {
             vp.set_mode(mode);
         }
@@ -823,6 +1446,220 @@ impl View3dState {
         self.active_camera = None;
         self.section = Some(base);
         self.setup = Some(Setup::Section(base));
+    }
+
+    // ----- vector elevations -----
+
+    /// The camera whose vector elevation the panel draws instead of the GL
+    /// scene: an elevation, section or wall elevation camera while the
+    /// technique is Vector View or Technical Illustration.
+    pub fn vector_camera<'a>(&self, project: &'a Project) -> Option<&'a CameraObject> {
+        if !self.active || !is_vector_technique(self.technique) {
+            return None;
+        }
+        project
+            .camera(self.active_camera?)
+            .filter(|c| is_elevation_camera(c))
+    }
+
+    /// What the vector drawing depends on: the project hash, the camera, the
+    /// technique, the sun and the raster size.
+    fn vector_key(&self, project: &Project, cam: &CameraObject, sun: Option<SunDir>) -> u64 {
+        let mut h = DefaultHasher::new();
+        project_hash(project).hash(&mut h);
+        let _ = write!(HashFmt(&mut h), "{cam:?}");
+        self.technique.label().hash(&mut h);
+        self.vector.raster_px.hash(&mut h);
+        match sun {
+            Some(s) => {
+                1_u8.hash(&mut h);
+                s.azimuth_deg.to_bits().hash(&mut h);
+                s.altitude_deg.to_bits().hash(&mut h);
+            }
+            None => 0_u8.hash(&mut h),
+        }
+        h.finish()
+    }
+
+    /// The Sun Angle's shadow direction, while that toggle is on.
+    pub fn plan_sun(&self, sun_angle_on: bool) -> Option<SunDir> {
+        sun_angle_on
+            .then(|| sun_dir(&self.raytrace.sun()))
+            .flatten()
+    }
+
+    /// Starts a new vector drawing when the project, the camera, the
+    /// technique or the sun changed since the one on screen ("Refresh").
+    pub fn refresh_vector(&mut self, project: &Project, sun: Option<SunDir>) {
+        let Some(cam) = self.vector_camera(project).cloned() else {
+            return;
+        };
+        let key = self.vector_key(project, &cam, sun);
+        if !self.vector.needs(key) {
+            return;
+        }
+        let (project, technique, raster) = (project.clone(), self.technique, self.vector.raster_px);
+        self.vector.start(key, move || {
+            vector_drawing(&project, &cam, technique, sun, raster)
+        });
+    }
+
+    /// [`refresh_vector`](Self::refresh_vector) on this thread: the drawing is
+    /// on screen when it returns.
+    #[cfg(test)]
+    pub fn refresh_vector_now(&mut self, project: &Project, sun: Option<SunDir>) {
+        let Some(cam) = self.vector_camera(project).cloned() else {
+            return;
+        };
+        let key = self.vector_key(project, &cam, sun);
+        if self.vector.key == key && self.vector.drawing.is_some() {
+            return;
+        }
+        let d = vector_drawing(project, &cam, self.technique, sun, self.vector.raster_px);
+        self.vector.pending = None;
+        self.vector.install(key, d);
+    }
+
+    // ----- walkthroughs -----
+
+    fn walk_camera_id(&self, project: &Project) -> Option<Id> {
+        let is_walk = |id: &Id| {
+            project
+                .camera(*id)
+                .is_some_and(|c| c.kind == CameraKind::Walkthrough)
+        };
+        self.active_camera.filter(is_walk).or_else(|| {
+            project
+                .cameras
+                .iter()
+                .find(|c| c.kind == CameraKind::Walkthrough)
+                .map(|c| c.id)
+        })
+    }
+
+    /// Plays the walkthrough (the active one, else the first) from the start.
+    pub fn play_walkthrough(&mut self, cx: &mut EditorContext) {
+        let Some(id) = self.walk_camera_id(&cx.project) else {
+            cx.status = "No walkthrough yet: draw one with Create Walkthrough Path".into();
+            return;
+        };
+        self.show_camera(&cx.project, id);
+        self.walk = Some(WalkPlay {
+            camera: id,
+            t_s: 0.0,
+            playing: true,
+        });
+    }
+
+    /// Moves the playing walkthrough on by `dt` seconds and returns the
+    /// viewport pose to apply (`None` when none is shown).
+    pub fn tick_walk(&mut self, project: &Project, dt: f64) -> Option<([f32; 3], f32)> {
+        let w = self.walk.as_mut()?;
+        let c = project.camera(w.camera)?;
+        if w.playing {
+            w.t_s += dt;
+            let end = c.walk_duration_s();
+            if w.t_s >= end {
+                w.t_s = end;
+                w.playing = false;
+            }
+        }
+        Some(walk_view(project, c, w.t_s))
+    }
+
+    /// Record Walkthrough: asks for a folder and renders the frames there.
+    pub fn record_walkthrough_dialog(&mut self, cx: &mut EditorContext) {
+        let Some(id) = self.walk_camera_id(&cx.project) else {
+            cx.status = "No walkthrough yet: draw one with Create Walkthrough Path".into();
+            return;
+        };
+        if self.recording.is_some() {
+            cx.status = "A walkthrough is already being recorded".into();
+            return;
+        }
+        let Some(dir) = rfd::FileDialog::new()
+            .set_title("Folder for the walkthrough frames")
+            .pick_folder()
+        else {
+            return;
+        };
+        self.start_recording(cx, id, dir);
+    }
+
+    /// Starts recording walkthrough camera `id` into `dir`.
+    pub fn start_recording(&mut self, cx: &mut EditorContext, id: Id, dir: PathBuf) {
+        let Some(cam) = cx.project.camera(id).cloned() else {
+            return;
+        };
+        let sun = self.raytrace.environment().sun;
+        let rec = Recording::start(&cx.project, &cam, sun, dir);
+        cx.status = format!(
+            "Recording {} frames to {}",
+            rec.progress().1,
+            rec.dir.display()
+        );
+        self.recording = Some(rec);
+    }
+
+    // ----- lights -----
+
+    pub fn open_adjust_lights(&mut self, project: &Project, focus: Option<Id>) {
+        let mut d = AdjustLightsDialog::new(project);
+        d.focus = focus;
+        self.adjust_lights = Some(d);
+    }
+
+    // ----- layout -----
+
+    /// Send to Layout: the active elevation or section camera becomes a box on
+    /// page 1 of the camera layout.
+    pub fn send_to_layout(&mut self, cx: &mut EditorContext) {
+        let Some(id) = self
+            .active_camera
+            .filter(|id| cx.project.camera(*id).is_some_and(is_elevation_camera))
+        else {
+            cx.status = "Open an elevation or section camera to send it to layout".into();
+            return;
+        };
+        cx.status = match crate::dialogs::camera::send_camera_to_layout(
+            &mut self.layout,
+            &cx.project,
+            id,
+            1,
+        ) {
+            Some(_) => format!(
+                "Sent to layout ({} views)",
+                self.layout
+                    .pages
+                    .iter()
+                    .map(|p| p.boxes.len())
+                    .sum::<usize>()
+            ),
+            None => "That camera has no 2D view to send".into(),
+        };
+    }
+
+    /// Prints the camera layout to a PDF.
+    pub fn export_layout_pdf(&mut self, cx: &mut EditorContext) {
+        if self.layout.pages.iter().all(|p| p.boxes.is_empty()) {
+            cx.status = "Send a camera view to layout first".into();
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("PDF", &["pdf"])
+            .set_file_name("camera views.pdf")
+            .save_file()
+        else {
+            return;
+        };
+        let bytes = plan_layout::render_pdf(
+            &self.layout,
+            &crate::dialogs::camera::layout_context(&cx.project),
+        );
+        cx.status = match std::fs::write(&path, bytes) {
+            Ok(()) => format!("Saved {}", path.display()),
+            Err(e) => format!("Could not save: {e}"),
+        };
     }
 
     // ----- the scene -----
@@ -949,9 +1786,12 @@ impl View3dState {
                 Outcome::Ok => self.apply_camera_dialog(cx, &d),
             }
         }
+        self.lights_window(ctx, cx);
+        self.recording_window(ctx, cx);
         self.sun_window(ctx, cx);
         self.defaults_window(ctx);
         if self.raytrace.open || self.raytrace.is_running() {
+            self.raytrace.lights = render_lights(&cx.project);
             let scope = ViewScope {
                 fill: None,
                 ..self.scope()
@@ -969,6 +1809,57 @@ impl View3dState {
         }
     }
 
+    /// Adjust Lights (C-64): edits a draft, applied with OK.
+    fn lights_window(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        let Some(mut d) = self.adjust_lights.take() else {
+            return;
+        };
+        match d.show(ctx) {
+            Outcome::Open => self.adjust_lights = Some(d),
+            Outcome::Cancel => {}
+            Outcome::Ok => {
+                cx.begin_change("Adjust Lights");
+                d.apply(&mut cx.project);
+                cx.mark_dirty();
+            }
+        }
+    }
+
+    /// Progress of a walkthrough recording.
+    fn recording_window(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        let Some(rec) = &self.recording else {
+            return;
+        };
+        if let Some(result) = rec.finished() {
+            cx.status = match result {
+                Ok(n) => format!("Recorded {n} frames to {}", rec.dir.display()),
+                Err(e) => format!("Recording failed: {e}"),
+            };
+            self.recording = None;
+            return;
+        }
+        let (done, total) = rec.progress();
+        let mut cancel = false;
+        egui::Window::new("Record Walkthrough")
+            .id(egui::Id::new("record_walkthrough_window"))
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                let frac = if total == 0 {
+                    0.0
+                } else {
+                    done as f32 / total as f32
+                };
+                ui.add(egui::ProgressBar::new(frac).text(format!("{done} / {total} frames")));
+                ui.weak(format!("Writing frame_NNNN.png to {}", rec.dir.display()));
+                cancel = ui.button("Cancel").clicked();
+            });
+        if cancel {
+            rec.cancel();
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
+
     fn apply_camera_dialog(&mut self, cx: &mut EditorContext, d: &CameraDialog) {
         let id = d.id();
         cx.begin_change("Camera Specification");
@@ -981,14 +1872,16 @@ impl View3dState {
         }
     }
 
-    /// The Sun Angle toggle (C-63): date, time and latitude, also used by the
-    /// ray tracer and as the viewport's key light direction.
+    /// The Sun Angle toggle (C-63): either a date, time and latitude or the
+    /// angles themselves. The sun also drives the ray tracer, the GL key light
+    /// and the shadows of vector elevations.
     fn sun_window(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
         if !cx.view_flags.contains(&ViewFlag::SunAngle) {
             self.sun_light = None;
             return;
         }
         let mut open = true;
+        let mut apply = false;
         let rt = &mut self.raytrace;
         egui::Window::new("Sun Angle")
             .id(egui::Id::new("sun_angle_window"))
@@ -996,36 +1889,82 @@ impl View3dState {
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
+                let mut manual = rt.manual_sun.is_some();
                 ui.horizontal(|ui| {
-                    ui.label("Date");
+                    ui.radio_value(&mut manual, false, "Date and time");
+                    ui.radio_value(&mut manual, true, "Angles");
+                });
+                if manual != rt.manual_sun.is_some() {
+                    let s = rt.sun();
+                    rt.manual_sun = manual.then_some((s.azimuth_deg, s.altitude_deg.max(1.0)));
+                }
+                ui.add_enabled_ui(!manual, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Date");
+                        ui.add(
+                            egui::DragValue::new(&mut rt.date.0)
+                                .range(1..=12)
+                                .prefix("month "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut rt.date.1)
+                                .range(1..=31)
+                                .prefix("day "),
+                        );
+                    });
                     ui.add(
-                        egui::DragValue::new(&mut rt.date.0)
-                            .range(1..=12)
-                            .prefix("month "),
+                        egui::Slider::new(&mut rt.time_hours, 0.0..=24.0)
+                            .text("Time")
+                            .fixed_decimals(1),
                     );
                     ui.add(
-                        egui::DragValue::new(&mut rt.date.1)
-                            .range(1..=31)
-                            .prefix("day "),
+                        egui::DragValue::new(&mut rt.latitude)
+                            .range(-66.0..=66.0)
+                            .prefix("Latitude ")
+                            .suffix("\u{B0}"),
                     );
                 });
-                ui.add(
-                    egui::Slider::new(&mut rt.time_hours, 0.0..=24.0)
-                        .text("Time")
-                        .fixed_decimals(1),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut rt.latitude)
-                        .range(-66.0..=66.0)
-                        .prefix("Latitude ")
-                        .suffix("\u{B0}"),
-                );
+                if let Some((az, alt)) = &mut rt.manual_sun {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(az)
+                                .range(0.0..=360.0)
+                                .prefix("Azimuth ")
+                                .suffix("\u{B0}"),
+                        );
+                        ui.add(
+                            egui::DragValue::new(alt)
+                                .range(-10.0..=90.0)
+                                .prefix("Altitude ")
+                                .suffix("\u{B0}"),
+                        );
+                    });
+                }
                 let s = rt.sun();
                 ui.weak(format!(
                     "Azimuth {:.0}\u{B0}, altitude {:.0}\u{B0}",
                     s.azimuth_deg, s.altitude_deg
                 ));
+                apply = ui
+                    .button("Use for elevation shadows")
+                    .on_hover_text("Turns shadows on in every elevation and section camera")
+                    .clicked();
             });
+        if apply {
+            let s = self.raytrace.sun();
+            cx.begin_change("Sun Angle Shadows");
+            for c in cx
+                .project
+                .cameras
+                .iter_mut()
+                .filter(|c| is_elevation_camera(c))
+            {
+                c.render.shadows = true;
+                c.render.sun_azimuth_deg = s.azimuth_deg;
+                c.render.sun_altitude_deg = s.altitude_deg.max(1.0);
+            }
+            cx.mark_dirty();
+        }
         if !open {
             cx.view_flags.remove(&ViewFlag::SunAngle);
         }
@@ -1096,9 +2035,45 @@ fn render_camera(cam: &plan_view3d::Camera) -> plan_render::Camera {
 
 // ----- drawing -----
 
+/// What the user asked for in a view's toolbar this frame.
+#[derive(Default)]
+struct BarOut {
+    mode: Option<CameraMode>,
+    technique: Option<RenderingTechnique>,
+    rebuild: bool,
+    ray: bool,
+    back: bool,
+    refresh: bool,
+    to_layout: bool,
+    layout_pdf: bool,
+    slider: Option<f64>,
+    walk_toggle: bool,
+    walk_stop: bool,
+    walk_scrub: Option<f64>,
+    walk_speed: Option<f64>,
+    record: bool,
+}
+
+/// The technique combo box shared by both views.
+fn technique_combo(ui: &mut egui::Ui, current: RenderingTechnique, out: &mut BarOut) {
+    egui::ComboBox::from_id_salt("view3d_technique")
+        .selected_text(current.label())
+        .show_ui(ui, |ui| {
+            for t in RenderingTechnique::ALL {
+                if ui.selectable_label(current == t, t.label()).clicked() {
+                    out.technique = Some(t);
+                }
+            }
+        });
+}
+
 /// Draws the 3D view in the central area.
 pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     let ctx = ui.ctx().clone();
+    if st.vector_camera(&cx.project).is_some() {
+        show_vector(ui, cx, st);
+        return;
+    }
     st.ensure_scene(&cx.project);
     if let Some(note) = crate::tools::library::chief::take_partial_notice() {
         cx.status = note;
@@ -1107,10 +2082,24 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     let size = ui.available_size();
     st.apply_setup(size.x / size.y.max(1.0));
 
+    // A playing walkthrough moves the eye along its path.
+    let dt = ctx.input(|i| f64::from(i.stable_dt.min(0.1)));
+    let walk_pose = if st.walk.is_some_and(|w| w.playing) {
+        ctx.request_repaint();
+        st.tick_walk(&cx.project, dt)
+    } else {
+        None
+    };
+
     let tv = technique_view(st.technique);
     let sun = st.sun_light;
     let vp = st.viewport.get_or_insert_with(Viewport3d::new);
     apply_to_viewport(vp, &tv, sun);
+    if let Some((position, yaw)) = walk_pose {
+        vp.camera.position = position;
+        vp.camera.yaw = yaw;
+        vp.camera.pitch = 0.0;
+    }
     let resp = vp.ui(ui, size);
     st.mode = vp.camera.mode;
 
@@ -1146,10 +2135,12 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
         );
     }
 
-    let mut want_mode = None;
-    let mut want_technique = None;
-    let (mut rebuild, mut ray, mut back) = (false, false, false);
-    let mut slider_change = None;
+    let mut out = BarOut::default();
+    let walk_info = st.walk.and_then(|w| {
+        cx.project
+            .camera(w.camera)
+            .map(|c| (w, c.walk_duration_s(), c.walk_speed))
+    });
     egui::Area::new(egui::Id::new("view3d_toolbar"))
         .order(egui::Order::Foreground)
         .fixed_pos(rect.min + egui::vec2(8.0, 8.0))
@@ -1166,22 +2157,14 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
                         .show_ui(ui, |ui| {
                             for (name, m) in &views {
                                 if ui.selectable_label(st.mode == *m, *name).clicked() {
-                                    want_mode = Some(*m);
+                                    out.mode = Some(*m);
                                 }
                             }
                         });
-                    egui::ComboBox::from_id_salt("view3d_technique")
-                        .selected_text(st.technique.label())
-                        .show_ui(ui, |ui| {
-                            for t in RenderingTechnique::ALL {
-                                if ui.selectable_label(st.technique == t, t.label()).clicked() {
-                                    want_technique = Some(t);
-                                }
-                            }
-                        });
-                    rebuild = ui.button("Rebuild 3D").clicked();
-                    ray = ui.button("Ray Trace\u{2026}").clicked();
-                    back = ui.button("Back to Plan").clicked();
+                    technique_combo(ui, st.technique, &mut out);
+                    out.rebuild = ui.button("Rebuild 3D").clicked();
+                    out.ray = ui.button("Ray Trace\u{2026}").clicked();
+                    out.back = ui.button("Back to Plan").clicked();
                 });
                 if let Some(s) = &st.slider {
                     let mut off = s.offset;
@@ -1191,18 +2174,60 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
                             .suffix("\""),
                     );
                     if r.changed() {
-                        slider_change = Some(off);
+                        out.slider = Some(off);
                     }
+                }
+                if let Some((w, duration, speed)) = walk_info {
+                    ui.horizontal(|ui| {
+                        let label = if w.playing {
+                            "Pause"
+                        } else {
+                            "Play Walkthrough"
+                        };
+                        out.walk_toggle = ui.button(label).clicked();
+                        out.walk_stop = ui.button("Stop").clicked();
+                        let mut t = w.t_s;
+                        let r = ui.add(
+                            egui::Slider::new(&mut t, 0.0..=duration.max(0.01))
+                                .text("s")
+                                .fixed_decimals(1),
+                        );
+                        if r.changed() {
+                            out.walk_scrub = Some(t);
+                        }
+                        let mut v = speed;
+                        let r = ui.add(
+                            egui::DragValue::new(&mut v)
+                                .range(6.0..=600.0)
+                                .prefix("Speed ")
+                                .suffix(" in/s"),
+                        );
+                        if r.changed() {
+                            out.walk_speed = Some(v);
+                        }
+                        out.record = ui.button("Record Walkthrough\u{2026}").clicked();
+                    });
                 }
             });
         });
-    if let Some(m) = want_mode {
+    apply_bar(&ctx, cx, st, out, Some(&resp));
+}
+
+/// Applies a toolbar's output to the state (both views).
+fn apply_bar(
+    ctx: &egui::Context,
+    cx: &mut EditorContext,
+    st: &mut View3dState,
+    out: BarOut,
+    resp: Option<&egui::Response>,
+) {
+    if let Some(m) = out.mode {
         st.set_mode_user(m);
     }
-    if let Some(t) = want_technique {
+    if let Some(t) = out.technique {
         st.set_technique(t);
     }
-    if let Some(off) = slider_change {
+    if let Some(off) = out.slider {
         if let Some(s) = &mut st.slider {
             s.offset = off;
             let mut cut = s.base;
@@ -1210,23 +2235,147 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
             st.section = Some(cut);
         }
     }
-    if rebuild {
+    if out.rebuild {
         st.rebuild();
         cx.status = "Rebuilt the 3D model".into();
     }
-    if ray {
+    if out.refresh {
+        st.vector.invalidate();
+        st.rebuild();
+    }
+    if out.ray {
         st.raytrace.open = true;
     }
-    let tab = ctx.input(|i| i.key_pressed(egui::Key::Tab)) && (resp.hovered() || resp.has_focus());
+    if out.to_layout {
+        st.send_to_layout(cx);
+    }
+    if out.layout_pdf {
+        st.export_layout_pdf(cx);
+    }
+    if out.record {
+        st.record_walkthrough_dialog(cx);
+    }
+    // Walkthrough transport.
+    if let Some(w) = &mut st.walk {
+        let end = cx
+            .project
+            .camera(w.camera)
+            .map_or(0.0, CameraObject::walk_duration_s);
+        if out.walk_toggle {
+            if w.t_s >= end {
+                w.t_s = 0.0;
+            }
+            w.playing = !w.playing;
+        }
+        if out.walk_stop {
+            w.playing = false;
+            w.t_s = 0.0;
+        }
+        if let Some(t) = out.walk_scrub {
+            w.playing = false;
+            w.t_s = t.clamp(0.0, end);
+        }
+    }
+    if out.walk_stop || out.walk_scrub.is_some() {
+        if let (Some(w), Some(vp)) = (st.walk, st.viewport.as_mut()) {
+            if let Some(c) = cx.project.camera(w.camera) {
+                let (position, yaw) = walk_view(&cx.project, c, w.t_s);
+                vp.camera.position = position;
+                vp.camera.yaw = yaw;
+                vp.camera.pitch = 0.0;
+            }
+        }
+    }
+    if let (Some(speed), Some(id)) = (out.walk_speed, st.walk.map(|w| w.camera)) {
+        cx.begin_change_merged("Walking Speed");
+        cx.project.update_camera(id, |c| c.walk_speed = speed);
+        cx.mark_dirty();
+    }
+    if !ctx.input(|i| i.pointer.any_down()) {
+        cx.end_merge();
+    }
+    let hot = resp.is_none_or(|r| r.hovered() || r.has_focus());
+    let tab = ctx.input(|i| i.key_pressed(egui::Key::Tab)) && hot;
     if tab {
         if let Some(id) = st.next_camera(&cx.project) {
             st.show_camera(&cx.project, id);
         }
     }
     let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    if back || esc {
+    if out.back || esc {
         st.active = false;
     }
+}
+
+/// The vector elevation of the active camera in the central area: pan with a
+/// drag, zoom with the wheel, double-click to fit.
+fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
+    let ctx = ui.ctx().clone();
+    let sun = st.plan_sun(cx.view_flags.contains(&ViewFlag::SunAngle));
+    st.refresh_vector(&cx.project, sun);
+    let rect = ui.available_rect_before_wrap();
+    let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+    ui.painter()
+        .rect_filled(rect, 0.0, egui::Color32::from_rgb(0xFA, 0xFA, 0xF8));
+    if resp.dragged() {
+        st.vector.pan += resp.drag_delta();
+    }
+    if resp.hovered() {
+        let scroll = ctx.input(|i| i.smooth_scroll_delta.y);
+        if let (true, Some(at)) = (scroll != 0.0, resp.hover_pos()) {
+            st.vector.zoom_about(rect, at, (scroll / 240.0).exp());
+        }
+    }
+    if resp.double_clicked() {
+        st.vector.reset_view();
+    }
+    paint_vector(ui.painter(), rect, &st.vector, st.technique);
+    let name = st
+        .active_camera
+        .and_then(|id| cx.project.camera(id))
+        .map_or(String::new(), |c| c.name.clone());
+    if st.vector.drawing().is_none() {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Drawing the view\u{2026}",
+            egui::FontId::proportional(14.0),
+            egui::Color32::from_gray(0x60),
+        );
+    } else if st.vector.drawing().is_some_and(|d| d.lines.is_empty()) {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Nothing to draw: the view is empty.",
+            egui::FontId::proportional(14.0),
+            egui::Color32::from_gray(0x60),
+        );
+    }
+    let busy = st.vector.is_busy();
+    let mut out = BarOut::default();
+    egui::Area::new(egui::Id::new("view3d_toolbar"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min + egui::vec2(8.0, 8.0))
+        .show(&ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(&name);
+                    technique_combo(ui, st.technique, &mut out);
+                    out.refresh = ui.button("Refresh").clicked();
+                    out.to_layout = ui.button("Send to Layout").clicked();
+                    out.layout_pdf = ui.button("Layout PDF\u{2026}").clicked();
+                    out.ray = ui.button("Ray Trace\u{2026}").clicked();
+                    out.back = ui.button("Back to Plan").clicked();
+                    if busy {
+                        ui.spinner();
+                    }
+                });
+            });
+        });
+    if busy {
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    apply_bar(&ctx, cx, st, out, Some(&resp));
 }
 
 #[cfg(test)]
@@ -1785,5 +2934,440 @@ mod tests {
             build_view_scene(&p, &ViewScope::default()).meshes.len(),
             before
         );
+    }
+
+    // ----- vector elevations, walkthroughs, lights -----
+
+    fn house() -> Project {
+        let mut p = Project::new("House");
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        for i in 0..4 {
+            p.add_wall(0, c[i], c[(i + 1) % 4], 6.0, 109.0, WallKind::Exterior);
+        }
+        p
+    }
+
+    fn vector_state(p: &mut Project, cam: CameraObject) -> (View3dState, Id) {
+        let id = p.add_camera(cam);
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.technique = RenderingTechnique::VectorView;
+        st.vector.raster_px = 192;
+        st.show_camera(p, id);
+        (st, id)
+    }
+
+    fn middle_section() -> CameraObject {
+        // Through the middle of the house, looking up the plan (+Y).
+        let mut c = CameraObject::new(
+            CameraKind::CrossSection { back_clip: None },
+            Point::new(120.0, 96.0),
+            90.0,
+            "Section 1",
+            0,
+        );
+        crate::tools::camera::upgrade_section(&mut c);
+        c
+    }
+
+    #[test]
+    fn a_section_camera_in_vector_view_draws_cut_regions() {
+        let mut p = house();
+        let (mut st, id) = vector_state(&mut p, middle_section());
+        assert_eq!(st.vector_camera(&p).map(|c| c.id), Some(id));
+        st.refresh_vector_now(&p, None);
+        let d = st.vector.drawing().expect("a drawing");
+        assert!(!d.lines.is_empty());
+        assert!(d.cut_regions().count() > 0, "the cut walls have poche");
+        assert!(d.lines.iter().any(|l| l.kind == EdgeKind::Cut));
+        // Standard shows the GL scene instead; Technical Illustration also draws vectors.
+        st.technique = RenderingTechnique::Standard;
+        assert!(st.vector_camera(&p).is_none());
+        st.technique = RenderingTechnique::TechnicalIllustration;
+        assert!(st.vector_camera(&p).is_some());
+        // A full camera never draws a vector view.
+        let full = p.add_camera(CameraObject::new(
+            CameraKind::FullCamera,
+            Point::new(10.0, 10.0),
+            90.0,
+            "c",
+            0,
+        ));
+        st.show_camera(&p, full);
+        assert!(st.vector_camera(&p).is_none());
+    }
+
+    #[test]
+    fn the_vector_drawing_refreshes_when_the_project_or_the_sun_change() {
+        let mut p = house();
+        let (mut st, id) = vector_state(&mut p, middle_section());
+        let cam = p.camera(id).unwrap().clone();
+        let key = st.vector_key(&p, &cam, None);
+        assert_eq!(
+            key,
+            st.vector_key(&p, &cam, None),
+            "stable while nothing changes"
+        );
+        st.refresh_vector_now(&p, None);
+        assert!(!st.vector.needs(key));
+        // A moved wall changes the project hash, so a new drawing is needed.
+        p.add_wall(
+            0,
+            Point::new(0.0, 96.0),
+            Point::new(240.0, 96.0),
+            4.0,
+            109.0,
+            WallKind::Interior,
+        );
+        let newer = st.vector_key(&p, &cam, None);
+        assert_ne!(key, newer);
+        assert!(st.vector.needs(newer));
+        // So do the technique, the camera and the plan's sun.
+        let sun = Some(SunDir {
+            azimuth_deg: 200.0,
+            altitude_deg: 40.0,
+        });
+        assert_ne!(newer, st.vector_key(&p, &cam, sun));
+        let mut moved = cam.clone();
+        moved.position.x += 12.0;
+        assert_ne!(newer, st.vector_key(&p, &moved, None));
+        st.technique = RenderingTechnique::TechnicalIllustration;
+        assert_ne!(newer, st.vector_key(&p, &cam, None));
+        // The worker thread delivers the new drawing.
+        st.refresh_vector(&p, None);
+        assert!(st.vector.is_busy() || st.vector.drawing().is_some());
+        for _ in 0..1000 {
+            st.refresh_vector(&p, None);
+            if !st.vector.is_busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!st.vector.is_busy());
+        let key = st.vector_key(&p, &cam, None);
+        assert!(
+            !st.vector.needs(key),
+            "the finished drawing is the current one"
+        );
+    }
+
+    #[test]
+    fn technical_illustration_casts_shadows_from_the_camera_sun() {
+        let mut p = house();
+        let cam = middle_section();
+        p.add_camera(cam.clone());
+        let plain = vector_drawing(&p, &cam, RenderingTechnique::VectorView, None, 160);
+        let tech = vector_drawing(
+            &p,
+            &cam,
+            RenderingTechnique::TechnicalIllustration,
+            None,
+            160,
+        );
+        assert_eq!(plain.regions_of(RegionKind::Shadow).count(), 0);
+        let lit = vector_drawing(
+            &p,
+            &cam,
+            RenderingTechnique::VectorView,
+            Some(SunDir {
+                azimuth_deg: 90.0,
+                altitude_deg: 25.0,
+            }),
+            160,
+        );
+        assert!(
+            lit.regions_of(RegionKind::Shadow).count() > 0,
+            "the plan's sun shades faces"
+        );
+        assert!(!tech.lines.is_empty());
+    }
+
+    #[test]
+    fn trapezoids_fill_concave_rings_and_holes_by_even_odd() {
+        let pts =
+            |v: &[(f64, f64)]| -> Vec<Point> { v.iter().map(|&(x, y)| Point::new(x, y)).collect() };
+        let l_shape = pts(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 10.0),
+            (0.0, 10.0),
+        ]);
+        assert!((trapezoid_area(&trapezoids(&l_shape)) - 64.0).abs() < 1e-9);
+        // A square with a square hole joined to the outside by a zero-width slit.
+        let holed = pts(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 5.0),
+            (4.0, 5.0),
+            (4.0, 4.0),
+            (6.0, 4.0),
+            (6.0, 6.0),
+            (4.0, 6.0),
+            (4.0, 5.0),
+            (0.0, 5.0),
+        ]);
+        assert!((trapezoid_area(&trapezoids(&holed)) - 96.0).abs() < 1e-9);
+        // A sloped edge (a gable) is cut exactly.
+        let gable = pts(&[(0.0, 0.0), (10.0, 0.0), (5.0, 5.0)]);
+        assert!((trapezoid_area(&trapezoids(&gable)) - 25.0).abs() < 1e-9);
+        assert!(trapezoids(&pts(&[(0.0, 0.0), (1.0, 1.0)])).is_empty());
+    }
+
+    #[test]
+    fn the_vector_view_pans_and_zooms_about_the_cursor() {
+        let mut p = house();
+        let (mut st, _id) = vector_state(&mut p, middle_section());
+        st.refresh_vector_now(&p, None);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let before = st.vector.transform(rect).unwrap();
+        // Fitted: the drawing sits inside the view.
+        let d = st.vector.drawing().unwrap();
+        let (lo, hi) = drawing_extent(d);
+        for pt in [lo, hi] {
+            assert!(rect.contains(before.to_screen(pt)), "{pt:?}");
+        }
+        // Zooming about a point keeps that point of the drawing under the cursor.
+        let at = egui::pos2(300.0, 200.0);
+        let anchor = before.to_drawing(at);
+        st.vector.zoom_about(rect, at, 2.0);
+        let after = st.vector.transform(rect).unwrap();
+        let moved = after.to_screen(anchor);
+        assert!((moved - at).length() < 0.01, "{moved:?} vs {at:?}");
+        assert!(after.scale > before.scale * 1.99);
+        st.vector.pan += egui::vec2(15.0, -5.0);
+        assert!(st.vector.transform(rect).unwrap().origin != after.origin);
+        st.vector.reset_view();
+        assert_eq!(st.vector.transform(rect).unwrap().origin, before.origin);
+    }
+
+    fn walk_camera() -> CameraObject {
+        let mut c = CameraObject::walkthrough(
+            vec![Point::new(0.0, 0.0), Point::new(100.0, 0.0)],
+            66.0,
+            "Walk",
+            0,
+        );
+        c.walk_speed = 50.0;
+        c
+    }
+
+    #[test]
+    fn a_walkthrough_plays_along_its_path_at_its_speed() {
+        let mut p = house();
+        p.floors[0].elevation = 10.0;
+        let id = p.add_camera(walk_camera());
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.show_camera(&p, id);
+        assert!(st.active && st.mode == CameraMode::FullCamera);
+        let w = st.walk.expect("the walkthrough is ready to play");
+        assert_eq!((w.camera, w.t_s, w.playing), (id, 0.0, false));
+        let c = p.camera(id).unwrap();
+        // Two seconds long; at one second the eye is at the midpoint.
+        assert!((c.walk_duration_s() - 2.0).abs() < 1e-9);
+        let ([x, y, z], yaw) = walk_view(&p, c, 1.0);
+        assert!((x - 50.0).abs() < 1e-4 && (y - 76.0).abs() < 1e-4 && z.abs() < 1e-4);
+        assert!((yaw + FRAC_PI_2).abs() < 1e-5, "looks along +X");
+        // The player advances with time and stops at the end.
+        st.walk.as_mut().unwrap().playing = true;
+        let (pos, _) = st.tick_walk(&p, 0.5).unwrap();
+        assert!((pos[0] - 25.0).abs() < 1e-3);
+        assert!(st.walk.unwrap().playing);
+        let (pos, _) = st.tick_walk(&p, 10.0).unwrap();
+        assert!((pos[0] - 100.0).abs() < 1e-3);
+        let w = st.walk.unwrap();
+        assert!(!w.playing && (w.t_s - 2.0).abs() < 1e-9);
+        // The Play command rewinds and starts.
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = p;
+        st.play_walkthrough(&mut cx);
+        let w = st.walk.unwrap();
+        assert!(w.playing && w.t_s == 0.0);
+        // Leaving for an overview drops the walkthrough.
+        st.open_mode(CameraMode::Orbit, None);
+        assert!(st.walk.is_none());
+    }
+
+    #[test]
+    fn recording_writes_a_numbered_png_sequence_and_a_video_script() {
+        let mut p = house();
+        p.floors[0].elevation = 0.0;
+        let mut cam = walk_camera();
+        cam.path = vec![Point::new(60.0, 40.0), Point::new(180.0, 40.0)];
+        cam.position = cam.path[0];
+        cam.direction_deg = 0.0;
+        cam.walk_speed = 120.0; // one second: 12 frames at the default rate
+        let scene = build_view_scene(&p, &ViewScope::default());
+        let dir = std::env::temp_dir().join(format!("plan_walk_frames_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let settings = plan_render::RenderSettings {
+            width: 24,
+            height: 18,
+            samples: 1,
+            ..plan_render::RenderSettings::default()
+        };
+        let env = plan_render::Environment::default();
+        let mut seen = Vec::new();
+        let n = record_walkthrough(
+            &scene,
+            &cam,
+            0.0,
+            &[],
+            &env,
+            &settings,
+            4.0,
+            &dir,
+            &mut |d, t| {
+                seen.push((d, t));
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(n, 4, "one second at 4 fps");
+        assert_eq!(seen, vec![(1, 4), (2, 4), (3, 4), (4, 4)]);
+        for i in 1..=4 {
+            let bytes = std::fs::read(dir.join(format!("frame_{i:04}.png"))).unwrap();
+            assert!(bytes.starts_with(b"\x89PNG"), "frame {i}");
+        }
+        assert!(dir.join("make_video.sh").exists());
+        // Stopping early keeps what was written.
+        let n = record_walkthrough(
+            &scene,
+            &cam,
+            0.0,
+            &[],
+            &env,
+            &settings,
+            4.0,
+            &dir,
+            &mut |d, _| d < 2,
+        )
+        .unwrap();
+        assert_eq!(n, 2);
+        // The first and last frames are the path's ends.
+        assert_eq!(walk_frame_count(&cam, 4.0), 4);
+        assert!((cam.walk_pose(0.0).position.x - 60.0).abs() < 1e-9);
+        assert!((cam.walk_pose(1.0).position.x - 180.0).abs() < 1e-9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_recording_thread_reports_progress_and_finishes() {
+        let p = house();
+        let mut cam = walk_camera();
+        cam.path = vec![Point::new(60.0, 40.0), Point::new(72.0, 40.0)];
+        cam.walk_speed = 48.0; // a quarter second: 3 frames
+        let dir = std::env::temp_dir().join(format!("plan_walk_thread_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rec = Recording::start(&p, &cam, None, dir.clone());
+        assert_eq!(rec.progress().1, 3);
+        let mut result = None;
+        for _ in 0..3000 {
+            result = rec.finished();
+            if result.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(result, Some(Ok(3)));
+        assert_eq!(rec.progress(), (3, 3));
+        assert!(dir.join("frame_0003.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_plan_sun_is_only_used_while_sun_angle_is_on() {
+        let st = View3dState::with_inbox(Outbox::default());
+        assert!(st.plan_sun(false).is_none());
+        let s = st
+            .plan_sun(true)
+            .expect("mid-afternoon in June is above the horizon");
+        assert!(s.altitude_deg > 10.0);
+    }
+
+    #[test]
+    fn lights_do_not_rebuild_the_3d_model() {
+        let mut p = house();
+        let before = project_hash(&p);
+        p.add_light(
+            0,
+            plan_core::camera::PlanLight::new(Point::new(50.0, 50.0), 84.0),
+        )
+        .unwrap();
+        assert_eq!(before, project_hash(&p));
+    }
+
+    fn run_frames(cx: &mut EditorContext, st: &mut View3dState, n: usize) {
+        let ctx = egui::Context::default();
+        for _ in 0..n {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                if st.frame(ctx, cx) {
+                    egui::CentralPanel::default().show(ctx, |ui| show(ui, cx, st));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn the_vector_view_and_the_light_and_sun_windows_draw_frames() {
+        let mut p = house();
+        let (mut st, id) = vector_state(&mut p, middle_section());
+        p.cameras[0].render.hatch = true;
+        p.add_light(
+            0,
+            plan_core::camera::PlanLight::new(Point::new(50.0, 50.0), 84.0),
+        )
+        .unwrap();
+        st.refresh_vector_now(&p, None);
+        assert!(st.vector.drawing().is_some());
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = p;
+        cx.view_flags.insert(ViewFlag::SunAngle);
+        st.open_adjust_lights(&cx.project, None);
+        st.active = true;
+        run_frames(&mut cx, &mut st, 3);
+        assert!(st.active && st.active_camera == Some(id));
+        // The drawing is painted: regions, lines and labels.
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(640.0, 480.0));
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                paint_vector(
+                    ui.painter(),
+                    rect,
+                    &st.vector,
+                    RenderingTechnique::VectorView,
+                );
+                paint_vector(
+                    ui.painter(),
+                    rect,
+                    &st.vector,
+                    RenderingTechnique::TechnicalIllustration,
+                );
+            });
+        });
+        // Apply from the Sun Angle window makes every elevation cast shadows.
+        assert!(!cx.project.cameras[0].render.shadows);
+    }
+
+    #[test]
+    fn walkthrough_controls_draw_frames_in_the_3d_view() {
+        let mut p = house();
+        let id = p.add_camera(walk_camera());
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.show_camera(&p, id);
+        st.walk.as_mut().unwrap().playing = true;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = p;
+        run_frames(&mut cx, &mut st, 2);
+        let w = st.walk.expect("still a walkthrough");
+        assert!(w.t_s > 0.0 || !w.playing);
     }
 }

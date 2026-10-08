@@ -546,6 +546,53 @@ pub fn construction_set_pdf(project: &plan_core::Project) -> Vec<u8> {
     render_pdf(&layout, &rcx)
 }
 
+/// File > New Layout: Daniel's layout template (ARCH C 18x24, his title
+/// block) with every floor sent in at the largest Chief scale that fits, one
+/// floor per page, saved as a PDF. Plan Studio has no layout window yet, so
+/// the new layout goes straight to paper.
+pub fn new_layout_pdf(project: &plan_core::Project) -> Vec<u8> {
+    let layout = new_layout_document(project);
+    let rcx = LayoutRenderContext::new(project);
+    render_pdf(&layout, &rcx)
+}
+
+/// The layout `new_layout_pdf` prints.
+pub fn new_layout_document(project: &plan_core::Project) -> plan_layout::Layout {
+    let settings = crate::templates::load_settings();
+    let seed = crate::templates::refresh(&settings, false);
+    let mut layout = crate::templates::new_layout(
+        &format!("{} Layout", project.name),
+        seed.cache.layout.as_ref(),
+    );
+    let rcx = LayoutRenderContext::new(project);
+    for floor in 0..project.floors.len() {
+        let page = u32::try_from(floor).unwrap_or(0);
+        if layout.page(page).is_none() {
+            let title = plan_layout::plan_label(project, floor);
+            layout.add_page(page, title);
+        }
+        let source = plan_layout::BoxSource::PlanView {
+            floor,
+            layer_set: project.layer_sets.active.clone(),
+        };
+        plan_layout::send_to_layout_auto(&mut layout, &rcx, page, source, None, None);
+    }
+    layout
+}
+
+fn new_layout_from_template(cx: &mut EditorContext) {
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(format!("{} Layout.pdf", cx.project.name))
+        .add_filter("pdf", &["pdf"])
+        .save_file()
+    else {
+        cx.status = "New Layout cancelled".into();
+        return;
+    };
+    let bytes = new_layout_pdf(&cx.project);
+    cx.status = write_file(&path, &bytes);
+}
+
 fn create_construction_set(cx: &mut EditorContext) {
     let Some(path) = rfd::FileDialog::new()
         .set_file_name(format!("{} Construction Set.pdf", cx.project.name))
@@ -637,6 +684,7 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
         Action::RoomSchedule => open_schedule(SchedKind::Room),
         Action::WallSchedule => open_schedule(SchedKind::Wall),
         Action::CreateConstructionSet => create_construction_set(cx),
+        Action::FileNewLayout => new_layout_from_template(cx),
         _ => {}
     }
 }

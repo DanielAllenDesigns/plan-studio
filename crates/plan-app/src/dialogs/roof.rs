@@ -10,8 +10,11 @@ use super::{
     dis_check, fmt_short, on, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
     PV_INK,
 };
-use crate::editor::roof_view::{pitch_label, RoofPlaneRecord, RoofSettings, ROOF_MATERIALS};
+use crate::editor::roof_view::{
+    pitch_label, CeilingRecord, RoofPlaneRecord, RoofSettings, ROOF_MATERIALS,
+};
 use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Stroke, Ui};
+use plan_core::LineStyle;
 use plan_roof::{DormerKind, DormerSpec};
 
 const MIN_PITCH: f64 = 0.5;
@@ -76,8 +79,13 @@ impl SpecPages for BuildPages {
                     .on_hover_text("Rebuild the automatic planes when the walls change");
                 ui.checkbox(&mut self.s.ignore_top_floor, "Ignore Top Floor")
                     .on_hover_text("Build the roof over the floor below the top one");
-                ui.checkbox(&mut self.s.build_ceiling_planes, "Build Ceiling Planes")
-                    .on_hover_text("Stored; vaulted ceiling planes are not generated yet");
+                ui.checkbox(
+                    &mut self.s.build_ceiling_planes,
+                    "Build ceiling planes for vaulted rooms",
+                )
+                .on_hover_text(
+                    "Rooms with Ceiling Over This Room turned off get ceiling planes that follow the roof",
+                );
                 section(ui, "Defaults for walls without their own roof settings");
                 pitch_row(ui, "Pitch", &mut self.s.pitch);
                 self.fields
@@ -428,6 +436,158 @@ impl RoofPlaneDialog {
     /// The edited copy.
     pub fn draft(&self) -> &RoofPlaneRecord {
         &self.pages.draft
+    }
+}
+
+// ===================================================================
+// Ceiling Plane Specification
+// ===================================================================
+
+const CEILING_TABS: &[Tab] = &[on("General"), on("Line Style"), on("Layer")];
+
+const LINE_STYLES: [(LineStyle, &str); 4] = [
+    (LineStyle::Solid, "Solid"),
+    (LineStyle::Dashed, "Dashed"),
+    (LineStyle::Dotted, "Dotted"),
+    (LineStyle::DashDot, "Dash Dot"),
+];
+
+struct CeilingPages {
+    draft: CeilingRecord,
+    layers: Vec<String>,
+    fields: Fields,
+}
+
+impl SpecPages for CeilingPages {
+    fn tabs(&self) -> &'static [Tab] {
+        CEILING_TABS
+    }
+
+    fn error(&self) -> Option<String> {
+        if self.fields.any_invalid() {
+            Some("Enter a valid length".into())
+        } else if self.draft.pitch < 0.0 || self.draft.pitch > MAX_PITCH {
+            Some("Pitch must be between 0 and 24 in 12".into())
+        } else if self.draft.thickness < 0.0 {
+            Some("The thickness cannot be negative".into())
+        } else {
+            None
+        }
+    }
+
+    fn page(&mut self, ui: &mut Ui, tab: usize) {
+        match tab {
+            0 => {
+                section(ui, "General");
+                self.fields.length_row(
+                    ui,
+                    "Height at Baseline",
+                    "ceiling_height",
+                    &mut self.draft.height_at_baseline,
+                );
+                row(ui, "Pitch", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.pitch)
+                            .range(0.0..=MAX_PITCH)
+                            .speed(0.1)
+                            .max_decimals(2)
+                            .suffix(" : 12"),
+                    );
+                });
+                self.fields.length_row(
+                    ui,
+                    "Thickness",
+                    "ceiling_thickness",
+                    &mut self.draft.thickness,
+                );
+                row(ui, "Origin", |ui| {
+                    ui.label(if self.draft.auto {
+                        "Built by Build Roof (replaced when the roof is rebuilt)"
+                    } else {
+                        "Manual (kept when the roof is rebuilt)"
+                    });
+                });
+            }
+            1 => {
+                section(ui, "Line Style");
+                row(ui, "Line style", |ui| {
+                    let current = LINE_STYLES
+                        .iter()
+                        .find(|(s, _)| *s == self.draft.line_style)
+                        .map_or("Solid", |(_, n)| *n);
+                    egui::ComboBox::from_id_salt("ceiling_line_style")
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            for (s, name) in LINE_STYLES {
+                                ui.selectable_value(&mut self.draft.line_style, s, name);
+                            }
+                        });
+                });
+            }
+            _ => {
+                section(ui, "Layer");
+                row(ui, "Layer", |ui| {
+                    egui::ComboBox::from_id_salt("ceiling_layer")
+                        .selected_text(self.draft.layer.clone())
+                        .show_ui(ui, |ui| {
+                            for l in &self.layers {
+                                ui.selectable_value(&mut self.draft.layer, l.clone(), l);
+                            }
+                        });
+                });
+            }
+        }
+    }
+
+    fn preview(&self, p: &Painter, area: Rect) {
+        // Side view: a sloped line over the baseline.
+        let ink = Stroke::new(1.5_f32, PV_INK);
+        let a = Pos2::new(area.min.x + area.width() * 0.15, area.center().y + 20.0);
+        let rise = (area.width() * 0.7) * (self.draft.pitch / 12.0).min(1.0) as f32;
+        let b = Pos2::new(area.max.x - area.width() * 0.15, a.y - rise);
+        p.line_segment([a, Pos2::new(b.x, a.y)], Stroke::new(1.0_f32, PV_ACCENT));
+        p.line_segment([a, b], ink);
+        p.text(
+            Pos2::new(area.center().x, area.max.y - 8.0),
+            Align2::CENTER_CENTER,
+            format!("Ceiling {}", pitch_label(self.draft.pitch)),
+            FontId::proportional(13.0),
+            PV_INK,
+        );
+    }
+}
+
+/// Ceiling Plane Specification (RF-45): height at the baseline, pitch,
+/// thickness, line style and layer of a vaulted ceiling plane.
+pub struct CeilingDialog {
+    frame: SpecDialog,
+    pages: CeilingPages,
+}
+
+impl CeilingDialog {
+    pub fn new(record: CeilingRecord, layers: Vec<String>) -> Self {
+        let key = record.id;
+        Self {
+            frame: SpecDialog::new("Ceiling Plane Specification", ("ceiling_plane", key)),
+            pages: CeilingPages {
+                draft: record,
+                layers,
+                fields: Fields::default(),
+            },
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        self.frame.show(ctx, &mut self.pages)
+    }
+
+    /// The edited copy.
+    pub fn draft(&self) -> &CeilingRecord {
+        &self.pages.draft
+    }
+
+    pub fn draft_mut(&mut self) -> &mut CeilingRecord {
+        &mut self.pages.draft
     }
 }
 

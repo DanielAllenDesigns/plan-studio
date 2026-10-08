@@ -3,11 +3,14 @@
 
 use super::ops::cad_center;
 use super::selection::{cad_by_id, ObjectRef};
-use super::{placed, roof_view, site_view, stairs_view, Camera, EditorContext};
+use super::{
+    foundation_view, framing_view, placed, roof_view, site_view, stairs_view, Camera, EditorContext,
+};
 use crate::theme::Palette;
 use crate::tools::camera::{self as camera_tool, CamHandle};
 use eframe::egui::{self, CursorIcon, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
+use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::Point;
 use plan_core::OpeningKind;
 
@@ -185,8 +188,43 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                     .collect()
             })
             .unwrap_or_default(),
-        // Foundation objects move by dragging their body (a group move).
-        ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::Foundation(_) => Vec::new(),
+        // Slabs, slab holes and platform holes: one handle per corner. All
+        // foundation objects move by dragging their body (a group move).
+        ObjectRef::Foundation(id) => {
+            let layer = FoundationLayer::load(floor);
+            layer
+                .find(id)
+                .and_then(|r| foundation_view::outline_points(&layer, r))
+                .map(|pts| {
+                    pts.into_iter()
+                        .enumerate()
+                        .map(|(i, p)| h(HandleKind::Reshape(i), p, CursorIcon::Crosshair))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        // Line members and layout lines: an end handle each; Truss Bases: a
+        // corner handle each. Posts and markers move by their body.
+        ObjectRef::Framing(id) => match framing_view::find(floor, id) {
+            Some(framing_view::Record::TrussBase { base, .. }) => base
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, p)| h(HandleKind::Reshape(i), *p, CursorIcon::Crosshair))
+                .collect(),
+            Some(r) => r
+                .line_ends()
+                .map(|(a, b)| {
+                    let resize = resize_cursor(b.sub(a));
+                    vec![
+                        h(HandleKind::ResizeStart, a, resize),
+                        h(HandleKind::ResizeEnd, b, resize),
+                    ]
+                })
+                .unwrap_or_default(),
+            None => Vec::new(),
+        },
+        ObjectRef::Room(_) | ObjectRef::Terrain => Vec::new(),
     }
 }
 

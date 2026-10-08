@@ -8,6 +8,9 @@
 //!   lines or the lines of one layer, with a preview count).
 //! * Build > Framing: Build Framing, Build All Framing, Delete Framing, and
 //!   the lumber Takeoff window with CSV export (Tools > Schedules).
+//! * File > Templates > Import Chief Template...: the decode summary of a
+//!   Chief `.plan` / `.layout` with Import into My Defaults and Set as default
+//!   plan / layout template. Also draws the Preferences > Templates page.
 //!
 //! Every command that changes the plan is one undo step. The windows live in
 //! a thread-local like `build_tools`, so the shell calls [`dispatch`] for the
@@ -15,6 +18,7 @@
 
 use crate::editor::framing_view;
 use crate::editor::{EditorContext, ObjectRef};
+use crate::templates;
 use crate::toolbar::{FileCommand, FramingCommand};
 use eframe::egui::{self, Align2};
 use plan_core::cad::{CadItem, CadObject};
@@ -26,7 +30,7 @@ use plan_import::{
     DxfDrawing, DxfUnits,
 };
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ===================================================================
 // Export
@@ -370,6 +374,7 @@ impl CadWallsWindow {
 
 #[derive(Default)]
 struct Windows {
+    chief_template: Option<ChiefTemplateWindow>,
     import: Option<ImportWindow>,
     cad_walls: Option<CadWallsWindow>,
     /// The Framing Takeoff window: `Some(all_floors)`.
@@ -432,10 +437,14 @@ pub fn dispatch_framing(cx: &mut EditorContext, c: FramingCommand) {
 pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext) {
     let mut w = with_windows(std::mem::take);
     w.show(ctx, cx);
+    super::defaults::show_templates_page(ctx, cx);
     with_windows(|slot| {
         // A command run while the windows were out may have opened new ones.
         let newer = std::mem::take(slot);
         *slot = w;
+        if newer.chief_template.is_some() {
+            slot.chief_template = newer.chief_template;
+        }
         if newer.import.is_some() {
             slot.import = newer.import;
         }
@@ -450,6 +459,11 @@ pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext) {
 
 impl Windows {
     fn show(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        if let Some(mut win) = self.chief_template.take() {
+            if chief_template_window(ctx, cx, &mut win) {
+                self.chief_template = Some(win);
+            }
+        }
         if let Some(mut win) = self.import.take() {
             if import_window(ctx, cx, &mut win) {
                 self.import = Some(win);
@@ -464,6 +478,121 @@ impl Windows {
             self.takeoff = takeoff_window(ctx, cx, all);
         }
     }
+}
+
+// ===================================================================
+// Import Chief Template
+// ===================================================================
+
+struct ChiefTemplateWindow {
+    path: PathBuf,
+    preview: templates::Preview,
+}
+
+/// Decodes `path` (a Chief `.plan` / `.tpl` / `.layout`) and opens the
+/// Import Chief Template window on it.
+pub fn open_chief_template(cx: &mut EditorContext, path: &Path) {
+    match templates::preview(path) {
+        Ok(preview) => with_windows(|w| {
+            w.chief_template = Some(ChiefTemplateWindow {
+                path: path.to_path_buf(),
+                preview,
+            })
+        }),
+        Err(e) => cx.status = format!("Import failed: {e}"),
+    }
+}
+
+/// Preferences > Templates: opens the page (drawn from [`show_all`]).
+pub fn open_templates_page() {
+    super::defaults::open_templates_page();
+}
+
+/// Seeds the defaults from the window's template and keeps them as the
+/// user's template.
+fn import_into_defaults(cx: &mut EditorContext, w: &ChiefTemplateWindow) {
+    let seed = plan_chiefplan::seed_defaults(&w.preview.inventory, cx.defaults.clone());
+    cx.defaults = seed.defaults.clone();
+    let saved = crate::plan_defaults::save_user(&cx.defaults);
+    cx.status = format!(
+        "Imported {}: {} wall types, {} layers added{}",
+        w.path.display(),
+        seed.added_wall_types.len(),
+        seed.added_layers.len(),
+        match saved {
+            Ok(_) => String::new(),
+            Err(e) => format!(" (could not save your template: {e})"),
+        }
+    );
+}
+
+/// Makes the window's template the default plan (or layout) template.
+fn set_as_default_template(cx: &mut EditorContext, w: &ChiefTemplateWindow) {
+    let mut settings = templates::load_settings();
+    if w.preview.is_layout {
+        settings.layout = Some(w.path.clone());
+    } else {
+        settings.plan = Some(w.path.clone());
+    }
+    let (_, status) = super::defaults::apply_template_settings(cx, &settings, true);
+    super::defaults::reload_templates_page();
+    cx.status = status;
+}
+
+fn chief_template_window(
+    ctx: &egui::Context,
+    cx: &mut EditorContext,
+    w: &mut ChiefTemplateWindow,
+) -> bool {
+    let mut open = true;
+    let mut import = false;
+    let mut set_default = false;
+    let kind = if w.preview.is_layout {
+        "layout"
+    } else {
+        "plan"
+    };
+    egui::Window::new("Import Chief Template")
+        .id(egui::Id::new("import_chief_template"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(ctx.screen_rect().center())
+        .show(ctx, |ui| {
+            ui.set_min_width(420.0);
+            ui.strong(
+                w.path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+            );
+            ui.weak(w.path.display().to_string());
+            ui.separator();
+            for line in &w.preview.lines {
+                ui.label(line);
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Import into My Defaults").clicked() {
+                    import = true;
+                }
+                if ui
+                    .button(format!("Set as default {kind} template"))
+                    .clicked()
+                {
+                    set_default = true;
+                }
+            });
+        });
+    if import {
+        import_into_defaults(cx, w);
+        return false;
+    }
+    if set_default {
+        set_as_default_template(cx, w);
+        return false;
+    }
+    open
 }
 
 fn import_window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut ImportWindow) -> bool {

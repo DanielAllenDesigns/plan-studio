@@ -6,7 +6,8 @@
 use super::actions::{EditAction, EditActionKind};
 use super::selection::ObjectRef;
 use super::{
-    foundation_view, placed, roof_view, site_view, stairs_view, EditorContext, EditorRequest,
+    foundation_view, framing_view, placed, roof_view, site_view, stairs_view, EditorContext,
+    EditorRequest,
 };
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use crate::tools::roof::RoofMode;
@@ -130,6 +131,14 @@ impl EditorContext {
             self.selection
                 .items
                 .retain(|o| !matches!(o, ObjectRef::Foundation(_)));
+        }
+        let framing = self.selected_ids(|o| match o {
+            ObjectRef::Framing(i) => Some(i),
+            _ => None,
+        });
+        if !framing.is_empty() {
+            // delete_records drops them from the selection itself.
+            n += framing_view::delete_records(self, &framing);
         }
         let cams = self.selected_ids(|o| match o {
             ObjectRef::Camera(i) => Some(i),
@@ -444,6 +453,16 @@ impl EditorContext {
             })
             .collect();
         foundation_view::translate_ids(self, &foundation, d);
+        let framing: Vec<Id> = items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::Framing(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        if !framing.is_empty() {
+            framing_view::translate_in(&mut self.project.floors[fl], &framing, d);
+        }
         self.mark_dirty();
     }
 }

@@ -33,6 +33,7 @@
 pub mod cad;
 pub mod camera;
 pub mod defaults;
+pub mod details;
 pub mod dimension;
 pub mod export;
 pub mod extras;

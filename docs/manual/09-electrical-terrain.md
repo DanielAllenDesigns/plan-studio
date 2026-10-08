@@ -2,8 +2,10 @@
 
 Two site-and-systems families share this chapter: the electrical plan (outlets,
 switches, lights, connections) and the terrain (lot, elevations, hills, roads,
-driveways). Both store their data as hidden records on the plan, so they save
-and undo with the plan like any other object.
+driveways). Both store their data in typed fields of the plan (a floor's `electrical`
+slot and the project's `terrain` slot), so they save and undo with the plan like any other
+object. Older files kept them as hidden records on data layers; the program moves those into the
+typed fields once, when it opens such a file.
 
 # Part A: Electrical
 
@@ -11,9 +13,10 @@ and undo with the plan like any other object.
 
 An electrical **device** has a kind, a position, a height above the floor, a
 facing, an optional label and circuit number, and the switches that control
-it. Devices live on the `Electrical` layer. The editor stores a floor's devices as
-one hidden record on the `Electrical, Data` layer (hidden and locked), so the plan
-file carries them without changes to the core model.
+it. Devices live on the `Electrical` layer. The editor stores a floor's devices in that
+floor's typed `electrical` slot, so the plan file carries them and undo restores them. (Files
+from before this change kept them as one hidden record on an `Electrical, Data` layer; opening
+such a file converts it and removes the layer.)
 
 Device kinds known to the engine (`plan-electrical`, 18 kinds): 110V Outlet, 220V Outlet,
 GFCI Outlet, Floor Outlet, Switch, 3-Way Switch, Dimmer Switch, Ceiling Light, Recessed Can,
@@ -121,9 +124,10 @@ regions), **modifiers** (hills, valleys, raised and lowered and flat regions), *
    +-----------------------+        +-----------------------+
 ```
 
-A new project has no terrain. The default terrain is a flat 100' by 80' lot. The record is
-stored on the first floor that holds one (floor 0 for a new record) on the hidden
-`Terrain, Data` layer.
+A new project has no terrain. The default terrain is a flat 100' by 80' lot. The record (the terrain,
+its contour interval and whether it has been built) is stored in the project's typed `terrain` slot.
+Older files kept it on the first floor that held one, on a hidden `Terrain, Data` layer; opening such a file
+moves it into the slot and removes the layer.
 
 ## 9.6 Terrain tools
 

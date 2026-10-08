@@ -116,9 +116,12 @@ variant.
 
 Objects are addressed by `ObjectRef { Wall(Id), Opening(Id), Dimension(Id), Cad(Id),
 Text(Id), Cabinet(Id), Symbol(Id), Stair(Id), RoofPlane(Id), Camera(Id), Device(Id),
-Room(usize), Terrain }`. `Room(i)` indexes the detected rooms of the active floor
+Room(usize), Terrain, Foundation(Id), Framing(Id) }`. `Room(i)` indexes the detected rooms of the active floor
 (`cx.rooms`); `Terrain` is the project's single terrain; `Device` is an electrical
-device (`site_view`). Text objects are CAD items, so a picked text is `Cad(id)`.
+device (`site_view`); `Foundation` is a slab, slab hole, pad, pier or platform hole
+(`foundation_view`); `Framing` is a manual framing record (`framing_view`); the
+foundation and framing tools keep no selection of their own, they use
+`cx.selection`. Text objects are CAD items, so a picked text is `Cad(id)`.
 `ObjectRef::exists_in` and `selection::layer_of` tell whether and on which layer
 an object lives.
 

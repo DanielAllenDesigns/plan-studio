@@ -6,24 +6,44 @@ Angle, the ray tracer and glTF export.
 
 ## 10.1 What is in the 3D model
 
-`plan_3d::build_scene` turns the plan into triangle meshes:
+`plan_3d::build_scene` turns the plan into triangle meshes, and the editor adds a few more families on top:
 
 - Walls, with openings cut through them and reveals at the jambs. The exterior surface takes its
-  material from the wall type's outer layer (stucco, siding, brick, stone, concrete ...). Half walls and
-  pony walls are cut down to their height, and a wall flagged Railing is drawn as posts, rails and balusters.
+  material from the wall type's outer layer (stucco, siding, brick, stone, concrete ...). Walls are built
+  by class (chapter 2):
+  - a **foundation** wall is concrete and reaches its Foundation Height below the floor;
+  - a **pony** wall is two walls stacked at the split height, each with its own type, thickness and look;
+  - a **glass** wall is a 1/2" glass pane in a 2" frame, and a **glass pony** wall a solid lower part under glass;
+  - a **half-wall** is cut down to its height; a **room divider** has no mesh;
+  - **railing** and **deck railing** walls are posts (at most 8' apart and one at each end), top and bottom rails and
+    3/4" balusters; a **deck edge** is a rim board; **fencing** is posts every 8' at most with pickets, boards or
+    rails by Fence Style;
+  - a **curved** wall is built as a run of straight facets (one per 7.5 degrees) of its class, and **doors and windows
+    are not cut through it**.
 - Door leaves and window frames, sashes and glass for every opening style the model knows (hinged, sliding,
   pocket, bifold, garage, barn, shower, fixed, casement, bay, box and bow), with lite grids.
 - Optional detail through `SceneOptions`: doors drawn open at an angle, interior and exterior casing, window
   sills and exterior thresholds. The editor's 3D view calls the builder with the defaults (doors closed, no
-  casing), and nothing in the editor sets the non-hinged styles or the wall flags yet, so today you see
-  closed hinged doors, plain windows and full-height walls (planned: View options for open doors and casing).
-- Floor and ceiling slabs for every detected room.
+  casing), and the editor only places hinged doors and plain windows, so today you see
+  closed hinged doors and plain windows (planned: View options for open doors and casing).
+- Floor and ceiling platforms for every detected room, with any **Hole in Floor Platform** and **Hole in Ceiling Platform**
+  cut out (chapter 16).
+- Slabs, slab holes, footings, square pads and round piers (chapter 16).
 
-The editor adds **roof planes** (chapter 8). That is the whole model in the 3D view today. Stairs, cabinets,
-library symbols, electrical devices, terrain and framing have 3D builders in their own crates
-but the 3D view does not draw them yet (planned). Coordinates: X is plan x, Y is up, Z is
+The editor appends:
+
+- **Roofs** (chapter 8): each plane as a slab with its holes cut, skylights (curb, frame, glass), vaulted ceiling planes
+  and dormers.
+- **Manual framing** (chapter 11.11): the members placed by the framing tools and those Build Framing makes from the layout
+  lines (directed joists, bearing beams, laid-out trusses). The members Build Framing makes from the walls, floors and roof
+  are drawn in plan only, not in 3D.
+- **Placed library symbols**: a box of the symbol's width, depth and height for a built-in symbol, and the decoded meshes
+  for a Chief catalog object (a box when the geometry is partial, nothing when the catalog is unavailable; chapter 6.6).
+
+Stairs, cabinets, electrical devices and terrain have 3D builders in their own crates but the 3D view does not draw
+them yet (planned). Coordinates: X is plan x, Y is up, Z is
 negative plan y, all in inches. The scene is rebuilt automatically when the plan changes (it
-watches a hash of the floors, walls and openings), and **3D > Rebuild 3D** forces it.
+watches a hash of the floors, walls, openings, placed symbols, roofs and foundation objects), and **3D > Rebuild 3D** forces it.
 
 ## 10.2 Tools and commands
 
@@ -89,7 +109,7 @@ symbol with a viewing cone. Select it with the Camera tool (or Select Objects).
 |---|---|
 | General | Name; Camera Type (read-only: Full Camera, Perspective Overview, Doll House View, Cross Section, Wall Elevation, Orthographic); Floor; Camera Position (or Cut Line and Center for a section); View Direction; Section Length (sections) or Height Above Floor and Angle of View (perspective) |
 | Options | **Clipping**: Back Clip Distance, Far Clip Distance (Limit view distance). **Display**: Show camera in plan, Locked camera (both disabled) |
-| Rendering | Technique (kept per camera for the session), Cast shadows (disabled) |
+| Rendering | Technique (kept per camera for the session), Cast shadows (disabled). Elevation and cross-section cameras (and wall elevations) add an **Elevation rendering** section (10.7). |
 
 The angle of view is limited to 5 to 170 degrees.
 
@@ -155,9 +175,38 @@ Not built: depth of field, light sets, glass and material overrides per surface,
 
 `plan-elevation` turns the 3D scene into hidden-line vector elevations (Front, Back, Left,
 Right), cross sections and a plan overhead, as weighted line drawings (Heavy, Medium, Light,
-Hidden). The drawings are used by the Create Construction Set PDF (chapter 11). There is no
-editor command yet that opens one as an elevation window or sends it to CAD, and Create Auto
-Elevations is (planned).
+Hidden, plus Hatch and Annotation lines). The Create Construction Set PDF draws them (chapter 11).
+There is no editor command yet that opens one as an elevation window or sends it to CAD, and Create
+Auto Elevations and Wall Elevation cameras are (planned).
+
+### Elevation rendering (camera Rendering tab)
+
+The Camera Specification of a **Cross Section/Elevation camera** (and of a wall elevation camera, once the tool exists) has an
+**Elevation rendering** section on its Rendering tab. The choices are stored on the camera, so they round-trip with the plan:
+
+| Setting | What it does |
+|---|---|
+| **Hatch materials** | Draws material hatch lines on the visible faces: brick, siding (6" lap), stucco, stone, roof shingle, concrete and glass; other materials stay plain. Off by default. |
+| **Shadows** | Casts shadows from the sun. Set **Sun azimuth (from north)** and **Sun height** by hand (default 135 degrees and 45 degrees), or fill in **Date (month, day)**, **Solar time (hours)** and **Latitude** and press **Set sun from date and time**. The sun must be 0 to 90 degrees high. |
+| **Section back-clip depth** | For a cross section: limit the drawing to that depth behind the cut (120" when first ticked), set in **Depth behind the cut**. |
+| **Line weight by distance** | Lines more than 12" behind the nearest drawn line step down one weight class. |
+| **Labels (title, levels, roof pitch)** | Adds the title (the camera's name), "T.O. SUBFLOOR" and "T.O. PLATE" level callouts, "GRADE" with a grade line, and roof pitch triangles such as `8:12`. On by default. |
+
+The editor turns these into the engine's `Options` (`elevation_options`) and `render_elevation` draws the camera's 2D drawing with them,
+but no editor command shows that drawing or sends a camera to a layout yet, so today the choices are saved on the camera and wait for
+that command. The construction set's elevation and section boxes do not read them.
+
+### What the engine draws
+
+- **Regions** (on by default): faces, section cuts and shadows are traced as polygons, so a cut is filled with a gray poche
+  and shadows with a lighter gray beneath the lines. Rings are simplified at about half a pixel.
+- **Hatch**: patterns are coarsened for a **1/4" = 1'-0" sheet** and start at each region's lower-left corner; the scale is fixed, it does
+  not follow the layout box's scale.
+- **Shadows**: a shadow map at the raster size with a constant bias; faces turned from the sun count as shadowed. The ground plane is
+  only drawn (and shadowed) in the plan overhead view. It is an approximation.
+- **Depth weights** and **labels** as in the table. **Sections**: the cut line is Heavy and the cut faces are filled.
+- **Limits**: accuracy is about one pixel of the depth buffer, so fine detail is dropped; glass occludes like a solid; sections assume
+  closed meshes; there are no curves (a curved wall is its facets); the 3D scene it reads has no stairs, cabinets, electrical or terrain.
 
 ## 10.8 Materials
 
@@ -178,5 +227,7 @@ material tabs on objects, textures in the viewport) is (planned).
 
 - No textures or material assignment in the view; surfaces use flat material colors.
 - Many Chief techniques are approximations of the real look.
-- Cameras do not yet carry shadows, lock, or per-camera lighting.
-- No framing, terrain, stairs, cabinets or fixtures in 3D.
+- Cameras do not yet carry shadows (perspective), lock, or per-camera lighting. Elevation hatch is fixed at a 1/4" scale.
+- No terrain, stairs, cabinets or electrical devices in 3D, and Build Framing's wall, floor and roof members are not drawn in 3D.
+- Curved walls have no door or window cuts in 3D.
+- Walkthroughs, Add Lights and wall elevation cameras are (planned).

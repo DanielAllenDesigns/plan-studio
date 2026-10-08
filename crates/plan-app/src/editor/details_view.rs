@@ -1,0 +1,1377 @@
+//! Corner boards, quoins, moldings, material regions, wall hatching, polygon
+//! decks and 3D solids: storage, editing, picking, plan drawing and the 3D
+//! meshes (`plan_core::details`, the Trim flyout, Floor/Wall Material Region,
+//! Wall Hatching, Polygon Shaped Deck and the 3D Solid flyout).
+//!
+//! # Storage
+//!
+//! A floor's [`DetailsLayer`] lives in the typed slot `Floor.details`;
+//! [`save`] also makes sure the layers the objects are drawn on exist in the
+//! plan. Undo and redo restore it with the rest of the project.
+//!
+//! # Selection
+//!
+//! The details tool keeps its own selection here ([`selected`], [`select`]),
+//! like `rooms_edit`. The Select tool cannot pick these objects until
+//! `ObjectRef::Detail(Id)` exists (see `docs/integration-queue.md`); the
+//! picking, box-select, move and delete helpers it needs are
+//! [`pick`], [`in_rect`], [`translate_ids`] and [`delete_ids`].
+//!
+//! # Drawing and 3D
+//!
+//! `render::draw_plan` calls [`draw_under`] (floor regions, decks and solids,
+//! under the walls) and [`draw_over`] (wall hatching and wall regions, corner
+//! trim and moldings, over the walls). The 3D view adds
+//! [`detail_meshes`] to its scene.
+
+use super::{Camera, EditorContext};
+use eframe::egui::{self, Color32, Pos2, Shape, Stroke};
+use plan_3d::triangulate::ear_clip;
+use plan_core::details::{
+    self, bounds, circle_points, corner_near, exterior_corners, wall_strip, CornerBoard,
+    DeckPolygon, DetailRef, DetailsLayer, ExteriorCorner, MaterialRegion, MoldingLine,
+    MoldingProfile, Quoin, RegionKind, Solid3d, SolidKind, WallHatch, CORNER_TRIM_LAYER,
+    DECK_LAYER, MOLDING_LAYER, REGION_LAYER, SOLID_LAYER,
+};
+use plan_core::geometry::{
+    dist_to_segment, point_in_polygon, polygon_area, project_on_segment, Point,
+};
+use plan_core::walls::Side;
+use plan_core::{Id, Layer, LayerSet, LineStyle, Project, Wall, WallClass};
+use plan_materials::{
+    clip_strokes_to_polygon, core_library, pattern_strokes, MaterialLibrary, Pattern,
+};
+use std::cell::{Cell, RefCell};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
+use std::sync::OnceLock;
+
+/// Smallest outline area a drawn shape needs, square inches.
+pub const MIN_AREA: f64 = 1.0;
+/// Hatch lines of a polygon deck: the decking board pitch, inches.
+const BOARD_PITCH: f64 = 5.5;
+/// Hatching is skipped when it would cover less than this many pixels per inch.
+const MIN_HATCH_PX_PER_IN: f64 = 0.04;
+
+/// The layers the detail objects use, with Chief-like colors and weights.
+fn layer_defaults() -> [Layer; 5] {
+    [
+        Layer::new(CORNER_TRIM_LAYER, [150, 110, 70], 25),
+        Layer::new(MOLDING_LAYER, [160, 90, 50], 18),
+        Layer::new(REGION_LAYER, [110, 110, 140], 18),
+        Layer::new(DECK_LAYER, [150, 110, 60], 25),
+        Layer::new(SOLID_LAYER, [90, 90, 90], 18),
+    ]
+}
+
+// ===================================================================
+// Storage and editing
+// ===================================================================
+
+/// The details layer of the active floor.
+pub fn load(cx: &EditorContext) -> DetailsLayer {
+    DetailsLayer::load(cx.floor())
+}
+
+/// Stores `layer` on floor `fi` and adds the layers it needs to the plan.
+pub fn save(project: &mut Project, fi: usize, layer: &DetailsLayer) {
+    layer.store(&mut project.floors[fi]);
+    if !layer.is_empty() {
+        ensure_layers(&mut project.layers);
+    }
+}
+
+/// Adds the detail layers when the plan lacks them.
+pub fn ensure_layers(set: &mut LayerSet) {
+    for l in layer_defaults() {
+        if set.get(&l.name).is_none() {
+            set.layers.push(l);
+        }
+    }
+}
+
+/// Runs `edit` on the active floor's details layer as one undo step.
+pub fn edit(cx: &mut EditorContext, label: &str, edit: impl FnOnce(&mut DetailsLayer)) {
+    cx.begin_change(label);
+    let mut layer = load(cx);
+    edit(&mut layer);
+    let fl = cx.floor;
+    save(&mut cx.project, fl, &layer);
+    cx.mark_dirty();
+}
+
+/// Adds a corner board on `corner`; returns its id.
+pub fn add_corner_board(cx: &mut EditorContext, corner: &ExteriorCorner) -> Id {
+    let id = cx.project.alloc_id();
+    edit(cx, "Corner Board", |l| {
+        l.corner_boards.push(CornerBoard::at(id, corner));
+    });
+    id
+}
+
+/// Adds a quoin stack on `corner`; returns its id.
+pub fn add_quoin(cx: &mut EditorContext, corner: &ExteriorCorner) -> Id {
+    let id = cx.project.alloc_id();
+    edit(cx, "Quoins", |l| l.quoins.push(Quoin::at(id, corner)));
+    id
+}
+
+/// Auto Place Corner Boards: a board on every convex exterior corner of the
+/// active floor that has none. One undo step, none when nothing was added.
+/// Returns how many were placed.
+pub fn auto_corner_boards(cx: &mut EditorContext) -> usize {
+    auto_place(
+        cx,
+        "Auto Place Corner Boards",
+        |layer, floor, rooms, alloc| layer.auto_corner_boards(floor, rooms, alloc),
+    )
+}
+
+/// Auto Place Quoins: a stack on every convex exterior corner that has none.
+pub fn auto_quoins(cx: &mut EditorContext) -> usize {
+    auto_place(cx, "Auto Place Quoins", |layer, floor, rooms, alloc| {
+        layer.auto_quoins(floor, rooms, alloc)
+    })
+}
+
+fn auto_place(
+    cx: &mut EditorContext,
+    label: &str,
+    place: impl FnOnce(
+        &mut DetailsLayer,
+        &plan_core::Floor,
+        &[plan_core::Room],
+        &mut dyn FnMut() -> Id,
+    ) -> usize,
+) -> usize {
+    let rooms = cx.rooms_now().to_vec();
+    let floor = cx.floor().clone();
+    let mut layer = load(cx);
+    let n = place(&mut layer, &floor, &rooms, &mut || cx.project.alloc_id());
+    if n > 0 {
+        cx.begin_change(label);
+        let fl = cx.floor;
+        save(&mut cx.project, fl, &layer);
+        cx.mark_dirty();
+    }
+    n
+}
+
+/// Adds a molding along `polyline`; returns its id.
+pub fn add_molding(cx: &mut EditorContext, polyline: Vec<Point>, profile: MoldingProfile) -> Id {
+    let id = cx.project.alloc_id();
+    let ceiling = cx.floor().ceiling_height;
+    let label = if polyline.len() > 2 {
+        "Molding Polyline"
+    } else {
+        "Molding Line"
+    };
+    edit(cx, label, |l| {
+        l.moldings
+            .push(MoldingLine::new(id, polyline, profile, ceiling));
+    });
+    id
+}
+
+/// Adds a floor material region; returns its id.
+pub fn add_floor_region(cx: &mut EditorContext, outline: Vec<Point>) -> Id {
+    let id = cx.project.alloc_id();
+    edit(cx, "Floor Material Region", |l| {
+        l.regions.push(MaterialRegion::floor(id, outline));
+    });
+    id
+}
+
+/// Adds a wall material region; returns its id.
+pub fn add_wall_region(
+    cx: &mut EditorContext,
+    wall: Id,
+    side: Side,
+    (u0, u1): (f64, f64),
+    (v0, v1): (f64, f64),
+) -> Id {
+    let id = cx.project.alloc_id();
+    edit(cx, "Wall Material Region", |l| {
+        l.regions
+            .push(MaterialRegion::wall(id, wall, side, u0, u1, v0, v1));
+    });
+    id
+}
+
+/// The hatch of a wall, adding the default one when it has none; returns its
+/// id and whether it was added.
+pub fn wall_hatch(cx: &mut EditorContext, wall: Id) -> (Id, bool) {
+    if let Some(h) = load(cx).hatches.iter().find(|h| h.wall_id == wall) {
+        return (h.id, false);
+    }
+    let id = cx.project.alloc_id();
+    edit(cx, "Wall Hatching", |l| {
+        l.hatches.push(WallHatch {
+            id,
+            wall_id: wall,
+            ..WallHatch::default()
+        });
+    });
+    (id, true)
+}
+
+/// Adds a polygon deck; returns its id.
+pub fn add_deck(cx: &mut EditorContext, outline: Vec<Point>) -> Id {
+    let id = cx.project.alloc_id();
+    edit(cx, "Polygon Shaped Deck", |l| {
+        l.decks.push(DeckPolygon::new(id, outline));
+    });
+    id
+}
+
+/// Adds a 3D solid; returns its id.
+pub fn add_solid(cx: &mut EditorContext, kind: SolidKind, position: Point) -> Id {
+    let id = cx.project.alloc_id();
+    let label = match &kind {
+        SolidKind::PolylineSolid { .. } => "3D Solid",
+        k => k.name(),
+    };
+    edit(cx, label, |l| {
+        l.solids.push(Solid3d::new(id, kind, position))
+    });
+    id
+}
+
+/// Deletes the object as one undo step; returns whether it existed.
+pub fn delete(cx: &mut EditorContext, r: DetailRef) -> bool {
+    if !exists(cx, r) {
+        return false;
+    }
+    edit(cx, &format!("Delete {}", r.name()), |l| {
+        l.remove(r);
+    });
+    if selected() == Some(r) {
+        clear_selection();
+    }
+    true
+}
+
+/// Moves the object by `d` as one undo step; returns whether it existed.
+pub fn move_by(cx: &mut EditorContext, r: DetailRef, d: Point) -> bool {
+    if !exists(cx, r) {
+        return false;
+    }
+    edit(cx, &format!("Move {}", r.name()), |l| {
+        l.translate(r, d);
+    });
+    true
+}
+
+/// Deletes the objects with these ids as one undo step; returns how many went.
+pub fn delete_ids(cx: &mut EditorContext, ids: &[Id]) -> usize {
+    let layer = load(cx);
+    let refs: Vec<DetailRef> = ids.iter().filter_map(|i| layer.find(*i)).collect();
+    if refs.is_empty() {
+        return 0;
+    }
+    let label = match refs.as_slice() {
+        [one] => format!("Delete {}", one.name()),
+        _ => "Delete Details".to_string(),
+    };
+    edit(cx, &label, |l| {
+        for r in &refs {
+            l.remove(*r);
+        }
+    });
+    if selected().is_some_and(|s| refs.contains(&s)) {
+        clear_selection();
+    }
+    refs.len()
+}
+
+/// Translates the objects with these ids by `d` inside the caller's undo
+/// step (group drags and nudges); returns how many moved.
+pub fn translate_ids(cx: &mut EditorContext, ids: &[Id], d: Point) -> usize {
+    let mut layer = load(cx);
+    let mut n = 0;
+    for id in ids {
+        if let Some(r) = layer.find(*id) {
+            n += usize::from(layer.translate(r, d));
+        }
+    }
+    if n > 0 {
+        let fl = cx.floor;
+        save(&mut cx.project, fl, &layer);
+        cx.mark_dirty();
+    }
+    n
+}
+
+/// Does the active floor have the object?
+pub fn exists(cx: &EditorContext, r: DetailRef) -> bool {
+    load(cx).find(r.id()) == Some(r)
+}
+
+// ===================================================================
+// Selection
+// ===================================================================
+
+thread_local! {
+    static SELECTED: Cell<Option<DetailRef>> = const { Cell::new(None) };
+}
+
+/// The selected detail object, if any.
+pub fn selected() -> Option<DetailRef> {
+    SELECTED.with(Cell::get)
+}
+
+pub fn select(r: DetailRef) {
+    SELECTED.with(|s| s.set(Some(r)));
+}
+
+pub fn clear_selection() {
+    SELECTED.with(|s| s.set(None));
+}
+
+// ===================================================================
+// Picking
+// ===================================================================
+
+fn near_edge(outline: &[Point], p: Point, tol: f64) -> bool {
+    let n = outline.len();
+    n >= 2 && (0..n).any(|i| dist_to_segment(p, outline[i], outline[(i + 1) % n]) <= tol)
+}
+
+fn near_or_inside(outline: &[Point], p: Point, tol: f64) -> bool {
+    outline.len() >= 3 && (point_in_polygon(p, outline) || near_edge(outline, p, tol))
+}
+
+fn visible(cx: &EditorContext, layer: &str) -> bool {
+    cx.layers().is_visible(layer)
+}
+
+/// The object at `p` within `tol` inches. Corner trim and moldings first
+/// (they are small), then solids, wall regions and hatches, decks and last
+/// the floor regions; among shapes the smallest wins.
+pub fn pick(cx: &EditorContext, p: Point, tol: f64) -> Option<DetailRef> {
+    let layer = load(cx);
+    let floor = cx.floor();
+    for b in &layer.corner_boards {
+        if visible(cx, &b.layer) && near_or_inside(&b.outline(), p, tol) {
+            return Some(DetailRef::CornerBoard(b.id));
+        }
+    }
+    for q in &layer.quoins {
+        if visible(cx, &q.layer) && near_or_inside(&q.outline(), p, tol) {
+            return Some(DetailRef::Quoin(q.id));
+        }
+    }
+    for m in &layer.moldings {
+        let hit = m
+            .polyline
+            .windows(2)
+            .any(|s| dist_to_segment(p, s[0], s[1]) <= tol + m.width);
+        if visible(cx, &m.layer) && hit {
+            return Some(DetailRef::Molding(m.id));
+        }
+    }
+    let smallest = |cands: Vec<(DetailRef, f64)>| {
+        cands
+            .into_iter()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|c| c.0)
+    };
+    let solids = layer
+        .solids
+        .iter()
+        .filter(|s| visible(cx, &s.layer) && near_or_inside(&s.footprint(), p, tol))
+        .map(|s| (DetailRef::Solid(s.id), polygon_area(&s.footprint()).abs()))
+        .collect();
+    if let Some(r) = smallest(solids) {
+        return Some(r);
+    }
+    for r in layer.regions.iter().filter(|r| !r.is_floor()) {
+        let hit = r
+            .plan_polygon(floor)
+            .is_some_and(|poly| near_or_inside(&poly, p, tol));
+        if visible(cx, &r.layer) && hit {
+            return Some(DetailRef::Region(r.id));
+        }
+    }
+    for h in &layer.hatches {
+        let hit = floor
+            .wall(h.wall_id)
+            .is_some_and(|w| near_or_inside(&w.footprint(), p, tol));
+        if visible(cx, &h.layer) && hit {
+            return Some(DetailRef::Hatch(h.id));
+        }
+    }
+    let decks = layer
+        .decks
+        .iter()
+        .filter(|d| visible(cx, &d.layer) && near_or_inside(&d.outline, p, tol))
+        .map(|d| (DetailRef::Deck(d.id), d.area()))
+        .collect();
+    if let Some(r) = smallest(decks) {
+        return Some(r);
+    }
+    let regions = layer
+        .regions
+        .iter()
+        .filter(|r| r.is_floor() && visible(cx, &r.layer) && near_or_inside(&r.outline, p, tol))
+        .map(|r| (DetailRef::Region(r.id), r.area()))
+        .collect();
+    smallest(regions)
+}
+
+/// Every object whose plan bounds lie inside the box `lo`..`hi`, or, with
+/// `crossing`, touch it.
+pub fn in_rect(cx: &EditorContext, lo: Point, hi: Point, crossing: bool) -> Vec<DetailRef> {
+    let layer = load(cx);
+    let floor = cx.floor();
+    let mut out = Vec::new();
+    let mut check = |r: DetailRef, lay: &str| {
+        if !visible(cx, lay) {
+            return;
+        }
+        if let Some((a, b)) = layer.plan_bounds(floor, r) {
+            let hit = if crossing {
+                a.x <= hi.x && b.x >= lo.x && a.y <= hi.y && b.y >= lo.y
+            } else {
+                a.x >= lo.x && a.y >= lo.y && b.x <= hi.x && b.y <= hi.y
+            };
+            if hit {
+                out.push(r);
+            }
+        }
+    };
+    for x in &layer.corner_boards {
+        check(DetailRef::CornerBoard(x.id), &x.layer);
+    }
+    for x in &layer.quoins {
+        check(DetailRef::Quoin(x.id), &x.layer);
+    }
+    for x in &layer.moldings {
+        check(DetailRef::Molding(x.id), &x.layer);
+    }
+    for x in &layer.regions {
+        check(DetailRef::Region(x.id), &x.layer);
+    }
+    for x in &layer.hatches {
+        check(DetailRef::Hatch(x.id), &x.layer);
+    }
+    for x in &layer.decks {
+        check(DetailRef::Deck(x.id), &x.layer);
+    }
+    for x in &layer.solids {
+        check(DetailRef::Solid(x.id), &x.layer);
+    }
+    out
+}
+
+/// A wall under the pointer: where along it and on which side.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WallHit {
+    pub wall: Id,
+    /// Distance from the wall start, inches.
+    pub u: f64,
+    pub side: Side,
+    pub length: f64,
+    pub height: f64,
+}
+
+/// The straight wall at `p` (within its thickness plus `tol`).
+pub fn wall_at(cx: &EditorContext, p: Point, tol: f64) -> Option<WallHit> {
+    let usable = |w: &Wall| {
+        !w.is_curved()
+            && !w.flags.invisible
+            && w.length() > 1e-6
+            && !matches!(w.class, WallClass::RoomDivider | WallClass::Fencing { .. })
+            && cx.layers().is_visible(&w.layer)
+    };
+    cx.floor()
+        .walls
+        .iter()
+        .filter(|w| usable(w))
+        .filter_map(|w| {
+            let (t, q) = project_on_segment(p, w.start, w.end);
+            let d = q.dist(p);
+            (d <= w.thickness * 0.5 + tol).then_some((d, w, t, q))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, w, t, q)| WallHit {
+            wall: w.id,
+            u: t * w.length(),
+            side: if (p - q).dot(w.normal()) >= 0.0 {
+                Side::Left
+            } else {
+                Side::Right
+            },
+            length: w.length(),
+            height: w.height,
+        })
+}
+
+/// The exterior corner near `p`, if any (corner boards and quoins are placed
+/// on these).
+pub fn corner_at(cx: &mut EditorContext, p: Point, tol: f64) -> Option<ExteriorCorner> {
+    let rooms = cx.rooms_now().to_vec();
+    corner_near(&exterior_corners(cx.floor(), &rooms), p, tol)
+}
+
+// ===================================================================
+// Materials and patterns
+// ===================================================================
+
+fn library() -> &'static MaterialLibrary {
+    static LIB: OnceLock<MaterialLibrary> = OnceLock::new();
+    LIB.get_or_init(core_library)
+}
+
+/// The names of the library materials, for the dialogs' material combo.
+pub fn material_names() -> Vec<String> {
+    library().materials.iter().map(|m| m.name.clone()).collect()
+}
+
+/// Plan look of a material: its 2D pattern and base color. Names the
+/// library does not know match the first material containing the name; the
+/// rest draw a plain gray fill.
+pub fn material_look(name: &str) -> (Pattern, [u8; 3]) {
+    let lib = library();
+    let def = lib
+        .find(name)
+        .or_else(|| lib.search(name).into_iter().next());
+    def.map_or((Pattern::None, [180, 180, 180]), |m| {
+        (m.pattern.clone(), m.color)
+    })
+}
+
+/// The pattern names a wall hatch can use.
+pub const PATTERN_NAMES: [&str; 13] = [
+    "Lines",
+    "Cross Hatch",
+    "Brick",
+    "Block",
+    "Shingle",
+    "Lap Siding",
+    "Board and Batten",
+    "Tile",
+    "Herringbone",
+    "Insulation",
+    "Concrete",
+    "Earth",
+    "Grass",
+];
+
+/// The `plan_materials` pattern called `name`, `scale` times its usual size
+/// (line patterns also take `angle` degrees). Unknown names give
+/// [`Pattern::None`].
+pub fn pattern_named(name: &str, scale: f64, angle: f64) -> Pattern {
+    let k = if scale > 0.0 { scale } else { 1.0 };
+    match name {
+        "Lines" => Pattern::Lines {
+            angle_deg: angle,
+            spacing: 6.0 * k,
+        },
+        "Cross Hatch" => Pattern::CrossHatch {
+            angle_deg: angle,
+            spacing: 6.0 * k,
+        },
+        "Brick" => Pattern::Brick {
+            length: 8.0 * k,
+            height: 2.25 * k,
+        },
+        "Block" => Pattern::Block {
+            length: 16.0 * k,
+            height: 8.0 * k,
+        },
+        "Shingle" => Pattern::Shingle {
+            exposure: 5.0 * k,
+            width: 12.0 * k,
+        },
+        "Lap Siding" => Pattern::LapSiding { exposure: 6.0 * k },
+        "Board and Batten" => Pattern::BoardAndBatten { spacing: 12.0 * k },
+        "Tile" => Pattern::Tile {
+            w: 12.0 * k,
+            h: 12.0 * k,
+        },
+        "Herringbone" => Pattern::Herringbone {
+            length: 12.0 * k,
+            width: 3.0 * k,
+        },
+        "Insulation" => Pattern::Insulation,
+        "Concrete" => Pattern::Concrete,
+        "Earth" => Pattern::Earth,
+        "Grass" => Pattern::Grass,
+        _ => Pattern::None,
+    }
+}
+
+/// The pattern strokes of `pattern` over `polygon`, clipped to it. `paper`
+/// is the drawing scale in paper inches per foot (1/4" = 1' is `0.25`).
+pub fn strokes_in(pattern: &Pattern, polygon: &[Point], paper: f64) -> Vec<(Point, Point)> {
+    if polygon.len() < 3 {
+        return Vec::new();
+    }
+    let (lo, hi) = bounds(polygon);
+    let raw = pattern_strokes(pattern, (lo, hi), paper);
+    clip_strokes_to_polygon(&raw, polygon)
+}
+
+/// The strokes that fill a floor region with its material's pattern, clipped
+/// to the region's outline.
+pub fn region_strokes(
+    region: &MaterialRegion,
+    polygon: &[Point],
+    paper: f64,
+) -> Vec<(Point, Point)> {
+    let (pattern, _) = material_look(&region.material);
+    strokes_in(&pattern, polygon, paper)
+}
+
+/// The polygon a wall's hatching is drawn in: the main layer's outline when
+/// the join cache has it, else the wall's drawn outline.
+pub fn hatch_polygon(cx: &EditorContext, wall: &Wall) -> Vec<Point> {
+    if wall.is_curved() {
+        return wall.plan_polygon();
+    }
+    cx.layer_outlines
+        .iter()
+        .find(|l| l.wall_id == wall.id && l.is_main)
+        .map(|l| l.polygon.clone())
+        .or_else(|| {
+            cx.outlines
+                .iter()
+                .find(|o| o.wall_id == wall.id)
+                .map(|o| o.polygon.clone())
+        })
+        .unwrap_or_else(|| wall.footprint().to_vec())
+}
+
+/// The strokes of a wall hatch inside `polygon`.
+pub fn hatch_strokes(h: &WallHatch, polygon: &[Point], paper: f64) -> Vec<(Point, Point)> {
+    strokes_in(&pattern_named(&h.pattern, h.scale, h.angle), polygon, paper)
+}
+
+type Strokes = Rc<Vec<(Point, Point)>>;
+
+thread_local! {
+    static STROKES: RefCell<HashMap<u64, Strokes>> = RefCell::new(HashMap::new());
+}
+
+/// Pattern strokes cached by what they depend on, so a frame does not clip
+/// thousands of segments again.
+fn cached_strokes(key: impl Hash, make: impl FnOnce() -> Vec<(Point, Point)>) -> Strokes {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let k = hasher.finish();
+    STROKES.with(|c| {
+        let mut map = c.borrow_mut();
+        if let Some(s) = map.get(&k) {
+            return s.clone();
+        }
+        if map.len() > 96 {
+            map.clear();
+        }
+        let s = Rc::new(make());
+        map.insert(k, s.clone());
+        s
+    })
+}
+
+fn hash_points(pts: &[Point]) -> Vec<(u64, u64)> {
+    pts.iter().map(|p| (p.x.to_bits(), p.y.to_bits())).collect()
+}
+
+// ===================================================================
+// 3D
+// ===================================================================
+
+/// Every corner board, quoin, molding, material region, deck and solid of the
+/// project as 3D meshes; the 3D view extends its scene with it.
+pub fn detail_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
+    plan_3d::details::detail_meshes(project)
+}
+
+// ===================================================================
+// Plan drawing
+// ===================================================================
+
+fn sc(cam: &Camera, p: Point) -> Pos2 {
+    cam.world_to_screen(p)
+}
+
+fn layer_color(cx: &EditorContext, name: &str, fallback: [u8; 3]) -> Color32 {
+    let [r, g, b] = cx.layers().get(name).map_or(fallback, |l| l.color);
+    Color32::from_rgb(r, g, b)
+}
+
+fn rgb(c: [u8; 3]) -> Color32 {
+    Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// A world outline in `stroke`, optionally closed, in the given line style
+/// (also the tool's rubber band).
+pub fn stroke_line(
+    painter: &egui::Painter,
+    cam: &Camera,
+    pts: &[Point],
+    closed: bool,
+    stroke: Stroke,
+    style: LineStyle,
+) {
+    if pts.len() < 2 {
+        return;
+    }
+    let mut screen: Vec<Pos2> = pts.iter().map(|p| sc(cam, *p)).collect();
+    if closed {
+        screen.push(screen[0]);
+    }
+    match style {
+        LineStyle::Solid => {
+            painter.add(Shape::line(screen, stroke));
+        }
+        LineStyle::Dashed => painter.extend(Shape::dashed_line(&screen, stroke, 9.0, 5.0)),
+        LineStyle::Dotted => painter.extend(Shape::dashed_line(&screen, stroke, 2.0, 4.0)),
+        LineStyle::DashDot => painter.extend(Shape::dashed_line(&screen, stroke, 10.0, 8.0)),
+    }
+}
+
+/// Fills a simple polygon with a flat color.
+fn fill_polygon(painter: &egui::Painter, cam: &Camera, outline: &[Point], color: Color32) {
+    if outline.len() < 3 || color.a() == 0 {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    for p in outline {
+        mesh.colored_vertex(sc(cam, *p), color);
+    }
+    for [a, b, c] in ear_clip(outline) {
+        mesh.add_triangle(a as u32, b as u32, c as u32);
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+fn draw_strokes(painter: &egui::Painter, cam: &Camera, strokes: &[(Point, Point)], stroke: Stroke) {
+    for (a, b) in strokes {
+        painter.line_segment([sc(cam, *a), sc(cam, *b)], stroke);
+    }
+}
+
+fn paper(cx: &EditorContext) -> f64 {
+    cx.sheet.scale.inches_per_foot()
+}
+
+fn draw_floor_region(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    r: &MaterialRegion,
+) {
+    if r.outline.len() < 3 {
+        return;
+    }
+    let ink = layer_color(cx, &r.layer, [110, 110, 140]);
+    let (pattern, color) = material_look(&r.material);
+    fill_polygon(painter, cam, &r.outline, rgb(color).gamma_multiply(0.35));
+    if cam.px_per_in >= MIN_HATCH_PX_PER_IN && pattern != Pattern::None {
+        let scale = paper(cx);
+        let strokes = cached_strokes(
+            (
+                "floor",
+                &r.material,
+                hash_points(&r.outline),
+                scale.to_bits(),
+            ),
+            || region_strokes(r, &r.outline, scale),
+        );
+        draw_strokes(
+            painter,
+            cam,
+            &strokes,
+            Stroke::new(0.75_f32, ink.gamma_multiply(0.8)),
+        );
+    }
+    stroke_line(
+        painter,
+        cam,
+        &r.outline,
+        true,
+        Stroke::new(1.2_f32, ink),
+        LineStyle::Solid,
+    );
+}
+
+fn draw_deck(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, d: &DeckPolygon) {
+    if d.outline.len() < 3 {
+        return;
+    }
+    let ink = layer_color(cx, &d.layer, [150, 110, 60]);
+    fill_polygon(painter, cam, &d.outline, ink.gamma_multiply(0.25));
+    if cam.px_per_in >= MIN_HATCH_PX_PER_IN {
+        let pattern = Pattern::Lines {
+            angle_deg: 0.0,
+            spacing: BOARD_PITCH,
+        };
+        let scale = paper(cx);
+        let strokes = cached_strokes(("deck", hash_points(&d.outline), scale.to_bits()), || {
+            strokes_in(&pattern, &d.outline, scale)
+        });
+        draw_strokes(
+            painter,
+            cam,
+            &strokes,
+            Stroke::new(0.6_f32, ink.gamma_multiply(0.7)),
+        );
+    }
+    let width = if d.railing { 2.8_f32 } else { 1.6_f32 };
+    stroke_line(
+        painter,
+        cam,
+        &d.outline,
+        true,
+        Stroke::new(width, ink),
+        LineStyle::Solid,
+    );
+    if d.railing {
+        // Posts at the corners.
+        for p in &d.outline {
+            painter.circle_filled(sc(cam, *p), 2.5, ink);
+        }
+    }
+}
+
+fn draw_solid(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, s: &Solid3d) {
+    let ink = layer_color(cx, &s.layer, [90, 90, 90]);
+    let foot = s.footprint();
+    let style = match s.kind {
+        SolidKind::Face { .. } => LineStyle::Dotted,
+        _ => LineStyle::Dashed,
+    };
+    fill_polygon(painter, cam, &foot, ink.gamma_multiply(0.12));
+    stroke_line(painter, cam, &foot, true, Stroke::new(1.3_f32, ink), style);
+    // The apex or center of round and pointed solids.
+    let mark = matches!(
+        s.kind,
+        SolidKind::Sphere { .. } | SolidKind::Cone { .. } | SolidKind::Cylinder { .. }
+    );
+    if mark {
+        let c = sc(cam, s.position);
+        painter.line_segment(
+            [c - egui::vec2(4.0, 0.0), c + egui::vec2(4.0, 0.0)],
+            Stroke::new(1.0_f32, ink),
+        );
+        painter.line_segment(
+            [c - egui::vec2(0.0, 4.0), c + egui::vec2(0.0, 4.0)],
+            Stroke::new(1.0_f32, ink),
+        );
+    }
+}
+
+/// Floor material regions, decks and 3D solids: drawn under the walls.
+pub fn draw_under(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let layer = load(cx);
+    if layer.is_empty() {
+        return;
+    }
+    for r in layer.regions.iter().filter(|r| r.is_floor()) {
+        if visible(cx, &r.layer) {
+            draw_floor_region(cx, painter, cam, r);
+        }
+    }
+    for d in &layer.decks {
+        if visible(cx, &d.layer) {
+            draw_deck(cx, painter, cam, d);
+        }
+    }
+    for s in &layer.solids {
+        if visible(cx, &s.layer) {
+            draw_solid(cx, painter, cam, s);
+        }
+    }
+}
+
+fn draw_wall_region(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    r: &MaterialRegion,
+    wall: &Wall,
+) {
+    let Some((u0, u1, _, _)) = r.uv_bounds() else {
+        return;
+    };
+    let strip = wall_strip(wall, u0, u1);
+    let ink = layer_color(cx, &r.layer, [110, 110, 140]);
+    let (pattern, color) = material_look(&r.material);
+    fill_polygon(painter, cam, &strip, rgb(color).gamma_multiply(0.5));
+    if cam.px_per_in >= MIN_HATCH_PX_PER_IN && pattern != Pattern::None {
+        let scale = paper(cx);
+        let strokes = cached_strokes(
+            ("wall", &r.material, hash_points(&strip), scale.to_bits()),
+            || strokes_in(&pattern, &strip, scale),
+        );
+        draw_strokes(painter, cam, &strokes, Stroke::new(0.75_f32, ink));
+    }
+    stroke_line(
+        painter,
+        cam,
+        &strip,
+        true,
+        Stroke::new(1.0_f32, ink),
+        LineStyle::Solid,
+    );
+}
+
+fn draw_hatch(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    h: &WallHatch,
+    wall: &Wall,
+) {
+    if cam.px_per_in < MIN_HATCH_PX_PER_IN {
+        return;
+    }
+    let poly = hatch_polygon(cx, wall);
+    let ink = layer_color(cx, &h.layer, [110, 110, 140]);
+    let scale = paper(cx);
+    let strokes = cached_strokes(
+        (
+            "hatch",
+            &h.pattern,
+            h.scale.to_bits(),
+            h.angle.to_bits(),
+            hash_points(&poly),
+            scale.to_bits(),
+        ),
+        || hatch_strokes(h, &poly, scale),
+    );
+    draw_strokes(painter, cam, &strokes, Stroke::new(0.75_f32, ink));
+}
+
+fn draw_corner_board(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, b: &CornerBoard) {
+    let ink = layer_color(cx, &b.layer, [150, 110, 70]);
+    let outline = b.outline();
+    fill_polygon(painter, cam, &outline, Color32::from_rgb(250, 248, 240));
+    stroke_line(
+        painter,
+        cam,
+        &outline,
+        true,
+        Stroke::new(1.2_f32, ink),
+        LineStyle::Solid,
+    );
+}
+
+fn draw_quoin(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, q: &Quoin) {
+    let ink = layer_color(cx, &q.layer, [150, 110, 70]);
+    let (la, lb) = q.course_lengths(0);
+    let top = q.axes.l_polygon(q.corner, la, lb, q.depth);
+    fill_polygon(painter, cam, &top, ink.gamma_multiply(0.3));
+    stroke_line(
+        painter,
+        cam,
+        &top,
+        true,
+        Stroke::new(1.2_f32, ink),
+        LineStyle::Solid,
+    );
+    // The next course (long and short swap) as ticks past the top block.
+    if q.alternating && q.courses() > 1 {
+        let (a1, b1) = q.course_lengths(1);
+        let (a, b) = (q.axes.dir_a, q.axes.dir_b);
+        let (na, nb) = (q.axes.out_a * q.depth, q.axes.out_b * q.depth);
+        let tick = Stroke::new(1.0_f32, ink);
+        for (len, len0, dir, off) in [(a1, la, a, na), (b1, lb, b, nb)] {
+            if len > len0 {
+                let from = q.corner + dir * len0;
+                painter.line_segment([sc(cam, from), sc(cam, from + off)], tick);
+                painter.line_segment(
+                    [
+                        sc(cam, q.corner + dir * len + off),
+                        sc(cam, q.corner + dir * len),
+                    ],
+                    tick,
+                );
+            }
+        }
+    }
+}
+
+fn draw_molding(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, m: &MoldingLine) {
+    if m.polyline.len() < 2 {
+        return;
+    }
+    let ink = layer_color(cx, &m.layer, [160, 90, 50]);
+    stroke_line(
+        painter,
+        cam,
+        &m.polyline,
+        false,
+        Stroke::new(1.6_f32, ink),
+        LineStyle::Solid,
+    );
+    // The projection side, dashed.
+    let mut edge: Vec<Point> = Vec::new();
+    for s in m.polyline.windows(2) {
+        let n = (s[1] - s[0]).normalized().perp() * m.width;
+        edge.push(s[0] + n);
+        edge.push(s[1] + n);
+    }
+    for pair in edge.chunks(2) {
+        stroke_line(
+            painter,
+            cam,
+            pair,
+            false,
+            Stroke::new(0.9_f32, ink.gamma_multiply(0.8)),
+            LineStyle::Dashed,
+        );
+    }
+}
+
+fn draw_selection(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, layer: &DetailsLayer) {
+    let mut refs: Vec<DetailRef> = selected().into_iter().collect();
+    refs.dedup();
+    let stroke = Stroke::new(2.6_f32, cx.palette.selection);
+    for r in refs {
+        let Some((lo, hi)) = layer.plan_bounds(cx.floor(), r) else {
+            continue;
+        };
+        let pad = 2.0 / cam.px_per_in.max(1e-6);
+        let box_pts = [
+            Point::new(lo.x - pad, lo.y - pad),
+            Point::new(hi.x + pad, lo.y - pad),
+            Point::new(hi.x + pad, hi.y + pad),
+            Point::new(lo.x - pad, hi.y + pad),
+        ];
+        stroke_line(painter, cam, &box_pts, true, stroke, LineStyle::Solid);
+    }
+}
+
+/// Wall hatching and wall regions, corner boards, quoins and moldings: drawn
+/// over the walls (and the selection box of the selected object).
+pub fn draw_over(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let layer = load(cx);
+    if layer.is_empty() {
+        return;
+    }
+    let floor = cx.floor();
+    for r in &layer.regions {
+        if let (RegionKind::Wall(id), true) = (r.kind, visible(cx, &r.layer)) {
+            if let Some(w) = floor.wall(id).filter(|w| !w.is_curved()) {
+                draw_wall_region(cx, painter, cam, r, w);
+            }
+        }
+    }
+    for h in &layer.hatches {
+        if visible(cx, &h.layer) {
+            if let Some(w) = floor.wall(h.wall_id) {
+                draw_hatch(cx, painter, cam, h, w);
+            }
+        }
+    }
+    for b in &layer.corner_boards {
+        if visible(cx, &b.layer) {
+            draw_corner_board(cx, painter, cam, b);
+        }
+    }
+    for q in &layer.quoins {
+        if visible(cx, &q.layer) {
+            draw_quoin(cx, painter, cam, q);
+        }
+    }
+    for m in &layer.moldings {
+        if visible(cx, &m.layer) {
+            draw_molding(cx, painter, cam, m);
+        }
+    }
+    draw_selection(cx, painter, cam, &layer);
+}
+
+/// The ghost of a circle for the round solids' rubber band.
+pub fn circle_outline(center: Point, r: f64) -> Vec<Point> {
+    circle_points(center, r)
+}
+
+/// Re-exported so the tool and dialog share one notion of "the layer names
+/// the details use".
+pub fn layer_names() -> [&'static str; 5] {
+    [
+        details::CORNER_TRIM_LAYER,
+        details::MOLDING_LAYER,
+        details::REGION_LAYER,
+        details::DECK_LAYER,
+        details::SOLID_LAYER,
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan_defaults;
+    use plan_core::WallKind;
+
+    fn cx() -> EditorContext {
+        EditorContext::new(plan_defaults::embedded())
+    }
+
+    fn box_walls(cx: &mut EditorContext) {
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 180.0),
+            Point::new(0.0, 180.0),
+        ];
+        for i in 0..4 {
+            cx.project
+                .add_wall(0, c[i], c[(i + 1) % 4], 6.5, 108.0, WallKind::Exterior);
+        }
+        cx.mark_dirty();
+    }
+
+    fn square(x: f64, y: f64, s: f64) -> Vec<Point> {
+        vec![
+            Point::new(x, y),
+            Point::new(x + s, y),
+            Point::new(x + s, y + s),
+            Point::new(x, y + s),
+        ]
+    }
+
+    #[test]
+    fn adding_stores_the_slot_and_the_layers_it_needs() {
+        let mut cx = cx();
+        let id = add_deck(&mut cx, square(0.0, 0.0, 96.0));
+        let l = load(&cx);
+        assert_eq!(l.decks.len(), 1);
+        assert_eq!(l.decks[0].id, id);
+        assert!(cx.floor().details.is_some());
+        for name in layer_names() {
+            assert!(cx.project.layers.get(name).is_some(), "{name}");
+        }
+        assert_eq!(cx.undo().as_deref(), Some("Polygon Shaped Deck"));
+        assert!(load(&cx).is_empty());
+        assert!(cx.floor().details.is_none());
+        assert_eq!(cx.redo().as_deref(), Some("Polygon Shaped Deck"));
+        assert_eq!(load(&cx).decks.len(), 1);
+    }
+
+    #[test]
+    fn auto_placement_is_one_undo_step_and_repeats_add_nothing() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        assert_eq!(auto_corner_boards(&mut cx), 4);
+        assert_eq!(load(&cx).corner_boards.len(), 4);
+        assert_eq!(auto_corner_boards(&mut cx), 0);
+        assert_eq!(auto_quoins(&mut cx), 4);
+        assert_eq!(cx.undo().as_deref(), Some("Auto Place Quoins"));
+        assert!(load(&cx).quoins.is_empty());
+        assert_eq!(cx.undo().as_deref(), Some("Auto Place Corner Boards"));
+        assert!(load(&cx).is_empty());
+    }
+
+    #[test]
+    fn manual_corners_come_from_the_exterior_walls() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        let c = corner_at(&mut cx, Point::new(238.0, 3.0), 10.0).expect("a corner");
+        let id = add_corner_board(&mut cx, &c);
+        assert_eq!(load(&cx).corner_board(id).unwrap().wall_corner, c.apex);
+        assert!(corner_at(&mut cx, Point::new(120.0, 90.0), 10.0).is_none());
+    }
+
+    #[test]
+    fn pick_finds_each_kind_and_move_and_delete_are_undoable() {
+        let mut cx = cx();
+        let deck = add_deck(&mut cx, square(0.0, 0.0, 96.0));
+        let region = add_floor_region(&mut cx, square(200.0, 0.0, 48.0));
+        let solid = add_solid(
+            &mut cx,
+            SolidKind::Sphere { r: 12.0 },
+            Point::new(400.0, 0.0),
+        );
+        let mold = add_molding(
+            &mut cx,
+            vec![Point::new(0.0, 300.0), Point::new(100.0, 300.0)],
+            MoldingProfile::Base,
+        );
+        assert_eq!(
+            pick(&cx, Point::new(48.0, 48.0), 4.0),
+            Some(DetailRef::Deck(deck))
+        );
+        assert_eq!(
+            pick(&cx, Point::new(224.0, 24.0), 4.0),
+            Some(DetailRef::Region(region))
+        );
+        assert_eq!(
+            pick(&cx, Point::new(402.0, 3.0), 4.0),
+            Some(DetailRef::Solid(solid))
+        );
+        assert_eq!(
+            pick(&cx, Point::new(50.0, 301.0), 4.0),
+            Some(DetailRef::Molding(mold))
+        );
+        assert_eq!(pick(&cx, Point::new(900.0, 900.0), 4.0), None);
+        // Move.
+        assert!(move_by(
+            &mut cx,
+            DetailRef::Deck(deck),
+            Point::new(10.0, 20.0)
+        ));
+        assert_eq!(
+            load(&cx).deck(deck).unwrap().outline[0],
+            Point::new(10.0, 20.0)
+        );
+        assert_eq!(cx.undo().as_deref(), Some("Move Deck"));
+        assert_eq!(load(&cx).deck(deck).unwrap().outline[0], Point::ZERO);
+        // Delete.
+        select(DetailRef::Solid(solid));
+        assert!(delete(&mut cx, DetailRef::Solid(solid)));
+        assert_eq!(selected(), None);
+        assert!(load(&cx).solid(solid).is_none());
+        assert_eq!(cx.undo().as_deref(), Some("Delete 3D Solid"));
+        assert!(load(&cx).solid(solid).is_some());
+        // Several at once is one step.
+        assert_eq!(delete_ids(&mut cx, &[deck, region, 9999]), 2);
+        assert_eq!(cx.undo().as_deref(), Some("Delete Details"));
+    }
+
+    #[test]
+    fn rect_select_finds_objects_by_bounds() {
+        let mut cx = cx();
+        let d = add_deck(&mut cx, square(0.0, 0.0, 50.0));
+        add_deck(&mut cx, square(500.0, 0.0, 50.0));
+        let hit = in_rect(&cx, Point::new(-10.0, -10.0), Point::new(60.0, 60.0), false);
+        assert_eq!(hit, vec![DetailRef::Deck(d)]);
+        let crossing = in_rect(&cx, Point::new(40.0, 40.0), Point::new(60.0, 60.0), true);
+        assert_eq!(crossing, vec![DetailRef::Deck(d)]);
+        assert!(in_rect(&cx, Point::new(40.0, 40.0), Point::new(60.0, 60.0), false).is_empty());
+    }
+
+    #[test]
+    fn walls_are_found_with_their_side_and_distance_along() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        let hit = wall_at(&cx, Point::new(60.0, 5.0), 4.0).expect("the south wall");
+        assert_eq!(hit.side, Side::Left);
+        assert!((hit.u - 60.0).abs() < 1e-9);
+        assert_eq!((hit.length, hit.height), (240.0, 108.0));
+        let outside = wall_at(&cx, Point::new(60.0, -2.0), 4.0).unwrap();
+        assert_eq!(outside.side, Side::Right);
+        assert!(wall_at(&cx, Point::new(120.0, 90.0), 4.0).is_none());
+    }
+
+    #[test]
+    fn a_floor_region_fills_with_pattern_strokes_clipped_inside_it() {
+        // A triangle, so clipping matters.
+        let tri = vec![
+            Point::new(0.0, 0.0),
+            Point::new(96.0, 0.0),
+            Point::new(0.0, 96.0),
+        ];
+        let r = MaterialRegion {
+            material: "Brick – Red".into(),
+            ..MaterialRegion::floor(1, tri.clone())
+        };
+        let strokes = region_strokes(&r, &tri, 0.25);
+        assert!(!strokes.is_empty(), "brick has a pattern");
+        for (a, b) in &strokes {
+            for p in [*a, *b, Point::lerp(*a, *b, 0.5)] {
+                assert!(
+                    point_in_polygon(p, &tri) || near_edge(&tri, p, 1e-6),
+                    "{p:?} is outside the region"
+                );
+            }
+        }
+        // Nothing for a material with no pattern.
+        let plain = MaterialRegion {
+            material: "Glass".into(),
+            ..r
+        };
+        assert!(region_strokes(&plain, &tri, 0.25).is_empty());
+    }
+
+    #[test]
+    fn wall_hatch_strokes_stay_inside_the_wall_polygon() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        cx.refresh();
+        let wall = cx.floor().walls[0].clone();
+        let poly = hatch_polygon(&cx, &wall);
+        assert!(poly.len() >= 4);
+        for pattern in ["Lines", "Cross Hatch", "Brick", "Insulation"] {
+            let h = WallHatch {
+                pattern: pattern.into(),
+                scale: 0.5,
+                ..WallHatch::default()
+            };
+            let strokes = hatch_strokes(&h, &poly, 0.25);
+            assert!(!strokes.is_empty(), "{pattern} drew nothing");
+            for (a, b) in &strokes {
+                for p in [*a, *b, Point::lerp(*a, *b, 0.5)] {
+                    assert!(
+                        point_in_polygon(p, &poly) || near_edge(&poly, p, 1e-6),
+                        "{pattern}: {p:?} is outside the wall"
+                    );
+                }
+            }
+        }
+        // The angle turns line patterns.
+        let flat = hatch_strokes(
+            &WallHatch {
+                angle: 0.0,
+                ..WallHatch::default()
+            },
+            &poly,
+            0.25,
+        );
+        assert!(flat.iter().all(|(a, b)| (a.y - b.y).abs() < 1e-6));
+        let unknown = WallHatch {
+            pattern: "Nonsense".into(),
+            ..WallHatch::default()
+        };
+        assert!(hatch_strokes(&unknown, &poly, 0.25).is_empty());
+    }
+
+    #[test]
+    fn a_wall_gets_one_hatch() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        let wall = cx.floor().walls[0].id;
+        let (id, added) = wall_hatch(&mut cx, wall);
+        assert!(added);
+        let (again, added) = wall_hatch(&mut cx, wall);
+        assert!(!added);
+        assert_eq!(id, again);
+        assert_eq!(load(&cx).hatches.len(), 1);
+    }
+
+    #[test]
+    fn region_polygons_and_looks_resolve() {
+        let (p, c) = material_look("Brick – Red");
+        assert_ne!(p, Pattern::None);
+        assert_ne!(c, [180, 180, 180]);
+        // Unknown names fall back to a substring match, then to gray.
+        assert_eq!(
+            material_look("Fieldstone").1,
+            material_look("Stone Veneer – Fieldstone").1
+        );
+        assert_eq!(material_look("zzz").0, Pattern::None);
+        assert!(material_names().len() > 20);
+        for n in PATTERN_NAMES {
+            assert_ne!(pattern_named(n, 1.0, 45.0), Pattern::None, "{n}");
+        }
+    }
+
+    #[test]
+    fn detail_meshes_reach_the_3d_scene() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        auto_corner_boards(&mut cx);
+        add_solid(
+            &mut cx,
+            SolidKind::Sphere { r: 12.0 },
+            Point::new(500.0, 0.0),
+        );
+        assert_eq!(detail_meshes(&cx.project).len(), 5);
+    }
+}

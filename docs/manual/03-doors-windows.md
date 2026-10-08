@@ -126,7 +126,7 @@ preview shows an elevation sketch of the door and a plan sketch in its wall.
 | Casing | Works (session only for a placed door; saved for the defaults) |
 | Lintel, Sill/Threshold | (disabled) |
 | Lites | (disabled) for doors |
-| Jamb | Works (session only for a placed door) |
+| Jamb | Works (the jamb width is stored with a placed door; the other jamb settings are session only) |
 | Arch, Hardware, Shutters, Opening Indicators, Rough Opening, Framing, Energy Values | (disabled) |
 | Layer, Materials | (disabled) |
 | Label | Works (session only) |
@@ -136,9 +136,9 @@ preview shows an elevation sketch of the door and a plan sketch in its wall.
 
 - **General**: Door Style (Hinged, Sliding, Pocket, Bifold, Barn ... kept per session
   and only Hinged changes the plan symbol today), Library Style (set when a library
-  door was chosen), Door Type (disabled, "Hinged").
+  door was chosen; stored with a placed door), Door Type (disabled, "Hinged").
 - **Size and Position**:
-  - Width, Height, Thickness (thickness is session only).
+  - Width, Height, Thickness (stored with a placed door).
   - Elevation Reference (disabled, "From Floor").
   - **Floor to Top** and **Floor to Bottom**: editing Floor to Top changes Height
     with the bottom fixed; editing Floor to Bottom moves the opening up or down.
@@ -153,8 +153,8 @@ preview shows an elevation sketch of the door and a plan sketch in its wall.
   **Swing side** is Left (the wall's normal side) or Right (the other side, flipped); it is the same
   setting as Reverse Swing. **Hinge side** is Start or End, with hover text "Hinge on the wall-start
   jamb" and "Hinge on the wall-end jamb" (stored as `hinge_at_end`). The preview, the plan symbol and the
-  swing handle follow both. Swing Angle (session only).
-- **Open/Close Display**: Show Open in 2D (session only); Show Open in 3D (disabled).
+  swing handle follow both. Swing Angle (stored with a placed door).
+- **Open/Close Display**: Show Open in 2D (stored); Show Open in 3D (disabled).
 - Disabled sections: Door Panels (Single / Double / Calculate from Width, All Glass),
   Plan Display (Top Edge), Safety (Tempered Glass, Fire Door), Recessed into Wall,
   Plinth Blocks.
@@ -188,13 +188,13 @@ Open by double-clicking a window, or Edit > Default Settings > Windows > Window.
 | Options | Works |
 | Casing | (disabled) |
 | Lintel, Sill/Threshold, Sash, Shape, Arch, Treatments, Shutters | (disabled) |
-| Frame | Works (session only for a placed window) |
+| Frame | Works (the frame width is stored with a placed window; the rest is session only) |
 | Lites | Works for counts |
 | Opening Indicators, Rough Opening, Framing, Energy Values, Layer, Materials | (disabled) |
 | Label | Works (session only) |
 | Components, Object Information, Schedule | (disabled) |
 
-- **General**: Window Type (Single Casement ... kept per session), Width, Height,
+- **General**: Window Type (Single Casement ... stored with a placed window), Width, Height,
   Floor to Top, Floor to Bottom (the sill), Distance from Wall Start.
 - **Options**: Egress and Tempered Glass (session only for a placed window; the
   Window defaults store them), Show Open in 2D; disabled Interior and Exterior
@@ -222,7 +222,10 @@ active floor with its size, style and position, and export CSV (chapter 11).
 
 - Hinge side and Swing side are separate settings (four combinations, as in Chief), both in the Door
   Specification. Choosing them from the pointer position while placing is (planned).
-- Opening Specification choices are session only for placed openings; only the
-  Default Settings dialogs write the template values that new openings copy.
+- A placed opening stores its library style or window type, a door's thickness and swing angle,
+  the jamb or frame width and Show Open in 2D (its `extras`, saved with the plan and loaded with
+  defaults from older files). The other Opening Specification choices (casing, lites' muntin width,
+  label options, door style) are session only for placed openings; only the Default Settings dialogs
+  write the template values that new openings copy.
 - Plan labels, schedule callouts, casing marks, mulled windows, bay/bow/box
   windows, garage and sliding door symbols are all (planned).

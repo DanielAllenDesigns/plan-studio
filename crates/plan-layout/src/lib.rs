@@ -33,10 +33,10 @@ pub use model::{
     BoxSource, Layout, LayoutBox, LayoutPage, ScaleExt, ScheduleKind, LABEL_GAP_IN,
     LAYOUT_EDGE_WEIGHT,
 };
-pub use render::{render_box_lines, render_pdf, LayoutRenderContext};
+pub use render::{render_box_lines, render_pdf, CameraDrawingFn, LayoutRenderContext};
 pub use send::{
-    default_construction_set, fit_largest_scale, send_to_layout, send_to_layout_auto,
-    AUTO_SCALE_CEILING,
+    default_construction_set, fit_largest_scale, plan_label, send_camera_to_layout, send_to_layout,
+    send_to_layout_auto, AUTO_SCALE_CEILING,
 };
 pub use titleblock::{
     long_date, MacroContext, TitleBlockStyle, TitleBlockTemplate, DANIEL_REVISION_ROWS,

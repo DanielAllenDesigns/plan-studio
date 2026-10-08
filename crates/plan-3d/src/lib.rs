@@ -7,6 +7,7 @@
 
 mod builder;
 mod casing;
+pub mod details;
 mod doors;
 pub mod foundation;
 mod frame;

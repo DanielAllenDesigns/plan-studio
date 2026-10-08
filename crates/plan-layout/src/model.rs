@@ -60,6 +60,11 @@ pub enum BoxSource {
         #[serde(with = "SectionCutDef")]
         cut: SectionCut,
     },
+    /// The 2D drawing of a camera object (an elevation, section or wall
+    /// elevation camera). The drawing comes from the hook the application sets
+    /// on [`crate::LayoutRenderContext::camera_drawing`]; without it the box is
+    /// an empty frame.
+    Camera { camera_id: Id },
     /// A table of the project's doors, windows, rooms or walls.
     Schedule { kind: ScheduleKind },
     /// Loose CAD in detail space (inches of the detail, drawn at the box scale).

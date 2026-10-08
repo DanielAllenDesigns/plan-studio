@@ -4,7 +4,7 @@ What Plan Studio can read and write today, how each format is handled, and what 
 engine-only (written and tested in a crate, but with no menu command yet). File > Export
 (DXF, Elevation DXF, Construction Set PDF, glTF), File > Import (Import Drawing (DXF)), File > Templates >
 Import Chief Template and CAD > CAD to Walls work; File > Print and the Library menu's catalog import
-are still dimmed, so Chief catalogs are reached from Rust code only.
+are still dimmed. Chief catalogs are read in place by the Library Browser (chapter 6.6), not imported.
 
 ## 12.1 Formats at a glance
 
@@ -19,7 +19,7 @@ are still dimmed, so Chief catalogs are reached from Rust code only.
 | DXF (ASCII, R12) | Write | Yes: File > Export > DXF..., Elevation DXF... | `plan-core::export::dxf`, `plan-elevation` |
 | DXF import, CAD to Walls | Read | Yes: File > Import > Import Drawing (DXF)..., CAD > CAD to Walls... | `plan-import` |
 | DWG | Neither | (planned) | |
-| Chief catalogs `.calib`, `.calibz` | Read | (planned; engine in `plan-calib`) | `plan-calib` |
+| Chief catalogs `.calib`, `.calibz` | Read in place | Yes: the Library Browser's Chief nodes (chapter 6.6); no import command | `plan-calib` |
 | Chief templates `.plan`, `.tpl`, `.layout` | Read names and some values | Yes: File > Templates > Import Chief Template... | `plan-chiefplan` |
 | Chief hotkeys, toolbars, preferences | Read | Hotkeys only (chapter 13) | `plan-config` |
 | IFC, SketchUp, Revit, OBJ | Neither | (planned) | |
@@ -51,18 +51,35 @@ are still dimmed, so Chief catalogs are reached from Rust code only.
 ## 12.2 Plan files (`.psplan`)
 
 A plan is one JSON document: a `Project` with its name, floors (each with walls, openings,
-dimensions, CAD objects, room names, symbols, cabinets, stairs and groups), the layer set,
-camera objects and the wall types stored in the plan. Lengths are inches.
+dimensions, CAD objects, room names, symbols, cabinets, stairs, groups, roofs, electrical devices,
+framing and slab objects), the layer set, camera objects, the terrain and the wall types stored in the
+plan. Lengths are inches.
 
 - File > **Open Plan...** and **Save As...** show a file dialog filtered to `.psplan`. Save As
   adds the extension if you leave it off. **Save** writes to the current file, or asks for one.
 - Newer fields all have defaults, so older files load cleanly. Opening a file resets the undo
   history (open is not undoable).
-- Objects that do not yet have their own field are stored as hidden, locked data on reserved
-  layers so they save and undo with the plan: roof planes (`Roof Planes, Data`), electrical
-  devices (`Electrical, Data`) and the terrain (`Terrain, Data`). Cabinets and stairs ride in
-  opaque JSON slots on the floor. A planned clean-up moves these into real fields.
-- Per-session settings (the "session only" fields in the dialogs) are not in the file.
+- Objects owned by an engine crate ride in **typed slots**: opaque JSON the editor reads and writes through
+  typed accessors in `plan-core`, saved and undone with the plan.
+
+  | Slot | Holds |
+  |---|---|
+  | `Floor.cabinets`, `Floor.stairs` | Cabinets and stairs (as before) |
+  | `Floor.roofs` | Roof planes, the Build Roof settings, ceiling planes and dormers (chapter 8) |
+  | `Floor.electrical` | The floor's electrical devices and connections (chapter 9) |
+  | `Floor.framing` | Built framing members, manual members and the framing layout lines (chapter 11.11) |
+  | `Floor.foundation` | Slabs, slab holes, pads, piers and platform holes (chapter 16) |
+  | `Project.terrain` | The terrain, its contour interval and whether it is built (chapter 9) |
+
+  Typed, serde-default **extras** hold what dialogs used to keep per session: a wall's label switch, specified label text and last
+  picked wall type; an opening's style name, thickness, swing angle, jamb or frame width and Show Open in 2D; a room's
+  conditioned setting, stem wall height, base and crown moldings, fill and label options. A wall also stores its class and
+  curve, a camera object its section line (with the back clip) and its elevation rendering options (hatch, shadows, sun, line weight by distance, labels).
+- **Migration.** Files from before these slots kept the roofs, electrical devices, terrain and slabs as hidden, locked text records on
+  reserved layers (`Roof Planes, Data`, `Electrical, Data`, `Terrain, Data`, `Foundation, Data`). When you open such a file the editor moves each
+  record into its slot and deletes the legacy items and the hidden layers; it happens as the file loads, so it is not an undo step. A slot that is already filled
+  is left alone, every new field has a default, and old files otherwise load unchanged.
+- Per-session settings (the "session only" fields that remain in the dialogs) are not in the file.
 - The file is readable and diff-friendly; keep it under version control if you like.
 
 Autosave, backups and an Open Recent list are (planned).
@@ -83,7 +100,14 @@ status bar says "Saved <path>", or "Export cancelled" if you dismiss the file di
 | Room labels | TEXT for the name and the area |
 
 The layer table carries every plan layer with an AutoCAD color index, negative when the layer is
-hidden. Roof planes show up as the closed outline polylines on `Roof Planes`.
+hidden. It also writes:
+
+| Plan object | DXF entities |
+|---|---|
+| Roof planes | The closed plan outline of every roof plane stored on the floor, on layer `Roof Planes` |
+| Framing placed by hand | The plan outline of each manual or layout-built member and each post footing, and each truss base, as closed polylines, and the Joist Direction, Roof Truss Direction and Bearing lines as open polylines, all on layer `Framing` |
+
+The members Build Framing makes from the walls, floors and roof are not written, and slabs, pads and piers are not written either.
 
 **File > Export > Elevation DXF...** (the same command is 3D > Create Orthographic View > Export Elevations
 (DXF)...) writes the four exterior elevations (Front, Back, Left, Right) as the hidden-line drawings of
@@ -151,8 +175,9 @@ lines on the floor the status bar says "CAD to Walls: there are no CAD lines on 
 ## 12.5 glTF export (works)
 
 3D > Export > **glTF...** asks for a file name and writes `<name>.gltf` (JSON) and `<name>.bin`
-(buffers), glTF 2.0, of the same scene the 3D view shows (walls with openings, doors, windows,
-slabs and roof planes). Coordinates: X right, Y up, Z = negative plan y, inches; UVs are in feet.
+(buffers), glTF 2.0, of the same scene the 3D view shows (walls of every class with openings, doors,
+windows, floor and ceiling platforms, slabs, pads and piers, roof planes with their holes, skylights, ceiling planes and dormers,
+manual framing, and placed symbols). Coordinates: X right, Y up, Z = negative plan y, inches; UVs are in feet.
 The status bar reports "Exported <path>.gltf" or the error; "Nothing to export: the 3D model is
 empty" if the plan has no geometry. Open the file in Blender, a glTF viewer or a web viewer.
 
@@ -164,10 +189,10 @@ empty" if the plan has no geometry. Open the file in Blender, a glTF viewer or a
   quoted as needed; open them in any spreadsheet.
 - **Markdown**: the Plan Check window's Save Report... writes findings grouped by severity.
 
-## 12.7 Chief catalogs (`.calib`, `.calibz`), planned in the editor
+## 12.7 Chief catalogs (`.calib`, `.calibz`)
 
-`plan-calib` reads the user's own Chief library catalogs in place. The Library menu's Import Library
-(.calib, .calibz)... is dimmed, and the Library Browser shows a "Chief catalogs" node that says "coming".
+`plan-calib` reads the user's own Chief library catalogs in place, and the Library Browser shows them (chapter 6.6). The Library menu's Import
+Library (.calib, .calibz)... is dimmed: catalogs are read where Chief keeps them, never imported.
 
 What the engine does:
 
@@ -205,8 +230,8 @@ What is not decoded yet (so some items stay placeholders):
   symbols are absent from the blobs; windows with no size record fall back to mesh bounds.
 - Elevation (floor to bottom) is always 0; plant spread and height are inferred, and a plant's plan symbol is a
   canopy circle where Chief draws a textured image.
-- 3D models for the editor (the meshes are decoded only to project a plan view), `LibraryObjects.Type`,
-  texture link tables and `Content/<hash>-01` image resolution.
+- Textures: the placed object's 3D mesh is drawn untextured (the editor fits the decoded meshes to the symbol, and shows a box when the
+  geometry is partial; chapter 6.6). `LibraryObjects.Type`, texture link tables and `Content/<hash>-01` image resolution are not decoded.
 
 Opening a `.calibz` writes its embedded `.calib` to `<temp dir>/plan-studio/` as a cache, a derived copy
 of your own file outside the repository; delete it any time. Details: `docs/chief-library-format.md`.
@@ -232,8 +257,16 @@ names) and decodes per-layer color, line weight and display/lock flags where the
 `seed_defaults` turns an inventory into Plan Studio defaults. It never writes or copies a template, and it
 redacts client-specific strings (project file names, network paths, address-like text) before any inventory is
 written. Daniel's 26 templates are inventoried in `docs/daniel-template-inventory.md`: for example the working
-template `x17 Working Template 2025-08-20.plan` has 34 layer sets, 356 layers, 12 text styles, 14 dimension
-default sets, 108 wall types and 20 saved plan views.
+template `x17 Working Template 2025-08-20.plan` has 34 layer sets, 356 layers, 20 saved plan views and (from the name scan) 108 wall types.
+
+The reader also **decodes the template's objects** (the "object stream", `docs/chief-template-format.md` section 7): in that template 103 wall
+types with their real layer stacks (name, material, thickness, main layer, framing; the 7 names with no definition fall back to the name-number guess),
+15 text styles (font, style, height; `1/4" Text Style` is 4.5 plan inches, Avenir Book), 14 dimension default sets (arrow, extension, offset,
+separation, smallest fraction, number format), 550 materials (146 named), the default room-type ceiling height (109 1/8") and the sheet size. Seeding
+uses the decoded wall stacks first, then a stack found by the older name scan, then the name-number guess. What did not decode: per-floor defaults (floor, foundation,
+rough ceiling and stem wall heights), roof and floor finish materials, arrow style, text colour, and the layout template's pages, boxes and title block
+(the template stores no page or box objects the reader could identify). Chief's own `Default Text Style` is 6" Arial in the stock template but 4.5"
+Avenir in Daniel's; the seed keeps the names Plan Studio already ships at their current values.
 
 ## 12.9 Chief hotkeys, toolbars and preferences
 

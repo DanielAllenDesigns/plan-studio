@@ -19,6 +19,7 @@ mod footprint;
 mod gable;
 mod geom;
 mod hole;
+mod join;
 mod skeleton;
 mod spec;
 
@@ -34,6 +35,7 @@ pub use gable::{
 pub use hole::{
     roof_plane_with_holes, HoleKind, RoofHole, RoofPolygonWithHoles, Skylight, SkylightSpec,
 };
+pub use join::join_planes;
 pub use spec::{build_roof_with_specs, EdgeRoofSpec};
 
 use plan_core::geometry::polygon_area;

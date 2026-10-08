@@ -11,6 +11,7 @@ use crate::icons;
 use crate::shell::view3d_panel::View3dCommand;
 use crate::theme::{scale, CanvasTheme};
 use crate::tools::camera::CameraVariant;
+use crate::tools::details::DetailsVariant;
 use crate::tools::foundation::FoundationVariant;
 use crate::tools::framing::FramingVariant;
 use crate::tools::wall::{WallStyle as Style, WallVariant};
@@ -112,6 +113,8 @@ pub enum Action {
     /// The wall flyout's currently selected variant (hotkey alias `2`).
     CurrentWall,
     FileNew,
+    /// File > New Layout: a layout from Daniel's layout template.
+    FileNewLayout,
     FileOpen,
     FileSave,
     FileSaveAs,
@@ -642,9 +645,9 @@ pub fn straight_wall() -> Flyout {
             wall_item("wall_pony", Style::GlassPony, false),
             wall_item("wall_half", Style::Half, false),
             wall_item("wall_room_divider", Style::RoomDivider, false),
-            todo("slab", "Slab Footing"),
-            todo("wall_hatch", "Wall Hatching"),
-            todo("wall_hatch", "Wall Material Region"),
+            det("slab", DetailsVariant::SlabFooting),
+            det("wall_hatch", DetailsVariant::WallHatching),
+            det("wall_hatch", DetailsVariant::WallMaterialRegion),
         ],
     )
 }
@@ -673,7 +676,7 @@ pub fn railing_deck() -> Flyout {
             wall_item("deck_railing", Style::DeckRailing, true),
             sep(wall_item("deck_edge", Style::DeckEdge, false)),
             wall_item("deck_edge", Style::DeckEdge, true),
-            sep(todo("deck_edge", "Polygon Shaped Deck")),
+            sep(det("deck_edge", DetailsVariant::PolygonDeck)),
         ],
     )
 }
@@ -917,7 +920,7 @@ pub fn floor() -> Flyout {
                 ),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}M",
             ),
-            todo("floor_new", "Floor Material Region"),
+            det("floor_new", DetailsVariant::FloorMaterialRegion),
             found("floor_new", FoundationVariant::FloorHole),
             found("floor_new", FoundationVariant::CeilingHole),
             with_hotkey(
@@ -987,10 +990,11 @@ pub fn roof() -> Flyout {
                 "\u{2303}\u{2325}\u{21E7}\u{2318}Z",
                 M::Dormer,
             ),
-            todo_k(
+            roof_k(
                 "dormer",
                 "Auto Floating Dormer",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}R",
+                M::FloatingDormer,
             ),
             item(
                 "dormer",
@@ -1032,12 +1036,12 @@ pub fn trim() -> Flyout {
     fly(
         "Trim",
         vec![
-            todo("corner_boards", "Corner Boards"),
-            todo("corner_boards", "Auto Place Corner Boards"),
-            todo("quoins", "Quoins"),
-            todo("quoins", "Auto Place Quoins"),
-            todo("corner_boards", "Molding Line"),
-            todo("corner_boards", "Molding Polyline"),
+            det("corner_boards", DetailsVariant::CornerBoards),
+            det("corner_boards", DetailsVariant::AutoCornerBoards),
+            det("quoins", DetailsVariant::Quoins),
+            det("quoins", DetailsVariant::AutoQuoins),
+            det("corner_boards", DetailsVariant::MoldingLine),
+            det("corner_boards", DetailsVariant::MoldingPolyline),
         ],
     )
 }
@@ -1111,6 +1115,12 @@ pub fn roof_framing() -> Flyout {
     )
 }
 
+/// An entry of the details tool (Trim, Material Region, Wall Hatching, Deck,
+/// Slab Footing and 3D Solid flyouts).
+fn det(icon: &'static str, v: DetailsVariant) -> Item {
+    item(icon, v.name(), Action::SetTool(ToolId::DetailsVariant(v)))
+}
+
 /// A Slab-flyout or platform-hole entry of the foundation tool.
 fn found(icon: &'static str, v: FoundationVariant) -> Item {
     item(
@@ -1138,12 +1148,12 @@ pub fn solid_3d() -> Flyout {
     fly(
         "3D Solid",
         vec![
-            todo("solid_3d", "3D Solid"),
-            todo("solid_3d", "Face"),
-            todo("solid_3d", "Cone"),
-            todo("cylinder", "Cylinder"),
-            todo("solid_3d", "Pyramid"),
-            todo("solid_3d", "Sphere"),
+            det("solid_3d", DetailsVariant::Solid3d),
+            det("solid_3d", DetailsVariant::Face),
+            det("solid_3d", DetailsVariant::Cone),
+            det("cylinder", DetailsVariant::Cylinder),
+            det("solid_3d", DetailsVariant::Pyramid),
+            det("solid_3d", DetailsVariant::Sphere),
             sep(todo("solid_3d", "3D Solid Feature")),
         ],
     )
@@ -1657,6 +1667,53 @@ pub fn full_camera() -> Flyout {
                 "Back-Clipped Cross Section",
                 V::BackClippedSection,
             ),
+            sep(camera_tool(
+                "cross_section",
+                "Wall Elevation Camera",
+                V::WallElevation,
+            )),
+            camera_tool("cross_section", "Auto Elevations", V::AutoElevation),
+            camera_tool(
+                "cross_section",
+                "Auto Back-Clipped Elevations",
+                V::AutoBackclipped,
+            ),
+        ],
+    )
+}
+
+/// Create Walkthrough Path, with Play and Record (C-1).
+pub fn walkthrough() -> Flyout {
+    use crate::tools::camera::CameraVariant as V;
+    fly(
+        "Create Walkthrough Path",
+        vec![
+            camera_tool("walkthrough", "Create Walkthrough Path", V::Walkthrough),
+            sep(view3d(
+                "walkthrough",
+                "Play Walkthrough",
+                View3dCommand::PlayWalkthrough,
+            )),
+            view3d(
+                "walkthrough",
+                "Record Walkthrough",
+                View3dCommand::RecordWalkthrough,
+            ),
+        ],
+    )
+}
+
+/// Add Lights and Adjust Lights (C-64).
+pub fn add_lights() -> Flyout {
+    use crate::tools::camera::CameraVariant as V;
+    fly(
+        "Add Lights",
+        vec![
+            camera_tool("add_lights", "Add Lights", V::AddLights),
+            with_hotkey(
+                view3d("add_lights", "Adjust Lights", View3dCommand::AdjustLights),
+                "\u{2303}\u{2325}\u{2318}L",
+            ),
         ],
     )
 }
@@ -1698,7 +1755,6 @@ pub fn rendering_techniques() -> Flyout {
 
 fn row1_slots() -> Vec<Slot> {
     use Slot::Separator as Sep;
-    let one = |icon, name| flyout_slot(fly(name, vec![todo(icon, name)]));
     vec![
         Slot::Button(item("file_new", "New Plan", Action::FileNew)),
         Slot::Button(item("file_open", "Open Plan", Action::FileOpen)),
@@ -1735,9 +1791,9 @@ fn row1_slots() -> Vec<Slot> {
         flyout_slot(full_camera()),
         flyout_slot(mouse_orbit()),
         flyout_slot(cross_section_slider()),
-        one("walkthrough", "Create Walkthrough Path"),
+        flyout_slot(walkthrough()),
         flyout_slot(rendering_techniques()),
-        one("add_lights", "Add Lights"),
+        flyout_slot(add_lights()),
         Sep,
         flag_toggle("sun_angle", "Sun Angle", ViewFlag::SunAngle),
         Sep,
@@ -2374,7 +2430,6 @@ mod tests {
         "Custom Countertop",
         "Custom Backsplash",
         "Custom Counter Hole",
-        "Auto Floating Dormer",
         "Delete Temporary Points",
         "Auto Elevation Dimensions",
         "Auto Story Pole Dimensions",
@@ -2426,5 +2481,60 @@ mod tests {
                 assert_eq!(name, e.name, "{}", f.group);
             }
         }
+    }
+
+    #[test]
+    fn the_3d_and_camera_flyouts_have_no_unimplemented_entries() {
+        let mut names = Vec::new();
+        for f in [
+            view_3d(),
+            full_camera(),
+            mouse_orbit(),
+            cross_section_slider(),
+            walkthrough(),
+            add_lights(),
+            rendering_techniques(),
+        ] {
+            for e in &f.entries {
+                assert!(
+                    !matches!(e.action, Action::NotImplemented(_)),
+                    "{} / {} is still a stub",
+                    f.group,
+                    e.name
+                );
+                names.push(e.name);
+            }
+        }
+        for want in [
+            "Wall Elevation Camera",
+            "Auto Elevations",
+            "Auto Back-Clipped Elevations",
+            "Create Walkthrough Path",
+            "Play Walkthrough",
+            "Record Walkthrough",
+            "Add Lights",
+            "Adjust Lights",
+        ] {
+            assert!(names.contains(&want), "missing {want}");
+        }
+        // Both flyouts sit on row 1 where the old placeholders were.
+        let row = row1_slots();
+        for group in ["Create Walkthrough Path", "Add Lights"] {
+            let fly = row
+                .iter()
+                .find_map(|s| match s {
+                    Slot::Flyout(f) if f.group == group => Some(f),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no {group} flyout on row 1"));
+            assert!(!matches!(fly.entries[0].action, Action::NotImplemented(_)));
+        }
+        // The camera tools are tools, the lights dialog is a 3D command.
+        let adjust = add_lights()
+            .entries
+            .into_iter()
+            .find(|e| e.name == "Adjust Lights")
+            .unwrap();
+        assert_eq!(adjust.action, Action::View3d(View3dCommand::AdjustLights));
     }
 }

@@ -854,3 +854,60 @@ fn old_layout_json_without_new_fields_still_loads() {
         .all(|b| b.hatch_materials));
     assert_eq!(back.title_block.revision_rows, 0);
 }
+
+#[test]
+fn camera_boxes_draw_what_the_hook_returns() {
+    use plan_elevation::{Drawing, EdgeKind, Line2, LineWeight};
+    let p = two_room_house();
+    let drawing = Drawing::new(vec![Line2 {
+        a: Point::new(0.0, 0.0),
+        b: Point::new(240.0, 120.0),
+        weight: LineWeight::Heavy,
+        kind: EdgeKind::Silhouette,
+    }]);
+    let hooked = LayoutRenderContext::new(&p)
+        .with_camera_drawing(move |id| (id == 7).then(|| drawing.clone()));
+    let source = BoxSource::Camera { camera_id: 7 };
+    let mut l = Layout::new("t", SheetSize::ArchC);
+    let id = send_to_layout(&mut l, &hooked, 1, source, Scale::QuarterInch, None);
+    let b = l
+        .page(1)
+        .unwrap()
+        .boxes
+        .iter()
+        .find(|b| b.id == id)
+        .unwrap();
+    // 240" x 120" plus the 12" margin each side at 1/4" = 1'.
+    let (w, h) = b.size_in();
+    assert!((w - (240.0 + 24.0) / 48.0).abs() < 1e-9, "w = {w}");
+    assert!((h - (120.0 + 24.0) / 48.0).abs() < 1e-9, "h = {h}");
+    assert_eq!(b.label.as_deref(), Some("CAMERA VIEW"));
+    // The box strokes the diagonal (plus its border); without the hook only
+    // the border is drawn.
+    let with = render_box_lines(b, &hooked);
+    let without = render_box_lines(b, &LayoutRenderContext::new(&p));
+    assert_eq!(
+        with.len(),
+        without.len() + 1,
+        "{} vs {}",
+        with.len(),
+        without.len()
+    );
+    assert!(render_pdf(&l, &hooked).len() > render_pdf(&l, &LayoutRenderContext::new(&p)).len());
+    // The hook is asked once however often the box is measured and drawn.
+    let calls = std::cell::Cell::new(0);
+    let counting = LayoutRenderContext::new(&p).with_camera_drawing(|_| {
+        calls.set(calls.get() + 1);
+        None
+    });
+    let _ = render_box_lines(b, &counting);
+    let _ = render_box_lines(b, &counting);
+    assert_eq!(calls.get(), 1);
+    // The source survives a JSON round trip.
+    let json = serde_json::to_string(&l).unwrap();
+    let back: Layout = serde_json::from_str(&json).unwrap();
+    assert!(matches!(
+        back.page(1).unwrap().boxes[0].source,
+        BoxSource::Camera { camera_id: 7 }
+    ));
+}

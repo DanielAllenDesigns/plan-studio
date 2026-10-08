@@ -118,7 +118,7 @@ Two details worth knowing:
 Status: **Works** (the command runs today), **(planned)** (the command is on a dimmed button; the key is kept and reports
 "Not yet implemented"), **No matching command yet** (Chief has the command; Plan Studio has no equivalent
 and shows the key under "Chief bindings with no action in Plan Studio yet" in the dialog), or a flag toggle.
-Of the 143 named bindings, 84 work or toggle a flag, 36 are planned and 23 have no matching command.
+Of the 143 named bindings, 88 work or toggle a flag, 32 are planned and 23 have no matching command.
 
 | Command | Daniel's key | Status |
 |---|---|---|
@@ -127,7 +127,7 @@ Of the 143 named bindings, 84 work or toggle a flag, 36 are planned and 23 have 
 | 3D View Defaults | `Cmd+1` | Works |
 | Adjust Lights | `Ctrl+Alt+Cmd+L` | No matching command yet |
 | Angular Dimension | `Ctrl+Alt+Cmd+F` | Works |
-| Auto Dormer | `Ctrl+Alt+Shift+Cmd+Z` | (planned) |
+| Auto Dormer | `Ctrl+Alt+Shift+Cmd+Z` | Works |
 | Auto Elevation Dimensions | `Ctrl+Alt+Cmd+H` | (planned) |
 | Auto Exterior Dimensions | `Shift+A` | Works |
 | Auto Floating Dormer | `Ctrl+Alt+Shift+Cmd+R` | (planned) |
@@ -149,7 +149,7 @@ Of the 143 named bindings, 84 work or toggle a flag, 36 are planned and 23 have 
 | CAD Block Management | `V` | (planned) |
 | CAD Detail Management | `Shift+V` | No matching command yet |
 | Callout | `Ctrl+Alt+Cmd+K` | Works |
-| Ceiling Plane | `Ctrl+Alt+Shift+Cmd+U` | (planned) |
+| Ceiling Plane | `Ctrl+Alt+Shift+Cmd+U` | Works |
 | Centerline Dimension | `Ctrl+Alt+Cmd+G` | Works |
 | Change Floor/Reference | `Shift+Cmd+G` | No matching command yet |
 | Circle | `K` | Works |
@@ -167,7 +167,7 @@ Of the 143 named bindings, 84 work or toggle a flag, 36 are planned and 23 have 
 | Custom Countertop | `Ctrl+Alt+Cmd+3` | (planned) |
 | Cut | `Cmd+X` | No matching command yet |
 | Delete | `Del` | No matching command yet |
-| Delete Ceiling Planes | `Ctrl+Alt+Shift+Cmd+X` | (planned) |
+| Delete Ceiling Planes | `Ctrl+Alt+Shift+Cmd+X` | Works |
 | Delete Current Floor | `Ctrl+Alt+Shift+Cmd+J` | Works |
 | Delete Foundation | `Ctrl+Alt+Shift+Cmd+K` | Works |
 | Delete Roof Planes | `Ctrl+Alt+Shift+Cmd+W` | Works |
@@ -247,7 +247,7 @@ Of the 143 named bindings, 84 work or toggle a flag, 36 are planned and 23 have 
 | Soffit | `T` | Works |
 | Straight Exterior Wall | `Shift+Q` | Works |
 | Straight Interior Wall | `Ctrl+Alt+Cmd+6` | Works |
-| Straight Railing | `Cmd+Q` | (planned) |
+| Straight Railing | `Cmd+Q` | The tool works from the toolbar and menu; the key is shown but not bound (Command-Q is the macOS Quit shortcut) |
 | Straight Stairs | `Ctrl+Alt+Shift+Cmd+B` | Works |
 | Swap Views | `F7` | No matching command yet |
 | Switch | `E, S` | Works |
@@ -285,8 +285,9 @@ Key (Chief command id): `Shift+F4` (106); `W` (202); `2` (231); `Cmd+D` (237); `
   what the keys do but those can still show the old one.
 - `Delete` and `Backspace` delete the selection through the tools' own key handling, not through the hotkey map.
   Daniel's `Del` (Delete) binding therefore shows under "no matching command" but still works.
-- `~` (Preferences), `` ` `` (Display Options), `Cmd+P` (Print), `Cmd+Q` (Straight Railing) and the other dimmed
-  commands hold their keys but do nothing yet.
+- `~` (Preferences), `` ` `` (Display Options), `Cmd+P` (Print) and the other dimmed commands hold their keys but do
+  nothing yet. `Cmd+Q` is shown beside Straight Railing but not bound, because it is the macOS Quit shortcut; the tool itself works from the
+  toolbar and the Build menu.
 - Four-modifier chords work on every platform; off macOS they are the `Ctrl+Alt+...` chords of 13.2.
 - Older notes say the four-modifier chords are "not bound on purpose". That predates the runtime hotkey map;
   today they are bound whenever Daniel's file names them.
@@ -344,6 +345,8 @@ Where the manual covers each tool's keys in detail:
 | Roofs | 8 |
 | Electrical, terrain | 9 |
 | 3D views | 10 |
+| Framing tools and Build Framing | 11.11 |
+| Slabs, pads, piers, platform holes | 16 |
 
 ## 13.9 Keys inside a tool
 
@@ -362,3 +365,8 @@ These go to the active tool, not the hotkey map.
 | Arrow keys | 3D Full Camera; Electrical free device | Walk; turn the device (`Shift` = 90 degrees). |
 | `W` `A` `S` `D`, `Page Up`, `Page Down` | 3D Full Camera | Walk; raise or lower the eye. |
 | `Backspace` | Polyline, spline | Drops the last vertex. |
+| `Enter`, double-click | Slab tools, platform holes, Truss Base | Closes the polygon and makes the object. |
+| `Backspace`, `Delete` | Slab tools, Truss Base | Drops the last corner; with none, deletes the selected object. |
+| `Shift` or `Cmd` + click | Framing tools | Picks a placed framing object (`Shift` on a picked one drops it). |
+| `Cmd` + click or drag | Slab tools | Picks an object, or moves it. |
+| `Shift`, `Alt` | Roof Return | `Shift` makes a half return, `Alt` a boxed one. |

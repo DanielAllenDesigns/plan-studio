@@ -215,11 +215,8 @@ pub fn wall_type_def(t: &TemplateWallType) -> WallTypeDef {
         layers: t
             .layers
             .iter()
-            .map(|(material, thickness, is_main)| WallLayer {
-                name: material.clone(),
-                thickness: *thickness,
-                is_main: *is_main,
-                material: material.clone(),
+            .map(|(material, thickness, is_main)| {
+                WallLayer::new(material, *thickness, *is_main, material)
             })
             .collect(),
         kind: guess_kind(&t.name),
@@ -235,9 +232,9 @@ pub fn wall_type_defs(types: &[TemplateWallType]) -> Vec<WallTypeDef> {
 /// height is kept as the plan height (`1/4" Text Style` is 4.5"); the colour
 /// is black because the object carries none.
 pub fn text_style_from_template(t: &TemplateTextStyle) -> TextStyle {
-    let mut style = TextStyle::plan_sized(t.name.clone(), t.height_in, t.bold);
-    style.font = t.font.clone();
-    style.italic = t.italic;
+    let mut style = TextStyle::plan_sized(t.name.clone(), t.height_in, t.bold)
+        .with_font(t.font.clone())
+        .with_italic(t.italic);
     if let Some(color) = t.color {
         style.color = color;
     }
@@ -283,6 +280,24 @@ pub fn dimension_defaults_from_template(
     }
     if let Some(v) = positive(d.line_separation_in) {
         out.auto_line_separation = v;
+    }
+    if let Some(v) = d.text_style.as_ref().filter(|n| !n.is_empty()) {
+        out.text_style = v.clone();
+    }
+    if let Some(v) = positive(d.extension_length_towards_in) {
+        out.extension_toward = v;
+    }
+    if let Some(v) = positive(d.extension_proximity_in) {
+        out.extension_proximity = v;
+    }
+    if let Some(v) = positive(d.baseline_separation_in) {
+        out.baseline_separation = v;
+    }
+    if let Some(v) = positive(d.reach_in) {
+        out.reach = v;
+    }
+    if let Some(v) = d.decimal_places {
+        out.decimals = v;
     }
     out
 }
@@ -346,7 +361,9 @@ fn pick_sheet_size(inv: &TemplateInventory) -> Option<String> {
         .map(|e| e.name.clone())
 }
 
-fn layout_seed(inv: &TemplateInventory) -> LayoutSeed {
+/// The layout vocabulary of one inventory (sheet size and dimensions, page
+/// names, title block macros).
+pub fn layout_seed(inv: &TemplateInventory) -> LayoutSeed {
     let sheet_size = pick_sheet_size(inv);
     let paper = sheet_size
         .as_ref()
@@ -1313,6 +1330,35 @@ mod tests {
             ..TemplateDimensionDefaults::default()
         };
         assert_eq!(dimension_defaults_from_template(&sparse, &odd), odd);
+    }
+
+    #[test]
+    fn dimension_slots_take_the_decoded_extras() {
+        let d = TemplateDimensionDefaults {
+            name: "1/4\" Scale Dimension Defaults".into(),
+            text_style: Some("Dimension Text Style".into()),
+            extension_length_towards_in: Some(1.5),
+            extension_proximity_in: Some(2.0),
+            baseline_separation_in: Some(12.0),
+            reach_in: Some(24.0),
+            decimal_places: Some(2),
+            ..TemplateDimensionDefaults::default()
+        };
+        let base = PlanDefaults::default().dimensions;
+        let out = dimension_defaults_from_template(&d, &base);
+        assert_eq!(out.text_style, "Dimension Text Style");
+        assert_eq!(
+            (
+                out.extension_toward,
+                out.extension_proximity,
+                out.baseline_separation,
+                out.reach,
+                out.decimals
+            ),
+            (1.5, 2.0, 12.0, 24.0, 2)
+        );
+        // The Phase-B numbers are untouched.
+        assert_eq!(out.arrow_size, base.arrow_size);
     }
 
     #[test]

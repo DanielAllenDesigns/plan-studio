@@ -16,6 +16,7 @@ use plan_core::WallKind;
 pub mod cabinet;
 pub mod cad;
 pub mod camera;
+pub mod details;
 pub mod dimension;
 pub mod electrical;
 pub mod foundation;
@@ -76,6 +77,10 @@ pub enum ToolId {
     Foundation,
     /// A flavor of the foundation tool (the flyout entry picked).
     FoundationVariant(foundation::FoundationVariant),
+    /// The Trim, Material Region, Deck and 3D Solid tools.
+    Details,
+    /// A flavor of the details tool (the flyout entry picked).
+    DetailsVariant(details::DetailsVariant),
     /// The manual framing tools (General, Floor/Ceiling and Roof Framing flyouts).
     Framing,
     /// A flavor of the framing tool (the flyout entry picked).
@@ -115,6 +120,7 @@ impl ToolId {
             ToolId::CadVariant(_) => ToolId::Cad,
             ToolId::CameraVariant(_) => ToolId::Camera,
             ToolId::FoundationVariant(_) => ToolId::Foundation,
+            ToolId::DetailsVariant(_) => ToolId::Details,
             ToolId::FramingVariant(_) => ToolId::Framing,
             other => other,
         }
@@ -298,6 +304,7 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(camera::CameraTool::default()),
         Box::new(terrain::TerrainTool::default()),
         Box::new(foundation::FoundationTool::default()),
+        Box::new(details::DetailsTool::default()),
         Box::new(framing::FramingTool::default()),
     ]
 }
@@ -406,6 +413,7 @@ mod tests {
             ToolId::Camera,
             ToolId::Terrain,
             ToolId::Foundation,
+            ToolId::Details,
             ToolId::Framing,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");

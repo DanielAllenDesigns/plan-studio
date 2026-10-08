@@ -135,9 +135,9 @@ Decoded numbers disagree with two built-ins in `plan-core`: the stock Chief temp
 
 Gaps found while bridging (plan-core is read-only for this crate, so the bridge works around them):
 
-- `TODO(plan-core)`: `WallLayer::new` is private; `bridge::wall_type_def` fills the public fields directly.
-- `TODO(plan-core)`: `TextStyle` has only `plan_sized` (Arial, black); the bridge sets `font` and `italic` afterwards. There is no field for the font style string (`Book`/`Heavy`; only `bold` is kept) or a way to hold the 12 unknown flag bytes.
-- `TODO(plan-core)`: `DimensionDefaults` has no slot for the dimension text style name, extension length towards the object, fixed proximity, baseline separation, reach, exterior reach, decimal places or arrow style. They stay in `TemplateDimensionDefaults` and are not applied.
+- Done: `WallLayer::new` is public and `bridge::wall_type_def` uses it.
+- Partly done: `TextStyle::with_font` / `with_italic` exist and the bridge uses them. Still open: there is no field for the font style string (`Book`/`Heavy`; only `bold` is kept) or a way to hold the 12 unknown flag bytes.
+- Partly done: `DimensionDefaults` now has slots for the text style name, extension length towards the object, fixed proximity, baseline separation, reach and decimal places (`dimension_defaults_from_template` fills them), and for the arrow style (not decoded yet). Exterior reach is still only in `TemplateDimensionDefaults`.
 - `TODO(plan-core)`: no type for layout sheets (sheet size in inches, printable area, margins) or rich text defaults; they stay in `LayoutSeed` and `TemplateSummary`.
 
 ## Open questions

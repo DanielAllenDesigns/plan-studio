@@ -227,7 +227,7 @@ impl FoundationTool {
                 return ToolResult::consumed();
             }
         };
-        fv::select(target);
+        fv::select(cx, target);
         self.reset(cx);
         cx.status.clear();
         ToolResult::committed(v.name())
@@ -248,13 +248,13 @@ impl FoundationTool {
             FoundationVariant::SquarePad => FoundationRef::Pad(fv::add_pad(cx, at)),
             _ => FoundationRef::Pier(fv::add_pier(cx, at)),
         };
-        fv::select(target);
+        fv::select(cx, target);
         ToolResult::committed(self.variant.name())
     }
 
     /// The object to delete: the selected one, else the one under the pointer.
     fn delete_target(&self, cx: &EditorContext) -> Option<FoundationRef> {
-        fv::selected()
+        fv::selected(cx)
             .filter(|r| fv::exists(cx, *r))
             .or_else(|| self.hover.and_then(|h| fv::pick(cx, h, cx.pick_tol())))
     }
@@ -425,7 +425,7 @@ impl Tool for FoundationTool {
         if self.points.is_empty() && Self::is_move_click(&p) {
             return match fv::pick(cx, p.world, cx.pick_tol()) {
                 Some(target) => {
-                    fv::select(target);
+                    fv::select(cx, target);
                     cx.begin_change(&format!("Move {}", target.name()));
                     self.moving = Some(MoveState {
                         target,
@@ -436,7 +436,7 @@ impl Tool for FoundationTool {
                     ToolResult::consumed()
                 }
                 None => {
-                    fv::clear_selection();
+                    fv::clear_selection(cx);
                     ToolResult::consumed()
                 }
             };
@@ -496,7 +496,7 @@ impl Tool for FoundationTool {
         self.reset(cx);
         match fv::pick(cx, p.world, cx.pick_tol()) {
             Some(r) => {
-                fv::select(r);
+                fv::select(cx, r);
                 self.open_spec(cx, r);
                 ToolResult::consumed()
             }
@@ -604,7 +604,7 @@ mod tests {
         assert!(l.slabs[0].footing.is_none());
         assert_eq!(l.slabs[0].thickness, 4.0);
         assert!(t.points().is_empty());
-        assert_eq!(fv::selected(), Some(FoundationRef::Slab(l.slabs[0].id)));
+        assert_eq!(fv::selected(&cx), Some(FoundationRef::Slab(l.slabs[0].id)));
         // The real shell sends a second press for the double-click too.
         assert_eq!(cx.undo().as_deref(), Some("Slab"));
         assert!(layer(&cx).is_empty());
@@ -751,7 +751,7 @@ mod tests {
         t.pointer_up(&mut cx, down);
         assert_eq!(cx.undo_label().map(str::to_string), before);
         // Delete removes the selected object.
-        assert_eq!(fv::selected(), Some(FoundationRef::Pad(id)));
+        assert_eq!(fv::selected(&cx), Some(FoundationRef::Pad(id)));
         let r = t.key(&mut cx, KeyEvent::key(Key::Delete));
         assert_eq!(r.commit.as_deref(), Some("Delete Square Pad"));
         assert!(layer(&cx).is_empty());
@@ -798,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn the_flyout_entries_are_live_except_floor_material_region() {
+    fn the_flyout_entries_are_live() {
         let mut names = Vec::new();
         for f in [toolbar::slab(), toolbar::floor()] {
             for e in &f.entries {
@@ -807,7 +807,8 @@ mod tests {
                 }
             }
         }
-        assert!(names.contains(&"Floor Material Region"));
+        // Floor Material Region is the details tool's.
+        assert!(!names.contains(&"Floor Material Region"));
         for v in FoundationVariant::ALL {
             assert!(!names.contains(&v.name()), "{} is still a stub", v.name());
         }

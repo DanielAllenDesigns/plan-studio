@@ -1,6 +1,8 @@
 //! Where Plan Studio's defaults come from: `~/.plan-studio/defaults.json` when
 //! the user saved one ("Save Current Defaults as My Template"), else the
-//! Chief X18 template embedded in the binary. Plus the small helpers that
+//! Chief X18 template embedded in the binary with the decoded values of the
+//! user's own Chief plan template laid over it (`crate::templates`, when the
+//! template exists and seeding is on). Plus the small helpers that
 //! turn [`PlanDefaults`] into the objects the editor places.
 
 use plan_core::defaults::{WallLayer, WallTypeDef};
@@ -21,16 +23,26 @@ pub fn user_path() -> Option<PathBuf> {
     crate::paths::user_file("defaults.json")
 }
 
-/// The user's saved defaults if present, else the embedded template. The
-/// second value is a note to show when the user's file could not be read.
+/// What a new plan starts from when the user has not saved their own
+/// defaults: the embedded template, seeded from the Chief plan template named
+/// in `~/.plan-studio/settings.json` when there is one. Without a template
+/// (or with seeding off) this is exactly [`embedded`]. The second value is a
+/// note for the status bar.
+pub fn template_base() -> (PlanDefaults, Option<String>) {
+    crate::templates::seeded_defaults(&crate::templates::load_settings(), embedded())
+}
+
+/// The user's saved defaults if present, else [`template_base`]. The second
+/// value is a note to show (a fresh template decode, or a file that could not
+/// be read).
 pub fn load() -> (PlanDefaults, Option<String>) {
     let Some(path) = user_path().filter(|p| p.exists()) else {
-        return (embedded(), None);
+        return template_base();
     };
     match PlanDefaults::load(&path) {
         Ok(d) => (d, None),
         Err(e) => (
-            embedded(),
+            template_base().0,
             Some(format!(
                 "Could not read {} ({e}); using the Chief X18 template",
                 path.display()

@@ -29,21 +29,25 @@ depends on.
 plan-app ---> plan-core  plan-3d  plan-view3d  plan-roof  plan-cabinets  plan-stairs
           \-> plan-docs  plan-layout  plan-elevation  plan-library  plan-config
           \-> plan-terrain  plan-materials  plan-electrical  plan-spaceplan  plan-check
-          \-> plan-render  plan-chiefplan  plan-framing  plan-import
+          \-> plan-render  plan-chiefplan  plan-framing  plan-import  plan-calib
 plan-3d <--- plan-cabinets, plan-stairs, plan-electrical, plan-terrain, plan-materials,
              plan-framing, plan-elevation, plan-spaceplan, plan-render, plan-check
 plan-layout -> plan-docs, plan-elevation        plan-view3d -> plan-render
-plan-calib  -> plan-library (not yet a dependency of plan-app)
+plan-calib  -> plan-library (plan-app uses plan-calib for the Library Browser's Chief nodes)
 plan-chiefplan -> plan-core      plan-config -> plan-core
 ```
 
 ### Model and geometry
 
 **plan-core.** The data model and the pure geometry, with no GUI. `Project` holds floors; a `Floor`
-holds walls, openings, dimensions, CAD objects, room names, symbols, cabinets and stairs (the last
-two as opaque JSON), and groups. It also has: `rooms` (planar-graph room detection from wall
+holds walls, openings, dimensions, CAD objects, room names, symbols and groups, and **typed slots** for what
+an engine crate owns: `cabinets`, `stairs`, `roofs`, `electrical`, `framing` and `foundation` per floor and
+`terrain` per project (opaque JSON read through typed accessors; chapter 12.2). It also has: `rooms` (planar-graph room detection from wall
 centerlines, with interior and standard areas), `joins` (mitered wall outlines and per-layer bands),
-`walls` (flags, curves, roof directives, connection and split helpers), `openings` (styles, casing,
+`walls` (`WallClass` and its flyout variants, flags, curves, roof directives, connection and split helpers), `extras`
+(the typed, serde-default dialog values of walls, openings and rooms, cross-section lines, the elevation rendering
+options, and the slot accessors), `foundation` (`FoundationLayer`: slabs, slab holes, pads, piers and platform holes,
+with the concrete takeoff math and the migration of the old record), `openings` (styles, casing,
 labels), `floors` (build, insert, delete, exchange, foundations), `layers`, `layer_sets` (named layer sets
 and saved plan views), `dimension`, `cad`,
 `camera`, `symbols`, `groups`, `history` (whole-project snapshot undo, 100 steps), `defaults`
@@ -53,16 +57,20 @@ with every geometry change.
 
 **plan-3d.** Turns a `Project` into renderable triangle meshes (`build_scene`, or `build_scene_with` and
 `SceneOptions` for open doors, casing and lite grids) and exports glTF 2.0 (`gltf::export_gltf`, `write_gltf_files`):
-walls with openings and wall-type materials, half, pony and railing walls, door leaves and window units in every
-opening style, and floor and ceiling slabs. It includes an ear-clipping triangulator and the `Material` enum other
-crates' meshes use. Output is plain vertex and index buffers: X right, Y up, Z = -plan y, UVs in feet.
+walls with openings and wall-type materials, door leaves and window units in every
+opening style, and floor and ceiling platforms. `wall_kinds` builds every wall class (foundation, pony, glass, glass pony, half-wall,
+railings, deck edge, fencing) and curved walls as facets; `foundation` builds slabs, footings, pads, piers and the platform holes
+cut in floors and ceilings; `roof` builds roof plane slabs with holes, skylights, ceiling planes and dormers. It includes an ear-clipping triangulator
+(with holes) and the `Material` enum other crates' meshes use. Output is plain vertex and index buffers: X right, Y up, Z = -plan y, UVs in feet.
 
 ### Building elements
 
 **plan-roof.** Automatic roofs: `build_roof(footprint, edges, baseline)` computes a weighted straight skeleton
 and returns watertight `RoofPlane`s (hip, gable and shed edges, per-edge pitch and overhang);
 `footprint_from_walls` traces the outer boundary. It falls back to uniform pitch or a bounding-box hip roof
-when the exact solution fails and sets `Roof::approximate`. No fascia, gutters or Dutch gables.
+when the exact solution fails and sets `Roof::approximate`. It also holds the roof features as input/output types: roof holes and
+skylights (`roof_plane_with_holes`), ceiling planes (`CeilingPlane`), `auto_dormer` and `explode_dormer`, `apply_gable_line`, `roof_return`,
+and per-edge `EdgeRoofSpec` (`build_roof_with_specs`). No fascia, gutters or Dutch gables.
 
 **plan-stairs.** The parametric stair engine: `solve` rounds the rise to whole risers and checks IRC R311.7;
 `Stair` and `StairShape` (straight, L, U, winder, ramp); `plan_symbol` (outline, riser lines, UP arrow, break
@@ -84,8 +92,11 @@ and `auto_hole_for_building`.
 
 **plan-framing.** Chief's Build Framing as a library: `frame_wall` (plates, studs at 16" on center, king and
 trimmer studs, plied headers, cripples, sills), `frame_floor` (joists, rim, blocking), `wall_detail` (the 2D
-framing elevation), `takeoff` (counts, board feet, linear feet) and `FramingDefaults`. The editor calls it from
-Build > Framing (`editor/framing_view.rs`, chapter 11.11); no corner or T backing, no combined headers.
+framing elevation), `takeoff` (counts, board feet, linear feet) and `FramingDefaults`; and the manually placed
+framing: `manual` (the `FramingMember` kinds with per-kind defaults), `truss` (Fink, Howe, king post, scissor, attic and mono trusses),
+`layout` (joist direction, bearing line, reference marker, truss base and the functions that honor them) and the manual takeoff with
+`MaterialList::to_csv`. The editor calls it from Build > Framing and the three framing flyouts (`editor/framing_view.rs`,
+`tools/framing.rs`, `dialogs/framing.rs`; chapter 11.11); no corner or T backing, no combined headers.
 
 ### Documents and output
 
@@ -93,12 +104,15 @@ Build > Framing (`editor/framing_view.rs`, chapter 11.11); no corner or T backin
 Markdown), `materials` (framing, drywall, sheathing, siding, flooring and openings take-off), and a minimal
 dependency-free PDF 1.4 writer (`PdfDoc`) with `plan_sheet`, a scaled plan sheet with a title block.
 
-**plan-layout.** Chief's Layout, headless: `Layout`, `LayoutPage`, `LayoutBox`, `BoxSource`, title block
-templates with macros, `send_to_layout` (shelf packing), `default_construction_set`, and `render_pdf`.
+**plan-layout.** Chief's Layout, headless: `Layout`, `LayoutPage`, `LayoutBox`, `BoxSource`, page background, Layout Edge weight and
+a template page, title block templates (including Daniel's 18 x 24 with a REVISIONS table) and the macros, `send_to_layout` and
+`send_to_layout_auto` (automatic scale up to 1/4"), `default_construction_set`, and `render_pdf` (layer colors, weights and dashes; image boxes;
+poche and shadow fills; material hatch).
 
 **plan-elevation.** Hidden-line vector drawings from a `plan-3d` scene: elevations, cross sections and the plan
-overhead, as weighted `Line2` lists with `to_cad` and `svg`. Accuracy is about one pixel of the depth buffer;
-no hatching, curves or text.
+overhead, as weighted `Line2` lists with `to_cad` and `svg`. Also face, cut and shadow regions, material hatch lines, shadows from a sun direction,
+line weight by distance, and level and roof-pitch labels. Accuracy is about one pixel of the depth buffer;
+no curves.
 
 **plan-import.** Brings outside drawings in: an ASCII DXF reader, unit conversion, `to_cad_objects` and
 `cad_to_walls` (parallel-line pairing). The editor calls it from File > Import and CAD > CAD to Walls
@@ -132,11 +146,12 @@ rule text and fix, `plan_footprint`, `report_markdown`; limits in `CheckOptions`
 
 **plan-calib.** Read-only access to `.calib` and `.calibz` catalogs: its own SQLite reader, inflate and zip code,
 `ChiefCatalog`, `ChiefRegistry`, `ChiefLibrary::discover/search`, a `decode` module that recovers object sizes and
-plan-view symbols from Chief's binary blobs (reverse-engineered, with measured coverage in its README), and a
-bridge to `plan-library` items.
+plan-view symbols from Chief's binary blobs (reverse-engineered, with measured coverage in its README), `mesh3d` (decoded triangles
+fitted to a placed symbol, with a cache), and a bridge to `plan-library` items. The Library Browser uses it (chapter 6.6).
 
 **plan-chiefplan.** Read-only reader for `.plan` and `.layout` templates: scan, classify, decode per-layer color, line
-weight and flags, and seed `PlanDefaults` (wall types, layers, layer sets, text styles, dimension sets). The editor uses it
+weight and flags, decode the object stream (wall types with real layer stacks, materials, text styles, rich text defaults, dimension
+defaults, default heights, sheet size; `docs/chief-template-format.md` section 7), and seed `PlanDefaults` (wall types, layers, layer sets, text styles, dimension sets). The editor uses it
 for File > Templates > Import Chief Template....
 
 **plan-config.** Chief's user configuration: `UserHotkeys.xml` (208 of 2,284 commands carry keys in Daniel's file),
@@ -154,15 +169,19 @@ theme.rs        canvas themes, UI brightness, ~/.plan-studio/settings.json
 plan_defaults.rs  defaults loading and the helpers that turn defaults into objects
 icons.rs        embedded SVG icons
 tools/          one module per Chief tool behind the Tool trait (select, wall, opening, pan,
-                dimension, text, cad, cabinet, stairs, roof, electrical, library, camera, terrain)
+                dimension, text, cad, cabinet, stairs, roof, electrical, library, camera, terrain,
+                foundation, framing); tools/library/chief.rs is the Chief catalog backend
 editor/         services shared by tools: EditorContext, selection, snap engine, handles,
                 temporary dimensions, undo history, plan rendering, wall connections, edit actions
                 and their dispatch, and per-object views (roof_view, stairs_view, site_view, placed,
-                rooms_edit, framing_view); restyle (View > Color and Line Weights) and sheet (the
-                drawing sheet)
-shell/          docks, library browser, the 3D panel, the runtime hotkey map, and spec_dialogs (the
+                rooms_edit, framing_view, foundation_view); restyle (View > Color and Line Weights)
+                and sheet (the drawing sheet). site_view also holds migrate_legacy_storage, run when a
+                plan is opened
+shell/          docks, library browser (library_browser.rs and library_browser/chief_ui.rs for the Chief
+                nodes, png.rs for thumbnails), the 3D panel, the runtime hotkey map, and spec_dialogs (the
                 one place that maps an object kind to its specification dialog)
-dialogs/        Chief-style specification dialogs on the shared frame, Default Settings and its lists
+dialogs/        Chief-style specification dialogs on the shared frame (wall, opening, room, roof, foundation,
+                framing, camera, symbol ...), Default Settings and its lists
                 (default_lists: dimension sets, room types, text styles), Customize Hotkeys, Layer
                 Display Options, file exchange and framing windows (exchange), the Build and Tools windows
 ```
@@ -179,12 +198,15 @@ dialogs/        Chief-style specification dialogs on the shared frame, Default S
   already mapped to world inches; key events as `KeyEvent`. Activation hotkeys are never read by tools; they
   come from the runtime `HotkeyMap` (chapter 13).
 - Objects are addressed by `ObjectRef` (Wall, Opening, Dimension, Cad, Cabinet, Stair, RoofPlane, Symbol,
-  Camera, Text, Room, Device, Terrain). A second, smaller `plan_core::ObjectRef` (Wall, Opening, Dimension, Cad,
+  Camera, Text, Room, Device, Terrain, Foundation). A second, smaller `plan_core::ObjectRef` (Wall, Opening, Dimension, Cad,
   Symbol, Camera) is used by object groups and the core clipboard; the two types are not the same, so convert
   deliberately.
-- Things the model has no field for yet go in `SessionExtras` (per session), in the opaque `cabinets` and
-  `stairs` JSON slots, or as hidden data records on reserved layers (roofs, electrical, terrain). Each of these
-  is marked `TODO: plan-core field` in the code.
+- Things the model has no field for yet go in the typed slots of `plan-core` (`Floor.cabinets`, `stairs`, `roofs`, `electrical`,
+  `framing`, `foundation` and `Project.terrain`: opaque JSON the owning view module reads and writes with `begin_change` and
+  `mark_dirty` like any other edit), in the serde-default `extras` of walls, openings and rooms (chapter 12.2), or, for what is still
+  not stored, in `SessionExtras` (per session). A file written before the slots existed is converted by `site_view::migrate_legacy_storage`
+  (which calls `roof_view::migrate_legacy` and `plan_core::foundation::migrate_legacy`) when `EditorContext::set_project` loads it; add a
+  step there when you move another record into a slot.
 
 ## 14.4 How to add a tool
 
@@ -238,7 +260,7 @@ Engine first, editor second is the usual order: write the algorithm in its own c
 
 ```bash
 cargo test -p plan-core                  # one crate
-cargo test --workspace                   # everything
+cargo test --workspace                   # everything (1,315 tests after Round 5)
 cargo test -p plan-app                   # editor state machines, dialogs, hotkeys (no window needed)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all

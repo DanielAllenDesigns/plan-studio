@@ -113,7 +113,7 @@ fn undo_row(
 
 fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     live(ui, "New Plan", "\u{2318}N", false, Action::FileNew, out);
-    inert(ui, &["New Layout"]);
+    live(ui, "New Layout", "", false, Action::FileNewLayout, out);
     ui.menu_button("Templates", |ui| {
         live(
             ui,
@@ -435,7 +435,23 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         ui.separator();
         live(ui, "Ray Trace\u{2026}", "", false, cmd(C::RayTrace), out);
     });
-    inert(ui, &["Create Auto Elevations>", "-"]);
+    ui.menu_button("Create Auto Elevations", |ui| {
+        for (name, v) in [
+            ("Auto Elevations", V::AutoElevation),
+            ("Auto Back-Clipped Elevations", V::AutoBackclipped),
+            ("Wall Elevation Camera", V::WallElevation),
+        ] {
+            live(
+                ui,
+                name,
+                "",
+                false,
+                Action::SetTool(ToolId::CameraVariant(v)),
+                out,
+            );
+        }
+    });
+    ui.separator();
     inert(
         ui,
         &[
@@ -446,9 +462,39 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "Tilt Camera>",
             "View Direction>",
             "Isometric Views>",
-            "-",
-            "Walkthroughs>",
-            "-",
+        ],
+    );
+    ui.separator();
+    ui.menu_button("Walkthroughs", |ui| {
+        live(
+            ui,
+            "Create Walkthrough Path",
+            "",
+            false,
+            Action::SetTool(ToolId::CameraVariant(V::Walkthrough)),
+            out,
+        );
+        live(
+            ui,
+            "Play Walkthrough",
+            "",
+            false,
+            cmd(C::PlayWalkthrough),
+            out,
+        );
+        live(
+            ui,
+            "Record Walkthrough\u{2026}",
+            "",
+            false,
+            cmd(C::RecordWalkthrough),
+            out,
+        );
+    });
+    ui.separator();
+    inert(
+        ui,
+        &[
             "Materials>",
             "Material Painter>",
             "Adjust Materials>",

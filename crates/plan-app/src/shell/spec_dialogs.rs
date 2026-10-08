@@ -1,6 +1,6 @@
 //! Hosts the specification dialogs of every object kind except walls and
 //! openings (those two keep their extras in `main.rs`): stairs, cabinets,
-//! symbols, roof planes and dormers, slabs and other foundation objects,
+//! symbols, roof planes, ceiling planes and dormers, framing members, slabs and other foundation objects,
 //! electrical devices, terrain, dimensions, text and CAD. [`SpecDialogs::open`] is the one place that maps an [`ObjectRef`] to
 //! its dialog; OK applies the draft as one undo step.
 
@@ -9,13 +9,16 @@ use crate::dialogs::cad::CadDialog;
 use crate::dialogs::dimension::{self, DimensionDialog};
 use crate::dialogs::electrical::ElectricalDialog;
 use crate::dialogs::foundation::FoundationDialog;
-use crate::dialogs::roof::{DormerDialog, RoofPlaneDialog};
+use crate::dialogs::framing::FramingMemberDialog;
+use crate::dialogs::roof::{CeilingDialog, DormerDialog, RoofPlaneDialog};
 use crate::dialogs::stairs::StairDialog;
 use crate::dialogs::symbol::SymbolDialog;
 use crate::dialogs::terrain::TerrainDialog;
 use crate::dialogs::text::TextDialog;
 use crate::dialogs::{cad, text, Outcome};
-use crate::editor::{foundation_view, placed, roof_view, rooms_edit, site_view, stairs_view};
+use crate::editor::{
+    foundation_view, framing_view, placed, roof_view, rooms_edit, site_view, stairs_view,
+};
 use crate::editor::{EditorContext, ObjectRef};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use eframe::egui;
@@ -29,6 +32,8 @@ enum Active {
     /// A dormer: its id, the plane it stands on and the dialog.
     Dormer(Id, Id, Box<DormerDialog>),
     Foundation(Box<FoundationDialog>),
+    Ceiling(Box<CeilingDialog>),
+    Framing(Box<FramingMemberDialog>),
     Device(Id, Box<ElectricalDialog>),
     Terrain(Box<TerrainDialog>),
     Dimension(Box<DimensionDialog>),
@@ -76,8 +81,10 @@ impl SpecDialogs {
                         d.main,
                         Box::new(DormerDialog::new(d.spec)),
                     )),
-                    // Ceiling planes have no dialog yet.
-                    _ => None,
+                    (None, None) => set
+                        .ceiling(id)
+                        .cloned()
+                        .map(|c| Active::Ceiling(Box::new(CeilingDialog::new(c, layer_names(cx))))),
                 }
             }
             ObjectRef::Foundation(id) => {
@@ -87,6 +94,13 @@ impl SpecDialogs {
                         .map(|d| Active::Foundation(Box::new(d)))
                 })
             }
+            ObjectRef::Framing(id) => match framing_view::find(cx.floor(), id) {
+                Some(framing_view::Record::Manual(m) | framing_view::Record::Built(m)) => Some(
+                    Active::Framing(Box::new(FramingMemberDialog::new(&m, layer_names(cx)))),
+                ),
+                // Layout lines and markers have no specification.
+                _ => None,
+            },
             ObjectRef::Device(id) => {
                 let layer = site_view::load_electrical(cx.floor());
                 layer
@@ -132,6 +146,8 @@ impl SpecDialogs {
             Active::RoofPlane(d) => d.show(ctx),
             Active::Dormer(_, _, d) => d.show(ctx),
             Active::Foundation(d) => d.show(ctx),
+            Active::Ceiling(d) => d.show(ctx),
+            Active::Framing(d) => d.show(ctx),
             Active::Device(_, d) => d.show(ctx),
             Active::Terrain(d) => d.show(ctx),
             Active::Dimension(d) => d.show(ctx),
@@ -184,6 +200,17 @@ fn apply(cx: &mut EditorContext, a: &Active) {
                 cx.cancel_change();
                 cx.status = "The object is gone".into();
             }
+        }
+        Active::Ceiling(d) => {
+            let fl = cx.floor;
+            cx.begin_change("Ceiling Plane Specification");
+            if !roof_view::apply_ceiling_edit(&mut cx.project, fl, d.draft()) {
+                cx.cancel_change();
+                cx.status = "The ceiling plane is gone".into();
+            }
+        }
+        Active::Framing(d) => {
+            framing_view::apply_edit(cx, d.draft().clone());
         }
         Active::Device(id, d) => {
             let draft = d.draft().clone();
@@ -276,5 +303,76 @@ mod tests {
         assert!(matches!(dialogs.active, Some(Active::Dormer(..))));
         assert!(dialogs.open(&mut cx, ObjectRef::RoofPlane(pid)));
         assert!(matches!(dialogs.active, Some(Active::RoofPlane(_))));
+    }
+
+    #[test]
+    fn framing_members_and_ceiling_planes_open_their_dialogs() {
+        use crate::editor::framing_view::Record;
+        use plan_framing::{FramingMember, ManualMemberKind, ReferenceMarker};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let mut dialogs = SpecDialogs::default();
+        let m = framing_view::new_member(
+            cx.floor(),
+            ManualMemberKind::Joist,
+            Point::new(0.0, 0.0),
+            Point::new(192.0, 0.0),
+        );
+        let id = framing_view::add_record(&mut cx, "Place Joist", |id| {
+            Record::Manual(FramingMember { id, ..m })
+        });
+        let marker = framing_view::add_record(&mut cx, "Place Marker", |id| Record::Marker {
+            id,
+            marker: ReferenceMarker {
+                point: Point::new(10.0, 10.0),
+                angle: 0.0,
+            },
+        });
+        assert!(dialogs.open(&mut cx, ObjectRef::Framing(id)));
+        assert!(matches!(dialogs.active, Some(Active::Framing(_))));
+        // Layout markers have no specification; neither do missing records.
+        assert!(!dialogs.open(&mut cx, ObjectRef::Framing(marker)));
+        assert!(!dialogs.open(&mut cx, ObjectRef::Framing(id + 500)));
+        if let Some(Active::Framing(d)) = dialogs.active.as_mut() {
+            d.set_length(240.0);
+        }
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        let Some(Record::Manual(m)) = framing_view::find(cx.floor(), id) else {
+            panic!("the member is gone");
+        };
+        assert!((m.plan_length() - 240.0).abs() < 1e-6);
+        assert_eq!(cx.undo_label(), Some("Framing Member Specification"));
+
+        // A ceiling plane: General, Line Style and Layer.
+        let fl = cx.floor;
+        let cid = roof_view::add_ceiling(
+            &mut cx.project,
+            fl,
+            (
+                Point::new(0.0, 0.0),
+                Point::new(240.0, 0.0),
+                Point::new(120.0, 90.0),
+            ),
+            100.0,
+            4.0,
+        )
+        .unwrap();
+        assert!(dialogs.open(&mut cx, ObjectRef::RoofPlane(cid)));
+        assert!(matches!(dialogs.active, Some(Active::Ceiling(_))));
+        if let Some(Active::Ceiling(d)) = dialogs.active.as_mut() {
+            let c = d.draft_mut();
+            c.pitch = 6.0;
+            c.height_at_baseline = 108.0;
+            c.thickness = 7.0;
+            c.line_style = plan_core::LineStyle::Solid;
+        }
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        let c = roof_view::load(cx.floor()).ceilings[0].clone();
+        assert_eq!(
+            (c.pitch, c.height_at_baseline, c.thickness, c.line_style),
+            (6.0, 108.0, 7.0, plan_core::LineStyle::Solid)
+        );
+        assert_eq!(cx.undo_label(), Some("Ceiling Plane Specification"));
     }
 }

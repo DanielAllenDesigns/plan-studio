@@ -181,6 +181,13 @@ pub(crate) fn frame_for(
             }
         }
         BoxSource::Elevation { dir } => view_frame(*dir, cx.project, scenes),
+        BoxSource::Camera { camera_id } => match cx.camera_drawing_for(*camera_id) {
+            Some(d) if !d.lines.is_empty() => {
+                let (lo, hi) = d.bounds;
+                pad(lo, hi, VIEW_MARGIN_IN)
+            }
+            _ => pad(Point::ZERO, Point::new(120.0, 120.0), 0.0),
+        },
         BoxSource::Section { cut } => view_frame(cut.plane_normal, cx.project, scenes),
         BoxSource::Schedule { kind } => {
             let m = table_metrics(&schedule_for(*kind, cx));

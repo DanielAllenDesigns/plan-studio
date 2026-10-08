@@ -26,7 +26,9 @@ pub struct WallLayer {
 }
 
 impl WallLayer {
-    fn new(name: &str, thickness: f64, is_main: bool, material: &str) -> Self {
+    /// A wall layer: `name`, `thickness` in inches, whether it is the main
+    /// (structural) layer, and its `material`.
+    pub fn new(name: &str, thickness: f64, is_main: bool, material: &str) -> Self {
         Self {
             name: name.into(),
             thickness,
@@ -233,6 +235,29 @@ pub struct DimensionDefaults {
     pub auto_exterior_offset: f64,
     pub auto_line_separation: f64,
     pub locate_openings_centers: bool,
+    /// Name of the text style dimension text uses; empty means "Dimension
+    /// Text Style" / the plan default.
+    #[serde(default)]
+    pub text_style: String,
+    /// Extension lines: length toward the marked object, inches (0 = not set).
+    #[serde(default)]
+    pub extension_toward: f64,
+    /// Extension lines: fixed proximity, the distance to the marked object,
+    /// inches (0 = not set).
+    #[serde(default)]
+    pub extension_proximity: f64,
+    /// Baseline dimensions: line separation, inches (0 = not set).
+    #[serde(default)]
+    pub baseline_separation: f64,
+    /// Automatic dimensions: reach, inches (0 = not set).
+    #[serde(default)]
+    pub reach: f64,
+    /// Decimal places shown in a decimal format (0 = not set).
+    #[serde(default)]
+    pub decimals: u32,
+    /// Arrow style name (empty = the default arrow).
+    #[serde(default)]
+    pub arrow_style: String,
 }
 
 /// One of Chief's saved dimension default sets ("1/4\" Scale", "NKBA", ...):
@@ -548,6 +573,13 @@ impl PlanDefaults {
             auto_exterior_offset: 32.0,
             auto_line_separation: 18.0,
             locate_openings_centers: true,
+            text_style: String::new(),
+            extension_toward: 0.0,
+            extension_proximity: 0.0,
+            baseline_separation: 0.0,
+            reach: 0.0,
+            decimals: 0,
+            arrow_style: String::new(),
         };
         PlanDefaults {
             name: "Chief X18 (Daniel)".into(),

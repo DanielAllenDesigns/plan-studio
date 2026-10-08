@@ -15,6 +15,12 @@
 //! `plan_elevation::Options` by [`elevation_options`]; [`render_elevation`]
 //! draws the camera's 2D drawing with them.
 //!
+//! Lights live here too: the light list handed to the ray tracer
+//! ([`render_lights`], plan lights plus electrical fixtures), the Adjust
+//! Lights dialog ([`AdjustLightsDialog`]) and the Add Lights defaults. The
+//! camera-backed layout box hook is [`layout_context`] /
+//! [`send_camera_to_layout`].
+//!
 //! [`RayTraceDialog`] is a small state machine around
 //! `plan_render::Renderer::render_progressive` running on a background
 //! thread: Idle -> Running -> Done / Cancelled / Failed. Everything except the
@@ -23,12 +29,12 @@
 use super::{dis_check, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke};
 use plan_3d::Scene;
-use plan_core::camera::DEFAULT_CONE_LENGTH;
+use plan_core::camera::{PlanLight, DEFAULT_CONE_LENGTH};
 use plan_core::geometry::Point;
 use plan_core::{CameraKind, CameraObject, Id, Project};
 use plan_elevation::{Drawing, Options, SectionCut, SunDir, ViewDir};
 use plan_materials::{RenderingTechnique, SunSettings};
-use plan_render::{Environment, Image, RenderSettings, Renderer, Sun, Technique};
+use plan_render::{Environment, Image, PointLight, RenderSettings, Renderer, Sun, Technique};
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -70,13 +76,32 @@ impl Default for CameraExtras {
 pub fn is_elevation_camera(c: &CameraObject) -> bool {
     matches!(
         c.kind,
-        CameraKind::CrossSection { .. } | CameraKind::WallElevation
+        CameraKind::CrossSection { .. } | CameraKind::WallElevation | CameraKind::Elevation
     )
+}
+
+/// Does the camera cut the model at its section line (so a back clip and the
+/// section drawing apply)? Exterior elevations (Auto Elevations) do not.
+pub fn cuts_model(c: &CameraObject) -> bool {
+    match c.kind {
+        CameraKind::CrossSection { .. } => true,
+        // A wall elevation made by the Wall Elevation tool has its cut line;
+        // one without a line draws the whole building from its direction.
+        CameraKind::WallElevation => c.section.is_some(),
+        _ => false,
+    }
+}
+
+/// The shadow direction of a sun, or `None` while it is below the horizon.
+pub fn sun_dir(s: &SunSettings) -> Option<SunDir> {
+    (s.altitude_deg > 0.0).then_some(SunDir {
+        azimuth_deg: s.azimuth_deg,
+        altitude_deg: s.altitude_deg,
+    })
 }
 
 /// The orthographic view closest to the camera's viewing direction (the
 /// camera stands on the opposite side of the model).
-#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
 pub fn elevation_view_dir(c: &CameraObject) -> ViewDir {
     let d = c.direction();
     if d.y.abs() >= d.x.abs() {
@@ -94,7 +119,6 @@ pub fn elevation_view_dir(c: &CameraObject) -> ViewDir {
 
 /// The cutting plane of a section camera: through the centre of its cut line,
 /// square to the nearest axis (scene Z is -plan y).
-#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
 pub fn section_cut(c: &CameraObject) -> SectionCut {
     let plane_normal = elevation_view_dir(c);
     let offset = match plane_normal {
@@ -110,32 +134,36 @@ pub fn section_cut(c: &CameraObject) -> SectionCut {
 /// `plan_elevation::Options` for a camera: hatch, shadows from the stored
 /// sun, line weight by distance, and a section's back clip as its depth.
 /// (`raster_px` is left at the default; tests lower it.)
-#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
 pub fn elevation_options(c: &CameraObject) -> Options {
+    elevation_options_with_sun(c, None)
+}
+
+/// [`elevation_options`] with the shadows taken from `sun` (the plan's Sun
+/// Angle) instead of the camera's own sun, when one is given.
+pub fn elevation_options_with_sun(c: &CameraObject, sun: Option<SunDir>) -> Options {
     let r = &c.render;
     Options {
         hatch: r.hatch,
-        shadows: r.shadows.then_some(SunDir {
+        shadows: sun.or(r.shadows.then_some(SunDir {
             azimuth_deg: r.sun_azimuth_deg,
             altitude_deg: r.sun_altitude_deg,
-        }),
+        })),
         depth_weights: r.depth_weights,
-        section_depth: matches!(c.kind, CameraKind::CrossSection { .. })
+        section_depth: cuts_model(c)
             .then(|| crate::tools::camera::back_clip(c))
             .flatten(),
         ..Options::default()
     }
 }
 
-/// The camera's 2D drawing with `opts`: a section is cut at its line, other
-/// elevation cameras draw the whole building from their direction. With the
-/// camera's labels option the drawing gets the title, level callouts, grade
-/// line and roof pitch symbols (a section is titled with the camera's name).
-#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
+/// The camera's 2D drawing with `opts`: a section or wall elevation is cut at
+/// its line, other elevation cameras draw the whole building from their
+/// direction. With the camera's labels option the drawing gets the title (the
+/// camera's name), level callouts, grade line and roof pitch symbols.
 pub fn render_elevation_with(project: &Project, c: &CameraObject, opts: &Options) -> Drawing {
     let scene = plan_3d::build_scene(project);
     let dir = elevation_view_dir(c);
-    let section = matches!(c.kind, CameraKind::CrossSection { .. });
+    let section = cuts_model(c);
     let mut drawing = if section {
         plan_elevation::section(&scene, section_cut(c), opts)
     } else {
@@ -143,7 +171,7 @@ pub fn render_elevation_with(project: &Project, c: &CameraObject, opts: &Options
     };
     if c.render.labels {
         plan_elevation::annotate(&mut drawing, &scene, project, dir);
-        if section {
+        if !c.name.trim().is_empty() && (section || c.kind == CameraKind::Elevation) {
             let title = c.name.to_uppercase();
             for (_, t) in &mut drawing.texts {
                 if t.ends_with("ELEVATION") {
@@ -156,9 +184,20 @@ pub fn render_elevation_with(project: &Project, c: &CameraObject, opts: &Options
 }
 
 /// [`render_elevation_with`] using [`elevation_options`].
-#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
 pub fn render_elevation(project: &Project, c: &CameraObject) -> Drawing {
     render_elevation_with(project, c, &elevation_options(c))
+}
+
+/// The back clip being edited: the cross section's own, or the one stored on
+/// the line of the other section-like cameras.
+fn back_clip_of(c: &mut CameraObject) -> Option<&mut Option<f64>> {
+    match &mut c.kind {
+        CameraKind::CrossSection { back_clip } => Some(back_clip),
+        CameraKind::WallElevation | CameraKind::Elevation => {
+            c.section.as_mut().map(|s| &mut s.back_clip)
+        }
+        _ => None,
+    }
 }
 
 /// Date, time and latitude the "Set sun" button turns into a sun position.
@@ -238,7 +277,7 @@ impl CameraDialog {
         }
         let back = match self.draft.kind {
             CameraKind::CrossSection { back_clip } => back_clip,
-            _ => None,
+            _ => self.draft.section.and_then(|s| s.back_clip),
         };
         let (centre, dir) = (self.draft.position, self.draft.direction_deg);
         crate::tools::camera::set_section_geometry(
@@ -250,8 +289,87 @@ impl CameraDialog {
         );
     }
 
+    /// Cross sections, wall elevations and exterior elevations are placed by
+    /// a cut line.
     fn is_section(&self) -> bool {
-        matches!(self.draft.kind, CameraKind::CrossSection { .. })
+        crate::tools::camera::is_section(&self.draft)
+    }
+
+    /// Keeps a walkthrough's eye position and direction on its first node
+    /// and segment after the path was edited.
+    fn sync_walkthrough(&mut self) {
+        if self.draft.kind != CameraKind::Walkthrough {
+            return;
+        }
+        let n = self.draft.path.len();
+        self.draft
+            .path_nodes
+            .resize(n, plan_core::camera::WalkNode::default());
+        if let Some(first) = self.draft.path.first().copied() {
+            self.draft.position = first;
+            if let Some(next) = self.draft.path.get(1) {
+                self.draft.direction_deg = (*next - first).angle().to_degrees();
+            }
+        }
+    }
+
+    /// The path table of a walkthrough: speed and, per node, the plan
+    /// position, camera height and an optional fixed look direction.
+    fn walkthrough_page(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Walkthrough");
+        row(ui, "Walking speed", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut self.draft.walk_speed)
+                    .range(6.0..=600.0)
+                    .suffix(" in/s"),
+            )
+        });
+        ui.weak(format!(
+            "{} nodes, {:.0}\" long, {:.1} s",
+            self.draft.path.len(),
+            self.draft.walk_length(),
+            self.draft.walk_duration_s()
+        ));
+        section(ui, "Path nodes");
+        let mut remove = None;
+        let nodes = self.draft.path.len();
+        self.draft
+            .path_nodes
+            .resize(nodes, plan_core::camera::WalkNode::default());
+        for i in 0..nodes {
+            ui.horizontal(|ui| {
+                ui.label(format!("{}", i + 1));
+                let p = &mut self.draft.path[i];
+                ui.add(egui::DragValue::new(&mut p.x).speed(1.0).prefix("x "));
+                ui.add(egui::DragValue::new(&mut p.y).speed(1.0).prefix("y "));
+                let n = &mut self.draft.path_nodes[i];
+                ui.add(
+                    egui::DragValue::new(&mut n.height)
+                        .range(12.0..=600.0)
+                        .prefix("h ")
+                        .suffix("\""),
+                );
+                let mut fixed = n.look_deg.is_some();
+                if ui.checkbox(&mut fixed, "look").changed() {
+                    n.look_deg = fixed.then_some(0.0);
+                }
+                if let Some(d) = &mut n.look_deg {
+                    ui.add(
+                        egui::DragValue::new(d)
+                            .range(-360.0..=360.0)
+                            .suffix("\u{B0}"),
+                    );
+                }
+                if nodes > 2 && ui.small_button("\u{2715}").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            self.draft.path.remove(i);
+            self.draft.path_nodes.remove(i);
+        }
+        ui.weak("A node without \"look\" faces along the path.");
     }
 
     fn kind_label(&self) -> &'static str {
@@ -263,6 +381,8 @@ impl CameraDialog {
             CameraKind::CrossSection { .. } => "Back-Clipped Cross Section",
             CameraKind::WallElevation => "Wall Elevation",
             CameraKind::Orthographic => "Orthographic",
+            CameraKind::Elevation => "Elevation",
+            CameraKind::Walkthrough => "Walkthrough",
         }
     }
 
@@ -273,6 +393,10 @@ impl CameraDialog {
         });
         row(ui, "Camera Type", |ui| ui.label(self.kind_label()));
         row(ui, "Floor", |ui| ui.label(&self.floor_name));
+        if self.draft.kind == CameraKind::Walkthrough {
+            self.walkthrough_page(ui);
+            return;
+        }
         let section_cam = self.is_section();
         section(
             ui,
@@ -315,8 +439,9 @@ impl CameraDialog {
 
     fn options(&mut self, ui: &mut egui::Ui) {
         section(ui, "Clipping");
-        let d = &mut self.draft;
-        if let CameraKind::CrossSection { back_clip } = &mut d.kind {
+        if self.draft.kind == CameraKind::Walkthrough {
+            ui.weak("A walkthrough has no clip planes.");
+        } else if let Some(back_clip) = back_clip_of(&mut self.draft) {
             let mut limited = back_clip.is_some();
             if ui.checkbox(&mut limited, "Back-clip the section").changed() {
                 *back_clip = limited.then_some(120.0);
@@ -325,6 +450,7 @@ impl CameraDialog {
                 self.fields.length_row(ui, "Back Clip Distance", "back", v);
             }
         } else {
+            let d = &mut self.draft;
             let mut limited = d.clip_distance.is_some();
             if ui.checkbox(&mut limited, "Limit view distance").changed() {
                 d.clip_distance = limited.then_some(DEFAULT_CONE_LENGTH);
@@ -405,7 +531,7 @@ impl CameraDialog {
                 self.set_sun_from_date();
             }
         }
-        if let CameraKind::CrossSection { back_clip } = &mut self.draft.kind {
+        if let Some(back_clip) = back_clip_of(&mut self.draft) {
             let mut limited = back_clip.is_some();
             if ui
                 .checkbox(&mut limited, "Section back-clip depth")
@@ -438,7 +564,10 @@ impl SpecPages for CameraDialog {
         if self.draft.name.trim().is_empty() {
             return Some("Enter a camera name".into());
         }
-        if !self.is_section() && !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&self.draft.fov_deg) {
+        if !self.is_section()
+            && self.draft.kind != CameraKind::Walkthrough
+            && !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&self.draft.fov_deg)
+        {
             return Some(format!(
                 "Angle of view must be {MIN_FOV_DEG:.0}\u{B0} to {MAX_FOV_DEG:.0}\u{B0}"
             ));
@@ -463,11 +592,14 @@ impl SpecPages for CameraDialog {
             _ => self.rendering(ui),
         }
         self.sync_section();
+        self.sync_walkthrough();
     }
 
     fn preview(&self, painter: &Painter, rect: Rect) {
         let ink = Stroke::new(1.2_f32, Color32::from_rgb(0x2F, 0x6C, 0xB3));
-        let mut pts: Vec<Point> = if self.is_section() {
+        let mut pts: Vec<Point> = if self.draft.kind == CameraKind::Walkthrough {
+            self.draft.path.clone()
+        } else if self.is_section() {
             let (a, b) = crate::tools::camera::section_line(&self.draft);
             vec![a, b, self.draft.position + self.draft.direction() * 36.0]
         } else {
@@ -491,7 +623,12 @@ impl SpecPages for CameraDialog {
             )
         };
         let s: Vec<Pos2> = pts.drain(..).map(to_screen).collect();
-        if self.is_section() {
+        if self.draft.kind == CameraKind::Walkthrough {
+            painter.add(egui::Shape::line(s.clone(), ink));
+            for p in &s {
+                painter.circle_filled(*p, 2.5, ink.color);
+            }
+        } else if self.is_section() {
             painter.line_segment([s[0], s[1]], ink);
             painter.line_segment([s[2], to_screen(self.draft.position)], ink);
         } else {
@@ -513,6 +650,295 @@ impl SpecPages for CameraDialog {
             egui::FontId::proportional(11.0),
             Color32::from_gray(0x2B),
         );
+    }
+}
+
+// ----- the camera's drawing in a layout -----
+
+/// The 2D drawing of camera `id` for a layout box: the elevation or section
+/// with the camera's own options. `None` for cameras that draw no 2D view.
+pub fn camera_drawing(project: &Project, id: Id) -> Option<Drawing> {
+    let c = project.camera(id)?;
+    is_elevation_camera(c).then(|| render_elevation(project, c))
+}
+
+/// A layout render context whose camera boxes draw through
+/// [`camera_drawing`].
+pub fn layout_context(project: &Project) -> plan_layout::LayoutRenderContext<'_> {
+    plan_layout::LayoutRenderContext::new(project)
+        .with_camera_drawing(move |id| camera_drawing(project, id))
+}
+
+/// Sends camera `camera` to page `page` of `layout` as a camera box at the
+/// largest scale that fits. `None` when the camera does not exist or has no
+/// 2D view.
+pub fn send_camera_to_layout(
+    layout: &mut plan_layout::Layout,
+    project: &Project,
+    camera: Id,
+    page: u32,
+) -> Option<Id> {
+    is_elevation_camera(project.camera(camera)?).then_some(())?;
+    let cx = layout_context(project);
+    plan_layout::send_camera_to_layout(layout, &cx, page, camera, None)
+}
+
+// ----- lights (C-64..C-66) -----
+
+/// Radiant intensity of a light of intensity 1.0 in the renderer's units
+/// (irradiance is `intensity / distance^2`, inches): about 1.7 on a floor 7'
+/// below the light.
+pub const LIGHT_UNIT: f32 = 12_000.0;
+
+/// Defaults for lights placed with the Add Lights tool.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightDefaults {
+    /// Height above the floor, inches; `None` hangs the light 12" below the
+    /// ceiling of its floor.
+    pub height: Option<f64>,
+    pub intensity: f32,
+    pub color: [u8; 3],
+}
+
+static LIGHT_DEFAULTS: Mutex<LightDefaults> = Mutex::new(LightDefaults {
+    height: None,
+    intensity: 1.0,
+    color: [255, 244, 229],
+});
+
+pub fn light_defaults() -> LightDefaults {
+    *LIGHT_DEFAULTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+pub fn set_light_defaults(d: LightDefaults) {
+    *LIGHT_DEFAULTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = d;
+}
+
+/// The light fixtures of the electrical plan (ceiling lights, recessed cans,
+/// pendants, sconces and rope lights) as lights; their `id` is the device id.
+pub fn electrical_lights(project: &Project) -> Vec<PlanLight> {
+    use plan_electrical::{DeviceKind, ElectricalLayer};
+    let mut out = Vec::new();
+    for (floor, f) in project.floors.iter().enumerate() {
+        let Ok(Some(layer)) = f.electrical_as::<ElectricalLayer>() else {
+            continue;
+        };
+        for d in layer.devices.iter().filter(|d| d.kind.is_light()) {
+            let hung = matches!(
+                d.kind,
+                DeviceKind::CeilingLight | DeviceKind::RecessedCan | DeviceKind::PendantLight
+            );
+            let mut l = PlanLight::new(d.position, if hung { d.height - 6.0 } else { d.height });
+            l.height = l.height.max(6.0);
+            l.id = d.id;
+            l.floor = floor;
+            l.name = d.kind.name().to_string();
+            l.intensity = match d.kind {
+                DeviceKind::RecessedCan => 0.5,
+                DeviceKind::WallSconce => 0.4,
+                DeviceKind::RopeLight { .. } => 0.3,
+                _ => 1.0,
+            };
+            out.push(l);
+        }
+    }
+    out
+}
+
+/// Every light that can shine: the plan's own lights plus, when the plan
+/// asks for it, the electrical fixtures.
+pub fn all_lights(project: &Project) -> Vec<PlanLight> {
+    let mut v = project.lights();
+    if project.light_settings().use_electrical {
+        v.extend(electrical_lights(project));
+    }
+    v
+}
+
+/// One light as the path tracer's point light (scene space: X, up, -plan Y).
+/// Lights that do not cast shadows get a large sphere, which blurs their
+/// shadows away (the renderer has no per-light shadow switch).
+pub fn render_light(project: &Project, l: &PlanLight) -> PointLight {
+    let elevation = project.floors.get(l.floor).map_or(0.0, |f| f.elevation);
+    PointLight {
+        position: [
+            l.position.x as f32,
+            (elevation + l.height) as f32,
+            -l.position.y as f32,
+        ],
+        intensity: l.intensity.max(0.0) * LIGHT_UNIT,
+        color: l.color.map(|c| f32::from(c) / 255.0),
+        radius: if l.cast_shadows { 2.0 } else { 24.0 },
+    }
+}
+
+/// The renderer's light list: every enabled light of [`all_lights`].
+pub fn render_lights(project: &Project) -> Vec<PointLight> {
+    all_lights(project)
+        .iter()
+        .filter(|l| l.enabled)
+        .map(|l| render_light(project, l))
+        .collect()
+}
+
+/// The Adjust Lights dialog (C-64): the plan's lights with on/off, height,
+/// intensity, colour and shadows, the electrical-fixture switch and the
+/// defaults of the Add Lights tool. Edits are kept in a draft until OK.
+pub struct AdjustLightsDialog {
+    draft: Vec<PlanLight>,
+    original: Vec<Id>,
+    use_electrical: bool,
+    electrical: Vec<PlanLight>,
+    defaults: LightDefaults,
+    /// Light to highlight (the one that was double-clicked).
+    pub focus: Option<Id>,
+}
+
+impl AdjustLightsDialog {
+    pub fn new(project: &Project) -> Self {
+        let draft = project.lights();
+        Self {
+            original: draft.iter().map(|l| l.id).collect(),
+            draft,
+            use_electrical: project.light_settings().use_electrical,
+            electrical: electrical_lights(project),
+            defaults: light_defaults(),
+            focus: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn lights_mut(&mut self) -> &mut Vec<PlanLight> {
+        &mut self.draft
+    }
+
+    #[cfg(test)]
+    pub fn set_use_electrical(&mut self, on: bool) {
+        self.use_electrical = on;
+    }
+
+    /// Writes the draft into `project`: edits, removals and the options.
+    pub fn apply(&self, project: &mut Project) {
+        for id in &self.original {
+            if !self.draft.iter().any(|l| l.id == *id) {
+                project.remove_light(*id);
+            }
+        }
+        for l in &self.draft {
+            let edited = l.clone();
+            project.update_light(l.id, |x| {
+                let (id, floor) = (x.id, x.floor);
+                *x = edited;
+                x.id = id;
+                x.floor = floor;
+            });
+        }
+        project.set_light_settings(plan_core::camera::LightSettings {
+            use_electrical: self.use_electrical,
+        });
+        set_light_defaults(self.defaults);
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let mut outcome = Outcome::Open;
+        let mut open = true;
+        egui::Window::new("Adjust Lights")
+            .id(egui::Id::new("adjust_lights_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                self.contents(ui);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        outcome = Outcome::Ok;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        outcome = Outcome::Cancel;
+                    }
+                });
+            });
+        if !open {
+            outcome = Outcome::Cancel;
+        }
+        outcome
+    }
+
+    fn contents(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Lights in the plan");
+        if self.draft.is_empty() {
+            ui.weak("No lights yet. Use Add Lights and click in the plan.");
+        }
+        let mut remove = None;
+        egui::ScrollArea::vertical()
+            .max_height(260.0)
+            .show(ui, |ui| {
+                for (i, l) in self.draft.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut l.enabled, "");
+                        let name = egui::TextEdit::singleline(&mut l.name).desired_width(90.0);
+                        let r = ui.add(name);
+                        if self.focus == Some(l.id) {
+                            r.highlight();
+                        }
+                        ui.add(
+                            egui::DragValue::new(&mut l.height)
+                                .range(0.0..=600.0)
+                                .prefix("h ")
+                                .suffix("\""),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut l.intensity)
+                                .range(0.0..=20.0)
+                                .speed(0.05)
+                                .prefix("power "),
+                        );
+                        ui.color_edit_button_srgb(&mut l.color);
+                        ui.checkbox(&mut l.cast_shadows, "shadows");
+                        if ui.small_button("\u{2715}").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+            });
+        if let Some(i) = remove {
+            self.draft.remove(i);
+        }
+        section(ui, "Electrical fixtures");
+        ui.checkbox(
+            &mut self.use_electrical,
+            format!(
+                "Lighting fixtures of the electrical plan emit light ({})",
+                self.electrical.len()
+            ),
+        );
+        section(ui, "New lights");
+        let d = &mut self.defaults;
+        let mut fixed = d.height.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut fixed, "Fixed height").changed() {
+                d.height = fixed.then_some(84.0);
+            }
+            if let Some(h) = &mut d.height {
+                ui.add(egui::DragValue::new(h).range(0.0..=600.0).suffix("\""));
+            } else {
+                ui.weak("12\" below the ceiling");
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Power");
+            ui.add(
+                egui::DragValue::new(&mut d.intensity)
+                    .range(0.0..=20.0)
+                    .speed(0.05),
+            );
+            ui.color_edit_button_srgb(&mut d.color);
+        });
     }
 }
 
@@ -633,6 +1059,11 @@ pub struct RayTraceDialog {
     pub latitude: f64,
     /// Replaces the size preset (tests render tiny images).
     pub size_override: Option<(u32, u32)>,
+    /// Sun Angle in manual mode: this azimuth and altitude replace the ones
+    /// worked out from the date, time and latitude.
+    pub manual_sun: Option<(f64, f64)>,
+    /// Point lights of the plan, set by the 3D panel before a render starts.
+    pub lights: Vec<PointLight>,
     pub message: String,
     phase: RtPhase,
     shared: Option<Arc<Shared>>,
@@ -654,6 +1085,8 @@ impl Default for RayTraceDialog {
             time_hours: 15.0,
             latitude: 33.75,
             size_override: None,
+            manual_sun: None,
+            lights: Vec::new(),
             message: String::new(),
             phase: RtPhase::Idle,
             shared: None,
@@ -688,7 +1121,17 @@ impl RayTraceDialog {
 
     /// The sun for the chosen date, time and latitude.
     pub fn sun(&self) -> SunSettings {
-        SunSettings::from_date_time_location(self.date, self.time_hours, self.latitude)
+        let mut s = SunSettings::from_date_time_location(self.date, self.time_hours, self.latitude);
+        if let Some((azimuth, altitude)) = self.manual_sun {
+            s.azimuth_deg = azimuth;
+            s.altitude_deg = altitude;
+            if altitude <= 0.0 {
+                s.intensity = 0.0;
+            } else if s.intensity <= 0.0 {
+                s.intensity = (altitude.to_radians().sin() as f32).sqrt();
+            }
+        }
+        s
     }
 
     /// The render settings the dialog describes (always valid: sizes and
@@ -726,6 +1169,7 @@ impl RayTraceDialog {
         }
         let settings = self.settings();
         let env = self.environment();
+        let lights = self.lights.clone();
         let shared = Arc::new(Shared {
             done: AtomicU32::new(0),
             total: settings.samples,
@@ -748,7 +1192,7 @@ impl RayTraceDialog {
                         });
                         !worker.cancel.load(Ordering::Relaxed)
                     };
-                    renderer.render_progressive(&camera, &env, &[], &settings, &mut progress)
+                    renderer.render_progressive(&camera, &env, &lights, &settings, &mut progress)
                 }));
                 *lock(&worker.finished) =
                     Some(result.map_err(|_| "The renderer stopped unexpectedly".to_string()));
@@ -1308,5 +1752,247 @@ mod tests {
         d.draft.fov_deg = 90.0;
         assert!(d.error().is_none());
         assert_eq!(d.id(), cam.id);
+    }
+
+    #[test]
+    fn a_camera_box_prints_the_elevation_through_the_hook() {
+        let mut p = house();
+        let id = p.add_camera(section_camera());
+        let full = p.add_camera(CameraObject::new(
+            CameraKind::FullCamera,
+            Point::ZERO,
+            0.0,
+            "c",
+            0,
+        ));
+        let mut layout = plan_layout::Layout::new("Camera Views", plan_docs::SheetSize::ArchC);
+        let box_id = send_camera_to_layout(&mut layout, &p, id, 1).expect("a camera box");
+        let b = layout
+            .page(1)
+            .unwrap()
+            .boxes
+            .iter()
+            .find(|b| b.id == box_id)
+            .unwrap();
+        assert!(
+            matches!(b.source, plan_layout::BoxSource::Camera { camera_id } if camera_id == id)
+        );
+        assert_eq!(b.label.as_deref(), Some("SECTION 1"));
+        let drawing = camera_drawing(&p, id).expect("a section draws");
+        assert!(drawing.cut_regions().count() > 0);
+        let hooked = layout_context(&p);
+        let plain = plan_layout::LayoutRenderContext::new(&p);
+        let with = plan_layout::render_box_lines(b, &hooked);
+        let without = plan_layout::render_box_lines(b, &plain);
+        // Without the hook only the box border (4 edges) is drawn.
+        assert_eq!(without.len(), 4);
+        assert!(
+            with.len() >= drawing.lines.len(),
+            "{} box lines for {} elevation lines",
+            with.len(),
+            drawing.lines.len()
+        );
+        let pdf = plan_layout::render_pdf(&layout, &hooked);
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > plan_layout::render_pdf(&layout, &plain).len() + 500);
+        // Cameras that draw no 2D view are refused.
+        assert!(send_camera_to_layout(&mut layout, &p, full, 1).is_none());
+        assert!(camera_drawing(&p, full).is_none());
+    }
+
+    #[test]
+    fn exterior_and_wall_elevations_draw_with_their_names() {
+        let p = house();
+        let cams = crate::tools::camera::auto_elevation_cameras(&p, 0, false).unwrap();
+        let south = cams.iter().find(|c| c.name == "South Elevation").unwrap();
+        let opts = Options {
+            raster_px: 192,
+            ..elevation_options(south)
+        };
+        let d = render_elevation_with(&p, south, &opts);
+        assert!(!d.lines.is_empty());
+        assert!(
+            d.texts.iter().any(|(_, t)| t == "SOUTH ELEVATION"),
+            "{:?}",
+            d.texts
+        );
+        // A wall elevation is a section: only that wall is in the picture.
+        let wall = p.floors[0].walls[0].clone();
+        let cam =
+            crate::tools::camera::wall_elevation(&wall, Point::new(120.0, 30.0), 0, "Kitchen Wall");
+        assert!(cuts_model(&cam) && is_elevation_camera(&cam));
+        assert_eq!(elevation_view_dir(&cam), ViewDir::Back);
+        let o = Options {
+            raster_px: 192,
+            ..elevation_options(&cam)
+        };
+        assert_eq!(o.section_depth, Some(wall.thickness + 2.5));
+        let wall_d = render_elevation_with(&p, &cam, &o);
+        let full_d = render_elevation_with(&p, south, &opts);
+        assert!(!wall_d.lines.is_empty());
+        assert!(wall_d.total_length() < full_d.total_length() * 1.5);
+        assert!(wall_d.texts.iter().any(|(_, t)| t == "KITCHEN WALL"));
+    }
+
+    #[test]
+    fn the_plan_sun_overrides_the_cameras_own_shadow_setting() {
+        let cam = section_camera();
+        assert!(elevation_options_with_sun(&cam, None).shadows.is_none());
+        let sun = SunDir {
+            azimuth_deg: 200.0,
+            altitude_deg: 30.0,
+        };
+        assert_eq!(
+            elevation_options_with_sun(&cam, Some(sun)).shadows,
+            Some(sun)
+        );
+        let low = SunSettings::from_date_time_location((6, 21), 3.0, 33.75);
+        assert!(sun_dir(&low).is_none(), "no shadows at night");
+        let noon = SunSettings::from_date_time_location((6, 21), 12.0, 33.75);
+        assert!(sun_dir(&noon).unwrap().altitude_deg > 60.0);
+    }
+
+    #[test]
+    fn lights_reach_the_render_light_list() {
+        use plan_electrical::{place_free, DeviceKind, ElectricalLayer};
+        let mut p = house();
+        p.floors[0].elevation = 10.0;
+        let mut on = PlanLight::new(Point::new(100.0, 50.0), 84.0);
+        on.intensity = 2.0;
+        on.color = [255, 0, 0];
+        let a = p.add_light(0, on).unwrap();
+        let mut off = PlanLight::new(Point::new(0.0, 0.0), 84.0);
+        off.enabled = false;
+        p.add_light(0, off).unwrap();
+        let lights = render_lights(&p);
+        assert_eq!(lights.len(), 1, "the disabled light is left out");
+        let l = lights[0];
+        assert_eq!(
+            l.position,
+            [100.0, 94.0, -50.0],
+            "x, elevation + height, -y"
+        );
+        assert!((l.intensity - 2.0 * LIGHT_UNIT).abs() < 1e-3);
+        assert_eq!(l.color, [1.0, 0.0, 0.0]);
+        assert!(l.radius < 5.0, "shadow casting lights are small spheres");
+        p.update_light(a, |x| x.cast_shadows = false);
+        assert!(render_lights(&p)[0].radius > 5.0);
+
+        // Electrical lighting fixtures emit light unless the plan says not to.
+        let mut layer = ElectricalLayer::default();
+        layer.add(place_free(DeviceKind::CeilingLight, Point::new(60.0, 60.0)));
+        layer.add(place_free(DeviceKind::Switch, Point::new(10.0, 10.0)));
+        crate::editor::site_view::save_electrical(&mut p, 0, &layer);
+        assert_eq!(electrical_lights(&p).len(), 1, "switches do not shine");
+        let all = render_lights(&p);
+        assert_eq!(all.len(), 2);
+        assert!(all
+            .iter()
+            .any(|l| l.position[0] == 60.0 && l.position[2] == -60.0));
+        p.set_light_settings(plan_core::camera::LightSettings {
+            use_electrical: false,
+        });
+        assert_eq!(render_lights(&p).len(), 1);
+    }
+
+    #[test]
+    fn the_ray_tracer_gets_the_plan_lights_and_the_manual_sun() {
+        let mut rt = RayTraceDialog::default();
+        let auto = rt.sun();
+        rt.manual_sun = Some((270.0, 20.0));
+        let s = rt.sun();
+        assert_eq!((s.azimuth_deg, s.altitude_deg), (270.0, 20.0));
+        assert!(s.intensity > 0.0);
+        assert_ne!(auto.azimuth_deg, s.azimuth_deg);
+        let e = rt.environment();
+        assert!(e.sun.is_some());
+        rt.manual_sun = Some((270.0, -5.0));
+        assert!(
+            rt.environment().sun.is_none(),
+            "a sun under the horizon is off"
+        );
+        // A light in the list is used by the render.
+        rt.manual_sun = None;
+        rt.size_override = Some((8, 8));
+        rt.samples = SamplesPreset::S64;
+        rt.lights = vec![PointLight {
+            position: [5.0, 40.0, -5.0],
+            intensity: 40_000.0,
+            color: [1.0, 1.0, 1.0],
+            radius: 2.0,
+        }];
+        rt.start(
+            tiny_scene(),
+            plan_render::Camera::from_plan(Point::new(5.0, 5.0), 0.0, 20.0, 60.0),
+        );
+        for _ in 0..600 {
+            rt.poll();
+            if !rt.is_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(rt.phase(), &RtPhase::Done);
+    }
+
+    #[test]
+    fn adjust_lights_applies_edits_removals_and_the_electrical_switch() {
+        let mut p = house();
+        let a = p
+            .add_light(0, PlanLight::new(Point::new(10.0, 10.0), 84.0))
+            .unwrap();
+        let b = p
+            .add_light(0, PlanLight::new(Point::new(50.0, 10.0), 84.0))
+            .unwrap();
+        let mut d = AdjustLightsDialog::new(&p);
+        assert_eq!(d.draft.len(), 2);
+        d.lights_mut()[0].intensity = 3.5;
+        d.lights_mut()[0].color = [10, 20, 30];
+        d.lights_mut()[0].enabled = false;
+        d.lights_mut().remove(1);
+        d.set_use_electrical(false);
+        // Nothing changes until OK.
+        assert_eq!(p.light(a).unwrap().intensity, 1.0);
+        d.apply(&mut p);
+        let got = p.light(a).unwrap();
+        assert_eq!(
+            (got.intensity, got.color, got.enabled),
+            (3.5, [10, 20, 30], false)
+        );
+        assert_eq!(
+            got.position,
+            Point::new(10.0, 10.0),
+            "position and floor are kept"
+        );
+        assert!(p.light(b).is_none());
+        assert!(!p.light_settings().use_electrical);
+    }
+
+    #[test]
+    fn walkthrough_cameras_are_edited_node_by_node() {
+        let cam = CameraObject::walkthrough(
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(100.0, 0.0),
+                Point::new(100.0, 80.0),
+            ],
+            66.0,
+            "Walk",
+            0,
+        );
+        let mut d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
+        assert_eq!(d.kind_label(), "Walkthrough");
+        assert!(
+            d.error().is_none(),
+            "no field of view check on a walkthrough"
+        );
+        // The eye follows the first node after the path is edited.
+        d.draft.path[0] = Point::new(-20.0, 5.0);
+        d.sync_walkthrough();
+        assert_eq!(d.draft.position, Point::new(-20.0, 5.0));
+        assert!(
+            (d.draft.direction_deg - (Point::new(120.0, -5.0)).angle().to_degrees()).abs() < 1e-9
+        );
+        assert_eq!(d.draft.path_nodes.len(), 3);
     }
 }

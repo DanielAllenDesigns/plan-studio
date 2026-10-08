@@ -98,7 +98,7 @@ fn spell_ordinal(name: &str) -> String {
 /// The caption of a plan box. Single-floor projects keep the floor's own name
 /// (`1ST FLOOR PLAN`); multi-floor projects spell the ordinal out like Chief's
 /// layout box labels (`FIRST FLOOR PLAN`, `SECOND FLOOR PLAN`).
-fn plan_label(project: &Project, floor: usize) -> String {
+pub fn plan_label(project: &Project, floor: usize) -> String {
     let name = project.floors.get(floor).map_or("", |f| f.name.as_str());
     let name = if project.floors.len() > 1 {
         spell_ordinal(name)
@@ -122,6 +122,11 @@ fn default_label(source: &BoxSource, project: &Project) -> Option<String> {
             .to_string(),
         ),
         BoxSource::Section { .. } => Some("SECTION".to_string()),
+        BoxSource::Camera { camera_id } => Some(
+            project
+                .camera(*camera_id)
+                .map_or_else(|| "CAMERA VIEW".to_string(), |c| c.name.to_uppercase()),
+        ),
         BoxSource::CadDetail { name, .. } => Some(name.to_uppercase()),
         BoxSource::Schedule { .. }
         | BoxSource::Image { .. }
@@ -228,6 +233,29 @@ pub fn send_to_layout_auto(
 ) -> Id {
     let scale = scale.unwrap_or_else(|| fit_largest_scale(layout, cx, &source, AUTO_SCALE_CEILING));
     send_to_layout(layout, cx, page, source, scale, at)
+}
+
+/// Sends the 2D view of camera `camera_id` to page `page` as a
+/// [`BoxSource::Camera`] box (the "Send to Layout" of a 3D view). With `scale`
+/// `None` the largest scale that fits is used, as in [`send_to_layout_auto`].
+/// `None` is returned when the project has no such camera. The drawing itself
+/// comes from the context's `camera_drawing` hook when the box is drawn.
+pub fn send_camera_to_layout(
+    layout: &mut Layout,
+    cx: &LayoutRenderContext,
+    page: u32,
+    camera_id: Id,
+    scale: Option<Scale>,
+) -> Option<Id> {
+    cx.project.camera(camera_id)?;
+    Some(send_to_layout_auto(
+        layout,
+        cx,
+        page,
+        BoxSource::Camera { camera_id },
+        scale,
+        None,
+    ))
 }
 
 fn page_text(layout: &mut Layout, page: u32, text: &str, height_in: f64, x: f64, y: f64) {

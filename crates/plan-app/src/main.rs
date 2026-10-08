@@ -14,6 +14,7 @@ mod menus;
 mod paths;
 mod plan_defaults;
 mod shell;
+mod templates;
 mod theme;
 mod toolbar;
 mod tools;
@@ -282,7 +283,8 @@ impl PlanApp {
             | Action::WindowSchedule
             | Action::RoomSchedule
             | Action::WallSchedule
-            | Action::CreateConstructionSet => dialogs::build_tools::dispatch(&mut self.cx, action),
+            | Action::CreateConstructionSet
+            | Action::FileNewLayout => dialogs::build_tools::dispatch(&mut self.cx, action),
             Action::OpenHotkeyDialog => self.docks.open_hotkey_dialog(&self.hotkeys),
             Action::OpenLayerDisplay => self.docks.open_layer_dialog(),
             Action::View3d(c) => {
@@ -445,9 +447,9 @@ impl PlanApp {
         };
     }
 
-    /// File > Templates > Import Chief Template...: seeds the defaults (wall
-    /// types, layers, layer sets, text and dimension styles) from a Chief
-    /// `.plan` / `.tpl` file and keeps them as your template.
+    /// File > Templates > Import Chief Template...: picks a Chief `.plan` /
+    /// `.tpl` / `.layout`, then the Import Chief Template window shows what
+    /// was decoded and offers to import it or make it the default template.
     fn import_chief_template(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
@@ -458,29 +460,14 @@ impl PlanApp {
         else {
             return;
         };
-        match plan_chiefplan::build_inventory(&path) {
-            Ok(inv) => {
-                let seed = plan_chiefplan::seed_defaults(&inv, self.cx.defaults.clone());
-                self.cx.defaults = seed.defaults.clone();
-                let saved = plan_defaults::save_user(&self.cx.defaults);
-                self.cx.status = format!(
-                    "Imported {}: {} wall types, {} layers added{}",
-                    path.display(),
-                    seed.added_wall_types.len(),
-                    seed.added_layers.len(),
-                    match saved {
-                        Ok(_) => String::new(),
-                        Err(e) => format!(" (could not save your template: {e})"),
-                    }
-                );
-            }
-            Err(e) => self.cx.status = format!("Import failed: {e}"),
-        }
+        dialogs::exchange::open_chief_template(&mut self.cx, &path);
     }
 
     /// File > Templates > Reset to Chief X18 Template.
     fn reset_template(&mut self) {
-        self.cx.defaults = plan_defaults::embedded();
+        // The embedded template, seeded from the Chief plan template when
+        // that is set up.
+        self.cx.defaults = plan_defaults::template_base().0;
         // Forget the per-session edits of the default dialogs so they show
         // the template's values again.
         for key in [
@@ -1177,6 +1164,10 @@ impl PlanApp {
             }
             DefaultsEntry::TextStyles => {
                 self.lists = Some(dialogs::DefaultsList::text_styles(&self.cx));
+                None
+            }
+            DefaultsEntry::Templates => {
+                dialogs::exchange::open_templates_page();
                 None
             }
         };

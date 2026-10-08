@@ -2,7 +2,7 @@
 
 This chapter covers the parametric cabinet tools and the Library Browser that
 places symbols (fixtures, appliances, furniture, plants, lighting) into the
-plan.
+plan, including the Chief Architect catalogs it reads from your own Chief install.
 
 ## 6.1 How cabinets work
 
@@ -153,12 +153,14 @@ Open it with the Library Browser button on the view bar or `Cmd+L`. It is a dock
 
 - A **search field** with a clear button. Search is case-insensitive; every word must
   match. Ranking, best first: name (whole word, prefix, substring), then tags, then category.
-- A **category tree** with item counts. Click a category to filter. The tree has a
-  collapsed "Chief catalogs" node that says "Connect Chief catalogs (plan-calib) - coming".
+- A **category tree** with item counts. Click a category to filter. Below the built-in tree sit
+  the **Chief Architect catalogs** (6.6): the "Use Chief Architect catalogs" check box, a
+  "Catalog folders..." button and four collapsed nodes.
 - A **result list** of up to 200 rows, each with a small drawing of the item's 2D symbol, its
   name and its size (for example `30 x 28 in`).
 - The line "Active item: ..." shows what a click in the plan will place.
-- A right-click menu on a result with Open Object and Add to User Library (both "coming").
+- A right-click menu on a built-in result with Open Object and Add to User Library (both "coming").
+  Chief rows have a working Open Object (6.6).
 
 ### Built-in catalogs
 
@@ -202,22 +204,75 @@ Clicking a result makes it the active item and switches to the Library tool.
 | Label | Label text |
 | Components, Object Information | (disabled) |
 
-## 6.6 Chief catalogs (.calib)
+## 6.6 Chief catalogs
 
-Reading Daniel's Chief libraries (Core, Bonus, Manufacturer, User) is written but not part
-of the editor yet. The `plan-calib` crate opens `.calib` and `.calibz` files in place, lists
-categories and thumbnails, searches across catalogs, and turns objects into library items with a decoded
-size and a plan symbol projected from the object's 3D geometry (placeholder when the decode does not
-fit); see chapter 12.7 for how it works and what is and is not decoded. The Library Browser shows a
-"Chief catalogs" node that says "coming", and Library > Import Library (.calib, .calibz)... in the menu is
-dimmed (planned).
+The Library Browser reads the catalogs of your own Chief Architect install **in place**: Core, Bonus,
+Manufacturer and your User catalog. Nothing is copied into a plan or into Plan Studio (the licensing rule
+in chapter 12.7 and `DECISIONS.md`). The reader is the `plan-calib` crate (chapter 12.7 explains what it
+decodes); the Library Browser side lives in `shell/library_browser/chief_ui.rs` and
+`tools/library/chief.rs`.
 
-Two decisions apply (`DECISIONS.md`): Chief catalog content is read at runtime from the
-user's own Chief install and never copied into the repository, and our own starter symbols
-are the only library content that ships.
+### Turning it on
+
+- **Use Chief Architect catalogs** (a check box under the category tree) switches the Chief rows on or off.
+  With no saved choice it is on when Chief's standard install folder exists
+  (`/Library/Application Support/Chief Architect Premier X18`, or X17) and off otherwise. Hover text shows
+  the licence note.
+- **Catalog folders...** opens the "Chief catalog folders" window: a text field and **Browse...** for an install
+  folder that holds `Core Libraries`, `Bonus Libraries` and `Manufacturer Libraries`, a "Folder found." or
+  "Folder not found." check, **Use standard location** (clears the field) and **Apply**. Leave it empty for Chief's
+  standard location. Applying saves the choice and the status line says "Chief catalog folder saved; expand a node
+  to rescan." The program reads Chief's registry file (`Chief Library.json`) when it finds one; without it, it scans the
+  three sub-folders for `.calib` and `.calibz` files (and the folder itself for user catalogs). Your user library at
+  `~/Documents/Chief Architect Premier X18 Data/Database Libraries/User_Library.calib` is added when the file exists.
+- Both settings are saved as the `chief_catalogs` object (`enabled`, `folder`) in `~/.plan-studio/settings.json`; the
+  other keys of that file are kept.
+
+### The four nodes
+
+Under the check box are four collapsed nodes, in Chief's order: **Chief Architect Core Catalogs**, **Bonus
+Catalogs**, **Manufacturer Catalogs** and **User Catalog**, each with the number of installed catalogs in
+brackets. Catalogs that are listed in Chief's registry but not installed, and deleted entries, are left out;
+the status line under the nodes reads "n Chief catalogs found" (with "(m not installed)" when some are missing).
+
+- The **first time you expand a node** the program scans the install on a background thread ("Scanning Chief
+  catalogs..."); the window stays responsive. An empty node says "No catalogs installed."
+- Expanding a catalog loads its **category tree** and object list on another thread ("Loading...") and shows the
+  tree with object counts. Click a category (or the catalog's name) to list its objects in the results area, headed
+  by the catalog and category path with a **Show all** button and "n objects". A catalog that cannot be read says
+  "Could not read this catalog: <reason>".
+- Each object row is 54 px tall: the catalog's own **thumbnail** (decoded from its PNG, a few per frame so
+  scrolling stays smooth; objects without one show the first letter of the name), the **name** and the decoded
+  **size** (`w x d in`). Only the rows on screen are decoded.
+- The search field filters the open category by name or keyword (every word must match). Tick **Search Chief
+  catalogs** (shown while the Chief rows are on) to search every installed catalog: results appear under the
+  built-in ones as "Chief catalogs: n hits" (the first 200) with the catalog name in each row. The search starts
+  0.35 seconds after your last keystroke, on a background thread.
+
+### Placing, Open Object and Replace From Library
+
+- **Click a row** to make it the active item and switch to the Library tool; click in the plan to place it, as in
+  6.5 (wall-mounted rotation, handles, Symbol Specification). The first click reads the object from the catalog and
+  bridges it into a library item with the id `chief.<catalog-uuid>.<object id>`. The plan stores only that id;
+  after you reopen it the item is read from the catalog again the first time it is needed.
+- **Right-click a row > Open Object** opens a window with the Name, Category, Keywords, Size (width x depth x height
+  in inches, or "not decoded"), Source catalog and the licence note.
+- **Symbol Specification** for a Chief symbol shows its **Source catalog** and the licence note, and **Replace From
+  Library** works as for built-in items: pick an item in the Library Browser, then press the button; position, angle
+  and size stay.
+- **3D**: a placed Chief symbol is drawn with the object's decoded meshes fitted to the symbol. When the decoded
+  geometry is missing or partial (its height is under 60% of the object's size) the symbol shows as a box, and the
+  status bar says once "3D: n Chief objects have only partial geometry and show as a box". When the catalog is not
+  available (the folder moved, or the check box is off) the symbol is not drawn in 3D. Built-in symbols show as boxes in 3D too.
+
+What is not decoded yet (partial or missing meshes, placeholder plan symbols, zero elevation) is listed in
+chapter 12.7. Library > Import Library (.calib, .calibz)... in the menu is still dimmed (planned), as are Add to
+User Library and the other Library menu items.
 
 ## 6.7 Differences from Chief
 
-- 2D symbols only; no 3D models for fixtures and furniture.
-- No manufacturer catalogs, user library folder, or Add to Library.
+- Built-in symbols are 2D drawings with a box in 3D. Chief catalog objects show their decoded 3D meshes, but a
+  fraction of them decode only partially and fall back to a box (6.6).
+- Chief catalogs are read, never written: no Add to User Library, no Import Library, no editing of a catalog.
+- Search filters are name and keyword only.
 - No cabinet-to-appliance insertion, joined countertops or fillers yet.

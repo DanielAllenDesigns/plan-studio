@@ -9,7 +9,9 @@ milestone. See [ROADMAP.md](ROADMAP.md) for where this is going and
 [docs/chief-x18-ui-notes.md](docs/chief-x18-ui-notes.md) for the UI study the
 design is based on.
 
-![Plan Studio phase 0: walls, a door, a window and an auto-detected room](docs/screenshot-phase0.jpg)
+![Plan Studio with Chief-style toolbars, menus and the Low Glare theme](docs/screenshot-chief-toolbars.jpg)
+
+Earlier milestone: [phase 0 screenshot](docs/screenshot-phase0.jpg).
 
 ## Why
 

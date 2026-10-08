@@ -2,11 +2,14 @@
 //! real egui key path (`D, H` hinged door, `-` zoom in, `2` `3` `4`
 //! aliases, `Cmd+Z` undo, floor up / down), and what the actions do.
 
-use super::{draw_shell, Sim};
+#[cfg(target_os = "macos")]
+use super::draw_shell;
+use super::Sim;
 use crate::shell::hotkeys::{self, Chord, HotkeyMap, HotkeyState};
 use crate::toolbar::{Action, SEQUENCE_TIMEOUT};
 use crate::tools::ToolId;
 use eframe::egui::{self, Key, Modifiers};
+#[cfg(target_os = "macos")]
 use plan_core::WallKind;
 use std::time::{Duration, Instant};
 

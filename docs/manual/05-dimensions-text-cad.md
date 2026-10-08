@@ -201,10 +201,10 @@ Double-click a line, polyline, circle or arc. One dialog serves all of them.
 | Layer | Manual or Automatic dimension layer. |
 | Label | Value Text: type a replacement for the measured value. |
 
-The Dimension Defaults sets (1/4" Scale, 1/8" Scale, Electrical, Framing ...) are
-(planned); the template's 1/4" Scale set (smallest fraction 1/8, diagonal fractions) is
-what every dimension uses. Edit > Default Settings > Dimension is listed but not
-openable yet.
+The Dimension Defaults sets (1/4" Scale, 1/8" Scale, Electrical, Framing ...) are kept in the plan
+defaults and edited from Edit > Default Settings > Dimension > Dimensions (5.9). The set marked
+Currently Active (the template's 1/4" Scale set in Daniel's: smallest fraction 1/8, diagonal
+fractions) is what dimensions use.
 
 ## 5.8 Dialog: Text Specification
 
@@ -213,3 +213,43 @@ openable yet.
 | Text | The text, Angle, Position (lower left X and Y), Text Height. |
 | Appearance | Font family, Bold, Italic, Underline, Alignment (Left, Center, Right), Border, Background Fill. All disabled until the model stores them. |
 | Layer | The layer, editable. |
+
+## 5.9 Default Settings: Dimensions and Text Styles
+
+### Saved Dimension Defaults
+
+Edit > Default Settings... > Dimension > **Dimensions** opens **Saved Dimension Defaults**: the dimension sets
+of the template.
+
+- **Currently Active** is a combo of the set names; the active set is the one new dimensions and the auto
+  dimension tools use, and the list marks it "(active)".
+- Click a row to select it. **Edit...** (or double-click) opens the set, **Copy** adds "<name> Copy" (made unique)
+  below it, **Rename...** asks for a name, **Delete** removes it. Names must be filled in and unique. The active
+  set cannot be deleted ("Make another set active before deleting this one") and the last set stays.
+- OK saves the draft into the defaults ("Saved the dimension defaults"); Cancel or Escape drops it.
+
+**Dimension Defaults - <name>** is a five-tab editor with a preview that draws a sample dimension (12'-6 1/2")
+in the set's format. A length field turns red when it does not parse and OK is blocked ("Fix the highlighted field").
+
+| Tab | Fields |
+|---|---|
+| Primary Format | Units (Feet and Inches, Inches, Decimal Feet, Millimeters, Centimeters, Meters), Smallest Fraction (1/2 to 1/64), Fraction Style (Diagonal, Horizontal, Stacked), Decimal Places (0 to 6), Unit Indicators, Trailing Zeroes |
+| Setup Automatic | Exterior Offset, Line Separation, Locate Openings at Centers |
+| Extensions | Gap from Object, Extend Past Dimension Line |
+| Arrow | Arrow Size, Leader Style (Square Corner, Round Corner, Diagonal) |
+| Text Style | Text Above Dimension Line, Fraction Text Size (25 to 100 %) |
+
+### Text Styles
+
+Edit > Default Settings... > Text > **Text Styles** edits named text styles for two places, chosen by the
+**Edit styles of** radios: **This plan** (the open plan's styles, one undo step, "Text Styles") and **New-plan
+defaults** (what plans start from).
+
+- The list is on the left. The form on the right has Name, Font (Arial, Helvetica, Times New Roman, Courier
+  New, Verdana, Georgia, Calibri), Height (0.25" to 96"), Style (Bold, Italic, Underline), Color, and Size
+  ("Follows the drawing scale"). **New** adds a style, **Copy** duplicates the selected one, **Delete** removes it.
+- Names must be filled in and unique. "Default Text Style" can be neither renamed nor deleted.
+- Renaming a style in the plan renames it on the layers that used it. OK applies both lists ("Saved the text
+  styles"); Cancel or Escape drops the changes.
+- The styles are stored with the plan, and a layer's Text Style property refers to one by name. The Text
+  Specification's Appearance tab is still disabled (5.8).

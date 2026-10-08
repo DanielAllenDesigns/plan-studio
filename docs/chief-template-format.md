@@ -241,7 +241,156 @@ Note: the project's dialog notes say the Text, Layout, Plan, and Schedules dialo
 
 ## 6. Open questions
 
-- Exact field layout of layer records and text style records (requires Phase B).
-- Meaning of the four header offset fields. The hypothesis is an index into the tail resource table, but this is not confirmed.
+Answered by section 7 (Phase C): the field layout of wall type records and text style records; where wall layer stacks live; why the stack search of Phase B found nothing (the thickness values sit 518 bytes apart, one per layer record, so no run of adjacent `f64`s exists).
+
+Still open:
+
+- Meaning of the four header offset fields. The hypothesis is an index into the tail resource table, but this is not confirmed (`offsets[0]` is the resource table start and `offsets[3]` is EOF - 1; `[1]` and `[2]` are not decoded).
 - Whether the X18 application writes the same body format as the x17 template (the template is dated 2025-08-20, and the app is X18). Confirm by diffing against a plan saved from X18 once one exists.
 - Whether the `Walls, Default Fill Color` and `Dimensions, *` repeated blocks correspond to saved plan views or to layer sets. Confirm with Phase B.
+- The unknowns listed at the end of section 7.
+
+---
+
+---
+
+## 7. Phase C: the object stream (typed decoding)
+
+Implemented in `crates/plan-chiefplan/src/decode.rs`; run with `cargo run --release -p plan-chiefplan --example summary -- <file>` (add `--json` for the whole summary). Numbers below are from `x17 Working Template 2025-08-20.plan` unless a layout is named. Confidence words: **High** = value matches an independent check (Chief's dialog, the UI capture in `plan-core`, or an obvious invariant such as a sum), **Medium** = consistent across all samples but the role is inferred, **Low** = pattern only.
+
+### 7.1 Objects
+
+Most template content is a stream of objects. Marker and header:
+
+```
+[01] CD AB <class u8> <version u8> <size u32 LE> <payload ...>
+```
+
+`size` counts its own four bytes, so an object spans `[size_pos, size_pos + size)` and the next sibling starts right there (verified on the first `Drywall` material: `size` 0x244 ends exactly at the next `01 CD AB 39`). The byte before `CD` is 1 for most top-level objects and other values when the object is nested. Objects nest (a wall type sits inside a wrapper, a material list component inside a room type), so scanning for `CD AB` and bounds-checking `size` gives a flat list that is good enough. A few `CD AB` byte pairs are chance matches with absurd sizes (for example class 169 with size 3.4 billion) and are dropped by the bounds check.
+
+Strings inside payloads: `u32` length, bytes, **one NUL**, so `08 00 00 00 "Stucco-6" 00`. Doubles are `f64` LE, unaligned. Lengths are inches. 16-byte blobs are GUIDs.
+
+Counts (plausible objects): x17 plan 4,578; default layout 810. Classes the decoders read (class, version, count in the x17 plan / default layout):
+
+| Class | Version | Meaning | Plan | Layout |
+|---|---|---|---|---|
+| 57 (0x39) | 0 | material | 550 | 112 |
+| 215 (0xD7) | 0 | wall type | 103 | 24 |
+| 139 (0x8B) | 0 | text style | 15 | 7 |
+| 129 (0x81) | 0 | dimension default set | 14 | 1 |
+| 64 (0x40) | 1 | rich text defaults (plus 2 later copies with other values) | 15 | 1 |
+| 23 (0x17) | 0 | room type | 54 | 28 |
+
+All 26 templates decode without a failure (`phase_c_every_template_summarizes`): wall types 22 to 104 per file, text styles 7 to 15.
+
+### 7.2 Materials (class 57) - High for id and name, Medium for colour
+
+Inside the payload, after a copyright string, a category, a GUID and a name, comes `[id u16][u16][R G B][FF 88 13 00 00]`. `88 13 00 00` (5000) is the same in every sample, which makes `FF 88 13 00 00` a reliable anchor: `id` is the `u16` 7 bytes before it, the colour the 3 bytes before it, and the name is the string that ends one NUL before the id. 550 materials in the plan, 550 distinct ids, 146 with a name (the rest are unnamed colour-palette swatches). Every id used by a wall layer resolves. Samples: 35 `Drywall`, 46 `Fire Rated Drywall`, 156 `Sand Finish - Eggshell`, 165 `Fir Stud 16" OC`, 166 `Housewrap`, 167 `OSB-Hrz`, 168 `Fir Stud 16" OC, Yellow` (the 2x4 stud), 169 `Fir Stud 16" OC, Teal` (the 2x6 stud), 171 `Concrete`, 172 `Lap Siding`, 354 `Timber Bark`. Daniel colour-codes studs by size: yellow for 3 1/2", teal for 5 1/2".
+
+### 7.3 Wall types (class 215) - High
+
+Payload: `<name string>` (with its NUL), then the record count `N` (`u32`), then `N` records of **518 bytes**. The last record is a sentinel (thickness 0, material 35); the first `N - 1` are the layers, exterior face first. 103 wall types; none repeats a name. Method: the three siding types `Siding-4/-6/-8` have byte-identical bodies apart from GUIDs and one `f64` (3.5, 5.5, 7.49) at the stud layer; correlating that `f64` with the number in the name found the thickness, and the same offset gave plausible values for all 103 types.
+
+Layer record (offsets from the record start):
+
+| Offset | Field | Confidence |
+|---|---|---|
+| +0x00 | thickness, `f64`, inches | High (3.5 / 5.5 for 2x4 / 2x6 studs, 0.5 drywall, 0.01 housewrap) |
+| +0x08 | material id, `u32` | High (resolves in the material table for every layer) |
+| +0x0C | `i32`: 1, -1, -65535, 10, ... | unknown |
+| +0x10 | `u32`: 0 or 1 | unknown |
+| +0x15 | main layer flag, `u8` | High: set on exactly the stud layer of `Stucco-6`, `Siding-6`, `Brick-6`, `Interior-4`, `Interior-6`; on the concrete or CMU core of foundation types; on all three structural layers of `SIP` and both studs of `Interior-4, Double` |
+| +0x16 | framing flag, `u8` | Medium: set on stud layers of exterior types and on `1 1/2"` furring studs; clear on `Interior-4` studs |
+| +0x17 | `u8` set on `Insulation  Air Gap`, `Opening (no material)`, `Room Divider` layers | Low |
+| +0x18 | `f64` module/spacing: 16 or 24 on studs, 96 on sheet goods, 7 or 8 on siding and brick, 16 on CMU, 0 on stucco | Medium |
+| +0x2A | 16-byte GUID of the layer (it also appears again in the material list data of the same wall wrapper) | Medium |
+| +0x3B, +0x43 | two `f64` 4.0 in every layer | unknown |
+| +0x12E.. | pairs of 144.0 / 96.0 and 9.25 / 1.5 / 5.5 (texture and framing sizes) | unknown |
+
+Validation: `Stucco-6` = 1.125 + 0.01 + 0.5 + 5.5 + 0.5 = **7.635"**, which Chief displays as 7 5/8" (the `plan-core` capture holds 7.625"). `Siding-6` = 7.01", `Interior-4` = 4.5", `Frame-3 1/2` = 3.5", `Footing-16` = 16", `8" CMU (block) Stem Wall` = 7.625". `Stucco-6` layers, exterior to interior: `Sand Finish - Eggshell` 1.125, `Housewrap` 0.01, `OSB-Hrz` 0.5, `Fir Stud 16" OC, Teal` 5.5 (main), `Drywall` 0.5.
+
+The 108 wall type *names* of Phase A include five names that have no definition object: `Siding-6, Copy`, `Interior-6, Copy`, `Demolition-6, Copy`, `12" CMU (block) Stem Wall, Copy` and the material names `Fire Rated Drywall` and `Log Siding` (and the stray `stone-6,`). They come from pick lists. The default layout's 24 wall types decode the same way but use older material names (`sheetrock`, `fir stud 16" OC`, `stucco`) and a different stack for `Stucco-6` (stucco 1.125, sheathing 0.625, stud 5.5, sheetrock 0.5 = 7.75").
+
+### 7.4 Text styles (class 139) - High for font, style, height and name
+
+Payload: `height f64` | `font string` | `font style string` | 12 flag bytes | `name string` | `u8` | 16-byte GUID (the last 16 bytes of the object). 15 styles in the x17 plan (Phase A names found 12; `Room Label Style, Small`, `Square Footage` and `Room Label Style 2` were missed by its suffix rules):
+
+| Name | Font | Style | Height (plan inches) |
+|---|---|---|---|
+| `Default Label Style` | Avenir | Book | 2.25 |
+| `Room Label Style` | Avenir | Heavy | 8 |
+| `1/4" Text Style` | Avenir | Book | 4.5 |
+| `1/2" Text Style` | Avenir | Book | 2.25 |
+| `1/8" Text Style` | Avenir | Book | 9 |
+| `1" Text Style` | Avenir | Book | 1.125 |
+| `3/16" Text Style` | Avenir | Book | 3.375 |
+| `Default Text Style` | Avenir | Book | 4.5 |
+| `Plot Plan Text Style` / `SF Plan Text Style` | Avenir | Book | 18 |
+| `Schedule Style` | Avenir | Book | 4.5 |
+| `Window Label Style` | Avenir | Book | 3 |
+| `Room Label Style, Small` | Avenir | Heavy | 6 |
+| `Room Label Style 2` | Avenir | Heavy | 8 |
+| `Square Footage` | Avenir | Book | 16 |
+
+The height is the plan size that prints 3/32" tall at the style's scale (4.5" at 1/4" scale, 9" at 1/8", 1.125" at 1"). `Heavy` is bold (weight byte 0x11 against 0x10). The other flag bytes vary (0 or 1 at flag +3 and +4) with no pattern against the names: unknown (transparent background or fill are guesses). Italic and underline never occur. **Text colour is not in this object** (None). The stock templates differ: `Residential Template.plan` has `Chief Blueprint` 6" for `Default Text Style` and `1/4" Text Style`. The x15 working template has the same 15 styles as x17.
+
+Layout (7 styles): `Layout Text Style` Avenir Heavy 0.25, `CAD Text Style` Arial 0.25, `Dimension Text Style` Arial Narrow 0.125, `Callout Text Style` and `Marker Text Style` Chief Blueprint 0.125, `Default Text Style` Avenir Book 0.1875, `Room Label Style` Arial 0.125 (layout heights are paper inches).
+
+### 7.5 Rich text defaults (class 64, version 1) - High
+
+Settings are stored as strings: name, font, optional style, size, text colour hex, background hex, a 32-digit flag string. Every set in the x17 plan: font Avenir Book (Chief Blueprint with no style for `Framing Rich Text Defaults, Ceiling` / `, Roof` and `Kitchen and Bath`), size `0.166666666666667` (1/6"), text colour `004080` (0, 64, 128), background `ffffff`. Exception: `Foundation Rich Text Defaults` is `000000`. 15 sets. Two later copies of `1/4" Scale Rich Text Defaults` (Avenir Heavy 1.5, `000000`) belong to another structure and are ignored by the decoder (first occurrence wins).
+
+### 7.6 Dimension defaults (class 129) - High for the 1/4" set, Medium for the role names
+
+Fields are located from two anchors: the end of the name (arrow size, number format) and the `Avenir`/`Arial` font string that follows the text height (everything else). With the `1/4" Scale` set (name length 29) the absolute payload offsets are given in parentheses.
+
+| Field | Anchor and offset | 1/4" | 1/2" | 1/8" | 1" |
+|---|---|---|---|---|---|
+| arrow size (`f64`) | name end + 0x29 (0x4B) | 2.25 | 1.125 | 4.5 | 0.75 |
+| decimal places (`u32`) | name end + 0x3B (0x5D) | 4 | 4 | 4 | 4 |
+| smallest fraction (`u32`) | name end + 0x3F (0x61) | 8 | 8 | 8 | 16 |
+| fraction text size % (`u32`) | name end + 0x9E (0xC0) | 60 | 60 | 60 | invalid |
+| text height (`f64`) | font - 8 (0x1B9) | 4.5 | 2.25 | 9 | 1.125 |
+| text style | 16-byte GUID at font + 0x1E, matched to a text style's GUID | `1/4" Text Style` | `1/2" Text Style` | `1/8" Text Style` | `1" Text Style` |
+| extension: length away | font + 0x32 | 3 | 1.5 | 6 | 0.75 |
+| extension: fixed gap | font + 0x3A | 3 | 1.5 | 6 | 0.75 |
+| extension: length towards | font + 0x42 | 3 | 3 | 3 | 3 |
+| fixed proximity | font + 0x4B | 12 | 12 | 12 | 12 |
+| line separation | font + 0x54 | 18 | 12 | 24 | 6 |
+| reach | font + 0x5C | 24 | 24 | 36 | 12 |
+| baseline separation | font + 0x64 | 18 | 12 | 24 | 6 |
+| 1st line offset | font + 0x6C | 32 | 18 | 42 | 9 |
+| exterior reach | font + 0x1C4 (0x385) | 240 | 192 | 192 | 192 |
+
+The 1/4" values equal Daniel's UI capture (`plan-core` `PlanDefaults`): smallest fraction 8, fraction text 60%, arrow 2.25", extension 3" / 3", 1st line offset 32", line separation 18", reach 240" (checked by a unit test and `phase_c_text_styles_and_dimension_defaults`). The scale sets scale with the drawing scale (a 3" extension at 1/4" is 1.5" at 1/2" and 6" at 1/8").
+
+The 14 sets resolve their text style as: `Plot Plan` to `Plot Plan Text Style`; the four scale sets as above; `NKBA` and `Kitchen and Bath` to `1/2" Text Style`; `Foundation` to `Default Text Style`. `Electrical`, `Framing`, `HVAC`, `Roof`, `Structural Steel` and `Legacy NKBA` have no style match (older layout); their extension, offset and separation fields past the first few read as zeros and are returned as `None`. `NKBA`, `Kitchen and Bath` and `1"` have a format block of a different shape: the fraction text size is out of range there and is reported `None`. The set count is 14 (Phase A listed the same 14 names).
+
+Not decoded: **arrow style** (the dialog shows `tick`; a `u32` near name end + 0x15 holds 8, 7, 12, 6, 15 across sets with no match to arrow size, so it is not used), leader style, text position, rounding method, unit labels beyond the strings `ft` and `in` (present in every set), layer. Layout: the single `Layout Dimensions` set reads arrow 0.125, decimal places 6, smallest fraction 16, fraction text 100%.
+
+### 7.7 Default heights (class 23 room types) - Medium
+
+Every full room type definition (53 of 54 in the x17 plan, 7 in each stock plan template) holds an `f64` multiple of 1/8" between 90 and 150 inches at 0x276 to 0x27D from the start of the size field (it moves with the name length). In Daniel's plan it is **109.125** (109 1/8") in all 53. The stock `Residential Template.plan`, `Interior Template.plan` and `x15 Working Template` hold **96.0**, so this is a ceiling-height default that Daniel changed. Nine bytes later the same object has a second `f64` whose value depends on the room type: 23.25 (33 types), 83.375 (13: decks and similar), 84.875 (4: slab and garage types), 4.0 (3: basement and crawl space). Role unknown.
+
+**Not found**: floor-to-floor height, foundation height, rough ceiling, stem wall height, floor and ceiling structure thicknesses. The object that holds the per-floor defaults was not identified. 109.125 does not occur anywhere else as an `f64` (whole file: 55 hits, 53 in room types and 2 inside a bogus object), so no separate wall-height default carries it. `108.0` occurs 4 times, in unrelated objects.
+
+### 7.8 Default materials and colours - partly found
+
+* The material table (7.2) holds all material colours (`Drywall` (239, 233, 218) and so on).
+* Default exterior wall type `Stucco-6` (named in `docs/daniel-chief-setup.md`): exterior finish `Sand Finish - Eggshell`, framing `Fir Stud 16" OC, Teal`, interior finish `Drywall`. Default interior wall type `Interior-4`: finish `Drywall`, framing `Fir Stud 16" OC, Yellow`. These come from the decoded wall stacks (`TemplateSummary::default_materials`).
+* **Roof and floor finish names were not found.** Room types and roof defaults refer to materials some other way than the material id or GUID (the id 161 `Shasta White` and the GUIDs of `Shasta White`, `Foam Underlayment` and `Color - Bone` do not appear in the room type objects). Not decoded.
+
+### 7.9 Sheet size and the layout template
+
+* **Plan**: the sheet is stored in numbers just before the name. For `ARCH C  (18" x 24")` (the double space is in the file) the preceding bytes are, in order: `f64` 0.1667, `f64` 0.1667 (margins), `f64` 23.8333, `f64` 17.8333 (printable area, landscape), `f64` 18.0, `f64` 24.0 (paper, portrait), one NUL byte, then the name (offset 0x1483). High. The same shape exists in the x15, Residential, Commercial and Interior plans.
+* **Layout** `18x24 PRESENTATION LAYOUT TEMPLATE.layout`: **the 18 x 24 is not stored as numbers anywhere.** The only sheet-size entry is `ANSI B  (11" x 17")` with paper `f64`s (11.0, 17.0) before it (same NUL-byte shape; offset 0x27B1), preceded by a `US Letter` entry (215.9 x 279.4 mm) and the printer `EPSON_WF_7610_Series`. 18 x 24 is only in the file name. Searched: no `f64` 18.0 followed by 24.0 (or 24.0 / 18.0, or as `f32`) outside material texture sizes.
+* **Pages and boxes**: no layout page or box objects were identified. The file body is the shared object stream (materials, wall types, styles, defaults), the project-information field names, and, after a path string at 0x18F4D7, an embedded JPEG of 669,454 bytes (start 0x18F571, end 0x232C7F exclusive; the firm logo) followed by one small object named `Page Template` (class 0x19C) and the resource table. So the template holds **0 pages** with Low confidence that this is complete (the box objects may use a class this survey never saw) and **no layout box scales**. The four "layout page" names of Phase A (`Layout Dimensions`, `Layout Box Labels`, `Layout Box Borders`, `Page Template`) are styles and layer-like names, not pages.
+* **Title block text**: the macros are plain strings (offsets in the layout): `Floor Finish - %floor.name%` (0x343FF), `Ceiling Finish - %floor.name%`, `Top of Subfloor - %floor.name%`, `Rough Ceiling - %floor.name%`, `%room.name%`, `%simple_schedule_number%` (0x60CD0). The project block is a list of field names from `Project` (0x975DC) through the client's `Country/Region`: Project, Project Name, Street, City, State/Province, Zip/Postal Code, Country/Region, APN, Property Zone, Occupancy Group, Construction Type, Designer (Name, Company Name, Phone Number 1/2, Cell Phone Number, Fax Number, Web Site, E-mail Address, address), Client (same fields). **Positions of text on a page are not stored** in this template.
+
+### 7.10 Unknowns, in one place
+
+* Text colour and the 12 text style flag bytes; arrow style; leader style; any dimension field not in the 7.6 table.
+* Layer record: `i32` at +0x0C, `u32` at +0x10, the two `4.0` doubles at +0x3B/+0x43, everything after +0x12E.
+* Floor, foundation, rough ceiling and stem wall heights; the second room-type `f64` (23.25 and friends); roof and floor finish materials.
+* Layout page, box, scale and title block geometry; the `Page Template` object's contents.
+* Material categories (the strings before the name), material textures (referenced by GUID in the tail table) and the 404 unnamed materials.

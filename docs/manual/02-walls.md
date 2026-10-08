@@ -242,7 +242,7 @@ does not parse.
     opening would no longer fit.
   - Wall Angle rotates the wall about its start point. Joined walls are not moved.
   - Length, angle and lock are disabled in the Default Settings dialog.
-- **Options**: Invisible, No Room Definition, No Locate (session only: see 2.9);
+- **Options**: Invisible, No Room Definition, No Locate (stored on the wall, see 2.9; disabled in the Default Settings dialog);
   Lock Center, No Room Moldings Exterior, No Room Moldings Interior, Automatically
   Generated Wall, Ignored by Hide Exterior Walls (disabled).
 - **Curved Wall** (disabled): Radius to Outer Surface / Main Layer Outside; Lock
@@ -308,12 +308,11 @@ edits the same values.
 
 ## 2.9 What the dialog stores and what it does not
 
-- **Stored with the plan**: thickness, height, kind, wall type, layer, and
-  the position of the wall.
-- **Session only**: Invisible, No Room Definition, No Locate, the Label tab. The
-  plan-core model has real `invisible`, `no_room_definition` and `no_locate` flags
-  and room detection honors them, but the checkboxes in this dialog do not
-  write them yet. Tools that create walls themselves (the Auto Stairwell) do set the real flags.
+- **Stored with the plan**: thickness, height, kind, wall type, layer, the
+  position of the wall, and the **Invisible**, **No Room Definition** and **No Locate**
+  options (the wall's `flags`). Room detection, drawing and dimensions honor them, and
+  the Auto Stairwell sets the same flags on the walls it creates.
+- **Session only**: the Label tab.
 - **Model ready, no UI**: pony walls, curved walls, railing, half-wall and
   foundation flags, per-wall roof directives (set with the Gable/Roof Line tool,
   chapter 8).

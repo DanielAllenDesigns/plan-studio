@@ -13,10 +13,28 @@
 //! See the crate README for the algorithm (a weighted straight skeleton) and
 //! its limits.
 
+mod ceiling;
+mod dormer;
 mod footprint;
+mod gable;
+mod geom;
+mod hole;
 mod skeleton;
+mod spec;
 
+pub use ceiling::{ceiling_planes_for_vaulted_room, CeilingPlane};
+pub use dormer::{
+    auto_dormer, explode_dormer, Dormer, DormerKind, DormerSpec, DormerWall, ExplodedDormer,
+    WindowOpening,
+};
 pub use footprint::footprint_from_walls;
+pub use gable::{
+    apply_gable_line, roof_return, roof_return_at, ReturnKind, ReturnSpec, RoofReturn,
+};
+pub use hole::{
+    roof_plane_with_holes, HoleKind, RoofHole, RoofPolygonWithHoles, Skylight, SkylightSpec,
+};
+pub use spec::{build_roof_with_specs, EdgeRoofSpec};
 
 use plan_core::geometry::polygon_area;
 use plan_core::Point;
@@ -113,6 +131,22 @@ impl RoofPlane {
         } else {
             [s[0] / len, s[1] / len, s[2] / len]
         }
+    }
+
+    /// Elevation of the plane above the plan point `p` (inches), or `None` for
+    /// a vertical or degenerate plane.
+    pub fn height_at(&self, p: Point) -> Option<f64> {
+        let n = self.normal();
+        if n[1] < 1e-9 {
+            return None;
+        }
+        let o = *self.polygon3d.first()?;
+        Some(o[1] - (n[0] * (p.x - o[0]) + n[2] * (-p.y - o[2])) / n[1])
+    }
+
+    /// The plane's outline in plan coordinates (counter-clockwise).
+    pub fn plan_polygon(&self) -> Vec<Point> {
+        self.polygon3d.iter().map(|&p| geom::to_plan(p)).collect()
     }
 
     /// Height of the plane's highest point above its lowest (the eave), inches.

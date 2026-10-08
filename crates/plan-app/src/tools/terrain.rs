@@ -17,8 +17,8 @@
 //! shown, Esc cancels. Delete removes the element under the pointer; a
 //! double-click outside a drawing opens the Terrain Specification.
 //!
-//! The terrain lives in `floor.cad` through `editor::site_view` (TODO:
-//! plan-core field); `site_view::draw_site` draws it.
+//! The terrain lives in `Project.terrain` through `editor::site_view`;
+//! `site_view::draw_site` draws it.
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::terrain::TerrainDialog;
@@ -1027,11 +1027,13 @@ mod tests {
         assert_eq!(back, record(&cx));
         assert_eq!(back.terrain.elevation_points.len(), 4);
         assert!(back.built);
-        // One record only, hidden from the plan.
-        assert_eq!(project.floors[0].cad.len(), 1);
-        assert!(!project
+        // Stored in the project's typed slot, not as a CAD record.
+        assert!(project.terrain.is_some());
+        assert!(project.floors[0].cad.is_empty());
+        assert!(project
             .layers
-            .is_visible(crate::editor::site_view::TERRAIN_DATA_LAYER));
+            .get(crate::editor::site_view::TERRAIN_DATA_LAYER)
+            .is_none());
     }
 
     #[test]

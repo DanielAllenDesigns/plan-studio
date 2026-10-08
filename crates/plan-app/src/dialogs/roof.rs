@@ -1,5 +1,6 @@
-//! The Build Roof dialog (RF-1, RF-2) and the Roof Plane Specification
-//! (RF-36), on the shared dialog frame.
+//! The Build Roof dialog (RF-1, RF-2), the Roof Plane Specification (RF-36,
+//! with its holes list and Build Roof edge fields) and the Dormer
+//! Specification (RF-48), on the shared dialog frame.
 //!
 //! Both edit a cloned draft; OK hands it back through `draft()`.
 
@@ -11,6 +12,7 @@ use super::{
 };
 use crate::editor::roof_view::{pitch_label, RoofPlaneRecord, RoofSettings, ROOF_MATERIALS};
 use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Stroke, Ui};
+use plan_roof::{DormerKind, DormerSpec};
 
 const MIN_PITCH: f64 = 0.5;
 const MAX_PITCH: f64 = 24.0;
@@ -175,6 +177,8 @@ impl BuildRoofDialog {
 
 const PLANE_TABS: &[Tab] = &[
     on("General"),
+    on("Holes"),
+    on("Build Roof Edge"),
     on("Options"),
     on("Materials"),
     on("Layer"),
@@ -185,6 +189,80 @@ struct PlanePages {
     draft: RoofPlaneRecord,
     layers: Vec<String>,
     fields: Fields,
+}
+
+impl PlanePages {
+    /// The holes and skylights of the plane: sizes, skylight construction,
+    /// and a Delete button each.
+    fn holes_page(&mut self, ui: &mut Ui) {
+        section(ui, "Holes and Skylights");
+        if self.draft.holes.is_empty() {
+            ui.weak("This plane has no holes. Use the Roof Hole and Skylight tools.");
+            return;
+        }
+        let mut remove = None;
+        for (i, h) in self.draft.holes.iter_mut().enumerate() {
+            let (w, l) = h.size();
+            ui.horizontal(|ui| {
+                ui.strong(if h.is_skylight() { "Skylight" } else { "Hole" });
+                ui.label(format!("{} x {}", fmt_short(w), fmt_short(l)));
+                if ui.button("Delete").clicked() {
+                    remove = Some(i);
+                }
+            });
+            if let Some(spec) = &mut h.skylight {
+                for (label, value, max) in [
+                    ("Curb Height", &mut spec.curb_height, 48.0),
+                    ("Glass Thickness", &mut spec.glass_thickness, 6.0),
+                    ("Frame Width", &mut spec.frame_width, 12.0),
+                ] {
+                    row(ui, label, |ui| {
+                        ui.add(
+                            egui::DragValue::new(value)
+                                .range(0.25..=max)
+                                .speed(0.1)
+                                .suffix(" in"),
+                        );
+                    });
+                }
+            }
+            ui.add_space(4.0);
+        }
+        if let Some(i) = remove {
+            self.draft.holes.remove(i);
+        }
+    }
+
+    /// The Build Roof overrides of the edge this plane rises from.
+    fn edge_page(&mut self, ui: &mut Ui) {
+        section(ui, "Edge (used by Build Roof)");
+        if self.draft.source.is_none() {
+            ui.weak("Only planes made by Build Roof rise from a wall edge.");
+            return;
+        }
+        let mut pitch_on = self.draft.edge.pitch.is_some();
+        let mut pitch = self.draft.edge.pitch.unwrap_or(self.draft.pitch);
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut pitch_on, "Pitch");
+            pitch_row(ui, "", &mut pitch);
+        });
+        self.draft.edge.pitch = pitch_on.then_some(pitch);
+        let mut over_on = self.draft.edge.overhang.is_some();
+        let mut over = self.draft.edge.overhang.unwrap_or(self.draft.overhang);
+        ui.checkbox(&mut over_on, "Overhang");
+        if over_on {
+            self.fields
+                .length_row(ui, "Overhang from wall face", "edge_overhang", &mut over);
+        }
+        self.draft.edge.overhang = over_on.then_some(over);
+        ui.checkbox(
+            &mut self.draft.edge.gable,
+            "Gable end (no plane rises from this edge)",
+        )
+        .on_hover_text("Rebuilds the roof; the plane disappears");
+        ui.add_space(6.0);
+        ui.weak("OK rebuilds the automatic roof with these edge settings.");
+    }
 }
 
 impl SpecPages for PlanePages {
@@ -250,20 +328,22 @@ impl SpecPages for PlanePages {
                         }
                     });
             }
-            1 => {
+            1 => self.holes_page(ui),
+            2 => self.edge_page(ui),
+            3 => {
                 section(ui, "Eaves and Ridge");
                 ui.checkbox(&mut self.draft.ridge_caps, "Include Ridge Caps")
                     .on_hover_text("Stored; ridge caps are not modeled yet");
                 ui.checkbox(&mut self.draft.gutters, "Include Gutter")
                     .on_hover_text("Stored; gutters are not modeled yet");
             }
-            2 => {
+            4 => {
                 section(ui, "Roofing");
                 row(ui, "Material", |ui| {
                     material_combo(ui, "plane_material", &mut self.draft.material);
                 });
             }
-            3 => {
+            5 => {
                 section(ui, "Layer");
                 row(ui, "Layer", |ui| {
                     egui::ComboBox::from_id_salt("plane_layer")
@@ -351,6 +431,184 @@ impl RoofPlaneDialog {
     }
 }
 
+// ===================================================================
+// Dormer Specification
+// ===================================================================
+
+const DORMER_TABS: &[Tab] = &[on("General"), on("Roof"), on("Window")];
+
+struct DormerPages {
+    spec: DormerSpec,
+    fields: Fields,
+    window_on: bool,
+    window: (f64, f64),
+}
+
+fn kind_name(k: DormerKind) -> &'static str {
+    match k {
+        DormerKind::Gable => "Gable",
+        DormerKind::Shed => "Shed",
+        DormerKind::Hip => "Hip",
+    }
+}
+
+impl SpecPages for DormerPages {
+    fn tabs(&self) -> &'static [Tab] {
+        DORMER_TABS
+    }
+
+    fn error(&self) -> Option<String> {
+        if self.fields.any_invalid() {
+            Some("Enter a valid length".into())
+        } else if self.spec.width < 6.0 {
+            Some("The dormer must be at least 6 inches wide".into())
+        } else if self.spec.wall_height < 6.0 {
+            Some("The dormer walls must be at least 6 inches tall".into())
+        } else if self.spec.pitch < MIN_PITCH || self.spec.pitch > MAX_PITCH {
+            Some("Pitch must be between 0.5 and 24 in 12".into())
+        } else {
+            None
+        }
+    }
+
+    fn page(&mut self, ui: &mut Ui, tab: usize) {
+        match tab {
+            0 => {
+                section(ui, "Dormer");
+                row(ui, "Type", |ui| {
+                    egui::ComboBox::from_id_salt("dormer_kind")
+                        .selected_text(kind_name(self.spec.kind))
+                        .show_ui(ui, |ui| {
+                            for k in [DormerKind::Gable, DormerKind::Shed, DormerKind::Hip] {
+                                ui.selectable_value(&mut self.spec.kind, k, kind_name(k));
+                            }
+                        });
+                });
+                self.fields
+                    .length_row(ui, "Width", "dormer_width", &mut self.spec.width);
+                self.fields.length_row(
+                    ui,
+                    "Wall Height",
+                    "dormer_wall",
+                    &mut self.spec.wall_height,
+                );
+                section(ui, "Position on the roof plane");
+                self.fields.length_row(
+                    ui,
+                    "Along the Eave",
+                    "dormer_along",
+                    &mut self.spec.position_along_eave,
+                );
+                self.fields.length_row(
+                    ui,
+                    "Setback from Eave",
+                    "dormer_setback",
+                    &mut self.spec.setback_from_eave,
+                );
+            }
+            1 => {
+                section(ui, "Dormer Roof");
+                pitch_row(ui, "Pitch", &mut self.spec.pitch);
+                self.fields.length_row(
+                    ui,
+                    "Height to Ridge",
+                    "dormer_ridge",
+                    &mut self.spec.height_to_ridge,
+                );
+                ui.weak("A ridge higher than the walls sets the pitch; 0 uses the pitch above.");
+            }
+            _ => {
+                section(ui, "Window");
+                ui.checkbox(&mut self.window_on, "Window in the front wall");
+                if self.window_on {
+                    self.fields
+                        .length_row(ui, "Width", "dormer_win_w", &mut self.window.0);
+                    self.fields
+                        .length_row(ui, "Height", "dormer_win_h", &mut self.window.1);
+                }
+                self.spec.window = self.window_on.then_some(self.window);
+            }
+        }
+    }
+
+    fn preview(&self, p: &Painter, area: Rect) {
+        // Front elevation: walls and the roof shape.
+        let w = area.width() * 0.7;
+        let h = area.height() * 0.3;
+        let base = Pos2::new(area.center().x, area.center().y + h * 0.5);
+        let left = Pos2::new(base.x - w * 0.5, base.y);
+        let right = Pos2::new(base.x + w * 0.5, base.y);
+        let ink = Stroke::new(1.5_f32, PV_INK);
+        p.rect_stroke(
+            Rect::from_two_pos(left, Pos2::new(right.x, base.y - h)),
+            0.0,
+            ink,
+            egui::StrokeKind::Inside,
+        );
+        let eave_l = Pos2::new(left.x, base.y - h);
+        let eave_r = Pos2::new(right.x, base.y - h);
+        match self.spec.kind {
+            DormerKind::Gable | DormerKind::Hip => {
+                let ridge = Pos2::new(base.x, base.y - h - area.height() * 0.2);
+                p.line_segment([eave_l, ridge], ink);
+                p.line_segment([ridge, eave_r], ink);
+            }
+            DormerKind::Shed => {
+                p.line_segment(
+                    [eave_l, Pos2::new(eave_r.x, eave_r.y - area.height() * 0.1)],
+                    ink,
+                );
+            }
+        }
+        if self.window_on {
+            let c = Pos2::new(base.x, base.y - h * 0.5);
+            p.rect_stroke(
+                Rect::from_center_size(c, egui::vec2(w * 0.3, h * 0.5)),
+                0.0,
+                Stroke::new(1.0_f32, PV_ACCENT),
+                egui::StrokeKind::Inside,
+            );
+        }
+        p.text(
+            Pos2::new(area.center().x, area.max.y - 8.0),
+            Align2::CENTER_CENTER,
+            format!("{} dormer", kind_name(self.spec.kind)),
+            FontId::proportional(13.0),
+            PV_INK,
+        );
+    }
+}
+
+/// Dormer Specification (RF-48): the dormer's dimensions. Used after an Auto
+/// Dormer click and to edit a placed dormer.
+pub struct DormerDialog {
+    frame: SpecDialog,
+    pages: DormerPages,
+}
+
+impl DormerDialog {
+    pub fn new(spec: DormerSpec) -> Self {
+        Self {
+            frame: SpecDialog::new("Dormer Specification", "dormer"),
+            pages: DormerPages {
+                window_on: spec.window.is_some(),
+                window: spec.window.unwrap_or((24.0, 36.0)),
+                spec,
+                fields: Fields::default(),
+            },
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        self.frame.show(ctx, &mut self.pages)
+    }
+
+    /// The edited dimensions.
+    pub fn spec(&self) -> DormerSpec {
+        self.pages.spec
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +624,20 @@ mod tests {
     }
 
     #[test]
+    fn dormer_dialog_round_trips_its_spec_and_validates() {
+        let spec = DormerSpec {
+            window: Some((30.0, 40.0)),
+            ..DormerSpec::default()
+        };
+        let mut d = DormerDialog::new(spec);
+        assert_eq!(d.spec(), spec);
+        assert!(d.pages.error().is_none());
+        d.pages.spec.width = 2.0;
+        assert!(d.pages.error().is_some());
+        assert_eq!(DORMER_TABS.len(), 3);
+    }
+
+    #[test]
     fn plane_dialog_rejects_bad_pitch() {
         let r = RoofPlaneRecord::new(
             1,
@@ -377,6 +649,6 @@ mod tests {
         assert!(d.pages.error().is_none());
         d.pages.draft.pitch = 40.0;
         assert!(d.pages.error().is_some());
-        assert_eq!(PLANE_TABS.len(), 5);
+        assert_eq!(PLANE_TABS.len(), 7);
     }
 }

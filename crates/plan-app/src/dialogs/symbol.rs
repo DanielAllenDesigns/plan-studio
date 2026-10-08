@@ -1,5 +1,8 @@
-//! Symbol Specification (CB-60): General (size, elevation, position, angle),
-//! Options (flip), Layer and Label for a placed library symbol.
+//! Symbol Specification (CB-60): General (source catalog and object, size,
+//! elevation, position, angle, flip), Options (flip), Layer and Label for a
+//! placed library symbol. Sizes stretch the symbol's 3D mesh too. "Replace
+//! From Library" swaps the symbol's catalog id for the active Library
+//! Browser item and keeps its position and angle.
 
 // The shell opens this dialog; until it is wired the items are unused.
 #![allow(dead_code)]
@@ -9,7 +12,8 @@ use super::{
     PV_WALL,
 };
 use crate::editor::placed::{placed_symbol_strokes, stroke_polylines, symbol_placement};
-use crate::tools::library::library_catalog;
+use crate::tools::library::chief::{self, LICENSE_NOTE};
+use crate::tools::library::{active_item, find_item};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use plan_core::geometry::Point;
 use plan_core::PlacedSymbol;
@@ -35,10 +39,17 @@ struct SymbolForm {
     name: String,
     category: String,
     placement: Placement,
+    /// Where the item comes from: the Chief catalog's name, or the built-in
+    /// library.
+    source: String,
+    /// The item is Chief Architect licensed content.
+    chief: bool,
     /// Library size, for "Reset to Library Size".
     library_size: Option<(f64, f64, f64)>,
     layers: Vec<String>,
     fields: Fields,
+    /// What the last "Replace From Library" did.
+    note: String,
 }
 
 fn placement_name(p: Placement) -> &'static str {
@@ -53,16 +64,19 @@ fn placement_name(p: Placement) -> &'static str {
 impl SymbolDialog {
     /// A dialog for `symbol`; `layers` are the plan's layer names.
     pub fn new(symbol: PlacedSymbol, layers: Vec<String>) -> Self {
-        let item = library_catalog().get(&symbol.catalog_id);
-        let form = SymbolForm {
-            name: item.map_or_else(|| symbol.catalog_id.clone(), |i| i.name.clone()),
-            category: item.map_or_else(String::new, |i| i.category.join(" > ")),
-            placement: symbol_placement(&symbol),
-            library_size: item.map(|i| (i.width, i.depth, i.height)),
+        let mut form = SymbolForm {
+            name: String::new(),
+            category: String::new(),
+            placement: Placement::FreeStanding,
+            source: String::new(),
+            chief: false,
+            library_size: None,
             layers,
             fields: Fields::default(),
+            note: String::new(),
             draft: symbol,
         };
+        form.describe();
         Self {
             frame: SpecDialog::new("Symbol Specification", "symbol"),
             form,
@@ -79,15 +93,61 @@ impl SymbolDialog {
 }
 
 impl SymbolForm {
+    /// Fills name, category, source and library size from the draft's
+    /// catalog id.
+    fn describe(&mut self) {
+        let id = self.draft.catalog_id.clone();
+        let item = find_item(&id);
+        self.name = item.as_ref().map_or_else(|| id.clone(), |i| i.name.clone());
+        self.category = item
+            .as_ref()
+            .map_or_else(String::new, |i| i.category.join(" > "));
+        self.placement = symbol_placement(&self.draft);
+        self.library_size = item.as_ref().map(|i| (i.width, i.depth, i.height));
+        self.chief = chief::is_chief_id(&id);
+        self.source = match chief::installed(&id) {
+            Some(c) => c.catalog_name,
+            None if self.chief => "Chief Architect catalog (not loaded)".into(),
+            None => "Plan Studio library".into(),
+        };
+    }
+
+    /// Replace From Library: the active Library Browser item takes over the
+    /// symbol's catalog id; position, angle and size stay.
+    fn replace_from_library(&mut self) {
+        self.note = match active_item() {
+            None => "Pick an item in the Library Browser first".into(),
+            Some(id) if id == self.draft.catalog_id => "Already that library item".into(),
+            Some(id) => {
+                self.draft.catalog_id = id;
+                self.describe();
+                format!("Replaced with {}", self.name)
+            }
+        };
+    }
+
     fn general(&mut self, ui: &mut Ui) {
+        let mut replace = false;
         let f = &mut self.fields;
         let d = &mut self.draft;
         section(ui, "Symbol");
         row(ui, "Name", |ui| ui.label(&self.name));
+        row(ui, "Source catalog", |ui| ui.label(&self.source));
         row(ui, "Category", |ui| ui.label(&self.category));
         row(ui, "Placement", |ui| {
             ui.label(placement_name(self.placement))
         });
+        if self.chief {
+            ui.weak(LICENSE_NOTE);
+        }
+        row(ui, "Library", |ui| {
+            if ui.button("Replace From Library").clicked() {
+                replace = true;
+            }
+        });
+        if !self.note.is_empty() {
+            ui.weak(&self.note);
+        }
         section(ui, "Size");
         f.length_row(ui, "Width", "width", &mut d.width);
         f.length_row(ui, "Depth", "depth", &mut d.depth);
@@ -104,6 +164,10 @@ impl SymbolForm {
         f.length_row(ui, "Position X (back center)", "pos_x", &mut d.position.x);
         f.length_row(ui, "Position Y (back center)", "pos_y", &mut d.position.y);
         f.degrees_row(ui, "Angle", "deg_angle", &mut d.angle);
+        ui.checkbox(&mut d.flip, "Flip");
+        if replace {
+            self.replace_from_library();
+        }
     }
 
     fn options(&mut self, ui: &mut Ui) {
@@ -238,7 +302,7 @@ mod tests {
 
     #[test]
     fn dialog_edits_a_draft_and_validates() {
-        let item = library_catalog()
+        let item = crate::tools::library::library_catalog()
             .all_items()
             .find(|i| i.placement == Placement::FreeStanding)
             .unwrap();
@@ -276,5 +340,54 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(unknown.form.name, "nope");
+    }
+
+    #[test]
+    fn chief_symbols_show_their_source_and_replace_from_the_library() {
+        use crate::editor::EditorContext;
+        use crate::plan_defaults;
+        use crate::tools::library::{library_catalog, set_active_item};
+        use plan_library::{CatalogItem, Symbol2d};
+
+        let item = CatalogItem::new(
+            "chief.cafe-0001.12",
+            "Round Tank Toilet",
+            Placement::FreeStanding,
+            Symbol2d::default(),
+        )
+        .with_category(&["Interiors", "Bath"])
+        .with_size(15.5, 28.0, 30.0);
+        chief::install_item(item, "Core Interiors");
+        let mut s = PlacedSymbol::new(
+            "chief.cafe-0001.12",
+            Point::new(10.0, 20.0),
+            20.0,
+            30.0,
+            32.0,
+        );
+        s.angle = 90.0;
+        let mut dlg = SymbolDialog::new(s, Vec::new());
+        assert_eq!(dlg.form.name, "Round Tank Toilet");
+        assert_eq!(dlg.form.source, "Core Interiors");
+        assert!(dlg.form.chief);
+        assert_eq!(dlg.form.library_size, Some((15.5, 28.0, 30.0)));
+
+        // Nothing active yet on this thread's tool state: a hint, no change.
+        crate::tools::library::clear_active_item();
+        dlg.form.replace_from_library();
+        assert_eq!(dlg.draft().catalog_id, "chief.cafe-0001.12");
+        // Replace with a built-in item: id changes, position, angle and size stay.
+        let other = library_catalog().all_items().next().unwrap().id.clone();
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        assert!(set_active_item(&mut cx, &other));
+        dlg.form.replace_from_library();
+        let d = dlg.draft();
+        assert_eq!(d.catalog_id, other);
+        assert_eq!(
+            (d.position, d.angle, d.width),
+            (Point::new(10.0, 20.0), 90.0, 20.0)
+        );
+        assert_eq!(dlg.form.source, "Plan Studio library");
+        assert!(!dlg.form.chief);
     }
 }

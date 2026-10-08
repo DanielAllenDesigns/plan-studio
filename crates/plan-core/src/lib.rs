@@ -37,6 +37,7 @@ pub mod dimension;
 pub mod export;
 pub mod extras;
 pub mod floors;
+pub mod foundation;
 pub mod geometry;
 pub mod groups;
 pub mod history;
@@ -57,10 +58,10 @@ pub use defaults::{
     DimensionDefaultSet, EditingDefaults, PlanDefaults, WallConnectDefaults, WallLayer, WallTypeDef,
 };
 pub use dimension::{auto_exterior_dimensions, DimFormat, Dimension, DimensionKind};
-pub use export::dxf::write_dxf;
+pub use export::dxf::{write_dxf, DxfExport};
 pub use extras::{
-    AreaKind, MoldingKind, MoldingRef, OpeningExtras, RoomFill, RoomLabelOptions, SectionLine,
-    WallExtras,
+    AreaKind, ElevationRender, MoldingKind, MoldingRef, OpeningExtras, RoomFill, RoomLabelOptions,
+    SectionLine, WallExtras,
 };
 pub use floors::{FloorKind, FoundationKind};
 pub use geometry::Point;
@@ -78,5 +79,6 @@ pub use rooms::{detect_rooms, detect_rooms_inner, Room};
 pub use symbols::PlacedSymbol;
 pub use text_styles::{TextStyle, TextStyles};
 pub use walls::{
-    PonyWall, ResizeAbout, Side, WallConnection, WallCurve, WallFlags, WallRoofDirective,
+    FenceStyle, PonyWall, ResizeAbout, Side, WallClass, WallConnection, WallCurve, WallFlags,
+    WallRoofDirective,
 };

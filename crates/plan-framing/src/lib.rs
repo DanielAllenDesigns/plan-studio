@@ -8,6 +8,13 @@
 //! * [`frame_roof`] frames a roof: rafters, ridge, hips, valleys, fascia,
 //!   collar ties, ceiling joists or Fink trusses.
 //! * [`takeoff`] counts members and totals lumber.
+//! * [`manual`], [`layout`] and [`truss`] hold the manually placed framing
+//!   tools: [`FramingMember`] (general framing, posts, blocking, joists,
+//!   beams, rafters, purlins, trusses), the direction/bearing/reference
+//!   markers and the generators they steer, truss geometry, oriented 3D boxes,
+//!   and takeoff with a [`MaterialList`] CSV. Their `MemberKind` and
+//!   `JoistDirection` are re-exported as [`ManualMemberKind`] and
+//!   [`JoistDirectionLine`] to keep the automatic-framing names.
 //!
 //! Lengths are inches. The 3D frame matches `plan-3d`: X right, Y up,
 //! Z = -plan y.
@@ -15,23 +22,36 @@
 mod defaults;
 mod detail;
 mod floor;
+pub mod layout;
 mod lumber;
+pub mod manual;
 mod member;
 mod roof;
 mod takeoff;
+pub mod truss;
 mod wall;
 
 pub use defaults::FramingDefaults;
 pub use detail::{wall_detail, Stroke};
 pub use floor::{frame_floor, JoistDirection};
+pub use layout::{
+    frame_floor_directed, frame_wall_with_marker, layout_trusses, BearingLine,
+    JoistDirection as JoistDirectionLine, ReferenceMarker, RoofTrussDirection, TrussBase,
+};
 pub use lumber::{
     format_inches, Lumber, TWO_BY_EIGHT, TWO_BY_FOUR, TWO_BY_SIX, TWO_BY_TEN, TWO_BY_TWELVE,
+};
+pub use manual::{
+    combined_takeoff, girder_truss, manual_takeoff, post_with_footing, Footing, FootingSpec,
+    FramingMaterial, FramingMember, LumberSize, MaterialList, MaterialRow,
+    MemberKind as ManualMemberKind, OrientedBox,
 };
 pub use member::{Member, MemberKind, Transform3, Vec3};
 pub use roof::{
     frame_roof, roof_framing_takeoff, roof_plan_symbols, truss_id, OverhangCut, RoofFramingDefaults,
 };
 pub use takeoff::{takeoff, Takeoff};
+pub use truss::{Truss, TrussEnvelope, TrussMember2, TrussRole, TrussSpec, TrussType};
 pub use wall::frame_wall;
 
 #[cfg(test)]

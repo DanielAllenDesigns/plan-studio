@@ -3,9 +3,22 @@
 //! whose rows paint a small preview of the item's [`Symbol2d`].
 //!
 //! The panel never touches the plan. Clicking a result returns
-//! [`LibraryEvent::Activate`]; the dock turns that into "make it the active
-//! library item and switch to the Library tool".
+//! [`LibraryEvent::Activate`]; [`apply_event`] turns that into "make it the
+//! active library item and switch to the Library tool".
+//!
+//! Below the built-in tree sit the user's Chief Architect catalogs
+//! ([`chief_ui`]): Core, Bonus, Manufacturer and User nodes that scan and load
+//! on background threads, thumbnails ([`png`]), a cross-catalog search and an
+//! Open Object window. A clicked Chief object is bridged into the transient
+//! catalog of `tools::library::chief` and activated like a built-in item.
 
+mod chief_ui;
+pub mod png;
+
+use crate::editor::EditorContext;
+use crate::tools::library::chief::{self, ChiefSettings};
+use crate::tools::ToolId;
+use chief_ui::{ChiefAction, ChiefBrowser};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use plan_library::{CatalogItem, CategoryNode, Library, Stroke as SymStroke, Symbol2d};
 
@@ -34,11 +47,16 @@ pub struct LibraryBrowserState {
     pub category: Vec<String>,
     /// The item the Library tool places.
     pub active_item: Option<String>,
+    /// The Chief Architect catalogs section.
+    pub chief: ChiefBrowser,
 }
 
 impl Default for LibraryBrowserState {
+    /// The built-in library plus the saved Chief catalog preference.
     fn default() -> Self {
-        LibraryBrowserState::new(Library::with_all_core())
+        let mut st = LibraryBrowserState::new(Library::with_all_core());
+        st.chief = ChiefBrowser::new(ChiefSettings::load());
+        st
     }
 }
 
@@ -51,38 +69,71 @@ impl LibraryBrowserState {
             query: String::new(),
             category: Vec::new(),
             active_item: None,
+            // Off until the saved preference is loaded (see `Default`).
+            chief: ChiefBrowser::new(ChiefSettings::off()),
         }
     }
 
     /// Items matching the search field inside the selected category: ranked
     /// search hits when there is a query, else the category in name order.
     /// Empty when there is neither a query nor a category.
+    #[cfg(test)]
     pub fn results(&self) -> Vec<&CatalogItem> {
-        let query = self.query.trim();
-        if query.is_empty() && self.category.is_empty() {
-            return Vec::new();
-        }
-        let mut items = self.library.search(query);
-        items.retain(|i| i.category.starts_with(&self.category));
-        if query.is_empty() {
-            items.sort_by_key(|i| (i.name.to_lowercase(), i.id.clone()));
-        }
-        items
+        results_of(&self.library, &self.query, &self.category)
     }
 
-    /// The display name of the active item.
-    pub fn active_name(&self) -> Option<&str> {
+    /// The display name of the active item (a built-in or a bridged Chief
+    /// object).
+    pub fn active_name(&self) -> Option<String> {
         let id = self.active_item.as_deref()?;
-        self.library.get(id).map(|i| i.name.as_str())
+        match self.library.get(id) {
+            Some(i) => Some(i.name.clone()),
+            None => chief::installed(id).map(|c| c.item.name.clone()),
+        }
     }
 
-    /// Makes `id` the active item when the library has it.
+    /// Makes `id` the active item when the library (or the transient Chief
+    /// catalog) has it.
     pub fn activate(&mut self, id: &str) -> bool {
-        if self.library.get(id).is_some() {
+        if self.library.get(id).is_some() || chief::installed(id).is_some() {
             self.active_item = Some(id.to_string());
             true
         } else {
             false
+        }
+    }
+}
+
+fn results_of<'a>(library: &'a Library, query: &str, category: &[String]) -> Vec<&'a CatalogItem> {
+    let query = query.trim();
+    if query.is_empty() && category.is_empty() {
+        return Vec::new();
+    }
+    let mut items = library.search(query);
+    items.retain(|i| i.category.starts_with(category));
+    if query.is_empty() {
+        items.sort_by_key(|i| (i.name.to_lowercase(), i.id.clone()));
+    }
+    items
+}
+
+/// Applies what the panel reported: activating an item makes it the Library
+/// tool's item and asks for that tool; messages go to the status bar.
+pub fn apply_event(
+    ev: LibraryEvent,
+    st: &mut LibraryBrowserState,
+    cx: &mut EditorContext,
+) -> Option<ToolId> {
+    match ev {
+        LibraryEvent::Activate(id) => {
+            // The Library tool keeps the id it places; the browser keeps its
+            // own copy to highlight the row.
+            (st.activate(&id) && crate::tools::library::set_active_item(cx, &id))
+                .then_some(ToolId::Library)
+        }
+        LibraryEvent::Message(m) => {
+            cx.status = m;
+            None
         }
     }
 }
@@ -154,6 +205,12 @@ pub fn preview_shapes(symbol: &Symbol2d, rect: Rect, stroke: Stroke) -> Vec<Shap
 /// Draws the whole panel body (below the dock heading).
 pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEvent> {
     let mut event = None;
+    let chief_action = |a: ChiefAction, event: &mut Option<LibraryEvent>| {
+        *event = Some(match a {
+            ChiefAction::Activate(id) => LibraryEvent::Activate(id),
+            ChiefAction::Message(m) => LibraryEvent::Message(m),
+        });
+    };
 
     ui.horizontal(|ui| {
         let edit = egui::TextEdit::singleline(&mut st.query)
@@ -168,10 +225,16 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
             st.query.clear();
         }
     });
+    if st.chief.enabled() {
+        ui.checkbox(&mut st.chief.search_chief, "Search Chief catalogs");
+    }
     match st.active_name() {
         Some(n) => ui.label(format!("Active item: {n}")),
         None => ui.weak("No active item"),
     };
+    if let Some(a) = chief_ui::windows(ui.ctx(), &mut st.chief) {
+        chief_action(a, &mut event);
+    }
     ui.separator();
 
     let tree_height = (ui.available_height() * 0.4).max(80.0);
@@ -185,15 +248,29 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
             category_node(ui, &root, &mut Vec::new(), &st.category, &mut picked, true);
             if let Some(path) = picked {
                 st.category = path;
+                st.chief.selected = None;
             }
-            egui::CollapsingHeader::new("Chief catalogs")
-                .id_salt("library_chief_catalogs")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.weak("Connect Chief catalogs (plan-calib) \u{2014} coming");
-                });
+            let before = st.chief.selected.clone();
+            if let Some(a) = chief_ui::tree(ui, &mut st.chief) {
+                chief_action(a, &mut event);
+            }
+            if st.chief.selected != before && st.chief.selected.is_some() {
+                st.category.clear();
+            }
         });
     ui.separator();
+
+    let active = st.active_item.clone();
+
+    // A Chief category is selected: list its objects.
+    if st.chief.selected.is_some() {
+        let query = st.query.clone();
+        let (_, a) = chief_ui::category_list(ui, &mut st.chief, &query, active.as_deref());
+        if let Some(a) = a {
+            chief_action(a, &mut event);
+        }
+        return event;
+    }
 
     let path = if st.category.is_empty() {
         "All categories".to_string()
@@ -207,10 +284,10 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
         }
     });
 
-    let results = st.results();
-    let active = st.active_item.clone();
+    let results = results_of(&st.library, &st.query, &st.category);
+    let chief_search = st.chief.enabled() && st.chief.search_chief && !st.query.trim().is_empty();
     let total = results.len();
-    if total == 0 {
+    if total == 0 && !chief_search {
         if st.query.trim().is_empty() && st.category.is_empty() {
             ui.weak("Search above or pick a category.");
         } else {
@@ -218,7 +295,10 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
         }
         return event;
     }
-    ui.weak(format!("{total} item{}", if total == 1 { "" } else { "s" }));
+    if total > 0 {
+        ui.weak(format!("{total} item{}", if total == 1 { "" } else { "s" }));
+    }
+    let query = st.query.clone();
     egui::ScrollArea::vertical()
         .id_salt("library_results")
         .auto_shrink([false, false])
@@ -234,6 +314,10 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
                     "{} more; narrow the search to see them.",
                     total - RESULT_CAP
                 ));
+            }
+            if let Some(a) = chief_ui::search_results(ui, &mut st.chief, &query, active.as_deref())
+            {
+                chief_action(a, &mut event);
             }
         });
     event
@@ -430,5 +514,67 @@ mod tests {
             }
         }
         assert!(drawn > 0);
+    }
+
+    #[test]
+    fn activating_a_chief_object_selects_it_and_asks_for_the_library_tool() {
+        use crate::plan_defaults;
+        use crate::tools::library::{active_item, clear_active_item};
+        use plan_library::{CatalogItem, Placement};
+
+        clear_active_item();
+        let id = "chief.cafe-0002.77";
+        chief::install_item(
+            CatalogItem::new(
+                id,
+                "Round Tank Toilet",
+                Placement::FreeStanding,
+                Symbol2d::default(),
+            )
+            .with_size(15.5, 28.0, 30.0),
+            "Core Interiors",
+        );
+        let mut st = state();
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let tool = apply_event(LibraryEvent::Activate(id.into()), &mut st, &mut cx);
+        assert_eq!(tool, Some(ToolId::Library));
+        assert_eq!(active_item().as_deref(), Some(id));
+        assert_eq!(st.active_item.as_deref(), Some(id));
+        assert_eq!(st.active_name().as_deref(), Some("Round Tank Toilet"));
+        assert!(cx.status.contains("Round Tank Toilet"), "{}", cx.status);
+
+        // An id nobody bridged does nothing.
+        assert_eq!(
+            apply_event(
+                LibraryEvent::Activate("chief.nope.1".into()),
+                &mut st,
+                &mut cx
+            ),
+            None
+        );
+        assert_eq!(st.active_item.as_deref(), Some(id));
+        apply_event(LibraryEvent::Message("hello".into()), &mut st, &mut cx);
+        assert_eq!(cx.status, "hello");
+    }
+
+    #[test]
+    fn the_panel_draws_with_chief_catalogs_on_and_off() {
+        let ctx = egui::Context::default();
+        let mut st = state();
+        st.chief = ChiefBrowser::new(ChiefSettings::off());
+        let run = |st: &mut LibraryBrowserState| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    assert!(show(ui, st).is_none());
+                });
+            });
+        };
+        run(&mut st);
+        st.chief.settings.enabled = true;
+        st.chief.search_chief = true;
+        st.query = "toilet".into();
+        st.chief
+            .set_library(plan_calib::ChiefLibrary::from_entries(Vec::new()));
+        run(&mut st);
     }
 }

@@ -12,7 +12,7 @@
 //! set); they queue [`DockRequest`]s that `main.rs` applies.
 
 use super::hotkeys::HotkeyState;
-use super::library_browser::{self, LibraryBrowserState, LibraryEvent};
+use super::library_browser::{self, LibraryBrowserState};
 use crate::dialogs::hotkeys::HotkeyDialog;
 use crate::dialogs::layer_display::LayerDisplayDialog;
 use crate::dialogs::Outcome;
@@ -81,17 +81,13 @@ pub fn show(ui: &mut egui::Ui, dock: Dock, cx: &mut EditorContext, st: &mut Dock
     match dock {
         Dock::LayerDisplay => layer_panel(ui, cx, &mut st.layers, 0.55),
         Dock::Project => project_browser(ui, cx, &mut st.requests),
-        Dock::Library => match library_browser::show(ui, &mut st.library) {
-            Some(LibraryEvent::Activate(id)) => {
-                // The Library tool keeps the id it places; the browser keeps
-                // its own copy to highlight the row.
-                if st.library.activate(&id) && crate::tools::library::set_active_item(cx, &id) {
-                    st.requests.push(DockRequest::SetTool(ToolId::Library));
+        Dock::Library => {
+            if let Some(ev) = library_browser::show(ui, &mut st.library) {
+                if let Some(tool) = library_browser::apply_event(ev, &mut st.library, cx) {
+                    st.requests.push(DockRequest::SetTool(tool));
                 }
             }
-            Some(LibraryEvent::Message(m)) => cx.status = m,
-            None => {}
-        },
+        }
     }
 }
 

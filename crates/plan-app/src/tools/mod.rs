@@ -18,6 +18,8 @@ pub mod cad;
 pub mod camera;
 pub mod dimension;
 pub mod electrical;
+pub mod foundation;
+pub mod framing;
 pub mod library;
 pub mod opening;
 pub mod pan;
@@ -36,6 +38,9 @@ pub enum ToolId {
     Wall {
         kind: WallKind,
     },
+    /// A flyout wall: foundation, pony, glass, half-wall, room divider,
+    /// railing, deck railing or edge, fencing, or a curved wall.
+    WallVariant(wall::WallVariant),
     Door,
     Window,
     Pan,
@@ -67,13 +72,24 @@ pub enum ToolId {
     CadVariant(cad::CadMode),
     /// A camera tool (Full Camera, the overviews, the section cameras).
     CameraVariant(camera::CameraVariant),
+    /// The slab and foundation tools (Slab flyout, platform holes).
+    Foundation,
+    /// A flavor of the foundation tool (the flyout entry picked).
+    FoundationVariant(foundation::FoundationVariant),
+    /// The manual framing tools (General, Floor/Ceiling and Roof Framing flyouts).
+    Framing,
+    /// A flavor of the framing tool (the flyout entry picked).
+    FramingVariant(framing::FramingVariant),
 }
 
 impl ToolId {
     /// Do both ids belong to the same tool object?
     pub fn same_tool(self, other: ToolId) -> bool {
         match (self.base(), other.base()) {
-            (ToolId::Wall { .. }, ToolId::Wall { .. }) => true,
+            (
+                ToolId::Wall { .. } | ToolId::WallVariant(_),
+                ToolId::Wall { .. } | ToolId::WallVariant(_),
+            ) => true,
             (ToolId::Door | ToolId::Window, ToolId::Door | ToolId::Window) => true,
             (
                 ToolId::Electrical | ToolId::ElectricalVariant(_),
@@ -98,6 +114,8 @@ impl ToolId {
             ToolId::TextVariant(_) => ToolId::Text,
             ToolId::CadVariant(_) => ToolId::Cad,
             ToolId::CameraVariant(_) => ToolId::Camera,
+            ToolId::FoundationVariant(_) => ToolId::Foundation,
+            ToolId::FramingVariant(_) => ToolId::Framing,
             other => other,
         }
     }
@@ -279,6 +297,8 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(library::LibraryTool::default()),
         Box::new(camera::CameraTool::default()),
         Box::new(terrain::TerrainTool::default()),
+        Box::new(foundation::FoundationTool::default()),
+        Box::new(framing::FramingTool::default()),
     ]
 }
 
@@ -385,6 +405,8 @@ mod tests {
             ToolId::Library,
             ToolId::Camera,
             ToolId::Terrain,
+            ToolId::Foundation,
+            ToolId::Framing,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");
         }

@@ -22,8 +22,9 @@ build from source.
   packages that CI installs: `libgtk-3-dev libxkbcommon-dev libwayland-dev libxcb-render0-dev
   libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev`.
 - macOS is the primary platform. Windows and Linux (X11 and Wayland) build, but
-  several things are Mac-first: the four-modifier hotkeys, and the settings
-  folder, which is found through the `HOME` variable (see 1.10).
+  several things are Mac-first: the hotkeys are Daniel's Mac bindings, and off
+  macOS Chief's `Ctrl` is the Control key and the four-modifier chords become
+  `Ctrl+Alt+...` chords (chapter 13).
 
 ### Build and run
 
@@ -161,8 +162,8 @@ Configuration, Space Planning Configuration, Extended Tool Configuration
 
 Select Objects | Wall flyouts (chapter 2) | Door and Window flyouts (3) |
 Cabinet and Electrical flyouts (6, 9) | Stairs and Floor flyouts (7, 4) |
-Roof, Trim, Framing, Slab and 3D Solid flyouts (8; Trim, Framing, Slab and 3D
-Solid are planned) | Paste Hold Position (planned) | Dimension flyouts (5) |
+Roof, Trim, Framing, Slab and 3D Solid flyouts (8; Trim, Slab and 3D Solid are
+planned; of Framing only Build Framing, Build All Framing and Delete Framing work, see 11.11) | Paste Hold Position (planned) | Dimension flyouts (5) |
 Text flyout and Revision Cloud (5) | Points, Lines, Arcs, Circles, Boxes,
 Spline (5) | Auto Detail, Current CAD Layer (planned).
 
@@ -171,18 +172,18 @@ Spline (5) | Auto Detail, Current CAD Layer (planned).
 | Button | Hotkey | Works today |
 |---|---|---|
 | Library Browser | `Cmd+L` | Opens the Library Browser dock (chapter 6). |
-| Project Browser | | Opens the dock: Plan > Floors, Cameras, Saved Views, Layout (see 1.5). |
+| Project Browser | | Opens the dock: Plan > Floors, Cameras, Saved Views, and Layout (see 1.5). |
 | Active Layer Display Options | | Opens the layer table dock (chapter 5). |
 | Zoom | `Shift+Z` | (planned) |
 | Zoom In / Zoom Out / Undo Zoom | `-` (Zoom In) | Yes. Zoom Out has no key in Daniel's setup (see 13.5). |
 | Fill Window Selected Objects, Fill Window Building Only | | (planned) |
 | Fill Window | `Ctrl+F` | Fits the drawing in the window. |
 | Pan Window | `H` | Left-drag pans. `Esc` or Select Objects leaves it. |
-| Reference Display | `F9` | The toggle changes state, but the floor below is not drawn yet (planned). |
+| Reference Display | `F9` | Draws the walls of the floor below in gray (walls only; nothing on the lowest floor). A saved plan view that has it set turns it on. |
 | Crosshairs | | Draws cursor crosshairs. |
-| Color | `F8` | The toggle changes state; plan colors do not switch to grayscale yet (planned). |
-| Line Weights | | The toggle changes state; weights are not drawn yet (planned). |
-| Drawing Sheet, Print Preview | `Alt+F3`, `Alt+F2` | Toggle state only (planned). |
+| Color | `F8` | On by default. Off draws the plan in grays (every color becomes its luminance); selection highlights stay colored. |
+| Line Weights | | On scales stroke widths by each layer's line weight (0.25 mm is the base width, so a 0.50 mm wall layer draws twice as heavy). |
+| Drawing Sheet, Print Preview | `Alt+F3`, `Alt+F2` | Drawing Sheet outlines the active layout's sheet, centered on the plan, with its size and scale as a caption. Print Preview also grays out everything outside the sheet. The size and scale are set in Project Browser > Layout (Arch D at 1/4" = 1'-0" by default). |
 | Temporary Dimensions | | Yes, on by default (shows live length while drawing and dimensions to a selected object). |
 | Connect CAD Segments | `Shift+F8` | Yes: CAD lines chain into connected segments. |
 | Arc Centers and Ends | | Toggle state only (planned). |
@@ -199,7 +200,7 @@ Click a view-bar toggle again to close its dock.
   Turning off Disp hides a layer's objects at once. A **Layer Set** drop-down at the top switches the
   active layer set (a named table of per-layer display, lock, color and line weight overrides). Edits are
   undoable. Tools > Layer Settings > Display Options opens the same table as a window.
-- **Project Browser**: Plan > Floors (click one to switch floors), Cameras (a list of the plan's camera objects; it does not open them yet), Saved Views (one placeholder, "Floor Plan View"; real saved views are planned) and Layout ("Layout pages: coming").
+- **Project Browser**: Plan > Floors (click one to switch floors), **Cameras** (the plan's camera objects; click one to select it, switch to its floor and pan the plan to it; an unnamed camera shows as "Camera n"), **Saved Views** (the plan's saved plan views; click one to activate it, hover for its layer set and floor; the active view is highlighted) and **Layout** (the active layout's sheet size and scale, which View > Drawing Sheet and Print Preview draw, and Create Construction Set...). The layout sheet is kept for the session only; the plan file stores no layouts yet.
 - **Library Browser**: a search field, a category tree and result rows with
   previews (chapter 6).
 
@@ -210,20 +211,24 @@ Window, Help. Build, Terrain and CAD are generated from the same flyout tables a
 entry shows its icon, name and hotkey and unbuilt ones are dimmed. Working today:
 
 - **File**: New Plan, Templates (Save Current Defaults as My Template..., Import Chief Template..., Reset to
-  Chief X18 Template), Open Plan..., Save, Save As..., Quit.
+  Chief X18 Template), Open Plan..., Save, Save As..., Export (DXF..., Elevation DXF..., Construction Set
+  PDF..., glTF...), Import (Import Drawing (DXF)...), Quit (chapter 12).
 - **Edit**: Undo and Redo (with the step name), Select Objects, Default Settings...
-- **Build**, **CAD**: all the live tools of chapters 2 to 9; **Terrain**: Create Terrain Perimeter, Terrain
+- **Build**, **CAD**: all the live tools of chapters 2 to 9, Build > Framing (Build Framing, Build All
+  Framing, Delete Framing: chapter 11.11) and CAD > CAD to Walls... (12.4); **Terrain**: Create Terrain Perimeter, Terrain
   Specification..., Build Terrain, Clear Terrain, Make Terrain Hole Around Building and the submenus.
 - **3D**: Create Orthographic View, Create Perspective View (with Ray Trace...), Rendering Techniques,
   Rebuild 3D, Export > glTF..., 3D View Defaults... (chapter 10).
 - **Tools**: Layer Settings > Display Options, Checks, Toolbars and Hotkeys > Customize Hotkeys..., Space
-  Planning, Schedules, Materials List.
+  Planning, Schedules (door, window, room, wall, Create Construction Set, Framing Takeoff), Materials List.
 - **View**: Library Browser, Project Browser, Active Layer Display Options, Color, Crosshairs, Reference Grid,
   Temporary Dimensions, Arc Centers and Ends, Line Weights, Drawing Sheet, Canvas Theme, UI Brightness.
-- **Window**: Zoom Out, Zoom In, Undo Zoom, Fill Window, Pan Window. **Help**: About Plan Studio.
+- **Window**: Zoom Out, Zoom In, Undo Zoom, Fill Window, Pan Window; the shortcut shown beside each comes
+  from the live hotkey map, so Daniel's keys (his `-` is Zoom In) and your own Customize Hotkeys edits
+  appear there, and so does the key shown beside 3D > 3D View Defaults... (`Cmd+1`). **Help**: About Plan Studio.
 
 Everything else in Chief's menus is listed, dimmed, with Chief's name: Cut/Copy/Paste, Select All, Snap
-Settings, Edit Behaviors, Close View, File > Export/Import/Print, the Library menu and most of the 3D menu.
+Settings, Edit Behaviors, Close View, File > Print, the Library menu and most of the 3D menu.
 
 ## 1.7 Templates and Daniel's Chief defaults
 
@@ -272,11 +277,13 @@ How defaults reach a plan:
   template. The file is read in place and never copied or changed. The status bar reports how many wall types
   and layers were added; wall types whose thickness had to be guessed from the name are approximate.
 - Edit > Default Settings... opens a searchable tree: Walls (Exterior, Interior,
-  Foundation), Doors (Interior, Exterior), Windows, Dimension (Dimensions), and
-  Floors and Rooms (Room Types). Double-click a leaf to open its dialog. The wall,
-  door and window leaves work; Dimensions and Room Types are listed but say "Coming
-  in a later phase" (planned). The other Chief groups (Cabinets, Roofs, Stairs and so
-  on) are not in the tree yet (planned).
+  Foundation), Doors (Interior, Exterior), Windows, Dimension (Dimensions), Text
+  (Text Styles), and Floors and Rooms (Room Types). Double-click a leaf (or press
+  Edit) to open its dialog. The wall, door and window leaves edit the values new
+  objects are placed from. **Dimensions** opens the Saved Dimension Defaults list
+  (5.9), **Text Styles** the text style editor (5.9) and **Room Types** the room
+  type list (4.10). The other Chief groups (Cabinets, Roofs, Stairs and so on) are
+  not in the tree yet (planned).
 
 Not stored in the defaults yet: muntin width, label options, the second casing
 of a door.
@@ -331,6 +338,6 @@ readable at any brightness.
 | Hotkey edits | `~/.plan-studio/hotkeys.json` |
 | Chief catalog index (Chief library reader, not used by the editor yet) | `~/.plan-studio/chief-catalog-index.json` |
 
-These paths use the `HOME` environment variable, so on Windows (where `HOME` is
-usually unset) settings are not saved (planned fix). Undo keeps 100 steps.
+The settings folder is found from `HOME`, else `USERPROFILE`, else `HOMEDRIVE` plus
+`HOMEPATH`, so it works on Windows as well. Undo keeps 100 steps.
 Autosave and backups are planned.

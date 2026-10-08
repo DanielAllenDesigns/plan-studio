@@ -63,13 +63,9 @@ pub fn to_plan_library(cat: &ChiefCatalog, limit: Option<usize>) -> Result<Bridg
     let take = limit.unwrap_or(usize::MAX);
     let mut objects = cat.objects()?;
     for obj in objects.by_ref().take(take) {
-        let json = cat.associated_json(obj.library_object_id)?;
-        let decoded = decode::decode_object(&cat.object_blobs(obj.library_object_id)?);
-        let item = item_from(cat, &obj, json.as_ref(), &decoded, &mut out.stats);
-        if obj.has_thumbnail {
-            if let Some(png) = cat.thumbnail(obj.library_object_id)? {
-                out.thumbnails.insert(item.id.clone(), png);
-            }
+        let (item, thumb) = bridge_object(cat, &obj, &mut out.stats)?;
+        if let Some(png) = thumb {
+            out.thumbnails.insert(item.id.clone(), png);
         }
         out.catalog.items.push(item);
     }
@@ -79,8 +75,29 @@ pub fn to_plan_library(cat: &ChiefCatalog, limit: Option<usize>) -> Result<Bridg
     Ok(out)
 }
 
-fn item_from(
+/// Converts one object of `cat` (reads its blobs and thumbnail), adding to
+/// `stats`. The item id is `chief.<catalog-uuid>.<library_object_id>`.
+pub fn bridge_object(
     cat: &ChiefCatalog,
+    obj: &ObjectSummary,
+    stats: &mut BridgeStats,
+) -> Result<(CatalogItem, Option<Vec<u8>>)> {
+    let json = cat.associated_json(obj.library_object_id)?;
+    let decoded = decode::decode_object(&cat.object_blobs(obj.library_object_id)?);
+    let item = item_from(cat.id(), cat.name(), obj, json.as_ref(), &decoded, stats);
+    let thumb = if obj.has_thumbnail {
+        cat.thumbnail(obj.library_object_id)?
+    } else {
+        None
+    };
+    Ok((item, thumb))
+}
+
+/// The item for an object whose blobs are already decoded: the pure part of
+/// [`bridge_object`] (used by tests and callers that cache blobs).
+pub fn item_from(
+    catalog_id: &str,
+    catalog_name: &str,
     obj: &ObjectSummary,
     json: Option<&Json>,
     decoded: &DecodedObject,
@@ -111,7 +128,7 @@ fn item_from(
         tags.push(SIZE_UNKNOWN_TAG.into());
     }
     let category = if obj.category_path.is_empty() {
-        vec![cat.name().to_owned()]
+        vec![catalog_name.to_owned()]
     } else {
         obj.category_path.clone()
     };
@@ -123,7 +140,7 @@ fn item_from(
         _ => placeholder_symbol(&obj.name, w, d),
     };
     let mut item = CatalogItem::new(
-        format!("chief.{}.{}", cat.id(), obj.library_object_id),
+        format!("chief.{catalog_id}.{}", obj.library_object_id),
         obj.name.clone(),
         Placement::FreeStanding,
         symbol,

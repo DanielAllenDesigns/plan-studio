@@ -1,28 +1,28 @@
 //! Site view: rendering, hit-testing and storage of the electrical devices
 //! (CB-62..CB-67) and the terrain (CB-51, CB-52) in the plan.
 //!
-//! # Storage (TODO: plan-core fields)
+//! # Storage
 //!
-//! `plan-core` has no slots for these yet, so both are stored as one JSON
-//! record in `floor.cad`, a [`CadItem::Text`] on a reserved, hidden layer:
+//! The floor's [`ElectricalLayer`] lives in `Floor.electrical` and the
+//! project's [`TerrainRecord`] (the `plan_terrain::Terrain` plus the contour
+//! interval and the built flag) in `Project.terrain`, both through the typed
+//! `*_as` / `set_*` accessors of `plan-core`.
 //!
-//! * `"Electrical, Data"`: the floor's `plan_electrical::ElectricalLayer`;
-//! * `"Terrain, Data"`: a [`TerrainRecord`] (the `plan_terrain::Terrain` plus the
-//!   contour interval and the built flag) for the whole project, kept on the
-//!   first floor that holds one (floor 0 for a new record).
-//!
-//! The layers are added to the project hidden and locked so the renderer and
-//! the Select tool skip the records; undo and redo restore them with the rest
-//! of the project. [`draw_site`] and [`draw_devices`] are called from
-//! `render::draw_plan`; parsed records and the built terrain surface are
-//! cached per thread, keyed by a hash of the record text.
+//! Older files kept both as JSON text records in `floor.cad` on the hidden
+//! layers `"Electrical, Data"` and `"Terrain, Data"`;
+//! [`migrate_legacy_storage`] moves them into the typed slots when a project
+//! is loaded (and does the same for the roof records, see
+//! `roof_view::migrate_legacy`). Undo and redo restore the slots with the
+//! rest of the project. [`draw_site`] and [`draw_devices`] are called from
+//! `render::draw_plan`; the parsed layers and the built terrain surface are
+//! cached per thread, keyed by a comparison with the stored value.
 
 use crate::editor::{Camera, EditorContext};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Shape};
 use plan_core::cad::CadItem;
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
 use plan_core::units::fmt_ft_in_frac;
-use plan_core::{Floor, Id, Layer, Project, Wall};
+use plan_core::{Floor, Id, Project, Wall};
 use plan_electrical::{place_on_wall, Device, ElectricalLayer, Stroke as ElStroke, WallSide};
 use plan_terrain::{
     auto_hole_for_building, build_terrain, contours, plan_symbols, Contour, FeatureKind,
@@ -30,13 +30,11 @@ use plan_terrain::{
 };
 use serde_json::{json, Value};
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-/// Reserved layer of the electrical record.
+/// Legacy hidden layer of the electrical record (older files only).
 pub const ELECTRICAL_DATA_LAYER: &str = "Electrical, Data";
-/// Reserved layer of the terrain record.
+/// Legacy hidden layer of the terrain record (older files only).
 pub const TERRAIN_DATA_LAYER: &str = "Terrain, Data";
 /// The visible layer devices are drawn on.
 pub const ELECTRICAL_LAYER: &str = "Electrical";
@@ -46,77 +44,27 @@ pub const TERRAIN_LAYER: &str = "Terrain";
 pub const DEFAULT_CONTOUR_INTERVAL: f64 = 12.0;
 /// How near a click must be to a device symbol to pick it, inches (at least).
 const DEVICE_PICK_MIN: f64 = 5.0;
-const RECORD_TEXT_HEIGHT: f64 = 0.1;
 
-// ----- record storage -----
+// ----- storage -----
 
-fn hash_str(s: &str) -> u64 {
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
-}
-
-fn record_text<'a>(floor: &'a Floor, layer: &str) -> Option<&'a str> {
-    floor.cad.iter().find_map(|c| match &c.item {
-        CadItem::Text { text, .. } if c.layer == layer => Some(text.as_str()),
-        _ => None,
-    })
-}
-
-/// Adds the reserved record layer (hidden and locked) if the project lacks it.
-fn ensure_data_layer(project: &mut Project, name: &str) {
-    if project.layers.get(name).is_none() {
-        let mut l = Layer::new(name, [128, 128, 128], 13);
-        l.display = false;
-        l.locked = true;
-        project.layers.add(l);
-    }
-}
-
-fn write_record(project: &mut Project, floor: usize, layer: &str, text: String) {
-    ensure_data_layer(project, layer);
-    let existing = project.floors[floor]
-        .cad
-        .iter_mut()
-        .find(|c| c.layer == layer && matches!(c.item, CadItem::Text { .. }));
-    match existing {
-        Some(c) => {
-            if let CadItem::Text { text: t, .. } = &mut c.item {
-                *t = text;
-            }
-        }
-        None => {
-            project.add_cad(
-                floor,
-                layer,
-                CadItem::Text {
-                    pos: Point::ZERO,
-                    text,
-                    height: RECORD_TEXT_HEIGHT,
-                    angle: 0.0,
-                },
-            );
-        }
-    }
-}
-
-/// The electrical layer of `floor` (empty when it has no record).
+/// The electrical layer of `floor` (empty when it has none).
 pub fn load_electrical(floor: &Floor) -> ElectricalLayer {
-    record_text(floor, ELECTRICAL_DATA_LAYER)
-        .and_then(|t| serde_json::from_str(t).ok())
+    floor
+        .electrical_as::<ElectricalLayer>()
+        .ok()
+        .flatten()
         .unwrap_or_default()
 }
 
-/// Stores `layer` as the electrical record of `floor`. An empty layer with no
-/// existing record writes nothing.
+/// Stores `layer` as the electrical data of `floor`. An empty layer on a
+/// floor without electrical data writes nothing.
 pub fn save_electrical(project: &mut Project, floor: usize, layer: &ElectricalLayer) {
-    let has_record = record_text(&project.floors[floor], ELECTRICAL_DATA_LAYER).is_some();
-    if !has_record && layer.devices.is_empty() && layer.connections.is_empty() {
+    let f = &mut project.floors[floor];
+    if f.electrical.is_none() && layer.devices.is_empty() && layer.connections.is_empty() {
         return;
     }
-    if let Ok(text) = serde_json::to_string(layer) {
-        write_record(project, floor, ELECTRICAL_DATA_LAYER, text);
-    }
+    // Serializing plain data cannot fail; keep the old value if it ever does.
+    let _ = f.set_electrical(layer);
 }
 
 /// The project's terrain with the settings the Terrain Specification edits.
@@ -149,21 +97,17 @@ impl TerrainRecord {
         self.terrain.perimeter.len() >= 3
     }
 
-    fn to_json(&self) -> Option<String> {
+    fn to_value(&self) -> Option<Value> {
         let terrain = serde_json::to_value(&self.terrain).ok()?;
-        Some(
-            json!({
-                "terrain": terrain,
-                "contour_interval": self.contour_interval,
-                "built": self.built,
-                "layer": self.layer,
-            })
-            .to_string(),
-        )
+        Some(json!({
+            "terrain": terrain,
+            "contour_interval": self.contour_interval,
+            "built": self.built,
+            "layer": self.layer,
+        }))
     }
 
-    fn from_json(s: &str) -> Option<Self> {
-        let v: Value = serde_json::from_str(s).ok()?;
+    fn from_value(v: &Value) -> Option<Self> {
         let terrain: Terrain = serde_json::from_value(v.get("terrain")?.clone()).ok()?;
         let base = Self::new();
         Some(Self {
@@ -188,52 +132,112 @@ impl Default for TerrainRecord {
     }
 }
 
-fn terrain_record_text(project: &Project) -> Option<(usize, &str)> {
-    project
-        .floors
-        .iter()
-        .enumerate()
-        .find_map(|(i, f)| record_text(f, TERRAIN_DATA_LAYER).map(|t| (i, t)))
-}
-
 /// The project's terrain record, if one was saved.
 pub fn load_terrain(project: &Project) -> Option<TerrainRecord> {
-    terrain_record_text(project).and_then(|(_, t)| TerrainRecord::from_json(t))
+    project.terrain.as_ref().and_then(TerrainRecord::from_value)
 }
 
-/// Stores the terrain record (on the floor that already holds one, else floor 0).
+/// Stores the terrain record in `Project.terrain`.
 pub fn save_terrain(project: &mut Project, rec: &TerrainRecord) {
-    let floor = terrain_record_text(project).map_or(0, |(i, _)| i);
-    if let Some(text) = rec.to_json() {
-        write_record(project, floor, TERRAIN_DATA_LAYER, text);
+    if let Some(v) = rec.to_value() {
+        project.terrain = Some(v);
     }
+}
+
+// ----- migration of the old CAD-record storage -----
+
+/// Removes the JSON text records on `layer` from `floor.cad` and returns the
+/// first one that parses. Records that do not parse are left in place.
+fn take_record(floor: &mut Floor, layer: &str) -> Option<Value> {
+    let parsed = floor.cad.iter().find_map(|c| match &c.item {
+        CadItem::Text { text, .. } if c.layer == layer => serde_json::from_str::<Value>(text).ok(),
+        _ => None,
+    })?;
+    floor
+        .cad
+        .retain(|c| !(c.layer == layer && matches!(c.item, CadItem::Text { .. })));
+    Some(parsed)
+}
+
+/// Drops the hidden record layer `name` once no CAD item uses it.
+pub(crate) fn drop_data_layer(project: &mut Project, name: &str) {
+    if project
+        .floors
+        .iter()
+        .any(|f| f.cad.iter().any(|c| c.layer == name))
+    {
+        return;
+    }
+    project.layers.layers.retain(|l| l.name != name);
+}
+
+fn migrate_electrical(project: &mut Project) -> bool {
+    let mut changed = false;
+    for floor in &mut project.floors {
+        if floor.electrical.is_some() {
+            continue;
+        }
+        if let Some(v) = take_record(floor, ELECTRICAL_DATA_LAYER) {
+            floor.electrical = Some(v);
+            changed = true;
+        }
+    }
+    drop_data_layer(project, ELECTRICAL_DATA_LAYER);
+    changed
+}
+
+fn migrate_terrain(project: &mut Project) -> bool {
+    let mut changed = false;
+    if project.terrain.is_none() {
+        for floor in &mut project.floors {
+            if let Some(v) = take_record(floor, TERRAIN_DATA_LAYER) {
+                project.terrain = Some(v);
+                changed = true;
+                break;
+            }
+        }
+    }
+    drop_data_layer(project, TERRAIN_DATA_LAYER);
+    changed
+}
+
+/// Project-load step ("Migrate roof storage", no undo entry): moves the roof,
+/// electrical and terrain records that older files kept as hidden CAD text
+/// into `Floor.roofs`, `Floor.electrical` and `Project.terrain`, removes the
+/// legacy items and the hidden "..., Data" layers, and returns whether
+/// anything moved. Slots that are already filled are left alone.
+pub fn migrate_legacy_storage(project: &mut Project) -> bool {
+    let mut changed = super::roof_view::migrate_legacy(project);
+    changed |= migrate_electrical(project);
+    changed |= migrate_terrain(project);
+    changed
 }
 
 // ----- caches -----
 
-type ElecCache = Option<(usize, u64, Rc<ElectricalLayer>)>;
-type TerrainCache = Option<(u64, Rc<TerrainView>)>;
+type ElecCache = Option<(usize, Value, Rc<ElectricalLayer>)>;
+type TerrainCache = Option<(Value, Rc<TerrainView>)>;
 
 thread_local! {
     static ELEC_CACHE: RefCell<ElecCache> = const { RefCell::new(None) };
     static TERRAIN_CACHE: RefCell<TerrainCache> = const { RefCell::new(None) };
 }
 
-/// The floor's electrical layer, parsed once per change of the record.
+/// The floor's electrical layer, parsed once per change of the stored value.
 pub fn electrical_layer(floor_index: usize, floor: &Floor) -> Rc<ElectricalLayer> {
-    let Some(text) = record_text(floor, ELECTRICAL_DATA_LAYER) else {
+    let Some(value) = floor.electrical.as_ref() else {
         return Rc::new(ElectricalLayer::default());
     };
-    let h = hash_str(text);
     ELEC_CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        if let Some((i, hh, layer)) = c.as_ref() {
-            if *i == floor_index && *hh == h {
+        if let Some((i, v, layer)) = c.as_ref() {
+            if *i == floor_index && v == value {
                 return layer.clone();
             }
         }
-        let layer: Rc<ElectricalLayer> = Rc::new(serde_json::from_str(text).unwrap_or_default());
-        *c = Some((floor_index, h, layer.clone()));
+        let layer: Rc<ElectricalLayer> =
+            Rc::new(serde_json::from_value(value.clone()).unwrap_or_default());
+        *c = Some((floor_index, value.clone(), layer.clone()));
         layer
     })
 }
@@ -265,19 +269,18 @@ impl TerrainView {
     }
 }
 
-/// The built view of the project's terrain (cached by record text).
+/// The built view of the project's terrain (cached by the stored value).
 pub fn terrain_view(project: &Project) -> Option<Rc<TerrainView>> {
-    let (_, text) = terrain_record_text(project)?;
-    let h = hash_str(text);
+    let value = project.terrain.as_ref()?;
     TERRAIN_CACHE.with(|c| {
         let mut c = c.borrow_mut();
-        if let Some((hh, v)) = c.as_ref() {
-            if *hh == h {
-                return Some(v.clone());
+        if let Some((v, view)) = c.as_ref() {
+            if v == value {
+                return Some(view.clone());
             }
         }
-        let view = Rc::new(TerrainView::new(TerrainRecord::from_json(text)?));
-        *c = Some((h, view.clone()));
+        let view = Rc::new(TerrainView::new(TerrainRecord::from_value(value)?));
+        *c = Some((value.clone(), view.clone()));
         Some(view)
     })
 }
@@ -861,34 +864,39 @@ mod tests {
     }
 
     #[test]
-    fn electrical_record_round_trips_and_hides_its_layer() {
+    fn electrical_round_trips_through_the_typed_slot() {
         let mut cx = cx();
         let mut layer = ElectricalLayer::default();
         let id = layer.add(place_free(DeviceKind::CeilingLight, Point::new(10.0, 20.0)));
         save_electrical(&mut cx.project, 0, &layer);
+        assert!(cx.floor().electrical.is_some());
+        assert!(cx.floor().cad.is_empty(), "no CAD record any more");
         let back = load_electrical(cx.floor());
         assert_eq!(back, layer);
         assert_eq!(back.device(id).unwrap().position, Point::new(10.0, 20.0));
-        assert!(!cx.layers().is_visible(ELECTRICAL_DATA_LAYER));
-        assert!(cx.layers().is_locked(ELECTRICAL_DATA_LAYER));
-        // The record survives a project JSON round trip.
+        assert_eq!(
+            cx.floor().electrical_as::<ElectricalLayer>().unwrap(),
+            Some(layer.clone())
+        );
+        // The slot survives a project JSON round trip.
         let json = cx.project.to_json().unwrap();
         let project = Project::from_json(&json).unwrap();
         assert_eq!(load_electrical(&project.floors[0]), layer);
-        // Saving again replaces the record instead of adding another.
+        // Saving again replaces the data instead of adding another.
         save_electrical(&mut cx.project, 0, &layer);
-        assert_eq!(cx.floor().cad.len(), 1);
-    }
-
-    #[test]
-    fn an_empty_layer_without_a_record_writes_nothing() {
-        let mut cx = cx();
-        save_electrical(&mut cx.project, 0, &ElectricalLayer::default());
         assert!(cx.floor().cad.is_empty());
     }
 
     #[test]
-    fn terrain_record_round_trips() {
+    fn an_empty_layer_without_data_writes_nothing() {
+        let mut cx = cx();
+        save_electrical(&mut cx.project, 0, &ElectricalLayer::default());
+        assert!(cx.floor().electrical.is_none());
+        assert!(cx.floor().cad.is_empty());
+    }
+
+    #[test]
+    fn terrain_round_trips_through_the_typed_slot() {
         let mut cx = cx();
         assert!(load_terrain(&cx.project).is_none());
         let mut rec = TerrainRecord::new();
@@ -907,9 +915,158 @@ mod tests {
         rec.built = true;
         save_terrain(&mut cx.project, &rec);
         assert_eq!(load_terrain(&cx.project), Some(rec.clone()));
+        assert!(cx.project.terrain.is_some());
         let project = Project::from_json(&cx.project.to_json().unwrap()).unwrap();
+        assert_eq!(load_terrain(&project), Some(rec.clone()));
+        assert_eq!(
+            project.terrain_as::<Value>().unwrap().unwrap()["built"],
+            true
+        );
+        assert!(cx.floor().cad.is_empty());
+    }
+
+    /// Writes the pre-typed-slot storage: a JSON text on a hidden layer.
+    fn put_legacy_record(project: &mut Project, floor: usize, layer: &str, text: String) {
+        let mut l = plan_core::Layer::new(layer, [128, 128, 128], 13);
+        l.display = false;
+        l.locked = true;
+        project.layers.add(l);
+        project.add_cad(
+            floor,
+            layer,
+            CadItem::Text {
+                pos: Point::ZERO,
+                text,
+                height: 0.1,
+                angle: 0.0,
+            },
+        );
+    }
+
+    #[test]
+    fn legacy_electrical_and_terrain_records_migrate_once() {
+        let mut project = Project::new("old");
+        project.floors.push(Floor::new("2nd Floor", 109.0));
+        let mut layer = ElectricalLayer::default();
+        layer.add(place_free(DeviceKind::Switch, Point::new(3.0, 4.0)));
+        put_legacy_record(
+            &mut project,
+            1,
+            ELECTRICAL_DATA_LAYER,
+            serde_json::to_string(&layer).unwrap(),
+        );
+        let mut rec = TerrainRecord::new();
+        rec.terrain.perimeter = vec![
+            Point::new(0.0, 0.0),
+            Point::new(300.0, 0.0),
+            Point::new(300.0, 300.0),
+        ];
+        rec.built = true;
+        let terrain_text = rec.to_value().unwrap().to_string();
+        put_legacy_record(&mut project, 0, TERRAIN_DATA_LAYER, terrain_text);
+        // Something unrelated on the same floor stays.
+        project.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Line {
+                a: Point::ZERO,
+                b: Point::new(1.0, 1.0),
+            },
+        );
+
+        assert!(migrate_legacy_storage(&mut project));
+        assert_eq!(load_electrical(&project.floors[1]), layer);
+        assert!(project.floors[0].electrical.is_none());
+        assert_eq!(load_terrain(&project), Some(rec.clone()));
+        assert_eq!(project.floors[0].cad.len(), 1, "only the line is left");
+        assert!(project.floors[1].cad.is_empty());
+        assert!(project.layers.get(ELECTRICAL_DATA_LAYER).is_none());
+        assert!(project.layers.get(TERRAIN_DATA_LAYER).is_none());
+        // Nothing left to migrate.
+        assert!(!migrate_legacy_storage(&mut project));
         assert_eq!(load_terrain(&project), Some(rec));
-        assert_eq!(cx.floor().cad.len(), 1);
+    }
+
+    #[test]
+    fn opening_a_project_migrates_the_legacy_records() {
+        let mut project = Project::new("old");
+        let mut layer = ElectricalLayer::default();
+        layer.add(place_free(DeviceKind::Switch, Point::new(3.0, 4.0)));
+        put_legacy_record(
+            &mut project,
+            0,
+            ELECTRICAL_DATA_LAYER,
+            serde_json::to_string(&layer).unwrap(),
+        );
+        let mut cx = cx();
+        cx.set_project(project);
+        assert_eq!(load_electrical(cx.floor()), layer);
+        assert!(cx.floor().cad.is_empty());
+        assert!(!cx.can_undo(), "the migration is not an undo step");
+    }
+
+    #[test]
+    fn the_sample_plans_still_load() {
+        let samples = [
+            (
+                "ranch-3bed",
+                include_str!("../../../../samples/ranch-3bed.psplan"),
+            ),
+            (
+                "studio-adu",
+                include_str!("../../../../samples/studio-adu.psplan"),
+            ),
+            (
+                "two-story-colonial",
+                include_str!("../../../../samples/two-story-colonial.psplan"),
+            ),
+        ];
+        for (name, text) in samples {
+            let mut p =
+                Project::from_json(text).unwrap_or_else(|e| panic!("{name} does not load: {e}"));
+            assert!(
+                p.floors.iter().any(|f| !f.walls.is_empty()),
+                "{name} has walls"
+            );
+            // Nothing legacy in them, and the new slots default.
+            assert!(!migrate_legacy_storage(&mut p), "{name}");
+            assert!(p.terrain.is_none(), "{name}");
+            assert!(p.floors.iter().all(|f| f.roofs.is_empty()), "{name}");
+            for o in p.floors.iter().flat_map(|f| &f.openings) {
+                assert!(o.extras.show_open_in_plan, "{name}");
+            }
+            // And they survive a save with the new fields.
+            let again = Project::from_json(&p.to_json().unwrap())
+                .unwrap_or_else(|e| panic!("{name} does not reload: {e}"));
+            assert_eq!(again.floors.len(), p.floors.len(), "{name}");
+            let mut cx = cx();
+            cx.set_project(again);
+            cx.refresh();
+            assert!(!cx.rooms.is_empty(), "{name} has rooms");
+        }
+    }
+
+    #[test]
+    fn migration_keeps_filled_slots_and_unreadable_records() {
+        let mut project = Project::new("both");
+        let mut typed = ElectricalLayer::default();
+        typed.add(place_free(DeviceKind::Switch, Point::ZERO));
+        save_electrical(&mut project, 0, &typed);
+        let mut old = ElectricalLayer::default();
+        old.add(place_free(DeviceKind::Outlet110, Point::new(9.0, 9.0)));
+        old.add(place_free(DeviceKind::Outlet110, Point::new(19.0, 9.0)));
+        put_legacy_record(
+            &mut project,
+            0,
+            ELECTRICAL_DATA_LAYER,
+            serde_json::to_string(&old).unwrap(),
+        );
+        put_legacy_record(&mut project, 0, TERRAIN_DATA_LAYER, "{not json".into());
+        migrate_legacy_storage(&mut project);
+        assert_eq!(load_electrical(&project.floors[0]), typed);
+        assert!(project.terrain.is_none());
+        // Records that could not be moved are not destroyed.
+        assert_eq!(project.floors[0].cad.len(), 2);
     }
 
     #[test]

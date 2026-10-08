@@ -9,23 +9,28 @@
 //!   framing the whole plan. No camera object is created (C-14, verify).
 //! * **Cross Section/Elevation** (C-17, C-19): press-drag defines the cut
 //!   line; the view looks to the LEFT of the drag direction, so dragging a
-//!   line west to east looks north. Release creates a `CrossSection` camera.
-//!   `CameraObject` has no second point, so by convention a section stores
-//!   the line centre in `position`, the viewing direction in `direction_deg`
-//!   and the line length in `fov_deg` (orthographic cameras have no field of
-//!   view, C-16); see [`section_line`].
+//!   line west to east looks north. Release creates a `CrossSection` camera
+//!   whose cut line is stored in `CameraObject.section` (a [`SectionLine`]
+//!   with both ends and the back clip). `position` mirrors the line centre
+//!   and `direction_deg` the viewing direction so every consumer of a camera
+//!   keeps working; `fov_deg` is left alone. Files from before the typed
+//!   field encoded a section as centre, direction and the line length in
+//!   `fov_deg`; they are still read that way when `section` is `None` (see
+//!   [`section_line`]) and are converted the first time one is edited
+//!   ([`upgrade_section`]).
 //! * Camera symbols (C-24) and handles (C-25..C-28): Move, Aim (direction,
-//!   Shift snaps to 15 degrees, C-27), Clip distance, and for sections the
-//!   two line ends. Tab cycles cameras, Delete removes one (C-29), a
+//!   Shift snaps to the Editing angle step, 15 degrees by default, C-27),
+//!   Clip distance, and for sections the two line ends. Tab cycles cameras, Delete removes one (C-29), a
 //!   double-click opens the Camera Specification (C-30).
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::{Camera, EditorContext};
 use crate::shell::view3d_panel::{camera_defaults, Outbox, ViewRequest};
 use eframe::egui::{self, Color32, Pos2, Shape, Stroke, StrokeKind};
-use plan_core::camera::DEFAULT_CONE_LENGTH;
+use plan_core::camera::{DEFAULT_CONE_LENGTH, DEFAULT_FOV_DEG};
+use plan_core::extras::SectionLine;
 use plan_core::geometry::{dist_to_segment, Point};
-use plan_core::{CameraKind, CameraObject, Id, Layer};
+use plan_core::{CameraKind, CameraObject, EditingDefaults, Id, Layer};
 use std::sync::Mutex;
 
 /// The layer camera symbols live on (C-24).
@@ -118,19 +123,72 @@ pub fn is_section(c: &CameraObject) -> bool {
 /// Unit vector along the section line (the viewing direction turned 90
 /// degrees clockwise, so the view looks to the left of A to B).
 pub fn section_tangent(c: &CameraObject) -> Point {
+    if let Some(s) = &c.section {
+        let v = s.b - s.a;
+        if v.length() > 1e-9 {
+            return v.normalized();
+        }
+    }
     let d = c.direction();
     Point::new(d.y, -d.x)
 }
 
-/// Length of a section line (stored in `fov_deg`, see the module docs).
+/// Length of a section line.
 pub fn section_width(c: &CameraObject) -> f64 {
-    c.fov_deg.max(MIN_SECTION_LEN)
+    match &c.section {
+        Some(s) => s.a.dist(s.b).max(MIN_SECTION_LEN),
+        // Old encoding: the length rides in `fov_deg`.
+        None => c.fov_deg.max(MIN_SECTION_LEN),
+    }
 }
 
 /// The two ends of a section camera's cut line.
 pub fn section_line(c: &CameraObject) -> (Point, Point) {
+    if let Some(s) = &c.section {
+        return (s.a, s.b);
+    }
     let t = section_tangent(c) * (section_width(c) * 0.5);
     (c.position - t, c.position + t)
+}
+
+/// Writes a section's geometry: the cut line of `width` centred on `centre`
+/// looking along `view_deg`, with back clip `back`. Also keeps `position`,
+/// `direction_deg` and the back clip of the camera kind in step.
+pub fn set_section_geometry(
+    c: &mut CameraObject,
+    centre: Point,
+    view_deg: f64,
+    width: f64,
+    back: Option<f64>,
+) {
+    let a = view_deg.to_radians();
+    let view = Point::new(a.cos(), a.sin());
+    let half = Point::new(view.y, -view.x) * (width.max(MIN_SECTION_LEN) * 0.5);
+    c.position = centre;
+    c.direction_deg = view_deg;
+    c.section = Some(SectionLine {
+        a: centre - half,
+        b: centre + half,
+        back_clip: back,
+    });
+    if let CameraKind::CrossSection { back_clip } = &mut c.kind {
+        *back_clip = back;
+    }
+}
+
+/// Gives a section read from an old file (no `section` yet) its typed cut
+/// line and frees `fov_deg` from carrying the length. Other cameras are left
+/// alone.
+pub fn upgrade_section(c: &mut CameraObject) {
+    if is_section(c) && c.section.is_none() {
+        let (a, b) = section_line(c);
+        c.section = Some(SectionLine {
+            a,
+            b,
+            back_clip: back_clip(c),
+        });
+        c.fov_deg = DEFAULT_FOV_DEG;
+    }
 }
 
 /// Centre, viewing direction (degrees) and length of the section whose cut
@@ -147,8 +205,9 @@ pub fn section_from_drag(a: Point, b: Point) -> Option<(Point, f64, f64)> {
 
 /// Back clip distance of a section camera, if it has one (C-19).
 pub fn back_clip(c: &CameraObject) -> Option<f64> {
-    match c.kind {
-        CameraKind::CrossSection { back_clip } => back_clip,
+    match (&c.section, c.kind) {
+        (Some(s), _) => s.back_clip,
+        (None, CameraKind::CrossSection { back_clip }) => back_clip,
         _ => None,
     }
 }
@@ -217,30 +276,62 @@ pub fn hit_symbol(c: &CameraObject, p: Point, tol: f64) -> bool {
 }
 
 /// Drags handle `h` of `c` to the plan point `to`. `snap_angle` rounds a
-/// direction to 15 degrees (C-27).
+/// direction to the default angle step (15 degrees, C-27); the tool passes the
+/// plan's Editing step through [`apply_handle_with`].
 pub fn apply_handle(c: &mut CameraObject, h: CamHandle, to: Point, snap_angle: bool) {
+    apply_handle_with(
+        c,
+        h,
+        to,
+        snap_angle.then(|| EditingDefaults::default().angle_snap_deg),
+    );
+}
+
+/// [`apply_handle`] with the angle step to round a direction to, if any.
+pub fn apply_handle_with(c: &mut CameraObject, h: CamHandle, to: Point, snap_deg: Option<f64>) {
+    upgrade_section(c);
     match h {
-        CamHandle::Move => c.position = to,
+        CamHandle::Move => {
+            let delta = to - c.position;
+            c.position = to;
+            if let Some(s) = &mut c.section {
+                s.a = s.a + delta;
+                s.b = s.b + delta;
+            }
+        }
         CamHandle::Aim => {
             let v = to - c.position;
             if v.length() > 1e-6 {
                 let mut deg = v.angle().to_degrees();
-                if snap_angle {
-                    deg = (deg / 15.0).round() * 15.0;
+                if let Some(step) = snap_deg.filter(|s| *s > 0.0) {
+                    deg = (deg / step).round() * step;
                 }
-                c.direction_deg = deg;
+                if is_section(c) {
+                    let (centre, width, back) = (c.position, section_width(c), back_clip(c));
+                    set_section_geometry(c, centre, deg, width, back);
+                } else {
+                    c.direction_deg = deg;
+                }
             }
         }
         CamHandle::Clip => {
             let along = ((to - c.position).dot(c.direction())).max(MIN_CLIP);
             match &mut c.kind {
-                CameraKind::CrossSection { back_clip } => *back_clip = Some(along),
+                CameraKind::CrossSection { back_clip } => {
+                    *back_clip = Some(along);
+                    if let Some(s) = &mut c.section {
+                        s.back_clip = Some(along);
+                    }
+                }
                 _ => c.clip_distance = Some(along),
             }
         }
         CamHandle::EndA | CamHandle::EndB => {
-            let half = (to - c.position).dot(section_tangent(c)).abs();
-            c.fov_deg = (half * 2.0).max(MIN_SECTION_LEN);
+            if is_section(c) {
+                let half = (to - c.position).dot(section_tangent(c)).abs();
+                let (centre, dir, back) = (c.position, c.direction_deg, back_clip(c));
+                set_section_geometry(c, centre, dir, half * 2.0, back);
+            }
         }
     }
 }
@@ -371,7 +462,7 @@ impl CameraTool {
     }
 
     fn create_section(&mut self, cx: &mut EditorContext, a: Point, b: Point) -> ToolResult {
-        let Some((centre, dir, width)) = section_from_drag(a, b) else {
+        let Some((centre, dir, _)) = section_from_drag(a, b) else {
             cx.status = "Drag a longer line to define the cross section".into();
             return ToolResult::consumed();
         };
@@ -387,7 +478,11 @@ impl CameraTool {
             name,
             cx.floor,
         );
-        cam.fov_deg = width;
+        cam.section = Some(SectionLine {
+            a,
+            b,
+            back_clip: back,
+        });
         self.add_camera(cx, cam)
     }
 
@@ -539,9 +634,12 @@ impl Tool for CameraTool {
         } else {
             p.world
         };
-        let snap_angle = p.modifiers.shift;
+        let snap_deg = p
+            .modifiers
+            .shift
+            .then_some(cx.defaults.editing.angle_snap_deg);
         cx.project
-            .update_camera(id, |c| apply_handle(c, handle, to, snap_angle));
+            .update_camera(id, |c| apply_handle_with(c, handle, to, snap_deg));
         // Update a 3D view of this camera live while the mouse is down (C-26).
         self.outbox.post(ViewRequest::RefreshCamera(id));
         ToolResult::consumed()
@@ -1016,5 +1114,130 @@ mod tests {
         // Without a pending choice the variant stays.
         t.set_variant(ToolId::Camera);
         assert_eq!(t.variant, CameraVariant::DollHouse);
+    }
+
+    fn legacy_section() -> CameraObject {
+        // West to east along y = -50, 400 long, looking north: the old
+        // encoding (length in `fov_deg`, no typed section).
+        CameraObject {
+            fov_deg: 400.0,
+            ..CameraObject::new(
+                CameraKind::CrossSection {
+                    back_clip: Some(80.0),
+                },
+                Point::new(120.0, -50.0),
+                90.0,
+                "Section 1",
+                0,
+            )
+        }
+    }
+
+    #[test]
+    fn a_new_section_stores_its_cut_line_and_leaves_fov_alone() {
+        let (mut cx, mut t, _o) = setup();
+        t.variant = CameraVariant::BackClippedSection;
+        drag(
+            &mut cx,
+            &mut t,
+            Point::new(10.0, 20.0),
+            Point::new(110.0, 20.0),
+        );
+        let c = &cx.project.cameras[0];
+        let s = c.section.expect("typed cut line");
+        assert_eq!(
+            (s.a, s.b),
+            (Point::new(10.0, 20.0), Point::new(110.0, 20.0))
+        );
+        assert_eq!(s.back_clip, Some(DEFAULT_BACK_CLIP));
+        assert_eq!(
+            c.kind,
+            CameraKind::CrossSection {
+                back_clip: Some(DEFAULT_BACK_CLIP)
+            }
+        );
+        assert_eq!(
+            c.fov_deg, DEFAULT_FOV_DEG,
+            "fov_deg no longer carries the length"
+        );
+        assert_eq!(c.position, Point::new(60.0, 20.0));
+        assert!((c.direction_deg - 90.0).abs() < 1e-9);
+        assert!((section_width(c) - 100.0).abs() < 1e-9);
+        // The section survives the file.
+        let back = plan_core::Project::from_json(&cx.project.to_json().unwrap()).unwrap();
+        assert_eq!(back.cameras[0].section, c.section);
+    }
+
+    #[test]
+    fn the_old_section_encoding_is_still_read() {
+        let c = legacy_section();
+        assert!(c.section.is_none());
+        assert!((section_width(&c) - 400.0).abs() < 1e-9);
+        let (a, b) = section_line(&c);
+        assert!(a.dist(Point::new(-80.0, -50.0)) < 1e-9 && b.dist(Point::new(320.0, -50.0)) < 1e-9);
+        assert_eq!(back_clip(&c), Some(80.0));
+        assert!(handles_of(&c).iter().any(|(h, _)| *h == CamHandle::Clip));
+    }
+
+    #[test]
+    fn editing_an_old_section_upgrades_it_without_moving_it() {
+        let mut c = legacy_section();
+        let before = section_line(&c);
+        upgrade_section(&mut c);
+        let s = c.section.unwrap();
+        assert_eq!((s.a, s.b), before);
+        assert_eq!(s.back_clip, Some(80.0));
+        assert_eq!(c.fov_deg, DEFAULT_FOV_DEG);
+        assert_eq!(section_line(&c), before);
+
+        // Handles on an old camera upgrade it first, then edit.
+        let mut c = legacy_section();
+        apply_handle(&mut c, CamHandle::Move, Point::new(130.0, -40.0), false);
+        let (a, b) = section_line(&c);
+        assert!(a.dist(Point::new(-70.0, -40.0)) < 1e-9 && b.dist(Point::new(330.0, -40.0)) < 1e-9);
+        assert!(c.section.is_some());
+    }
+
+    #[test]
+    fn section_handles_keep_the_line_and_the_camera_in_step() {
+        let mut c = legacy_section();
+        // Stretch: the line grows symmetrically about the centre.
+        apply_handle(&mut c, CamHandle::EndB, Point::new(170.0, -50.0), false);
+        assert!((section_width(&c) - 100.0).abs() < 1e-9);
+        let (a, b) = section_line(&c);
+        assert!(a.dist(Point::new(70.0, -50.0)) < 1e-9 && b.dist(Point::new(170.0, -50.0)) < 1e-9);
+        // Aim: the line turns about the centre, keeping its length; the view
+        // direction follows and the stored line stays perpendicular to it.
+        apply_handle(&mut c, CamHandle::Aim, Point::new(120.0, 100.0), false);
+        assert!((c.direction_deg - 90.0).abs() < 1e-9);
+        apply_handle(&mut c, CamHandle::Aim, Point::new(220.0, -50.0), false);
+        assert!(c.direction_deg.abs() < 1e-9);
+        let (a, b) = section_line(&c);
+        assert!((a.dist(b) - 100.0).abs() < 1e-9);
+        assert!((a.x - 120.0).abs() < 1e-9 && (b.x - 120.0).abs() < 1e-9);
+        assert_eq!(c.position, Point::new(120.0, -50.0));
+        // Clip: both the kind and the typed line carry it.
+        apply_handle(&mut c, CamHandle::Clip, Point::new(320.0, -50.0), false);
+        assert_eq!(back_clip(&c), Some(200.0));
+        assert_eq!(
+            c.kind,
+            CameraKind::CrossSection {
+                back_clip: Some(200.0)
+            }
+        );
+        assert_eq!(c.section.unwrap().back_clip, Some(200.0));
+    }
+
+    #[test]
+    fn the_aim_snap_step_comes_from_the_caller() {
+        let mut c = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "c", 0);
+        // 38 degrees snaps to 30 with a 30 degree step, to 45 with 45.
+        let to = Point::new(100.0, 100.0 * 38.0_f64.to_radians().tan());
+        apply_handle_with(&mut c, CamHandle::Aim, to, Some(30.0));
+        assert!((c.direction_deg - 30.0).abs() < 1e-9);
+        apply_handle_with(&mut c, CamHandle::Aim, to, Some(45.0));
+        assert!((c.direction_deg - 45.0).abs() < 1e-9);
+        apply_handle_with(&mut c, CamHandle::Aim, to, None);
+        assert!((c.direction_deg - 38.0).abs() < 1e-6);
     }
 }

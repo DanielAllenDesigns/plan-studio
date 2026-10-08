@@ -1,9 +1,9 @@
 # Chapter 11: Layout, Schedules and Printing
 
-This chapter covers turning the model into documents: schedules, the materials list,
-the Create Construction Set PDF, and the layout system behind it. It is honest about the
-gap: schedules, materials and the construction set work today; interactive layout pages,
-Print and Print Preview do not.
+This chapter covers turning the model into documents: schedules, the Framing Takeoff, the materials
+list, the Create Construction Set PDF, the drawing sheet and Print Preview on the plan, and the layout
+system behind it. It is honest about the gap: schedules, framing, materials and the construction set
+work today; interactive layout pages and Print do not.
 
 ## 11.1 The documentation pipeline
 
@@ -21,7 +21,7 @@ Everything is generated from the plan on demand, so the documents always match t
 ## 11.2 Tools: Tools > Schedules
 
 Chief's Tools > Schedules submenu lists 12 schedule types. Plan Studio builds four, for the
-active floor.
+active floor, and a Framing Takeoff (11.11).
 
 | Menu item | Columns | Today |
 |---|---|---|
@@ -29,7 +29,8 @@ active floor.
 | Window Schedule | Number, Width, Height, Sill, Head, Type, Wall | Works. |
 | Room Schedule | Number, Name, Area (sq ft), Perimeter (ft), Ceiling height | Works. |
 | Wall Schedule | Number, Type, Length, Thickness, Height, Area (sq ft), Openings | Works. |
-| Cabinet, Electrical, Fixture, Framing, Furniture, Note, Plant, Room Finish, Custom Schedule | | (planned) |
+| Framing Takeoff | Item, Qty | Works, see 11.11. |
+| Cabinet, Electrical, Fixture, Furniture, Note, Plant, Room Finish, Custom Schedule | | (planned) |
 
 Each opens a window with a scrollable table and an **Export CSV...** button that asks for a
 file name (default `Door_Schedule.csv` and so on). The tables are live: reopen the window after
@@ -95,15 +96,18 @@ architectural scale. Paper units are inches, origin bottom-left.
 - `default_construction_set`: the set in 11.4.
 
 None of this has an interactive editor yet. File > New Layout, Open Layout, Send to Layout (`S, L`),
-the Layout page tabs in the Project Browser, layout box editing, and View > Print Preview are
-(planned).
+the Layout page tabs in the Project Browser and layout box editing are (planned). What exists in the
+editor is the Project Browser's Layout section: one active layout sheet (size and scale, kept for the
+session), which View > Drawing Sheet and Print Preview draw (11.6).
 
 ## 11.6 Printing
 
 | Item | Today |
 |---|---|
 | Print button (`Cmd+P`), File > Print | (planned) dimmed |
-| Print Preview (`Alt+F2`), Drawing Sheet (`Alt+F3`) | The view-bar toggles change state; nothing is drawn (planned) |
+| Drawing Sheet (`Alt+F3`) | Works. Outlines the active layout's sheet, centered on the walls of the active floor, with a caption such as `ARCH D (24 x 36)  1/4" = 1'-0"`. |
+| Print Preview (`Alt+F2`) | Works as a screen preview: it draws the same outline and grays out everything outside the sheet. Nothing is sent to a printer. |
+| Sheet size and scale | Project Browser > Layout > Active layout sheet: a size list (Arch D 24 x 36, Arch C 18 x 24, Letter, Tabloid and the other Arch, ANSI and ISO sheets) and a scale list (1/2", 1/4", 3/16", 1/8" = 1'-0" and the other architectural and metric scales). The default is Arch D at 1/4". Kept for the session; the plan file does not store it. |
 | Print to PDF of the active plan view | (planned; engine: `plan_docs::plan_sheet`) |
 | Create Construction Set (PDF) | Works, see 11.4 |
 
@@ -124,16 +128,17 @@ into Plan Studio is not done; the file is read-only to the program and never cop
 ## 11.8 Line weights and fills
 
 Layer line weights are stored in hundredths of a millimeter (a wall layer is 0.50 mm; a dimension
-0.18 mm). The Line Weights toggle does not change the on-screen drawing yet. The PDF writer does
-apply the weights of its drawings. Fill patterns and hatches (`plan-materials::pattern_strokes`:
+0.18 mm). The View > Line Weights toggle scales the on-screen stroke widths by each layer's weight:
+0.25 mm draws at the base width, and the factor is held between 0.5 and 4 times. Text is not scaled.
+The PDF writer applies the weights of its drawings. Fill patterns and hatches (`plan-materials::pattern_strokes`:
 brick, block, shingle, lap siding, tile, herringbone, insulation, concrete, earth, grass) exist in
 the engine; the plan does not use them yet.
 
 ## 11.9 Differences from Chief
 
 - No interactive layout pages, no layout boxes you can move, no sheet index you can edit.
-- No Print or Print Preview. The only document output is the construction set PDF and CSV.
-- Four of the twelve schedules; no schedule callouts on the plan.
+- No Print. Print Preview only grays out what lies outside the drawing sheet. The document output is the construction set PDF, DXF (chapter 12) and CSV.
+- Four of the twelve schedules, plus the Framing Takeoff; no schedule callouts on the plan.
 - Materials list is a quantity list, not a priced estimate.
 
 ## 11.10 A worked example: a first document set
@@ -153,3 +158,42 @@ With a finished first-floor plan open:
 7. Save the plan with `Cmd+S` so the `.psplan` and the PDF stay together.
 
 The PDF is regenerated from the model every time, so after a change just run step 6 again.
+
+## 11.11 Framing and the Framing Takeoff
+
+Plan Studio builds framing from the plan the way Chief's Build Framing does, using the `plan-framing`
+library. The commands are in the **Build > Framing** menu and in the General Framing flyout on row 2 of the
+toolbar.
+
+| Command | Hotkey | What it does |
+|---|---|---|
+| Build Framing | `Shift+Cmd+S` | Frames the active floor (below). One undo step. |
+| Build All Framing | | The same for every floor. One undo step. |
+| Delete Framing | | Removes the active floor's framing. One undo step. With none the status bar says "There is no framing to delete". |
+
+What Build Framing makes on a floor:
+
+- **Walls**: every wall except Invisible, room divider and railing walls, with its openings: plates, studs at
+  16" on center, king and trimmer studs, headers, cripples and sills.
+- **Floor platforms**: one per detected room (joists across the short side, rim and blocking), except on a
+  foundation floor and for rooms under 1 sq ft.
+- **Roof**: the roof planes stored on the floor (chapter 8) are framed with rafters.
+
+Building again replaces the floor's earlier framing. The members are stored on the floor, so they are saved
+with the plan and undone with it. The Framing layer is created if it is missing and turned on; each member is
+drawn as its plan outline, shaded in that layer's color, whenever the layer is shown. The status bar reports
+"Built framing: n wall, n floor and n roof members".
+
+### Tools > Schedules > Framing Takeoff...
+
+Opens the **Framing Takeoff** window, a lumber list of the framing built so far.
+
+- Two radios choose "<floor name> only" or "All floors".
+- The table has two columns, **Item** (a cut line such as a stud length or a joist) and **Qty**, followed by a
+  **Total <size> (linear ft)** row for each lumber size and **Total board feet**.
+- The footer shows the member count and **Export CSV...** (default file name `framing_takeoff.csv`, an
+  `Item,Qty` file). With no framing the window says "No framing yet. Use Build > Framing > Build Framing."
+
+Not built yet: the manual framing tools (General Framing, Post, Post with Footing, Blocking, Framing Reference
+Marker, Joist, Beam, Rafter, Truss ...) are (planned) and stay dimmed; there is no framing defaults dialog, so
+the library's built-in defaults are used; corner and T backing and combined headers are not generated.

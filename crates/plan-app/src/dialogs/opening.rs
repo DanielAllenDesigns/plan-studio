@@ -7,6 +7,7 @@ use super::{
 };
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use plan_core::defaults::{OpeningDefaults, WindowDefaults};
+use plan_core::extras::OpeningExtras as StoredExtras;
 use plan_core::{Id, Opening, OpeningKind, Project, Wall, WallKind};
 
 /// Minimum clear distance between an opening jamb and a wall end or another
@@ -100,8 +101,11 @@ impl OpeningTarget {
     }
 }
 
-/// Door and window settings the model has no fields for yet, kept per
-/// session by the app. One struct serves both kinds.
+/// Door and window dialog values. The style name, thickness, swing angle,
+/// jamb/frame width and "show open in plan" are stored with the opening
+/// (`Opening.extras`, see [`OpeningExtras::with_stored`] and
+/// [`OpeningExtras::to_stored`]); the rest is kept per session by the app.
+/// One struct serves both kinds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpeningExtras {
     /// Library style name (e.g. "Door P04"); shown read-only.
@@ -229,6 +233,58 @@ impl OpeningExtras {
         }
     }
 
+    /// These extras with the values stored with an opening of `kind` laid
+    /// over them.
+    pub fn with_stored(mut self, stored: &StoredExtras, kind: OpeningKind) -> Self {
+        if let Some(name) = &stored.style_name {
+            self.style_name = name.clone();
+            if kind == OpeningKind::Window {
+                if let Some(i) = WINDOW_TYPES.iter().position(|t| *t == name) {
+                    self.window_type = i;
+                }
+            }
+        }
+        if kind == OpeningKind::Door {
+            if let Some(t) = stored.thickness {
+                self.thickness = t;
+            }
+            if let Some(a) = stored.swing_angle_deg {
+                self.swing_angle = a;
+            }
+        }
+        let jamb = match kind {
+            OpeningKind::Door => stored.jamb_width,
+            OpeningKind::Window => stored.frame_width,
+        };
+        if let Some(j) = jamb {
+            self.jamb_side = j;
+            self.jamb_top = j;
+            self.jamb_bottom = j;
+        }
+        self.show_open_2d = stored.show_open_in_plan;
+        self
+    }
+
+    /// The stored form of these values for an opening of `kind`; fields the
+    /// dialog does not edit (the sash width) come from `keep`.
+    pub fn to_stored(&self, kind: OpeningKind, keep: &StoredExtras) -> StoredExtras {
+        let mut out = keep.clone();
+        match kind {
+            OpeningKind::Door => {
+                out.style_name = (!self.style_name.is_empty()).then(|| self.style_name.clone());
+                out.thickness = Some(self.thickness);
+                out.swing_angle_deg = Some(self.swing_angle);
+                out.jamb_width = Some(self.jamb_side);
+            }
+            OpeningKind::Window => {
+                out.style_name = Some(WINDOW_TYPES[self.window_type].to_string());
+                out.frame_width = Some(self.jamb_side);
+            }
+        }
+        out.show_open_in_plan = self.show_open_2d;
+        out
+    }
+
     /// The door defaults after editing: `base` with everything these extras
     /// and the edited `draft` can express written over it.
     pub fn to_door_defaults(
@@ -333,6 +389,11 @@ impl OpeningDialog {
         others: Vec<Opening>,
         extras: OpeningExtras,
     ) -> Self {
+        // A placed opening's own stored values win over the session's.
+        let extras = match target {
+            OpeningTarget::Placed(_) => extras.with_stored(&draft.extras, draft.kind),
+            _ => extras,
+        };
         let title = match draft.kind {
             OpeningKind::Door => "Door Specification",
             OpeningKind::Window => "Window Specification",
@@ -355,7 +416,16 @@ impl OpeningDialog {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        self.frame.show(ctx, &mut self.form)
+        let outcome = self.frame.show(ctx, &mut self.form);
+        self.sync_stored();
+        outcome
+    }
+
+    /// Copies the values that persist with the opening into the draft, so
+    /// accepting the dialog stores them in `Opening.extras`.
+    pub(crate) fn sync_stored(&mut self) {
+        let f = &mut self.form;
+        f.draft.extras = f.extras.to_stored(f.draft.kind, &f.draft.extras);
     }
 
     pub fn target(&self) -> OpeningTarget {
@@ -473,7 +543,7 @@ impl OpeningForm {
                         }
                     })
                     .response
-                    .on_hover_text("Stored per session until the model grows these fields");
+                    .on_hover_text("The window type is stored with the window");
             });
         }
 
@@ -566,11 +636,10 @@ impl OpeningForm {
                     .range(0.0..=180.0)
                     .speed(1.0)
                     .suffix("\u{B0}"),
-            )
-            .on_hover_text(super::SESSION_NOTE);
+            );
         });
         section(ui, "Open/Close Display");
-        session_check(ui, &mut self.extras.show_open_2d, "Show Open in 2D");
+        ui.checkbox(&mut self.extras.show_open_2d, "Show Open in 2D");
         dis_check(ui, "Show Open in 3D", false);
         ui.add_enabled_ui(false, |ui| {
             section(ui, "Door Panels");
@@ -604,7 +673,7 @@ impl OpeningForm {
         session_check(ui, &mut self.extras.egress, "Egress");
         session_check(ui, &mut self.extras.tempered, "Tempered Glass");
         section(ui, "Display");
-        session_check(ui, &mut self.extras.show_open_2d, "Show Open in 2D");
+        ui.checkbox(&mut self.extras.show_open_2d, "Show Open in 2D");
         dis_check(ui, "Show Open in 3D", false);
         ui.add_enabled_ui(false, |ui| {
             section(ui, "Recessed into Wall");
@@ -1113,6 +1182,84 @@ fn window_elevation(p: &Painter, area: Rect, o: &Opening, e: &OpeningExtras) {
 mod tests {
     use super::*;
     use plan_core::geometry::Point;
+
+    fn host() -> Wall {
+        Wall::new(
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            6.0,
+            109.0,
+            WallKind::Exterior,
+        )
+    }
+
+    #[test]
+    fn door_values_persist_with_the_opening() {
+        let door = Opening::default_door(5, 1, 100.0);
+        let mut d = OpeningDialog::for_opening(door, &host(), Vec::new(), OpeningExtras::default());
+        {
+            let e = &mut d.form.extras;
+            e.style_name = "Door P09".into();
+            e.thickness = 1.75;
+            e.swing_angle = 110.0;
+            e.jamb_side = 1.0;
+            e.show_open_2d = false;
+        }
+        d.sync_stored();
+        let saved = d.draft().clone();
+        let x = &saved.extras;
+        assert_eq!(x.style_name.as_deref(), Some("Door P09"));
+        assert_eq!(x.thickness, Some(1.75));
+        assert_eq!(x.swing_angle_deg, Some(110.0));
+        assert_eq!(x.jamb_width, Some(1.0));
+        assert!(!x.show_open_in_plan);
+        assert_eq!(x.frame_width, None);
+
+        let back: Opening = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(back.extras, saved.extras);
+        // A new session (default extras) shows what the file holds.
+        let d2 = OpeningDialog::for_opening(back, &host(), Vec::new(), OpeningExtras::default());
+        let e = d2.extras();
+        assert_eq!(e.style_name, "Door P09");
+        assert_eq!(
+            (e.thickness, e.swing_angle, e.jamb_side),
+            (1.75, 110.0, 1.0)
+        );
+        assert!(!e.show_open_2d);
+    }
+
+    #[test]
+    fn window_values_persist_and_the_sash_width_is_kept() {
+        let mut win = Opening::default_window(6, 1, 100.0);
+        win.extras.sash_width = Some(1.25);
+        let mut d = OpeningDialog::for_opening(win, &host(), Vec::new(), OpeningExtras::default());
+        d.form.extras.window_type = 1;
+        d.form.extras.jamb_side = 0.5;
+        d.sync_stored();
+        let x = d.draft().extras.clone();
+        assert_eq!(x.style_name.as_deref(), Some("Double Hung"));
+        assert_eq!(x.frame_width, Some(0.5));
+        assert_eq!(x.sash_width, Some(1.25));
+        assert_eq!((x.thickness, x.jamb_width), (None, None));
+        let d2 = OpeningDialog::for_opening(
+            d.draft().clone(),
+            &host(),
+            Vec::new(),
+            OpeningExtras::default(),
+        );
+        assert_eq!(d2.extras().window_type, 1);
+        assert_eq!(d2.extras().jamb_side, 0.5);
+    }
+
+    #[test]
+    fn defaults_dialogs_ignore_the_template_extras() {
+        let d = plan_core::PlanDefaults::chief_x18_daniel();
+        let extras = OpeningExtras::from_door_defaults(&d.interior_door, false);
+        let template = Opening::default_door(0, 0, 0.0);
+        let dialog =
+            OpeningDialog::for_default(OpeningTarget::DefaultDoor, template, extras.clone());
+        assert_eq!(dialog.extras(), &extras);
+    }
 
     #[test]
     fn template_sizes_apply_and_overlap_is_rejected() {

@@ -24,7 +24,7 @@ Rooms are derived data, recomputed after every edit. The detector (`plan_core::r
 
 - A wall defines rooms unless its flags say otherwise: Invisible, No Room
   Definition and (in the model) Room Divider are handled by `WallFlags::defines_rooms`.
-  The checkboxes in the Wall Specification do not set those flags yet (chapter 2.9).
+  The Invisible and No Room Definition checkboxes in the Wall Specification set those flags (chapter 2.9).
 - A wall that dead-ends inside a room does not split it.
 - Rooms are detected for the active floor only. Other floors never participate.
 - A loop inside another loop is its own room; the enclosing room's area does not
@@ -85,7 +85,7 @@ Each of these is one undo step, and none of them needs a canvas click.
 | Floor number | | Shows the current floor. |
 | Up One Floor | `Ctrl+A` | Moves the view to the floor above. |
 | Floor Defaults | `Shift+Cmd+Y` | (planned) |
-| Reference Display | `F9` (view bar) | The toggle flips its state but the floor below is not drawn yet (planned). |
+| Reference Display | `F9` (view bar) | Draws the walls of the floor below in gray, walls only and honoring their layers' display (nothing on the lowest floor). A saved plan view that has it set turns it on. |
 
 Those two floor hotkeys are Daniel's Chief bindings (factory Chief uses `Shift+M`
 and `Shift+N`). Switching floors keeps the zoom, pan and active tool, and clears
@@ -127,7 +127,7 @@ model grows those fields.
 
 - **Room Name** and **Room Type** (a drop-down of the template's room types: Attic,
   Balcony, Bath, Bedroom, Closet, Dining, Entry, Garage, Kitchen, Living, Master
-  Bath, Porch, Utility and so on). Stored.
+  Bath, Porch, Utility and so on; edit the list in 4.10). Stored.
 - **Function** (Standard, Living, Utility, Deck, Garage, Porch, Open Below ...) is
   shown read-only; it comes from the room type. Function-specific behavior such as a
   dropped garage floor or Open Below cut-outs is (planned).
@@ -237,5 +237,24 @@ there is no settings dialog for them yet.
 - Nested rooms do not yet cut a hole in the enclosing room's area.
 - Room Specification values beyond the name, type, living-area flag, heights and
   finishes are kept for the session only.
-- Floor Defaults, Reference Display, Hole in Floor Platform and Attic floors from
+- Floor Defaults, Hole in Floor Platform and Attic floors from
   Build Roof are (planned).
+
+## 4.10 Room Types (Edit > Default Settings)
+
+Edit > Default Settings... > Floors and Rooms > **Room Types** (double-click it or press Edit) opens the
+list behind the Room Type drop-down in the Room Specification.
+
+- The table shows **Name**, **Function**, **Living Area** (Yes or No) and **Conditioned** (Yes or No) for every type
+  in the template (about 49 in Daniel's).
+- **Add** appends a Standard room type named "New Room Type" (made unique) and opens it for editing.
+  **Edit...** (or double-click a row) opens **Room Type - <name>**: Function (Standard, Living, Utility, Deck, Garage,
+  Porch, Open Below), Include in Living Area, Conditioned and Default Floor Finish. **Rename...** asks for a new
+  name. **Delete** removes the selected type.
+- Names must be filled in and unique ("A name is required", "That name is already used"). "Unspecified", the
+  type rooms without a type use, cannot be deleted.
+- OK applies the draft; Cancel or Escape drops it. The new list becomes the defaults' room types (save them to
+  your template with File > Templates > Save Current Defaults as My Template...). Renaming a type also renames
+  it on the rooms of the open plan that used it, as one undo step ("Rename Room Types"), so those rooms keep
+  their type.
+- Function-driven behavior is still (planned) (see 4.4).

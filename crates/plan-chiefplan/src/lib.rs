@@ -5,7 +5,10 @@
 //! layer sets, layers, text styles, dimension defaults, wall types, saved plan
 //! views, sheet sizes, layout pages. Phase B ([`values`]) decodes per-layer
 //! colour, line weight and display/lock flags where the record frame is
-//! understood. [`bridge`] turns an inventory into Plan Studio defaults.
+//! understood. Phase C ([`decode`]) reads the typed objects: wall type layer
+//! stacks, text styles, dimension defaults, materials and default heights,
+//! collected in [`TemplateSummary`]. [`bridge`] turns an inventory into Plan
+//! Studio defaults.
 //!
 //! Nothing here writes to a template or copies one: files are read in place.
 //! `std` + `serde` only.
@@ -17,6 +20,7 @@
 
 pub mod bridge;
 pub mod classify;
+pub mod decode;
 pub mod error;
 pub mod redact;
 pub mod scan;
@@ -27,6 +31,11 @@ pub use bridge::{
     seed_text_styles, ApplySeed, LayerSetSeed, LayoutSeed, TemplateSeed,
 };
 pub use classify::{classify, classify_strings, Category, Entry, TemplateInventory};
+pub use decode::{
+    DefaultHeights, DefaultMaterial, LayoutInfo, PaperSize, TemplateDimensionDefaults,
+    TemplateMaterial, TemplateRichText, TemplateSummary, TemplateTextStyle, TemplateWallLayer,
+    TemplateWallType,
+};
 pub use error::{Error, Result};
 pub use scan::{scan, scan_bytes, TemplateKind, TemplateScan};
 pub use values::{calibrate, decode, Calibration, Confidence, ValueReport};
@@ -98,7 +107,20 @@ pub fn build_inventory_with_values(
     }
     inv.layer_set_data = report.layer_sets.clone();
     inv.wall_stacks = report.wall_stacks.clone();
+    inv.summary = decode::summarize_bytes(
+        &bytes,
+        &scan.strings,
+        scan.kind,
+        &inv.file_name,
+        scan.resource_table_start as usize,
+    );
     Ok((inv, report))
+}
+
+/// The Phase C decoders alone: wall types, text styles, dimension defaults,
+/// materials, default heights, paper sizes and layout info of one template.
+pub fn summarize(path: impl AsRef<Path>) -> Result<TemplateSummary> {
+    Ok(build_inventory(path)?.summary)
 }
 
 /// Inventories of every template in Daniel's Templates folder. Files that
@@ -148,6 +170,7 @@ pub fn write_inventory_json(dir: &Path, out_path: &Path) -> Result<usize> {
             // Keep the file small: layer tables only for the two default
             // templates; the calibration summary covers all files.
             inv.layer_set_data.clear();
+            inv.summary.materials.clear();
         }
         let rel = p
             .strip_prefix(dir)
@@ -159,7 +182,7 @@ pub fn write_inventory_json(dir: &Path, out_path: &Path) -> Result<usize> {
     }
     let doc = InventoryDocument {
         generator: "plan-chiefplan",
-        note: "Names only; client-specific strings and non-stock paths are redacted. Per-layer records are kept for the two default templates only.",
+        note: "Names only; client-specific strings and non-stock paths are redacted. Per-layer records and the material table are kept for the two default templates only.",
         files: invs
             .iter()
             .map(|(file, inventory)| InventoryFile {

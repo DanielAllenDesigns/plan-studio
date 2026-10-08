@@ -81,7 +81,7 @@ symbol with a viewing cone. Select it with the Camera tool (or Select Objects).
 - **Clip** handle: sets the back clip distance.
 - Section cameras also have the **two line-end** handles.
 - `Tab` cycles cameras, `Delete` removes one, double-click opens the Camera Specification.
-- The Project Browser lists the plan's cameras.
+- The Project Browser lists the plan's cameras (Plan > Cameras). Click one to select it, switch to its floor and pan the plan to it.
 
 ### Dialog: Camera Specification
 
@@ -95,6 +95,7 @@ The angle of view is limited to 5 to 170 degrees.
 
 ### Dialog: 3D View Defaults (`Cmd+1`)
 
+Opened from 3D > 3D View Defaults... (`Cmd+1`; the menu shows whatever key the live hotkey map gives it).
 Camera eye height (12" to 600"), Angle of view, and the Rendering technique used when a view opens.
 
 ## 10.4 Rendering techniques

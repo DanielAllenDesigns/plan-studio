@@ -52,6 +52,10 @@ pub struct CameraObject {
     /// Cut line of a cross section; replaces overloading `fov_deg`.
     #[serde(default)]
     pub section: Option<crate::extras::SectionLine>,
+    /// Hatch, shadow, depth-weight and label options of an elevation or
+    /// section camera.
+    #[serde(default)]
+    pub render: crate::extras::ElevationRender,
 }
 
 impl CameraObject {
@@ -75,6 +79,7 @@ impl CameraObject {
             name: name.into(),
             floor,
             section: None,
+            render: crate::extras::ElevationRender::default(),
         }
     }
 

@@ -310,7 +310,7 @@ underlayment, ridge cap, gutters, fascia) and the roof pitch diagram.
 
 ## 10. Plan Studio today
 
-`plan-roof` builds roofs and the editor drives it: Build Roof (with auto rebuild), Roof Plane, edit, Gable/Roof Line, Roof Hole and Skylight tools, a Roof Specification dialog, the Edit toolbar's Rebuild Roofs, and roof planes in the 3D view. Walls carry roof directives in the model; Build Roof takes its default pitch and overhang from the exterior wall defaults. Planes are stored per floor in a hidden CAD data layer (`Roof Planes, Data`) with a visible outline layer, so they save, undo and export with the plan. Roof framing is available from Build > Framing (rafters, ridge, hips, valleys, collar ties, ceiling joists or trusses). Missing: Dutch gable, high shed, knee wall, dormers (Auto Dormer, Auto Floating Dormer), Join Roof Planes, ceiling planes, gutters, fascia and soffit, roof holes cut in 3D. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
+`plan-roof` builds roofs and the editor drives it: Build Roof (with auto rebuild), Roof Plane, edit, Gable/Roof Line, Roof Hole and Skylight tools, a Roof Specification dialog, the Edit toolbar's Rebuild Roofs, and roof planes in the 3D view. Walls carry roof directives in the model; Build Roof takes its default pitch and overhang from the exterior wall defaults. Roof records (planes, ceiling planes, dormers and the Build Roof settings) are stored per floor in the typed `Floor.roofs` slot, so they save and undo with the plan. Roof holes and skylights are cut in 3D (the skylight has a curb, frame and glass), ceiling planes (layer `Ceiling Planes`), Auto Dormer / Explode Dormer, Gable/Roof Line on an eave and Roof Return are live, and the Roof Plane Specification has a Holes tab and per-edge pitch / overhang / gable fields that feed Build Roof. Roof framing is available from Build > Framing (rafters, ridge, hips, valleys, collar ties, ceiling joists or trusses). Missing: Dutch gable, knee wall, Auto Floating Dormer, Join Roof Planes, Build Ceiling Planes, a Ceiling Plane dialog, dormer walls as wall objects (Explode Dormer keeps only the planes and the hole), gutters, fascia and soffit. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## 11. Gap table
 
@@ -330,18 +330,18 @@ underlayment, ridge cap, gutters, fascia) and the roof pitch diagram.
 | RF-22 High Shed/Gable | `Shed` treated like Gable | Med | Distinct handling: rise toward wall, wall extends to plane, no overhang on that side |
 | RF-23, RF-24 Knee Wall, Extend Slope Downward | Missing | Med | Per-wall flags consumed by wall mesh clip and eave extent |
 | RF-25 Upper pitch / break at height / in from baseline (gambrel, mansard) | Single pitch per edge | High | Extend skeleton to two-stage speed (second wavefront pass at break height) |
-| RF-27 Auto Roof Return | Missing | Med | Generate return geometry at gable corners (length, extend, type, slope) |
+| RF-27 Auto Roof Return | Roof Return tool: click an eave corner (full, half with Shift, boxed with Alt, 24") | Partly done | Length / type dialog and the wall's `auto_roof_return` flag |
 | RF-28, RF-29 Lower wall type, bay/box/bow roof attach | Missing | Low | Depends on wall type system and bay window objects |
 | RF-31..RF-34 Attic walls auto-generation and attic floor | Missing | High | Generate wall objects flagged `auto_generated` from roof underside; Attic `FloorKind` (see rooms-floors.md R-68) |
 | RF-35, RF-36 Manual Roof Plane tool (baseline then ridge/polygon), Roof Plane spec | Missing | Critical | Tool in `plan-app`; `RoofPlane` as editable object with pitch/baseline height; dialog |
 | RF-38 Edit handles (vertex, edge, pitch arrow, move, rotate) | Missing | Critical | Handle set in plan hit-testing; keep plane planar by solving z from pitch/baseline |
 | RF-39, RF-40 Edit All Roof Planes, Delete Roof/Ceiling Planes | Missing | Med | Multi-select dialog; delete commands |
 | RF-41 Join Roof Planes | Missing | High | Plane-plane intersection trim/extend operation |
-| RF-42 Roof Hole | Missing | High | Polygon subtraction on planes (`i_overlay`) and 3D cut |
-| RF-43 Skylight | Missing | Med | Library item with roof-plane placement and shaft |
-| RF-44 Gable/Roof Line | Missing | Med | Trim planes by line and generate gable wall |
-| RF-45..RF-47 Ceiling planes and Build Ceiling Planes (vaulted) | Missing; ceilings flat at `Floor.ceiling_height` | High | `CeilingPlane` object; build from roof planes minus structure; consumed by `plan-3d::slab` |
-| RF-48..RF-51 Auto/floating/manual dormers | Missing | High | Dormer object generating walls + planes + roof hole; later Phase 3 |
+| RF-42 Roof Hole | Done: rectangle drag, dashed in plan, cut in 3D | Done (rectangles) | Polygon holes |
+| RF-43 Skylight | Done: drag or click, curb/frame/glass in 3D, spec in the plane dialog | Done | Library skylights |
+| RF-44 Gable/Roof Line | Done: click an eave (automatic planes rebuild, manual planes use `apply_gable_line`) | Done | Free line trimming |
+| RF-45..RF-47 Ceiling planes and Build Ceiling Planes (vaulted) | Ceiling Plane tool and Delete Ceiling Planes (Build Ceiling Planes not yet) | Partly done | `ceiling_planes_for_vaulted_room` from the Build Roof dialog |
+| RF-48..RF-51 Auto/floating/manual dormers | Auto Dormer with its dialog and Explode Dormer | Partly done | Floating and manual dormers, dormer walls as wall objects |
 | RF-52..RF-57 Roof framing: rafters, trusses, truss base/direction | `plan-framing` empty | High | See CB-framing items in cabinets-stairs-framing-terrain-library.md |
 | RF-58, RF-59 Plan display of roof (dashed, slope arrows, pitch triangle, labels) | No drawing | High | Draw in `draw_*` layer "Roof Planes"; label with pitch text |
 | RF-60 Roof quantities to Materials List | `materials_list` has no roof lines | Med | Add roof area, ridge/hip/valley length, fascia length from planes |

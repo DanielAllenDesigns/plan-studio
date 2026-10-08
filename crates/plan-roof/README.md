@@ -32,6 +32,86 @@ All lengths are inches. Output coordinates are `X = plan x`, `Y = elevation`,
 * `footprint_from_walls(walls, tol) -> Option<Vec<Point>>`: the outer boundary
   of the wall centerlines.
 
+## Roof features (holes, ceilings, dormers, gable lines, returns, edge specs)
+
+All of these are input/output types in this crate; none needs a model field.
+`plan-3d` meshes them (`roof_plane_meshes`, `skylight_meshes`,
+`ceiling_plane_meshes`, `dormer_meshes`, `roof_meshes`).
+
+| Chief feature | API |
+|---|---|
+| Roof Hole / Skylight (RF-42/43) | `RoofHole { outline, kind: Skylight \| Hole, skylight: Option<SkylightSpec { curb_height, glass_thickness, frame_width }> }`; `roof_plane_with_holes(&plane, &holes) -> RoofPolygonWithHoles { outer, holes, skylights, normal, .. }` |
+| Ceiling Plane / Build Ceiling Planes (RF-45/46) | `CeilingPlane { outline, baseline, pitch_in_12, height_at_baseline, thickness }` (`height_at`, `polygon3d`, `area`); `ceiling_planes_for_vaulted_room(room_poly, &roof_planes, thickness) -> Vec<CeilingPlane>` |
+| Auto Dormer / Explode Dormer (RF-48..51) | `auto_dormer(&main_plane, DormerSpec) -> Option<Dormer>`; `explode_dormer(&Dormer) -> ExplodedDormer` |
+| Gable/Roof Line (RF-44) | `apply_gable_line(&roof, edge_index) -> Option<Roof>` |
+| Auto Roof Return (RF-27) | `roof_return(&plane, edge, ReturnSpec { kind: Full \| Half \| Boxed, length }) -> Option<RoofReturn>`, `roof_return_at(.., at_start, ..)` |
+| Wall Roof tab (RF-18..26) | `EdgeRoofSpec { pitch, overhang, gable, full_gable_wall, high_shed_gable, extend_slope_downward }`; `build_roof_with_specs(footprint, &specs, baseline)` |
+
+Also `RoofPlane::height_at(plan_point)` and `RoofPlane::plan_polygon()`.
+
+Mapping from the model (the model has no such fields yet, so wire these in the
+app):
+
+* Wall > Roof tab: Hip Wall = `EdgeRoofSpec::default()`; Full Gable Wall =
+  `full_gable_wall` (same as `gable`: the gable wall always reaches the ridge);
+  High Shed/Gable Wall = `high_shed_gable` (edge kind Shed, overhang forced to 0);
+  Extend Slope Downward = `extend_slope_downward: Some(inches of drop)`; Pitch
+  and Overhang = `pitch`, `overhang`. Priority: high shed, then gable, then hip.
+  Dutch gable, knee wall and upper pitch are not modelled.
+* Dormer defaults: width, wall height, roof type/pitch and window map to
+  `DormerSpec`. `position_along_eave` is the distance from `baseline.0` to the
+  dormer centre, `setback_from_eave` the plan distance from the eave line to the
+  front wall. For gable and hip, `height_to_ridge > wall_height` wins over
+  `pitch` (the pitch is then derived and reported on the roof planes); a shed
+  dormer uses `pitch` and halves it when it is not flatter than the main roof.
+  The Dormer has `front_wall`, `side_walls` (cheek walls, triangles), `roof_planes`
+  (gable 2, shed 1, hip 3; each polygon starts with its eave edge),
+  `hole_in_main_roof` (a `RoofHole` of kind Hole whose area equals the sum of
+  the dormer roof planes' projected areas), and `window_opening`. `DormerWall`
+  carries `start`/`end`/`base_elevation`/`height` so the app can create a wall
+  object from it; the cheek walls are triangles under the main roof, i.e. they
+  are cut by the main roof like Chief's (RF-16).
+* Roof Hole tool: one `RoofHole` per click polygon; pass the holes together with
+  a plane to `roof_plane_with_holes`.
+* Ceiling plane tool: `CeilingPlane { baseline, pitch_in_12, height_at_baseline
+  (scene Y), outline, thickness }`; the plane rises toward the left of
+  `baseline.0 -> baseline.1`.
+* Auto Roof Return: Chief's Gable/Hip/Full types are approximated by `Full`
+  (quad continuing the main plane around the corner), `Half` (its triangle) and
+  `Boxed` (level boxed return); `length` runs along the adjacent rake or hip edge
+  and projects the same distance past the corner. Slope, extend, shadow boards,
+  ridge caps, frieze and gutter options are not modelled.
+
+### Behaviour and limits of the features
+
+* **Holes** must lie completely inside one plane (not touching its boundary) and
+  must not overlap an earlier hole. Others are not clipped; their indices are
+  returned in `skipped_holes`. A feature spanning a ridge or hip (chimney) needs
+  one hole per plane. Skylight curb and glass are measured along the plane
+  normal; the frame ring is inset in the plane. The mesh triangulates the polygon
+  with holes by bridging (`plan_3d::triangulate::ear_clip_with_holes`).
+* **Ceiling planes** are one per (roof plane, room overlap piece) and follow each
+  roof plane (same pitch and eave baseline), lowered by `thickness` measured
+  along the roof normal. A room spanning a hip/valley gets one piece per plane
+  with no mitre between them. Flat rooms are not handled here (they keep the
+  floor ceiling height). Only plan overlap is computed; walls are not cut.
+* **Dormers**: no overhang, soffit or fascia on the dormer roof; the front wall is
+  parallel to the eave; cheek walls are plain triangles. `auto_dormer` returns
+  `None` when the footprint does not lie inside the main plane (too big, too
+  close to the eave, or past the ridge), when the hip ridge would collapse, or
+  for a flat or degenerate plane. A dormer across two planes is not supported.
+* **Gable line** rebuilds the roof from the planes' eave baselines, so it needs
+  the planes to form one closed ring or one chain with a single straight gap
+  (checked by the area tiling test); otherwise it returns `None`. From a footprint
+  and edges, set `EdgeKind::Gable` and call `build_roof` instead. The new gable
+  wall stands on the old eave line (the edge's overhang becomes the rake).
+* **Edge specs** use the exact weighted straight skeleton already described above:
+  there is no "pitches within 2:12" approximation. The same exceptions apply
+  (rare parallel-jog cases fall back to `Roof::approximate`). `extend_slope_downward`
+  adds a strip along the plane's fall line below its eave (planar; the hips shared
+  with neighbours are not continued below the old eave), so the planes then no
+  longer tile the eave polygon.
+
 ## Algorithm
 
 1. **Overhang.** Each footprint edge is moved outward by its own overhang and

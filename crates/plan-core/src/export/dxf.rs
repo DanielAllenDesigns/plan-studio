@@ -201,6 +201,83 @@ fn write_cad(d: &mut Dxf, c: &CadObject) {
 /// Export `floor` of `project` as an R12 ASCII DXF string. `rooms` are the
 /// detected rooms for that floor (used for room labels).
 pub fn write_dxf(project: &Project, floor: usize, rooms: &[Room]) -> String {
+    DxfExport::new(project, floor, rooms).write()
+}
+
+/// One extra polyline group of a [`DxfExport`].
+#[derive(Debug, Clone, PartialEq)]
+struct ExtraPolylines {
+    layer: String,
+    polylines: Vec<Vec<Point>>,
+    closed: bool,
+}
+
+/// A DXF export of one floor with additional polylines for data the model
+/// keeps outside the typed fields (roof plane outlines, manual framing).
+///
+/// ```
+/// use plan_core::{export::dxf::DxfExport, Point, Project};
+/// let p = Project::new("x");
+/// let sq = vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0)];
+/// let dxf = DxfExport::new(&p, 0, &[])
+///     .with_extra_polylines("Roof Planes", vec![sq])
+///     .write();
+/// assert!(dxf.contains("Roof Planes"));
+/// ```
+pub struct DxfExport<'a> {
+    project: &'a Project,
+    floor: usize,
+    rooms: &'a [Room],
+    extra: Vec<ExtraPolylines>,
+}
+
+impl<'a> DxfExport<'a> {
+    pub fn new(project: &'a Project, floor: usize, rooms: &'a [Room]) -> Self {
+        Self {
+            project,
+            floor,
+            rooms,
+            extra: Vec::new(),
+        }
+    }
+
+    /// Adds closed polylines on `layer` (a layer unknown to the project is
+    /// still declared in the LAYER table). Polylines with fewer than two
+    /// points are dropped.
+    pub fn with_extra_polylines(mut self, layer: &str, polylines: Vec<Vec<Point>>) -> Self {
+        self.push_extra(layer, polylines, true);
+        self
+    }
+
+    /// Like [`DxfExport::with_extra_polylines`], but the polylines stay open.
+    pub fn with_extra_open_polylines(mut self, layer: &str, polylines: Vec<Vec<Point>>) -> Self {
+        self.push_extra(layer, polylines, false);
+        self
+    }
+
+    fn push_extra(&mut self, layer: &str, polylines: Vec<Vec<Point>>, closed: bool) {
+        let polylines: Vec<Vec<Point>> = polylines.into_iter().filter(|p| p.len() >= 2).collect();
+        if !polylines.is_empty() {
+            self.extra.push(ExtraPolylines {
+                layer: layer.to_string(),
+                polylines,
+                closed,
+            });
+        }
+    }
+
+    /// The R12 ASCII DXF text.
+    pub fn write(&self) -> String {
+        write_dxf_with(self.project, self.floor, self.rooms, &self.extra)
+    }
+}
+
+fn write_dxf_with(
+    project: &Project,
+    floor: usize,
+    rooms: &[Room],
+    extra_polylines: &[ExtraPolylines],
+) -> String {
     let fl = &project.floors[floor];
     let mut d = Dxf::new();
 
@@ -219,6 +296,9 @@ pub fn write_dxf(project: &Project, floor: usize, rooms: &[Room]) -> String {
     }
     for w in &fl.walls {
         layer_names.insert(w.layer.as_str());
+    }
+    for e in extra_polylines {
+        layer_names.insert(e.layer.as_str());
     }
     let extra: Vec<&str> = layer_names
         .into_iter()
@@ -354,6 +434,13 @@ pub fn write_dxf(project: &Project, floor: usize, rooms: &[Room]) -> String {
         write_cad(&mut d, c);
     }
 
+    // Extra polylines (roof planes, manual framing)
+    for e in extra_polylines {
+        for pl in &e.polylines {
+            d.polyline(&e.layer, pl, e.closed);
+        }
+    }
+
     d.end_section();
     d.pair(0, "EOF");
     d.out
@@ -461,6 +548,41 @@ mod tests {
             .count();
         assert_eq!(secs, 3);
         assert_eq!(secs, ends);
+    }
+
+    #[test]
+    fn extra_polylines_land_on_their_own_declared_layer() {
+        let p = sample();
+        let sq = vec![
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            Point::new(100.0, 50.0),
+            Point::new(0.0, 50.0),
+        ];
+        let base = write_dxf(&p, 0, &[]);
+        let s = DxfExport::new(&p, 0, &[])
+            .with_extra_polylines("Roof Planes", vec![sq.clone(), vec![Point::ZERO]])
+            .with_extra_open_polylines("Framing", vec![vec![Point::ZERO, Point::new(5.0, 0.0)]])
+            .write();
+        // Two polylines added (the one-point polyline is dropped).
+        assert_eq!(
+            s.lines().filter(|l| *l == "POLYLINE").count(),
+            base.lines().filter(|l| *l == "POLYLINE").count() + 2
+        );
+        // Declared in the layer table, then used by the entity.
+        let lines: Vec<&str> = s.lines().collect();
+        let decl = lines
+            .chunks(2)
+            .position(|c| c[0] == "2" && c[1] == "Roof Planes")
+            .expect("layer declared");
+        let used = lines
+            .chunks(2)
+            .rposition(|c| c[0] == "8" && c[1] == "Roof Planes")
+            .unwrap();
+        assert!(decl < used);
+        // The closed flag is written (group 70 = 1) for the roof outline.
+        assert!(s.contains("Framing"));
+        assert_eq!(write_dxf(&p, 0, &[]), DxfExport::new(&p, 0, &[]).write());
     }
 
     #[test]

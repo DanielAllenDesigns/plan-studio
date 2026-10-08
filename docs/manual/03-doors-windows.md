@@ -79,8 +79,9 @@ defaults (32" x 72", 24" sill). Each placement is one undo step.
 
 Hinge and swing: a placed hinged door hinges at the wall-start jamb and swings to
 the left side of the wall (looking from start to end). Use Reverse Swing or the
-swing handle (below) to flip the swing to the other side. Choosing the swing side and
-hinge jamb from the pointer position while placing (Chief's behavior) is (planned).
+swing handle (below) to flip the swing to the other side, and the Door Specification's
+Swing side and Hinge side to set both. Choosing the swing side and hinge jamb from the
+pointer position while placing (Chief's behavior) is (planned).
 
 ### Editing with Select Objects
 
@@ -91,7 +92,7 @@ Select an opening by clicking it (the opening wins over its host wall).
 | Drag the opening | Slides it along its wall. Dragging it onto another wall re-hosts it there. Snaps to 1". It stops at the clearance from the wall ends and from neighbors. |
 | Temporary dimension (jamb to wall end or neighbor) | Click the value, type a length, `Enter`: the opening moves so that dimension takes the value; the other one changes. |
 | Click the **swing handle** at the free end of the door leaf (a small pointing-hand handle) | Reverses the swing, the same as the Edit toolbar button. A click, not a drag. |
-| Edit toolbar: **Reverse Swing** | Flips the door's swing to the other side of the wall; the hinge jamb stays. One undo step. Moving the hinge to the other jamb (Flip Hinge) has no control yet (planned). |
+| Edit toolbar: **Reverse Swing** | Flips the door's swing to the other side of the wall; the hinge jamb stays. One undo step. Moving the hinge to the other jamb is the **Hinge side** setting in the Door Specification (3.4). |
 | Edit toolbar: Open Object, Delete Objects, Copy, Paste in Place | As for any object. |
 | `Delete` | Removes the opening; the wall is untouched. |
 | Double-click, `Enter` | Opens the Door or Window Specification. |
@@ -148,9 +149,11 @@ preview shows an elevation sketch of the door and a plan sketch in its wall.
 
 ### Options
 
-- **Door Swing**: Hinge side Left or Right, with hover text "Hinge on the wall-start jamb" and "Hinge on the
-  wall-end jamb". In the current build these two radios flip the **swing side** (the same setting as
-  Reverse Swing), not the hinge jamb, so the label is misleading. Swing Angle (session only).
+- **Door Swing**: two independent settings, as in Chief, so all four combinations are possible.
+  **Swing side** is Left (the wall's normal side) or Right (the other side, flipped); it is the same
+  setting as Reverse Swing. **Hinge side** is Start or End, with hover text "Hinge on the wall-start
+  jamb" and "Hinge on the wall-end jamb" (stored as `hinge_at_end`). The preview, the plan symbol and the
+  swing handle follow both. Swing Angle (session only).
 - **Open/Close Display**: Show Open in 2D (session only); Show Open in 3D (disabled).
 - Disabled sections: Door Panels (Single / Double / Calculate from Width, All Glass),
   Plan Display (Top Edge), Safety (Tempered Glass, Fire Door), Recessed into Wall,
@@ -217,8 +220,8 @@ active floor with its size, style and position, and export CSV (chapter 11).
 
 ## 3.8 Differences from Chief
 
-- The model has separate hinge and swing settings (four combinations, as in Chief), but only the swing side has a
-  control in the editor; the hinge jamb is fixed at the wall-start jamb (planned).
+- Hinge side and Swing side are separate settings (four combinations, as in Chief), both in the Door
+  Specification. Choosing them from the pointer position while placing is (planned).
 - Opening Specification choices are session only for placed openings; only the
   Default Settings dialogs write the template values that new openings copy.
 - Plan labels, schedule callouts, casing marks, mulled windows, bay/bow/box

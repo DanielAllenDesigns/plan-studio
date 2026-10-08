@@ -210,10 +210,14 @@ impl AppSettings {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        let v = serde_json::json!({
-            "theme": self.theme.key(),
-            "brightness": self.brightness,
-        });
+        // Keep keys other modules store in the same file (Chief catalogs).
+        let mut v = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}));
+        v["theme"] = serde_json::json!(self.theme.key());
+        v["brightness"] = serde_json::json!(self.brightness);
         let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
         std::fs::write(path, text).map_err(|e| e.to_string())
     }

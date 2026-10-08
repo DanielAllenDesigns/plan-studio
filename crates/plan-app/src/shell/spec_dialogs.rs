@@ -1,20 +1,21 @@
 //! Hosts the specification dialogs of every object kind except walls and
 //! openings (those two keep their extras in `main.rs`): stairs, cabinets,
-//! symbols, roof planes, electrical devices, terrain, dimensions, text and
-//! CAD. [`SpecDialogs::open`] is the one place that maps an [`ObjectRef`] to
+//! symbols, roof planes and dormers, slabs and other foundation objects,
+//! electrical devices, terrain, dimensions, text and CAD. [`SpecDialogs::open`] is the one place that maps an [`ObjectRef`] to
 //! its dialog; OK applies the draft as one undo step.
 
 use crate::dialogs::cabinet::CabinetDialog;
 use crate::dialogs::cad::CadDialog;
 use crate::dialogs::dimension::{self, DimensionDialog};
 use crate::dialogs::electrical::ElectricalDialog;
-use crate::dialogs::roof::RoofPlaneDialog;
+use crate::dialogs::foundation::FoundationDialog;
+use crate::dialogs::roof::{DormerDialog, RoofPlaneDialog};
 use crate::dialogs::stairs::StairDialog;
 use crate::dialogs::symbol::SymbolDialog;
 use crate::dialogs::terrain::TerrainDialog;
 use crate::dialogs::text::TextDialog;
 use crate::dialogs::{cad, text, Outcome};
-use crate::editor::{placed, roof_view, rooms_edit, site_view, stairs_view};
+use crate::editor::{foundation_view, placed, roof_view, rooms_edit, site_view, stairs_view};
 use crate::editor::{EditorContext, ObjectRef};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use eframe::egui;
@@ -25,6 +26,9 @@ enum Active {
     Cabinet(Box<CabinetDialog>),
     Symbol(Box<SymbolDialog>),
     RoofPlane(Box<RoofPlaneDialog>),
+    /// A dormer: its id, the plane it stands on and the dialog.
+    Dormer(Id, Id, Box<DormerDialog>),
+    Foundation(Box<FoundationDialog>),
     Device(Id, Box<ElectricalDialog>),
     Terrain(Box<TerrainDialog>),
     Dimension(Box<DimensionDialog>),
@@ -60,10 +64,29 @@ impl SpecDialogs {
                 .symbol(id)
                 .cloned()
                 .map(|s| Active::Symbol(Box::new(SymbolDialog::new(s, layer_names(cx))))),
-            ObjectRef::RoofPlane(id) => roof_view::load(cx.floor())
-                .plane(id)
-                .cloned()
-                .map(|r| Active::RoofPlane(Box::new(RoofPlaneDialog::new(r, layer_names(cx))))),
+            ObjectRef::RoofPlane(id) => {
+                let set = roof_view::load(cx.floor());
+                match (set.plane(id), set.dormer(id)) {
+                    (Some(r), _) => Some(Active::RoofPlane(Box::new(RoofPlaneDialog::new(
+                        r.clone(),
+                        layer_names(cx),
+                    )))),
+                    (None, Some(d)) => Some(Active::Dormer(
+                        d.id,
+                        d.main,
+                        Box::new(DormerDialog::new(d.spec)),
+                    )),
+                    // Ceiling planes have no dialog yet.
+                    _ => None,
+                }
+            }
+            ObjectRef::Foundation(id) => {
+                let layer = foundation_view::load(cx);
+                layer.find(id).and_then(|r| {
+                    FoundationDialog::new(&layer, r, layer_names(cx))
+                        .map(|d| Active::Foundation(Box::new(d)))
+                })
+            }
             ObjectRef::Device(id) => {
                 let layer = site_view::load_electrical(cx.floor());
                 layer
@@ -107,6 +130,8 @@ impl SpecDialogs {
             Active::Cabinet(d) => d.show(ctx),
             Active::Symbol(d) => d.show(ctx),
             Active::RoofPlane(d) => d.show(ctx),
+            Active::Dormer(_, _, d) => d.show(ctx),
+            Active::Foundation(d) => d.show(ctx),
             Active::Device(_, d) => d.show(ctx),
             Active::Terrain(d) => d.show(ctx),
             Active::Dimension(d) => d.show(ctx),
@@ -136,14 +161,28 @@ fn apply(cx: &mut EditorContext, a: &Active) {
             placed::apply_symbol(cx, d.draft());
         }
         Active::RoofPlane(d) => {
-            let (fl, id) = (cx.floor, d.draft().id);
-            let mut set = roof_view::load(&cx.project.floors[fl]);
-            if set.plane(id).is_some() {
+            let fl = cx.floor;
+            if roof_view::exists(&cx.project.floors[fl], d.draft().id) {
                 cx.begin_change("Roof Plane Specification");
-                if let Some(old) = set.plane_mut(id) {
-                    roof_view::apply_edits(old, d.draft());
-                }
-                roof_view::store(&mut cx.project, fl, &mut set);
+                roof_view::apply_plane_edit(&mut cx.project, fl, d.draft());
+            }
+        }
+        Active::Dormer(id, main, d) => {
+            let fl = cx.floor;
+            cx.begin_change("Dormer Specification");
+            if let Err(e) = roof_view::apply_dormer(&mut cx.project, fl, *main, Some(*id), d.spec())
+            {
+                cx.cancel_change();
+                cx.status = format!("Dormer Specification: {e}");
+            }
+        }
+        Active::Foundation(d) => {
+            let draft = d.draft().clone();
+            let mut found = false;
+            foundation_view::edit(cx, draft.title(), |l| found = draft.apply(l));
+            if !found {
+                cx.cancel_change();
+                cx.status = "The object is gone".into();
             }
         }
         Active::Device(id, d) => {
@@ -175,5 +214,67 @@ fn apply(cx: &mut EditorContext, a: &Active) {
         Active::Cad(d) => {
             d.apply(cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan_defaults;
+    use plan_core::foundation::{rect_outline, DATA_LAYER};
+    use plan_core::geometry::Point;
+
+    #[test]
+    fn foundation_objects_and_dormers_open_their_dialogs() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let mut dialogs = SpecDialogs::default();
+        let slab = foundation_view::add_slab(
+            &mut cx,
+            rect_outline(Point::ZERO, Point::new(240.0, 180.0)),
+            false,
+        );
+        assert!(dialogs.open(&mut cx, ObjectRef::Foundation(slab)));
+        assert!(dialogs.is_open());
+        assert!(!dialogs.open(&mut cx, ObjectRef::Foundation(slab + 99)));
+        // OK applies the draft as one undo step.
+        if let Some(Active::Foundation(d)) = dialogs.active.as_mut() {
+            if let crate::dialogs::foundation::Draft::Slab(s) = d.draft_mut() {
+                s.thickness = 6.0;
+            }
+        }
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        assert_eq!(
+            foundation_view::load(&cx).slab(slab).unwrap().thickness,
+            6.0
+        );
+        assert_eq!(cx.undo_label(), Some("Slab Specification"));
+        assert!(cx.project.layers.get(DATA_LAYER).is_none());
+
+        // A dormer on a manual plane.
+        let fl = cx.floor;
+        let (base, poly) = roof_view::manual_plane_geometry(
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(120.0, 120.0),
+            100.0,
+            8.0,
+        )
+        .unwrap();
+        let mut set = roof_view::load(&cx.project.floors[fl]);
+        let pid = cx.project.alloc_id();
+        set.planes
+            .push(roof_view::RoofPlaneRecord::new(pid, poly, 8.0, base));
+        roof_view::store(&mut cx.project, fl, &mut set);
+        let spec = plan_roof::DormerSpec {
+            position_along_eave: 120.0,
+            setback_from_eave: 40.0,
+            ..Default::default()
+        };
+        let did = roof_view::apply_dormer(&mut cx.project, fl, pid, None, spec).unwrap();
+        assert!(dialogs.open(&mut cx, ObjectRef::RoofPlane(did)));
+        assert!(matches!(dialogs.active, Some(Active::Dormer(..))));
+        assert!(dialogs.open(&mut cx, ObjectRef::RoofPlane(pid)));
+        assert!(matches!(dialogs.active, Some(Active::RoofPlane(_))));
     }
 }

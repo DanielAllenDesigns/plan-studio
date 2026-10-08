@@ -9,6 +9,7 @@ pub mod actions;
 pub mod camera;
 pub mod connect;
 pub mod dispatch;
+pub mod foundation_view;
 pub mod framing_view;
 pub mod handles;
 pub mod history;
@@ -169,6 +170,7 @@ impl EditorContext {
     /// per-project session state.
     pub fn set_project(&mut self, project: Project) {
         self.project = project;
+        site_view::migrate_legacy_storage(&mut self.project);
         self.floor = 0;
         self.history.clear();
         self.reset_view_state();

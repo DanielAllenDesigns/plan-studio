@@ -117,7 +117,8 @@ Extend Slope Downward) exist in the model; only High Shed/Gable is honored by th
   object the 3D view draws besides floors, so you can check a roof in Perspective, Doll House and
   elevation views (chapter 10).
 - Ridge caps, gutters, fascia and frieze, soffits and rafter tails are (planned).
-- Roof framing (Rafter, Roof Beam, Roof Truss ...) is (planned; engine in `plan-framing`).
+- Build > Framing > Build Framing frames the roof planes stored on the floor (rafters from `plan-framing`;
+  chapter 11.11). The manual roof framing tools (Rafter, Roof Beam, Roof Truss ...) are (planned).
 
 ## 8.4 Dialog: Build Roof
 
@@ -126,7 +127,7 @@ Opened from the Build Roof mode. Three tabs.
 | Tab | Fields |
 |---|---|
 | Roof | **Roof**: Build Roof Planes, Auto Rebuild Roofs, Ignore Top Floor (build over the floor below the top one), Build Ceiling Planes (stored; vaulted ceilings are not generated yet). **Defaults for walls without their own roof settings**: Pitch, Overhang, Raise Roof Off Plate. A note says which floor the roof goes over. |
-| Options | **Framing**: Build Framing (stored; framing is not generated yet), Rafters (disabled, on), Trusses (disabled, off). |
+| Options | **Framing**: Build Framing (stored; the Build > Framing commands frame the stored roof planes whatever it says, 11.11), Rafters (disabled, on), Trusses (disabled, off). |
 | Materials | **Roofing**: Material (Asphalt Shingles, Concrete Tile, Standing Seam Metal, Wood Shakes, Slate). |
 
 OK is refused with "Pitch must be between 0.5 and 24 in 12" for an out-of-range pitch. The

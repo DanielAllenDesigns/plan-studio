@@ -32,11 +32,13 @@ pub enum Material {
     Glass,
     /// Rails, balusters, tracks, garage-door rails.
     Metal,
+    /// Dimensional lumber: framing members and the structure above ceilings.
+    Framing,
 }
 
 impl Material {
     /// Every material, in the order used for glTF material indices.
-    pub const ALL: [Material; 16] = [
+    pub const ALL: [Material; 17] = [
         Material::WallExterior,
         Material::WallInterior,
         Material::Floor,
@@ -53,6 +55,7 @@ impl Material {
         Material::Trim,
         Material::Glass,
         Material::Metal,
+        Material::Framing,
     ];
 
     /// Index of this material within [`Material::ALL`].
@@ -82,6 +85,7 @@ impl Material {
             Material::Trim => [0.97, 0.97, 0.95, 1.0],         // painted trim
             Material::Glass => [0.70, 0.85, 0.92, 0.30],       // translucent glass
             Material::Metal => [0.55, 0.57, 0.60, 1.0],        // painted steel
+            Material::Framing => [0.76, 0.60, 0.38, 1.0],      // raw lumber
         }
     }
 
@@ -104,6 +108,7 @@ impl Material {
             Material::Trim => "Trim",
             Material::Glass => "Glass",
             Material::Metal => "Metal",
+            Material::Framing => "Framing",
         }
     }
 

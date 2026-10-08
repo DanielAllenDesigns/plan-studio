@@ -4,15 +4,20 @@
 //! cutting) -> weld vertices and split T-junctions -> classify edges ->
 //! rasterize a depth buffer -> sample every candidate edge against it.
 
-use crate::drawing::{Drawing, EdgeKind, Line2, LineWeight};
+use crate::drawing::{Drawing, EdgeKind, Line2, LineWeight, RegionKind};
 use crate::projection::Projection;
+use crate::regions::Labels;
+use crate::shadow::Surface;
 use crate::Options;
 use plan_3d::{Material, Scene};
 use plan_core::{Id, Point};
 use std::collections::HashMap;
 
 /// A view-space vector: `[u, v, depth]`, depth growing toward the viewer.
-type V3 = [f64; 3];
+pub(crate) type V3 = [f64; 3];
+
+/// Material and source object of a triangle: a change across an edge draws a seam.
+type Group = (Material, Option<Id>);
 
 /// Vertices closer than this (inches) are welded.
 const WELD: f64 = 0.01;
@@ -25,7 +30,9 @@ const FRONT_EPS: f64 = 1e-4;
 /// Runs shorter than this many pixels are dropped or bridged.
 const MIN_RUN_PX: f64 = 2.0;
 /// Empty border around the depth buffer, pixels.
-const MARGIN_PX: f64 = 2.0;
+pub(crate) const MARGIN_PX: f64 = 2.0;
+/// A cut face wins depth ties within this many inches (f32 rounding of coplanar faces).
+const CUT_TIE_EPS: f32 = 1e-3;
 /// Grid cells per axis for the T-junction vertex index.
 const GRID_CELLS: f64 = 24.0;
 
@@ -58,23 +65,23 @@ fn xy(p: V3) -> Point {
 }
 
 /// A view-space triangle with its facing.
-struct Tri {
-    p: [V3; 3],
+pub(crate) struct Tri {
+    pub p: [V3; 3],
     /// Unit normal from the winding (outward for the solids plan-3d builds).
     n: V3,
     front: bool,
-    /// Material and source object: a change across an edge draws a seam.
-    group: (Material, Option<Id>),
+    group: Group,
 }
 
 /// Kept triangles plus, for a section, the oriented cut segments (closed
-/// loops around each solid, consistently wound so they can be filled).
+/// loops around each solid, consistently wound so they can be filled), each
+/// tagged with the group of the mesh it cuts.
 struct Clipped {
     tris: Vec<Tri>,
-    cut: Vec<(Point, Point)>,
+    cut: Vec<(Point, Point, Group)>,
 }
 
-fn push_tri(tris: &mut Vec<Tri>, p: [V3; 3], group: (Material, Option<Id>)) {
+fn push_tri(tris: &mut Vec<Tri>, p: [V3; 3], group: Group) {
     let c = cross(sub(p[1], p[0]), sub(p[2], p[0]));
     let len = dot(c, c).sqrt();
     if len < 1e-6 {
@@ -89,12 +96,21 @@ fn push_tri(tris: &mut Vec<Tri>, p: [V3; 3], group: (Material, Option<Id>)) {
     });
 }
 
-/// Transform the scene into view space, keeping depth `<= cut_depth` when cutting.
-fn collect(scene: &Scene, proj: &Projection, cut_depth: Option<f64>) -> Clipped {
+/// Transform the scene into view space, keeping depth `<= cut_depth` when
+/// cutting and, with `section_depth`, depth `>= cut_depth - section_depth`.
+fn collect(
+    scene: &Scene,
+    proj: &Projection,
+    cut_depth: Option<f64>,
+    section_depth: Option<f64>,
+) -> Clipped {
     let mut out = Clipped {
         tris: Vec::new(),
         cut: Vec::new(),
     };
+    let far = cut_depth
+        .zip(section_depth)
+        .map(|(dc, sd)| dc - sd.max(0.0));
     for mesh in &scene.meshes {
         let group = (mesh.material, mesh.object_id);
         let view = |i: u32| {
@@ -105,51 +121,73 @@ fn collect(scene: &Scene, proj: &Projection, cut_depth: Option<f64>) -> Clipped 
             let p = [view(t[0]), view(t[1]), view(t[2])];
             match cut_depth {
                 None => push_tri(&mut out.tris, p, group),
-                Some(dc) => clip_tri(p, dc, group, &mut out),
+                Some(dc) => clip_tri(p, dc, far, group, &mut out),
             }
         }
     }
     out
 }
 
-/// Clip one triangle to the half-space `depth <= dc` (Sutherland-Hodgman).
-fn clip_tri(p: [V3; 3], dc: f64, group: (Material, Option<Id>), out: &mut Clipped) {
+/// Clip one triangle to the slab `far <= depth <= dc` (Sutherland-Hodgman).
+/// Only the near plane produces cut segments.
+fn clip_tri(p: [V3; 3], dc: f64, far: Option<f64>, group: Group, out: &mut Clipped) {
     let f = p.map(|v| v[2] - dc);
+    let mut poly: Vec<V3> = Vec::with_capacity(5);
     if f.iter().all(|&x| x <= PLANE_EPS) {
-        push_tri(&mut out.tris, p, group);
+        poly.extend_from_slice(&p);
+    } else if f.iter().all(|&x| x > PLANE_EPS) {
         return;
-    }
-    if f.iter().all(|&x| x > PLANE_EPS) {
-        return;
-    }
-    let mut poly: Vec<V3> = Vec::with_capacity(4);
-    let (mut exit, mut entry) = (None, None);
-    for i in 0..3 {
-        let (a, b) = (p[i], p[(i + 1) % 3]);
-        let (fa, fb) = (f[i], f[(i + 1) % 3]);
-        let (in_a, in_b) = (fa <= PLANE_EPS, fb <= PLANE_EPS);
-        if in_a {
-            poly.push(a);
-        }
-        if in_a != in_b {
-            let mut x = lerp(a, b, fa / (fa - fb));
-            x[2] = dc;
-            poly.push(x);
+    } else {
+        let (mut exit, mut entry) = (None, None);
+        for i in 0..3 {
+            let (a, b) = (p[i], p[(i + 1) % 3]);
+            let (fa, fb) = (f[i], f[(i + 1) % 3]);
+            let (in_a, in_b) = (fa <= PLANE_EPS, fb <= PLANE_EPS);
             if in_a {
-                exit = Some(x);
-            } else {
-                entry = Some(x);
+                poly.push(a);
+            }
+            if in_a != in_b {
+                let mut x = lerp(a, b, fa / (fa - fb));
+                x[2] = dc;
+                poly.push(x);
+                if in_a {
+                    exit = Some(x);
+                } else {
+                    entry = Some(x);
+                }
+            }
+        }
+        if let (Some(x0), Some(x1)) = (exit, entry) {
+            if xy(x0).dist(xy(x1)) > 1e-6 {
+                out.cut.push((xy(x0), xy(x1), group));
             }
         }
     }
-    if let (Some(x0), Some(x1)) = (exit, entry) {
-        if xy(x0).dist(xy(x1)) > 1e-6 {
-            out.cut.push((xy(x0), xy(x1)));
-        }
+    if let Some(df) = far {
+        poly = clip_far(&poly, df);
     }
     for k in 1..poly.len().saturating_sub(1) {
         push_tri(&mut out.tris, [poly[0], poly[k], poly[k + 1]], group);
     }
+}
+
+/// Keep the part of a convex polygon with `depth >= df`.
+fn clip_far(poly: &[V3], df: f64) -> Vec<V3> {
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        let (fa, fb) = (a[2] - df, b[2] - df);
+        let (in_a, in_b) = (fa >= -PLANE_EPS, fb >= -PLANE_EPS);
+        if in_a {
+            out.push(a);
+        }
+        if in_a != in_b {
+            let mut x = lerp(a, b, fa / (fa - fb));
+            x[2] = df;
+            out.push(x);
+        }
+    }
+    out
 }
 
 /// An edge that may be drawn, with how it should look.
@@ -282,7 +320,12 @@ fn classify(edge_tris: &[u32], tris: &[Tri], crease_cos: f64) -> Option<(EdgeKin
 }
 
 /// Candidate edges of the kept triangles: silhouettes, creases and seams.
-fn candidates(tris: &[Tri], cut_depth: Option<f64>, opts: &Options) -> Vec<Candidate> {
+fn candidates(
+    tris: &[Tri],
+    cut_depth: Option<f64>,
+    far: Option<f64>,
+    opts: &Options,
+) -> Vec<Candidate> {
     let (pts, ids) = weld(tris);
     let grid = VertexGrid::new(&pts);
     let crease_cos = opts.crease_angle_deg.to_radians().cos();
@@ -325,6 +368,11 @@ fn candidates(tris: &[Tri], cut_depth: Option<f64>, opts: &Options) -> Vec<Candi
                     return None; // lies on the cut plane: drawn as a cut line instead
                 }
             }
+            if let Some(df) = far {
+                if pa[2] <= df + 1e-3 && pb[2] <= df + 1e-3 {
+                    return None; // lies on the back clip plane of a limited-depth section
+                }
+            }
             let (kind, weight) = classify(&adj, tris, crease_cos)?;
             Some(Candidate {
                 a: pa,
@@ -337,16 +385,18 @@ fn candidates(tris: &[Tri], cut_depth: Option<f64>, opts: &Options) -> Vec<Candi
 }
 
 /// Depth buffer over the drawing extent. Larger depth is nearer the viewer.
-struct DepthBuffer {
-    w: usize,
-    h: usize,
-    scale: f64,
-    origin: Point,
-    data: Vec<f32>,
+pub(crate) struct DepthBuffer {
+    pub w: usize,
+    pub h: usize,
+    pub scale: f64,
+    pub origin: Point,
+    pub data: Vec<f32>,
+    /// Label of the surface that owns each pixel's depth; 0 is background.
+    pub ids: Vec<u32>,
 }
 
 impl DepthBuffer {
-    fn new(extent: (Point, Point), raster_px: usize) -> DepthBuffer {
+    pub fn new(extent: (Point, Point), raster_px: usize) -> DepthBuffer {
         let (lo, hi) = extent;
         let longest = (hi.x - lo.x).max(hi.y - lo.y).max(1e-6);
         let scale = raster_px.max(8) as f64 / longest;
@@ -358,11 +408,12 @@ impl DepthBuffer {
             scale,
             origin: lo,
             data: vec![f32::NEG_INFINITY; w * h],
+            ids: vec![0; w * h],
         }
     }
 
     /// Continuous pixel coordinates of a drawing point.
-    fn to_px(&self, p: Point) -> (f64, f64) {
+    pub fn to_px(&self, p: Point) -> (f64, f64) {
         (
             (p.x - self.origin.x) * self.scale + MARGIN_PX,
             (p.y - self.origin.y) * self.scale + MARGIN_PX,
@@ -370,18 +421,18 @@ impl DepthBuffer {
     }
 
     /// Size of one pixel in drawing units.
-    fn pixel_size(&self) -> f64 {
+    pub fn pixel_size(&self) -> f64 {
         1.0 / self.scale
     }
 
-    fn pixel_index(&self, x: f64, y: f64) -> usize {
+    pub fn pixel_index(&self, x: f64, y: f64) -> usize {
         let cx = (x.floor().max(0.0) as usize).min(self.w - 1);
         let cy = (y.floor().max(0.0) as usize).min(self.h - 1);
         cy * self.w + cx
     }
 
     /// Edge-function rasterizer sampling pixel centres.
-    fn rasterize(&mut self, tri: &[V3; 3]) {
+    pub fn rasterize(&mut self, tri: &[V3; 3], label: u32) {
         let q = tri.map(|p| {
             let (x, y) = self.to_px(xy(p));
             [x, y, p[2]]
@@ -409,16 +460,18 @@ impl DepthBuffer {
                     continue;
                 }
                 let d = (l0 * q[0][2] + l1 * q[1][2] + l2 * q[2][2]) as f32;
-                let slot = &mut self.data[y * self.w + x];
-                if d > *slot {
-                    *slot = d;
+                let i = y * self.w + x;
+                if d > self.data[i] {
+                    self.data[i] = d;
+                    self.ids[i] = label;
                 }
             }
         }
     }
 
-    /// Fill the section's cut faces at `depth` using a non-zero winding scanline fill.
-    fn fill_cut(&mut self, segments: &[(Point, Point)], depth: f64) {
+    /// Fill one solid's cut face at `depth` using a non-zero winding scanline
+    /// fill, labelling the pixels it wins (ties go to the cut face).
+    fn fill_cut(&mut self, segments: &[(Point, Point)], depth: f64, label: u32) {
         let mut rows: Vec<Vec<(f64, i32)>> = vec![Vec::new(); self.h];
         for (a, b) in segments {
             let ((x0, y0), (x1, y1)) = (self.to_px(*a), self.to_px(*b));
@@ -444,8 +497,11 @@ impl DepthBuffer {
                 let from = (pair[0].0 - 0.5).ceil().max(0.0) as usize;
                 let end = ((pair[1].0 - 0.5).ceil().max(0.0) as usize).min(self.w);
                 for x in from..end {
-                    let slot = &mut self.data[row * self.w + x];
-                    *slot = slot.max(depth as f32);
+                    let i = row * self.w + x;
+                    if depth as f32 + CUT_TIE_EPS >= self.data[i] {
+                        self.data[i] = self.data[i].max(depth as f32);
+                        self.ids[i] = label;
+                    }
                 }
             }
         }
@@ -494,6 +550,16 @@ fn collect_runs(flags: &[bool]) -> Vec<(bool, usize, usize)> {
     runs
 }
 
+/// With `depth_weights`, lines more than this far (inches) behind the nearest drawn line step down a weight.
+const DEPTH_BAND: f64 = 12.0;
+
+fn step_down(w: LineWeight) -> LineWeight {
+    match w {
+        LineWeight::Heavy => LineWeight::Medium,
+        _ => LineWeight::Light,
+    }
+}
+
 /// Run the whole pipeline for one projection, optionally cutting at `cut_depth`.
 pub(crate) fn render(
     scene: &Scene,
@@ -501,53 +567,156 @@ pub(crate) fn render(
     cut_depth: Option<f64>,
     opts: &Options,
 ) -> Drawing {
-    let clipped = collect(scene, proj, cut_depth);
+    let clipped = collect(scene, proj, cut_depth, opts.section_depth);
+    let far = cut_depth
+        .zip(opts.section_depth)
+        .map(|(dc, sd)| dc - sd.max(0.0));
     let mut buf = DepthBuffer::new(proj.extent(), opts.raster_px);
+    let mut labels = Labels::default();
     for t in &clipped.tris {
         if t.front || !opts.cull_backfaces {
-            buf.rasterize(&t.p);
+            let label = labels.get(t.group.0, t.group.1, RegionKind::Face);
+            buf.rasterize(&t.p, label);
         }
     }
     if let Some(dc) = cut_depth {
-        buf.fill_cut(&clipped.cut, dc);
+        // A solid's cut loop is only closed across all its meshes (a wall has
+        // one mesh per material), so fill per source object; meshes without
+        // an object are separate solids per material.
+        type SolidKey = (Option<Id>, Option<usize>);
+        type Solid = (SolidKey, Vec<(Point, Point, Material)>);
+        let mut solids: Vec<Solid> = Vec::new();
+        for &(a, b, (material, object)) in &clipped.cut {
+            let key = (object, object.is_none().then(|| material.index()));
+            match solids.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, segs)) => segs.push((a, b, material)),
+                None => solids.push((key, vec![(a, b, material)])),
+            }
+        }
+        for ((object, _), segs) in &solids {
+            // Name the cut face after the material with the most cut length.
+            let mut length = [0.0_f64; Material::ALL.len()];
+            for (a, b, m) in segs {
+                length[m.index()] += a.dist(*b);
+            }
+            let best = (0..length.len()).fold(0, |best, i| {
+                if length[i] > length[best] + 1e-6 {
+                    i
+                } else {
+                    best
+                }
+            });
+            let label = labels.get(Material::ALL[best], *object, RegionKind::Cut);
+            let outline: Vec<(Point, Point)> = segs.iter().map(|&(a, b, _)| (a, b)).collect();
+            buf.fill_cut(&outline, dc, label);
+        }
     }
     let bias = 1.5 * buf.pixel_size() + 0.02;
 
-    let mut lines: Vec<Line2> = clipped
+    // Each line carries its mean depth for the optional depth weighting.
+    let mut lines: Vec<(Line2, f64)> = clipped
         .cut
         .iter()
-        .map(|&(a, b)| Line2 {
-            a,
-            b,
-            weight: LineWeight::Heavy,
-            kind: EdgeKind::Cut,
+        .map(|&(a, b, _)| {
+            (
+                Line2 {
+                    a,
+                    b,
+                    weight: LineWeight::Heavy,
+                    kind: EdgeKind::Cut,
+                },
+                f64::INFINITY,
+            )
         })
         .collect();
-    for c in candidates(&clipped.tris, cut_depth, opts) {
+    for c in candidates(&clipped.tris, cut_depth, far, opts) {
         for (visible, t0, t1) in edge_runs(&buf, c.a, c.b, bias) {
             let end = |t: f64| match t {
                 t if t <= 0.0 => xy(c.a),
                 t if t >= 1.0 => xy(c.b),
                 t => xy(lerp(c.a, c.b, t)),
             };
+            let depth = lerp(c.a, c.b, 0.5 * (t0 + t1))[2];
             if visible {
-                lines.push(Line2 {
-                    a: end(t0),
-                    b: end(t1),
-                    weight: c.weight,
-                    kind: c.kind,
-                });
+                lines.push((
+                    Line2 {
+                        a: end(t0),
+                        b: end(t1),
+                        weight: c.weight,
+                        kind: c.kind,
+                    },
+                    depth,
+                ));
             } else if opts.include_hidden_dashed {
-                lines.push(Line2 {
-                    a: end(t0),
-                    b: end(t1),
-                    weight: LineWeight::Light,
-                    kind: EdgeKind::Hidden,
-                });
+                lines.push((
+                    Line2 {
+                        a: end(t0),
+                        b: end(t1),
+                        weight: LineWeight::Light,
+                        kind: EdgeKind::Hidden,
+                    },
+                    depth,
+                ));
             }
         }
     }
-    let mut drawing = Drawing::new(lines);
+    if opts.depth_weights {
+        let nearest = lines
+            .iter()
+            .filter(|(l, _)| l.kind != EdgeKind::Hidden)
+            .map(|(_, d)| *d)
+            .filter(|d| d.is_finite())
+            .fold(f64::NEG_INFINITY, f64::max);
+        for (l, d) in &mut lines {
+            if l.kind != EdgeKind::Hidden && *d < nearest - DEPTH_BAND {
+                l.weight = step_down(l.weight);
+            }
+        }
+    }
+    let mut drawing = Drawing::new(lines.into_iter().map(|(l, _)| l).collect());
     drawing.merge_collinear();
+
+    if opts.regions || opts.hatch || opts.shadows.is_some() {
+        let to_point = |p: Point| {
+            Point::new(
+                (p.x - MARGIN_PX) / buf.scale + buf.origin.x,
+                (p.y - MARGIN_PX) / buf.scale + buf.origin.y,
+            )
+        };
+        drawing.regions = crate::regions::extract(&buf.ids, buf.w, buf.h, &labels, &to_point);
+        if let Some(sun) = opts.shadows {
+            let surface = |i: usize| match labels.key(buf.ids[i]) {
+                None => Surface::Background,
+                Some(k) if k.kind == RegionKind::Cut => Surface::Skip,
+                Some(k) => Surface::Material(k.material),
+            };
+            let shadowed = crate::shadow::shadowed_pixels(
+                &clipped.tris,
+                &buf,
+                proj,
+                sun,
+                opts.raster_px,
+                &surface,
+            );
+            let mut shadow_labels = Labels::default();
+            let mut shadow_ids = vec![0u32; buf.ids.len()];
+            for s in shadowed {
+                let material = s.material.unwrap_or(Material::Floor);
+                shadow_ids[s.index] = shadow_labels.get(material, None, RegionKind::Shadow);
+            }
+            drawing.regions.extend(crate::regions::extract(
+                &shadow_ids,
+                buf.w,
+                buf.h,
+                &shadow_labels,
+                &to_point,
+            ));
+        }
+    }
+    if opts.hatch {
+        drawing
+            .lines
+            .extend(crate::hatch::hatch_lines(&drawing.regions));
+    }
     drawing
 }

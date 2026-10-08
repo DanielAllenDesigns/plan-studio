@@ -64,15 +64,35 @@ pub enum BoxSource {
     Schedule { kind: ScheduleKind },
     /// Loose CAD in detail space (inches of the detail, drawn at the box scale).
     CadDetail { name: String, items: Vec<CadObject> },
-    /// A raster image. The PDF writer has no image support yet, so the box
-    /// prints a placeholder frame with the file name.
+    /// A raster image by file name. The layout does not read files, so the box
+    /// prints a placeholder frame with the name; use [`BoxSource::ImageData`]
+    /// to embed pixels.
     Image { path: String },
+    /// An embedded raster image: `rgba` holds `width * height * 4` bytes,
+    /// rows top to bottom, flattened onto white when printed. It is drawn as
+    /// an image XObject, scaled to fit the box and centred.
+    ImageData {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
     /// Plain text, drawn in paper points.
     Text { text: String, height_pt: f64 },
 }
 
 fn one() -> f64 {
     1.0
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Chief's "Layout Edge" line weight in Daniel's preferences, 1/100 mm.
+pub const LAYOUT_EDGE_WEIGHT: u32 = 18;
+
+fn edge_weight() -> u32 {
+    LAYOUT_EDGE_WEIGHT
 }
 
 /// A rectangular viewport on a page.
@@ -90,8 +110,12 @@ pub struct LayoutBox {
     /// Multiplier on every pen weight inside the box.
     #[serde(default = "one")]
     pub line_weight_scale: f64,
-    /// Cut content off at the box frame.
+    /// Cut content off at the box frame (a PDF clip rectangle).
     pub clip: bool,
+    /// Elevation and section boxes: fill wall faces with their material's
+    /// pattern (see [`crate::wall_face_hatch`]).
+    #[serde(default = "yes")]
+    pub hatch_materials: bool,
 }
 
 impl LayoutBox {
@@ -106,6 +130,7 @@ impl LayoutBox {
             border: true,
             line_weight_scale: 1.0,
             clip: true,
+            hatch_materials: true,
         }
     }
 
@@ -131,6 +156,10 @@ pub struct LayoutPage {
     pub boxes: Vec<LayoutBox>,
     /// Page annotations in paper inches (title text, notes, leaders).
     pub cad: Vec<CadObject>,
+    /// Chief's "Page Template" page: it is not printed itself, its boxes and
+    /// CAD repeat on every other page (under that page's own content).
+    #[serde(default)]
+    pub template_page: bool,
 }
 
 impl LayoutPage {
@@ -152,6 +181,12 @@ pub struct Layout {
     /// Print the sheet index on the first page.
     #[serde(default)]
     pub sheet_index: bool,
+    /// Fill every page with Chief's layout background (249, 248, 244).
+    #[serde(default = "yes")]
+    pub page_background: bool,
+    /// Line weight of the page border ("Layout Edge"), 1/100 mm.
+    #[serde(default = "edge_weight")]
+    pub edge_line_weight: u32,
 }
 
 impl Layout {
@@ -164,6 +199,8 @@ impl Layout {
             title_block: TitleBlockTemplate::presentation_18x24(),
             margins_in: 0.5,
             sheet_index: false,
+            page_background: true,
+            edge_line_weight: LAYOUT_EDGE_WEIGHT,
         }
     }
 
@@ -184,8 +221,27 @@ impl Layout {
             title: title.into(),
             boxes: Vec::new(),
             cad: Vec::new(),
+            template_page: false,
         });
         self.pages.last_mut().expect("just pushed")
+    }
+
+    /// Pages that are printed: every page that is not a template page.
+    pub fn content_pages(&self) -> Vec<&LayoutPage> {
+        self.pages.iter().filter(|p| !p.template_page).collect()
+    }
+
+    /// The template pages, whose contents repeat on every printed page.
+    pub fn template_pages(&self) -> Vec<&LayoutPage> {
+        self.pages.iter().filter(|p| p.template_page).collect()
+    }
+
+    /// Sheet sizes this layout can be switched to: all of
+    /// [`SheetSize::ALL`] (landscape), the current size first.
+    pub fn sheet_sizes_available(&self) -> Vec<SheetSize> {
+        std::iter::once(self.sheet)
+            .chain(SheetSize::ALL.into_iter().filter(|s| *s != self.sheet))
+            .collect()
     }
 
     /// An id not used by any box in the layout.

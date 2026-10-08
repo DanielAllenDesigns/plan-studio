@@ -13,6 +13,10 @@
 //!   Symbol Specification; the Edit toolbar offers Open Object, Delete, Copy
 //!   and a placeholder Replace From Library (CB-57).
 //!
+//! Chief Architect catalog objects (`chief.<catalog-uuid>.<id>`) are placed the
+//! same way: the Library Browser bridges the clicked object into the transient
+//! catalog of [`chief`] and [`find_item`] returns it like a built-in item.
+//!
 //! The active item id is kept per thread (the shared `SessionExtras` has no
 //! slot for it and `editor/mod.rs` is not this tool's to change).
 
@@ -29,7 +33,10 @@ use plan_core::geometry::{dist_to_segment, Point};
 use plan_core::{Id, PlacedSymbol};
 use plan_library::{CatalogItem, Library, Placement};
 use std::cell::RefCell;
-use std::sync::OnceLock;
+use std::ops::Deref;
+use std::sync::{Arc, OnceLock};
+
+pub mod chief;
 
 /// Pixels the pointer must travel before a press becomes a drag.
 const DRAG_THRESHOLD_PX: f32 = 3.0;
@@ -40,6 +47,32 @@ const COUNTER_SNAP: f64 = 12.0;
 pub fn library_catalog() -> &'static Library {
     static LIB: OnceLock<Library> = OnceLock::new();
     LIB.get_or_init(Library::with_all_core)
+}
+
+/// A library item: built in (static) or a bridged Chief object.
+pub enum ItemRef {
+    Core(&'static CatalogItem),
+    Chief(Arc<CatalogItem>),
+}
+
+impl Deref for ItemRef {
+    type Target = CatalogItem;
+
+    fn deref(&self) -> &CatalogItem {
+        match self {
+            ItemRef::Core(i) => i,
+            ItemRef::Chief(i) => i,
+        }
+    }
+}
+
+/// The library item with this id: a built-in one, or a Chief object (bridged
+/// on first use when only its id is known, as after a plan was reopened).
+pub fn find_item(id: &str) -> Option<ItemRef> {
+    match library_catalog().get(id) {
+        Some(i) => Some(ItemRef::Core(i)),
+        None => chief::resolve_item(id).map(|c| ItemRef::Chief(c.item)),
+    }
 }
 
 thread_local! {
@@ -54,7 +87,7 @@ pub fn active_item() -> Option<String> {
 /// Makes `catalog_id` the item the Library tool places. Returns `false` (and
 /// says so in the status bar) for an unknown id.
 pub fn set_active_item(cx: &mut EditorContext, catalog_id: &str) -> bool {
-    match library_catalog().get(catalog_id) {
+    match find_item(catalog_id) {
         Some(item) => {
             ACTIVE.with(|a| *a.borrow_mut() = Some(item.id.clone()));
             cx.status = format!("Library Symbol: click to place {}", item.name);
@@ -336,7 +369,7 @@ impl Tool for LibraryTool {
     }
 
     fn hint(&self) -> String {
-        match active_item().and_then(|id| library_catalog().get(&id).map(|i| i.name.clone())) {
+        match active_item().and_then(|id| find_item(&id).map(|i| i.name.clone())) {
             Some(n) => format!("Library Symbol: click to place {n}"),
             None => {
                 "Library Symbol: pick an item in the Library Browser, then click in the plan".into()
@@ -375,8 +408,8 @@ impl Tool for LibraryTool {
             return ToolResult::consumed();
         }
         self.ghost = active_item()
-            .and_then(|id| library_catalog().get(&id))
-            .map(|item| placement_for(cx, item, &p));
+            .and_then(|id| find_item(&id))
+            .map(|item| placement_for(cx, &item, &p));
         ToolResult {
             repaint: true,
             ..ToolResult::default()
@@ -403,11 +436,11 @@ impl Tool for LibraryTool {
             return ToolResult::consumed();
         }
         // Otherwise place the active item (CB-55).
-        let Some(item) = active_item().and_then(|id| library_catalog().get(&id)) else {
+        let Some(item) = active_item().and_then(|id| find_item(&id)) else {
             cx.status = self.hint();
             return ToolResult::consumed();
         };
-        let sym = placement_for(cx, item, &p);
+        let sym = placement_for(cx, &item, &p);
         cx.begin_change("Place Symbol");
         let fl = cx.floor;
         let id = cx.project.add_symbol(fl, sym);

@@ -185,7 +185,8 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                     .collect()
             })
             .unwrap_or_default(),
-        ObjectRef::Room(_) | ObjectRef::Terrain => Vec::new(),
+        // Foundation objects move by dragging their body (a group move).
+        ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::Foundation(_) => Vec::new(),
     }
 }
 

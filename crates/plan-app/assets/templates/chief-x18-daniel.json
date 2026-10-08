@@ -167,6 +167,66 @@
       "kind": "Exterior"
     },
     {
+      "name": "Glass-1",
+      "layers": [
+        {
+          "name": "Glass",
+          "thickness": 1.0,
+          "is_main": true,
+          "material": "Glass"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Railing-4",
+      "layers": [
+        {
+          "name": "Rail",
+          "thickness": 4.0,
+          "is_main": true,
+          "material": "Wood"
+        }
+      ],
+      "kind": "Interior"
+    },
+    {
+      "name": "Deck Railing-4",
+      "layers": [
+        {
+          "name": "Rail",
+          "thickness": 4.0,
+          "is_main": true,
+          "material": "Wood"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Deck Edge-2",
+      "layers": [
+        {
+          "name": "Rim Board",
+          "thickness": 1.5,
+          "is_main": true,
+          "material": "Wood"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Fence-Wood-2",
+      "layers": [
+        {
+          "name": "Boards",
+          "thickness": 1.5,
+          "is_main": true,
+          "material": "Wood"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
       "name": "Interior-4",
       "layers": [
         {
@@ -814,5 +874,19 @@
   },
   "units": {
     "imperial": true
+  },
+  "wall_variants": {
+    "pony_upper_type": "Stucco-6",
+    "pony_lower_type": "Foundation-8",
+    "pony_split_height": 36.0,
+    "half_wall_height": 36.0,
+    "glass_type": "Glass-1",
+    "railing_type": "Railing-4",
+    "railing_height": 36.0,
+    "deck_railing_type": "Deck Railing-4",
+    "deck_edge_type": "Deck Edge-2",
+    "deck_edge_height": 9.25,
+    "fencing_type": "Fence-Wood-2",
+    "fencing_height": 72.0
   }
 }

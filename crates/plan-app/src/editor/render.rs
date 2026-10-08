@@ -13,7 +13,7 @@ use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
-use plan_core::{Dimension, DimensionKind, Opening, OpeningKind, Wall, WallKind};
+use plan_core::{Dimension, DimensionKind, Opening, OpeningKind, Wall, WallClass, WallKind};
 
 /// Everything under the tool overlay.
 pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
@@ -25,6 +25,8 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     draw_reference_floor(cx, painter, cam);
     crate::editor::site_view::draw_site(cx, painter, cam);
     draw_rooms(cx, painter, cam);
+    // Slabs, pads and piers sit under the walls.
+    crate::editor::foundation_view::draw_foundation(cx, painter, cam);
     crate::editor::stairs_view::draw_stairs(cx, painter, cam);
     crate::editor::placed::draw_placed(cx, painter, cam);
     crate::editor::roof_view::draw_roofs(cx, painter, cam);
@@ -181,6 +183,10 @@ fn draw_rooms(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
 
 /// The wall's drawn polygon: the mitered outline when the cache has one.
 fn wall_polygon(cx: &EditorContext, wall: &Wall) -> Vec<Point> {
+    // The join cache only knows straight walls.
+    if wall.is_curved() {
+        return wall.plan_polygon();
+    }
     cx.outlines
         .iter()
         .find(|o| o.wall_id == wall.id)
@@ -189,8 +195,18 @@ fn wall_polygon(cx: &EditorContext, wall: &Wall) -> Vec<Point> {
 
 fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     for wall in &cx.floor().walls {
+        if !cx.layers().is_visible(&wall.layer) {
+            continue;
+        }
+        // A drawn room divider is invisible in 3D but shows as a dashed line.
+        if wall.class == WallClass::RoomDivider {
+            weighted(cx, painter, &wall.layer, || {
+                draw_room_divider(cx, painter, cam, wall)
+            });
+            continue;
+        }
         // Invisible walls (stairwell dividers) are room boundaries only.
-        if wall.flags.invisible || !cx.layers().is_visible(&wall.layer) {
+        if wall.flags.invisible {
             continue;
         }
         weighted(cx, painter, &wall.layer, || {
@@ -199,21 +215,219 @@ fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
 }
 
+/// The wall's left and right face lines (a straight wall's footprint edges,
+/// or the two offset curves of an arc), both running start to end.
+fn face_lines(wall: &Wall) -> (Vec<Point>, Vec<Point>) {
+    if wall.is_curved() {
+        let poly = wall.plan_polygon();
+        let h = poly.len() / 2;
+        (
+            poly[..h].to_vec(),
+            poly[h..].iter().rev().copied().collect(),
+        )
+    } else {
+        let f = wall.footprint();
+        (vec![f[0], f[1]], vec![f[3], f[2]])
+    }
+}
+
+/// Fills the wall (an arc as a strip of convex facets) and outlines it.
+fn fill_wall(
+    painter: &egui::Painter,
+    cam: &Camera,
+    wall: &Wall,
+    poly: &[Point],
+    fill: Color32,
+    stroke: Stroke,
+) {
+    if wall.is_curved() {
+        let (left, right) = face_lines(wall);
+        for i in 0..left.len().saturating_sub(1) {
+            let quad = [left[i], left[i + 1], right[i + 1], right[i]];
+            painter.add(Shape::convex_polygon(
+                quad.iter().map(|p| cam.world_to_screen(*p)).collect(),
+                fill,
+                Stroke::NONE,
+            ));
+        }
+        painter.add(Shape::closed_line(quad(cam, poly), stroke));
+    } else {
+        painter.add(Shape::convex_polygon(quad(cam, poly), fill, stroke));
+    }
+}
+
+/// Diagonal hatch lines (screen space, 45 degrees) inside `poly`.
+fn hatch_polygon(painter: &egui::Painter, poly: &[Pos2], spacing: f32, stroke: Stroke) {
+    if poly.len() < 3 {
+        return;
+    }
+    let sums = poly.iter().map(|p| p.x + p.y);
+    let lo = sums.clone().fold(f32::MAX, f32::min);
+    let hi = sums.fold(f32::MIN, f32::max);
+    let mut c = (lo / spacing).ceil() * spacing;
+    while c < hi {
+        let mut hits: Vec<Pos2> = Vec::new();
+        for i in 0..poly.len() {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            let (fa, fb) = (a.x + a.y - c, b.x + b.y - c);
+            if (fa < 0.0) != (fb < 0.0) {
+                hits.push(a + (b - a) * (fa / (fa - fb)));
+            }
+        }
+        hits.sort_by(|p, q| p.x.total_cmp(&q.x));
+        for i in (0..hits.len().saturating_sub(1)).step_by(2) {
+            painter.line_segment([hits[i], hits[i + 1]], stroke);
+        }
+        c += spacing;
+    }
+}
+
+/// Room divider: a thin dashed line on its layer.
+fn draw_room_divider(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall: &Wall) {
+    let pts: Vec<Pos2> = wall
+        .sample_points(if wall.is_curved() { 24 } else { 1 })
+        .iter()
+        .map(|p| cam.world_to_screen(*p))
+        .collect();
+    let stroke = Stroke::new(0.75_f32, cx.palette.wall_stroke.gamma_multiply(0.7));
+    painter.extend(Shape::dashed_line(&pts, stroke, 6.0, 4.0));
+}
+
+/// Glass walls and railings in plan: two thin face lines, and for railings
+/// a post at each end.
+fn draw_double_line(
+    painter: &egui::Painter,
+    cam: &Camera,
+    wall: &Wall,
+    color: Color32,
+    posts: bool,
+) {
+    let (left, right) = face_lines(wall);
+    let stroke = Stroke::new(0.75_f32, color);
+    for line in [&left, &right] {
+        painter.add(Shape::line(
+            line.iter().map(|p| cam.world_to_screen(*p)).collect(),
+            stroke,
+        ));
+    }
+    if posts {
+        let r = (wall.thickness.max(3.5) * 0.5 * cam.px_per_in).max(1.5) as f32;
+        for p in [wall.start, wall.end] {
+            painter.circle_filled(cam.world_to_screen(p), r, color);
+        }
+    }
+}
+
+/// Fencing in plan: a center line with a post at least every 96".
+fn draw_fence(painter: &egui::Painter, cam: &Camera, wall: &Wall) {
+    let color = Color32::from_rgb(90, 130, 60);
+    let pts: Vec<Pos2> = wall
+        .sample_points(if wall.is_curved() { 24 } else { 1 })
+        .iter()
+        .map(|p| cam.world_to_screen(*p))
+        .collect();
+    painter.add(Shape::line(pts, Stroke::new(1.25_f32, color)));
+    let bays = (wall.path_length() / 96.0).ceil().max(1.0) as usize;
+    let r = (1.75 * cam.px_per_in).max(1.5) as f32;
+    for p in wall.sample_points(bays) {
+        painter.circle_filled(cam.world_to_screen(p), r, color);
+    }
+}
+
+/// The layers of a pony wall's lower type, drawn straight across the wall.
+fn draw_pony_lower(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    wall: &Wall,
+    lower_type: &str,
+    fill: Color32,
+) {
+    let Some(def) = cx
+        .project
+        .wall_type_def(lower_type)
+        .or_else(|| cx.defaults.wall_type(lower_type))
+    else {
+        return;
+    };
+    let mut lower = wall.clone();
+    lower.thickness = def.thickness();
+    let n = lower.normal();
+    let thin = Stroke::new(0.75_f32, cx.palette.wall_stroke);
+    for b in plan_core::wall_layer_bands(&lower, Some(def)) {
+        let pts: Vec<Pos2> = [
+            wall.start.add(n.scale(b.outer)),
+            wall.end.add(n.scale(b.outer)),
+            wall.end.add(n.scale(b.inner)),
+            wall.start.add(n.scale(b.inner)),
+        ]
+        .iter()
+        .map(|p| cam.world_to_screen(*p))
+        .collect();
+        let color = if b.is_main {
+            crate::theme::scale(fill, 0.78)
+        } else {
+            fill
+        };
+        painter.add(Shape::convex_polygon(pts, color, thin));
+    }
+}
+
 fn draw_one_wall(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall: &Wall) {
     let pal = &cx.palette;
     // Below this zoom the layer lines would just turn into a smear.
     let show_layers = cam.px_per_in >= 1.0;
-    let fill = match wall.kind {
+    let mut fill = match wall.kind {
         WallKind::Exterior => pal.wall_fill_exterior,
         WallKind::Interior => pal.wall_fill_interior,
     };
+    // Wall classes with their own plan symbol (W-52..W-58).
+    match &wall.class {
+        WallClass::Glass | WallClass::GlassPony { .. } => {
+            return draw_double_line(painter, cam, wall, Color32::from_rgb(70, 130, 180), false);
+        }
+        WallClass::Railing | WallClass::DeckRailing => {
+            return draw_double_line(painter, cam, wall, pal.wall_stroke, true);
+        }
+        WallClass::Fencing { .. } => return draw_fence(painter, cam, wall),
+        WallClass::DeckEdge => fill = Color32::from_rgb(196, 160, 110),
+        _ => {}
+    }
+    let poly = wall_polygon(cx, wall);
     // The mitered outline: fill and heavy edge of the whole wall.
-    painter.add(Shape::convex_polygon(
-        quad(cam, &wall_polygon(cx, wall)),
+    fill_wall(
+        painter,
+        cam,
+        wall,
+        &poly,
         fill,
-        Stroke::new(1.0_f32, pal.wall_stroke),
-    ));
-    if !show_layers {
+        Stroke::new(
+            if wall.class == WallClass::DeckEdge {
+                1.75_f32
+            } else {
+                1.0_f32
+            },
+            pal.wall_stroke,
+        ),
+    );
+    if !show_layers || wall.class == WallClass::DeckEdge {
+        return;
+    }
+    // Foundation walls are hatched concrete.
+    if wall.is_foundation() {
+        let hatch = Stroke::new(0.75_f32, pal.wall_stroke.gamma_multiply(0.6));
+        hatch_polygon(painter, &quad(cam, &poly), 6.0, hatch);
+    }
+    // A pony wall's plan shows the lower type unless the upper one sets it.
+    if let WallClass::Pony {
+        lower_type,
+        upper_sets_plan_display: false,
+        ..
+    } = &wall.class
+    {
+        return draw_pony_lower(cx, painter, cam, wall, lower_type, fill);
+    }
+    if wall.is_curved() {
         return;
     }
     // Chief's plan view of a wall type: every layer boundary as a thin
@@ -546,8 +760,13 @@ fn highlight(
             }
         }
         ObjectRef::RoofPlane(id) => {
-            if let Some(r) = crate::editor::roof_view::load(floor).plane(id) {
-                painter.add(Shape::closed_line(quad(cam, &r.plan_polygon()), stroke));
+            let set = crate::editor::roof_view::load(floor);
+            for (rid, _, polys) in set.pick_polys() {
+                if rid == id {
+                    for poly in polys {
+                        painter.add(Shape::closed_line(quad(cam, &poly), stroke));
+                    }
+                }
             }
         }
         ObjectRef::Camera(id) => {
@@ -555,7 +774,8 @@ fn highlight(
                 painter.circle_stroke(cam.world_to_screen(c.position), 14.0, stroke);
             }
         }
-        // Stairs, cabinets and symbols draw their own selection.
+        // Stairs, cabinets, symbols and foundation objects draw their own
+        // selection.
         _ => {}
     }
 }
@@ -782,5 +1002,114 @@ mod tests {
             ViewFlag::ReferenceDisplay,
         ]);
         let _ = colored(&cx);
+    }
+
+    /// Plan shapes of one 240" wall of `class`: (filled paths, line segments).
+    fn wall_shapes(class: WallClass, curved: bool) -> (usize, usize) {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            7.625,
+            109.0,
+            WallKind::Exterior,
+        );
+        let w = cx.project.floors[0].wall_mut(id).unwrap();
+        if let Some(l) = class.default_layer() {
+            w.layer = l.to_string();
+        }
+        w.set_class(class);
+        w.wall_type = Some("Stucco-6".into());
+        if curved {
+            w.curve = Some(plan_core::WallCurve { bulge: 40.0 });
+        }
+        cx.refresh();
+        let (mut filled, mut lines) = (0, 0);
+        let egui_ctx = egui::Context::default();
+        let _ = egui_ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (_, painter) =
+                    ui.allocate_painter(Vec2::new(800.0, 600.0), egui::Sense::hover());
+                let mut cam = Camera::default_view();
+                cam.rect = painter.clip_rect();
+                cam.px_per_in = 2.0;
+                draw_walls(&cx, &painter, &cam);
+                painter.for_each_shape(|cs| match &cs.shape {
+                    Shape::Path(p) if p.fill != Color32::TRANSPARENT => filled += 1,
+                    Shape::LineSegment { .. } => lines += 1,
+                    _ => {}
+                });
+            });
+        });
+        (filled, lines)
+    }
+
+    #[test]
+    fn wall_classes_have_their_own_plan_symbols() {
+        let (std_fill, std_lines) = wall_shapes(WallClass::Standard, false);
+        assert!(std_fill >= 1);
+        // Foundation walls add a concrete hatch.
+        let (f_fill, f_lines) = wall_shapes(WallClass::Foundation, false);
+        assert!(
+            f_fill >= 1 && f_lines > std_lines + 5,
+            "{f_lines} {std_lines}"
+        );
+        // Glass, railings, fences and room dividers are lines, not filled walls.
+        for class in [
+            WallClass::Glass,
+            WallClass::GlassPony {
+                lower_type: "Brick-6".into(),
+                split_height: 36.0,
+            },
+            WallClass::Railing,
+            WallClass::DeckRailing,
+            WallClass::Fencing {
+                style: plan_core::FenceStyle::Picket,
+            },
+            WallClass::RoomDivider,
+        ] {
+            let (fill, _) = wall_shapes(class.clone(), false);
+            assert_eq!(fill, 0, "{class:?}");
+        }
+        // A pony wall shows its lower type's layers unless the upper sets the plan.
+        let pony = |upper: bool| WallClass::Pony {
+            upper_type: "Stucco-6".into(),
+            lower_type: "Brick-6".into(),
+            split_height: 36.0,
+            upper_sets_plan_display: upper,
+        };
+        let (lower_fill, _) = wall_shapes(pony(false), false);
+        let (upper_fill, _) = wall_shapes(pony(true), false);
+        assert_ne!(lower_fill, upper_fill);
+        // Half-walls and deck edges draw as walls; every class draws curved.
+        assert!(wall_shapes(WallClass::HalfWall { height: 36.0 }, false).0 >= 1);
+        assert!(wall_shapes(WallClass::DeckEdge, false).0 >= 1);
+        for class in [WallClass::Standard, WallClass::Foundation, WallClass::Glass] {
+            let _ = wall_shapes(class, true);
+        }
+        assert!(wall_shapes(WallClass::Standard, true).0 > 4, "arc facets");
+    }
+
+    #[test]
+    fn face_lines_follow_the_arc() {
+        let mut w = Wall::new(
+            Point::ZERO,
+            Point::new(100.0, 0.0),
+            10.0,
+            96.0,
+            WallKind::Interior,
+        );
+        let (l, r) = face_lines(&w);
+        assert_eq!((l.len(), r.len()), (2, 2));
+        assert_eq!((l[0], r[0]), (Point::new(0.0, 5.0), Point::new(0.0, -5.0)));
+        w.curve = Some(plan_core::WallCurve { bulge: 20.0 });
+        let (l, r) = face_lines(&w);
+        assert_eq!(l.len(), r.len());
+        assert!(l.len() > 3);
+        // The faces are 5" either side of the arc, square to its tangent.
+        assert!((l[0].dist(Point::ZERO) - 5.0).abs() < 1e-6);
+        assert!((r[0].dist(Point::ZERO) - 5.0).abs() < 1e-6);
+        assert!((r.last().unwrap().dist(Point::new(100.0, 0.0)) - 5.0).abs() < 1e-6);
     }
 }

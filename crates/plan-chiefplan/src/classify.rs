@@ -1,6 +1,7 @@
 //! Sorts scanned strings into the template categories of
 //! `docs/chief-template-format.md` section 4 using suffix and keyword rules.
 
+use crate::decode::TemplateSummary;
 use crate::scan::{TemplateKind, TemplateScan};
 use crate::values::{LayerSetData, WallStack};
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,10 @@ pub struct TemplateInventory {
     pub wall_stacks: Vec<WallStack>,
     /// Number of strings replaced by redaction (see [`crate::redact`]).
     pub redacted: usize,
+    /// Phase C: typed objects (wall types with layer stacks, text styles,
+    /// dimension defaults, materials, default heights, paper sizes, layout
+    /// info). Empty until [`crate::build_inventory`] fills it.
+    pub summary: TemplateSummary,
 }
 
 impl TemplateInventory {

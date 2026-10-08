@@ -17,7 +17,7 @@ const GLASS_IOR: f32 = 1.5;
 const CLAY_ALBEDO: f32 = 0.72;
 /// GGX roughness per [`Material`], in `Material::ALL` order.
 const ROUGHNESS: [f32; MATERIAL_COUNT] = [
-    0.85, 0.9, 0.4, 0.95, 0.45, 0.0, 0.35, 0.75, 0.95, 0.8, 0.9, 0.85, 0.9, 0.5, 0.0, 0.35,
+    0.85, 0.9, 0.4, 0.95, 0.45, 0.0, 0.35, 0.75, 0.95, 0.8, 0.9, 0.85, 0.9, 0.5, 0.0, 0.35, 0.8,
 ];
 
 /// How light interacts with a surface.
@@ -176,6 +176,22 @@ pub(crate) fn sheet_reflectance(cos_i: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_material_has_a_surface_and_framing_is_rough_lumber() {
+        for technique in [
+            Technique::PhysicallyBased,
+            Technique::Clay,
+            Technique::Ambient,
+        ] {
+            assert_eq!(Surface::table(technique).len(), Material::ALL.len());
+        }
+        assert_eq!(ROUGHNESS.len(), Material::ALL.len());
+        let t = Surface::table(Technique::PhysicallyBased);
+        let s = t[Material::Framing.index()];
+        assert_eq!(s.kind, Kind::Opaque);
+        assert!(s.roughness > 0.7);
+    }
 
     #[test]
     fn glass_reflects_about_eight_percent_head_on_and_more_at_grazing() {

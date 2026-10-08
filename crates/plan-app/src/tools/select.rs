@@ -532,11 +532,11 @@ impl SelectTool {
             Op::RoofMove(id) => {
                 let unit = cx.snap_unit();
                 let mut set = roof_view::load(&a.original.floors[fl]);
-                if let Some(r) = set.plane_mut(id) {
-                    r.translate(Point::new(
-                        snap_unit_round(total.x, unit),
-                        snap_unit_round(total.y, unit),
-                    ));
+                let d = Point::new(
+                    snap_unit_round(total.x, unit),
+                    snap_unit_round(total.y, unit),
+                );
+                if roof_view::translate_record(&mut set, id, d) {
                     roof_view::store(&mut cx.project, fl, &mut set);
                 }
             }
@@ -561,7 +561,14 @@ impl SelectTool {
                     };
                     cx.project.update_camera(id, |c| {
                         *c = orig.clone();
-                        camera_tool::apply_handle(c, h, to, p.modifiers.shift);
+                        camera_tool::apply_handle_with(
+                            c,
+                            h,
+                            to,
+                            p.modifiers
+                                .shift
+                                .then_some(cx.defaults.editing.angle_snap_deg),
+                        );
                     });
                 }
             }
@@ -1315,5 +1322,80 @@ mod tests {
         assert_ne!(moved.rect, first.rect);
         assert!(cx.selection.is_empty());
         rooms_edit::clear_space_boxes();
+    }
+
+    #[test]
+    fn select_picks_moves_and_deletes_a_pad_with_undo() {
+        use crate::editor::foundation_view;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = foundation_view::add_pad(&mut cx, Point::new(100.0, 100.0));
+        cx.refresh();
+        let mut t = SelectTool::default();
+        // A click selects it as a Foundation object.
+        let p = ev(&cx, 104.0, 98.0);
+        t.pointer_down(&mut cx, p.with_down(true));
+        t.pointer_up(&mut cx, p);
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Foundation(id)));
+        assert!(ObjectRef::Foundation(id).exists(cx.floor()));
+        assert_eq!(
+            layer_of(cx.floor(), ObjectRef::Foundation(id)).as_deref(),
+            Some("Piers/Pads")
+        );
+        // Dragging its body moves it, as one undo step.
+        drag(&mut t, &mut cx, (104.0, 98.0), (128.0, 98.0));
+        let moved = foundation_view::load(&cx).pad(id).unwrap().center;
+        assert!(
+            (moved.x - 124.0).abs() < 1e-6 && (moved.y - 100.0).abs() < 1e-6,
+            "{moved:?}"
+        );
+        // Double-click asks for the specification.
+        cx.requests.clear();
+        let at = ev(&cx, 126.0, 100.0);
+        assert!(t.double_click(&mut cx, at).consumed);
+        assert!(cx
+            .requests
+            .iter()
+            .any(|r| matches!(r, EditorRequest::OpenSpec(ObjectRef::Foundation(i)) if *i == id)));
+        // Delete removes it; undo brings it back; box select finds it.
+        assert!(t.key(&mut cx, KeyEvent::key(Key::Delete)).consumed);
+        assert!(foundation_view::load(&cx).is_empty());
+        assert!(cx.selection.is_empty());
+        cx.undo();
+        assert!(foundation_view::load(&cx).pad(id).is_some());
+        let boxed = objects_in_rect(&cx, Point::new(0.0, 0.0), Point::new(300.0, 300.0));
+        assert!(boxed.contains(&ObjectRef::Foundation(id)));
+    }
+
+    #[test]
+    fn roof_dormers_and_ceiling_planes_are_selected_as_roof_records() {
+        use crate::editor::roof_view;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let fl = cx.floor;
+        let id = roof_view::add_ceiling(
+            &mut cx.project,
+            fl,
+            (
+                Point::new(0.0, 0.0),
+                Point::new(240.0, 0.0),
+                Point::new(120.0, 90.0),
+            ),
+            100.0,
+            4.0,
+        )
+        .unwrap();
+        cx.mark_dirty();
+        cx.refresh();
+        let mut t = SelectTool::default();
+        let p = ev(&cx, 120.0, 45.0);
+        t.pointer_down(&mut cx, p.with_down(true));
+        t.pointer_up(&mut cx, p);
+        assert_eq!(cx.selection.single(), Some(ObjectRef::RoofPlane(id)));
+        // Moving it moves the ceiling plane.
+        drag(&mut t, &mut cx, (120.0, 45.0), (144.0, 45.0));
+        let c = &roof_view::load(cx.floor()).ceilings[0];
+        assert!((c.outline[0].x - 24.0).abs() < 1e-6, "{:?}", c.outline[0]);
+        // Delete removes it.
+        t.key(&mut cx, KeyEvent::key(Key::Delete));
+        assert!(roof_view::load(cx.floor()).ceilings.is_empty());
     }
 }

@@ -11,6 +11,9 @@ use crate::icons;
 use crate::shell::view3d_panel::View3dCommand;
 use crate::theme::{scale, CanvasTheme};
 use crate::tools::camera::CameraVariant;
+use crate::tools::foundation::FoundationVariant;
+use crate::tools::framing::FramingVariant;
+use crate::tools::wall::{WallStyle as Style, WallVariant};
 use crate::tools::ToolId;
 
 use eframe::egui::{
@@ -612,6 +615,12 @@ fn flag_toggle(icon: &'static str, name: &'static str, flag: ViewFlag) -> Slot {
     Slot::Toggle(item(icon, name, Action::ToggleFlag(flag)))
 }
 
+/// A wall flyout entry that draws `style` (straight or curved).
+fn wall_item(icon: &'static str, style: Style, curved: bool) -> Item {
+    let v = WallVariant { style, curved };
+    item(icon, v.name(), Action::SetTool(ToolId::WallVariant(v)))
+}
+
 // ----- flyout tables (docs/chief-x18-subtools.md) -----
 
 /// Walls: Straight Wall Tools, in Build-menu order.
@@ -627,12 +636,12 @@ pub fn straight_wall() -> Flyout {
                 item("wall_interior", "Straight Interior Wall", INTERIOR_WALL),
                 "\u{2303}\u{2325}\u{2318}6",
             ),
-            todo("wall_foundation", "Straight Foundation Wall"),
-            todo("wall_pony", "Straight Pony Wall"),
-            todo("wall_exterior", "Straight Glass Wall"),
-            todo("wall_pony", "Straight Glass Pony Wall"),
-            todo("wall_half", "Straight Half-Wall"),
-            todo("wall_room_divider", "Room Divider"),
+            wall_item("wall_foundation", Style::Foundation, false),
+            wall_item("wall_pony", Style::Pony, false),
+            wall_item("wall_exterior", Style::Glass, false),
+            wall_item("wall_pony", Style::GlassPony, false),
+            wall_item("wall_half", Style::Half, false),
+            wall_item("wall_room_divider", Style::RoomDivider, false),
             todo("slab", "Slab Footing"),
             todo("wall_hatch", "Wall Hatching"),
             todo("wall_hatch", "Wall Material Region"),
@@ -644,11 +653,11 @@ pub fn curved_wall() -> Flyout {
     fly(
         "Curved Wall",
         vec![
-            todo("wall_curved", "Curved Exterior Wall"),
-            todo("wall_curved_interior", "Curved Interior Wall"),
-            todo("wall_curved", "Curved Foundation Wall"),
-            todo("wall_curved", "Curved Pony Wall"),
-            todo("wall_curved", "Curved Half-Wall"),
+            wall_item("wall_curved", Style::Exterior, true),
+            wall_item("wall_curved_interior", Style::Interior, true),
+            wall_item("wall_curved", Style::Foundation, true),
+            wall_item("wall_curved", Style::Pony, true),
+            wall_item("wall_curved", Style::Half, true),
         ],
     )
 }
@@ -657,12 +666,13 @@ pub fn railing_deck() -> Flyout {
     fly(
         "Railing and Deck",
         vec![
-            todo_k("railing", "Straight Railing", "\u{2318}Q"),
-            todo("railing_curved", "Curved Railing"),
-            sep(todo("deck_railing", "Straight Deck Railing")),
-            todo("deck_railing", "Curved Deck Railing"),
-            sep(todo("deck_edge", "Straight Deck Edge")),
-            todo("deck_edge", "Curved Deck Edge"),
+            // Chief's Command-Q is the macOS Quit shortcut: shown, not bound.
+            with_hotkey(wall_item("railing", Style::Railing, false), "\u{2318}Q"),
+            wall_item("railing_curved", Style::Railing, true),
+            sep(wall_item("deck_railing", Style::DeckRailing, false)),
+            wall_item("deck_railing", Style::DeckRailing, true),
+            sep(wall_item("deck_edge", Style::DeckEdge, false)),
+            wall_item("deck_edge", Style::DeckEdge, true),
             sep(todo("deck_edge", "Polygon Shaped Deck")),
         ],
     )
@@ -672,8 +682,8 @@ pub fn fencing() -> Flyout {
     fly(
         "Fencing",
         vec![
-            todo("railing", "Straight Fencing"),
-            todo("railing_curved", "Curved Fencing"),
+            wall_item("railing", Style::Fencing, false),
+            wall_item("railing_curved", Style::Fencing, true),
         ],
     )
 }
@@ -908,8 +918,8 @@ pub fn floor() -> Flyout {
                 "\u{2303}\u{2325}\u{21E7}\u{2318}M",
             ),
             todo("floor_new", "Floor Material Region"),
-            todo("floor_new", "Hole in Floor Platform"),
-            todo("floor_new", "Hole in Ceiling Platform"),
+            found("floor_new", FoundationVariant::FloorHole),
+            found("floor_new", FoundationVariant::CeilingHole),
             with_hotkey(
                 item(
                     "floor_defaults",
@@ -947,10 +957,11 @@ pub fn roof() -> Flyout {
                 "\u{2303}\u{2325}\u{21E7}\u{2318}N",
                 M::Build,
             ),
-            todo_k(
+            roof_k(
                 "roof_plane",
                 "Ceiling Plane",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}U",
+                M::Ceiling,
             ),
             roof_k(
                 "gable_line",
@@ -981,6 +992,16 @@ pub fn roof() -> Flyout {
                 "Auto Floating Dormer",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}R",
             ),
+            item(
+                "dormer",
+                "Explode Dormer",
+                Action::SetTool(ToolId::RoofVariant(M::Explode)),
+            ),
+            item(
+                "roof_plane",
+                "Roof Return",
+                Action::SetTool(ToolId::RoofVariant(M::Return)),
+            ),
             roof_k(
                 "roof_plane",
                 "Edit All Roof Planes",
@@ -995,9 +1016,12 @@ pub fn roof() -> Flyout {
                 ),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}W",
             ),
-            todo_k(
-                "roof_plane",
-                "Delete Ceiling Planes",
+            with_hotkey(
+                item(
+                    "roof_plane",
+                    "Delete Ceiling Planes",
+                    Action::Custom(crate::editor::dispatch::cmd::ROOF_DELETE_CEILINGS),
+                ),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}X",
             ),
         ],
@@ -1018,14 +1042,20 @@ pub fn trim() -> Flyout {
     )
 }
 
+/// An entry of the framing tool.
+fn fram(icon: &'static str, v: FramingVariant) -> Item {
+    item(icon, v.name(), Action::SetTool(ToolId::FramingVariant(v)))
+}
+
 pub fn general_framing() -> Flyout {
+    use FramingVariant as V;
     fly(
         "General Framing",
         vec![
-            todo("framing_general", "General Framing"),
-            todo("post", "Post"),
-            todo("post", "Post with Footing"),
-            todo("framing_general", "Blocking"),
+            fram("framing_general", V::General),
+            fram("post", V::Post),
+            fram("post", V::PostWithFooting),
+            fram("framing_general", V::Blocking),
             with_hotkey(
                 item(
                     "framing_general",
@@ -1044,38 +1074,49 @@ pub fn general_framing() -> Flyout {
                 "Delete Framing",
                 Action::Framing(FramingCommand::Delete),
             ),
-            todo("marker", "Framing Reference Marker"),
+            fram("marker", V::ReferenceMarker),
         ],
     )
 }
 
 pub fn floor_ceiling_framing() -> Flyout {
+    use FramingVariant as V;
     fly(
         "Floor/Ceiling Framing",
         vec![
-            todo("joist", "Joist"),
-            todo("joist", "Joist Blocking"),
-            todo("joist", "Joist Direction"),
-            todo("beam", "Floor/Ceiling Beam"),
-            todo("truss", "Floor/Ceiling Truss"),
-            todo("joist", "Bearing Line"),
+            fram("joist", V::Joist),
+            fram("joist", V::JoistBlocking),
+            fram("joist", V::JoistDirection),
+            fram("beam", V::FloorCeilingBeam),
+            fram("truss", V::FloorCeilingTruss),
+            fram("joist", V::BearingLine),
         ],
     )
 }
 
 pub fn roof_framing() -> Flyout {
+    use FramingVariant as V;
     fly(
         "Roof Framing",
         vec![
-            todo("rafter", "Rafter"),
-            todo("beam", "Roof Beam"),
-            todo("framing_general", "Roof Blocking"),
-            todo("beam", "Roof Purlin"),
-            todo("truss", "Roof Truss"),
-            todo("truss", "Girder Truss"),
-            todo("truss", "Roof Truss Direction"),
-            todo("truss", "Truss Base"),
+            fram("rafter", V::Rafter),
+            fram("beam", V::RoofBeam),
+            fram("framing_general", V::RoofBlocking),
+            fram("beam", V::RoofPurlin),
+            fram("truss", V::RoofTruss),
+            fram("truss", V::GirderTruss),
+            fram("truss", V::RoofTrussDirection),
+            fram("truss", V::TrussBase),
         ],
+    )
+}
+
+/// A Slab-flyout or platform-hole entry of the foundation tool.
+fn found(icon: &'static str, v: FoundationVariant) -> Item {
+    item(
+        icon,
+        v.name(),
+        Action::SetTool(ToolId::FoundationVariant(v)),
     )
 }
 
@@ -1083,12 +1124,12 @@ pub fn slab() -> Flyout {
     fly(
         "Slab",
         vec![
-            todo("slab", "Slab"),
-            todo("slab", "Slab with Footing"),
-            todo("slab", "Slab Hole"),
-            todo("slab", "Slab Hole with Footing"),
-            todo("slab", "Square Pad"),
-            todo("post", "Round Pier"),
+            found("slab", FoundationVariant::Slab),
+            found("slab", FoundationVariant::SlabFooting),
+            found("slab", FoundationVariant::SlabHole),
+            found("slab", FoundationVariant::SlabHoleFooting),
+            found("slab", FoundationVariant::SquarePad),
+            found("post", FoundationVariant::RoundPier),
         ],
     )
 }
@@ -2186,7 +2227,10 @@ mod tests {
             let text = pretty_hotkey(k);
             assert!(fonts.has_glyphs(&font, &text), "missing glyph in {text:?}");
         }
-        assert_eq!(pretty_hotkey("\u{2303}\u{2325}\u{2318}6"), "Ctrl+Alt+Cmd+6");
+        assert_eq!(
+            pretty_hotkey_for("\u{2303}\u{2325}\u{2318}6", true),
+            "Ctrl+Alt+Cmd+6"
+        );
         assert_eq!(pretty_hotkey("D, H"), "D, H");
         // No Command key off the Mac: Command (and Control) read as Ctrl.
         assert_eq!(pretty_hotkey_for("\u{2318}S", false), "Ctrl+S");
@@ -2292,6 +2336,10 @@ mod tests {
     /// (framing, slabs, curved walls, trim, terrain extras, ...) belong to
     /// tools that are not built yet and are only printed.
     const BUILT_GROUPS: &[&str] = &[
+        "Straight Wall",
+        "Curved Wall",
+        "Railing and Deck",
+        "Fencing",
         "Stairs",
         "Roof",
         "Cabinet",
@@ -2316,6 +2364,10 @@ mod tests {
 
     /// Entries of the built groups that are still `NotImplemented`.
     const ALLOWED_NOT_IMPLEMENTED: &[&str] = &[
+        "Polygon Shaped Deck",
+        "Slab Footing",
+        "Wall Hatching",
+        "Wall Material Region",
         "Base Filler",
         "Wall Filler",
         "Full Height Filler",
@@ -2323,8 +2375,6 @@ mod tests {
         "Custom Backsplash",
         "Custom Counter Hole",
         "Auto Floating Dormer",
-        "Ceiling Plane",
-        "Delete Ceiling Planes",
         "Delete Temporary Points",
         "Auto Elevation Dimensions",
         "Auto Story Pole Dimensions",

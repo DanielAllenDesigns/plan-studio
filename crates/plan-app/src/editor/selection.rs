@@ -4,12 +4,14 @@
 //! can hold has a variant, and `exists`, `layer_of`, [`hit_test_cx`] and
 //! [`extra_in_rect`] ask the view module that owns the kind.
 
-use super::{placed, roof_view, rooms_edit, site_view, stairs_view, EditorContext};
+use super::{
+    foundation_view, placed, roof_view, rooms_edit, site_view, stairs_view, EditorContext,
+};
 use crate::tools::camera as camera_tool;
 use plan_core::cad::CadItem;
-use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
+use plan_core::foundation::FoundationLayer;
+use plan_core::geometry::{dist_to_segment, point_in_polygon, project_on_segment, Point};
 use plan_core::{CadObject, DimensionKind, Floor, Id, LayerSet, OpeningKind, Project};
-use std::collections::HashSet;
 use std::f64::consts::TAU;
 
 /// Addresses one object of the plan.
@@ -21,6 +23,8 @@ pub enum ObjectRef {
     Cad(Id),
     Cabinet(Id),
     Stair(Id),
+    /// A roof record: a roof plane, a ceiling plane or a dormer
+    /// (`roof_view::RoofSet::kind_of` tells which).
     RoofPlane(Id),
     Symbol(Id),
     Camera(Id),
@@ -33,6 +37,9 @@ pub enum ObjectRef {
     Room(usize),
     /// The project's terrain (one per plan).
     Terrain,
+    /// A slab, slab hole, pad, pier or platform hole
+    /// (`FoundationLayer::find(id)` tells which).
+    Foundation(Id),
 }
 
 impl ObjectRef {
@@ -48,7 +55,8 @@ impl ObjectRef {
             | ObjectRef::Symbol(i)
             | ObjectRef::Camera(i)
             | ObjectRef::Text(i)
-            | ObjectRef::Device(i) => i,
+            | ObjectRef::Device(i)
+            | ObjectRef::Foundation(i) => i,
             ObjectRef::Room(i) => i as Id,
             ObjectRef::Terrain => 0,
         }
@@ -70,6 +78,7 @@ impl ObjectRef {
             ObjectRef::Device(_) => "Electrical Device",
             ObjectRef::Room(_) => "Room",
             ObjectRef::Terrain => "Terrain",
+            ObjectRef::Foundation(_) => "Foundation Object",
         }
     }
 
@@ -87,6 +96,7 @@ impl ObjectRef {
             ObjectRef::Stair(i) => stairs_view::exists(floor, i),
             ObjectRef::RoofPlane(i) => roof_view::exists(floor, i),
             ObjectRef::Device(i) => site_view::load_electrical(floor).device(i).is_some(),
+            ObjectRef::Foundation(i) => FoundationLayer::load(floor).find(i).is_some(),
             ObjectRef::Camera(_) | ObjectRef::Room(_) | ObjectRef::Terrain => false,
         }
     }
@@ -189,7 +199,11 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
         ObjectRef::Stair(i) => {
             stairs_view::exists(floor, i).then(|| stairs_view::LAYER.to_string())
         }
-        ObjectRef::RoofPlane(i) => roof_view::load(floor).plane(i).map(|r| r.layer.clone()),
+        ObjectRef::RoofPlane(i) => roof_view::load(floor).layer_of(i),
+        ObjectRef::Foundation(i) => {
+            let layer = FoundationLayer::load(floor);
+            layer.find(i).and_then(|r| layer.layer_of(r))
+        }
         ObjectRef::Device(_) => Some(site_view::ELECTRICAL_LAYER.to_string()),
         ObjectRef::Camera(_) => Some(camera_tool::CAMERA_LAYER.to_string()),
         ObjectRef::Terrain => Some(site_view::TERRAIN_LAYER.to_string()),
@@ -286,13 +300,11 @@ fn open_hits(
     out
 }
 
-/// Dimensions, then CAD (newest first); CAD objects in `skip` (the outlines
-/// and records of roof planes) are not pickable as CAD.
+/// Dimensions, then CAD (newest first).
 fn dim_cad_hits(
     floor: &Floor,
     p: Point,
     tol: f64,
-    skip: &HashSet<Id>,
     visible: &dyn Fn(ObjectRef) -> bool,
 ) -> Vec<ObjectRef> {
     let mut out = Vec::new();
@@ -309,7 +321,7 @@ fn dim_cad_hits(
     }
     for c in floor.cad.iter().rev() {
         let r = ObjectRef::Cad(c.id);
-        if !skip.contains(&c.id) && cad_distance(&c.item, p) <= tol && visible(r) {
+        if cad_distance(&c.item, p) <= tol && visible(r) {
             out.push(r);
         }
     }
@@ -346,22 +358,9 @@ fn wall_hits(
 pub fn hit_test(floor: &Floor, layers: &LayerSet, p: Point, tol: f64) -> Vec<ObjectRef> {
     let visible = |o: ObjectRef| layer_of(floor, o).is_none_or(|l| layers.is_visible(&l));
     let mut out = open_hits(floor, p, tol, &visible);
-    out.extend(dim_cad_hits(floor, p, tol, &HashSet::new(), &visible));
+    out.extend(dim_cad_hits(floor, p, tol, &visible));
     out.extend(wall_hits(floor, p, tol, &visible));
     out
-}
-
-/// CAD objects that are really the storage of a roof plane (its outline and
-/// its record); they are picked as [`ObjectRef::RoofPlane`] instead.
-fn roof_storage_ids(floor: &Floor) -> HashSet<Id> {
-    let mut ids = HashSet::new();
-    for r in &roof_view::load(floor).planes {
-        ids.insert(r.id);
-        if r.outline_id != 0 {
-            ids.insert(r.outline_id);
-        }
-    }
-    ids
 }
 
 /// Every object under `p`, topmost first, over the whole editor model:
@@ -397,24 +396,34 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
             out.push(ObjectRef::Stair(id));
         }
     }
-    let skip = roof_storage_ids(floor);
-    out.extend(dim_cad_hits(floor, p, tol, &skip, &visible));
+    out.extend(dim_cad_hits(floor, p, tol, &visible));
     out.extend(wall_hits(floor, p, tol, &visible));
+
+    // Foundation objects: edges (and pads and piers) win over the room; a
+    // slab picked only by its interior comes after it.
+    let mut slab_interior = None;
+    if let Some(r) = foundation_view::pick(cx, p, tol) {
+        if foundation_view::picked_by_interior(cx, r, p, tol) {
+            slab_interior = Some(ObjectRef::Foundation(r.id()));
+        } else {
+            out.push(ObjectRef::Foundation(r.id()));
+        }
+    }
 
     let roofs = roof_view::load(floor);
     let mut interior = None;
-    for r in roofs.planes.iter().rev() {
-        let r_ref = ObjectRef::RoofPlane(r.id);
+    for (id, _, polys) in roofs.pick_polys().iter().rev() {
+        let r_ref = ObjectRef::RoofPlane(*id);
         if !visible(r_ref) {
             continue;
         }
-        let poly = r.plan_polygon();
-        let n = poly.len();
-        let on_edge =
-            n >= 2 && (0..n).any(|i| dist_to_segment(p, poly[i], poly[(i + 1) % n]) <= tol);
+        let on_edge = polys.iter().any(|poly| {
+            let n = poly.len();
+            n >= 2 && (0..n).any(|i| dist_to_segment(p, poly[i], poly[(i + 1) % n]) <= tol)
+        });
         if on_edge {
             out.push(r_ref);
-        } else if interior.is_none() && r.contains(p) {
+        } else if interior.is_none() && polys.iter().any(|poly| point_in_polygon(p, poly)) {
             interior = Some(r_ref);
         }
     }
@@ -424,6 +433,7 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
         }
     }
     out.extend(interior);
+    out.extend(slab_interior);
     if layers.is_visible(site_view::TERRAIN_LAYER) {
         if let Some(view) = site_view::terrain_view(&cx.project) {
             if site_view::hit_terrain(&view.record.terrain, p, tol).is_some() {
@@ -480,10 +490,16 @@ pub fn extra_in_rect(cx: &EditorContext, lo: Point, hi: Point, crossing: bool) -
             out.push(r);
         }
     }
-    for r in &roof_view::load(floor).planes {
-        let o = ObjectRef::RoofPlane(r.id);
-        let poly = r.plan_polygon();
-        if !poly.is_empty() && usable(o) && hit(&poly) {
+    for (id, _, polys) in roof_view::load(floor).pick_polys() {
+        let o = ObjectRef::RoofPlane(id);
+        let pts: Vec<Point> = polys.into_iter().flatten().collect();
+        if !pts.is_empty() && usable(o) && hit(&pts) {
+            out.push(o);
+        }
+    }
+    for r in foundation_view::in_rect_or_touching(cx, lo, hi, crossing) {
+        let o = ObjectRef::Foundation(r.id());
+        if usable(o) {
             out.push(o);
         }
     }

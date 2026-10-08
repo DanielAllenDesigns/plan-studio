@@ -98,6 +98,51 @@ pub struct WallDefaults {
     pub roof: WallRoofDefaults,
 }
 
+/// Defaults of the flyout wall variants (pony, half, glass, deck, fencing).
+/// Not captured from Chief; typical values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WallVariantDefaults {
+    /// Pony wall upper type (the default exterior type).
+    pub pony_upper_type: String,
+    /// Pony wall lower type.
+    pub pony_lower_type: String,
+    /// Elevation of the pony split, inches.
+    pub pony_split_height: f64,
+    /// Half-wall top height, inches.
+    pub half_wall_height: f64,
+    /// Glass wall type.
+    pub glass_type: String,
+    /// Railing wall type.
+    pub railing_type: String,
+    pub railing_height: f64,
+    pub deck_railing_type: String,
+    pub deck_edge_type: String,
+    /// Height of a deck edge (rim board), inches.
+    pub deck_edge_height: f64,
+    pub fencing_type: String,
+    pub fencing_height: f64,
+}
+
+impl Default for WallVariantDefaults {
+    fn default() -> Self {
+        Self {
+            pony_upper_type: "Stucco-6".into(),
+            pony_lower_type: "Foundation-8".into(),
+            pony_split_height: 36.0,
+            half_wall_height: 36.0,
+            glass_type: "Glass-1".into(),
+            railing_type: "Railing-4".into(),
+            railing_height: 36.0,
+            deck_railing_type: "Deck Railing-4".into(),
+            deck_edge_type: "Deck Edge-2".into(),
+            deck_edge_height: 9.25,
+            fencing_type: "Fence-Wood-2".into(),
+            fencing_height: 72.0,
+        }
+    }
+}
+
 // ----- openings -----
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -307,6 +352,8 @@ pub struct PlanDefaults {
     pub exterior_wall: WallDefaults,
     pub interior_wall: WallDefaults,
     pub foundation_wall: WallDefaults,
+    /// Defaults of the pony, half, glass, railing, deck and fencing walls.
+    pub wall_variants: WallVariantDefaults,
     pub wall_types: Vec<WallTypeDef>,
     pub interior_door: OpeningDefaults,
     pub exterior_door: OpeningDefaults,
@@ -520,6 +567,7 @@ impl PlanDefaults {
                 height: 48.0,
                 roof,
             },
+            wall_variants: WallVariantDefaults::default(),
             wall_types: chief_wall_types(),
             interior_door: door(30.0, 3.5, 0.75, 1.375),
             // Casing is the exterior casing (3 1/4" x 1"); thickness is not
@@ -654,6 +702,11 @@ fn chief_wall_types() -> Vec<WallTypeDef> {
                 l("Drywall", 0.5, false, "Drywall"),
             ],
         ),
+        wall_type("Glass-1", ext, vec![l("Glass", 1.0, true, "Glass")]),
+        wall_type("Railing-4", int, vec![l("Rail", 4.0, true, "Wood")]),
+        wall_type("Deck Railing-4", ext, vec![l("Rail", 4.0, true, "Wood")]),
+        wall_type("Deck Edge-2", ext, vec![l("Rim Board", 1.5, true, "Wood")]),
+        wall_type("Fence-Wood-2", ext, vec![l("Boards", 1.5, true, "Wood")]),
         wall_type(
             "Interior-4",
             int,

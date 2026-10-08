@@ -49,12 +49,27 @@ pub struct ConnectOptions {
     /// walls where they cross (X). When false the T is only snapped onto the
     /// centerline and crossings are left alone (Chief's W-35/W-36 behavior).
     pub split_on_tee: bool,
+    /// Smallest connect distance in inches (Chief's "Connect Distance
+    /// Minimum" in Default Settings ▸ Walls). Thicker walls use their own
+    /// thickness instead.
+    pub connect_distance_min: f64,
 }
 
 impl Default for ConnectOptions {
     fn default() -> Self {
         Self {
             split_on_tee: SPLIT_ON_TEE_DEFAULT,
+            connect_distance_min: MIN_CONNECT_DISTANCE,
+        }
+    }
+}
+
+impl ConnectOptions {
+    /// The options Daniel's plan defaults ask for.
+    pub fn from_defaults(d: &plan_core::defaults::PlanDefaults) -> Self {
+        Self {
+            split_on_tee: d.walls_connect.split_on_tee,
+            connect_distance_min: d.walls_connect.connect_distance_min,
         }
     }
 }
@@ -62,7 +77,12 @@ impl Default for ConnectOptions {
 /// How close an end must be to another wall to be connected to it: the
 /// wall's thickness, at least 6".
 pub fn connect_distance(w: &Wall) -> f64 {
-    w.thickness.max(MIN_CONNECT_DISTANCE)
+    connect_distance_with(w, MIN_CONNECT_DISTANCE)
+}
+
+/// The connect distance with a plan-specific minimum.
+pub fn connect_distance_with(w: &Wall, min: f64) -> f64 {
+    w.thickness.max(min)
 }
 
 fn end_pos(w: &Wall, e: WallEnd) -> Point {
@@ -116,6 +136,7 @@ fn can_merge(a: &Wall, b: &Wall) -> bool {
         && (a.thickness - b.thickness).abs() <= 1e-9
         && (a.height - b.height).abs() <= 1e-9
         && a.kind == b.kind
+        && a.class == b.class
         && a.layer == b.layer
         && a.wall_type == b.wall_type
         && a.flags == b.flags
@@ -242,7 +263,7 @@ fn connect_end(
     }
     let p = end_pos(&w, end);
     let far = end_pos(&w, other_end(end));
-    let d = connect_distance(&w);
+    let d = connect_distance_with(&w, opts.connect_distance_min);
 
     // Nearest other end, and nearest other centerline (away from its ends).
     let mut best_end: Option<(f64, Id, WallEnd, Point)> = None;
@@ -343,6 +364,43 @@ fn connect_end(
     n
 }
 
+/// Curved walls: the end of curved wall `id` snaps onto the nearest end of
+/// another wall within the connect distance (no miter, no corner solving: the
+/// bulge stays and only the chord end moves). Returns the number of edits.
+fn snap_curved_end(
+    project: &mut Project,
+    floor: usize,
+    id: Id,
+    end: WallEnd,
+    opts: &ConnectOptions,
+) -> usize {
+    let Some(w) = project.floors[floor].wall(id).cloned() else {
+        return 0;
+    };
+    if !w.is_curved() {
+        return 0;
+    }
+    let p = end_pos(&w, end);
+    let far = end_pos(&w, other_end(end));
+    let d = connect_distance_with(&w, opts.connect_distance_min);
+    let best = project.floors[floor]
+        .walls
+        .iter()
+        .filter(|o| o.id != id)
+        .flat_map(|o| [end_pos(o, WallEnd::Start), end_pos(o, WallEnd::End)])
+        .map(|q| (p.dist(q), q))
+        // Never collapse the chord.
+        .filter(|(dist, q)| *dist <= d && q.dist(far) >= MIN_WALL_LENGTH)
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    match best {
+        Some((dist, q)) if dist > SAME => {
+            set_exact(project, floor, id, end, q);
+            1
+        }
+        _ => 0,
+    }
+}
+
 /// (c) Cuts wall `id` and every wall it crosses at the crossings (X
 /// junctions, W-36). Returns the number of crossings cut.
 fn split_crossings(project: &mut Project, floor: usize, id: Id) -> usize {
@@ -412,6 +470,7 @@ pub fn auto_connect_project(
         }
         for end in [WallEnd::Start, WallEnd::End] {
             n += connect_end(project, floor, id, end, opts);
+            n += snap_curved_end(project, floor, id, end, opts);
         }
         if opts.split_on_tee {
             n += split_crossings(project, floor, id);
@@ -453,7 +512,7 @@ pub fn fix_all_connections_project(
 /// outlines. Call it after a wall was created or one of its ends was moved or
 /// released, inside the caller's undo step. Returns the number of edits.
 pub fn auto_connect(cx: &mut EditorContext, wall_id: Id) -> usize {
-    auto_connect_with(cx, wall_id, &ConnectOptions::default())
+    auto_connect_with(cx, wall_id, &ConnectOptions::from_defaults(&cx.defaults))
 }
 
 /// [`auto_connect`] with explicit options.
@@ -467,7 +526,11 @@ pub fn auto_connect_with(cx: &mut EditorContext, wall_id: Id, opts: &ConnectOpti
 /// Fix Wall Connections over every wall of the active floor, then recomputes
 /// rooms and outlines. Does not open an undo step.
 pub fn fix_all_connections(cx: &mut EditorContext) -> usize {
-    let n = fix_all_connections_project(&mut cx.project, cx.floor, &ConnectOptions::default());
+    let n = fix_all_connections_project(
+        &mut cx.project,
+        cx.floor,
+        &ConnectOptions::from_defaults(&cx.defaults),
+    );
     cx.mark_dirty();
     cx.refresh();
     n
@@ -487,7 +550,7 @@ pub fn fix_wall_connections_action(cx: &mut EditorContext) {
         })
         .collect();
     cx.begin_change("Fix Wall Connections");
-    let opts = ConnectOptions::default();
+    let opts = ConnectOptions::from_defaults(&cx.defaults);
     let n = if selected.is_empty() {
         fix_all_connections_project(&mut cx.project, cx.floor, &opts)
     } else {
@@ -598,6 +661,7 @@ mod tests {
         let stem = wall(&mut p, (100.0, 120.0), (100.0, 4.0));
         let o = ConnectOptions {
             split_on_tee: false,
+            ..ConnectOptions::default()
         };
         assert!(auto_connect_project(&mut p, 0, stem, &o) > 0);
         assert_eq!(p.floors[0].walls.len(), 2);
@@ -761,5 +825,59 @@ mod tests {
         assert_eq!(cx.undo_label().map(str::to_string), before);
         assert!(cx.status.contains("already clean"));
         let _ = ids;
+    }
+
+    #[test]
+    fn walls_of_different_class_never_merge() {
+        let mut p = Project::new("t");
+        let a = wall(&mut p, (0.0, 0.0), (200.0, 0.0));
+        let b = wall(&mut p, (100.0, 0.0), (300.0, 0.0));
+        p.floors[0].wall_mut(b).unwrap().class = plan_core::WallClass::Foundation;
+        let (wa, wb) = (
+            p.floors[0].wall(a).unwrap().clone(),
+            p.floors[0].wall(b).unwrap().clone(),
+        );
+        assert!(!can_merge(&wa, &wb));
+        assert_eq!(merge_overlaps(&mut p, 0, a), 0);
+        assert_eq!(p.floors[0].walls.len(), 2);
+        // The same class still merges.
+        p.floors[0].wall_mut(b).unwrap().class = plan_core::WallClass::Standard;
+        let (wa, wb) = (
+            p.floors[0].wall(a).unwrap().clone(),
+            p.floors[0].wall(b).unwrap().clone(),
+        );
+        assert!(can_merge(&wa, &wb));
+    }
+
+    #[test]
+    fn curved_wall_ends_snap_to_the_nearest_wall_end() {
+        let mut p = Project::new("t");
+        let straight = wall(&mut p, (0.0, 0.0), (200.0, 0.0));
+        let other = wall(&mut p, (400.0, 0.0), (400.0, 200.0));
+        // A curve whose ends are 4" short of both walls' ends.
+        let curved = wall(&mut p, (204.0, 0.0), (396.0, 0.0));
+        p.floors[0].wall_mut(curved).unwrap().curve = Some(plan_core::WallCurve { bulge: 40.0 });
+        assert!(auto_connect_project(&mut p, 0, curved, &opts()) > 0);
+        let (s, e) = at(&p, curved);
+        assert_eq!((s, e), (Point::new(200.0, 0.0), Point::new(400.0, 0.0)));
+        // No miter: the neighbours did not move, and the wall stays curved.
+        assert_eq!(
+            at(&p, straight),
+            (Point::new(0.0, 0.0), Point::new(200.0, 0.0))
+        );
+        assert_eq!(
+            at(&p, other),
+            (Point::new(400.0, 0.0), Point::new(400.0, 200.0))
+        );
+        assert!(p.floors[0].wall(curved).unwrap().is_curved());
+        // Idempotent, and an end farther than the connect distance stays put.
+        assert_eq!(auto_connect_project(&mut p, 0, curved, &opts()), 0);
+        let far = wall(&mut p, (600.0, 0.0), (800.0, 0.0));
+        p.floors[0].wall_mut(far).unwrap().curve = Some(plan_core::WallCurve { bulge: 30.0 });
+        assert_eq!(auto_connect_project(&mut p, 0, far, &opts()), 0);
+        assert_eq!(
+            at(&p, far),
+            (Point::new(600.0, 0.0), Point::new(800.0, 0.0))
+        );
     }
 }

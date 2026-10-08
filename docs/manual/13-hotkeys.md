@@ -36,9 +36,12 @@ unless one of Daniel's keys takes the chord.
   prefix. If a key is not a valid continuation, it is treated as a fresh press.
 - A key can be both a complete binding and the start of a longer one only if the longer one is
   assigned; the dialog reports such prefix clashes as conflicts.
-- Modifiers: `Ctrl` is the physical Control key and `Cmd` the Command key on a Mac. On Windows and
-  Linux the program maps the Control key to `Cmd`, and `Ctrl` is not available, so every chord that
-  needs both (`Ctrl+Alt+Cmd+6` and the other four-modifier chords) cannot be typed there (planned fix).
+- Modifiers: `Ctrl` is the physical Control key and `Cmd` the Command key on a Mac. Where there is no Command
+  key (Windows, Linux), Chief's "Ctrl" is the Control key: the program treats `Cmd` as Control and folds the Mac
+  Control modifier into it (`shell::hotkeys::platform_modifiers`), so Chief's four-modifier chords become
+  `Ctrl+Alt+...` chords (`Ctrl+Alt+Cmd+6` is typed Ctrl+Alt+6, `Ctrl+Alt+Shift+Cmd+N` is Ctrl+Alt+Shift+N). Menus,
+  tooltips and the Customize Hotkeys dialog then write `Ctrl+` where this chapter writes `Cmd+`. The tables below
+  keep the Mac spelling.
 - `Alt` is Option on a Mac.
 - Tools never read raw keys to activate themselves. Inside a running tool, keys such as `Esc`, `Enter`,
   `Tab`, `Delete` and the arrow keys go to the tool (13.9).
@@ -115,13 +118,13 @@ Two details worth knowing:
 Status: **Works** (the command runs today), **(planned)** (the command is on a dimmed button; the key is kept and reports
 "Not yet implemented"), **No matching command yet** (Chief has the command; Plan Studio has no equivalent
 and shows the key under "Chief bindings with no action in Plan Studio yet" in the dialog), or a flag toggle.
-Of the 143 named bindings, 82 work or toggle a flag, 37 are planned and 24 have no matching command.
+Of the 143 named bindings, 84 work or toggle a flag, 36 are planned and 23 have no matching command.
 
 | Command | Daniel's key | Status |
 |---|---|---|
 | 110V Outlet | `E, O` | Works |
 | 220V Outlet | `Ctrl+Alt+Cmd+7` | Works |
-| 3D View Defaults | `Cmd+1` | No matching command yet |
+| 3D View Defaults | `Cmd+1` | Works |
 | Adjust Lights | `Ctrl+Alt+Cmd+L` | No matching command yet |
 | Angular Dimension | `Ctrl+Alt+Cmd+F` | Works |
 | Auto Dormer | `Ctrl+Alt+Shift+Cmd+Z` | (planned) |
@@ -139,7 +142,7 @@ Of the 143 named bindings, 82 work or toggle a flag, 37 are planned and 24 have 
 | Bow Window | `Ctrl+Alt+Cmd+T` | (planned) |
 | Box Window | `Ctrl+Alt+Cmd+U` | (planned) |
 | Build Foundation | `Cmd+F` | Works |
-| Build Framing | `Shift+Cmd+S` | (planned) |
+| Build Framing | `Shift+Cmd+S` | Works |
 | Build New Floor | `Shift+X` | Works |
 | Build Roof | `Ctrl+Alt+Shift+Cmd+N` | Works |
 | Bumping/Pushing | `F11` | No matching command yet |
@@ -151,7 +154,7 @@ Of the 143 named bindings, 82 work or toggle a flag, 37 are planned and 24 have 
 | Change Floor/Reference | `Shift+Cmd+G` | No matching command yet |
 | Circle | `K` | Works |
 | Close View | `Cmd+W` | No matching command yet |
-| Color | `F8` | Toggles a flag; no visible effect yet |
+| Color | `F8` | Toggles a flag: off draws the plan in grays |
 | Concentric | `X, C` | No matching command yet |
 | Connect CAD Segments | `Shift+F8` | Works |
 | Copy | `Cmd+C` | No matching command yet |
@@ -173,7 +176,7 @@ Of the 143 named bindings, 82 work or toggle a flag, 37 are planned and 24 have 
 | Down One Floor | `Ctrl+Z` | Works |
 | Draw Ramp | `Ctrl+Alt+Shift+Cmd+H` | Works |
 | Draw Stairs | `Shift+Y` | Works |
-| Drawing Sheet | `Alt+F3` | Toggles a flag; no visible effect yet |
+| Drawing Sheet | `Alt+F3` | Toggles a flag: outlines the active layout's sheet |
 | Edit All Roof Planes | `Ctrl+Alt+Shift+Cmd+P` | Works |
 | Electrical Connection | `E, C` | Works |
 | End to End Dimension | `D, E` | Works |
@@ -220,11 +223,11 @@ Of the 143 named bindings, 82 work or toggle a flag, 37 are planned and 24 have 
 | Point to Point Dimension | `Ctrl+Alt+Cmd+B` | Works |
 | Preferences | `~` | (planned) |
 | Print | `Cmd+P` | (planned) |
-| Print Preview | `Alt+F2` | Toggles a flag; no visible effect yet |
+| Print Preview | `Alt+F2` | Toggles a flag: grays out everything outside the sheet |
 | Rebuild Walls/Floors/Ceilings | `F12` | Works |
 | Rectangular Polyline | `Shift+P` | Works |
 | Redo | `Cmd+Y` | Works |
-| Reference Display | `F9` | Toggles a flag; no visible effect yet |
+| Reference Display | `F9` | Toggles a flag: draws the floor below in gray |
 | Reference Grid | `Shift+F9` | Works |
 | Refresh Display | `F5` | No matching command yet |
 | Revision Cloud | `Ctrl+Alt+Shift+Cmd+!` | (planned) |
@@ -274,17 +277,19 @@ Key (Chief command id): `Shift+F4` (106); `W` (202); `2` (231); `Cmd+D` (237); `
 
 ## 13.6 Known quirks
 
-- **Zoom Out has no key.** Daniel rebound Zoom In to `-` and cleared Zoom Out's factory key. The Window menu still
-  prints `-` next to Zoom Out and `+` next to Zoom In (its static labels), but only `-` works and it zooms *in*.
-- The menus and tooltips print the hotkey of each command from the tables at build time; a key you change in the
-  dialog changes what the keys do but the built-in tooltips can still show the old one.
+- **Zoom Out has no key.** Daniel rebound Zoom In to `-` and cleared Zoom Out's factory key. The Window menu follows
+  the live hotkey map, so it shows `-` beside Zoom In and nothing beside Zoom Out; only `-` works and it zooms *in*.
+- The Window menu (Zoom Out, Zoom In, Undo Zoom, Fill Window, Pan Window) and 3D > 3D View Defaults... read the
+  live hotkey map, so Daniel's keys and your Customize Hotkeys edits show there. The other menus and the toolbar
+  tooltips print the hotkey of each command from the tables at build time; a key you change in the dialog changes
+  what the keys do but those can still show the old one.
 - `Delete` and `Backspace` delete the selection through the tools' own key handling, not through the hotkey map.
   Daniel's `Del` (Delete) binding therefore shows under "no matching command" but still works.
 - `~` (Preferences), `` ` `` (Display Options), `Cmd+P` (Print), `Cmd+Q` (Straight Railing) and the other dimmed
   commands hold their keys but do nothing yet.
-- Four-modifier chords work on macOS only (13.2).
-- The toolbar.rs comment says the four-modifier chords are "not bound on purpose" and the README repeats it.
-  That predates the runtime hotkey map; today they are bound whenever Daniel's file names them.
+- Four-modifier chords work on every platform; off macOS they are the `Ctrl+Alt+...` chords of 13.2.
+- Older notes say the four-modifier chords are "not bound on purpose". That predates the runtime hotkey map;
+  today they are bound whenever Daniel's file names them.
 
 ## 13.7 The Customize Hotkeys dialog
 
@@ -322,7 +327,7 @@ The dialog edits a copy of the map. While it is open the main window ignores the
 
 An empty list means "unbound". Key text follows Chief's file convention, where `Ctrl` is the Command key and
 `Meta` is the Control key on a Mac; the dialog writes it for you, so you rarely edit the file by hand. Unknown
-command names and unreadable sequences are skipped. If `HOME` is not set (some Windows setups) the dialog cannot save.
+command names and unreadable sequences are skipped. The settings folder is found from `HOME`, else `USERPROFILE`, else `HOMEDRIVE` plus `HOMEPATH`.
 
 ## 13.8 Keys by area
 

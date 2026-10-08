@@ -8,6 +8,7 @@
 mod builder;
 mod casing;
 mod doors;
+pub mod foundation;
 mod frame;
 pub mod gltf;
 pub mod import;
@@ -15,15 +16,22 @@ mod leaf;
 mod mesh;
 mod opening;
 mod railing;
+mod roof;
 mod slab;
 pub mod triangulate;
 mod wall;
+pub mod wall_kinds;
 mod windows;
 
 pub use mesh::{Bounds, Material, Mesh, Scene, Vertex};
 pub use railing::post_count as railing_post_count;
+pub use roof::{
+    ceiling_plane_meshes, dormer_meshes, roof_meshes, roof_plane_meshes, skylight_meshes,
+    CEILING_FRAMING_MATERIAL,
+};
 pub use slab::slab_from_polygon;
 
+use plan_core::foundation::PlatformKind;
 use plan_core::geometry::point_in_polygon;
 use plan_core::{detect_rooms, Floor, Project, Room, Wall, WallKind, WallTypeDef};
 use wall::{InteriorSign, WallLook};
@@ -114,6 +122,19 @@ struct TypeLookup<'a> {
 }
 
 impl TypeLookup<'_> {
+    /// Thickness and surface material of the named type.
+    fn info(&self, name: &str) -> Option<wall_kinds::TypeInfo> {
+        let ty = self
+            .project
+            .iter()
+            .chain(self.defaults)
+            .find(|t| t.name == name)?;
+        Some(wall_kinds::TypeInfo {
+            thickness: ty.thickness(),
+            exterior: self.exterior_material(name),
+        })
+    }
+
     /// Surface material of the named type's exterior layer, if it maps.
     fn exterior_material(&self, name: &str) -> Option<Material> {
         let ty = self
@@ -158,19 +179,23 @@ fn add_floor(floor: &Floor, opts: &SceneOptions, types: &TypeLookup, scene: &mut
     let slabs = [
         (
             Material::Floor,
+            PlatformKind::Floor,
             finished_floor - slab::SLAB_THICKNESS,
             finished_floor,
         ),
         (
             Material::Ceiling,
+            PlatformKind::Ceiling,
             floor.elevation + floor.ceiling_height,
             floor.elevation + floor.ceiling_height + slab::SLAB_THICKNESS,
         ),
     ];
-    for (material, y0, y1) in slabs {
-        scene
-            .meshes
-            .extend(slab::build_slab(material, &rooms, y0, y1));
+    for (material, kind, y0, y1) in slabs {
+        // Holes in the platform (stairwells, light wells) are cut out.
+        let holes = foundation::platform_holes(floor, kind);
+        scene.meshes.extend(foundation::build_platform(
+            material, &rooms, &holes, y0, y1, None,
+        ));
     }
 }
 
@@ -183,6 +208,12 @@ fn add_wall(
     scene: &mut Scene,
 ) {
     if wall.flags.invisible {
+        return;
+    }
+    if wall_kinds::handles(wall) {
+        let interior = interior_sign(wall, rooms);
+        let info = |n: &str| types.info(n);
+        wall_kinds::add_wall(floor, wall, interior, opts, &info, &mut scene.meshes);
         return;
     }
     if wall.flags.railing {

@@ -208,6 +208,21 @@ pub(crate) fn frame_for(
             w_in: IMAGE_SIZE_IN.0,
             h_in: IMAGE_SIZE_IN.1,
         },
+        // 4" wide at the image's aspect ratio (at most 6" tall).
+        BoxSource::ImageData { width, height, .. } => {
+            if *width == 0 || *height == 0 {
+                Frame::Paper {
+                    w_in: IMAGE_SIZE_IN.0,
+                    h_in: IMAGE_SIZE_IN.1,
+                }
+            } else {
+                let h = (IMAGE_SIZE_IN.0 * f64::from(*height) / f64::from(*width)).min(6.0);
+                Frame::Paper {
+                    w_in: IMAGE_SIZE_IN.0,
+                    h_in: h,
+                }
+            }
+        }
         BoxSource::Text { text, height_pt } => {
             let (w_in, h_in) = text_size_in(text, *height_pt);
             Frame::Paper { w_in, h_in }

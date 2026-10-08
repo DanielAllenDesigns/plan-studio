@@ -25,8 +25,8 @@ chapter 1 and the glossary in chapter 15.
 | 8 | [08-roofs.md](08-roofs.md) | Build Roof, roof planes, Gable/Roof Line, roof holes and skylights |
 | 9 | [09-electrical-terrain.md](09-electrical-terrain.md) | Electrical devices and circuits, terrain, roads and site tools |
 | 10 | [10-3d-views-rendering.md](10-3d-views-rendering.md) | 3D views, cameras, rendering techniques, the ray tracer |
-| 11 | [11-layout-schedules-print.md](11-layout-schedules-print.md) | Schedules, materials list, construction sets, layout, printing |
-| 12 | [12-import-export.md](12-import-export.md) | DXF, glTF, PDF, CSV, Chief catalogs (.calib) and Chief templates |
+| 11 | [11-layout-schedules-print.md](11-layout-schedules-print.md) | Schedules, Framing Build and Takeoff, materials list, construction sets, the drawing sheet and Print Preview, layout, printing |
+| 12 | [12-import-export.md](12-import-export.md) | DXF export and import, CAD to Walls, glTF, PDF, CSV, Chief catalogs (.calib) and Chief templates |
 | 13 | [13-hotkeys.md](13-hotkeys.md) | The full hotkey table, Daniel's Chief hotkeys, the Customize Hotkeys dialog |
 | 14 | [14-architecture-for-contributors.md](14-architecture-for-contributors.md) | Crate map, adding a tool, testing |
 | 15 | [15-glossary.md](15-glossary.md) | Residential design terms in plain language |
@@ -58,8 +58,9 @@ Hotkeys are written the way the program's tooltips write them in text form.
 - `D, H` is a sequence: press `D`, release, then press `H` within 1.5 seconds.
   The status bar shows `D, ...` while the program waits.
 - `Ctrl` is the Control key and `Cmd` is the Command key on macOS. On Windows
-  and Linux, `Cmd` stands for the Control key; the four-modifier chords such as
-  `Ctrl+Alt+Cmd+6` need both and cannot be typed there (see chapter 13).
+  and Linux there is no Command key: `Cmd` stands for the Control key and the Mac
+  Control modifier folds into it, so the four-modifier chord `Ctrl+Alt+Cmd+6` is
+  typed Ctrl+Alt+6 and menus and tooltips write `Ctrl+` (see chapter 13).
 - `Alt` is Option on macOS.
 
 The hotkeys in this manual are Daniel's Chief Architect X18 bindings. Several
@@ -96,18 +97,19 @@ this manual all use those names. "Plan Studio" is a working title; see
 
 | Area | Works today | Not yet |
 |---|---|---|
-| Walls (ch. 2) | Straight exterior and interior walls, click chains and drags, snapping, automatic corner/T/crossing joins, Select Objects editing, typed temporary dimensions, Wall Specification and Wall Type Definitions | Curved, foundation, pony, half, glass walls and room dividers as tools; typed length while drawing; Break Wall, Reverse Layers, Fix Wall Connections button |
-| Doors and windows (ch. 3) | Hinged Door, Window, ghost placement, sliding along walls, Reverse Swing, both specification dialogs | All other door and window styles, plan labels, mulling, resize handles |
-| Rooms and floors (ch. 4) | Automatic rooms, interior and standard areas, Room Specification, new/insert/delete/exchange floors, foundations, Space Planning Assistant, Plan Check | Reference Display drawing, Floor Defaults, function-driven room behavior, nested-room holes |
-| Dimensions, text, CAD (ch. 5) | Nine dimension tools plus auto exterior and interior, seven text tools, points/lines/arcs/circles/boxes/polylines/splines, layers, layer sets and saved plan views | Associative dimensions, printed-size text, Fillet and Chamfer, line weights on screen |
+| Walls (ch. 2) | Straight exterior and interior walls, click chains and drags, snapping, automatic corner/T/crossing joins, Select Objects editing, typed temporary dimensions, Wall Specification (Invisible, No Room Definition and No Locate are saved) and Wall Type Definitions | Curved, foundation, pony, half, glass walls and room dividers as tools; typed length while drawing; Break Wall, Reverse Layers, Fix Wall Connections button |
+| Doors and windows (ch. 3) | Hinged Door, Window, ghost placement, sliding along walls, Reverse Swing, both specification dialogs (a door's Swing side and Hinge side are separate settings) | All other door and window styles, plan labels, mulling, resize handles |
+| Rooms and floors (ch. 4) | Automatic rooms, interior and standard areas, Room Specification, Room Types list, new/insert/delete/exchange floors, foundations, Reference Display (floor below in gray), Space Planning Assistant, Plan Check | Floor Defaults, function-driven room behavior, nested-room holes |
+| Dimensions, text, CAD (ch. 5) | Nine dimension tools plus auto exterior and interior, seven text tools, points/lines/arcs/circles/boxes/polylines/splines, layers, layer sets and saved plan views, line weights on screen, Saved Dimension Defaults and the Text Styles editor (Edit > Default Settings) | Associative dimensions, printed-size text, Fillet and Chamfer |
 | Cabinets and library (ch. 6) | Six cabinet kinds, Cabinet Specification with face tree, Library Browser with about 145 built-in 2D symbols, symbol placement | Fillers, custom countertops, 3D symbols, Chief catalogs in the editor |
 | Stairs (ch. 7) | Straight, L, U, winder, ramp, landing, IRC solver, Stair Specification, Auto Stairwell | Railings, 3D view, stairwell cut in the floor |
-| Roofs (ch. 8) | Build Roof (skeleton), Roof Plane, edit, Gable/Roof Line, hole, skylight, 3D | Dormers, join planes, ceiling planes, gutters, framing |
+| Roofs (ch. 8) | Build Roof (skeleton), Roof Plane, edit, Gable/Roof Line, hole, skylight, 3D, roof framing through Build Framing | Dormers, join planes, ceiling planes, gutters, manual rafter and truss tools |
 | Electrical and terrain (ch. 9) | Outlets, lights, switches, connections, Auto Place Outlets; perimeter, elevations, hills, roads, Build Terrain with contours | Circuits UI, electrical schedule, 3D terrain |
-| 3D (ch. 10) | Overviews, Doll House, Full Camera, sections, elevations, nine technique looks, Sun Angle, ray tracer, glTF export | Walkthroughs, lights, materials painting, stairs/cabinets/terrain in 3D |
-| Documents (ch. 11) | Door, window, room, wall schedules, materials list, construction set PDF | Print, Print Preview, interactive layout, other schedules |
-| Import/export (ch. 12) | `.psplan`, glTF, PDF, PNG, CSV, Markdown | DXF/DWG in the menus, Chief catalogs and templates in the editor |
-| Hotkeys (ch. 13) | Base table, Daniel's Chief hotkeys, Customize Hotkeys | Four-modifier chords off macOS |
+| 3D (ch. 10) | Overviews, Doll House, Full Camera, sections, elevations, nine technique looks, Sun Angle, ray tracer, glTF export, 3D View Defaults (`Cmd+1`), cameras in the Project Browser | Walkthroughs, lights, materials painting, stairs/cabinets/terrain in 3D |
+| Documents (ch. 11) | Door, window, room, wall schedules, Build Framing and Framing Takeoff (CSV), materials list, construction set PDF, Drawing Sheet and Print Preview on the plan (sheet size and scale in Project Browser > Layout) | Print, interactive layout, other schedules, manual framing tools |
+| Import/export (ch. 12) | `.psplan`, glTF, PDF, PNG, CSV, Markdown, DXF export (plan and elevations), DXF import, CAD to Walls, Import Chief Template | DWG, Chief catalogs in the editor |
+| Defaults and docks (ch. 1) | Default Settings (walls, doors, windows, Dimensions, Text Styles, Room Types), File > Templates including Import Chief Template, Project Browser floors, cameras, Saved Views and Layout, View toggles Color, Line Weights, Reference Display, Drawing Sheet and Print Preview | Defaults groups for cabinets, roofs, stairs and the rest |
+| Hotkeys (ch. 13) | Base table, Daniel's Chief hotkeys, Customize Hotkeys, four-modifier chords as `Ctrl+Alt+...` off macOS, Window menu labels that follow the live map | Distinguishing Control from Command off macOS (they are one key there) |
 
 ## Where this manual comes from
 

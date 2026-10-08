@@ -1,24 +1,26 @@
 //! Roof planes: storage, automatic building, editing math, plan display and
 //! the 3D meshes (`docs/parity/roofs.md`).
 //!
-//! # Storage (temporary)
+//! # Storage
 //!
-//! `plan-core` has no roof field yet, so roof planes ride in the opaque
-//! `Floor.cad` list of the floor they sit on, which is saved, loaded and
-//! undone with the plan like everything else:
+//! A floor's roof lives in `Floor.roofs`, saved, loaded and undone with the
+//! plan: one JSON object per entry, tagged by `"kind"`: `"plane"` for a
+//! [`RoofPlaneRecord`] (its `id` is the plane id) and `"settings"` for the
+//! [`RoofSettings`] of the last Build Roof. Two more kinds share the slot:
+//! `"ceiling"` ([`CeilingRecord`], a vaulted ceiling plane on layer
+//! "Ceiling Planes") and `"dormer"` ([`DormerRecord`]: the main plane, the
+//! `plan_roof::DormerSpec`; its planes, walls and the hole in the main roof
+//! are regenerated from those, so a dormer follows its plane). Planes are
+//! picked and drawn straight from the records; there are no outline
+//! polylines in `Floor.cad`.
 //!
-//! * layer `"Roof Planes, Data"` (hidden): one `CadItem::Text` per plane whose
-//!   text is `RFP1:` + the JSON of a [`RoofPlaneRecord`] (the object id is the
-//!   plane id), and one `RFS1:` + JSON of the [`RoofSettings`] of the last
-//!   Build Roof;
-//! * the plane's own layer (`"Roof Planes"`): a closed `CadItem::Polyline` of
-//!   the plane outline, so DXF export and other CAD consumers see the roof.
+//! Holes and skylights are [`HoleRecord`]s on the plane that carries them.
+//! `RoofSettings::edge_specs` keeps the per-edge pitch / overhang / gable
+//! overrides the Roof Plane Specification sets for Build Roof.
 //!
-//! The data items are the source of truth; the polylines are rewritten from
-//! them on every [`store`].
-//!
-//! TODO: replace with a `roofs: Vec<RoofPlaneRecord>` field on `plan_core::Floor`
-//! (and `roof: RoofSettings` on `Project`), then delete the CAD-slot code.
+//! Older files kept the roof as hidden CAD text records (`RFP1:` / `RFS1:` on
+//! the layer `"Roof Planes, Data"`, plus an outline polyline per plane);
+//! [`migrate_legacy`] converts them once when a project is loaded.
 //!
 //! Coordinates in a record follow `plan-roof`: `[x, elevation, -plan_y]`.
 
@@ -26,14 +28,23 @@ use super::{Camera, EditorContext};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Stroke};
 use plan_core::cad::{CadItem, CadObject};
 use plan_core::defaults::RoofWallKind;
-use plan_core::geometry::{
-    dist_to_segment, point_in_polygon, polygon_area, polygon_centroid, Point,
-};
+use plan_core::geometry::{dist_to_segment, point_in_polygon, polygon_centroid, Point};
 use plan_core::{Floor, Id, Layer, PlanDefaults, Project, Wall, WallKind};
-use plan_roof::{build_roof, footprint_from_walls, EdgeKind, EdgeRoof};
+use plan_roof::{
+    apply_gable_line, auto_dormer, build_roof_with_specs, footprint_from_walls,
+    roof_plane_with_holes, roof_return_at, CeilingPlane, Dormer, DormerSpec, EdgeRoofSpec,
+    ReturnSpec, Roof, RoofHole, RoofPlane, SkylightSpec,
+};
 use serde_json::{json, Value};
 
 pub const LAYER_PLANES: &str = "Roof Planes";
+/// Layer of the vaulted ceiling planes.
+pub const LAYER_CEILING: &str = "Ceiling Planes";
+/// Thickness of a ceiling plane (structure above the finished surface), inches.
+pub const CEILING_THICKNESS: f64 = 9.0;
+/// Thickness of the dormer walls in the 3D meshes, inches.
+pub const DORMER_WALL_THICKNESS: f64 = 4.5;
+/// Hidden layer of the legacy CAD-record storage (older files only).
 pub const LAYER_DATA: &str = "Roof Planes, Data";
 const PLANE_TAG: &str = "RFP1:";
 const SETTINGS_TAG: &str = "RFS1:";
@@ -41,6 +52,8 @@ const SETTINGS_TAG: &str = "RFS1:";
 const TOL: f64 = 0.5;
 /// Default skylight size (RF-43), inches: width, length along the slope.
 pub const SKYLIGHT_SIZE: (f64, f64) = (24.0, 48.0);
+/// A hole must have at least this much plan clearance from its plane's edge.
+const HOLE_MARGIN: f64 = 0.5;
 /// Thickness of the plane slab in the 3D meshes, inches.
 pub const SLAB_THICKNESS: f64 = 1.0;
 
@@ -53,6 +66,10 @@ pub const ROOF_MATERIALS: [&str; 5] = [
     "Slate",
 ];
 
+// ===================================================================
+// Records
+// ===================================================================
+
 macro_rules! field {
     ($v:expr, $k:literal, $t:ty) => {
         $v.get($k)
@@ -60,9 +77,126 @@ macro_rules! field {
     };
 }
 
-// ===================================================================
-// Records
-// ===================================================================
+/// A hole through a roof plane: a plain opening (RF-42) or a skylight on a
+/// curb (RF-43).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoleRecord {
+    /// Plan outline, inches.
+    pub outline: Vec<Point>,
+    /// Skylight construction; `None` is a plain hole.
+    pub skylight: Option<SkylightSpec>,
+}
+
+impl HoleRecord {
+    pub fn hole(outline: Vec<Point>) -> Self {
+        Self {
+            outline,
+            skylight: None,
+        }
+    }
+
+    pub fn skylight(outline: Vec<Point>) -> Self {
+        Self {
+            outline,
+            skylight: Some(SkylightSpec::default()),
+        }
+    }
+
+    pub fn is_skylight(&self) -> bool {
+        self.skylight.is_some()
+    }
+
+    /// Plan extents `(width, height)` of the outline's bounding box.
+    pub fn size(&self) -> (f64, f64) {
+        let (mut lo, mut hi) = (
+            Point::new(f64::MAX, f64::MAX),
+            Point::new(f64::MIN, f64::MIN),
+        );
+        for p in &self.outline {
+            lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+            hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+        }
+        if self.outline.is_empty() {
+            (0.0, 0.0)
+        } else {
+            (hi.x - lo.x, hi.y - lo.y)
+        }
+    }
+
+    pub fn translate(&mut self, d: Point) {
+        for p in &mut self.outline {
+            *p = p.add(d);
+        }
+    }
+
+    /// The `plan-roof` hole.
+    pub fn to_roof_hole(&self) -> RoofHole {
+        match self.skylight {
+            Some(spec) => RoofHole::skylight(self.outline.clone(), spec),
+            None => RoofHole::hole(self.outline.clone()),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({ "outline": self.outline, "skylight": self.skylight })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        let outline = field!(v, "outline", Vec<Point>)?;
+        (outline.len() >= 3).then(|| Self {
+            outline,
+            skylight: field!(v, "skylight", SkylightSpec),
+        })
+    }
+}
+
+/// Per-edge overrides of Build Roof (the Roof Plane Specification's edge
+/// fields), feeding `plan_roof::EdgeRoofSpec`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EdgeOverride {
+    /// Rise per 12 instead of the wall's.
+    pub pitch: Option<f64>,
+    /// Overhang from the wall face instead of the wall's.
+    pub overhang: Option<f64>,
+    /// A gable end: no plane rises from the edge.
+    pub gable: bool,
+}
+
+impl EdgeOverride {
+    pub fn is_default(&self) -> bool {
+        self.pitch.is_none() && self.overhang.is_none() && !self.gable
+    }
+}
+
+/// An override and the footprint edge it applies to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeSpec {
+    pub edge: (Point, Point),
+    pub over: EdgeOverride,
+}
+
+impl EdgeSpec {
+    fn to_json(&self) -> Value {
+        json!({
+            "a": self.edge.0,
+            "b": self.edge.1,
+            "pitch": self.over.pitch,
+            "overhang": self.over.overhang,
+            "gable": self.over.gable,
+        })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            edge: (field!(v, "a", Point)?, field!(v, "b", Point)?),
+            over: EdgeOverride {
+                pitch: field!(v, "pitch", f64),
+                overhang: field!(v, "overhang", f64),
+                gable: field!(v, "gable", bool).unwrap_or(false),
+            },
+        })
+    }
+}
 
 /// One roof plane (RF-36).
 #[derive(Clone, Debug, PartialEq)]
@@ -75,10 +209,8 @@ pub struct RoofPlaneRecord {
     pub baseline: (Point, Point),
     /// Built by Build Roof and not edited by hand (RF-6, RF-37).
     pub auto: bool,
-    /// One rectangular/polygonal hole (RF-42).
-    pub hole: Option<Vec<Point>>,
-    /// `(center, width, length)` of each skylight (RF-43).
-    pub skylights: Vec<(Point, f64, f64)>,
+    /// Holes and skylights through the plane (RF-42, RF-43).
+    pub holes: Vec<HoleRecord>,
     /// Horizontal overhang beyond the wall face, inches (read-only display).
     pub overhang: f64,
     pub label: String,
@@ -86,8 +218,13 @@ pub struct RoofPlaneRecord {
     pub layer: String,
     pub ridge_caps: bool,
     pub gutters: bool,
-    /// Id of the derived outline polyline in `Floor.cad` (0 = none yet).
-    pub outline_id: Id,
+    /// The footprint edge an automatic plane rises from (what Build Roof
+    /// overrides are keyed by).
+    pub source: Option<(Point, Point)>,
+    /// The Build Roof override of [`source`](Self::source). Read from the
+    /// roof settings on load; the dialog edits it and
+    /// [`apply_plane_edit`] writes it back.
+    pub edge: EdgeOverride,
 }
 
 impl RoofPlaneRecord {
@@ -98,15 +235,15 @@ impl RoofPlaneRecord {
             pitch,
             baseline,
             auto: false,
-            hole: None,
-            skylights: Vec::new(),
+            holes: Vec::new(),
             overhang: 0.0,
             label: String::new(),
             material: ROOF_MATERIALS[0].to_string(),
             layer: LAYER_PLANES.to_string(),
             ridge_caps: false,
             gutters: false,
-            outline_id: 0,
+            source: None,
+            edge: EdgeOverride::default(),
         }
     }
 
@@ -194,13 +331,12 @@ impl RoofPlaneRecord {
             v[2] -= d.y;
         }
         self.baseline = (self.baseline.0.add(d), self.baseline.1.add(d));
-        if let Some(h) = &mut self.hole {
-            for p in h.iter_mut() {
-                *p = p.add(d);
-            }
+        for h in &mut self.holes {
+            h.translate(d);
         }
-        for s in &mut self.skylights {
-            s.0 = s.0.add(d);
+        if let Some((a, b)) = &mut self.source {
+            *a = a.add(d);
+            *b = b.add(d);
         }
         self.auto = false;
     }
@@ -214,26 +350,29 @@ impl RoofPlaneRecord {
         pitch_label(self.pitch)
     }
 
-    pub fn to_json(&self) -> Value {
+    /// The `Floor.roofs` entry of this plane.
+    fn to_json(&self) -> Value {
         json!({
+            "kind": "plane",
             "id": self.id,
             "polygon3d": self.polygon3d,
             "pitch": self.pitch,
             "baseline": [self.baseline.0, self.baseline.1],
             "auto": self.auto,
-            "hole": self.hole,
-            "skylights": self.skylights,
+            "holes": self.holes.iter().map(HoleRecord::to_json).collect::<Vec<_>>(),
+            "source": self.source.map(|(a, b)| [a, b]),
             "overhang": self.overhang,
             "label": self.label,
             "material": self.material,
             "layer": self.layer,
             "ridge_caps": self.ridge_caps,
             "gutters": self.gutters,
-            "outline_id": self.outline_id,
         })
     }
 
-    pub fn from_json(v: &Value) -> Option<Self> {
+    /// A plane from a `Floor.roofs` entry or a legacy record; `None` when
+    /// the geometry is missing or degenerate.
+    fn from_json(v: &Value) -> Option<Self> {
         let polygon3d = field!(v, "polygon3d", Vec<[f64; 3]>)?;
         if polygon3d.len() < 3 {
             return None;
@@ -246,8 +385,11 @@ impl RoofPlaneRecord {
             (*base.first()?, *base.get(1)?),
         );
         r.auto = field!(v, "auto", bool).unwrap_or(false);
-        r.hole = field!(v, "hole", Vec<Point>);
-        r.skylights = field!(v, "skylights", Vec<(Point, f64, f64)>).unwrap_or_default();
+        r.holes = field!(v, "holes", Vec<Value>)
+            .map(|hs| hs.iter().filter_map(HoleRecord::from_json).collect())
+            .unwrap_or_default();
+        r.source = field!(v, "source", Vec<Point>).and_then(|e| Some((*e.first()?, *e.get(1)?)));
+        r.read_legacy_holes(v);
         r.overhang = field!(v, "overhang", f64).unwrap_or(0.0);
         r.label = field!(v, "label", String).unwrap_or_default();
         if let Some(m) = field!(v, "material", String) {
@@ -258,9 +400,64 @@ impl RoofPlaneRecord {
         }
         r.ridge_caps = field!(v, "ridge_caps", bool).unwrap_or(false);
         r.gutters = field!(v, "gutters", bool).unwrap_or(false);
-        r.outline_id = field!(v, "outline_id", Id).unwrap_or(0);
         Some(r)
     }
+
+    /// Files written before `holes`: one `hole` outline and `skylights` as
+    /// `(center, width, length)` along the slope.
+    fn read_legacy_holes(&mut self, v: &Value) {
+        if let Some(h) = field!(v, "hole", Vec<Point>).filter(|h| h.len() >= 3) {
+            self.holes.push(HoleRecord::hole(h));
+        }
+        let up = self.up_slope();
+        let across = up.perp();
+        for (c, w, l) in field!(v, "skylights", Vec<(Point, f64, f64)>).unwrap_or_default() {
+            self.holes
+                .push(HoleRecord::skylight(oriented_rect(c, w, l, across, up)));
+        }
+    }
+
+    /// The plane as a `plan-roof` plane; `source_edge` tags it.
+    pub fn to_roof_plane(&self, source_edge: usize) -> RoofPlane {
+        RoofPlane {
+            polygon3d: self.polygon3d.clone(),
+            pitch_in_12: self.pitch,
+            baseline: self.baseline,
+            source_edge,
+        }
+    }
+
+    /// The holes as `plan-roof` holes.
+    pub fn roof_holes(&self) -> Vec<RoofHole> {
+        self.holes.iter().map(HoleRecord::to_roof_hole).collect()
+    }
+
+    /// Does `outline` lie inside the plane with a margin, so `plan-roof`
+    /// will cut it?
+    pub fn encloses(&self, outline: &[Point]) -> bool {
+        let poly = self.plan_polygon();
+        let n = poly.len();
+        outline.len() >= 3
+            && outline.iter().all(|q| {
+                point_in_polygon(*q, &poly)
+                    && (0..n).all(|i| dist_to_segment(*q, poly[i], poly[(i + 1) % n]) > HOLE_MARGIN)
+            })
+    }
+}
+
+/// The plan rectangle `width` (along `across`) by `length` (along `up`)
+/// centered on `c`.
+pub fn oriented_rect(c: Point, width: f64, length: f64, across: Point, up: Point) -> Vec<Point> {
+    let corner = |sw: f64, sl: f64| {
+        c.add(across.scale(sw * width * 0.5))
+            .add(up.scale(sl * length * 0.5))
+    };
+    vec![
+        corner(-1.0, -1.0),
+        corner(1.0, -1.0),
+        corner(1.0, 1.0),
+        corner(-1.0, 1.0),
+    ]
 }
 
 /// `8:12`, or `8.5:12` for fractional pitches.
@@ -284,7 +481,8 @@ fn newell_area(poly: &[[f64; 3]]) -> f64 {
     (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt() * 0.5
 }
 
-/// The Build Roof dialog's settings (RF-2), kept with the roof.
+/// The Build Roof dialog's settings (RF-2), kept with the roof. Fields a
+/// stored roof lacks load with Chief's stock values ([`RoofSettings::fallback`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoofSettings {
     pub build_planes: bool,
@@ -300,6 +498,8 @@ pub struct RoofSettings {
     pub material: String,
     /// [`wall_signature`] at the last build (Auto Rebuild compares it).
     pub signature: u64,
+    /// Per-edge overrides set in the Roof Plane Specification.
+    pub edge_specs: Vec<EdgeSpec>,
 }
 
 impl RoofSettings {
@@ -316,6 +516,7 @@ impl RoofSettings {
             build_framing: false,
             material: ROOF_MATERIALS[0].to_string(),
             signature: 0,
+            edge_specs: Vec::new(),
         }
     }
 
@@ -332,11 +533,14 @@ impl RoofSettings {
             build_framing: false,
             material: ROOF_MATERIALS[0].to_string(),
             signature: 0,
+            edge_specs: Vec::new(),
         }
     }
 
-    pub fn to_json(&self) -> Value {
+    /// The `Floor.roofs` entry of these settings.
+    fn to_json(&self) -> Value {
         json!({
+            "kind": "settings",
             "build_planes": self.build_planes,
             "auto_rebuild": self.auto_rebuild,
             "pitch": self.pitch,
@@ -347,10 +551,12 @@ impl RoofSettings {
             "build_framing": self.build_framing,
             "material": self.material,
             "signature": self.signature,
+            "edge_specs": self.edge_specs.iter().map(EdgeSpec::to_json).collect::<Vec<_>>(),
         })
     }
 
-    pub fn from_json(v: &Value, defaults: &RoofSettings) -> Self {
+    /// Settings from a stored entry; missing fields take `defaults`' values.
+    fn from_json(v: &Value, defaults: &RoofSettings) -> Self {
         Self {
             build_planes: field!(v, "build_planes", bool).unwrap_or(defaults.build_planes),
             auto_rebuild: field!(v, "auto_rebuild", bool).unwrap_or(defaults.auto_rebuild),
@@ -363,7 +569,127 @@ impl RoofSettings {
             build_framing: field!(v, "build_framing", bool).unwrap_or(false),
             material: field!(v, "material", String).unwrap_or_else(|| defaults.material.clone()),
             signature: field!(v, "signature", u64).unwrap_or(0),
+            edge_specs: field!(v, "edge_specs", Vec<Value>)
+                .map(|e| e.iter().filter_map(EdgeSpec::from_json).collect())
+                .unwrap_or_default(),
         }
+    }
+}
+
+impl RoofSettings {
+    /// The override stored for footprint edge `edge`, if any.
+    pub fn override_of(&self, edge: (Point, Point)) -> Option<EdgeOverride> {
+        self.edge_specs
+            .iter()
+            .find(|e| same_edge(e.edge, edge))
+            .map(|e| e.over)
+    }
+
+    /// Sets (or, when `over` is the default, clears) the override of `edge`.
+    pub fn set_override(&mut self, edge: (Point, Point), over: EdgeOverride) {
+        self.edge_specs.retain(|e| !same_edge(e.edge, edge));
+        if !over.is_default() {
+            self.edge_specs.push(EdgeSpec { edge, over });
+        }
+    }
+}
+
+/// A vaulted ceiling plane (RF-45): `plan_roof::CeilingPlane` data on layer
+/// "Ceiling Planes".
+#[derive(Clone, Debug, PartialEq)]
+pub struct CeilingRecord {
+    pub id: Id,
+    /// Plan outline, inches.
+    pub outline: Vec<Point>,
+    /// The plane rises toward the left of `baseline.0 -> baseline.1`.
+    pub baseline: (Point, Point),
+    pub pitch: f64,
+    /// Scene elevation at the baseline, inches.
+    pub height_at_baseline: f64,
+    pub thickness: f64,
+    pub layer: String,
+}
+
+impl CeilingRecord {
+    pub fn to_plane(&self) -> CeilingPlane {
+        CeilingPlane {
+            outline: self.outline.clone(),
+            baseline: self.baseline,
+            pitch_in_12: self.pitch,
+            height_at_baseline: self.height_at_baseline,
+            thickness: self.thickness,
+        }
+    }
+
+    pub fn contains(&self, p: Point) -> bool {
+        point_in_polygon(p, &self.outline)
+    }
+
+    pub fn translate(&mut self, d: Point) {
+        for p in &mut self.outline {
+            *p = p.add(d);
+        }
+        self.baseline = (self.baseline.0.add(d), self.baseline.1.add(d));
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "kind": "ceiling",
+            "id": self.id,
+            "outline": self.outline,
+            "baseline": [self.baseline.0, self.baseline.1],
+            "pitch": self.pitch,
+            "height": self.height_at_baseline,
+            "thickness": self.thickness,
+            "layer": self.layer,
+        })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        let outline = field!(v, "outline", Vec<Point>).filter(|o| o.len() >= 3)?;
+        let base = field!(v, "baseline", Vec<Point>)?;
+        Some(Self {
+            id: field!(v, "id", Id)?,
+            outline,
+            baseline: (*base.first()?, *base.get(1)?),
+            pitch: field!(v, "pitch", f64)?,
+            height_at_baseline: field!(v, "height", f64)?,
+            thickness: field!(v, "thickness", f64).unwrap_or(CEILING_THICKNESS),
+            layer: field!(v, "layer", String).unwrap_or_else(|| LAYER_CEILING.to_string()),
+        })
+    }
+}
+
+/// An Auto Dormer (RF-48): the main plane and the dormer dimensions. The
+/// dormer's planes, walls and the hole in the main roof come from
+/// `plan_roof::auto_dormer`, see [`dormer_geometry`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct DormerRecord {
+    pub id: Id,
+    /// The roof plane the dormer stands on.
+    pub main: Id,
+    pub spec: DormerSpec,
+    pub layer: String,
+}
+
+impl DormerRecord {
+    fn to_json(&self) -> Value {
+        json!({
+            "kind": "dormer",
+            "id": self.id,
+            "main": self.main,
+            "spec": self.spec,
+            "layer": self.layer,
+        })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(Self {
+            id: field!(v, "id", Id)?,
+            main: field!(v, "main", Id)?,
+            spec: field!(v, "spec", DormerSpec)?,
+            layer: field!(v, "layer", String).unwrap_or_else(|| LAYER_PLANES.to_string()),
+        })
     }
 }
 
@@ -373,6 +699,16 @@ pub struct RoofSet {
     /// `None` until Build Roof ran (or after Delete Roof Planes).
     pub settings: Option<RoofSettings>,
     pub planes: Vec<RoofPlaneRecord>,
+    pub ceilings: Vec<CeilingRecord>,
+    pub dormers: Vec<DormerRecord>,
+}
+
+/// What an id of the roof slot names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordKind {
+    Plane,
+    Ceiling,
+    Dormer,
 }
 
 impl RoofSet {
@@ -384,6 +720,27 @@ impl RoofSet {
         self.planes.iter_mut().find(|p| p.id == id)
     }
 
+    pub fn ceiling(&self, id: Id) -> Option<&CeilingRecord> {
+        self.ceilings.iter().find(|c| c.id == id)
+    }
+
+    pub fn dormer(&self, id: Id) -> Option<&DormerRecord> {
+        self.dormers.iter().find(|d| d.id == id)
+    }
+
+    /// Which kind of record `id` is.
+    pub fn kind_of(&self, id: Id) -> Option<RecordKind> {
+        if self.plane(id).is_some() {
+            Some(RecordKind::Plane)
+        } else if self.ceiling(id).is_some() {
+            Some(RecordKind::Ceiling)
+        } else if self.dormer(id).is_some() {
+            Some(RecordKind::Dormer)
+        } else {
+            None
+        }
+    }
+
     /// Topmost (last drawn) plane containing `p`.
     pub fn plane_at(&self, p: Point) -> Option<Id> {
         self.planes
@@ -392,11 +749,128 @@ impl RoofSet {
             .find(|r| r.contains(p))
             .map(|r| r.id)
     }
+
+    /// The dormer whose roof or front wall covers `p`.
+    pub fn dormer_at(&self, p: Point) -> Option<Id> {
+        self.dormers
+            .iter()
+            .rev()
+            .find(|d| {
+                dormer_geometry(self, d).is_some_and(|g| {
+                    g.roof_planes
+                        .iter()
+                        .any(|r| point_in_polygon(p, &r.plan_polygon()))
+                })
+            })
+            .map(|d| d.id)
+    }
+
+    /// The topmost dormer, plane or ceiling plane under `p`, in that order.
+    pub fn record_at(&self, p: Point) -> Option<Id> {
+        self.dormer_at(p).or_else(|| self.plane_at(p)).or_else(|| {
+            self.ceilings
+                .iter()
+                .rev()
+                .find(|c| c.contains(p))
+                .map(|c| c.id)
+        })
+    }
+
+    /// Layer of record `id`.
+    pub fn layer_of(&self, id: Id) -> Option<String> {
+        self.plane(id)
+            .map(|p| p.layer.clone())
+            .or_else(|| self.ceiling(id).map(|c| c.layer.clone()))
+            .or_else(|| self.dormer(id).map(|d| d.layer.clone()))
+    }
+
+    /// Plan polygons that stand for each record, for picking: a plane's
+    /// outline, a ceiling plane's outline, a dormer's roof planes.
+    pub fn pick_polys(&self) -> Vec<(Id, String, Vec<Vec<Point>>)> {
+        let mut out: Vec<(Id, String, Vec<Vec<Point>>)> = self
+            .planes
+            .iter()
+            .map(|r| (r.id, r.layer.clone(), vec![r.plan_polygon()]))
+            .collect();
+        out.extend(
+            self.ceilings
+                .iter()
+                .map(|c| (c.id, c.layer.clone(), vec![c.outline.clone()])),
+        );
+        for d in &self.dormers {
+            if let Some(g) = dormer_geometry(self, d) {
+                out.push((
+                    d.id,
+                    d.layer.clone(),
+                    g.roof_planes.iter().map(RoofPlane::plan_polygon).collect(),
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// The dormer of `rec` rebuilt on its main plane; `None` when the plane is
+/// gone or the dormer no longer fits it.
+pub fn dormer_geometry(set: &RoofSet, rec: &DormerRecord) -> Option<Dormer> {
+    auto_dormer(&set.plane(rec.main)?.to_roof_plane(0), rec.spec)
 }
 
 // ===================================================================
-// Storage in Floor.cad
+// Storage in Floor.roofs
 // ===================================================================
+
+/// Reads the roof stored on `floor`. Entries that do not parse are skipped.
+pub fn load(floor: &Floor) -> RoofSet {
+    let base = RoofSettings::fallback();
+    let mut set = RoofSet::default();
+    for v in &floor.roofs {
+        match v.get("kind").and_then(Value::as_str) {
+            Some("plane") => set.planes.extend(RoofPlaneRecord::from_json(v)),
+            Some("ceiling") => set.ceilings.extend(CeilingRecord::from_json(v)),
+            Some("dormer") => set.dormers.extend(DormerRecord::from_json(v)),
+            Some("settings") => set.settings = Some(RoofSettings::from_json(v, &base)),
+            _ => {}
+        }
+    }
+    if let Some(s) = &set.settings {
+        for r in &mut set.planes {
+            if let Some(edge) = r.source {
+                r.edge = s.override_of(edge).unwrap_or_default();
+            }
+        }
+    }
+    set
+}
+
+/// Writes `set` back as the floor's roof, replacing what was stored.
+pub fn store(project: &mut Project, fi: usize, set: &mut RoofSet) {
+    let mut items: Vec<Value> = set.planes.iter().map(RoofPlaneRecord::to_json).collect();
+    items.extend(set.ceilings.iter().map(CeilingRecord::to_json));
+    items.extend(set.dormers.iter().map(DormerRecord::to_json));
+    if let Some(s) = &set.settings {
+        items.push(s.to_json());
+    }
+    if !set.ceilings.is_empty() {
+        project
+            .layers
+            .add(Layer::new(LAYER_CEILING, [96, 96, 160], 18));
+    }
+    // Plain data always serializes; on the impossible error the old roof stays.
+    let _ = project.floors[fi].set_roofs(&items);
+}
+
+/// Does record `id` (a plane, ceiling plane or dormer) exist on `floor`?
+pub fn exists(floor: &Floor, id: Id) -> bool {
+    floor.roofs.iter().any(|v| {
+        matches!(
+            v.get("kind").and_then(Value::as_str),
+            Some("plane" | "ceiling" | "dormer")
+        ) && v.get("id").and_then(Value::as_u64) == Some(id)
+    })
+}
+
+// ----- migration of the old CAD-record storage -----
 
 fn data_text<'a>(c: &'a CadObject, tag: &str) -> Option<&'a str> {
     if c.layer != LAYER_DATA {
@@ -408,93 +882,55 @@ fn data_text<'a>(c: &'a CadObject, tag: &str) -> Option<&'a str> {
     }
 }
 
-/// Reads the roof stored on `floor`.
-pub fn load(floor: &Floor) -> RoofSet {
-    let base = RoofSettings::fallback();
+/// The roof stored the old way on `floor`: `RFP1:` / `RFS1:` text records on
+/// the hidden data layer (the plane id is the CAD object id). Also returns the
+/// ids of the outline polylines that went with the planes.
+fn load_legacy(floor: &Floor) -> (RoofSet, Vec<Id>) {
     let mut set = RoofSet::default();
+    let mut outlines = Vec::new();
     for c in &floor.cad {
         if let Some(json) = data_text(c, PLANE_TAG) {
-            if let Some(mut r) = serde_json::from_str::<Value>(json)
+            if let Some((mut r, outline)) = serde_json::from_str::<Value>(json)
                 .ok()
-                .and_then(|v| RoofPlaneRecord::from_json(&v))
+                .and_then(|v| Some((RoofPlaneRecord::from_json(&v)?, field!(v, "outline_id", Id))))
             {
                 r.id = c.id;
+                outlines.extend(outline.filter(|o| *o != 0));
                 set.planes.push(r);
             }
         } else if let Some(json) = data_text(c, SETTINGS_TAG) {
             if let Ok(v) = serde_json::from_str::<Value>(json) {
-                set.settings = Some(RoofSettings::from_json(&v, &base));
+                set.settings = Some(RoofSettings::from_json(&v, &RoofSettings::fallback()));
             }
         }
     }
-    set
+    (set, outlines)
 }
 
-/// Writes `set` back as the floor's roof, replacing what was stored.
-pub fn store(project: &mut Project, fi: usize, set: &mut RoofSet) {
-    if project.layers.get(LAYER_DATA).is_none() {
-        let mut l = Layer::new(LAYER_DATA, [128, 0, 128], 13);
-        l.display = false;
-        project.layers.add(l);
-    }
-    let mut cad = std::mem::take(&mut project.floors[fi].cad);
-    let old_outlines: Vec<Id> = cad
-        .iter()
-        .filter_map(|c| data_text(c, PLANE_TAG))
-        .filter_map(|j| serde_json::from_str::<Value>(j).ok())
-        .filter_map(|v| field!(v, "outline_id", Id))
-        .collect();
-    let settings_id = cad
-        .iter()
-        .find(|c| data_text(c, SETTINGS_TAG).is_some())
-        .map(|c| c.id);
-    cad.retain(|c| c.layer != LAYER_DATA && !old_outlines.contains(&c.id));
-    for r in &mut set.planes {
-        if r.outline_id == 0 {
-            r.outline_id = project.alloc_id();
+/// Project-load step "Migrate roof storage" (no undo entry): on every floor
+/// whose `roofs` slot is empty, moves the legacy CAD records into it, deletes
+/// the data records and the plane outline polylines from `Floor.cad`, and
+/// drops the hidden "Roof Planes, Data" layer. Returns whether anything moved.
+pub fn migrate_legacy(project: &mut Project) -> bool {
+    let mut changed = false;
+    for fi in 0..project.floors.len() {
+        if !project.floors[fi].roofs.is_empty() {
+            continue;
         }
-        let poly = r.plan_polygon();
-        cad.push(CadObject {
-            id: r.outline_id,
-            layer: r.layer.clone(),
-            item: CadItem::Polyline {
-                points: poly.clone(),
-                closed: true,
-            },
-        });
-        cad.push(CadObject {
-            id: r.id,
-            layer: LAYER_DATA.to_string(),
-            item: CadItem::Text {
-                pos: poly.first().copied().unwrap_or(Point::ZERO),
-                text: format!("{PLANE_TAG}{}", r.to_json()),
-                height: 1.0,
-                angle: 0.0,
-            },
-        });
+        let (mut set, outlines) = load_legacy(&project.floors[fi]);
+        if set.planes.is_empty() && set.settings.is_none() {
+            continue;
+        }
+        store(project, fi, &mut set);
+        project.floors[fi]
+            .cad
+            .retain(|c| c.layer != LAYER_DATA && !outlines.contains(&c.id));
+        changed = true;
     }
-    if let Some(s) = &set.settings {
-        let id = settings_id.unwrap_or_else(|| project.alloc_id());
-        cad.push(CadObject {
-            id,
-            layer: LAYER_DATA.to_string(),
-            item: CadItem::Text {
-                pos: Point::ZERO,
-                text: format!("{SETTINGS_TAG}{}", s.to_json()),
-                height: 1.0,
-                angle: 0.0,
-            },
-        });
-    }
-    project.floors[fi].cad = cad;
-}
-
-/// Does plane `id` exist on `floor`?
-pub fn exists(floor: &Floor, id: Id) -> bool {
-    floor
-        .cad
-        .iter()
-        .any(|c| c.id == id && data_text(c, PLANE_TAG).is_some())
+    super::site_view::drop_data_layer(project, LAYER_DATA);
+    // The slab record kept the same way.
+    changed |= plan_core::foundation::migrate_legacy(project);
+    changed
 }
 
 // ===================================================================
@@ -556,7 +992,7 @@ pub fn build_floor(project: &Project, ignore_top: bool, fallback: usize) -> usiz
 }
 
 struct EdgePlan {
-    roof: EdgeRoof,
+    spec: EdgeRoofSpec,
     /// Overhang from the wall face, as shown to the user.
     face_overhang: f64,
 }
@@ -596,46 +1032,76 @@ fn edge_plans(walls: &[Wall], fp: &[Point], s: &RoofSettings) -> Vec<EdgePlan> {
                 ),
                 None => (RoofWallKind::Hip, s.pitch, s.overhang, 0.0),
             };
-            let kind = match kind {
-                RoofWallKind::FullGable => EdgeKind::Gable,
-                RoofWallKind::HighShedGable => EdgeKind::Shed,
-                _ => EdgeKind::Hip,
+            let mut spec = EdgeRoofSpec {
+                pitch,
+                // plan-roof measures from the centerline; RF-10 wants the
+                // wall face.
+                overhang: over + thick * 0.5,
+                full_gable_wall: kind == RoofWallKind::FullGable,
+                high_shed_gable: kind == RoofWallKind::HighShedGable,
+                ..EdgeRoofSpec::default()
             };
+            let mut face_overhang = over;
+            // The Roof Plane Specification's overrides win over the wall.
+            if let Some(o) = s.override_of((a, b)) {
+                if let Some(p) = o.pitch {
+                    spec.pitch = p;
+                }
+                if let Some(v) = o.overhang {
+                    spec.overhang = v + thick * 0.5;
+                    face_overhang = v;
+                }
+                if o.gable {
+                    spec.gable = true;
+                    spec.high_shed_gable = false;
+                }
+            }
             EdgePlan {
-                roof: EdgeRoof {
-                    pitch_in_12: pitch,
-                    kind,
-                    // plan-roof measures from the centerline; RF-10 wants the
-                    // wall face.
-                    overhang: over + thick * 0.5,
-                },
-                face_overhang: over,
+                spec,
+                face_overhang,
             }
         })
         .collect()
 }
 
-/// Footprint edge index and walls of the edge `wall_id` lies on.
-fn edge_of_wall(floor: &Floor, wall_id: Id) -> Option<Vec<Id>> {
+/// The footprint edge `wall_id` lies on, and the ids of the walls along it.
+fn edge_of_wall(floor: &Floor, wall_id: Id) -> Option<((Point, Point), Vec<Id>)> {
     let walls = exterior_walls(floor);
     let fp = footprint_from_walls(&walls, TOL)?;
     let n = fp.len();
     for i in 0..n {
-        let on = walls_on_edge(&walls, fp[i], fp[(i + 1) % n]);
+        let edge = (fp[i], fp[(i + 1) % n]);
+        let on = walls_on_edge(&walls, edge.0, edge.1);
         if on.iter().any(|&k| walls[k].id == wall_id) {
-            return Some(on.iter().map(|&k| walls[k].id).collect());
+            return Some((edge, on.iter().map(|&k| walls[k].id).collect()));
         }
     }
     None
 }
 
+/// Does the Build Roof override of footprint edge `edge` make it a gable?
+fn edge_override_is_gable(project: &Project, edge: (Point, Point)) -> bool {
+    project.floors.iter().any(|f| {
+        load(f)
+            .settings
+            .and_then(|s| s.override_of(edge))
+            .is_some_and(|o| o.gable)
+    })
+}
+
 /// Gable/Roof Line on a wall (RF-18, RF-20): flips every wall along its
-/// footprint edge between Hip and Full Gable. Returns the new kind.
+/// footprint edge between Hip and Full Gable. A gable that comes from the
+/// roof settings' edge override (set from an eave) counts as a gable: the
+/// override is cleared and the walls become Hip. Returns the new kind.
 pub fn toggle_gable(project: &mut Project, fi: usize, wall_id: Id) -> Option<RoofWallKind> {
     let floor = &project.floors[fi];
-    let ids = edge_of_wall(floor, wall_id).unwrap_or_else(|| vec![wall_id]);
+    let (edge, ids) = match edge_of_wall(floor, wall_id) {
+        Some((e, ids)) => (Some(e), ids),
+        None => (None, vec![wall_id]),
+    };
     let current = floor.wall(wall_id)?.roof.kind;
-    let new = if current == RoofWallKind::FullGable {
+    let overridden = edge.is_some_and(|e| edge_override_is_gable(project, e));
+    let new = if current == RoofWallKind::FullGable || overridden {
         RoofWallKind::Hip
     } else {
         RoofWallKind::FullGable
@@ -643,6 +1109,21 @@ pub fn toggle_gable(project: &mut Project, fi: usize, wall_id: Id) -> Option<Roo
     for id in ids {
         if let Some(w) = project.floors[fi].wall_mut(id) {
             w.roof.kind = new;
+        }
+    }
+    if let (Some(edge), true) = (edge, overridden) {
+        for f in 0..project.floors.len() {
+            let mut set = load(&project.floors[f]);
+            let Some(s) = set.settings.as_mut() else {
+                continue;
+            };
+            if let Some(mut o) = s.override_of(edge).filter(|o| o.gable) {
+                o.gable = false;
+                s.set_override(edge, o);
+                // The walls did not change: make Auto Rebuild notice.
+                s.signature = 0;
+                store(project, f, &mut set);
+            }
         }
     }
     Some(new)
@@ -660,14 +1141,16 @@ fn make_auto_planes(
     let fp = footprint_from_walls(&walls, TOL)
         .ok_or_else(|| "The exterior walls do not enclose an area".to_string())?;
     let plans = edge_plans(&walls, &fp, s);
-    let edges: Vec<EdgeRoof> = plans.iter().map(|e| e.roof).collect();
+    let specs: Vec<EdgeRoofSpec> = plans.iter().map(|e| e.spec).collect();
     let top = walls.iter().map(|w| w.height).fold(0.0, f64::max);
     let baseline = floor.elevation + top + s.raise_off_plate;
-    let roof = build_roof(&fp, &edges, baseline);
+    let roof = build_roof_with_specs(&fp, &specs, baseline);
+    let n = fp.len();
     let mut out = Vec::new();
     for pl in roof.planes {
         let mut r = RoofPlaneRecord::new(0, pl.polygon3d, pl.pitch_in_12, pl.baseline);
         r.auto = true;
+        r.source = Some((fp[pl.source_edge % n], fp[(pl.source_edge + 1) % n]));
         r.overhang = plans
             .get(pl.source_edge)
             .map_or(s.overhang, |e| e.face_overhang);
@@ -681,8 +1164,10 @@ fn make_auto_planes(
 }
 
 /// Copies holes, skylights and per-plane options from the old automatic plane
-/// with the same baseline onto the rebuilt one.
-fn carry_over(old: &[RoofPlaneRecord], new: &mut [RoofPlaneRecord]) {
+/// with the same baseline onto the rebuilt one. Returns `(old id, new id)` of
+/// every plane that was matched.
+fn carry_over(old: &[RoofPlaneRecord], new: &mut [RoofPlaneRecord]) -> Vec<(Id, Id)> {
+    let mut map = Vec::new();
     for n in new.iter_mut() {
         let nd = n.baseline.1.sub(n.baseline.0).normalized();
         let nm = Point::lerp(n.baseline.0, n.baseline.1, 0.5);
@@ -692,16 +1177,16 @@ fn carry_over(old: &[RoofPlaneRecord], new: &mut [RoofPlaneRecord]) {
             om.dist(nm) < 12.0 && od.dot(nd) > 0.99
         });
         if let Some(o) = hit {
-            n.hole = o.hole.clone();
-            n.skylights = o.skylights.clone();
+            n.holes = o.holes.clone();
             n.label = o.label.clone();
             n.material = o.material.clone();
             n.layer = o.layer.clone();
             n.ridge_caps = o.ridge_caps;
             n.gutters = o.gutters;
-            n.outline_id = o.outline_id;
+            map.push((o.id, n.id));
         }
     }
+    map
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -729,7 +1214,13 @@ pub fn rebuild(
     if settings.build_planes {
         match make_auto_planes(project, fi, &settings) {
             Ok((mut planes, approx)) => {
-                carry_over(&old_auto, &mut planes);
+                let moved = carry_over(&old_auto, &mut planes);
+                // Dormers follow their (rebuilt) plane.
+                for d in &mut set.dormers {
+                    if let Some((_, new)) = moved.iter().find(|(old, _)| *old == d.main) {
+                        d.main = *new;
+                    }
+                }
                 approximate = approx;
                 built = planes.len();
                 set.planes.extend(planes);
@@ -790,9 +1281,65 @@ pub fn delete_all(project: &mut Project, fi: usize) -> usize {
     let mut set = load(&project.floors[fi]);
     let n = set.planes.len();
     set.planes.clear();
+    // Dormers stand on planes: they go with them.
+    set.dormers.clear();
     set.settings = None;
     store(project, fi, &mut set);
     n
+}
+
+/// Delete Ceiling Planes: removes every ceiling plane of floor `fi`. Returns
+/// how many went.
+pub fn delete_ceilings(project: &mut Project, fi: usize) -> usize {
+    let mut set = load(&project.floors[fi]);
+    let n = set.ceilings.len();
+    if n > 0 {
+        set.ceilings.clear();
+        store(project, fi, &mut set);
+    }
+    n
+}
+
+/// Removes the records `ids` (planes, ceiling planes, dormers; the dormers of
+/// a removed plane go with it) from floor `fi`. Returns how many records went.
+pub fn delete_records(project: &mut Project, fi: usize, ids: &[Id]) -> usize {
+    let mut set = load(&project.floors[fi]);
+    let before = set.planes.len() + set.ceilings.len() + set.dormers.len();
+    set.planes.retain(|p| !ids.contains(&p.id));
+    set.ceilings.retain(|c| !ids.contains(&c.id));
+    set.dormers
+        .retain(|d| !ids.contains(&d.id) && !ids.contains(&d.main));
+    let gone = before - (set.planes.len() + set.ceilings.len() + set.dormers.len());
+    if gone > 0 {
+        store(project, fi, &mut set);
+    }
+    gone
+}
+
+/// Translates record `id` by `d` in plan: a plane or ceiling plane moves, a
+/// dormer slides on its plane (its position follows the eave and slope
+/// directions). Returns whether the record exists.
+pub fn translate_record(set: &mut RoofSet, id: Id, d: Point) -> bool {
+    if let Some(r) = set.plane_mut(id) {
+        r.translate(d);
+        return true;
+    }
+    if let Some(c) = set.ceilings.iter_mut().find(|c| c.id == id) {
+        c.translate(d);
+        return true;
+    }
+    let Some(i) = set.dormers.iter().position(|x| x.id == id) else {
+        return false;
+    };
+    if let Some(main) = set.plane(set.dormers[i].main) {
+        let (a, b) = main.baseline;
+        let along = b.sub(a).normalized();
+        let up = main.up_slope();
+        let spec = &mut set.dormers[i].spec;
+        spec.position_along_eave += d.dot(along);
+        spec.setback_from_eave = (spec.setback_from_eave + d.dot(up)).max(0.0);
+    }
+    true
 }
 
 // ===================================================================
@@ -865,6 +1412,330 @@ pub fn apply_edits(old: &mut RoofPlaneRecord, new: &RoofPlaneRecord) {
     old.layer = new.layer.clone();
     old.ridge_caps = new.ridge_caps;
     old.gutters = new.gutters;
+    // The dialog removes holes and edits skylight constructions.
+    old.holes = new.holes.clone();
+}
+
+/// Applies the Roof Plane Specification's edited copy `new` to plane
+/// `new.id` of floor `fi` (RF-36). The per-edge fields go to the roof
+/// settings; when they changed the automatic roof is rebuilt. Returns whether
+/// the plane exists.
+pub fn apply_plane_edit(project: &mut Project, fi: usize, new: &RoofPlaneRecord) -> bool {
+    let mut set = load(&project.floors[fi]);
+    let Some(old) = set.plane_mut(new.id) else {
+        return false;
+    };
+    let edge_changed = old.edge != new.edge;
+    let source = old.source;
+    apply_edits(old, new);
+    if edge_changed {
+        if let (Some(edge), Some(s)) = (source, set.settings.as_mut()) {
+            s.set_override(edge, new.edge);
+        }
+    }
+    store(project, fi, &mut set);
+    if edge_changed {
+        if let Some(s) = set.settings.clone() {
+            // A failed rebuild (no closed walls) leaves the roof as it was.
+            let _ = rebuild(project, fi, s, false);
+        }
+    }
+    true
+}
+
+// ===================================================================
+// Roof features: holes, skylights, ceiling planes, dormers, gable lines,
+// returns (RF-27, RF-42..RF-51)
+// ===================================================================
+
+/// Roof Hole / Skylight (RF-42, RF-43): the plan rectangle through `a` and
+/// `b` becomes a hole (or skylight) of the plane under its center. Returns the
+/// plane's id.
+pub fn add_hole(
+    project: &mut Project,
+    fi: usize,
+    a: Point,
+    b: Point,
+    skylight: bool,
+) -> Result<Id, String> {
+    add_hole_outline(project, fi, rect_polygon(a, b), skylight)
+}
+
+fn add_hole_outline(
+    project: &mut Project,
+    fi: usize,
+    outline: Vec<Point>,
+    skylight: bool,
+) -> Result<Id, String> {
+    let name = if skylight { "skylight" } else { "hole" };
+    let mut set = load(&project.floors[fi]);
+    let center = polygon_centroid(&outline);
+    let id = set
+        .plane_at(center)
+        .ok_or_else(|| format!("Draw the {name} inside a roof plane"))?;
+    let plane = set.plane_mut(id).ok_or("The roof plane is gone")?;
+    if !plane.encloses(&outline) {
+        return Err(format!(
+            "The {name} must lie completely inside one roof plane"
+        ));
+    }
+    plane.holes.push(if skylight {
+        HoleRecord::skylight(outline)
+    } else {
+        HoleRecord::hole(outline)
+    });
+    store(project, fi, &mut set);
+    Ok(id)
+}
+
+/// A default-size skylight (24" x 48", long side along the slope) centered at
+/// `at` on the plane under it.
+pub fn place_skylight(project: &mut Project, fi: usize, at: Point) -> Result<Id, String> {
+    let set = load(&project.floors[fi]);
+    let id = set
+        .plane_at(at)
+        .ok_or("Click inside a roof plane".to_string())?;
+    let up = set.plane(id).map_or(Point::new(0.0, 1.0), |p| p.up_slope());
+    let outline = oriented_rect(at, SKYLIGHT_SIZE.0, SKYLIGHT_SIZE.1, up.perp(), up);
+    add_hole_outline(project, fi, outline, true)
+}
+
+/// Ceiling Plane (RF-45): a rectangle on baseline `a -> b` rising toward
+/// `toward`, `height` above the floor-0 datum at the baseline.
+pub fn add_ceiling(
+    project: &mut Project,
+    fi: usize,
+    (a, b, toward): (Point, Point, Point),
+    height: f64,
+    pitch: f64,
+) -> Result<Id, String> {
+    let (baseline, poly) = manual_plane_geometry(a, b, toward, height, pitch)
+        .ok_or("Click away from the baseline, on the side the ceiling rises to".to_string())?;
+    let outline: Vec<Point> = poly.iter().map(|v| Point::new(v[0], -v[2])).collect();
+    let mut set = load(&project.floors[fi]);
+    let id = project.alloc_id();
+    set.ceilings.push(CeilingRecord {
+        id,
+        outline,
+        baseline,
+        pitch,
+        height_at_baseline: height,
+        thickness: CEILING_THICKNESS,
+        layer: LAYER_CEILING.to_string(),
+    });
+    store(project, fi, &mut set);
+    Ok(id)
+}
+
+/// Auto Dormer (RF-48): stores a dormer of `spec` on plane `main` of floor
+/// `fi`, or, with `edit`, replaces the spec of that dormer. Fails when the
+/// dormer does not fit the plane. Returns the dormer's id.
+pub fn apply_dormer(
+    project: &mut Project,
+    fi: usize,
+    main: Id,
+    edit: Option<Id>,
+    spec: DormerSpec,
+) -> Result<Id, String> {
+    let mut set = load(&project.floors[fi]);
+    let plane = set.plane(main).ok_or("The roof plane is gone")?;
+    if auto_dormer(&plane.to_roof_plane(0), spec).is_none() {
+        return Err("The dormer does not fit on that roof plane".into());
+    }
+    let existing = edit.filter(|id| set.dormer(*id).is_some());
+    let id = match existing {
+        Some(id) => {
+            if let Some(d) = set.dormers.iter_mut().find(|d| d.id == id) {
+                d.spec = spec;
+                d.main = main;
+            }
+            id
+        }
+        None => {
+            let id = project.alloc_id();
+            set.dormers.push(DormerRecord {
+                id,
+                main,
+                spec,
+                layer: LAYER_PLANES.to_string(),
+            });
+            id
+        }
+    };
+    store(project, fi, &mut set);
+    Ok(id)
+}
+
+/// The dormer spec a click at `at` on plane `main` starts from: centered at
+/// the click along the eave and `at`'s distance up the slope as the setback.
+pub fn dormer_spec_at(set: &RoofSet, main: Id, at: Point) -> DormerSpec {
+    let mut spec = DormerSpec::default();
+    if let Some(p) = set.plane(main) {
+        let (a, b) = p.baseline;
+        spec.position_along_eave = at.sub(a).dot(b.sub(a).normalized());
+        spec.setback_from_eave = at.sub(a).dot(p.up_slope()).max(12.0);
+    }
+    spec
+}
+
+/// Explode Dormer (RF-51): the dormer's roof planes become plain plane
+/// records and its footprint a plain hole in the main plane. The dormer's
+/// walls are not kept. Returns the number of planes made.
+pub fn explode_dormer_record(project: &mut Project, fi: usize, id: Id) -> Result<usize, String> {
+    let mut set = load(&project.floors[fi]);
+    let rec = set.dormer(id).cloned().ok_or("That is not a dormer")?;
+    let geom = dormer_geometry(&set, &rec).ok_or("The dormer no longer fits its roof plane")?;
+    let exploded = plan_roof::explode_dormer(&geom);
+    let (material, layer) = set
+        .plane(rec.main)
+        .map(|p| (p.material.clone(), p.layer.clone()))
+        .unwrap_or_else(|| (ROOF_MATERIALS[0].to_string(), LAYER_PLANES.to_string()));
+    let mut made = 0;
+    for pl in exploded.roof_planes {
+        let mut r = RoofPlaneRecord::new(
+            project.alloc_id(),
+            pl.polygon3d,
+            pl.pitch_in_12,
+            pl.baseline,
+        );
+        r.material = material.clone();
+        r.layer = layer.clone();
+        set.planes.push(r);
+        made += 1;
+    }
+    if let Some(main) = set.plane_mut(rec.main) {
+        main.holes.push(HoleRecord::hole(exploded.hole.outline));
+    }
+    set.dormers.retain(|d| d.id != id);
+    store(project, fi, &mut set);
+    Ok(made)
+}
+
+/// The plane whose eave edge (polygon edge `0 -> 1`) passes within `tol` of
+/// `p`.
+pub fn eave_near(set: &RoofSet, p: Point, tol: f64) -> Option<Id> {
+    set.planes
+        .iter()
+        .map(|r| (dist_to_segment(p, r.baseline.0, r.baseline.1), r.id))
+        .filter(|(d, _)| *d <= tol)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, id)| id)
+}
+
+/// The eave corner within `tol` of `p`: the plane and whether it is the
+/// start (vertex 0) of the eave.
+pub fn eave_corner_near(set: &RoofSet, p: Point, tol: f64) -> Option<(Id, bool)> {
+    let mut best: Option<(f64, Id, bool)> = None;
+    for r in &set.planes {
+        for (pt, at_start) in [(r.baseline.0, true), (r.baseline.1, false)] {
+            let d = pt.dist(p);
+            if d <= tol && best.is_none_or(|b| d < b.0) {
+                best = Some((d, r.id, at_start));
+            }
+        }
+    }
+    best.map(|(_, id, at_start)| (id, at_start))
+}
+
+/// Auto Roof Return (RF-27): a return of `spec` at the eave corner of plane
+/// `id` (`at_start`: its first eave vertex). The return becomes a plane
+/// record. Returns the new plane's id.
+pub fn add_return(
+    project: &mut Project,
+    fi: usize,
+    id: Id,
+    at_start: bool,
+    spec: ReturnSpec,
+) -> Result<Id, String> {
+    let mut set = load(&project.floors[fi]);
+    let plane = set.plane(id).ok_or("The roof plane is gone")?;
+    let ret = roof_return_at(&plane.to_roof_plane(0), 0, at_start, spec)
+        .ok_or("A roof return does not fit at that corner")?;
+    let mut r = RoofPlaneRecord::new(
+        project.alloc_id(),
+        ret.plane.polygon3d,
+        ret.plane.pitch_in_12,
+        ret.plane.baseline,
+    );
+    r.material = plane.material.clone();
+    r.layer = plane.layer.clone();
+    let new_id = r.id;
+    set.planes.push(r);
+    store(project, fi, &mut set);
+    Ok(new_id)
+}
+
+/// Gable/Roof Line on an automatic plane (RF-44): the edge it rises from
+/// becomes a gable end in the roof settings, and the roof is rebuilt. The plane
+/// is gone afterwards.
+pub fn set_edge_gable(project: &mut Project, fi: usize, id: Id) -> Result<(), String> {
+    let set = load(&project.floors[fi]);
+    let plane = set.plane(id).ok_or("The roof plane is gone")?;
+    let edge = plane
+        .source
+        .filter(|_| plane.auto)
+        .ok_or("That plane is not an automatic one")?;
+    let mut settings = set
+        .settings
+        .clone()
+        .ok_or("No roof has been built yet: use Build Roof")?;
+    let mut over = settings.override_of(edge).unwrap_or_default();
+    over.gable = true;
+    settings.set_override(edge, over);
+    rebuild(project, fi, settings, false).map(|_| ())
+}
+
+/// Gable/Roof Line on manual planes (RF-44): `plan_roof::apply_gable_line`
+/// rebuilds the roof formed by the manual planes with the eave of plane `id`
+/// as a gable end. The planes must form one closed ring or a chain with one
+/// straight gap. Returns the number of manual planes afterwards.
+pub fn gable_line_manual(project: &mut Project, fi: usize, id: Id) -> Result<usize, String> {
+    let mut set = load(&project.floors[fi]);
+    let manual: Vec<RoofPlaneRecord> = set.planes.iter().filter(|p| !p.auto).cloned().collect();
+    let target = manual
+        .iter()
+        .position(|p| p.id == id)
+        .ok_or("That plane is not a manual one")?;
+    let roof = Roof {
+        planes: manual
+            .iter()
+            .enumerate()
+            .map(|(k, r)| r.to_roof_plane(k))
+            .collect(),
+        fascia_height: plan_roof::DEFAULT_FASCIA_HEIGHT,
+        baseline_elevation: manual[target].baseline_height(),
+        approximate: false,
+    };
+    let rebuilt = apply_gable_line(&roof, target).ok_or(
+        "The manual roof planes do not form a closed roof: build the roof with Build Roof instead",
+    )?;
+    set.planes.retain(|p| p.auto);
+    for np in rebuilt.planes {
+        let Some(old) = manual.get(np.source_edge) else {
+            continue;
+        };
+        let mut r = RoofPlaneRecord::new(old.id, np.polygon3d, np.pitch_in_12, np.baseline);
+        r.material = old.material.clone();
+        r.layer = old.layer.clone();
+        r.label = old.label.clone();
+        r.ridge_caps = old.ridge_caps;
+        r.gutters = old.gutters;
+        r.overhang = old.overhang;
+        let holes = old
+            .holes
+            .iter()
+            .filter(|h| r.encloses(&h.outline))
+            .cloned()
+            .collect();
+        r.holes = holes;
+        set.planes.push(r);
+    }
+    // Dormers of the plane that went are orphaned: drop them.
+    let live: Vec<Id> = set.planes.iter().map(|p| p.id).collect();
+    set.dormers.retain(|d| live.contains(&d.main));
+    let n = set.planes.iter().filter(|p| !p.auto).count();
+    store(project, fi, &mut set);
+    Ok(n)
 }
 
 // ===================================================================
@@ -884,112 +1755,181 @@ fn same_edge(a: (Point, Point), b: (Point, Point)) -> bool {
     (near(a.0, b.0) && near(a.1, b.1)) || (near(a.0, b.1) && near(a.1, b.0))
 }
 
-/// The roof planes of the current floor on layer "Roof Planes": outline with
-/// eaves heavy and ridge/hip/valley lines (edges two planes share) solid,
-/// holes, skylights, and at each centroid the pitch label with a slope arrow
-/// (pointing down the slope).
-pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    let set = load(cx.floor());
-    if set.planes.is_empty() {
+/// A dashed closed outline.
+fn dashed_outline(painter: &egui::Painter, pts: &[Pos2], stroke: Stroke) {
+    if pts.len() < 2 {
         return;
     }
-    let edges_of = |r: &RoofPlaneRecord| -> Vec<(Point, Point)> {
-        let p = r.plan_polygon();
-        (0..p.len()).map(|i| (p[i], p[(i + 1) % p.len()])).collect()
-    };
+    let mut ring = pts.to_vec();
+    ring.push(pts[0]);
+    painter.extend(egui::Shape::dashed_line(&ring, stroke, 6.0, 4.0));
+}
+
+/// The outline of one roof plane polygon: eaves heavy, edges two planes share
+/// medium, the rest light.
+fn draw_plane_outline(
+    painter: &egui::Painter,
+    cam: &Camera,
+    poly: &[Point],
+    heights: &[f64],
+    others: &[Vec<(Point, Point)>],
+    color: Color32,
+) {
+    let n = poly.len();
+    let min_h = heights.iter().copied().fold(f64::INFINITY, f64::min);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let eave = (heights[i] - min_h).abs() < 0.5 && (heights[j] - min_h).abs() < 0.5;
+        let shared = others
+            .iter()
+            .any(|edges| edges.iter().any(|e| same_edge(*e, (poly[i], poly[j]))));
+        let width = if eave {
+            2.5
+        } else if shared {
+            1.5
+        } else {
+            1.0
+        };
+        painter.line_segment(
+            [cam.world_to_screen(poly[i]), cam.world_to_screen(poly[j])],
+            Stroke::new(width as f32, color),
+        );
+    }
+}
+
+fn poly_edges(p: &[Point]) -> Vec<(Point, Point)> {
+    (0..p.len()).map(|i| (p[i], p[(i + 1) % p.len()])).collect()
+}
+
+/// A slope arrow (pointing down the slope) and the label text at `c`.
+fn draw_slope_label(
+    painter: &egui::Painter,
+    cam: &Camera,
+    c: Point,
+    up: Point,
+    text: String,
+    color: Color32,
+) {
+    let at = cam.world_to_screen(c);
+    if !cam.rect.expand(40.0).contains(at) {
+        return;
+    }
+    // Slope arrow: down the slope, 26 px long.
+    let len = 26.0 / cam.px_per_in.max(1e-6);
+    let tail = cam.world_to_screen(c.add(up.scale(len * 0.5)));
+    let tip = cam.world_to_screen(c.sub(up.scale(len * 0.5)));
+    let stroke = Stroke::new(1.25_f32, color);
+    painter.line_segment([tail, tip], stroke);
+    let dir = (tip - tail).normalized();
+    let side = egui::Vec2::new(-dir.y, dir.x);
+    for s in [-1.0_f32, 1.0] {
+        painter.line_segment([tip, tip - dir * 6.0 + side * (3.5 * s)], stroke);
+    }
+    painter.text(
+        at + egui::Vec2::new(0.0, -14.0),
+        Align2::CENTER_CENTER,
+        text,
+        FontId::proportional(11.0),
+        color,
+    );
+}
+
+/// The roof planes of the current floor on layer "Roof Planes": outline with
+/// eaves heavy and ridge/hip/valley lines (edges two planes share) solid,
+/// holes (dashed), skylights (outline with diagonals), dormers (their planes
+/// and the front wall), ceiling planes (layer "Ceiling Planes", dashed), and
+/// at each centroid the pitch label with a slope arrow (pointing down the
+/// slope).
+pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let set = load(cx.floor());
+    if set.planes.is_empty() && set.ceilings.is_empty() {
+        return;
+    }
+    let edges: Vec<Vec<(Point, Point)>> = set
+        .planes
+        .iter()
+        .map(|r| poly_edges(&r.plan_polygon()))
+        .collect();
     for (k, r) in set.planes.iter().enumerate() {
         if !cx.layers().is_visible(&r.layer) {
             continue;
         }
         let color = layer_color(cx, &r.layer);
         let poly = r.plan_polygon();
-        let n = poly.len();
-        let min_h = r
-            .polygon3d
+        let heights: Vec<f64> = r.polygon3d.iter().map(|v| v[1]).collect();
+        let others: Vec<Vec<(Point, Point)>> = edges
             .iter()
-            .map(|v| v[1])
-            .fold(f64::INFINITY, f64::min);
-        for i in 0..n {
-            let j = (i + 1) % n;
-            let eave =
-                (r.polygon3d[i][1] - min_h).abs() < 0.5 && (r.polygon3d[j][1] - min_h).abs() < 0.5;
-            let shared = set.planes.iter().enumerate().any(|(o, other)| {
-                o != k
-                    && edges_of(other)
-                        .iter()
-                        .any(|e| same_edge(*e, (poly[i], poly[j])))
-            });
-            let width = if eave {
-                2.5
-            } else if shared {
-                1.5
+            .enumerate()
+            .filter(|(o, _)| *o != k)
+            .map(|(_, e)| e.clone())
+            .collect();
+        draw_plane_outline(painter, cam, &poly, &heights, &others, color);
+        for h in &r.holes {
+            let pts: Vec<Pos2> = h.outline.iter().map(|p| cam.world_to_screen(*p)).collect();
+            if h.is_skylight() {
+                painter.add(egui::Shape::closed_line(
+                    pts.clone(),
+                    Stroke::new(1.5_f32, color),
+                ));
+                if pts.len() >= 4 {
+                    painter.line_segment([pts[0], pts[2]], Stroke::new(1.0_f32, color));
+                    painter.line_segment([pts[1], pts[3]], Stroke::new(1.0_f32, color));
+                }
             } else {
-                1.0
-            };
-            painter.line_segment(
-                [cam.world_to_screen(poly[i]), cam.world_to_screen(poly[j])],
-                Stroke::new(width as f32, color),
-            );
-        }
-        if let Some(h) = &r.hole {
-            let pts: Vec<Pos2> = h.iter().map(|p| cam.world_to_screen(*p)).collect();
-            painter.add(egui::Shape::closed_line(
-                pts.clone(),
-                Stroke::new(1.5_f32, color),
-            ));
-            if pts.len() >= 4 {
-                painter.line_segment([pts[0], pts[2]], Stroke::new(1.0_f32, color));
-                painter.line_segment([pts[1], pts[3]], Stroke::new(1.0_f32, color));
+                dashed_outline(painter, &pts, Stroke::new(1.5_f32, color));
             }
-        }
-        let up = r.up_slope();
-        let across = up.perp();
-        for (c, w, l) in &r.skylights {
-            let corner = |sw: f64, sl: f64| {
-                cam.world_to_screen(
-                    c.add(across.scale(sw * w * 0.5))
-                        .add(up.scale(sl * l * 0.5)),
-                )
-            };
-            let q = [
-                corner(-1.0, -1.0),
-                corner(1.0, -1.0),
-                corner(1.0, 1.0),
-                corner(-1.0, 1.0),
-            ];
-            painter.add(egui::Shape::closed_line(
-                q.to_vec(),
-                Stroke::new(1.5_f32, color),
-            ));
-            painter.line_segment([q[0], q[2]], Stroke::new(1.0_f32, color));
-            painter.line_segment([q[1], q[3]], Stroke::new(1.0_f32, color));
-        }
-        let c = r.centroid();
-        let at = cam.world_to_screen(c);
-        if !cam.rect.expand(40.0).contains(at) {
-            continue;
-        }
-        // Slope arrow: down the slope, 26 px long.
-        let len = 26.0 / cam.px_per_in.max(1e-6);
-        let tail = cam.world_to_screen(c.add(up.scale(len * 0.5)));
-        let tip = cam.world_to_screen(c.sub(up.scale(len * 0.5)));
-        let stroke = Stroke::new(1.25_f32, color);
-        painter.line_segment([tail, tip], stroke);
-        let dir = (tip - tail).normalized();
-        let side = egui::Vec2::new(-dir.y, dir.x);
-        for s in [-1.0_f32, 1.0] {
-            painter.line_segment([tip, tip - dir * 6.0 + side * (3.5 * s)], stroke);
         }
         let mut text = r.pitch_label();
         if !r.label.is_empty() {
             text = format!("{} {text}", r.label);
         }
-        painter.text(
-            at + egui::Vec2::new(0.0, -14.0),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::proportional(11.0),
+        draw_slope_label(painter, cam, r.centroid(), r.up_slope(), text, color);
+    }
+    for c in &set.ceilings {
+        if !cx.layers().is_visible(&c.layer) {
+            continue;
+        }
+        let color = layer_color(cx, &c.layer);
+        let pts: Vec<Pos2> = c.outline.iter().map(|p| cam.world_to_screen(*p)).collect();
+        dashed_outline(painter, &pts, Stroke::new(1.5_f32, color));
+        let (a, b) = c.baseline;
+        let up = b.sub(a).normalized().perp();
+        draw_slope_label(
+            painter,
+            cam,
+            polygon_centroid(&c.outline),
+            up,
+            format!("Ceiling {}", pitch_label(c.pitch)),
             color,
+        );
+    }
+    for d in &set.dormers {
+        if !cx.layers().is_visible(&d.layer) {
+            continue;
+        }
+        let Some(g) = dormer_geometry(&set, d) else {
+            continue;
+        };
+        let color = layer_color(cx, &d.layer);
+        let planes: Vec<Vec<(Point, Point)>> = g
+            .roof_planes
+            .iter()
+            .map(|p| poly_edges(&p.plan_polygon()))
+            .collect();
+        for (k, pl) in g.roof_planes.iter().enumerate() {
+            let heights: Vec<f64> = pl.polygon3d.iter().map(|v| v[1]).collect();
+            let others: Vec<Vec<(Point, Point)>> = planes
+                .iter()
+                .enumerate()
+                .filter(|(o, _)| *o != k)
+                .map(|(_, e)| e.clone())
+                .collect();
+            draw_plane_outline(painter, cam, &pl.plan_polygon(), &heights, &others, color);
+        }
+        let w = &g.front_wall;
+        painter.line_segment(
+            [cam.world_to_screen(w.start), cam.world_to_screen(w.end)],
+            Stroke::new(2.0_f32, color),
         );
     }
 }
@@ -998,107 +1938,63 @@ pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
 // 3D meshes
 // ===================================================================
 
-fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit3(a: [f64; 3]) -> [f64; 3] {
-    let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-    if l < 1e-12 {
-        [0.0, 1.0, 0.0]
-    } else {
-        [a[0] / l, a[1] / l, a[2] / l]
+/// Marks every mesh as belonging to record `id`.
+fn tagged(mut meshes: Vec<plan_3d::Mesh>, id: Id) -> Vec<plan_3d::Mesh> {
+    for m in &mut meshes {
+        m.object_id = Some(id);
     }
+    meshes
 }
 
-struct Tris {
-    vertices: Vec<plan_3d::Vertex>,
-    indices: Vec<u32>,
-}
-
-impl Tris {
-    /// One triangle, wound so its front faces `toward` (a direction).
-    fn tri(&mut self, a: [f64; 3], b: [f64; 3], c: [f64; 3], toward: [f64; 3]) {
-        let mut n = cross3(sub3(b, a), sub3(c, a));
-        let (mut b, mut c) = (b, c);
-        if n[0] * toward[0] + n[1] * toward[1] + n[2] * toward[2] < 0.0 {
-            std::mem::swap(&mut b, &mut c);
-            n = [-n[0], -n[1], -n[2]];
-        }
-        let n = unit3(n);
-        let base = self.vertices.len() as u32;
-        for p in [a, b, c] {
-            self.vertices.push(plan_3d::Vertex {
-                position: [p[0] as f32, p[1] as f32, p[2] as f32],
-                normal: [n[0] as f32, n[1] as f32, n[2] as f32],
-                uv: [(p[0] / 12.0) as f32, (p[2] / 12.0) as f32],
-            });
-        }
-        self.indices.extend([base, base + 1, base + 2]);
-    }
-}
-
-/// One mesh per roof plane on every floor: the sloped top triangulated by ear
-/// clipping, a 1" slab underneath (bottom face and edge walls), material
-/// `Roof`. Holes are not cut yet. The 3D view builder appends these to the
-/// scene of `plan_3d::build_scene`.
-pub fn roof_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
+/// The meshes of one floor's roof: each plane as a slab with its holes cut
+/// (skylight curb, frame and glass on top), the ceiling planes, and the
+/// dormers (walls and roof planes; their footprint is cut from the main
+/// plane). The 3D view builder appends these to the scene of
+/// `plan_3d::build_scene`.
+pub fn floor_roof_meshes(floor: &Floor) -> Vec<plan_3d::Mesh> {
+    let set = load(floor);
+    let dormers: Vec<(&DormerRecord, Dormer)> = set
+        .dormers
+        .iter()
+        .filter_map(|d| Some((d, dormer_geometry(&set, d)?)))
+        .collect();
     let mut out = Vec::new();
-    for floor in &project.floors {
-        for r in load(floor).planes {
-            let plan = r.plan_polygon();
-            if plan.len() < 3 {
-                continue;
-            }
-            let tris = plan_3d::triangulate::ear_clip(&plan);
-            let up = [0.0, 1.0, 0.0];
-            let down = [0.0, -1.0, 0.0];
-            let drop = |p: [f64; 3]| [p[0], p[1] - SLAB_THICKNESS, p[2]];
-            let mut t = Tris {
-                vertices: Vec::new(),
-                indices: Vec::new(),
-            };
-            for [i, j, k] in &tris {
-                let (a, b, c) = (r.polygon3d[*i], r.polygon3d[*j], r.polygon3d[*k]);
-                t.tri(a, b, c, up);
-                t.tri(drop(a), drop(b), drop(c), down);
-            }
-            let ccw = polygon_area(&plan) >= 0.0;
-            let n = plan.len();
-            for i in 0..n {
-                let j = (i + 1) % n;
-                let (a, b) = (r.polygon3d[i], r.polygon3d[j]);
-                // Outward in plan is to the right of a CCW edge: (dy, -dx),
-                // which is (dy, 0, dx) in scene space.
-                let (dx, dy) = (plan[j].x - plan[i].x, plan[j].y - plan[i].y);
-                let s = if ccw { 1.0 } else { -1.0 };
-                let out_dir = [dy * s, 0.0, dx * s];
-                t.tri(a, b, drop(b), out_dir);
-                t.tri(a, drop(b), drop(a), out_dir);
-            }
-            out.push(plan_3d::Mesh {
-                vertices: t.vertices,
-                indices: t.indices,
-                material: plan_3d::Material::Roof,
-                object_id: Some(r.id),
-            });
-        }
+    for r in &set.planes {
+        let mut holes = r.roof_holes();
+        holes.extend(
+            dormers
+                .iter()
+                .filter(|(d, _)| d.main == r.id)
+                .map(|(_, g)| g.hole_in_main_roof.clone()),
+        );
+        let poly = roof_plane_with_holes(&r.to_roof_plane(0), &holes);
+        out.extend(tagged(
+            plan_3d::roof_plane_meshes(&poly, SLAB_THICKNESS),
+            r.id,
+        ));
+    }
+    for c in &set.ceilings {
+        out.extend(tagged(plan_3d::ceiling_plane_meshes(&c.to_plane()), c.id));
+    }
+    for (d, g) in &dormers {
+        out.extend(tagged(
+            plan_3d::dormer_meshes(g, DORMER_WALL_THICKNESS, SLAB_THICKNESS),
+            d.id,
+        ));
     }
     out
+}
+
+/// [`floor_roof_meshes`] of every floor.
+pub fn roof_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
+    project.floors.iter().flat_map(floor_roof_meshes).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plan_defaults;
+    use plan_core::geometry::polygon_area;
 
     fn rect_project(w: f64, d: f64) -> Project {
         let mut p = Project::new("t");
@@ -1141,10 +2037,14 @@ mod tests {
         let mut p = rect_project(480.0, 288.0);
         rebuild(&mut p, 0, RoofSettings::from_defaults(&d), false).unwrap();
         let mut set = load(&p.floors[0]);
-        set.planes[0].hole = Some(rect_polygon(Point::new(0.0, 0.0), Point::new(10.0, 10.0)));
-        set.planes[0]
-            .skylights
-            .push((Point::new(5.0, 5.0), 24.0, 48.0));
+        set.planes[0].holes.push(HoleRecord::hole(rect_polygon(
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 10.0),
+        )));
+        set.planes[0].holes.push(HoleRecord::skylight(rect_polygon(
+            Point::new(20.0, 20.0),
+            Point::new(44.0, 68.0),
+        )));
         set.planes[1].label = "Main".into();
         store(&mut p, 0, &mut set);
         let text = serde_json::to_string(&p).unwrap();
@@ -1153,20 +2053,138 @@ mod tests {
         assert_eq!(again, load(&p.floors[0]));
         assert_eq!(again.planes.len(), 4);
         assert_eq!(again.planes[1].label, "Main");
-        assert_eq!(again.planes[0].skylights.len(), 1);
-        // The data layer is hidden, the outline polylines are on "Roof Planes".
-        assert!(!back.layers.is_visible(LAYER_DATA));
-        let outlines = back.floors[0]
-            .cad
-            .iter()
-            .filter(|c| c.layer == LAYER_PLANES)
-            .count();
-        assert_eq!(outlines, 4);
+        assert_eq!(again.planes[0].holes.len(), 2);
+        assert!(again.planes[0].holes[1].is_skylight());
+        // The roof lives in the typed slot; nothing is left in the CAD list.
+        assert_eq!(
+            back.floors[0].roofs.len(),
+            4 + 1,
+            "four planes and the settings"
+        );
+        assert!(back.floors[0].cad.is_empty());
+        assert!(back.layers.get(LAYER_DATA).is_none());
+        assert_eq!(
+            back.floors[0].roofs_as::<Value>().unwrap().len(),
+            back.floors[0].roofs.len()
+        );
         // Storing twice does not duplicate anything.
         let mut p2 = back;
         let mut s2 = load(&p2.floors[0]);
         store(&mut p2, 0, &mut s2);
-        assert_eq!(p2.floors[0].cad.len(), 4 + 4 + 1);
+        assert_eq!(p2.floors[0].roofs.len(), 5);
+        assert!(exists(&p2.floors[0], again.planes[2].id));
+        assert!(!exists(&p2.floors[0], 9999));
+    }
+
+    /// A plane as the old storage wrote it (with its outline id).
+    fn legacy_plane_json(r: &RoofPlaneRecord, outline_id: Id) -> Value {
+        let mut v = r.to_json();
+        let o = v.as_object_mut().unwrap();
+        o.remove("kind");
+        o.insert("outline_id".into(), json!(outline_id));
+        v
+    }
+
+    /// The pre-typed-slot storage: `RFP1:` / `RFS1:` records on the hidden
+    /// layer and an outline polyline per plane.
+    fn write_legacy(project: &mut Project, fi: usize, set: &RoofSet) {
+        let mut l = plan_core::Layer::new(LAYER_DATA, [128, 0, 128], 13);
+        l.display = false;
+        project.layers.add(l);
+        for r in &set.planes {
+            let outline = project.alloc_id();
+            project.floors[fi].cad.push(CadObject {
+                id: outline,
+                layer: r.layer.clone(),
+                item: CadItem::Polyline {
+                    points: r.plan_polygon(),
+                    closed: true,
+                },
+            });
+            project.floors[fi].cad.push(CadObject {
+                id: r.id,
+                layer: LAYER_DATA.to_string(),
+                item: CadItem::Text {
+                    pos: Point::ZERO,
+                    text: format!("{PLANE_TAG}{}", legacy_plane_json(r, outline)),
+                    height: 1.0,
+                    angle: 0.0,
+                },
+            });
+        }
+        if let Some(s) = &set.settings {
+            let id = project.alloc_id();
+            project.floors[fi].cad.push(CadObject {
+                id,
+                layer: LAYER_DATA.to_string(),
+                item: CadItem::Text {
+                    pos: Point::ZERO,
+                    text: format!("{SETTINGS_TAG}{}", s.to_json()),
+                    height: 1.0,
+                    angle: 0.0,
+                },
+            });
+        }
+    }
+
+    #[test]
+    fn legacy_cad_records_migrate_into_the_roofs_slot() {
+        let d = plan_defaults::embedded();
+        let mut built = rect_project(480.0, 288.0);
+        rebuild(&mut built, 0, RoofSettings::from_defaults(&d), false).unwrap();
+        let mut set = load(&built.floors[0]);
+        set.planes[1].label = "Kept".into();
+        set.planes[0].holes.push(HoleRecord::skylight(rect_polygon(
+            Point::new(20.0, 20.0),
+            Point::new(44.0, 68.0),
+        )));
+
+        // An old file: the same walls, the roof as CAD text records.
+        let mut old = rect_project(480.0, 288.0);
+        old.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Line {
+                a: Point::ZERO,
+                b: Point::new(10.0, 0.0),
+            },
+        );
+        write_legacy(&mut old, 0, &set);
+        assert!(old.floors[0].roofs.is_empty());
+        assert_eq!(old.floors[0].cad.len(), 1 + 4 * 2 + 1);
+        // Through a JSON round trip, as when the file is opened.
+        let mut loaded = Project::from_json(&old.to_json().unwrap()).unwrap();
+        assert!(site_view_migrate(&mut loaded));
+
+        let got = load(&loaded.floors[0]);
+        assert_eq!(got, set);
+        assert_eq!(loaded.floors[0].roofs.len(), 5);
+        // Only the unrelated CAD line is left, and the data layer is gone.
+        assert_eq!(loaded.floors[0].cad.len(), 1);
+        assert!(loaded.layers.get(LAYER_DATA).is_none());
+        assert!(loaded.layers.get(LAYER_PLANES).is_some());
+        // Planes keep their ids, so a selection by id still resolves.
+        assert!(exists(&loaded.floors[0], set.planes[3].id));
+        // Migrating again is a no-op.
+        assert!(!site_view_migrate(&mut loaded));
+        assert_eq!(load(&loaded.floors[0]), set);
+    }
+
+    fn site_view_migrate(p: &mut Project) -> bool {
+        crate::editor::site_view::migrate_legacy_storage(p)
+    }
+
+    #[test]
+    fn migration_leaves_a_filled_roofs_slot_alone() {
+        let d = plan_defaults::embedded();
+        let mut p = rect_project(480.0, 288.0);
+        rebuild(&mut p, 0, RoofSettings::from_defaults(&d), false).unwrap();
+        let typed = load(&p.floors[0]);
+        let mut other = typed.clone();
+        other.planes.truncate(1);
+        write_legacy(&mut p, 0, &other);
+        assert!(!migrate_legacy(&mut p));
+        assert_eq!(load(&p.floors[0]), typed);
     }
 
     #[test]

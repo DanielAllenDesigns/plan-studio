@@ -115,6 +115,40 @@ impl Default for WallExtras {
     }
 }
 
+/// Rendering options of an elevation or cross-section camera, stored on the
+/// [`crate::CameraObject`] so they round-trip with the plan. They become
+/// `plan_elevation::Options` (the back clip of a section is the section's own
+/// `back_clip`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ElevationRender {
+    /// Material hatches on the visible faces.
+    pub hatch: bool,
+    /// Cast shadows from the sun below.
+    pub shadows: bool,
+    /// Compass bearing of the sun, degrees clockwise from plan north.
+    pub sun_azimuth_deg: f64,
+    /// Height of the sun above the horizon, degrees.
+    pub sun_altitude_deg: f64,
+    /// Line weight by distance: lines far behind the nearest step down a weight.
+    pub depth_weights: bool,
+    /// Title, level callouts and roof pitch symbols.
+    pub labels: bool,
+}
+
+impl Default for ElevationRender {
+    fn default() -> Self {
+        Self {
+            hatch: false,
+            shadows: false,
+            sun_azimuth_deg: 135.0,
+            sun_altitude_deg: 45.0,
+            depth_weights: false,
+            labels: true,
+        }
+    }
+}
+
 /// A cross-section cut line carried by a camera object.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SectionLine {
@@ -349,5 +383,31 @@ mod tests {
         v.as_object_mut().unwrap().remove("section");
         let old: CameraObject = serde_json::from_value(v).unwrap();
         assert!(old.section.is_none());
+    }
+
+    #[test]
+    fn camera_render_options_round_trip_and_default() {
+        let mut c = CameraObject::new(
+            CameraKind::CrossSection { back_clip: None },
+            Point::ZERO,
+            90.0,
+            "Sec",
+            0,
+        );
+        assert_eq!(c.render, ElevationRender::default());
+        assert!(c.render.labels && !c.render.hatch && !c.render.shadows);
+        c.render.hatch = true;
+        c.render.shadows = true;
+        c.render.sun_azimuth_deg = 200.0;
+        c.render.depth_weights = true;
+        c.render.labels = false;
+        let json = serde_json::to_string(&c).unwrap();
+        let back: CameraObject = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.render, c.render);
+        // An old file has no `render`.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v.as_object_mut().unwrap().remove("render");
+        let old: CameraObject = serde_json::from_value(v).unwrap();
+        assert_eq!(old.render, ElevationRender::default());
     }
 }

@@ -30,8 +30,10 @@ plan-spaceplan = { path = "../plan-spaceplan" }
 plan-check = { path = "../plan-check" }
 plan-render = { path = "../plan-render" }
 plan-chiefplan = { path = "../plan-chiefplan" }
+plan-calib = { path = "../plan-calib" }
 
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.31", default-features = false, features = ["svg"] }
 rfd = "0.15"
+serde = { workspace = true }
 serde_json = { workspace = true }

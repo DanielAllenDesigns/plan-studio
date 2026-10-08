@@ -12,7 +12,7 @@
 
 use super::handles::{Handle, HandleKind};
 use super::{Camera, EditorContext, ObjectRef};
-use crate::tools::library::library_catalog;
+use crate::tools::library::find_item;
 use eframe::egui::{self, Color32, CursorIcon, FontId, Pos2, Shape, Vec2};
 use plan_cabinets::Stroke as CabStroke;
 use plan_cabinets::{auto_label, plan_symbol, Cabinet, CabinetKind, FaceItem, FaceLayout};
@@ -404,7 +404,7 @@ fn warp_stroke(s: &LibStroke, sx: f64, sy: f64) -> LibStroke {
 /// symbols are pre-scaled stroke by stroke (arcs and circles become
 /// polylines then). `None` when the catalog id is unknown.
 pub fn placed_symbol_strokes(s: &PlacedSymbol) -> Option<Symbol2d> {
-    let item = library_catalog().get(&s.catalog_id)?;
+    let item = find_item(&s.catalog_id)?;
     let sx = if item.width > 1e-9 {
         s.width / item.width
     } else {
@@ -438,9 +438,7 @@ pub fn placed_symbol_strokes(s: &PlacedSymbol) -> Option<Symbol2d> {
 
 /// The catalog placement of a symbol (free-standing when unknown).
 pub fn symbol_placement(s: &PlacedSymbol) -> Placement {
-    library_catalog()
-        .get(&s.catalog_id)
-        .map_or(Placement::FreeStanding, |i| i.placement)
+    find_item(&s.catalog_id).map_or(Placement::FreeStanding, |i| i.placement)
 }
 
 // ----- hit testing -----
@@ -1005,6 +1003,7 @@ pub fn cabinet_label(c: &Cabinet) -> String {
 mod tests {
     use super::*;
     use crate::plan_defaults;
+    use crate::tools::library::library_catalog;
     use plan_core::WallKind;
 
     fn cx() -> EditorContext {

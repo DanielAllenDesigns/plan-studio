@@ -97,6 +97,14 @@ impl Chord {
         })
     }
 
+    /// The same chord with its modifiers folded to this platform's
+    /// convention (Control and Command are one key off the Mac), so a chord
+    /// assigned from a test or a file matches one captured from the keyboard.
+    pub fn normalized(self) -> Chord {
+        let (ctrl, meta) = platform_modifiers(self.ctrl, self.meta, cfg!(target_os = "macos"));
+        Chord { ctrl, meta, ..self }
+    }
+
     pub fn to_config(self) -> KeyChord {
         KeyChord {
             ctrl: self.ctrl,
@@ -598,6 +606,7 @@ impl HotkeyMap {
     /// names and changes nothing, unless `steal` removes the clashing
     /// sequences from the other commands first.
     pub fn assign(&mut self, cmd: &str, seq: Vec<Chord>, steal: bool) -> Result<(), Vec<String>> {
+        let seq: Vec<Chord> = seq.into_iter().map(Chord::normalized).collect();
         if seq.is_empty() || seq.len() > MAX_SEQUENCE || self.command(cmd).is_none() {
             return Err(Vec::new());
         }
@@ -831,8 +840,15 @@ mod tests {
             ctrl: true,
             ..plain(Key::Z)
         };
-        assert_eq!(map.lookup(&[ctrl_z]), Some(Action::FloorDown));
-        assert_eq!(map.lookup(&[cmd_chord(Key::Z)]), Some(Action::Undo));
+        if cfg!(target_os = "macos") {
+            assert_eq!(map.lookup(&[ctrl_z]), Some(Action::FloorDown));
+            assert_eq!(map.lookup(&[cmd_chord(Key::Z)]), Some(Action::Undo));
+        } else {
+            // One Ctrl key off the Mac: Control+Z and Command+Z collapse onto
+            // Ctrl+Z, and whichever Daniel's file lists wins; it must bind.
+            assert!(map.lookup(&[ctrl_z.normalized()]).is_some());
+            assert!(map.lookup(&[cmd_chord(Key::Z)]).is_some());
+        }
         // Plan Studio's own number keys survive.
         assert_eq!(
             map.lookup(&[plain(Key::Num1)]),
@@ -974,6 +990,7 @@ mod tests {
         assert_eq!(n, 3);
         assert_eq!(loaded.lookup(&[plain(Key::Equals)]), Some(Action::ZoomOut));
         assert_eq!(loaded.lookup(&[plain(Key::D), plain(Key::H)]), None);
+        let seq: Vec<Chord> = seq.into_iter().map(Chord::normalized).collect();
         assert_eq!(loaded.lookup(&seq), Some(Action::SetTool(ToolId::Window)));
         assert_eq!(loaded.sequences("Window"), map.sequences("Window"));
         // The default chord of Window is still there beside the new one.

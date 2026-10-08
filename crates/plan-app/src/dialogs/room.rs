@@ -1,9 +1,11 @@
 //! Room Specification (docs/chief-x18-dialogs.md, "Room Types and Room
 //! Specification"; R-19..R-36, R-45).
 //!
-//! The dialog edits a draft [`RoomName`] plus the session-only
-//! [`RoomExtras`]. OK hands both back to the app, which writes them with
-//! `rooms_edit::apply_room_spec` as one undo step.
+//! The dialog edits a draft [`RoomName`] plus the [`RoomExtras`] view of the
+//! rest of the specification. OK hands both back to the app, which writes
+//! them with `rooms_edit::apply_room_spec` as one undo step; conditioned, the
+//! stem wall, moldings, fill and label options are stored in the room's
+//! `RoomName`, the other extras are kept for the session.
 
 use super::{
     dis_check, off, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab,
@@ -12,6 +14,7 @@ use super::{
 use crate::editor::rooms_edit::{FillPattern, RoomExtras};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Ui};
 use plan_core::defaults::RoomTypeDef;
+use plan_core::extras::AreaKind;
 use plan_core::geometry::Point;
 use plan_core::units::fmt_ft_in;
 use plan_core::RoomName;
@@ -197,12 +200,9 @@ impl RoomForm {
 
         section(ui, "Conditioned Room");
         let default_text = self.conditioned_default();
-        ui.radio_value(&mut self.extras.conditioned, Some(true), "Conditioned")
-            .on_hover_text(super::SESSION_NOTE);
-        ui.radio_value(&mut self.extras.conditioned, Some(false), "Unconditioned")
-            .on_hover_text(super::SESSION_NOTE);
-        ui.radio_value(&mut self.extras.conditioned, None, default_text)
-            .on_hover_text(super::SESSION_NOTE);
+        ui.radio_value(&mut self.extras.conditioned, Some(true), "Conditioned");
+        ui.radio_value(&mut self.extras.conditioned, Some(false), "Unconditioned");
+        ui.radio_value(&mut self.extras.conditioned, None, default_text);
     }
 
     fn structure(&mut self, ui: &mut Ui) {
@@ -280,8 +280,7 @@ impl RoomForm {
             .on_hover_text(super::SESSION_NOTE);
 
         section(ui, "Stem Wall");
-        ui.checkbox(&mut self.extras.stem_wall, "Stem Wall")
-            .on_hover_text(super::SESSION_NOTE);
+        ui.checkbox(&mut self.extras.stem_wall, "Stem Wall");
         if self.extras.stem_wall {
             self.fields.length_row(
                 ui,
@@ -330,6 +329,9 @@ impl RoomForm {
         row(ui, "Color", |ui| {
             ui.color_edit_button_srgb(&mut self.extras.fill.color);
         });
+        row(ui, "Opacity", |ui| {
+            ui.add(egui::Slider::new(&mut self.extras.fill.alpha, 0.1..=1.0));
+        });
         ui.weak("Drawn in the plan view only.");
     }
 
@@ -347,22 +349,25 @@ impl RoomForm {
         self.name.ceiling_finish = (!ceil.trim().is_empty()).then_some(ceil);
         section(ui, "Moldings");
         row(ui, "Base", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.extras.base_molding).desired_width(200.0))
-                .on_hover_text(super::SESSION_NOTE);
+            ui.add(egui::TextEdit::singleline(&mut self.extras.base_molding).desired_width(200.0));
         });
         row(ui, "Crown", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.extras.crown_molding).desired_width(200.0))
-                .on_hover_text(super::SESSION_NOTE);
+            ui.add(egui::TextEdit::singleline(&mut self.extras.crown_molding).desired_width(200.0));
         });
     }
 
     fn label(&mut self, ui: &mut Ui) {
         section(ui, "Display in All Views");
         let l = &mut self.extras.label;
-        ui.checkbox(&mut l.interior_dimensions, "Interior Dimensions");
-        ui.checkbox(&mut l.interior_area, "Interior Area");
-        ui.checkbox(&mut l.standard_area, "Standard Area");
-        ui.checkbox(&mut l.display_in_plan, "Display in Plan View");
+        ui.checkbox(&mut l.show_name, "Room Name");
+        ui.checkbox(&mut l.show_dimensions, "Interior Dimensions");
+        ui.checkbox(&mut l.show_area, "Area");
+        ui.add_enabled_ui(l.show_area, |ui| {
+            ui.radio_value(&mut l.area_kind, AreaKind::Interior, "Interior Area");
+            ui.radio_value(&mut l.area_kind, AreaKind::Standard, "Standard Area");
+            ui.radio_value(&mut l.area_kind, AreaKind::Centerline, "Centerline Area");
+        });
+        ui.weak("With everything unchecked the room shows no label.");
         section(ui, "Appearance");
         row(ui, "Text Style", |ui| {
             ui.add_enabled(false, egui::Button::new("Use Layer Text Style"));

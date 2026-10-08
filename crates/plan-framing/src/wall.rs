@@ -91,6 +91,20 @@ pub fn frame_wall(
     floor_elevation: f64,
     d: &FramingDefaults,
 ) -> Vec<Member> {
+    frame_wall_grid(wall, openings, floor_elevation, d, None)
+}
+
+/// [`frame_wall`] with the stud layout grid anchored at `grid_origin`, the
+/// distance along the wall from its start to the near edge of a grid stud
+/// (a Framing Reference Marker). Grid studs run both ways from it; the wall's
+/// first and last studs are always present.
+pub(crate) fn frame_wall_grid(
+    wall: &Wall,
+    openings: &[&Opening],
+    floor_elevation: f64,
+    d: &FramingDefaults,
+    grid_origin: Option<f64>,
+) -> Vec<Member> {
     let f = WallFrame::new(wall);
     let lumber = d.stud_size_for(wall);
     let t = lumber.thickness;
@@ -129,11 +143,16 @@ pub fn frame_wall(
     // Common studs on the layout grid, then the end stud.
     let step = d.stud_spacing.max(t);
     let end_left = (len - t).max(0.0);
-    let mut lefts: Vec<f64> = (0..)
-        .map(|k| f64::from(k) * step)
+    let origin = grid_origin.unwrap_or(0.0);
+    let first_k = ((-origin) / step - EPS).ceil() as i64;
+    let mut lefts: Vec<f64> = (first_k..)
+        .map(|k| origin + k as f64 * step)
         .take_while(|&g| g <= end_left - t + EPS)
         .filter(|&g| !in_zone(g))
         .collect();
+    if grid_origin.is_some() && lefts.first().is_none_or(|&g| g > EPS) && !in_zone(0.0) {
+        lefts.insert(0, 0.0);
+    }
     if end_left > EPS && !in_zone(end_left) {
         lefts.push(end_left);
     }

@@ -29,10 +29,10 @@ use crate::toolbar::ViewFlag;
 use crate::tools::camera::{self as camera_tool, CameraVariant};
 use crate::tools::{ToolId, ToolSet};
 use eframe::egui;
-use plan_3d::{build_scene, Material, Mesh, Scene};
+use plan_3d::{build_scene, Material, Mesh, Scene, Vertex};
 use plan_core::camera::{DEFAULT_EYE_HEIGHT, DEFAULT_FOV_DEG};
 use plan_core::geometry::Point;
-use plan_core::{CameraKind, CameraObject, Id, Project};
+use plan_core::{CameraKind, CameraObject, Id, PlacedSymbol, Project};
 use plan_materials::{settings as technique_settings, FillMode, RenderingTechnique, ShadingModel};
 use plan_view3d::{standard_views, CameraMode, Lighting, Viewport3d};
 use std::collections::hash_map::DefaultHasher;
@@ -425,6 +425,13 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
     scene
         .meshes
         .extend(crate::editor::roof_view::roof_meshes(proj));
+    scene
+        .meshes
+        .extend(plan_3d::foundation::foundation_meshes(proj));
+    scene
+        .meshes
+        .extend(crate::editor::framing_view::manual_framing_meshes(proj));
+    scene.meshes.extend(symbol_meshes(proj));
     let mut scene = match &scope.section {
         Some(cut) => clip_scene(&scene, cut),
         None => scene,
@@ -433,6 +440,100 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
         apply_fill(&mut scene, m);
     }
     scene
+}
+
+/// A box of `symbol`'s width x depth x height on its footprint, in the
+/// symbol's trim material, for placed items without 3D geometry.
+pub fn symbol_box(symbol: &PlacedSymbol, floor_elevation: f64) -> Mesh {
+    let foot = symbol.footprint();
+    let y0 = (floor_elevation + symbol.elevation) as f32;
+    let y1 = y0 + symbol.height.max(0.0) as f32;
+    let at = |p: Point, y: f32| [p.x as f32, y, -p.y as f32];
+    let mut mesh = Mesh {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        material: Material::Trim,
+        object_id: Some(symbol.id),
+    };
+    let mut quad = |c: [[f32; 3]; 4], n: [f32; 3]| {
+        let base = mesh.vertices.len() as u32;
+        let (a, b, d) = (c[0], c[1], c[2]);
+        let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let e2 = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+        let cross = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let flip = cross[0] * n[0] + cross[1] * n[1] + cross[2] * n[2] < 0.0;
+        for p in c {
+            mesh.vertices.push(Vertex {
+                position: p,
+                normal: n,
+                uv: [0.0, 0.0],
+            });
+        }
+        let order: [u32; 6] = if flip {
+            [0, 2, 1, 0, 3, 2]
+        } else {
+            [0, 1, 2, 0, 2, 3]
+        };
+        mesh.indices.extend(order.iter().map(|i| base + i));
+    };
+    quad(
+        [
+            at(foot[0], y1),
+            at(foot[1], y1),
+            at(foot[2], y1),
+            at(foot[3], y1),
+        ],
+        [0.0, 1.0, 0.0],
+    );
+    quad(
+        [
+            at(foot[0], y0),
+            at(foot[1], y0),
+            at(foot[2], y0),
+            at(foot[3], y0),
+        ],
+        [0.0, -1.0, 0.0],
+    );
+    let centre = Point::new(
+        foot.iter().map(|p| p.x).sum::<f64>() / 4.0,
+        foot.iter().map(|p| p.y).sum::<f64>() / 4.0,
+    );
+    for i in 0..4 {
+        let (p, q) = (foot[i], foot[(i + 1) % 4]);
+        // Outward in the plan, then into scene axes (Z = -plan y).
+        let mid = Point::new((p.x + q.x) / 2.0 - centre.x, (p.y + q.y) / 2.0 - centre.y);
+        let len = mid.length().max(1e-9);
+        let n = [(mid.x / len) as f32, 0.0, (-mid.y / len) as f32];
+        quad([at(p, y0), at(q, y0), at(q, y1), at(p, y1)], n);
+    }
+    mesh
+}
+
+/// 3D geometry of every placed symbol: Chief objects use their decoded
+/// meshes (or a box when the geometry is missing or partial; nothing when
+/// the catalog is not available), everything else is a box so each placed
+/// item shows something.
+pub fn symbol_meshes(project: &Project) -> Vec<Mesh> {
+    use crate::tools::library::chief::{self, Chief3d};
+    let mut out = Vec::new();
+    for floor in &project.floors {
+        for s in &floor.symbols {
+            if chief::is_chief_id(&s.catalog_id) {
+                match chief::placed_meshes(s, floor.elevation) {
+                    Chief3d::Meshes(m) => out.extend(m),
+                    Chief3d::Box => out.push(symbol_box(s, floor.elevation)),
+                    Chief3d::Missing => {}
+                }
+            } else {
+                out.push(symbol_box(s, floor.elevation));
+            }
+        }
+    }
+    out
 }
 
 struct HashFmt<'a>(&'a mut DefaultHasher);
@@ -444,8 +545,8 @@ impl std::fmt::Write for HashFmt<'_> {
     }
 }
 
-/// A hash of everything that shapes the 3D model: floors, walls, openings and
-/// the CAD records roofs are stored in.
+/// A hash of everything that shapes the 3D model: floors, walls, openings,
+/// placed symbols, the roofs and the foundation objects.
 /// Cameras, dimensions and other annotations are not part of it.
 pub fn project_hash(p: &Project) -> u64 {
     let mut h = DefaultHasher::new();
@@ -459,9 +560,21 @@ pub fn project_hash(p: &Project) -> u64 {
         for o in &f.openings {
             let _ = write!(HashFmt(&mut h), "{o:?}");
         }
+        // Placed library symbols (position, size, angle, flip, elevation).
+        for sym in &f.symbols {
+            let _ = write!(HashFmt(&mut h), "{sym:?}");
+        }
         // Roof planes are stored as tagged CAD records (`editor::roof_view`).
         for c in &f.cad {
             let _ = write!(HashFmt(&mut h), "{c:?}");
+        }
+        // Roofs live in the floor's typed `roofs` slot (`editor::roof_view`).
+        for r in &f.roofs {
+            let _ = write!(HashFmt(&mut h), "{r:?}");
+        }
+        // Slabs, pads and piers live in the typed `foundation` slot.
+        if let Some(v) = &f.foundation {
+            let _ = write!(HashFmt(&mut h), "{v:?}");
         }
     }
     p.wall_types.len().hash(&mut h);
@@ -987,6 +1100,9 @@ fn render_camera(cam: &plan_view3d::Camera) -> plan_render::Camera {
 pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     let ctx = ui.ctx().clone();
     st.ensure_scene(&cx.project);
+    if let Some(note) = crate::tools::library::chief::take_partial_notice() {
+        cx.status = note;
+    }
     let rect = ui.available_rect_before_wrap();
     let size = ui.available_size();
     st.apply_setup(size.x / size.y.max(1.0));
@@ -1177,6 +1293,35 @@ mod tests {
         assert_ne!(before, project_hash(&p), "a new roof rebuilds the 3D view");
         let roofed = build_view_scene(&p, &ViewScope::default());
         assert!(roofed.meshes.iter().any(|m| m.material == Material::Roof));
+    }
+
+    #[test]
+    fn a_placed_slab_joins_the_3d_scene_and_the_hash() {
+        use plan_core::foundation::{rect_outline, FoundationLayer, Slab};
+        let mut p = project_with_wall();
+        let before = project_hash(&p);
+        let plain = build_view_scene(&p, &ViewScope::default());
+        let mut layer = FoundationLayer::default();
+        layer.slabs.push(Slab::new(
+            900,
+            rect_outline(Point::new(0.0, 0.0), Point::new(240.0, 180.0)),
+        ));
+        layer
+            .pads
+            .push(plan_core::foundation::Pad::new(901, Point::new(300.0, 0.0)));
+        layer.store(&mut p.floors[0]);
+        assert_ne!(before, project_hash(&p), "a slab rebuilds the 3D view");
+        let with_slab = build_view_scene(&p, &ViewScope::default());
+        assert!(with_slab.meshes.len() > plain.meshes.len());
+        assert!(with_slab
+            .meshes
+            .iter()
+            .any(|m| m.material == Material::Concrete && m.object_id == Some(900)));
+        // Editing the slab changes the hash again.
+        let h = project_hash(&p);
+        layer.slabs[0].thickness = 8.0;
+        layer.store(&mut p.floors[0]);
+        assert_ne!(h, project_hash(&p));
     }
 
     #[test]
@@ -1535,5 +1680,110 @@ mod tests {
         outbox.post(ViewRequest::CameraDeleted(id));
         st.drain(&p);
         assert!(st.active_camera.is_none());
+    }
+
+    #[test]
+    fn placed_symbols_appear_in_the_scene_and_the_hash() {
+        use plan_core::PlacedSymbol;
+        let mut p = project_with_wall();
+        let before_hash = project_hash(&p);
+        let before = build_view_scene(&p, &ViewScope::default()).meshes.len();
+        // A non-Chief library item: 24 x 30 x 40 box, 6 in off the floor.
+        let mut s = PlacedSymbol::new(
+            "core.plumbing.toilet_elongated",
+            Point::new(100.0, 50.0),
+            24.0,
+            30.0,
+            40.0,
+        );
+        s.elevation = 6.0;
+        p.add_symbol(0, s);
+        assert_ne!(
+            before_hash,
+            project_hash(&p),
+            "a placed symbol rebuilds the 3D view"
+        );
+        let scene = build_view_scene(&p, &ViewScope::default());
+        assert_eq!(scene.meshes.len(), before + 1);
+        let id = p.floors[0].symbols[0].id;
+        let boxed = scene
+            .meshes
+            .iter()
+            .find(|m| m.object_id == Some(id))
+            .expect("a mesh for the symbol");
+        assert_eq!(boxed.material, Material::Trim);
+        assert_eq!(boxed.triangle_count(), 12);
+        let (lo, hi) = boxed.bounds().unwrap();
+        // x 88..112, up 6..46, scene Z = -plan y: -80..-50 (front is +plan y).
+        assert_eq!((lo, hi), ([88.0, 6.0, -80.0], [112.0, 46.0, -50.0]));
+        // Every face points away from the box centre.
+        let c = [100.0, 26.0, -65.0];
+        for tri in boxed.indices.as_chunks::<3>().0 {
+            let (a, b, d) = (
+                boxed.vertices[tri[0] as usize],
+                boxed.vertices[tri[1] as usize],
+                boxed.vertices[tri[2] as usize],
+            );
+            let e1 = [
+                b.position[0] - a.position[0],
+                b.position[1] - a.position[1],
+                b.position[2] - a.position[2],
+            ];
+            let e2 = [
+                d.position[0] - a.position[0],
+                d.position[1] - a.position[1],
+                d.position[2] - a.position[2],
+            ];
+            let n = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let out: f32 = (0..3).map(|k| (a.position[k] - c[k]) * n[k]).sum();
+            assert!(out > 0.0, "winding faces outward: {out}");
+        }
+
+        // Moving the symbol changes the hash, so the view rebuilds.
+        let h = project_hash(&p);
+        p.floors[0].symbols[0].position = Point::new(130.0, 50.0);
+        assert_ne!(h, project_hash(&p));
+        let moved = build_view_scene(&p, &ViewScope::default());
+        let (lo, _) = moved
+            .meshes
+            .iter()
+            .find(|m| m.object_id == Some(id))
+            .unwrap()
+            .bounds()
+            .unwrap();
+        assert_eq!(lo[0], 118.0);
+
+        // The ensure_scene signature follows it too.
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.ensure_scene(&p);
+        let first = st.last_project_hash;
+        p.floors[0].symbols[0].width = 30.0;
+        st.ensure_scene(&p);
+        assert_ne!(st.last_project_hash, first);
+    }
+
+    #[test]
+    fn a_chief_symbol_without_its_catalog_adds_nothing() {
+        use plan_core::PlacedSymbol;
+        let mut p = project_with_wall();
+        let before = build_view_scene(&p, &ViewScope::default()).meshes.len();
+        p.add_symbol(
+            0,
+            PlacedSymbol::new(
+                "chief.no-such-catalog.9",
+                Point::new(10.0, 10.0),
+                20.0,
+                20.0,
+                20.0,
+            ),
+        );
+        assert_eq!(
+            build_view_scene(&p, &ViewScope::default()).meshes.len(),
+            before
+        );
     }
 }

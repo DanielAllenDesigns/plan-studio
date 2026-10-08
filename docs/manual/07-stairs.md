@@ -50,8 +50,8 @@ You give the stair a position, a direction and a shape. The program does the ari
 | Landing | `Ctrl+Alt+Shift+Cmd+G` | Works. |
 | Draw Ramp | `Ctrl+Alt+Shift+Cmd+H` | Works. |
 
-Each flyout entry (or its hotkey) starts the stair tool in that variant. The four-modifier
-chords can only be typed on macOS.
+Each flyout entry (or its hotkey) starts the stair tool in that variant. Off macOS the
+four-modifier chords are typed as `Ctrl+Alt+Shift+...` (chapter 13.2).
 
 ### Drawing a stair
 

@@ -6,6 +6,9 @@
 //! names have no slot in `PlanDefaults` and travel in [`TemplateSeed`] only.
 
 use crate::classify::{Category, TemplateInventory};
+pub use crate::decode::{
+    TemplateDimensionDefaults, TemplateTextStyle, TemplateWallLayer, TemplateWallType,
+};
 use crate::values::{LayerSetData, WallStack};
 use plan_core::defaults::{
     DimensionDefaultSet, DimensionDefaults, PlanDefaults, WallLayer, WallTypeDef,
@@ -40,6 +43,14 @@ pub struct LayoutSeed {
     pub sheet_size: Option<String>,
     pub pages: Vec<String>,
     pub macros: Vec<String>,
+    /// Width and height in inches of the sheet: the decoded paper size of
+    /// `sheet_size` when the template stores one, else the `18x24` in the
+    /// file name. `None` when neither exists.
+    #[serde(default)]
+    pub sheet_dimensions_in: Option<(f64, f64)>,
+    /// Printable area of that sheet, inches, where the template stores it.
+    #[serde(default)]
+    pub printable_in: Option<(f64, f64)>,
 }
 
 /// Defaults plus the template vocabulary that has no home in `PlanDefaults`.
@@ -67,6 +78,20 @@ pub struct TemplateSeed {
     /// Dimension default sets from the template's names.
     #[serde(default)]
     pub dimension_set_defs: Vec<DimensionDefaultSet>,
+    /// Wall types in `added_wall_types` whose layer stack was decoded from
+    /// the template (the rest are the name-number guess).
+    #[serde(default)]
+    pub decoded_wall_types: Vec<String>,
+    /// Text styles in `text_style_defs` built from decoded values.
+    #[serde(default)]
+    pub decoded_text_styles: Vec<String>,
+    /// Dimension sets whose numbers were read from the template.
+    #[serde(default)]
+    pub decoded_dimension_sets: Vec<String>,
+    /// The room-type height found in the template, inches (109.125 in
+    /// Daniel's plan template).
+    #[serde(default)]
+    pub default_height_in: Option<f64>,
 }
 
 fn empty_layer_sets() -> LayerSets {
@@ -181,6 +206,87 @@ fn stack_to_layers(stack: &WallStack) -> Vec<WallLayer> {
         .collect()
 }
 
+/// Turns a decoded wall type into a Plan Studio wall type. Layers run from the
+/// exterior face to the interior face; each layer is named and filled with its
+/// material. The kind is guessed from the wall type's name.
+pub fn wall_type_def(t: &TemplateWallType) -> WallTypeDef {
+    WallTypeDef {
+        name: t.name.clone(),
+        layers: t
+            .layers
+            .iter()
+            .map(|(material, thickness, is_main)| WallLayer {
+                name: material.clone(),
+                thickness: *thickness,
+                is_main: *is_main,
+                material: material.clone(),
+            })
+            .collect(),
+        kind: guess_kind(&t.name),
+    }
+}
+
+/// [`wall_type_def`] for every decoded wall type.
+pub fn wall_type_defs(types: &[TemplateWallType]) -> Vec<WallTypeDef> {
+    types.iter().map(wall_type_def).collect()
+}
+
+/// Turns a decoded text style into a Plan Studio text style. The decoded
+/// height is kept as the plan height (`1/4" Text Style` is 4.5"); the colour
+/// is black because the object carries none.
+pub fn text_style_from_template(t: &TemplateTextStyle) -> TextStyle {
+    let mut style = TextStyle::plan_sized(t.name.clone(), t.height_in, t.bold);
+    style.font = t.font.clone();
+    style.italic = t.italic;
+    if let Some(color) = t.color {
+        style.color = color;
+    }
+    style
+}
+
+/// [`text_style_from_template`] for every decoded style (first of a name wins).
+pub fn text_styles_from_template(styles: &[TemplateTextStyle]) -> TextStyles {
+    let mut out = TextStyles { styles: Vec::new() };
+    for t in styles {
+        out.add(text_style_from_template(t));
+    }
+    out
+}
+
+/// Dimension settings with the decoded numbers laid over `base`: smallest
+/// fraction, fraction text size, arrow size, extension gap (the fixed gap) and
+/// reach past the marked object (length away), 1st line offset and line
+/// separation. Fields the template does not give keep `base`.
+pub fn dimension_defaults_from_template(
+    d: &TemplateDimensionDefaults,
+    base: &DimensionDefaults,
+) -> DimensionDefaults {
+    let mut out = base.clone();
+    let positive = |v: Option<f64>| v.filter(|x| *x > 0.0);
+    if let Some(v) = d.smallest_fraction {
+        out.smallest_fraction = v;
+    }
+    if let Some(v) = d.fraction_text_size_pct {
+        out.fraction_text_size_pct = v;
+    }
+    if let Some(v) = positive(d.arrow_size_in) {
+        out.arrow_size = v;
+    }
+    if let Some(v) = positive(d.extension_fixed_gap_in) {
+        out.extension_gap = v;
+    }
+    if let Some(v) = positive(d.extension_length_away_in) {
+        out.extension_past = v;
+    }
+    if let Some(v) = positive(d.first_line_offset_in) {
+        out.auto_exterior_offset = v;
+    }
+    if let Some(v) = positive(d.line_separation_in) {
+        out.auto_line_separation = v;
+    }
+    out
+}
+
 fn approximate_type(name: &str) -> WallTypeDef {
     let thickness =
         thickness_hint(name).map_or(FALLBACK_WALL_THICKNESS, |n| n + NAME_NUMBER_ALLOWANCE);
@@ -240,6 +346,33 @@ fn pick_sheet_size(inv: &TemplateInventory) -> Option<String> {
         .map(|e| e.name.clone())
 }
 
+fn layout_seed(inv: &TemplateInventory) -> LayoutSeed {
+    let sheet_size = pick_sheet_size(inv);
+    let paper = sheet_size
+        .as_ref()
+        .and_then(|n| inv.summary.paper_sizes.iter().find(|p| &p.name == n));
+    let (sheet_dimensions_in, printable_in) = match paper {
+        Some(p) => (
+            Some((p.width_in, p.height_in)),
+            p.printable_width_in.zip(p.printable_height_in),
+        ),
+        None => (
+            inv.summary
+                .layout
+                .as_ref()
+                .and_then(|l| l.sheet_from_file_name),
+            None,
+        ),
+    };
+    LayoutSeed {
+        sheet_size,
+        pages: names(inv, Category::LayoutPage),
+        macros: names(inv, Category::TitleBlockMacro),
+        sheet_dimensions_in,
+        printable_in,
+    }
+}
+
 /// Layer sets with their decoded per-layer state. Unnamed tables are skipped
 /// and the first table of a repeated name wins. The active set is "Working
 /// Layer Set" when present, else "Floor Plan Dimensioned Layer Set", else the
@@ -287,12 +420,26 @@ fn text_style_scale(name: &str) -> Option<f64> {
     (num > 0.0 && den > 0.0).then_some(num / den)
 }
 
-/// One style per text style name in the template. Names Plan Studio already
-/// ships keep those values; `<scale>" Text Style` names get the plan height
-/// that prints 1/8" at that scale; others copy "Default Text Style".
+/// One style per text style in the template. Names Plan Studio already ships
+/// keep those values. Styles decoded from the template (every one the
+/// template holds, including ones Phase A did not name) take the decoded font,
+/// weight and plan height; names only seen as strings fall back to the
+/// `<scale>" Text Style` height that prints 1/8" at that scale, or a copy of
+/// "Default Text Style".
 pub fn seed_text_styles(inv: &TemplateInventory) -> TextStyles {
     let known = TextStyles::chief_defaults();
     let mut out = TextStyles { styles: Vec::new() };
+    for t in &inv.summary.text_styles {
+        if out.get(&t.name).is_some() {
+            continue;
+        }
+        out.add(
+            known
+                .get(&t.name)
+                .cloned()
+                .unwrap_or_else(|| text_style_from_template(t)),
+        );
+    }
     for e in &inv.text_styles {
         if out.get(&e.name).is_some() {
             continue;
@@ -316,17 +463,38 @@ fn dimension_sets_from(
     inv: &TemplateInventory,
     base: &DimensionDefaults,
 ) -> Vec<DimensionDefaultSet> {
+    let short = |full: &str| -> String {
+        full.strip_suffix(" Dimension Defaults")
+            .unwrap_or(full)
+            .trim()
+            .to_string()
+    };
+    let names = inv
+        .dimension_defaults
+        .iter()
+        .map(|e| e.name.as_str())
+        .chain(
+            inv.summary
+                .dimension_defaults
+                .iter()
+                .map(|d| d.name.as_str()),
+        );
     let mut out: Vec<DimensionDefaultSet> = Vec::new();
-    for e in &inv.dimension_defaults {
-        let name = e
-            .name
-            .strip_suffix(" Dimension Defaults")
-            .unwrap_or(&e.name)
-            .trim();
-        if name.is_empty() || out.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
+    for full in names {
+        let name = short(full);
+        if name.is_empty() || out.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
             continue;
         }
-        out.push(DimensionDefaultSet::new(name, base.clone()));
+        let auto = inv
+            .summary
+            .dimension_defaults
+            .iter()
+            .find(|d| short(&d.name).eq_ignore_ascii_case(&name))
+            .map_or_else(
+                || base.clone(),
+                |d| dimension_defaults_from_template(d, base),
+            );
+        out.push(DimensionDefaultSet::new(name, auto));
     }
     out
 }
@@ -446,6 +614,16 @@ pub fn seed_defaults(inv: &TemplateInventory, base: PlanDefaults) -> TemplateSee
     let mut added_wall_types = Vec::new();
     let mut approximate_wall_types = Vec::new();
 
+    let mut decoded_wall_types = Vec::new();
+    // Wall types whose layer stack was read from the template come first.
+    for t in &inv.summary.wall_types {
+        if defaults.wall_type(&t.name).is_some() {
+            continue;
+        }
+        added_wall_types.push(t.name.clone());
+        decoded_wall_types.push(t.name.clone());
+        defaults.wall_types.push(wall_type_def(t));
+    }
     for e in &inv.wall_types {
         if defaults.wall_type(&e.name).is_some() {
             continue;
@@ -518,6 +696,25 @@ pub fn seed_defaults(inv: &TemplateInventory, base: PlanDefaults) -> TemplateSee
     let layer_set_defs = seed_layer_sets(inv);
     let text_style_defs = seed_text_styles(inv);
     let dimension_set_defs = dimension_sets_from(inv, &defaults.dimensions);
+    let decoded_text_styles: Vec<String> = inv
+        .summary
+        .text_styles
+        .iter()
+        .filter(|t| text_style_defs.get(&t.name).is_some())
+        .map(|t| t.name.clone())
+        .collect();
+    let decoded_dimension_sets: Vec<String> = inv
+        .summary
+        .dimension_defaults
+        .iter()
+        .map(|d| {
+            d.name
+                .strip_suffix(" Dimension Defaults")
+                .unwrap_or(&d.name)
+                .trim()
+                .to_string()
+        })
+        .collect();
     merge_vocabulary(
         &mut defaults,
         &layer_set_defs,
@@ -531,17 +728,17 @@ pub fn seed_defaults(inv: &TemplateInventory, base: PlanDefaults) -> TemplateSee
         text_styles: names(inv, Category::TextStyle),
         dimension_sets: names(inv, Category::DimensionDefaults),
         plan_views: names(inv, Category::PlanView),
-        layout: LayoutSeed {
-            sheet_size: pick_sheet_size(inv),
-            pages: names(inv, Category::LayoutPage),
-            macros: names(inv, Category::TitleBlockMacro),
-        },
+        layout: layout_seed(inv),
         added_wall_types,
         approximate_wall_types,
         added_layers,
         layer_set_defs,
         text_style_defs,
         dimension_set_defs,
+        decoded_wall_types,
+        decoded_text_styles,
+        decoded_dimension_sets,
+        default_height_in: inv.summary.default_heights.room_type_height_in,
     }
 }
 
@@ -1001,5 +1198,211 @@ mod tests {
             seed_plan_defaults(&inv, PlanDefaults::default()),
             seed_defaults(&inv, PlanDefaults::default()).defaults
         );
+    }
+
+    fn decoded_wall(name: &str, layers: &[(&str, f64, bool)]) -> TemplateWallType {
+        let layers: Vec<(String, f64, bool)> = layers
+            .iter()
+            .map(|(m, t, main)| ((*m).to_string(), *t, *main))
+            .collect();
+        TemplateWallType {
+            name: name.into(),
+            total_thickness_in: layers.iter().map(|l| l.1).sum(),
+            layer_details: layers
+                .iter()
+                .map(|(m, t, main)| TemplateWallLayer {
+                    material: m.clone(),
+                    material_id: 1,
+                    thickness_in: *t,
+                    is_main: *main,
+                    is_framing: *main,
+                    is_gap: false,
+                    spacing_in: 0.0,
+                })
+                .collect(),
+            layers,
+            offset: 0,
+        }
+    }
+
+    #[test]
+    fn decoded_wall_type_becomes_a_wall_type_def() {
+        let t = decoded_wall(
+            "Siding-6 Test",
+            &[
+                ("Timber Bark", 0.5, false),
+                ("Housewrap", 0.01, false),
+                ("OSB-Hrz", 0.5, false),
+                ("Fir Stud 16\" OC, Teal", 5.5, true),
+                ("Drywall", 0.5, false),
+            ],
+        );
+        let def = wall_type_def(&t);
+        assert_eq!(def.name, "Siding-6 Test");
+        assert_eq!(def.kind, WallKind::Exterior);
+        assert_eq!(def.layers.len(), 5);
+        assert!((def.thickness() - 7.01).abs() < 1e-9);
+        assert_eq!(def.main_layer().unwrap().thickness, 5.5);
+        assert_eq!(def.main_layer().unwrap().material, "Fir Stud 16\" OC, Teal");
+        assert!((def.main_layer_offset() - 1.01).abs() < 1e-9);
+        let interior = wall_type_def(&decoded_wall("Interior-4 Test", &[("Drywall", 0.5, false)]));
+        assert_eq!(interior.kind, WallKind::Interior);
+        assert_eq!(wall_type_defs(&[t]).len(), 1);
+    }
+
+    fn decoded_style(name: &str, height: f64, style: &str) -> TemplateTextStyle {
+        TemplateTextStyle {
+            name: name.into(),
+            font: "Avenir".into(),
+            font_style: style.into(),
+            height_in: height,
+            bold: style == "Heavy",
+            italic: false,
+            color: None,
+            guid: String::new(),
+            offset: 0,
+        }
+    }
+
+    #[test]
+    fn decoded_text_style_becomes_a_text_style() {
+        let ts = text_styles_from_template(&[
+            decoded_style("1/8\" Text Style", 9.0, "Book"),
+            decoded_style("Room Label Style, Small", 6.0, "Heavy"),
+            decoded_style("1/8\" Text Style", 99.0, "Book"),
+        ]);
+        assert_eq!(ts.styles.len(), 2, "first of a name wins");
+        let s = ts.get("1/8\" Text Style").unwrap();
+        assert_eq!(
+            (s.font.as_str(), s.height_in, s.bold),
+            ("Avenir", 9.0, false)
+        );
+        assert_eq!(s.color, [0, 0, 0]);
+        assert!(ts.get("Room Label Style, Small").unwrap().bold);
+    }
+
+    #[test]
+    fn decoded_quarter_inch_dimension_set_matches_the_captured_defaults() {
+        let d = TemplateDimensionDefaults {
+            name: "1/4\" Scale Dimension Defaults".into(),
+            arrow_size_in: Some(2.25),
+            extension_length_away_in: Some(3.0),
+            extension_fixed_gap_in: Some(3.0),
+            line_separation_in: Some(18.0),
+            first_line_offset_in: Some(32.0),
+            smallest_fraction: Some(8),
+            fraction_text_size_pct: Some(60),
+            ..TemplateDimensionDefaults::default()
+        };
+        let base = PlanDefaults::default().dimensions;
+        let mut odd = base.clone();
+        odd.arrow_size = 9.0;
+        odd.smallest_fraction = 2;
+        let out = dimension_defaults_from_template(&d, &odd);
+        // Same numbers Daniel's UI capture holds for the 1/4" set.
+        assert_eq!(out.arrow_size, base.arrow_size);
+        assert_eq!(out.smallest_fraction, base.smallest_fraction);
+        assert_eq!(out.fraction_text_size_pct, base.fraction_text_size_pct);
+        assert_eq!(out.extension_gap, base.extension_gap);
+        assert_eq!(out.extension_past, base.extension_past);
+        assert_eq!(out.auto_exterior_offset, base.auto_exterior_offset);
+        assert_eq!(out.auto_line_separation, base.auto_line_separation);
+        // Fields the template leaves out keep the base value; zeros are ignored.
+        let sparse = TemplateDimensionDefaults {
+            arrow_size_in: Some(0.0),
+            ..TemplateDimensionDefaults::default()
+        };
+        assert_eq!(dimension_defaults_from_template(&sparse, &odd), odd);
+    }
+
+    #[test]
+    fn seed_uses_the_decoded_summary() {
+        let mut inv = inventory(&["Siding-6", "Frame-3 1/2"]);
+        inv.file_name = "18x24 TEST.layout".into();
+        inv.wall_types.push(crate::classify::Entry {
+            name: "Plain-4".into(),
+            count: 1,
+            first_offset: 0,
+        });
+        inv.summary.wall_types = vec![
+            decoded_wall("Brick-Test", &[("Brick", 4.0, false), ("Stud", 3.5, true)]),
+            decoded_wall("Siding-6", &[("Other", 1.0, true)]),
+        ];
+        inv.summary.text_styles = vec![
+            decoded_style("Window Label Style", 3.0, "Book"),
+            decoded_style("Default Text Style", 4.5, "Book"),
+        ];
+        inv.summary.dimension_defaults = vec![TemplateDimensionDefaults {
+            name: "Foundation Dimension Defaults".into(),
+            smallest_fraction: Some(4),
+            ..TemplateDimensionDefaults::default()
+        }];
+        inv.summary.default_heights.room_type_height_in = Some(109.125);
+        let seed = seed_defaults(&inv, PlanDefaults::default());
+        // Decoded types are added with their real stack; a type already in the
+        // defaults keeps the built-in one.
+        let brick = seed.defaults.wall_type("Brick-Test").unwrap();
+        assert_eq!(brick.layers.len(), 2);
+        assert_eq!(seed.decoded_wall_types, vec!["Brick-Test"]);
+        assert!(!seed
+            .approximate_wall_types
+            .contains(&"Brick-Test".to_string()));
+        assert_eq!(seed.defaults.wall_type("Siding-6").unwrap().layers.len(), 4);
+        // Names without a decoded stack still get the guess.
+        assert!(seed.approximate_wall_types.contains(&"Plain-4".to_string()));
+        // Text styles: decoded name added; a shipped name keeps its values.
+        assert_eq!(
+            seed.text_style_defs
+                .get("Window Label Style")
+                .unwrap()
+                .height_in,
+            3.0
+        );
+        assert_eq!(
+            seed.text_style_defs
+                .get("Default Text Style")
+                .unwrap()
+                .height_in,
+            6.0
+        );
+        assert_eq!(seed.decoded_text_styles.len(), 2);
+        // Dimension set numbers come from the decode.
+        let fnd = seed
+            .dimension_set_defs
+            .iter()
+            .find(|s| s.name == "Foundation")
+            .unwrap();
+        assert_eq!(fnd.auto.smallest_fraction, 4);
+        assert_eq!(seed.decoded_dimension_sets, vec!["Foundation"]);
+        assert_eq!(seed.default_height_in, Some(109.125));
+        // No listed size matches `18x24`, so the file name supplies it.
+        assert_eq!(seed.layout.sheet_dimensions_in, None);
+        inv.summary.layout = Some(crate::decode::LayoutInfo {
+            sheet_from_file_name: Some((18.0, 24.0)),
+            ..crate::decode::LayoutInfo::default()
+        });
+        let seed = seed_defaults(&inv, PlanDefaults::default());
+        assert_eq!(seed.layout.sheet_dimensions_in, Some((18.0, 24.0)));
+        // A decoded paper size of the picked sheet wins and brings its printable area.
+        inv.file_name = "Plain.plan".into();
+        inv.sheet_sizes.push(crate::classify::Entry {
+            name: "ARCH C (18\" x 24\")".into(),
+            count: 1,
+            first_offset: 0,
+        });
+        inv.summary.paper_sizes = vec![crate::decode::PaperSize {
+            name: "ARCH C (18\" x 24\")".into(),
+            width_in: 18.0,
+            height_in: 24.0,
+            printable_width_in: Some(23.5),
+            printable_height_in: Some(17.5),
+            offset: 0,
+        }];
+        let seed = seed_defaults(&inv, PlanDefaults::default());
+        assert_eq!(seed.layout.sheet_dimensions_in, Some((18.0, 24.0)));
+        assert_eq!(seed.layout.printable_in, Some((23.5, 17.5)));
+        let json = seed.to_json().unwrap();
+        let back: TemplateSeed = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, seed);
     }
 }

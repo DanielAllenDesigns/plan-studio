@@ -1,11 +1,13 @@
 //! Routes the shared edit commands (Delete, Copy, Paste in Place, Reverse
 //! Swing and the module-specific Edit toolbar commands) to the module that
-//! owns each object kind: `stairs_view`, `placed`, `roof_view`, `site_view`
-//! and the camera tool.
+//! owns each object kind: `stairs_view`, `placed`, `roof_view`, `site_view`,
+//! `foundation_view` and the camera tool.
 
 use super::actions::{EditAction, EditActionKind};
 use super::selection::ObjectRef;
-use super::{placed, roof_view, site_view, stairs_view, EditorContext, EditorRequest};
+use super::{
+    foundation_view, placed, roof_view, site_view, stairs_view, EditorContext, EditorRequest,
+};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use crate::tools::roof::RoofMode;
 use crate::tools::ToolId;
@@ -21,6 +23,8 @@ pub mod cmd {
     pub const ROOF_JOIN: &str = "roof.join";
     pub const ROOF_REBUILD: &str = "roof.rebuild";
     pub const ROOF_DELETE_ALL: &str = "roof.delete_all";
+    pub const ROOF_DELETE_CEILINGS: &str = "roof.delete_ceilings";
+    pub const ROOF_EXPLODE_DORMER: &str = "roof.explode_dormer";
     pub const SYMBOL_REPLACE: &str = "symbol.replace";
     pub const DEVICE_FLIP: &str = "device.flip";
     pub const DEVICE_ROTATE: &str = "device.rotate";
@@ -68,8 +72,9 @@ impl EditorContext {
         self.selection.items.iter().any(|o| is_core(*o))
     }
 
-    /// Deletes the selected stairs, cabinets, symbols, devices, roof planes
-    /// and cameras (each kind is one undo step). Returns how many went.
+    /// Deletes the selected stairs, cabinets, symbols, devices, roof records,
+    /// foundation objects and cameras (each kind is one undo step). Returns
+    /// how many went.
     pub(super) fn delete_extra(&mut self) -> usize {
         let mut n = 0;
         if self
@@ -110,15 +115,21 @@ impl EditorContext {
         if !planes.is_empty() {
             self.begin_change("Delete Roof Plane");
             let fl = self.floor;
-            let mut set = roof_view::load(&self.project.floors[fl]);
-            let before = set.planes.len();
-            set.planes.retain(|p| !planes.contains(&p.id));
-            n += before - set.planes.len();
-            roof_view::store(&mut self.project, fl, &mut set);
+            n += roof_view::delete_records(&mut self.project, fl, &planes);
             self.selection
                 .items
                 .retain(|o| !matches!(o, ObjectRef::RoofPlane(_)));
             self.mark_dirty();
+        }
+        let foundation = self.selected_ids(|o| match o {
+            ObjectRef::Foundation(i) => Some(i),
+            _ => None,
+        });
+        if !foundation.is_empty() {
+            n += foundation_view::delete_ids(self, &foundation);
+            self.selection
+                .items
+                .retain(|o| !matches!(o, ObjectRef::Foundation(_)));
         }
         let cams = self.selected_ids(|o| match o {
             ObjectRef::Camera(i) => Some(i),
@@ -192,19 +203,28 @@ impl EditorContext {
                     v.push(custom(stair_id(c), c.label(), c.icon().unwrap_or(""), on));
                 }
             }
-            ObjectRef::RoofPlane(_) => {
-                v.push(custom(
-                    cmd::ROOF_JOIN,
-                    "Join Roof Planes",
-                    "roof_plane",
-                    true,
-                ));
-                v.push(custom(
-                    cmd::ROOF_REBUILD,
-                    "Rebuild Roofs",
-                    "roof_build",
-                    true,
-                ));
+            ObjectRef::RoofPlane(id) => {
+                if roof_view::load(self.floor()).dormer(id).is_some() {
+                    v.push(custom(
+                        cmd::ROOF_EXPLODE_DORMER,
+                        "Explode Dormer",
+                        "dormer",
+                        true,
+                    ));
+                } else {
+                    v.push(custom(
+                        cmd::ROOF_JOIN,
+                        "Join Roof Planes",
+                        "roof_plane",
+                        true,
+                    ));
+                    v.push(custom(
+                        cmd::ROOF_REBUILD,
+                        "Rebuild Roofs",
+                        "roof_build",
+                        true,
+                    ));
+                }
             }
             ObjectRef::Symbol(_) => {
                 v.push(custom(
@@ -238,6 +258,8 @@ impl EditorContext {
                 .push(EditorRequest::SetTool(ToolId::RoofVariant(RoofMode::Join))),
             cmd::ROOF_REBUILD => self.rebuild_roofs(),
             cmd::ROOF_DELETE_ALL => self.delete_all_roof_planes(),
+            cmd::ROOF_DELETE_CEILINGS => self.delete_all_ceiling_planes(),
+            cmd::ROOF_EXPLODE_DORMER => self.explode_selected_dormer(),
             cmd::SYMBOL_REPLACE => self.replace_symbol_from_library(),
             cmd::DEVICE_FLIP => self.edit_selected_device("Flip Side", |d, wall| {
                 site_view::flip_side(d, wall);
@@ -267,6 +289,41 @@ impl EditorContext {
             .retain(|o| !matches!(o, ObjectRef::RoofPlane(_)));
         self.mark_dirty();
         self.status = format!("Deleted {n} roof plane{}", if n == 1 { "" } else { "s" });
+    }
+
+    fn delete_all_ceiling_planes(&mut self) {
+        self.begin_change("Delete Ceiling Planes");
+        let mut n = 0;
+        for fi in 0..self.project.floors.len() {
+            n += roof_view::delete_ceilings(&mut self.project, fi);
+        }
+        if n == 0 {
+            self.cancel_change();
+            self.status = "There are no ceiling planes to delete".into();
+            return;
+        }
+        self.selection.retain_existing(&self.project, self.floor);
+        self.mark_dirty();
+        self.status = format!("Deleted {n} ceiling plane{}", if n == 1 { "" } else { "s" });
+    }
+
+    fn explode_selected_dormer(&mut self) {
+        let Some(ObjectRef::RoofPlane(id)) = self.selection.single() else {
+            return;
+        };
+        self.begin_change("Explode Dormer");
+        let fl = self.floor;
+        match roof_view::explode_dormer_record(&mut self.project, fl, id) {
+            Ok(n) => {
+                self.selection.clear();
+                self.mark_dirty();
+                self.status = format!("Exploded the dormer into {n} roof planes");
+            }
+            Err(e) => {
+                self.cancel_change();
+                self.status = format!("Explode Dormer: {e}");
+            }
+        }
     }
 
     fn rebuild_roofs(&mut self) {
@@ -333,7 +390,8 @@ impl EditorContext {
     }
 
     /// Translates the selected stairs, cabinets, symbols, devices, roof
-    /// planes and cameras by `d` (group drags and nudges).
+    /// records, foundation objects and cameras by `d` (group drags and
+    /// nudges).
     pub fn translate_extra(&mut self, items: &[ObjectRef], d: plan_core::geometry::Point) {
         let fl = self.floor;
         for o in items {
@@ -367,8 +425,7 @@ impl EditorContext {
                 }
                 ObjectRef::RoofPlane(id) => {
                     let mut set = roof_view::load(&self.project.floors[fl]);
-                    if let Some(r) = set.plane_mut(id) {
-                        r.translate(d);
+                    if roof_view::translate_record(&mut set, id, d) {
                         roof_view::store(&mut self.project, fl, &mut set);
                     }
                 }
@@ -379,6 +436,14 @@ impl EditorContext {
                 _ => {}
             }
         }
+        let foundation: Vec<Id> = items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::Foundation(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        foundation_view::translate_ids(self, &foundation, d);
         self.mark_dirty();
     }
 }

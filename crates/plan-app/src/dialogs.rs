@@ -20,6 +20,8 @@ pub mod dimension;
 pub mod electrical;
 pub mod exchange;
 pub mod floor;
+pub mod foundation;
+pub mod framing;
 pub mod hotkeys;
 pub mod layer_display;
 mod opening;

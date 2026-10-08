@@ -75,7 +75,37 @@ pub fn redact_inventory(inv: &mut TemplateInventory) -> usize {
         .filter_map(|r| redact_resource(r))
         .collect();
     n += before - inv.resources.len();
+    n += redact_summary(inv);
     inv.redacted = n;
+    n
+}
+
+/// Blanks client-looking names in the Phase C summary (wall types, styles,
+/// materials, paper sizes, layout macros and fields) and drops the printer
+/// name. Returns how many strings changed.
+fn redact_summary(inv: &mut TemplateInventory) -> usize {
+    let mut n = 0;
+    let mut fix = |name: &mut String| {
+        if looks_client_specific(name) {
+            *name = REDACTED.to_string();
+            n += 1;
+        }
+    };
+    let s = &mut inv.summary;
+    s.wall_types.iter_mut().for_each(|w| fix(&mut w.name));
+    s.text_styles.iter_mut().for_each(|t| fix(&mut t.name));
+    s.rich_text_defaults
+        .iter_mut()
+        .for_each(|t| fix(&mut t.name));
+    s.dimension_defaults
+        .iter_mut()
+        .for_each(|d| fix(&mut d.name));
+    s.materials.iter_mut().for_each(|m| fix(&mut m.name));
+    s.paper_sizes.iter_mut().for_each(|p| fix(&mut p.name));
+    if let Some(l) = s.layout.as_mut() {
+        l.title_block_macros.iter_mut().for_each(|(m, _)| fix(m));
+        l.project_info_fields.iter_mut().for_each(|(m, _)| fix(m));
+    }
     n
 }
 
@@ -141,5 +171,29 @@ mod tests {
         assert_eq!(inv.plan_views[0].name, REDACTED);
         assert_eq!(inv.plan_views[1].name, "Working Plan View");
         assert_eq!(inv.resources, vec!["Ash.png"]);
+    }
+
+    #[test]
+    fn summary_names_are_redacted() {
+        use crate::decode::{TemplateMaterial, TemplateWallType};
+        let mut inv = classify_strings(&[]);
+        let wall = |name: &str| TemplateWallType {
+            name: name.into(),
+            layers: Vec::new(),
+            layer_details: Vec::new(),
+            total_thickness_in: 0.0,
+            offset: 0,
+        };
+        inv.summary.wall_types = vec![wall("Siding-6"), wall("2836 Parkridge")];
+        inv.summary.materials = vec![TemplateMaterial {
+            id: 1,
+            name: "Smith Residence.plan".into(),
+            color: [0, 0, 0],
+            offset: 0,
+        }];
+        assert_eq!(redact_inventory(&mut inv), 2);
+        assert_eq!(inv.summary.wall_types[0].name, "Siding-6");
+        assert_eq!(inv.summary.wall_types[1].name, REDACTED);
+        assert_eq!(inv.summary.materials[0].name, REDACTED);
     }
 }

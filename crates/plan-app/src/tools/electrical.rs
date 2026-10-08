@@ -18,8 +18,7 @@
 //! * Auto Place Outlets: one click places outlets for every room of the
 //!   current floor from its name and type (CB-64).
 //!
-//! Devices live in `floor.cad` through `editor::site_view` (TODO: plan-core
-//! fields).
+//! Devices live in `Floor.electrical` through `editor::site_view`.
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::electrical::{DeviceDraft, ElectricalDialog};

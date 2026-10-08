@@ -112,7 +112,7 @@ footing), **monolithic slab** (one concrete pour with thickened edges) and **pie
 
 **Footing.** The wide concrete base under a foundation wall that spreads the load into the ground.
 
-**Framing.** The wood or steel skeleton of a building: studs, joists, rafters, headers. See 14.2 (`plan-framing`).
+**Framing.** The wood or steel skeleton of a building: studs, joists, rafters, headers. Build > Framing builds it from the plan (11.11); the library is `plan-framing` (14.2).
 
 **Frieze.** A trim board where the top of the wall meets the soffit under the eave.
 
@@ -226,7 +226,7 @@ and Dimensions each have their own. See 5.5.
 
 **Rake.** The sloping edge of a gable roof at the end of the building.
 
-**Reference display.** A view setting that shows the floor below (or above) in gray behind the current one, so you can line walls up. (Toggle exists; drawing is planned.)
+**Reference display.** A view setting that shows the floor below (or above) in gray behind the current one, so you can line walls up. (View > Reference Display draws the floor below, walls only, in gray.)
 
 **Reveal.** A small step back, such as the 1/4" between a door jamb edge and its casing.
 

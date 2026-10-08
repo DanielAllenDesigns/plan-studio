@@ -83,6 +83,21 @@ pub struct Wall {
     /// Wall dialog values that persist with the wall.
     #[serde(default)]
     pub extras: crate::extras::WallExtras,
+    /// Which flyout wall this is (foundation, pony, glass, half-wall, ...);
+    /// `Standard` for ordinary walls and files from before the variants.
+    #[serde(default)]
+    pub class: crate::walls::WallClass,
+    /// How far a [`crate::walls::WallClass::Foundation`] wall reaches below
+    /// the floor it is drawn on, inches.
+    #[serde(default = "default_foundation_height")]
+    pub foundation_height: f64,
+    /// Deck edge (rim board, no railing); set with the `DeckEdge` class.
+    #[serde(default)]
+    pub is_deck_edge: bool,
+}
+
+fn default_foundation_height() -> f64 {
+    crate::walls::DEFAULT_FOUNDATION_HEIGHT
 }
 
 impl Wall {
@@ -302,6 +317,9 @@ pub struct Floor {
     /// Opaque framing objects; see [`Floor::framing_as`].
     #[serde(default)]
     pub framing: Vec<serde_json::Value>,
+    /// Opaque slab / pad / pier data; see [`crate::foundation::FoundationLayer`].
+    #[serde(default)]
+    pub foundation: Option<serde_json::Value>,
 }
 
 impl Floor {
@@ -323,6 +341,7 @@ impl Floor {
             roofs: Vec::new(),
             electrical: None,
             framing: Vec::new(),
+            foundation: None,
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {

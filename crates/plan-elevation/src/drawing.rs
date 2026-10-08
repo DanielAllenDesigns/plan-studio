@@ -1,6 +1,7 @@
 //! The output of the hidden-line pipeline: weighted 2D line segments.
 
-use plan_core::{CadItem, CadObject, Point};
+use plan_3d::Material;
+use plan_core::{CadItem, CadObject, Id, Point};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
@@ -38,6 +39,10 @@ pub enum EdgeKind {
     Crease,
     /// Seam between different materials or objects on the same surface.
     Material,
+    /// A material hatch stroke inside a [`RegionKind::Face`] region.
+    Hatch,
+    /// Drafting annotation: grade line, pitch triangles ([`crate::annotate`]).
+    Annotation,
     /// A hidden edge, kept only when dashed hidden lines are requested.
     Hidden,
 }
@@ -81,12 +86,73 @@ impl Line2 {
     }
 }
 
-/// A finished 2D drawing: line segments plus their bounding box.
+/// What a [`Region`] represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum RegionKind {
+    /// A visible surface of one material (hatched when [`crate::Options::hatch`] is set).
+    Face,
+    /// A section cut face: fill solid or gray (poche).
+    Cut,
+    /// Cast shadow on a visible surface; `material` is the surface it falls on.
+    Shadow,
+}
+
+/// A filled area of the drawing.
+///
+/// `polygon` is one closed ring in drawing space (no repeated first point).
+/// Holes (window openings in a wall face...) are joined to the outer ring by
+/// a zero-width slit, so the ring is weakly simple and fills correctly under
+/// both the even-odd and non-zero rules.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Region {
+    pub polygon: Vec<Point>,
+    #[serde(with = "material_serde")]
+    pub material: Material,
+    /// The wall or opening the surface belongs to, if known.
+    pub object_id: Option<Id>,
+    pub kind: RegionKind,
+}
+
+impl Region {
+    /// Absolute enclosed area, square drawing units (slits cancel out).
+    pub fn area(&self) -> f64 {
+        plan_core::geometry::polygon_area(&self.polygon).abs()
+    }
+}
+
+/// Serialise [`Material`] by name (plan-3d's enum has no serde impls).
+mod material_serde {
+    use plan_3d::Material;
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(m: &Material, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(m.name())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Material, D::Error> {
+        let name = String::deserialize(d)?;
+        Material::ALL
+            .iter()
+            .copied()
+            .find(|m| m.name() == name)
+            .ok_or_else(|| D::Error::custom(format!("unknown material {name}")))
+    }
+}
+
+/// A finished 2D drawing: line segments, filled regions and text, plus bounds.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Drawing {
     pub lines: Vec<Line2>,
     /// `(min, max)` corners of all line endpoints; zero for an empty drawing.
     pub bounds: (Point, Point),
+    /// Visible-surface, section-cut and shadow areas (see [`Region`]).
+    #[serde(default)]
+    pub regions: Vec<Region>,
+    /// Annotations from [`crate::annotate`]: `(anchor, text)`. The anchor is
+    /// the left end of the text baseline, in drawing space.
+    #[serde(default)]
+    pub texts: Vec<(Point, String)>,
 }
 
 impl Drawing {
@@ -95,6 +161,8 @@ impl Drawing {
         let mut d = Drawing {
             lines,
             bounds: (Point::ZERO, Point::ZERO),
+            regions: Vec::new(),
+            texts: Vec::new(),
         };
         d.update_bounds();
         d
@@ -112,6 +180,16 @@ impl Drawing {
                 )
             }),
         };
+    }
+
+    /// The section cut faces (poche): regions of kind [`RegionKind::Cut`].
+    pub fn cut_regions(&self) -> impl Iterator<Item = &Region> + '_ {
+        self.regions_of(RegionKind::Cut)
+    }
+
+    /// Regions of one kind, in drawing order.
+    pub fn regions_of(&self, kind: RegionKind) -> impl Iterator<Item = &Region> + '_ {
+        self.regions.iter().filter(move |r| r.kind == kind)
     }
 
     /// Width and height of the bounds.
@@ -152,10 +230,34 @@ impl Drawing {
         self.update_bounds();
     }
 
-    /// A small SVG rendering for debugging and tests: one `<line>` per segment, Y flipped.
+    /// Bounds of lines, regions and text together (text width is estimated).
+    fn extent(&self) -> (Point, Point) {
+        let (mut lo, mut hi) = self.bounds;
+        let mut grow = |p: Point| {
+            lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+            hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+        };
+        for r in &self.regions {
+            r.polygon.iter().for_each(|&p| grow(p));
+        }
+        for (p, t) in &self.texts {
+            grow(*p);
+            grow(Point::new(
+                p.x + TEXT_CHAR_W * t.chars().count() as f64,
+                p.y + TEXT_H,
+            ));
+        }
+        (lo, hi)
+    }
+
+    /// A small SVG rendering for debugging and tests, Y flipped.
+    ///
+    /// Paint order: face regions (white), section poche (gray), shadows
+    /// (translucent gray), then one `<line>` per segment (hatch strokes
+    /// included) and one `<text>` per annotation.
     pub fn svg(&self) -> String {
-        let (lo, hi) = self.bounds;
-        let (w, h) = self.size();
+        let (lo, hi) = self.extent();
+        let (w, h) = (hi.x - lo.x, hi.y - lo.y);
         let unit = w.max(h).max(1.0) / 800.0;
         let margin = 8.0 * unit;
         let mut s = String::new();
@@ -169,6 +271,29 @@ impl Drawing {
             (w + 2.0 * margin) / unit,
             (h + 2.0 * margin) / unit,
         );
+        for kind in [RegionKind::Face, RegionKind::Cut, RegionKind::Shadow] {
+            let paint = match kind {
+                RegionKind::Face => "fill=\"#ffffff\"",
+                RegionKind::Cut => "fill=\"#8c8c8c\"",
+                RegionKind::Shadow => "fill=\"#808080\" fill-opacity=\"0.35\"",
+            };
+            for r in self.regions_of(kind) {
+                let mut d = String::new();
+                for (i, p) in r.polygon.iter().enumerate() {
+                    let _ = write!(
+                        d,
+                        "{}{:.3} {:.3} ",
+                        if i == 0 { "M" } else { "L" },
+                        p.x - lo.x,
+                        hi.y - p.y
+                    );
+                }
+                let _ = writeln!(
+                    s,
+                    "<path d=\"{d}Z\" {paint} fill-rule=\"evenodd\" stroke=\"none\"/>"
+                );
+            }
+        }
         for l in &self.lines {
             let (stroke, width) = match l.weight {
                 LineWeight::Heavy => ("#000000", 2.5),
@@ -190,10 +315,28 @@ impl Drawing {
                 width * unit,
             );
         }
+        for (p, t) in &self.texts {
+            let escaped = t
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let _ = writeln!(
+                s,
+                "<text x=\"{:.3}\" y=\"{:.3}\" font-family=\"sans-serif\" font-size=\"{:.3}\">{escaped}</text>",
+                p.x - lo.x,
+                hi.y - p.y,
+                TEXT_H,
+            );
+        }
         s.push_str("</svg>\n");
         s
     }
 }
+
+/// Nominal text height of annotations, drawing units (inches of the building).
+pub(crate) const TEXT_H: f64 = 8.0;
+/// Estimated advance width of one character of annotation text.
+pub(crate) const TEXT_CHAR_W: f64 = 0.6 * TEXT_H;
 
 mod merge {
     //! Collinear merging: cluster by direction and offset, then merge intervals per tier.

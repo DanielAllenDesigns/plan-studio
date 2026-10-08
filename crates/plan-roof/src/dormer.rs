@@ -1,0 +1,600 @@
+//! Auto Dormer and Explode Dormer (Chief RF-48..RF-51).
+//!
+//! A dormer is built on one roof plane from a handful of dimensions. The
+//! result is plain geometry: a front wall, two cheek (side) walls, the dormer
+//! roof planes, the hole to cut in the main roof, and an optional window
+//! opening on the front wall. No overhang, soffit or fascia is generated.
+//!
+//! Frame: the main plane's eave (`baseline`) runs from `a` to `b`; `u` is the
+//! unit eave direction and `w = u.perp()` points up the slope. A dormer point
+//! is addressed by `(along, d)`: `along` is the distance from `a` along `u`,
+//! `d` the plan distance from the eave line along `w`.
+
+use crate::geom::{self, V3};
+use crate::hole::{HoleKind, RoofHole};
+use crate::RoofPlane;
+use plan_core::Point;
+use serde::{Deserialize, Serialize};
+
+/// Dormer roof shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DormerKind {
+    /// Two planes meeting in a horizontal ridge; gable front wall.
+    #[default]
+    Gable,
+    /// One plane, flatter than the main roof.
+    Shed,
+    /// Three planes (front hip and two sides).
+    Hip,
+}
+
+/// Dormer dimensions, inches.
+///
+/// `height_to_ridge` and `pitch` both describe the slope of a gable or hip
+/// roof. When `height_to_ridge > wall_height` it wins (the roof pitch is then
+/// derived and reported on the roof planes); otherwise `pitch` is used. A shed
+/// dormer always uses `pitch` (halved when not flatter than the main roof) and
+/// ignores `height_to_ridge`: its roof runs until it meets the main roof.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DormerSpec {
+    pub kind: DormerKind,
+    /// Outside width of the front wall, along the eave direction.
+    pub width: f64,
+    /// Ridge height above the main roof surface at the front wall base.
+    pub height_to_ridge: f64,
+    /// Height of the front wall and cheek-wall tops above the same base.
+    pub wall_height: f64,
+    /// Distance from the baseline's first point to the dormer centre, along the
+    /// eave direction.
+    pub position_along_eave: f64,
+    /// Plan distance from the eave line up the slope to the front wall.
+    pub setback_from_eave: f64,
+    /// Dormer roof pitch (rise in 12), see above.
+    pub pitch: f64,
+    /// Window `(width, height)` centred on the front wall.
+    pub window: Option<(f64, f64)>,
+}
+
+impl Default for DormerSpec {
+    /// 48" gable dormer, 36" walls, 8:12, centred at the origin, 36" back from
+    /// the eave, no window.
+    fn default() -> Self {
+        Self {
+            kind: DormerKind::Gable,
+            width: 48.0,
+            height_to_ridge: 0.0,
+            wall_height: 36.0,
+            position_along_eave: 0.0,
+            setback_from_eave: 36.0,
+            pitch: 8.0,
+            window: None,
+        }
+    }
+}
+
+/// A dormer wall as a vertical polygon plus the plan line it stands on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DormerWall {
+    /// Roof-space outline (`X = x`, `Y` up, `Z = -y`); the Newell normal points
+    /// out of the dormer.
+    pub polygon3d: Vec<V3>,
+    /// Unit outward normal (horizontal).
+    pub normal: V3,
+    /// Plan base line.
+    pub start: Point,
+    pub end: Point,
+    /// Elevation of the wall base at `start` (the main roof surface under the
+    /// front wall), inches.
+    pub base_elevation: f64,
+    /// Full wall height above `base_elevation` at its tallest point.
+    pub height: f64,
+}
+
+/// A rectangular window opening in the front wall.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowOpening {
+    /// Four corners on the front wall plane, outward-facing winding.
+    pub polygon3d: Vec<V3>,
+    pub width: f64,
+    pub height: f64,
+    /// Sill height above the wall base.
+    pub sill_height: f64,
+}
+
+/// A dormer built on a main roof plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dormer {
+    pub kind: DormerKind,
+    pub spec: DormerSpec,
+    pub front_wall: DormerWall,
+    /// The two cheek walls: left (toward the baseline start) then right.
+    pub side_walls: Vec<DormerWall>,
+    /// Gable 2, shed 1, hip 3. Each polygon starts with its eave edge.
+    pub roof_planes: Vec<RoofPlane>,
+    /// The footprint to cut in the main roof (`kind` is [`HoleKind::Hole`]).
+    pub hole_in_main_roof: RoofHole,
+    pub window_opening: Option<WindowOpening>,
+    /// Elevation of the dormer ridge (gable/hip) or of the shed roof where it
+    /// meets the main roof, inches.
+    pub ridge_elevation: f64,
+    /// Plan depth of the dormer from the front wall to the back of its roof.
+    pub depth: f64,
+}
+
+/// The dormer's parts as plain planes and walls, no longer tied to a spec.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExplodedDormer {
+    /// Front wall first, then the cheek walls.
+    pub walls: Vec<DormerWall>,
+    pub roof_planes: Vec<RoofPlane>,
+    pub hole: RoofHole,
+    pub window_opening: Option<WindowOpening>,
+}
+
+/// Split a dormer into independent parts (Chief "Explode Dormer").
+pub fn explode_dormer(dormer: &Dormer) -> ExplodedDormer {
+    let mut walls = vec![dormer.front_wall.clone()];
+    walls.extend(dormer.side_walls.iter().cloned());
+    ExplodedDormer {
+        walls,
+        roof_planes: dormer.roof_planes.clone(),
+        hole: dormer.hole_in_main_roof.clone(),
+        window_opening: dormer.window_opening.clone(),
+    }
+}
+
+/// Horizontal plan vector as a roof-space direction.
+fn dir3(v: Point) -> V3 {
+    [v.x, 0.0, -v.y]
+}
+
+struct Frame {
+    a: Point,
+    u: Point,
+    w: Point,
+    /// Elevation of the main plane at the front wall base.
+    yb: f64,
+    /// Front wall distance from the eave line.
+    s: f64,
+}
+
+impl Frame {
+    fn plan(&self, along: f64, d: f64) -> Point {
+        self.a.add(self.u.scale(along)).add(self.w.scale(d))
+    }
+    /// Roof-space point at `(along, d)` and height `rel` above the front base.
+    fn pt(&self, along: f64, d: f64, rel: f64) -> V3 {
+        geom::lift(self.plan(along, d), self.yb + rel)
+    }
+}
+
+/// Build a dormer on `main_plane`.
+///
+/// Returns `None` when the dormer cannot be built: a degenerate dimension, a
+/// flat or reversed main plane, or a footprint that does not lie completely
+/// inside the plane (too wide, too close to the eave, or reaching past the
+/// ridge). Deviation from a bare `Dormer` return: the failure cases need a
+/// value.
+pub fn auto_dormer(main_plane: &RoofPlane, spec: DormerSpec) -> Option<Dormer> {
+    if spec.width <= 1e-6 || spec.wall_height <= 1e-6 || main_plane.polygon3d.len() < 3 {
+        return None;
+    }
+    let (a, b) = main_plane.baseline;
+    let u = b.sub(a).normalized();
+    if u == Point::ZERO {
+        return None;
+    }
+    let w = u.perp();
+    let h0 = main_plane.height_at(a)?;
+    let tm = main_plane.height_at(a.add(w))? - h0;
+    if tm <= 1e-6 {
+        return None;
+    }
+    let c = spec.position_along_eave;
+    let mut f = Frame {
+        a,
+        u,
+        w,
+        yb: 0.0,
+        s: spec.setback_from_eave,
+    };
+    f.yb = main_plane.height_at(f.plan(c, f.s))?;
+
+    let (hw, wh) = (spec.width * 0.5, spec.wall_height);
+    let (ul, ur) = (c - hw, c + hw);
+    let s = f.s;
+
+    // Roof-plane polygons start with their eave edge; walls are oriented below.
+    let roof_polys: Vec<Vec<V3>>;
+    let hole_outline: Vec<Point>;
+    let front_poly: Vec<V3>;
+    let (cheek_depth, ridge_rel, depth): (f64, f64, f64);
+    match spec.kind {
+        DormerKind::Gable | DormerKind::Hip => {
+            let rise = if spec.height_to_ridge > wh {
+                spec.height_to_ridge - wh
+            } else {
+                hw * spec.pitch / 12.0
+            };
+            if rise <= 1e-6 {
+                return None;
+            }
+            let hr = wh + rise;
+            let dw = wh / tm;
+            let dr = hr / tm;
+            let gable = spec.kind == DormerKind::Gable;
+            if !gable && dr <= hw + 1e-6 {
+                return None; // ridge would collapse into a point
+            }
+            let left = if gable {
+                vec![
+                    f.pt(ul, s, wh),
+                    f.pt(ul, s + dw, wh),
+                    f.pt(c, s + dr, hr),
+                    f.pt(c, s, hr),
+                ]
+            } else {
+                vec![
+                    f.pt(ul, s, wh),
+                    f.pt(ul, s + dw, wh),
+                    f.pt(c, s + dr, hr),
+                    f.pt(c, s + hw, hr),
+                ]
+            };
+            let right = if gable {
+                vec![
+                    f.pt(ur, s, wh),
+                    f.pt(ur, s + dw, wh),
+                    f.pt(c, s + dr, hr),
+                    f.pt(c, s, hr),
+                ]
+            } else {
+                vec![
+                    f.pt(ur, s, wh),
+                    f.pt(ur, s + dw, wh),
+                    f.pt(c, s + dr, hr),
+                    f.pt(c, s + hw, hr),
+                ]
+            };
+            let mut polys = vec![left, right];
+            if gable {
+                front_poly = vec![
+                    f.pt(ul, s, 0.0),
+                    f.pt(ur, s, 0.0),
+                    f.pt(ur, s, wh),
+                    f.pt(c, s, hr),
+                    f.pt(ul, s, wh),
+                ];
+            } else {
+                polys.push(vec![f.pt(ul, s, wh), f.pt(ur, s, wh), f.pt(c, s + hw, hr)]);
+                front_poly = vec![
+                    f.pt(ul, s, 0.0),
+                    f.pt(ur, s, 0.0),
+                    f.pt(ur, s, wh),
+                    f.pt(ul, s, wh),
+                ];
+            }
+            roof_polys = polys;
+            hole_outline = vec![
+                f.plan(ul, s),
+                f.plan(ur, s),
+                f.plan(ur, s + dw),
+                f.plan(c, s + dr),
+                f.plan(ul, s + dw),
+            ];
+            cheek_depth = dw;
+            ridge_rel = hr;
+            depth = dr;
+        }
+        DormerKind::Shed => {
+            let raw = if spec.pitch > 0.0 {
+                spec.pitch / 12.0
+            } else {
+                tm * 0.5
+            };
+            let ts = if raw >= tm * 0.95 { tm * 0.5 } else { raw };
+            let d_shed = wh / (tm - ts);
+            let meet = tm * d_shed;
+            roof_polys = vec![vec![
+                f.pt(ul, s, wh),
+                f.pt(ur, s, wh),
+                f.pt(ur, s + d_shed, meet),
+                f.pt(ul, s + d_shed, meet),
+            ]];
+            front_poly = vec![
+                f.pt(ul, s, 0.0),
+                f.pt(ur, s, 0.0),
+                f.pt(ur, s, wh),
+                f.pt(ul, s, wh),
+            ];
+            hole_outline = vec![
+                f.plan(ul, s),
+                f.plan(ur, s),
+                f.plan(ur, s + d_shed),
+                f.plan(ul, s + d_shed),
+            ];
+            cheek_depth = d_shed;
+            ridge_rel = meet;
+            depth = d_shed;
+        }
+    }
+
+    // The whole footprint must sit inside the main plane.
+    let outline = geom::ccw(&main_plane.plan_polygon());
+    if !hole_outline
+        .iter()
+        .all(|&p| geom::strictly_inside(p, &outline, 1e-6))
+    {
+        return None;
+    }
+
+    let roof_planes: Vec<RoofPlane> = roof_polys
+        .into_iter()
+        .map(|poly| {
+            let poly = geom::up_eave_first(poly);
+            let pitch = roof_pitch(&poly);
+            RoofPlane {
+                baseline: (geom::to_plan(poly[0]), geom::to_plan(poly[1])),
+                polygon3d: poly,
+                pitch_in_12: pitch,
+                source_edge: main_plane.source_edge,
+            }
+        })
+        .collect();
+
+    let front_out = f.w.scale(-1.0);
+    let front_wall = DormerWall {
+        polygon3d: geom::orient_toward(front_poly, dir3(front_out)),
+        normal: dir3(front_out),
+        start: f.plan(ul, s),
+        end: f.plan(ur, s),
+        base_elevation: f.yb,
+        height: if spec.kind == DormerKind::Gable {
+            ridge_rel
+        } else {
+            wh
+        },
+    };
+    let cheek = |along: f64, out: Point| {
+        let tri = vec![
+            f.pt(along, s, 0.0),
+            f.pt(along, s, wh),
+            f.pt(along, s + cheek_depth, tm * cheek_depth),
+        ];
+        DormerWall {
+            polygon3d: geom::orient_toward(tri, dir3(out)),
+            normal: dir3(out),
+            start: f.plan(along, s),
+            end: f.plan(along, s + cheek_depth),
+            base_elevation: f.yb,
+            height: wh,
+        }
+    };
+    let side_walls = vec![cheek(ul, f.u.scale(-1.0)), cheek(ur, f.u)];
+
+    let window_opening = spec.window.and_then(|(ww, wht)| {
+        let ww = ww.min(spec.width - 6.0);
+        let wht = wht.min(wh);
+        (ww > 1e-6 && wht > 1e-6).then(|| {
+            let sill = (wh - wht) * 0.5;
+            let (x0, x1) = (c - ww * 0.5, c + ww * 0.5);
+            let poly = vec![
+                f.pt(x0, s, sill),
+                f.pt(x1, s, sill),
+                f.pt(x1, s, sill + wht),
+                f.pt(x0, s, sill + wht),
+            ];
+            WindowOpening {
+                polygon3d: geom::orient_toward(poly, dir3(front_out)),
+                width: ww,
+                height: wht,
+                sill_height: sill,
+            }
+        })
+    });
+
+    Some(Dormer {
+        kind: spec.kind,
+        spec,
+        front_wall,
+        side_walls,
+        roof_planes,
+        hole_in_main_roof: RoofHole {
+            outline: hole_outline,
+            kind: HoleKind::Hole,
+            skylight: None,
+        },
+        window_opening,
+        ridge_elevation: f.yb + ridge_rel,
+        depth,
+    })
+}
+
+/// Pitch (rise in 12) of an upward-facing polygon from its normal.
+fn roof_pitch(poly: &[V3]) -> f64 {
+    let n = geom::unit3(geom::newell(poly)).unwrap_or([0.0, 1.0, 0.0]);
+    if n[1] <= 1e-9 {
+        return 0.0;
+    }
+    (n[0] * n[0] + n[2] * n[2]).sqrt() / n[1] * 12.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hole::tests::gable_roof_planes;
+    use plan_core::geometry::polygon_area;
+
+    fn south() -> RoofPlane {
+        gable_roof_planes()
+            .into_iter()
+            .find(|p| p.source_edge == 0)
+            .unwrap()
+    }
+
+    fn spec(kind: DormerKind) -> DormerSpec {
+        DormerSpec {
+            kind,
+            width: 72.0,
+            height_to_ridge: 0.0,
+            wall_height: 36.0,
+            position_along_eave: 240.0,
+            setback_from_eave: 30.0,
+            pitch: 8.0,
+            window: Some((30.0, 24.0)),
+        }
+    }
+
+    fn hole_area(d: &Dormer) -> f64 {
+        polygon_area(&d.hole_in_main_roof.outline).abs()
+    }
+
+    fn roofs_plan_area(d: &Dormer) -> f64 {
+        d.roof_planes.iter().map(RoofPlane::projected_area).sum()
+    }
+
+    #[test]
+    fn gable_dormer_has_two_planes_horizontal_ridge_vertical_front() {
+        let main = south();
+        assert!((main.pitch_in_12 - 8.0).abs() < 1e-9);
+        let d = auto_dormer(&main, spec(DormerKind::Gable)).unwrap();
+        assert_eq!(d.roof_planes.len(), 2);
+        assert_eq!(d.side_walls.len(), 2);
+        // Ridge: the two highest vertices of the roof planes share a height.
+        let top = d
+            .roof_planes
+            .iter()
+            .flat_map(|p| p.polygon3d.iter())
+            .fold(f64::MIN, |m, p| m.max(p[1]));
+        let ridge: Vec<V3> = d.roof_planes[0]
+            .polygon3d
+            .iter()
+            .copied()
+            .filter(|p| (p[1] - top).abs() < 1e-6)
+            .collect();
+        assert_eq!(ridge.len(), 2);
+        assert!((ridge[0][1] - ridge[1][1]).abs() < 1e-9);
+        assert!((top - d.ridge_elevation).abs() < 1e-6);
+        // Pitch 8:12 from the dormer pitch field.
+        for p in &d.roof_planes {
+            assert!((p.pitch_in_12 - 8.0).abs() < 1e-6, "{}", p.pitch_in_12);
+            assert!(p.normal()[1] > 0.0);
+            assert_eq!(p.baseline.0, geom::to_plan(p.polygon3d[0]));
+        }
+        // Front wall is vertical: horizontal normal, shared plan line.
+        let f = &d.front_wall;
+        assert!(f.normal[1].abs() < 1e-12);
+        let nn = geom::unit3(geom::newell(&f.polygon3d)).unwrap();
+        assert!(nn[1].abs() < 1e-9);
+        assert!(geom::dot3(nn, f.normal) > 0.999);
+        // Faces down the slope (toward the eave at y = 0, so plan -y).
+        assert!(f.normal[2] > 0.99, "{:?}", f.normal);
+        let plan_pts: Vec<Point> = f.polygon3d.iter().map(|&p| geom::to_plan(p)).collect();
+        assert!(plan_pts.iter().all(|p| (p.y - 30.0).abs() < 1e-6));
+        // Base sits on the main roof.
+        for p in &f.polygon3d {
+            if (p[1] - f.base_elevation).abs() < 1e-9 {
+                let y = main.height_at(geom::to_plan(*p)).unwrap();
+                assert!((y - p[1]).abs() < 1e-6);
+            }
+        }
+        assert!(f.height > 36.0);
+    }
+
+    #[test]
+    fn height_to_ridge_overrides_pitch_for_gable() {
+        let main = south();
+        let mut sp = spec(DormerKind::Gable);
+        sp.height_to_ridge = 36.0 + 36.0; // rise 36 over half-width 36: 12:12
+        let d = auto_dormer(&main, sp).unwrap();
+        for p in &d.roof_planes {
+            assert!((p.pitch_in_12 - 12.0).abs() < 1e-6);
+        }
+        assert!((d.ridge_elevation - d.front_wall.base_elevation - 72.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hole_matches_the_dormer_footprint_for_every_kind() {
+        let main = south();
+        for kind in [DormerKind::Gable, DormerKind::Hip, DormerKind::Shed] {
+            let d = auto_dormer(&main, spec(kind)).unwrap();
+            assert_eq!(d.hole_in_main_roof.kind, HoleKind::Hole);
+            // The dormer roofs cover exactly the hole in plan.
+            assert!(
+                (hole_area(&d) - roofs_plan_area(&d)).abs() < 1e-6,
+                "{kind:?}: hole {} roofs {}",
+                hole_area(&d),
+                roofs_plan_area(&d)
+            );
+            // Every roof-plane vertex lies in or on the hole outline.
+            let hole = geom::ccw(&d.hole_in_main_roof.outline);
+            for p in d.roof_planes.iter().flat_map(|p| p.polygon3d.iter()) {
+                let q = geom::to_plan(*p);
+                assert!(
+                    plan_core::geometry::point_in_polygon(q, &hole)
+                        || geom::boundary_dist(q, &hole) < 1e-6
+                );
+            }
+            // The roof planes meet the main roof along the hole (valleys): the
+            // wall/roof vertices on the main plane agree with it.
+            for p in d.roof_planes.iter().flat_map(|p| p.polygon3d.iter()) {
+                let q = geom::to_plan(*p);
+                let on_main = main.height_at(q).unwrap();
+                assert!(
+                    on_main <= p[1] + 1e-6,
+                    "dormer roof dips below the main roof"
+                );
+            }
+            // Applying the hole to the main plane works.
+            let r = crate::roof_plane_with_holes(&main, std::slice::from_ref(&d.hole_in_main_roof));
+            assert_eq!(r.holes.len(), 1, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn hip_and_shed_plane_counts() {
+        let main = south();
+        let hip = auto_dormer(&main, spec(DormerKind::Hip)).unwrap();
+        assert_eq!(hip.roof_planes.len(), 3);
+        let shed = auto_dormer(&main, spec(DormerKind::Shed)).unwrap();
+        assert_eq!(shed.roof_planes.len(), 1);
+        // Shed roof is flatter than the main roof.
+        assert!(shed.roof_planes[0].pitch_in_12 < main.pitch_in_12);
+        // An 8:12 request is not flatter than the 8:12 main roof: halved.
+        assert!((shed.roof_planes[0].pitch_in_12 - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn window_sits_on_the_front_wall_and_explode_returns_all_parts() {
+        let main = south();
+        let d = auto_dormer(&main, spec(DormerKind::Gable)).unwrap();
+        let win = d.window_opening.clone().unwrap();
+        assert_eq!(win.polygon3d.len(), 4);
+        assert!((win.sill_height - 6.0).abs() < 1e-9);
+        for p in &win.polygon3d {
+            assert!((geom::to_plan(*p).y - 30.0).abs() < 1e-6);
+        }
+        let x = explode_dormer(&d);
+        assert_eq!(x.walls.len(), 3);
+        assert_eq!(x.roof_planes.len(), 2);
+        assert_eq!(x.hole, d.hole_in_main_roof);
+        assert!(x.window_opening.is_some());
+    }
+
+    #[test]
+    fn dormers_that_do_not_fit_are_rejected() {
+        let main = south();
+        let mut sp = spec(DormerKind::Gable);
+        sp.setback_from_eave = 0.0; // front wall on the eave edge
+        assert!(auto_dormer(&main, sp).is_none());
+        let mut sp = spec(DormerKind::Gable);
+        sp.position_along_eave = 10.0; // hangs off the end
+        assert!(auto_dormer(&main, sp).is_none());
+        let mut sp = spec(DormerKind::Gable);
+        sp.setback_from_eave = 170.0; // over the ridge
+        assert!(auto_dormer(&main, sp).is_none());
+        let mut sp = spec(DormerKind::Gable);
+        sp.width = 0.0;
+        assert!(auto_dormer(&main, sp).is_none());
+    }
+}

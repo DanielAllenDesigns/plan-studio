@@ -15,7 +15,8 @@ Read-only reader for Chief Architect `.plan` and `.layout` template files, so Pl
 | `scan` | `scan(path) -> TemplateScan`: header, thumbnail PNG, every length-prefixed string with its offset, tail resource table, kind by extension and by content |
 | `classify` | `classify(&scan) -> TemplateInventory`: suffix/keyword rules into 15 categories, de-duplicated with counts and first offsets |
 | `values` | Phase B: per-layer colour, line weight, display and lock flags; wall stack search; `calibrate` across files |
-| `bridge` | `seed_defaults(&inv, PlanDefaults) -> TemplateSeed` (`.defaults` is the seeded `PlanDefaults`), `to_json` |
+| `decode` | Phase C: the object stream. `TemplateSummary` with wall types (layer stacks), text styles, rich text defaults, dimension defaults, materials, default heights, paper sizes, layout info. Filled into `TemplateInventory::summary` |
+| `bridge` | `seed_defaults(&inv, PlanDefaults) -> TemplateSeed` (`.defaults` is the seeded `PlanDefaults`), `to_json`; `wall_type_defs`, `text_styles_from_template`, `dimension_defaults_from_template` |
 | `redact` | client-string redaction |
 | `lib.rs` | `build_inventory`, `scan_daniel_templates`, `write_inventory_json(dir, out)` |
 
@@ -23,6 +24,7 @@ Read-only reader for Chief Architect `.plan` and `.layout` template files, so Pl
 cargo test -p plan-chiefplan
 cargo test -p plan-chiefplan --release -- --ignored --nocapture   # real templates
 cargo run -p plan-chiefplan --example inventory -- [dir] out.json # redacted inventory JSON
+cargo run --release -p plan-chiefplan --example summary -- [file] [--json]  # Phase C decode of one template
 ```
 
 ## Phase A: what the scanner relies on
@@ -86,30 +88,63 @@ Why colour is High: stable across files for the same set, differs between sets, 
 
 Not decoded: line style, the meaning of `o-5` and the second colour, anything past `e+26` except the second colour, per-layer text style.
 
-### Wall layer stacks (not decoded)
+### Wall layer stacks (Phase B: not found; Phase C: decoded)
 
-`find_wall_stack` looks for two or more consecutive, not-all-equal `f64` (then `f32`) values that are multiples of 1/32" and sum to a multiple of 1/16" between 2" and 30", in the 256 bytes after a wall type name that is not part of a pick list. Result on all 26 files: **no stacks found**. What the data shows:
+`find_wall_stack` looks for adjacent `f64` thicknesses after a wall type name and finds nothing, which is why Phase B called stacks undecoded: the thickness of each layer sits in its own 518-byte record, so no run of adjacent values exists. Phase C reads the records (below). `find_wall_stack` stays for completeness; `bridge` prefers the Phase C stacks, then a Phase B stack, then the name-number guess.
 
-- Wall type names occur in repeated pick lists (15 copies of the list in the default plan): each name is followed by `00 00` or `00 01` and the next name. No thickness data sits next to the names.
-- Searching the whole default plan for f64 sequences `[0.5, 3.5, 0.5]`, `[0.5, 5.5, 0.5]`, `[0.5, 3.5]`, `[3.5, 0.5]`, `[5.5, 0.5]`, `[0.5, 4.0, 0.5]` finds none, so stacks are probably not stored as inch-valued f64 runs, or are keyed by index or GUID elsewhere.
-- Material names (`Drywall`, `Sheathing Panels`, `Sand Finish - Eggshell`) appear in a separate materials table, not in wall records.
+## Phase C: typed objects
 
-So `bridge` uses the fallback: a single main layer of `number in the name + 1.0"` (`Siding-6` is 7.0", `Frame-3 1/2` is 4.5", `8" CMU ...` is 9.0"), or 4.5" when the name has no number, with material `approximate`; those names are listed in `TemplateSeed.approximate_wall_types`. On the default plan this adds 102 wall types, all approximate.
+`decode::summarize_bytes` (and `plan_chiefplan::summarize(path)`) scan the object stream `[01] CD AB <class> <version> <u32 size> <payload>` and read the classes below. Formats, offsets and confidence are in `docs/chief-template-format.md` section 7.
+
+| What | Class | x17 plan | Default layout | Confidence |
+|---|---|---|---|---|
+| Wall types: name, layers (material, thickness, main, framing), total | 215 | 103 (no name repeats) | 24 | High |
+| Materials: id, name, colour | 57 | 550 (146 named) | 112 | High (id, name), Medium (colour) |
+| Text styles: name, font, style, height, bold, GUID | 139 | 15 | 7 | High; colour not stored here |
+| Rich text defaults: font, size, text and background colour | 64 | 15 | 1 | High |
+| Dimension defaults: arrow, extension, separation, number format, text style | 129 | 14 | 1 | High for the 1/4" set, Medium elsewhere |
+| Default ceiling height (room types) | 23 | 109.125 in 53 of 53 | none | Medium |
+| Sheet size | strings | `ARCH C (18" x 24")`, printable 23.833 x 17.833 | `ANSI B (11" x 17")` only | High |
+| Layout: page template, printer, logo JPEG, macros, project fields | strings | n/a | see below | Medium |
+
+Sample values: `Stucco-6` is `Sand Finish - Eggshell` 1.125", `Housewrap` 0.01", `OSB-Hrz` 0.5", `Fir Stud 16" OC, Teal` 5.5" (main), `Drywall` 0.5", 7.635" in total (Chief shows 7 5/8"). `Interior-4` is 4.5". Text styles are Avenir Book; `1/4" Text Style` is 4.5 plan inches, `1/8"` 9, `1"` 1.125, `Room Label Style` Avenir Heavy 8. The `1/4" Scale Dimension Defaults` set holds arrow 2.25", extension 3", 1st line offset 32", line separation 18", smallest fraction 1/8, fraction text 60%: the same numbers as the UI capture in `plan-core`.
+
+What did **not** decode, and why:
+
+- **Floor, foundation, rough ceiling and stem wall heights**: the object holding per-floor defaults was not identified. The only height found is the room type ceiling height.
+- **Roof and floor finish materials**: room types and roof defaults do not refer to materials by id or GUID in a form we found.
+- **Arrow style, text colour, leader style**: not present in the objects read, or no stable pattern.
+- **Layout pages, boxes, box scales, title block positions, and the 18 x 24 sheet**: the layout template stores no page or box objects we could identify (one `Page Template` object, an embedded logo JPEG, the shared styles); 18 x 24 appears only in the file name, so `LayoutInfo::sheet_from_file_name` supplies it and `LayoutInfo::page_count` is `Some(0)` with Low confidence.
+
+Decoded numbers disagree with two built-ins in `plan-core`: the stock Chief templates (and `plan-core`'s `TextStyles::chief_defaults`) use 6" `Chief Blueprint`/Arial for `Default Text Style`, Daniel's x17 template stores 4.5" Avenir. `seed_text_styles` keeps names Plan Studio already ships (so `Default Text Style` stays 6"); the decoded values are in `TemplateSummary::text_styles` and `bridge::text_styles_from_template`.
 
 ## Bridge
 
 `seed_defaults(&inv, base) -> TemplateSeed`:
 
-- Wall types: every inventory name not already in `base.wall_types` is appended (existing entries untouched and first). Kind is guessed from the name (`Interior`, `Fire`, `Frame`, `Room Divider`... are interior).
+- Wall types: every decoded wall type not already in `base.wall_types` is appended with its real layer stack (`bridge::wall_type_def`: layer name and material are the material name, `is_main` from the main flag, exterior face first). Then every inventory name still missing gets the Phase B stack or the name-number guess (`approximate_wall_types`; on Daniel's plan only 7 names remain: pick-list entries such as `Siding-6, Copy` that have no definition). Existing entries stay untouched and first. Kind is guessed from the name (`Interior`, `Fire`, `Frame`, `Room Divider`... are interior). `TemplateSeed::decoded_wall_types` lists the decoded ones.
 - Layers: names not in `base.layers` are added with the colour and line weight from the `Working Layer Set` table (then `Floor Plan Dimensioned Layer Set`, then the first table), else black and 18. Names are compared with whitespace collapsed and case folded, so the template's `Walls,  Normal` does not duplicate `Walls, Normal`. On the default plan 342 layers are added.
-- `layer_sets` (name plus `visible_layers` when the table decoded), `text_styles`, `dimension_sets`, `plan_views`, and `layout { sheet_size, pages, macros }`.
+- `layer_sets` (name plus `visible_layers` when the table decoded), `text_styles`, `dimension_sets`, `plan_views`, and `layout { sheet_size, pages, macros, sheet_dimensions_in, printable_in }`.
+- Text styles (`text_style_defs`): every decoded style, not only the names Phase A found (15 on the x17 plan). Names Plan Studio already ships keep their values; others take the decoded font, weight and plan height.
+- Dimension sets (`dimension_set_defs`): the decoded numbers (smallest fraction, fraction text size, arrow size, extension gap and reach, 1st line offset, line separation) laid over the base settings, for the 14 sets; `decoded_dimension_sets` lists them. `default_height_in` carries the room-type height (109.125).
+- `sheet_dimensions_in`: the decoded paper size of `sheet_size`, else the `NNxMM` in the file name (`(18.0, 24.0)` for the default layout).
 - `sheet_size`: the listed size whose numbers appear in the file name; `None` when the file name carries dimensions (`18x24`) and no listed size matches (true for the default layout, which does not list `ARCH C (18" x 24")`); the first listed size when the file name carries no dimensions.
 - `seed_plan_defaults` returns just the `PlanDefaults`.
 
+## TODO(plan-core)
+
+Gaps found while bridging (plan-core is read-only for this crate, so the bridge works around them):
+
+- `TODO(plan-core)`: `WallLayer::new` is private; `bridge::wall_type_def` fills the public fields directly.
+- `TODO(plan-core)`: `TextStyle` has only `plan_sized` (Arial, black); the bridge sets `font` and `italic` afterwards. There is no field for the font style string (`Book`/`Heavy`; only `bold` is kept) or a way to hold the 12 unknown flag bytes.
+- `TODO(plan-core)`: `DimensionDefaults` has no slot for the dimension text style name, extension length towards the object, fixed proximity, baseline separation, reach, exterior reach, decimal places or arrow style. They stay in `TemplateDimensionDefaults` and are not applied.
+- `TODO(plan-core)`: no type for layout sheets (sheet size in inches, printable area, margins) or rich text defaults; they stay in `LayoutSeed` and `TemplateSummary`.
+
 ## Open questions
 
-- Where wall layer stacks, text style fonts and sizes, and dimension default values live. Not found by name adjacency; likely index- or GUID-keyed records elsewhere in the body.
+- Where per-floor defaults live (floor-to-floor, foundation, rough ceiling, stem wall heights) and what the second room-type `f64` (23.25, 83.375, 84.875, 4.0) means.
+- Text colour, arrow style, leader style; the 12 text style flag bytes.
+- Layout pages, boxes, scales and title block geometry (none found in the default layout template).
 - Meaning of header `offsets[1]` and `offsets[2]`, of layer flag bits above bit 1, of the class byte and of the second colour.
 - How the 13 unnamed layer-set tables are named (probably by a record that is not a plain `... Layer Set` string).
 - Whether the display flag matches Chief's Layer Display Options. A one-set UI comparison (for example `Foundation Layer Set`) would settle it.
-- Whether the 18 x 24 sheet is stored as numeric page setup; no string names it in the layout.

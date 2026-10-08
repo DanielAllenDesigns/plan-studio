@@ -88,6 +88,108 @@ pub struct PonyWall {
     pub lower_height: f64,
 }
 
+/// Fence look of a [`WallClass::Fencing`] wall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FenceStyle {
+    /// Pickets on two rails.
+    #[default]
+    Picket,
+    /// Solid boards.
+    Privacy,
+    /// Posts and open rails.
+    Rail,
+}
+
+/// Default half-wall top height, inches.
+pub const DEFAULT_HALF_WALL_HEIGHT: f64 = 36.0;
+/// Default elevation of the pony wall split, inches.
+pub const DEFAULT_PONY_SPLIT: f64 = 36.0;
+/// Default height of a foundation wall below its floor, inches.
+pub const DEFAULT_FOUNDATION_HEIGHT: f64 = 48.0;
+/// Layer of room dividers.
+pub const ROOM_DIVIDER_LAYER: &str = "Walls, Invisible";
+/// Layer of deck railings and deck edges.
+pub const DECK_RAILING_LAYER: &str = "Deck Railing";
+/// Layer of fencing.
+pub const FENCING_LAYER: &str = "Fencing";
+
+/// Which flyout wall a [`Wall`] is (W-52..W-58, R-3..R-5). `Standard` is an
+/// ordinary exterior or interior wall (its [`WallKind`]); the others are the
+/// Straight/Curved Foundation, Pony, Glass, Glass Pony, Half-Wall, Room
+/// Divider, Railing, Deck Railing, Deck Edge and Fencing tools. A curved
+/// variant is the same class with `Wall::curve` set.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum WallClass {
+    #[default]
+    Standard,
+    Foundation,
+    /// Upper part of `upper_type`, lower part of `lower_type`, split at
+    /// `split_height`. `upper_sets_plan_display` picks which type's layers
+    /// the plan draws.
+    Pony {
+        upper_type: String,
+        lower_type: String,
+        split_height: f64,
+        upper_sets_plan_display: bool,
+    },
+    Glass,
+    /// A solid `lower_type` wall up to `split_height`, glass above.
+    GlassPony {
+        lower_type: String,
+        split_height: f64,
+    },
+    /// Top lowered to `height`.
+    HalfWall {
+        height: f64,
+    },
+    /// Invisible, zero thickness in 3D; only closes rooms.
+    RoomDivider,
+    Railing,
+    DeckRailing,
+    DeckEdge,
+    Fencing {
+        style: FenceStyle,
+    },
+}
+
+impl WallClass {
+    pub fn is_standard(&self) -> bool {
+        matches!(self, WallClass::Standard)
+    }
+
+    /// Short name for the Wall Specification dialog.
+    pub fn label(&self) -> &'static str {
+        match self {
+            WallClass::Standard => "Standard",
+            WallClass::Foundation => "Foundation",
+            WallClass::Pony { .. } => "Pony Wall",
+            WallClass::Glass => "Glass Wall",
+            WallClass::GlassPony { .. } => "Glass Pony Wall",
+            WallClass::HalfWall { .. } => "Half-Wall",
+            WallClass::RoomDivider => "Room Divider",
+            WallClass::Railing => "Railing",
+            WallClass::DeckRailing => "Deck Railing",
+            WallClass::DeckEdge => "Deck Edge",
+            WallClass::Fencing { .. } => "Fencing",
+        }
+    }
+
+    /// The layer walls of this class are drawn on (`None` = the wall's own).
+    pub fn default_layer(&self) -> Option<&'static str> {
+        match self {
+            WallClass::RoomDivider => Some(ROOM_DIVIDER_LAYER),
+            WallClass::DeckRailing | WallClass::DeckEdge => Some(DECK_RAILING_LAYER),
+            WallClass::Fencing { .. } => Some(FENCING_LAYER),
+            _ => None,
+        }
+    }
+
+    /// Railing-like classes draw posts and rails instead of a solid wall.
+    pub fn is_railing(&self) -> bool {
+        matches!(self, WallClass::Railing | WallClass::DeckRailing)
+    }
+}
+
 /// Wall options and variants (W-24, W-52..W-58, R-3..R-5).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -256,7 +358,89 @@ impl Wall {
             roof: WallRoofDirective::default(),
             exterior_side: Side::Left,
             extras: crate::extras::WallExtras::default(),
+            class: WallClass::Standard,
+            foundation_height: DEFAULT_FOUNDATION_HEIGHT,
+            is_deck_edge: false,
         }
+    }
+
+    /// Makes this wall `class`, keeping the legacy [`WallFlags`] other code
+    /// reads (foundation, pony, half wall, room divider, railing) and the
+    /// deck-edge marker in step.
+    pub fn set_class(&mut self, class: WallClass) {
+        match &self.class {
+            WallClass::Foundation => self.flags.foundation = false,
+            WallClass::Pony { .. } | WallClass::GlassPony { .. } => self.flags.pony = None,
+            WallClass::HalfWall { .. } => self.flags.half_wall = false,
+            WallClass::RoomDivider => {
+                self.flags.room_divider = false;
+                self.flags.invisible = false;
+            }
+            WallClass::Railing | WallClass::DeckRailing => self.flags.railing = false,
+            WallClass::DeckEdge => self.is_deck_edge = false,
+            _ => {}
+        }
+        match &class {
+            WallClass::Foundation => self.flags.foundation = true,
+            WallClass::Pony {
+                lower_type,
+                split_height,
+                ..
+            }
+            | WallClass::GlassPony {
+                lower_type,
+                split_height,
+            } => {
+                self.flags.pony = Some(PonyWall {
+                    lower_type: lower_type.clone(),
+                    lower_height: *split_height,
+                })
+            }
+            WallClass::HalfWall { .. } => self.flags.half_wall = true,
+            WallClass::RoomDivider => {
+                self.flags.room_divider = true;
+                self.flags.invisible = true;
+            }
+            WallClass::Railing | WallClass::DeckRailing => self.flags.railing = true,
+            WallClass::DeckEdge => self.is_deck_edge = true,
+            _ => {}
+        }
+        self.class = class;
+    }
+
+    /// A foundation wall by class or by the legacy flag.
+    pub fn is_foundation(&self) -> bool {
+        self.class == WallClass::Foundation || self.flags.foundation
+    }
+
+    /// Room dividers close rooms but are never built or drawn as walls.
+    pub fn is_room_divider(&self) -> bool {
+        self.class == WallClass::RoomDivider || self.flags.room_divider
+    }
+
+    /// The closed plan polygon of a curved wall: the left offset curve
+    /// forward, then the right one back, faceted per the curve's facet angle.
+    /// Straight walls give their footprint.
+    pub fn plan_polygon(&self) -> Vec<Point> {
+        let Some(c) = self.curve.filter(|c| !c.is_straight()) else {
+            return self.footprint().to_vec();
+        };
+        let n = c.facet_count(self.start, self.end).max(2);
+        let pts = c.sample_points(self.start, self.end, n);
+        let half = self.thickness * 0.5;
+        let normal_at = |i: usize| {
+            let a = pts[i.saturating_sub(1)];
+            let b = pts[(i + 1).min(pts.len() - 1)];
+            b.sub(a).normalized().perp()
+        };
+        let left: Vec<Point> = (0..pts.len())
+            .map(|i| pts[i].add(normal_at(i).scale(half)))
+            .collect();
+        let right: Vec<Point> = (0..pts.len())
+            .rev()
+            .map(|i| pts[i].sub(normal_at(i).scale(half)))
+            .collect();
+        left.into_iter().chain(right).collect()
     }
 
     /// Whether the wall is a real (non-straight) arc.
@@ -513,6 +697,7 @@ impl Project {
             || (wa.thickness - wb.thickness).abs() > 1e-9
             || (wa.height - wb.height).abs() > 1e-9
             || wa.kind != wb.kind
+            || wa.class != wb.class
             || wa.layer != wb.layer
             || wa.wall_type != wb.wall_type
             || wa.flags != wb.flags
@@ -909,5 +1094,167 @@ mod tests {
         let s = serde_json::to_string(&w).unwrap();
         let back: Wall = serde_json::from_str(&s).unwrap();
         assert_eq!(back.roof, w.roof);
+    }
+
+    fn every_class() -> Vec<WallClass> {
+        vec![
+            WallClass::Standard,
+            WallClass::Foundation,
+            WallClass::Pony {
+                upper_type: "Stucco-6".into(),
+                lower_type: "Foundation-8".into(),
+                split_height: 36.0,
+                upper_sets_plan_display: true,
+            },
+            WallClass::Glass,
+            WallClass::GlassPony {
+                lower_type: "Siding-6".into(),
+                split_height: 30.0,
+            },
+            WallClass::HalfWall { height: 36.0 },
+            WallClass::RoomDivider,
+            WallClass::Railing,
+            WallClass::DeckRailing,
+            WallClass::DeckEdge,
+            WallClass::Fencing {
+                style: FenceStyle::Privacy,
+            },
+        ]
+    }
+
+    #[test]
+    fn every_wall_class_round_trips_through_json_straight_and_curved() {
+        for class in every_class() {
+            for curved in [false, true] {
+                let mut w = Wall::new(
+                    Point::ZERO,
+                    Point::new(120.0, 0.0),
+                    6.5,
+                    96.0,
+                    WallKind::Exterior,
+                );
+                w.set_class(class.clone());
+                w.foundation_height = 40.0;
+                if curved {
+                    w.curve = Some(WallCurve { bulge: 20.0 });
+                }
+                let back: Wall = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+                assert_eq!(back.class, class);
+                assert_eq!(back.foundation_height, 40.0);
+                assert_eq!(back.is_deck_edge, class == WallClass::DeckEdge);
+                assert_eq!(back.flags, w.flags);
+                assert_eq!(back.curve, w.curve);
+            }
+        }
+    }
+
+    #[test]
+    fn set_class_keeps_the_legacy_flags_in_step() {
+        let mut w = Wall::default();
+        w.set_class(WallClass::RoomDivider);
+        assert!(w.flags.room_divider && w.flags.invisible && w.is_room_divider());
+        assert!(w.flags.defines_rooms());
+        w.set_class(WallClass::Foundation);
+        assert!(!w.flags.room_divider && !w.flags.invisible);
+        assert!(w.flags.foundation && w.is_foundation());
+        w.set_class(WallClass::Pony {
+            upper_type: "a".into(),
+            lower_type: "b".into(),
+            split_height: 30.0,
+            upper_sets_plan_display: false,
+        });
+        assert!(!w.flags.foundation);
+        assert_eq!(w.flags.pony.as_ref().unwrap().lower_height, 30.0);
+        w.set_class(WallClass::HalfWall { height: 36.0 });
+        assert!(w.flags.pony.is_none() && w.flags.half_wall);
+        w.set_class(WallClass::DeckEdge);
+        assert!(w.is_deck_edge && !w.flags.half_wall);
+        w.set_class(WallClass::Standard);
+        assert_eq!(w.flags, WallFlags::default());
+        assert!(!w.is_deck_edge);
+    }
+
+    #[test]
+    fn old_wall_json_is_a_standard_wall() {
+        let w: Wall = serde_json::from_str(
+            r#"{"id":1,"start":{"x":0.0,"y":0.0},"end":{"x":10.0,"y":0.0},
+                "thickness":6.5,"height":96.0,"kind":"Interior"}"#,
+        )
+        .unwrap();
+        assert!(w.class.is_standard());
+        assert_eq!(w.foundation_height, DEFAULT_FOUNDATION_HEIGHT);
+    }
+
+    #[test]
+    fn curved_plan_polygon_is_a_band_around_the_arc() {
+        let mut w = Wall::new(
+            Point::ZERO,
+            Point::new(100.0, 0.0),
+            10.0,
+            96.0,
+            WallKind::Interior,
+        );
+        assert_eq!(w.plan_polygon().len(), 4);
+        w.curve = Some(WallCurve { bulge: 25.0 });
+        let poly = w.plan_polygon();
+        assert!(poly.len() > 8);
+        let (min, max) = poly
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+        // The apex bulges 25" to the left (+y) and the band is 10" thick.
+        assert!((max - 30.0).abs() < 0.5, "{max}");
+        assert!(min < 0.0 && min > -6.0, "{min}");
+    }
+
+    #[test]
+    fn different_classes_do_not_merge() {
+        let mut p = Project::new("t");
+        let a = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(100.0, 0.0),
+            4.5,
+            96.0,
+            WallKind::Interior,
+        );
+        let b = p.add_wall(
+            0,
+            Point::new(100.0, 0.0),
+            Point::new(200.0, 0.0),
+            4.5,
+            96.0,
+            WallKind::Interior,
+        );
+        p.floors[0].wall_mut(b).unwrap().class = WallClass::Glass;
+        assert!(p.join_collinear_walls(0, a, b).is_none());
+        p.floors[0].wall_mut(b).unwrap().class = WallClass::Standard;
+        assert!(p.join_collinear_walls(0, a, b).is_some());
+    }
+
+    #[test]
+    fn a_room_divider_closes_a_room() {
+        let mut p = Project::new("t");
+        let c = [
+            Point::ZERO,
+            Point::new(200.0, 0.0),
+            Point::new(200.0, 150.0),
+            Point::new(0.0, 150.0),
+        ];
+        let mut ids = Vec::new();
+        for i in 0..4 {
+            ids.push(p.add_wall(0, c[i], c[(i + 1) % 4], 4.5, 96.0, WallKind::Interior));
+        }
+        let rooms = |p: &Project| crate::rooms::detect_rooms(&p.floors[0].walls, 0.5).len();
+        assert_eq!(rooms(&p), 1);
+        p.floors[0]
+            .wall_mut(ids[3])
+            .unwrap()
+            .set_class(WallClass::RoomDivider);
+        assert_eq!(rooms(&p), 1, "the divider still closes the room");
+        // A plain invisible wall does not.
+        let w = p.floors[0].wall_mut(ids[3]).unwrap();
+        w.set_class(WallClass::Standard);
+        w.flags.invisible = true;
+        assert_eq!(rooms(&p), 0);
     }
 }

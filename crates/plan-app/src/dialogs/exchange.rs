@@ -32,10 +32,11 @@ use std::path::Path;
 // Export
 // ===================================================================
 
-/// The active floor as an R12 ASCII DXF.
+/// The active floor as an R12 ASCII DXF, with the roof plane outlines on layer
+/// "Roof Planes" and the manual framing on layer "Framing".
 pub fn floor_dxf(cx: &mut EditorContext) -> String {
     cx.refresh();
-    plan_core::write_dxf(&cx.project, cx.floor, &cx.rooms)
+    framing_view::floor_dxf(&cx.project, cx.floor, &cx.rooms)
 }
 
 /// The four exterior elevations (Front, Back, Left, Right) as one DXF, side
@@ -645,7 +646,8 @@ fn cad_walls_window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut CadWall
 fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) -> Option<bool> {
     let mut open = true;
     let mut export = false;
-    let members = framing_view::members_for(&cx.project, cx.floor, all);
+    let mut export_list = false;
+    let data = framing_view::takeoff_data(&cx.project, cx.floor, all);
     egui::Window::new("Framing Takeoff")
         .id(egui::Id::new("framing_takeoff"))
         .open(&mut open)
@@ -656,21 +658,21 @@ fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) ->
                 ui.radio_value(&mut all, true, "All floors");
             });
             ui.separator();
-            if members.is_empty() {
+            if data.members == 0 {
                 ui.weak("No framing yet. Use Build > Framing > Build Framing.");
             } else {
-                let (cols, rows) = framing_view::takeoff_table(&members);
+                let (cols, rows) = (&data.columns, &data.rows);
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
                         egui::Grid::new("framing_takeoff_grid")
                             .striped(true)
                             .show(ui, |ui| {
-                                for c in &cols {
+                                for c in cols {
                                     ui.strong(c);
                                 }
                                 ui.end_row();
-                                for r in &rows {
+                                for r in rows {
                                     for c in r {
                                         ui.label(c);
                                     }
@@ -681,18 +683,23 @@ fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) ->
             }
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label(format!("{} members", members.len()));
+                ui.label(format!("{} members", data.members));
                 export = ui
-                    .add_enabled(!members.is_empty(), egui::Button::new("Export CSV\u{2026}"))
+                    .add_enabled(data.members > 0, egui::Button::new("Export CSV\u{2026}"))
+                    .clicked();
+                export_list = ui
+                    .add_enabled(
+                        data.members > 0,
+                        egui::Button::new("Export Material List\u{2026}"),
+                    )
                     .clicked();
             });
         });
     if export {
-        cx.status = save_text(
-            "framing_takeoff.csv",
-            "csv",
-            &framing_view::takeoff_csv(&members),
-        );
+        cx.status = save_text("framing_takeoff.csv", "csv", &data.csv);
+    }
+    if export_list {
+        cx.status = save_text("framing_material_list.csv", "csv", &data.material_csv);
     }
     open.then_some(all)
 }

@@ -29,7 +29,7 @@ depends on.
 plan-app ---> plan-core  plan-3d  plan-view3d  plan-roof  plan-cabinets  plan-stairs
           \-> plan-docs  plan-layout  plan-elevation  plan-library  plan-config
           \-> plan-terrain  plan-materials  plan-electrical  plan-spaceplan  plan-check
-          \-> plan-render  plan-chiefplan  plan-framing*  plan-import*   (* declared, not yet used)
+          \-> plan-render  plan-chiefplan  plan-framing  plan-import
 plan-3d <--- plan-cabinets, plan-stairs, plan-electrical, plan-terrain, plan-materials,
              plan-framing, plan-elevation, plan-spaceplan, plan-render, plan-check
 plan-layout -> plan-docs, plan-elevation        plan-view3d -> plan-render
@@ -84,8 +84,8 @@ and `auto_hole_for_building`.
 
 **plan-framing.** Chief's Build Framing as a library: `frame_wall` (plates, studs at 16" on center, king and
 trimmer studs, plied headers, cripples, sills), `frame_floor` (joists, rim, blocking), `wall_detail` (the 2D
-framing elevation), `takeoff` (counts, board feet, linear feet) and `FramingDefaults`. Not in the editor yet; no
-corner or T backing, no combined headers.
+framing elevation), `takeoff` (counts, board feet, linear feet) and `FramingDefaults`. The editor calls it from
+Build > Framing (`editor/framing_view.rs`, chapter 11.11); no corner or T backing, no combined headers.
 
 ### Documents and output
 
@@ -101,7 +101,8 @@ overhead, as weighted `Line2` lists with `to_cad` and `svg`. Accuracy is about o
 no hatching, curves or text.
 
 **plan-import.** Brings outside drawings in: an ASCII DXF reader, unit conversion, `to_cad_objects` and
-`cad_to_walls` (parallel-line pairing). No DWG, no binary DXF.
+`cad_to_walls` (parallel-line pairing). The editor calls it from File > Import and CAD > CAD to Walls
+(`dialogs/exchange.rs`, chapter 12.4). No DWG, no binary DXF.
 
 ### Views and rendering
 
@@ -157,11 +158,13 @@ tools/          one module per Chief tool behind the Tool trait (select, wall, o
 editor/         services shared by tools: EditorContext, selection, snap engine, handles,
                 temporary dimensions, undo history, plan rendering, wall connections, edit actions
                 and their dispatch, and per-object views (roof_view, stairs_view, site_view, placed,
-                rooms_edit)
+                rooms_edit, framing_view); restyle (View > Color and Line Weights) and sheet (the
+                drawing sheet)
 shell/          docks, library browser, the 3D panel, the runtime hotkey map, and spec_dialogs (the
                 one place that maps an object kind to its specification dialog)
-dialogs/        Chief-style specification dialogs on the shared frame, Default Settings, Customize
-                Hotkeys, Layer Display Options, the Build and Tools windows
+dialogs/        Chief-style specification dialogs on the shared frame, Default Settings and its lists
+                (default_lists: dimension sets, room types, text styles), Customize Hotkeys, Layer
+                Display Options, file exchange and framing windows (exchange), the Build and Tools windows
 ```
 
 ## 14.3 How data flows in the editor

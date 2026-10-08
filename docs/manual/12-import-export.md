@@ -1,9 +1,10 @@
 # Chapter 12: Import and Export
 
 What Plan Studio can read and write today, how each format is handled, and what is
-engine-only (written and tested in a crate, but with no menu command yet). The File >
-Export, Import and Print submenus are dimmed in the current build, so several formats
-below are reached from Rust code or the command line rather than from the menus.
+engine-only (written and tested in a crate, but with no menu command yet). File > Export
+(DXF, Elevation DXF, Construction Set PDF, glTF), File > Import (Import Drawing (DXF)), File > Templates >
+Import Chief Template and CAD > CAD to Walls work; File > Print and the Library menu's catalog import
+are still dimmed, so Chief catalogs are reached from Rust code only.
 
 ## 12.1 Formats at a glance
 
@@ -15,11 +16,11 @@ below are reached from Rust code or the command line rather than from the menus.
 | PNG (ray-traced stills) | Write | Yes: Ray Trace > Save PNG... | `plan-render` |
 | CSV (schedules, materials list) | Write | Yes: Export CSV... buttons | `plan-docs` |
 | Markdown (Plan Check report) | Write | Yes: Save Report... | `plan-check` |
-| DXF (ASCII, R12) | Write | (planned; engine in `plan-core`) | `plan-core::export::dxf` |
-| DXF import, CAD to Walls | Read | (planned; engine in `plan-import`) | `plan-import` |
+| DXF (ASCII, R12) | Write | Yes: File > Export > DXF..., Elevation DXF... | `plan-core::export::dxf`, `plan-elevation` |
+| DXF import, CAD to Walls | Read | Yes: File > Import > Import Drawing (DXF)..., CAD > CAD to Walls... | `plan-import` |
 | DWG | Neither | (planned) | |
 | Chief catalogs `.calib`, `.calibz` | Read | (planned; engine in `plan-calib`) | `plan-calib` |
-| Chief templates `.plan`, `.layout` | Read names and some values | (planned; engine in `plan-chiefplan`) | `plan-chiefplan` |
+| Chief templates `.plan`, `.tpl`, `.layout` | Read names and some values | Yes: File > Templates > Import Chief Template... | `plan-chiefplan` |
 | Chief hotkeys, toolbars, preferences | Read | Hotkeys only (chapter 13) | `plan-config` |
 | IFC, SketchUp, Revit, OBJ | Neither | (planned) | |
 
@@ -29,8 +30,14 @@ below are reached from Rust code or the command line rather than from the menus.
 |---|---|---|---|
 | File > Open Plan... | `Cmd+O` | Opens a `.psplan`. | Works. |
 | File > Save, Save As... | `Cmd+S` | Writes a `.psplan`. | Works. |
-| File > Export > (DXF, PDF, Image) | | Chief's export submenu. | (planned) dimmed |
-| File > Import > (DXF/DWG, image underlay) | | Chief's import submenu. | (planned) dimmed |
+| File > Export > DXF... | | Writes the active floor as an ASCII R12 DXF (12.3). | Works. |
+| File > Export > Elevation DXF... (also 3D > Create Orthographic View > Export Elevations (DXF)...) | | Writes the four elevations as one DXF (12.3). | Works. |
+| File > Export > Construction Set PDF... | | The same as Create Construction Set. | Works. |
+| File > Export > glTF... | | The same as 3D > Export > glTF.... | Works. |
+| File > Export > (image, DWG) | | Not in the menu. | (planned) |
+| File > Import > Import Drawing (DXF)... | | Adds a DXF drawing to the active floor as CAD objects (12.4). | Works. |
+| File > Import > (DWG, image underlay) | | Not in the menu. | (planned) |
+| File > Templates > Import Chief Template... | | Seeds your defaults from a Chief `.plan`, `.tpl` or `.layout` (12.8). | Works. |
 | File > Print > Print... | `Cmd+P` | Prints the active view. | (planned) dimmed |
 | 3D > Export > glTF... | | Writes `.gltf` and `.bin`. | Works. |
 | Tools > Schedules > Create Construction Set... | | Writes a PDF set. | Works. |
@@ -39,7 +46,7 @@ below are reached from Rust code or the command line rather than from the menus.
 | Checks window > Save Report... | | Writes Markdown. | Works. |
 | Ray Trace... > Save PNG... | | Writes a PNG. | Works. |
 | Library > Import Library (.calib, .calibz)... | | Adds a Chief catalog. | (planned) dimmed |
-| CAD > CAD to Walls... | | Converts lines to walls. | (planned) dimmed |
+| CAD > CAD to Walls... | | Converts pairs of parallel CAD lines to walls (12.4). | Works. |
 
 ## 12.2 Plan files (`.psplan`)
 
@@ -60,10 +67,12 @@ camera objects and the wall types stored in the plan. Lengths are inches.
 
 Autosave, backups and an Open Recent list are (planned).
 
-## 12.3 DXF export (planned in the editor; engine ready)
+## 12.3 DXF export (works)
 
-`plan_core::write_dxf(project, floor, rooms)` returns an **ASCII DXF, release 12 (AC1009)**
-string for one floor. Units are inches (`$INSUNITS` 1). It writes:
+**File > Export > DXF...** asks for a file name (default `<Project Name> - <Floor Name>.dxf`) and writes the
+**active floor** as an **ASCII DXF, release 12 (AC1009)** (`plan_core::write_dxf(project, floor, rooms)`). The
+status bar says "Saved <path>", or "Export cancelled" if you dismiss the file dialog. Units are inches
+(`$INSUNITS` 1). It writes:
 
 | Plan object | DXF entities |
 |---|---|
@@ -76,7 +85,13 @@ string for one floor. Units are inches (`$INSUNITS` 1). It writes:
 The layer table carries every plan layer with an AutoCAD color index, negative when the layer is
 hidden. Roof planes show up as the closed outline polylines on `Roof Planes`.
 
-To use it before a menu command exists, call it from a small Rust program or test:
+**File > Export > Elevation DXF...** (the same command is 3D > Create Orthographic View > Export Elevations
+(DXF)...) writes the four exterior elevations (Front, Back, Left, Right) as the hidden-line drawings of
+`plan-elevation`, side by side with a 120" gap and a caption under each ("Front Elevation" ...), into one DXF
+(default `<Project Name> Elevations.dxf`). A side with nothing to draw is skipped; a plan with nothing to draw
+says "There is nothing to draw an elevation of".
+
+The same floor export from a small Rust program or test:
 
 ```rust
 let rooms = plan_core::detect_rooms(&project.floors[0].walls, 0.5);
@@ -84,9 +99,39 @@ let dxf = plan_core::write_dxf(&project, 0, &rooms);
 std::fs::write("first-floor.dxf", dxf)?;
 ```
 
-## 12.4 DXF import and CAD to Walls (planned in the editor; engine ready)
+## 12.4 DXF import and CAD to Walls (work)
 
 `plan-import` is the counterpart of Chief's Import Drawing and CAD to Walls.
+
+### File > Import > Import Drawing (DXF)...
+
+Pick a `.dxf` file; the **Import Drawing (DXF)** window opens before anything is added.
+
+- It shows the file name, "<n> entities on <m> layers; the file's units: <units>" and, when the reader
+  skipped entity kinds it does not support, "Not imported: <count> <kind>, ...". A file that cannot be read
+  ends with "Import failed: <reason>" in the status bar.
+- **Units**: As the file says (default), Inches, Feet, Millimeters, Centimeters or Meters. A file with no
+  units reads as inches. **Layer name prefix** is put in front of every imported layer name (blank by default).
+  "Size in the plan" shows the drawing's declared extents in the current units, updating as you change Units.
+- **Import** adds the drawing to the active floor as CAD objects, as one undo step ("Import Drawing"). Layers the
+  plan does not have are created, hidden when the DXF layer was off. The status bar says "Imported n objects (k
+  new layers)", or "The drawing had nothing to import".
+
+### CAD > CAD to Walls...
+
+Opens the **CAD to Walls** window ("Pairs of parallel lines become walls.") for the active floor. With no CAD
+lines on the floor the status bar says "CAD to Walls: there are no CAD lines on this floor".
+
+- **Lines from**: "Selected CAD lines (n)" or "All lines on layer" with a layer combo that lists each layer
+  holding lines or polylines with its segment count. Polyline segments count as lines.
+- **Options** (inches): Thinnest wall, Thickest wall, Shortest wall, Snap corners within, and Exterior from
+  thickness (the thickness from which a proposed wall counts as exterior).
+- **Preview** reads "<n> lines give <w> walls (<e> exterior, <i> interior); <p> line pieces left over." The
+  preview refreshes when you change a setting.
+- **Create <n> Walls** adds the proposed walls at the default height of their kind, as one undo step ("CAD to
+  Walls"); the status bar says "Created n walls from CAD lines". The CAD lines stay where they are.
+
+### The engine
 
 - `parse_dxf(text)` reads **ASCII DXF** tolerantly (CRLF or LF, padded or bare group codes) into a
   `DxfDrawing` with layers, units, extents, blocks and entities. Supported entities: LINE,
@@ -102,7 +147,6 @@ std::fs::write("first-floor.dxf", dxf)?;
   fails with "not an ASCII DXF file" or "binary DXF files are not supported".
 - The reader round-trips what `write_dxf` writes.
 
-The planned menu commands are File > Import > DXF/DWG... and CAD > CAD to Walls....
 
 ## 12.5 glTF export (works)
 
@@ -175,12 +219,17 @@ Plan Studio **reads them in place** from your installation; it never ships, copi
 fixtures built at test time; tests against a real install are marked `#[ignore]`. This is decision 3 in
 `DECISIONS.md`.
 
-## 12.8 Chief templates (`.plan`, `.layout`), planned in the editor
+## 12.8 Chief templates (`.plan`, `.tpl`, `.layout`)
+
+**File > Templates > Import Chief Template...** picks a Chief `.plan`, `.tpl` or `.layout` file, seeds your
+defaults from it (chapter 1.7) and saves the result as your template in `~/.plan-studio/defaults.json`. The status
+bar reports "Imported <path>: n wall types, m layers added", or "Import failed: <reason>"; if your template could not
+be saved it says so. Reset to Chief X18 Template undoes it. The engine behind it:
 
 `plan-chiefplan` is a **read-only** scanner for Chief template files. It lists the names stored in a template (layer sets,
 layers, text styles, dimension defaults, wall types, saved plan views, sheet sizes, layout pages, schedule
 names) and decodes per-layer color, line weight and display/lock flags where the record layout is understood. It
-`seed_defaults` can turn an inventory into Plan Studio defaults. It never writes or copies a template, and it
+`seed_defaults` turns an inventory into Plan Studio defaults. It never writes or copies a template, and it
 redacts client-specific strings (project file names, network paths, address-like text) before any inventory is
 written. Daniel's 26 templates are inventoried in `docs/daniel-template-inventory.md`: for example the working
 template `x17 Working Template 2025-08-20.plan` has 34 layer sets, 356 layers, 12 text styles, 14 dimension

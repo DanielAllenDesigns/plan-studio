@@ -36,7 +36,8 @@ crates/plan-app/src/
   tools/             one module per Chief tool behind the Tool trait
     mod.rs           Tool trait, ToolId, ToolSet, registry(); one line per tool
     select.rs wall.rs opening.rs pan.rs dimension.rs text.rs cad.rs cabinet.rs
-    library.rs stairs.rs roof.rs electrical.rs terrain.rs camera.rs
+    library.rs stairs.rs roof.rs electrical.rs terrain.rs camera.rs foundation.rs
+    framing.rs       the 19 manual framing flyout entries (members, direction lines, markers, truss base)
   dialogs/           Chief-style specification dialogs and Default Settings lists
     (wall, opening, room, floor, dimension, text, cad, cabinet, symbol, stairs,
      roof, electrical, terrain, camera, defaults, default_lists, hotkeys,
@@ -103,6 +104,7 @@ sub-tool, so one tool object serves every entry of its flyout:
 | `StairsVariant(StairKind)`, `RoofVariant(RoofMode)`, `CabinetVariant(CabinetKind)` | the flyout entry |
 | `DimensionVariant(DimMode)`, `TextVariant(TextMode)`, `CadVariant(CadMode)` | the flyout entry |
 | `CameraVariant(CameraVariant)` | Full Camera, overviews, Doll House, sections |
+| `FramingVariant(FramingVariant)` | General Framing, Post, Joist, Joist Direction, Bearing Line, Rafter, Roof Truss, Truss Base ... (`framing_view` stores the objects in `Floor.framing`) |
 
 `ToolSet::set_active` finds the tool whose `id().same_tool(id)` and calls
 `set_variant(id)` with the full payload; `ToolId::base()` gives the plain id.

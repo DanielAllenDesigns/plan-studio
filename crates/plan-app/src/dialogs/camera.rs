@@ -6,6 +6,15 @@
 //! lock) are drawn disabled; the per-camera rendering technique is kept for
 //! the session by the 3D panel ([`CameraExtras`]).
 //!
+//! Elevation and cross-section cameras (and wall elevations) also get the
+//! "Elevation rendering" section on the Rendering tab: hatch materials,
+//! shadows (sun azimuth and altitude, optionally from a date, time and
+//! latitude through `plan_materials::SunSettings`), the section back-clip
+//! depth, line weight by distance and labels. They are stored on the camera
+//! (`CameraObject.render`, the back clip in the section) and turned into
+//! `plan_elevation::Options` by [`elevation_options`]; [`render_elevation`]
+//! draws the camera's 2D drawing with them.
+//!
 //! [`RayTraceDialog`] is a small state machine around
 //! `plan_render::Renderer::render_progressive` running on a background
 //! thread: Idle -> Running -> Done / Cancelled / Failed. Everything except the
@@ -16,7 +25,8 @@ use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke};
 use plan_3d::Scene;
 use plan_core::camera::DEFAULT_CONE_LENGTH;
 use plan_core::geometry::Point;
-use plan_core::{CameraKind, CameraObject, Id};
+use plan_core::{CameraKind, CameraObject, Id, Project};
+use plan_elevation::{Drawing, Options, SectionCut, SunDir, ViewDir};
 use plan_materials::{RenderingTechnique, SunSettings};
 use plan_render::{Environment, Image, RenderSettings, Renderer, Sun, Technique};
 use std::panic::AssertUnwindSafe;
@@ -56,6 +66,121 @@ impl Default for CameraExtras {
     }
 }
 
+/// Is this a camera that draws a 2D elevation or cross section?
+pub fn is_elevation_camera(c: &CameraObject) -> bool {
+    matches!(
+        c.kind,
+        CameraKind::CrossSection { .. } | CameraKind::WallElevation
+    )
+}
+
+/// The orthographic view closest to the camera's viewing direction (the
+/// camera stands on the opposite side of the model).
+#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
+pub fn elevation_view_dir(c: &CameraObject) -> ViewDir {
+    let d = c.direction();
+    if d.y.abs() >= d.x.abs() {
+        if d.y >= 0.0 {
+            ViewDir::Front
+        } else {
+            ViewDir::Back
+        }
+    } else if d.x >= 0.0 {
+        ViewDir::Left
+    } else {
+        ViewDir::Right
+    }
+}
+
+/// The cutting plane of a section camera: through the centre of its cut line,
+/// square to the nearest axis (scene Z is -plan y).
+#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
+pub fn section_cut(c: &CameraObject) -> SectionCut {
+    let plane_normal = elevation_view_dir(c);
+    let offset = match plane_normal {
+        ViewDir::Front | ViewDir::Back => -c.position.y,
+        _ => c.position.x,
+    };
+    SectionCut {
+        plane_normal,
+        offset,
+    }
+}
+
+/// `plan_elevation::Options` for a camera: hatch, shadows from the stored
+/// sun, line weight by distance, and a section's back clip as its depth.
+/// (`raster_px` is left at the default; tests lower it.)
+#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
+pub fn elevation_options(c: &CameraObject) -> Options {
+    let r = &c.render;
+    Options {
+        hatch: r.hatch,
+        shadows: r.shadows.then_some(SunDir {
+            azimuth_deg: r.sun_azimuth_deg,
+            altitude_deg: r.sun_altitude_deg,
+        }),
+        depth_weights: r.depth_weights,
+        section_depth: matches!(c.kind, CameraKind::CrossSection { .. })
+            .then(|| crate::tools::camera::back_clip(c))
+            .flatten(),
+        ..Options::default()
+    }
+}
+
+/// The camera's 2D drawing with `opts`: a section is cut at its line, other
+/// elevation cameras draw the whole building from their direction. With the
+/// camera's labels option the drawing gets the title, level callouts, grade
+/// line and roof pitch symbols (a section is titled with the camera's name).
+#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
+pub fn render_elevation_with(project: &Project, c: &CameraObject, opts: &Options) -> Drawing {
+    let scene = plan_3d::build_scene(project);
+    let dir = elevation_view_dir(c);
+    let section = matches!(c.kind, CameraKind::CrossSection { .. });
+    let mut drawing = if section {
+        plan_elevation::section(&scene, section_cut(c), opts)
+    } else {
+        plan_elevation::elevation(&scene, dir, opts)
+    };
+    if c.render.labels {
+        plan_elevation::annotate(&mut drawing, &scene, project, dir);
+        if section {
+            let title = c.name.to_uppercase();
+            for (_, t) in &mut drawing.texts {
+                if t.ends_with("ELEVATION") {
+                    *t = title.clone();
+                }
+            }
+        }
+    }
+    drawing
+}
+
+/// [`render_elevation_with`] using [`elevation_options`].
+#[allow(dead_code)] // the elevation camera view calls this (docs/integration-queue.md)
+pub fn render_elevation(project: &Project, c: &CameraObject) -> Drawing {
+    render_elevation_with(project, c, &elevation_options(c))
+}
+
+/// Date, time and latitude the "Set sun" button turns into a sun position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SunInput {
+    month: u32,
+    day: u32,
+    time_hours: f64,
+    latitude: f64,
+}
+
+impl Default for SunInput {
+    fn default() -> Self {
+        Self {
+            month: 6,
+            day: 21,
+            time_hours: 15.0,
+            latitude: 33.75,
+        }
+    }
+}
+
 /// The Camera Specification dialog (C-30).
 pub struct CameraDialog {
     frame: SpecDialog,
@@ -63,13 +188,22 @@ pub struct CameraDialog {
     extras: CameraExtras,
     floor_name: String,
     fields: Fields,
+    /// Length of a section's cut line (the draft's `section` is rebuilt from
+    /// the centre, the view direction and this after every edit).
+    section_len: f64,
+    sun_input: SunInput,
 }
 
 impl CameraDialog {
     pub fn new(camera: &CameraObject, floor_name: &str, extras: CameraExtras) -> Self {
+        let mut draft = camera.clone();
+        crate::tools::camera::upgrade_section(&mut draft);
+        let section_len = crate::tools::camera::section_width(&draft);
         Self {
             frame: SpecDialog::new("Camera Specification", "camera"),
-            draft: camera.clone(),
+            draft,
+            section_len,
+            sun_input: SunInput::default(),
             extras,
             floor_name: floor_name.to_string(),
             fields: Fields::default(),
@@ -94,6 +228,26 @@ impl CameraDialog {
         let outcome = frame.show(ctx, self);
         self.frame = frame;
         outcome
+    }
+
+    /// Rebuilds a section's cut line from the edited centre, direction,
+    /// length and back clip.
+    fn sync_section(&mut self) {
+        if !self.is_section() {
+            return;
+        }
+        let back = match self.draft.kind {
+            CameraKind::CrossSection { back_clip } => back_clip,
+            _ => None,
+        };
+        let (centre, dir) = (self.draft.position, self.draft.direction_deg);
+        crate::tools::camera::set_section_geometry(
+            &mut self.draft,
+            centre,
+            dir,
+            self.section_len,
+            back,
+        );
     }
 
     fn is_section(&self) -> bool {
@@ -152,7 +306,7 @@ impl CameraDialog {
         );
         f.degrees_row(ui, "View Direction", "deg_dir", &mut d.direction_deg);
         if section_cam {
-            f.length_row(ui, "Section Length", "width", &mut d.fov_deg);
+            f.length_row(ui, "Section Length", "width", &mut self.section_len);
         } else {
             f.length_row(ui, "Height Above Floor", "eye", &mut d.eye_height);
             f.degrees_row(ui, "Angle of View", "deg_fov", &mut d.fov_deg);
@@ -197,6 +351,81 @@ impl CameraDialog {
         });
         dis_check(ui, "Cast shadows", true);
         ui.weak("The technique is kept for this session.");
+        if is_elevation_camera(&self.draft) {
+            self.elevation_rendering(ui);
+        }
+    }
+
+    /// Sets the sun from the date, time and latitude (`plan_materials`).
+    pub fn set_sun_from_date(&mut self) {
+        let i = self.sun_input;
+        let sun = SunSettings::from_date_time_location((i.month, i.day), i.time_hours, i.latitude);
+        self.draft.render.sun_azimuth_deg = sun.azimuth_deg;
+        self.draft.render.sun_altitude_deg = sun.altitude_deg.max(1.0);
+    }
+
+    fn elevation_rendering(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Elevation rendering");
+        ui.checkbox(&mut self.draft.render.hatch, "Hatch materials");
+        ui.checkbox(&mut self.draft.render.shadows, "Shadows");
+        if self.draft.render.shadows {
+            let f = &mut self.fields;
+            f.degrees_row(
+                ui,
+                "Sun azimuth (from north)",
+                "deg_sun_az",
+                &mut self.draft.render.sun_azimuth_deg,
+            );
+            f.degrees_row(
+                ui,
+                "Sun height",
+                "deg_sun_alt",
+                &mut self.draft.render.sun_altitude_deg,
+            );
+            let i = &mut self.sun_input;
+            row(ui, "Date (month, day)", |ui| {
+                ui.add(egui::DragValue::new(&mut i.month).range(1..=12));
+                ui.add(egui::DragValue::new(&mut i.day).range(1..=31));
+            });
+            row(ui, "Solar time (hours)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut i.time_hours)
+                        .range(0.0..=24.0)
+                        .speed(0.1),
+                )
+            });
+            row(ui, "Latitude", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut i.latitude)
+                        .range(-90.0..=90.0)
+                        .speed(0.1),
+                )
+            });
+            if ui.button("Set sun from date and time").clicked() {
+                self.set_sun_from_date();
+            }
+        }
+        if let CameraKind::CrossSection { back_clip } = &mut self.draft.kind {
+            let mut limited = back_clip.is_some();
+            if ui
+                .checkbox(&mut limited, "Section back-clip depth")
+                .changed()
+            {
+                *back_clip = limited.then_some(120.0);
+            }
+            if let Some(v) = back_clip {
+                self.fields
+                    .length_row(ui, "Depth behind the cut", "back_r", v);
+            }
+        }
+        ui.checkbox(
+            &mut self.draft.render.depth_weights,
+            "Line weight by distance",
+        );
+        ui.checkbox(
+            &mut self.draft.render.labels,
+            "Labels (title, levels, roof pitch)",
+        );
     }
 }
 
@@ -217,6 +446,13 @@ impl SpecPages for CameraDialog {
         if self.fields.any_invalid() {
             return Some("Fix the highlighted fields".into());
         }
+        let r = &self.draft.render;
+        if is_elevation_camera(&self.draft)
+            && r.shadows
+            && !(0.0..=90.0).contains(&r.sun_altitude_deg)
+        {
+            return Some("The sun height must be 0\u{B0} to 90\u{B0}".into());
+        }
         None
     }
 
@@ -226,6 +462,7 @@ impl SpecPages for CameraDialog {
             1 => self.options(ui),
             _ => self.rendering(ui),
         }
+        self.sync_section();
     }
 
     fn preview(&self, painter: &Painter, rect: Rect) {
@@ -752,6 +989,195 @@ impl RayTraceDialog {
 mod tests {
     use super::*;
     use plan_3d::{Material, Mesh, Vertex};
+
+    #[test]
+    fn the_dialog_edits_a_sections_cut_line_not_its_fov() {
+        // An old file: length in `fov_deg`, no typed section.
+        let old = CameraObject {
+            fov_deg: 200.0,
+            ..CameraObject::new(
+                CameraKind::CrossSection { back_clip: None },
+                Point::new(100.0, 0.0),
+                90.0,
+                "Section 1",
+                0,
+            )
+        };
+        let mut d = CameraDialog::new(&old, "1st Floor", CameraExtras::default());
+        let s = d.draft().section.expect("upgraded on open");
+        assert!((s.a.dist(s.b) - 200.0).abs() < 1e-9);
+        assert_eq!(d.draft().fov_deg, plan_core::camera::DEFAULT_FOV_DEG);
+        // Editing the length, centre and back clip rebuilds the typed line.
+        d.section_len = 100.0;
+        d.draft.position = Point::new(150.0, 10.0);
+        d.draft.kind = CameraKind::CrossSection {
+            back_clip: Some(60.0),
+        };
+        d.sync_section();
+        let s = d.draft().section.unwrap();
+        assert!(s.a.dist(Point::new(100.0, 10.0)) < 1e-9);
+        assert!(s.b.dist(Point::new(200.0, 10.0)) < 1e-9);
+        assert_eq!(s.back_clip, Some(60.0));
+    }
+
+    fn house() -> Project {
+        let mut p = Project::new("House");
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        let mut front = 0;
+        for i in 0..4 {
+            let id = p.add_wall(
+                0,
+                c[i],
+                c[(i + 1) % 4],
+                6.5,
+                109.125,
+                plan_core::WallKind::Exterior,
+            );
+            if i == 0 {
+                front = id;
+            }
+        }
+        // Glass hatches in the elevation.
+        p.add_opening(0, front, 120.0, plan_core::OpeningKind::Window)
+            .unwrap();
+        p
+    }
+
+    fn section_camera() -> CameraObject {
+        let mut c = CameraObject::new(
+            CameraKind::CrossSection {
+                back_clip: Some(80.0),
+            },
+            Point::new(120.0, 96.0),
+            90.0,
+            "Section 1",
+            0,
+        );
+        crate::tools::camera::upgrade_section(&mut c);
+        c
+    }
+
+    #[test]
+    fn rendering_toggles_persist_on_the_camera_and_reach_the_options() {
+        let cam = section_camera();
+        let mut d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
+        let o = elevation_options(d.draft());
+        assert!(!o.hatch && o.shadows.is_none() && !o.depth_weights);
+        assert_eq!(o.section_depth, Some(80.0));
+        assert!(d.draft().render.labels, "labels are on by default");
+
+        d.draft.render.hatch = true;
+        d.draft.render.shadows = true;
+        d.draft.render.depth_weights = true;
+        d.draft.render.labels = false;
+        d.set_sun_from_date();
+        let (az, alt) = (
+            d.draft.render.sun_azimuth_deg,
+            d.draft.render.sun_altitude_deg,
+        );
+        assert!(alt > 10.0 && alt < 90.0, "afternoon sun: {alt}");
+        assert!((az - 135.0).abs() > 1.0, "the sun moved: {az}");
+        d.draft.kind = CameraKind::CrossSection {
+            back_clip: Some(60.0),
+        };
+        d.sync_section();
+        assert!(d.error().is_none());
+
+        let o = elevation_options(d.draft());
+        assert!(o.hatch && o.depth_weights);
+        assert_eq!(o.section_depth, Some(60.0));
+        assert_eq!(
+            o.shadows,
+            Some(SunDir {
+                azimuth_deg: az,
+                altitude_deg: alt
+            })
+        );
+
+        // The draft is what the 3D panel stores back; it round-trips.
+        let json = serde_json::to_string(d.draft()).unwrap();
+        let back: CameraObject = serde_json::from_str(&json).unwrap();
+        assert_eq!(&back, d.draft());
+        let reopened = CameraDialog::new(&back, "1st Floor", CameraExtras::default());
+        assert!(reopened.draft().render.hatch && reopened.draft().render.shadows);
+        assert!(!reopened.draft().render.labels);
+
+        // A sun below the horizon blocks OK while shadows are on.
+        d.draft.render.sun_altitude_deg = 120.0;
+        assert!(d.error().is_some());
+
+        // The dialog draws its Rendering tab for sections only.
+        let ctx = egui::Context::default();
+        let mut sec = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
+        let mut plain = CameraDialog::new(
+            &CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "C", 0),
+            "1st Floor",
+            CameraExtras::default(),
+        );
+        for dialog in [&mut sec, &mut plain] {
+            dialog.draft.render.shadows = true;
+            for tab in 0..3 {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| dialog.page(ui, tab));
+                });
+            }
+        }
+        assert!(!is_elevation_camera(plain.draft()));
+    }
+
+    #[test]
+    fn the_options_change_what_the_camera_renders() {
+        let p = house();
+        let mut cam = CameraObject::new(
+            CameraKind::WallElevation,
+            Point::new(120.0, -300.0),
+            90.0,
+            "Front",
+            0,
+        );
+        assert_eq!(elevation_view_dir(&cam), ViewDir::Front);
+        let fast = |c: &CameraObject| Options {
+            raster_px: 256,
+            ..elevation_options(c)
+        };
+        let plain = render_elevation_with(&p, &cam, &fast(&cam));
+        assert!(plain.texts.iter().any(|(_, t)| t == "FRONT ELEVATION"));
+        assert!(!plain
+            .lines
+            .iter()
+            .any(|l| l.kind == plan_elevation::EdgeKind::Hatch));
+
+        cam.render.hatch = true;
+        cam.render.labels = false;
+        let hatched = render_elevation_with(&p, &cam, &fast(&cam));
+        assert!(hatched
+            .lines
+            .iter()
+            .any(|l| l.kind == plan_elevation::EdgeKind::Hatch));
+        assert!(hatched.texts.is_empty(), "labels off");
+
+        // Facing the other way picks another side.
+        cam.direction_deg = 270.0;
+        assert_eq!(elevation_view_dir(&cam), ViewDir::Back);
+        cam.direction_deg = 0.0;
+        assert_eq!(elevation_view_dir(&cam), ViewDir::Left);
+        cam.direction_deg = 180.0;
+        assert_eq!(elevation_view_dir(&cam), ViewDir::Right);
+
+        // A section is cut at its line and titled with the camera's name.
+        let sec = section_camera();
+        let cut = section_cut(&sec);
+        assert_eq!(cut.plane_normal, ViewDir::Front);
+        assert!((cut.offset + 96.0).abs() < 1e-9);
+        let d = render_elevation_with(&p, &sec, &fast(&sec));
+        assert!(d.cut_regions().count() > 0, "the cut walls are poche");
+        assert!(d.texts.iter().any(|(_, t)| t == "SECTION 1"));
+    }
 
     fn tiny_scene() -> Scene {
         let v = |x, y, z| Vertex {

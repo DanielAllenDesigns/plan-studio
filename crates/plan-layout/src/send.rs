@@ -76,12 +76,41 @@ fn pack(area: (Point, Point), placed: &[Foot], w: f64, h: f64) -> Point {
     Point::new(area.0.x, lowest - GUTTER_IN)
 }
 
+/// `1st Floor` as `FIRST FLOOR`: the leading ordinal number spelled out
+/// (first to tenth). Other names are returned upper-cased as they are.
+fn spell_ordinal(name: &str) -> String {
+    const WORDS: [&str; 10] = [
+        "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH", "SEVENTH", "EIGHTH", "NINTH",
+        "TENTH",
+    ];
+    let upper = name.trim().to_uppercase();
+    let digits: String = upper.chars().take_while(char::is_ascii_digit).collect();
+    let rest = &upper[digits.len()..];
+    let suffix = rest.get(..2).unwrap_or("");
+    match digits.parse::<usize>() {
+        Ok(n) if (1..=WORDS.len()).contains(&n) && matches!(suffix, "ST" | "ND" | "RD" | "TH") => {
+            format!("{}{}", WORDS[n - 1], &rest[2..])
+        }
+        _ => upper,
+    }
+}
+
+/// The caption of a plan box. Single-floor projects keep the floor's own name
+/// (`1ST FLOOR PLAN`); multi-floor projects spell the ordinal out like Chief's
+/// layout box labels (`FIRST FLOOR PLAN`, `SECOND FLOOR PLAN`).
+fn plan_label(project: &Project, floor: usize) -> String {
+    let name = project.floors.get(floor).map_or("", |f| f.name.as_str());
+    let name = if project.floors.len() > 1 {
+        spell_ordinal(name)
+    } else {
+        name.to_uppercase()
+    };
+    format!("{name} PLAN").trim().to_string()
+}
+
 fn default_label(source: &BoxSource, project: &Project) -> Option<String> {
     match source {
-        BoxSource::PlanView { floor, .. } => {
-            let name = project.floors.get(*floor).map_or("", |f| f.name.as_str());
-            Some(format!("{name} PLAN").to_uppercase())
-        }
+        BoxSource::PlanView { floor, .. } => Some(plan_label(project, *floor)),
         BoxSource::Elevation { dir } => Some(
             match dir {
                 ViewDir::Front => "FRONT ELEVATION",
@@ -94,7 +123,10 @@ fn default_label(source: &BoxSource, project: &Project) -> Option<String> {
         ),
         BoxSource::Section { .. } => Some("SECTION".to_string()),
         BoxSource::CadDetail { name, .. } => Some(name.to_uppercase()),
-        BoxSource::Schedule { .. } | BoxSource::Image { .. } | BoxSource::Text { .. } => None,
+        BoxSource::Schedule { .. }
+        | BoxSource::Image { .. }
+        | BoxSource::ImageData { .. }
+        | BoxSource::Text { .. } => None,
     }
 }
 
@@ -148,24 +180,54 @@ pub fn send_to_layout(
     id
 }
 
-/// The largest scale at or below `want` at which `source` fits the layout's
-/// drawing area (the smallest scale if none does).
-fn fit_scale(layout: &Layout, cx: &LayoutRenderContext, source: &BoxSource, want: Scale) -> Scale {
+/// The scale at or below `max` (in [`Scale::ALL`] order, largest drawing
+/// first) at which `source` fits the layout's drawing area, leaving room for
+/// the caption below; the smallest architectural scale (1" = 20') if none
+/// does. Schedules, text and images do not scale, so they get `max`.
+///
+/// Pass [`Scale::ThreeInch`] for the pure "largest scale that fits".
+pub fn fit_largest_scale(
+    layout: &Layout,
+    cx: &LayoutRenderContext,
+    source: &BoxSource,
+    max: Scale,
+) -> Scale {
     let (lo, hi) = layout.drawing_area();
     let scenes = SceneSource::new(cx.scene);
     let frame = frame_for(source, cx, &scenes);
     if matches!(frame, Frame::Paper { .. }) {
-        return want;
+        return max;
     }
-    let mut s = want;
+    let mut s = max;
     loop {
         let (w, h) = size_of(frame, s);
-        let fits = w <= hi.x - lo.x && h + LABEL_GAP_IN <= hi.y - lo.y;
-        match (fits, s.smaller()) {
+        let fits = w <= hi.x - lo.x + 1e-9 && h + LABEL_GAP_IN <= hi.y - lo.y + 1e-9;
+        match (fits, s.smaller_any()) {
             (true, _) | (false, None) => return s,
             (false, Some(next)) => s = next,
         }
     }
+}
+
+/// The scale [`send_to_layout_auto`] starts from: construction drawings are
+/// not printed larger than 1/4" = 1'-0" unless asked for.
+pub const AUTO_SCALE_CEILING: Scale = Scale::QuarterInch;
+
+/// [`send_to_layout`] with an optional scale. With `Some(scale)` it behaves
+/// exactly like [`send_to_layout`]; with `None` it picks the largest scale of
+/// [`Scale::ALL`], no larger than [`AUTO_SCALE_CEILING`] (1/4"), at which the
+/// source fits the page's drawing area (see [`fit_largest_scale`]). A 40' x 30'
+/// plan lands at 1/4" on an Arch D sheet and 1/8" on Letter.
+pub fn send_to_layout_auto(
+    layout: &mut Layout,
+    cx: &LayoutRenderContext,
+    page: u32,
+    source: BoxSource,
+    scale: Option<Scale>,
+    at: Option<Point>,
+) -> Id {
+    let scale = scale.unwrap_or_else(|| fit_largest_scale(layout, cx, &source, AUTO_SCALE_CEILING));
+    send_to_layout(layout, cx, page, source, scale, at)
 }
 
 fn page_text(layout: &mut Layout, page: u32, text: &str, height_in: f64, x: f64, y: f64) {
@@ -184,7 +246,11 @@ fn page_text(layout: &mut Layout, page: u32, text: &str, height_in: f64, x: f64,
     }
 }
 
-/// Chief-like construction set on 18x24 (Arch C landscape).
+/// Daniel's construction set on 18x24 (Arch C landscape): his presentation
+/// title block ([`TitleBlockTemplate::from_daniel_18x24`]), Chief's layout
+/// background and Layout Edge border, and Chief-style box labels (floors spelled
+/// out as `FIRST FLOOR PLAN` when the project has several) with the scale note
+/// under each box.
 ///
 /// Sheets, numbered `A-0`, `A-1`, ... in order:
 /// cover (project title and sheet index); one floor plan per floor at 1/4";
@@ -201,8 +267,9 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
         format!("{} Construction Set", project.name),
         SheetSize::ArchC,
     );
-    layout.title_block = TitleBlockTemplate::presentation_18x24();
+    layout.title_block = TitleBlockTemplate::from_daniel_18x24();
     layout.sheet_index = true;
+    layout.page_background = true;
 
     let scene = build_scene(project);
     let mut cx = LayoutRenderContext::new(project);
@@ -242,7 +309,7 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
             floor,
             layer_set: project.layers.name.clone(),
         };
-        let scale = fit_scale(&layout, cx, &source, quarter);
+        let scale = fit_largest_scale(&layout, cx, &source, quarter);
         send_to_layout(&mut layout, cx, number, source, scale, None);
     }
 
@@ -261,7 +328,7 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
         layout.add_page(number, title);
         for dir in dirs {
             let source = BoxSource::Elevation { dir };
-            let scale = fit_scale(&layout, cx, &source, quarter);
+            let scale = fit_largest_scale(&layout, cx, &source, quarter);
             send_to_layout(&mut layout, cx, number, source, scale, None);
         }
     }
@@ -291,7 +358,7 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
         },
     );
     let source = BoxSource::Section { cut };
-    let scale = fit_scale(&layout, cx, &source, quarter);
+    let scale = fit_largest_scale(&layout, cx, &source, quarter);
     send_to_layout(&mut layout, cx, number, source, scale, None);
 
     // Schedules.

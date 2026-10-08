@@ -2,23 +2,29 @@
 //! Planning boxes (R-16, R-19..R-54, R-55..R-68 in `docs/parity/rooms-floors.md`).
 //!
 //! `ObjectRef` has no room variant and the shared selection files are not
-//! ours to change, so the selected room, the per-room settings the model has
-//! no fields for yet and the Space Planning boxes live in a thread-local
-//! [`State`] of this module (the UI runs on one thread; every test thread gets
-//! its own). Rooms are derived from walls, so a room is remembered by a point
-//! inside it, never by an index.
+//! ours to change, so the selected room, the session-only room settings and
+//! the Space Planning boxes live in a thread-local [`State`] of this module
+//! (the UI runs on one thread; every test thread gets its own). Rooms are
+//! derived from walls, so a room is remembered by a point inside it, never by
+//! an index.
+//!
+//! What a Room Specification sets and the file keeps lives in the room's
+//! [`RoomName`] (conditioned, stem wall height, fill style, label options,
+//! moldings); [`RoomExtras`] is the dialog's view of those plus the few
+//! settings that are still per session.
 
 use super::{Camera, EditorContext};
 use crate::dialogs::room::RoomInit;
 use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Shape, Stroke};
 use plan_core::cad::{CadItem, DEFAULT_CAD_LAYER};
+use plan_core::extras::{AreaKind, MoldingKind, MoldingRef, RoomFill, RoomLabelOptions};
 use plan_core::geometry::{point_in_polygon, polygon_area, Point};
 use plan_core::{detect_rooms, FloorKind, FoundationKind, PlanDefaults, Room, RoomName};
 use plan_spaceplan::{bump, plan_symbols, RoomBox, Stroke as SpStroke, GRID};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-// ----- per-room settings the model does not store yet -----
+// ----- per-room settings -----
 
 /// Plan fill pattern of a room (R-35).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -49,12 +55,22 @@ impl FillPattern {
             FillPattern::Grid => "Grid",
         }
     }
+
+    /// The pattern a stored name stands for (unknown names fill solid).
+    fn from_name(name: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|p| p.name() == name)
+            .unwrap_or(FillPattern::Solid)
+    }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FillStyle {
     pub pattern: FillPattern,
     pub color: [u8; 3],
+    /// Opacity factor, 0..=1, applied to the pattern's own transparency.
+    pub alpha: f32,
 }
 
 impl Default for FillStyle {
@@ -62,32 +78,43 @@ impl Default for FillStyle {
         Self {
             pattern: FillPattern::None,
             color: [0xC8, 0xB4, 0x8C],
+            alpha: 1.0,
         }
     }
 }
 
-/// Room Specification > Label (R-45, R-50).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct LabelOptions {
-    pub interior_dimensions: bool,
-    pub interior_area: bool,
-    pub standard_area: bool,
-    pub display_in_plan: bool,
-}
+impl FillStyle {
+    /// The fill a room stores (`None` = no fill).
+    pub fn from_room(fill: Option<&RoomFill>) -> Self {
+        fill.map_or_else(Self::default, |f| Self {
+            pattern: FillPattern::from_name(&f.pattern),
+            color: f.color,
+            alpha: f.alpha.clamp(0.0, 1.0),
+        })
+    }
 
-impl Default for LabelOptions {
-    fn default() -> Self {
-        Self {
-            interior_dimensions: true,
-            interior_area: true,
-            standard_area: false,
-            display_in_plan: true,
-        }
+    /// The stored form of this fill; no pattern stores nothing.
+    pub fn to_room(self) -> Option<RoomFill> {
+        (self.pattern != FillPattern::None).then(|| RoomFill {
+            color: self.color,
+            pattern: self.pattern.name().to_string(),
+            alpha: self.alpha,
+        })
     }
 }
 
-/// What a Room Specification holds beyond `plan_core::RoomName`. Kept for the
-/// session until the model grows these fields.
+/// Room Specification > Label (R-45, R-50): the model's label options.
+pub type LabelOptions = RoomLabelOptions;
+
+/// Default molding heights when a profile name is first entered, inches.
+const BASE_MOLDING_HEIGHT: f64 = 5.25;
+const CROWN_MOLDING_HEIGHT: f64 = 3.5;
+
+/// What a Room Specification holds beyond the plain fields of
+/// `plan_core::RoomName`. Conditioned, the stem wall, the moldings, the fill
+/// and the label options are stored in the `RoomName` (see
+/// [`RoomExtras::with_stored`] and [`RoomExtras::store_into`]); the rest is
+/// kept for the session.
 #[derive(Clone, PartialEq, Debug)]
 pub struct RoomExtras {
     /// `None` follows the room type (R-43).
@@ -124,6 +151,67 @@ impl RoomExtras {
             label: LabelOptions::default(),
         }
     }
+
+    /// These extras with the stored settings of `name` laid over them.
+    pub fn with_stored(mut self, name: &RoomName) -> Self {
+        self.conditioned = name.conditioned;
+        self.stem_wall = name.stem_wall_height.is_some();
+        if let Some(h) = name.stem_wall_height {
+            self.stem_wall_height = h;
+        }
+        self.base_molding = molding_profile(name, MoldingKind::Base);
+        self.crown_molding = molding_profile(name, MoldingKind::Crown);
+        self.fill = FillStyle::from_room(name.fill_style.as_ref());
+        self.label = name.label.clone();
+        self
+    }
+
+    /// Writes the settings the file keeps into `name`.
+    pub fn store_into(&self, name: &mut RoomName) {
+        name.conditioned = self.conditioned;
+        name.stem_wall_height = self.stem_wall.then_some(self.stem_wall_height);
+        set_molding(
+            name,
+            MoldingKind::Base,
+            &self.base_molding,
+            BASE_MOLDING_HEIGHT,
+        );
+        set_molding(
+            name,
+            MoldingKind::Crown,
+            &self.crown_molding,
+            CROWN_MOLDING_HEIGHT,
+        );
+        name.fill_style = self.fill.to_room();
+        name.label = self.label.clone();
+    }
+}
+
+/// The profile name of the room's `kind` molding ("" = none).
+fn molding_profile(name: &RoomName, kind: MoldingKind) -> String {
+    name.moldings
+        .iter()
+        .find(|m| m.kind == kind)
+        .map(|m| m.profile.clone())
+        .unwrap_or_default()
+}
+
+/// Sets, renames or removes the `kind` molding of `name`; other kinds stay,
+/// and a renamed molding keeps its height.
+fn set_molding(name: &mut RoomName, kind: MoldingKind, profile: &str, height: f64) {
+    let profile = profile.trim();
+    match name.moldings.iter().position(|m| m.kind == kind) {
+        Some(i) if profile.is_empty() => {
+            name.moldings.remove(i);
+        }
+        Some(i) => name.moldings[i].profile = profile.to_string(),
+        None if profile.is_empty() => {}
+        None => name.moldings.push(MoldingRef {
+            kind,
+            profile: profile.to_string(),
+            height,
+        }),
+    }
 }
 
 type ExtrasKey = (usize, i64, i64);
@@ -157,6 +245,8 @@ struct State {
     dialog_request: Option<RoomSel>,
     boxes: Vec<RoomBox>,
     drag: Option<BoxDrag>,
+    /// Snap distance of the running box drag, inches (`editing.bumping_distance`).
+    bump_snap: f64,
 }
 
 thread_local! {
@@ -206,11 +296,29 @@ pub fn name_entry<'a>(cx: &'a EditorContext, room: &Room) -> Option<&'a RoomName
         .find(|n| point_in_polygon(n.anchor, &room.polygon))
 }
 
-/// The session settings of `room`, else the defaults'.
+/// The Room Specification values of `room`: the session settings (or the
+/// defaults') with the settings stored in its `RoomName` laid over them.
 pub fn extras_for(cx: &EditorContext, room: &Room) -> RoomExtras {
-    let key = name_entry(cx, room).map(|n| extras_key(cx.floor, n.anchor));
-    key.and_then(|k| with(|s| s.extras.get(&k).cloned()))
-        .unwrap_or_else(|| RoomExtras::from_defaults(&cx.defaults))
+    let entry = name_entry(cx, room);
+    let key = entry.map(|n| extras_key(cx.floor, n.anchor));
+    let base = key
+        .and_then(|k| with(|s| s.extras.get(&k).cloned()))
+        .unwrap_or_else(|| RoomExtras::from_defaults(&cx.defaults));
+    match entry {
+        Some(n) => base.with_stored(n),
+        None => base,
+    }
+}
+
+/// The label options stored with `room` (the defaults when it has no name
+/// entry yet).
+pub fn label_options(cx: &EditorContext, room: &Room) -> RoomLabelOptions {
+    name_entry(cx, room).map_or_else(RoomLabelOptions::default, |n| n.label.clone())
+}
+
+/// The plan fill stored with `room`.
+pub fn fill_style(cx: &EditorContext, room: &Room) -> FillStyle {
+    FillStyle::from_room(name_entry(cx, room).and_then(|n| n.fill_style.as_ref()))
 }
 
 // ----- selection (R-16) -----
@@ -278,23 +386,24 @@ pub fn interior_dims_text(cx: &EditorContext, room: &Room) -> String {
     format!("{} x {}", cx.fmt_dim(hi.x - lo.x), cx.fmt_dim(hi.y - lo.y))
 }
 
-/// The label text of a room per its Label options: the name, then the
-/// interior dimensions, interior area and standard area when checked. Empty
-/// when the label is hidden (R-50).
+/// The label text of a room per the label options stored with it: the name,
+/// then the interior dimensions and the area (interior, standard or
+/// centerline) when checked. Empty when nothing is shown (R-50).
 pub fn room_label_text(cx: &EditorContext, room: &Room) -> String {
-    let opts = extras_for(cx, room).label;
-    if !opts.display_in_plan {
-        return String::new();
+    let opts = label_options(cx, room);
+    let mut lines = Vec::new();
+    if opts.show_name {
+        lines.push(cx.room_name(room));
     }
-    let mut lines = vec![cx.room_name(room)];
-    if opts.interior_dimensions {
+    if opts.show_dimensions {
         lines.push(interior_dims_text(cx, room));
     }
-    if opts.interior_area {
-        lines.push(format!("{} sq ft", room.interior_area_sq_ft().round()));
-    }
-    if opts.standard_area {
-        lines.push(format!("{} sq ft std", room.standard_area_sq_ft().round()));
+    if opts.show_area {
+        lines.push(match opts.area_kind {
+            AreaKind::Interior => format!("{} sq ft", room.interior_area_sq_ft().round()),
+            AreaKind::Standard => format!("{} sq ft std", room.standard_area_sq_ft().round()),
+            AreaKind::Centerline => format!("{} sq ft c/l", room.area_sq_ft().round()),
+        });
     }
     lines.join("\n")
 }
@@ -411,6 +520,7 @@ pub fn apply_room_spec(
         n.has_ceiling = draft.has_ceiling;
         n.has_floor = draft.has_floor;
         n.rough_ceiling = draft.rough_ceiling;
+        extras.store_into(n);
     }
     with(|s| {
         if let Some(k) = old_key {
@@ -514,9 +624,10 @@ fn draw_fill(painter: &egui::Painter, cam: &Camera, poly: &[Point], fill: FillSt
         return;
     }
     let [r, g, b] = fill.color;
+    let alpha = |base: f32| (base * fill.alpha.clamp(0.0, 1.0)).round() as u8;
     match fill.pattern {
         FillPattern::Solid => {
-            let col = Color32::from_rgba_unmultiplied(r, g, b, 70);
+            let col = Color32::from_rgba_unmultiplied(r, g, b, alpha(70.0));
             let pts = screen_poly(cam, poly);
             let mut mesh = Mesh::default();
             for p in &pts {
@@ -528,7 +639,7 @@ fn draw_fill(painter: &egui::Painter, cam: &Camera, poly: &[Point], fill: FillSt
             painter.add(Shape::mesh(mesh));
         }
         pattern => {
-            let col = Color32::from_rgba_unmultiplied(r, g, b, 150);
+            let col = Color32::from_rgba_unmultiplied(r, g, b, alpha(150.0));
             let stroke = Stroke::new(1.0_f32, col);
             let spacing = 12.0_f64.max(6.0 / cam.px_per_in);
             let s = std::f64::consts::FRAC_1_SQRT_2;
@@ -555,7 +666,7 @@ fn draw_fill(painter: &egui::Painter, cam: &Camera, poly: &[Point], fill: FillSt
 /// room (R-16, R-35). Called once from the room drawing.
 pub fn draw_room_selection(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     for room in &cx.rooms {
-        let fill = extras_for(cx, room).fill;
+        let fill = fill_style(cx, room);
         let poly = if room.inner_polygon.len() >= 3 {
             &room.inner_polygon
         } else {
@@ -610,10 +721,17 @@ fn box_at(boxes: &[RoomBox], floor: usize, p: Point) -> Option<usize> {
 
 /// A press on a box starts dragging it. Returns true when the box took it.
 pub fn space_pointer_down(cx: &EditorContext, world: Point) -> bool {
+    let editing = &cx.defaults.editing;
+    let snap = if editing.bumping {
+        editing.bumping_distance
+    } else {
+        0.0
+    };
     with(|s| {
         let Some(i) = box_at(&s.boxes, cx.floor, world) else {
             return false;
         };
+        s.bump_snap = snap;
         let b = &s.boxes[i];
         s.drag = Some(BoxDrag {
             id: b.id,
@@ -645,7 +763,7 @@ pub fn space_pointer_move(world: Point) -> bool {
             snap(d.start_min.y + world.y - d.grab.y),
         );
         let proposed = (min, Point::new(min.x + w, min.y + h));
-        let rect = bump(&s.boxes, d.id, proposed, 12.0);
+        let rect = bump(&s.boxes, d.id, proposed, s.bump_snap);
         if let Some(b) = s.boxes.iter_mut().find(|b| b.id == d.id) {
             b.rect = rect;
         }
@@ -935,7 +1053,7 @@ pub fn add_plan_footprint(cx: &mut EditorContext) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::plan_defaults;
-    use plan_core::WallKind;
+    use plan_core::{Project, WallKind};
 
     fn house() -> EditorContext {
         let mut cx = EditorContext::new(plan_defaults::embedded());
@@ -977,24 +1095,124 @@ mod tests {
     fn label_follows_the_label_options() {
         let mut cx = house();
         let room = cx.rooms[0].clone();
+        // A room that was never named shows its name and interior area.
         let text = room_label_text(&cx, &room);
-        assert!(text.contains("sq ft") && text.contains(" x "), "{text}");
+        assert!(text.contains("sq ft") && !text.contains(" x "), "{text}");
         let mut extras = extras_for(&cx, &room);
-        extras.label.interior_dimensions = false;
-        extras.label.standard_area = true;
+        extras.label.show_dimensions = true;
+        extras.label.area_kind = AreaKind::Standard;
         let draft = RoomName::new(room_anchor(&room), "Study", "Study");
         assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
         let room = cx.rooms[0].clone();
         let text = room_label_text(&cx, &room);
         assert!(text.starts_with("Study"), "{text}");
-        assert!(!text.contains(" x "), "{text}");
+        assert!(text.contains(" x "), "{text}");
         assert!(text.contains("std"), "{text}");
         let mut extras = extras_for(&cx, &room);
-        extras.label.display_in_plan = false;
+        extras.label.show_area = false;
+        extras.label.show_dimensions = false;
+        let draft = name_entry(&cx, &room).cloned().unwrap();
+        apply_room_spec(&mut cx, 0, &draft, &extras);
+        let room = cx.rooms[0].clone();
+        assert_eq!(room_label_text(&cx, &room), "Study");
+        let mut extras = extras_for(&cx, &room);
+        extras.label.show_name = false;
         let draft = name_entry(&cx, &room).cloned().unwrap();
         apply_room_spec(&mut cx, 0, &draft, &extras);
         let room = cx.rooms[0].clone();
         assert_eq!(room_label_text(&cx, &room), "");
+    }
+
+    #[test]
+    fn centerline_area_kind_shows_the_centerline_area() {
+        let mut cx = house();
+        let room = cx.rooms[0].clone();
+        let mut extras = extras_for(&cx, &room);
+        extras.label.area_kind = AreaKind::Centerline;
+        let draft = RoomName::new(room_anchor(&room), "Hall", "Hall");
+        apply_room_spec(&mut cx, 0, &draft, &extras);
+        let room = cx.rooms[0].clone();
+        let want = format!("{} sq ft c/l", room.area_sq_ft().round());
+        assert!(room_label_text(&cx, &room).ends_with(&want));
+    }
+
+    #[test]
+    fn room_specification_persists_in_the_room_name_and_the_file() {
+        let mut cx = house();
+        let room = cx.rooms[0].clone();
+        let mut extras = extras_for(&cx, &room);
+        extras.conditioned = Some(false);
+        extras.stem_wall = true;
+        extras.stem_wall_height = 30.0;
+        extras.base_molding = "Colonial".into();
+        extras.crown_molding = "Cove".into();
+        extras.fill = FillStyle {
+            pattern: FillPattern::Hatch,
+            color: [1, 2, 3],
+            alpha: 0.5,
+        };
+        extras.label.show_dimensions = true;
+        extras.label.area_kind = AreaKind::Centerline;
+        let draft = RoomName::new(room_anchor(&room), "Den", "Den");
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+
+        let n = &cx.floor().room_names[0];
+        assert_eq!(n.conditioned, Some(false));
+        assert_eq!(n.stem_wall_height, Some(30.0));
+        assert_eq!(n.fill_style.as_ref().unwrap().pattern, "Hatch");
+        assert_eq!(n.fill_style.as_ref().unwrap().color, [1, 2, 3]);
+        assert!(n.label.show_dimensions);
+        assert_eq!(n.label.area_kind, AreaKind::Centerline);
+        assert_eq!(n.moldings.len(), 2);
+
+        // A fresh session (a reloaded file) sees the same Room Specification:
+        // the stored values do not depend on the session extras.
+        let json = cx.project.to_json().unwrap();
+        let mut cx2 = EditorContext::new(crate::plan_defaults::embedded());
+        cx2.set_project(Project::from_json(&json).unwrap());
+        cx2.refresh();
+        let room2 = cx2.rooms[0].clone();
+        with(|s| s.extras.clear());
+        let back = extras_for(&cx2, &room2);
+        assert_eq!(back.conditioned, Some(false));
+        assert!(back.stem_wall && back.stem_wall_height == 30.0);
+        assert_eq!(back.base_molding, "Colonial");
+        assert_eq!(back.crown_molding, "Cove");
+        assert_eq!(back.fill, extras.fill);
+        assert_eq!(back.label, extras.label);
+        assert_eq!(fill_style(&cx2, &room2).pattern, FillPattern::Hatch);
+        assert!(room_label_text(&cx2, &room2).contains(" x "));
+
+        // Clearing them stores nothing.
+        let mut cleared = back;
+        cleared.stem_wall = false;
+        cleared.base_molding.clear();
+        cleared.fill.pattern = FillPattern::None;
+        let draft = name_entry(&cx2, &room2).cloned().unwrap();
+        apply_room_spec(&mut cx2, 0, &draft, &cleared);
+        let n = &cx2.floor().room_names[0];
+        assert_eq!(n.stem_wall_height, None);
+        assert!(n.fill_style.is_none());
+        assert_eq!(n.moldings.len(), 1);
+        assert_eq!(n.moldings[0].kind, MoldingKind::Crown);
+    }
+
+    #[test]
+    fn bumping_distance_comes_from_the_editing_defaults() {
+        use plan_spaceplan::{generate_boxes, Questionnaire};
+        let mut cx = house();
+        cx.defaults.editing.bumping = false;
+        set_space_boxes(generate_boxes(&Questionnaire::default()));
+        let c = space_boxes()[0].center();
+        assert!(space_pointer_down(&cx, c));
+        assert_eq!(with(|s| s.bump_snap), 0.0);
+        space_pointer_up();
+        cx.defaults.editing.bumping = true;
+        cx.defaults.editing.bumping_distance = 7.0;
+        assert!(space_pointer_down(&cx, c));
+        assert_eq!(with(|s| s.bump_snap), 7.0);
+        space_pointer_up();
+        clear_space_boxes();
     }
 
     #[test]

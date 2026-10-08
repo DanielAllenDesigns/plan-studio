@@ -2,7 +2,8 @@
 
 Every 3D view is generated from the plan. Edit a wall and the 3D model follows. This
 chapter covers the 3D views, the camera objects, the rendering techniques, the Sun
-Angle, the ray tracer, the vector elevations you can open as drawings, Auto Elevations
+Angle, the live view's shadows, ambient occlusion and quality settings, the ray tracer (sky, exposure, depth of field, Save Image), the textures of the 3D view and the ray tracer, the
+vector elevations you can open as drawings (free-angle sections, plan callouts, automatic dimensions, material labels, DXF), Auto Elevations, Auto Interior Elevations
 and Wall Elevation cameras, walkthroughs, lights and glTF export.
 
 ## 10.1 What is in the 3D model
@@ -21,22 +22,29 @@ and Wall Elevation cameras, walkthroughs, lights and glTF export.
     rails by Fence Style;
   - a **curved** wall is built as a run of straight facets (one per 7.5 degrees) of its class, and **doors and windows
     are not cut through it**.
-- Door leaves and window frames, sashes and glass for every opening style the model knows (hinged, sliding,
-  pocket, bifold, garage, barn, shower, fixed, casement, bay, box and bow), with lite grids.
+- Door leaves and window frames, sashes and glass for every opening style (chapter 3.2), with lite grids: hinged and double
+  doors, sliding doors (two to four overlapping panels on two tracks), pocket, bifold (a pair of panels, or two pairs), garage, barn, shower and
+  fixed doors, a doorway (jambs only); hung and fixed windows, casements (one sash, two from 4' wide), sliding windows, awnings and hoppers
+  (hinged at the head or the sill, with a hinge bar), and bay, box and bow windows projecting from the exterior face. A Pass-Through is an empty hole and a Wall Niche is a recess in the room face
+  of the wall (3 1/2" deep, not a through hole).
 - Optional detail through `SceneOptions`: doors drawn open at an angle, interior and exterior casing, window
   sills and exterior thresholds. The editor's 3D view calls the builder with the defaults (doors closed, no
-  casing), and the editor only places hinged doors and plain windows, so today you see
-  closed hinged doors and plain windows (planned: View options for open doors and casing).
+  casing), so today you see closed doors and no casing (planned: View options for open doors and casing).
 - Floor and ceiling platforms for every detected room, at the room's own Floor Height offset and Ceiling Height when its Room Specification sets them (chapter 4.4), with any **Hole in Floor Platform** and **Hole in Ceiling Platform**
-  cut out (chapter 16).
+  cut out (chapter 16). The room's function shapes them: a Garage floor sits 24" lower on a concrete slab, a Deck or Porch has no ceiling platform,
+  an Open Below, Attic or Courtyard room has no floor platform, and the ceiling of the room under an Open Below room is open to it. The floor and ceiling layers of a Floor/Ceiling
+  Structure Define give the platform its thickness. A room nested inside another room leaves a hole in the surrounding room's platforms. A dropped Garage floor, and any room with a **Stem Wall** height, get concrete **stem walls** under the room's exterior walls, from the underside of the floor platform up to the floor level, interrupted at garage doors (chapter 4.4).
+- **Walls follow the roof** (chapter 8.3): gable ends rise to the roof in a triangle, hip and shed roofs clip the walls under them, interior walls rise to a vaulted ceiling, and
+  butting roofs are trimmed with flashing and attic walls fill the gap above a lower roof. Half, pony, foundation and curved walls are cut by the roof the same way but are never raised to a gable; with **Roof Cuts Wall at Bottom** a wall standing over a lower roof is cut along that roof (chapter 8.4a). Railing, glass, fencing and the other special classes keep flat tops.
 - Slabs, slab holes, footings, square pads and round piers (chapter 16).
 - Wall **bottom heights**: a wall that starts above the floor (chapter 2.9) is built from its bottom to its top, for standard walls and every straight wall class;
   the openings keep their sill heights measured from the floor, so only the part of an opening inside the wall is cut.
 
 The editor appends:
 
-- **Roofs** (chapter 8): each plane as a slab with its holes cut, skylights (curb, frame, glass), vaulted ceiling planes
-  and dormers.
+- **Roofs** (chapter 8): each plane as a 6" slab with its holes cut (and trimmed where it butts a taller wall), skylights (curb, frame, glass), vaulted ceiling planes
+  and dormers, and the eave detail: the eave cut (plumb, level or square), fascia, soffit or exposed rafter tails, rake boards, optional frieze, gutters, ridge and hip caps, and flashing (Trim, Roof and Metal materials), each mesh tagged with its plane
+  so a click in 3D picks the plane. The sizes and switches come from Roof Defaults (chapter 8.4a) and a plane can override them.
 - **Manual framing** (chapter 11.11): the members placed by the framing tools and those Build Framing makes from the layout
   lines (directed joists, bearing beams, laid-out trusses). The members Build Framing makes from the walls, floors and roof
   are drawn in plan only, not in 3D.
@@ -50,10 +58,8 @@ The editor appends:
   Trim material, so the Floor material stays the room slabs. The stairwell hole Auto Stairwell cuts in the floor above is cut out of that floor's
   platform (QA-04; chapter 7.4).
 - **Terrain** (chapter 9): the surface after Build Terrain, the roads draped on it, and the landscape objects (walls and curbs, features, garden
-  beds, grass, water, stepping stones, plants, sprinklers). The landscape uses stand-in materials because the material list has no grass or foliage: grass,
-  mulch and canopies are the brown Floor material, trunks Framing, edging and stones Stone, water translucent glass.
-- **Pictures, billboards and 3D solid features** (chapter 6.7): a picture is a flat-colored quad (no textures in the GL view); billboards keep their
-  stored angle in the cached scene; a 3D Solid Feature draws its library item in Concrete.
+  beds, grass, water, stepping stones, plants, sprinklers). The landscape uses its own Grass, Mulch, Foliage and Water materials: lawn and grass regions Grass, garden beds Mulch (or their named material), canopies Foliage, water Water (translucent), trunks Framing, edging and stones Stone.
+- **Pictures, billboards and 3D solid features** (chapter 6.7): a picture or billboard is a quad that shows its **own bitmap** in the GL view (PNG or JPEG, with the picture's transparent color cut out; 10.8a), or a flat-colored quad when the file is missing or cannot be decoded, and always in the ray tracer; billboards turn to face the camera in the live view (glTF export and the ray tracer keep the stored angle); a 3D Solid Feature draws its library item in Concrete.
 
 Electrical devices have a 3D builder in their crate that the view does not draw (planned). Coordinates: X is plan x, Y is up, Z is
 negative plan y, all in inches. The scene is rebuilt automatically when the plan changes (it
@@ -80,7 +86,9 @@ watches a hash of the floors, walls, openings, placed symbols, room names, cabin
 | **Create Walkthrough Path** flyout: Create Walkthrough Path, Play Walkthrough, Record Walkthrough | | Draw a path in the plan, then play it in the 3D view or record it as frames (10.12). |
 | **Add Lights** flyout: Add Lights, Adjust Lights | `Ctrl+Alt+Cmd+L` (Adjust Lights; `Ctrl+Alt+L` off macOS) | Click to place lights; Adjust Lights opens the lights dialog (10.13). |
 | **Sun Angle** (toggle) | | Opens the Sun Angle window (10.5). |
-| Material Painter, Material Eyedropper, Object Eyedropper, Delete Surface, Adjust Material Definition, Interactive Material Editor | | (planned; engine in `plan-materials`) |
+| Material Painter, Material Eyedropper, Delete Surface (toggles) | | Work: the 3D view's paint, pick-material and remove-material modes (10.8). |
+| Adjust Material Definition, Interactive Material Editor | | Work: they open the Material Builder and the Materials list (10.8). |
+| Object Eyedropper | | (planned) |
 
 ### The 3D menu
 
@@ -89,9 +97,9 @@ Section/Elevation; Back-Clipped Cross Section), Create Perspective View (Full Ca
 Full Overview `Shift+K`, Perspective Floor Overview, Doll House View, Ray Trace...), **Create Auto
 Elevations** (Auto Elevations, Auto Back-Clipped Elevations, Wall Elevation Camera), **Walkthroughs**
 (Create Walkthrough Path, Play Walkthrough, Record Walkthrough...), Rendering Techniques, Rebuild 3D,
-Export > glTF..., and **3D View Defaults... `Cmd+1`**. The rest of Chief's 3D menu (camera movement,
-isometric views, materials, the Lighting submenu, camera view options) is listed and dimmed (planned);
-the lights live on the row 1 Add Lights flyout.
+Export > glTF..., **Materials..., Material Painter, Adjust Materials... and Material Builder...** (10.8), **Lighting**
+(Add Lights, Adjust Lights), **Delete Surface**, and **3D View Defaults... `Cmd+1`**. Chief's camera-movement submenus, isometric views and camera view options are not in the menu (`DECISIONS.md`
+item 19); Create Orthographic View covers the view directions.
 
 ### Navigating a 3D view
 
@@ -110,6 +118,10 @@ ones (window glass) back to front; an optional dark edge overlay outlines the mo
 needs OpenGL 3.1 (GLSL 1.40); if setup fails the viewport stays blank and the reason is available
 in the error text.
 
+### Selecting in 3D
+
+Click an object in a 3D view to select it. The selection is the plan's own, so the plan shows the same objects when you go back, and the 3D view tints them orange. `Shift`-click adds an object to the selection or removes it. Double-click selects the object and opens its specification. `Delete` or `Backspace` deletes the selection. A click on a surface with no object clears the selection. Not built: dragging objects in 3D, Alt-click to set the orbit center, and a hover highlight.
+
 ## 10.3 Camera objects
 
 A Full Camera or a section camera is a plan object on the `Cameras` layer, drawn as a camera
@@ -120,7 +132,8 @@ symbol with a viewing cone. Select it with the Camera tool (or Select Objects).
 - **Clip** handle: sets the back clip distance.
 - Section cameras also have the **two line-end** handles.
 - `Tab` cycles cameras, `Delete` removes one, double-click opens the Camera Specification.
-- The Project Browser lists the plan's cameras (Plan > Cameras). Click one to select it, switch to its floor and pan the plan to it.
+- The Project Browser lists the plan's cameras (Cameras node). Click one to select it, switch to its floor and pan the plan to it; right-click for Rename, Delete and Send to Layout.
+- A section or elevation camera also draws a **callout** in the plan (10.7).
 
 ### Dialog: Camera Specification
 
@@ -135,7 +148,7 @@ The angle of view is limited to 5 to 170 degrees.
 ### Dialog: 3D View Defaults (`Cmd+1`)
 
 Opened from 3D > 3D View Defaults... (`Cmd+1`; the menu shows whatever key the live hotkey map gives it).
-Camera eye height (12" to 600"), Angle of view, and the Rendering technique used when a view opens.
+Camera eye height (12" to 600"), Angle of view, and the Rendering technique used when a view opens, plus the look of the plan **callouts** of section and elevation cameras: **Callout shape** (Circle, Square or Hexagon), **Callout size** (radius, 4" to 36") and **Callout shows the name** (10.7).
 
 ## 10.4 Rendering techniques
 
@@ -143,17 +156,30 @@ Row 1 Rendering Techniques flyout, 3D > Rendering Techniques. Nine techniques ar
 
 | Technique | In the interactive 3D view |
 |---|---|
-| Standard | Shaded surfaces with an edge overlay. |
+| Standard | Shaded surfaces with sky light, sun shadows and soft ambient occlusion (10.4a), and **textures** while the 3D toolbar's Textures box is ticked (10.8a). |
 | Vector View | Flat shading, white background, edge lines. On an elevation, section or wall elevation camera it shows the camera's **vector drawing** instead (10.7). |
-| Technical Illustration | Flat shading with material-color fill and edge lines. On an elevation, section or wall elevation camera it shows the vector drawing with material-colored faces and heavier lines, always with shadows (10.7). |
-| Watercolor | Flat shading on a warm paper background (an approximation of the bitmap technique). |
+| Technical Illustration | Flat banded color with bold **silhouette and crease lines** drawn from the depth and normals of the picture, so the edges follow the model at any zoom. On an elevation, section or wall elevation camera it shows the vector drawing with material-colored faces and heavier lines, always with shadows (10.7). |
+| Watercolor | A **pigment wash**: soft color, darkened edges and paper grain over a warm paper background (an approximation of Chief's bitmap technique). |
 | Line Drawing | Edge lines on white. |
 | Glass House | Every surface transparent glass so structure behind shows. |
-| Physically Based | Looks like Standard interactively; the real result comes from the Ray Trace window (10.6). |
+| Physically Based | Standard with glossier highlights and sky reflections (textures included); the real result comes from the Ray Trace window (10.6), which textures it too. |
 | Clay | Uniform gray material on a gray background. |
 | Duotone | Two-tone approximation on a warm background. |
 
-Switching technique never changes the model, only how the view is shown.
+Switching technique never changes the model, only how the view is shown. Only Standard and Physically Based show textures; the other techniques keep their flat looks.
+
+### 10.4a Shadows, ambient occlusion and quality in the live view
+
+The 3D toolbar has a **Shading** menu (it appears in the standard 3D views; the vector drawings have their own bar) with the settings of the OpenGL view:
+
+| Setting | What it does |
+|---|---|
+| Shadows | The sun casts shadows through a **shadow map** fitted to the model, filtered with percentage-closer filtering (PCF) so the edges are soft. The sun is the Sun Angle sun (10.5). Looks that do not use shadows (Line Drawing and other flat looks) ignore it. |
+| Ambient occlusion | Screen-space occlusion (SSAO): a half-resolution pass samples a hemisphere around each pixel from the depth buffer and a blur removes the noise, darkening creases and contact areas. |
+| Quality | **Low**: a 1024 shadow map with hard edges, 8 occlusion samples, no anti-aliasing. **Medium** (the default): 2048 map with 3 x 3 PCF, 12 samples, FXAA. **High**: 4096 map with 5 x 5 PCF, 16 samples, FXAA. |
+| Exposure | A slider from 0.5 to 2.0 applied before the tone curve. |
+
+Also in the live view: a sky gradient and ground fade behind the model (a flat horizon color in orthographic views), **GGX specular highlights with Fresnel and a roughness and metalness for each scene material** (glass and water also reflect the sky), up to **8 point lights** (the nearest plan lights and lighting fixtures of the electrical plan, 10.13) evaluated in the shader, and **FXAA** anti-aliasing at Medium and High. The Technical Illustration edge lines and the Watercolor wash are part of the same final screen pass.
 
 ## 10.5 Sun Angle
 
@@ -178,21 +204,28 @@ cancelled.
 | Samples per pixel | 64, 256, 1024 |
 | Technique | Physically Based, Clay |
 | Sun date, time, latitude | As in the Sun Angle window |
+| Sky | **Clear sky** (the Preetham analytic sky, with a **Turbidity** slider from 2 for very clear to 10 for hazy; it brightens toward the horizon and the sun and changes color from noon to sunset) or **Gradient** (the two-color zenith-to-horizon blend). The clear sky needs the sun above the horizon, otherwise the gradient is used. |
+| Exposure | A slider in stops (EV), -3 to +3, applied before tone mapping |
+| Depth of field | **Aperture** (0 is a pinhole, everything sharp; a larger aperture blurs what is off the focus plane) and **Focus** distance (0 focuses on what is at the center of the image) |
+| Noise | **Denoise (keeps edges and textures)**: a bilateral filter guided by the albedo, normal and depth of the first hit, so textures and geometry edges stay sharp while path-tracing noise is smoothed |
 
 Press **Render**; a progress bar shows `done / total samples` and the preview refines as passes
 finish (the button becomes **Cancel**). The result reads "Finished: 256 samples", or "Stopped after
-80 of 256 samples" if cancelled. **Save PNG...** writes `render.png`. If the model is empty the dialog says "There is nothing to render".
+80 of 256 samples" if cancelled. **Save Image...** writes the picture as a PNG; the size list beside it saves at **Same size**, **2x size** or **4x size** (the render is made again at that size, reduced until the image fits 8192 pixels on a side and 24 million pixels). If the model is empty the dialog says "There is nothing to render".
 
 How the tracer works: a binned-SAH BVH over every triangle; Lambert plus a GGX coat per
-material; thin-sheet glass with Fresnel (index 1.5); soft sun shadows and point lights; sky by
-cosine sampling; Russian roulette after 2 bounces; ACES, Reinhard or linear tone mapping; an
+material; thin-sheet glass with Fresnel (index 1.5); soft sun shadows and point lights; **next-event estimation** (area lights, such as lighting fixtures, are sampled directly at each hit, so a room lit by fixtures converges in far fewer samples than by chance alone); sky by
+cosine sampling or the Preetham model; Russian roulette after 2 bounces; ACES, Reinhard or linear tone mapping; an
 optional bilateral denoise. Output is deterministic: the same seed gives byte-identical
 pixels for any thread count. On Apple silicon in a release build, a 480x360 image at 64 samples takes
 about half a second on 20 threads; a 1920 x 1080 image at 256 samples is a minutes-scale job on
 a laptop. The PNG is uncompressed (about 4 bytes per pixel). Real projects with tens of thousands of
 triangles are 2 to 4 times slower than the small test scene.
 
-Not built: depth of field, light sets, glass and material overrides per surface, and animation
+Textured materials (brick, siding, shingles, wood ...) are painted with their bitmaps in the **Physically Based** technique (10.8a); **Clay** ignores colors and textures.
+The Ray Trace window has no switch for this: textures are always on in a render, a perspective box, Print Model and a recorded walkthrough.
+
+Not built: light sets, glass and material overrides per surface, bump or normal maps, and animation
 (planned).
 
 ## 10.7 Elevations and sections
@@ -200,8 +233,8 @@ Not built: depth of field, light sets, glass and material overrides per surface,
 `plan-elevation` turns the 3D scene into hidden-line vector elevations (Front, Back, Left,
 Right), cross sections and a plan overhead, as weighted line drawings (Heavy, Medium, Light,
 Hidden, plus Hatch and Annotation lines). The Create Construction Set PDF draws them (chapter 11).
-Elevation and section cameras open as these drawings in the 3D panel (below), Auto Elevations and Wall Elevation cameras make them
-(10.11), and Send to Layout puts them on a layout page (chapter 11.3). There is no command that sends one to CAD.
+Elevation and section cameras open as these drawings in the 3D panel (below), Auto Elevations, Auto Interior Elevations and Wall Elevation cameras make them
+(10.11), and Send to Layout puts them on a layout page (chapter 11.3). **Export DXF** writes a drawing as a DXF (below).
 
 ### Elevation rendering (camera Rendering tab)
 
@@ -216,8 +249,52 @@ The Camera Specification of a **Cross Section/Elevation camera** (and of a wall 
 | **Line weight by distance** | Lines more than 12" behind the nearest drawn line step down one weight class. |
 | **Labels (title, levels, roof pitch)** | Adds the title (the camera's name), "T.O. SUBFLOOR" and "T.O. PLATE" level callouts, "GRADE" with a grade line, and roof pitch triangles such as `8:12`. On by default. |
 
+The same tab has a **Vector View** section for the annotations and line weights of the camera's drawing, and a **Plan callout** section (below):
+
+| Vector View setting | What it does |
+|---|---|
+| **Level callouts** (under Labels) | "T.O. SUBFLOOR" and "T.O. PLATE" notes; they need the Labels option. |
+| **Automatic dimensions (floor-to-floor, openings)** | Adds the vertical dimension strings left of the building (below). |
+| **Material labels (siding, brick, roofing)** | Adds a text leader naming the cladding or roofing of each region (below). |
+| **Line weights from the layers** | Draws each wall's and opening's lines at the pen weight of its layer in Layer Display Options (Heavy, Medium or Light class), instead of the engine's own weights. |
+| **Dashed hidden lines** | Draws hidden edges dashed. |
+| **Export drawing as DXF...** | Writes this camera's drawing as a DXF (below). |
+
 The editor turns these into the engine's `Options` (`elevation_options`) and `render_elevation` draws the camera's 2D drawing with them. The vector view (below) and camera
 boxes in a layout read them; the construction set's own elevation and section boxes do not.
+
+### Free-angle sections and elevations
+
+A **Cross Section/Elevation** camera or a **Wall Elevation** camera is cut along its own line at **any angle**, not only square to a side of the plan: the engine turns the scene about the
+vertical axis into the camera's frame, runs the same hidden-line pipeline and clips the drawing to the length of the camera line (`plan-elevation` `FreeView`). Drawing space is view-local: X runs along
+the camera line from its left end (looking along the view direction) to its right end. An exterior elevation camera (Auto Elevations) draws the whole building from its direction.
+
+### Plan callouts, view numbers and sheet references
+
+Every section, wall elevation and elevation camera draws a **callout** in the plan: a bubble behind the middle of its cut line (on the viewer's side) with a stem to the line. The bubble holds the **view number**
+and, once the camera's view is on a layout page (a Camera box), a dividing line with that **sheet's number** under it (`A-3`). Cameras are numbered in order unless the camera has a number of its own:
+in the Camera Specification's Plan callout section tick **Show the callout in the plan** and **View number** (1 to 99); with no number ticked the cameras are numbered automatically in plan order, taking
+the lowest number nobody claims. The shape (Circle, Square or Hexagon), size and whether the callout shows the camera's name are set in 3D > 3D View Defaults (`Cmd+1`).
+
+### Automatic elevation dimensions
+
+With **Automatic dimensions** on, the drawing gets vertical dimension strings in a column left of the building, taken from the plan's levels and openings so they follow the model exactly:
+
+- **Floor to floor** (the outer string): from each finished floor to the next, and from the top floor to its top of plate.
+- **Openings** (the inner string): per floor, the floor level, the sill and head of every door and window seen in the view, and the top of plate.
+- **Overall**: the lowest floor to the highest top of plate.
+
+Values read feet-inches to 1/8".
+
+### Material labels
+
+With **Material labels** on, a text leader names the surface of each cladding or roofing region: SIDING, BRICK, STUCCO, STONE, ROOFING, CONCRETE, TRIM or METAL. The labels line up in a column beside the
+drawing. Regions under about 3 sq ft are not labelled, and a second region of the same material is labelled when it is at least 40% as big as the largest and 10' or more away from it.
+
+### Export DXF
+
+The vector view's bar (**Export DXF...**) and the Camera Specification (**Export drawing as DXF...**) write the camera's drawing as a DXF named after the camera (`<camera name>.dxf`). It is an R12 ASCII DXF in inches of the building. The lines go on
+layers by weight class (`<camera name>, Heavy`, `Medium`, `Light`, `Hidden`, plus `Hatch` and `Annotation`) and the text on `<camera name>, Text`, so the plotted weights survive in the CAD program; filled regions (poche and shadows) are not written. "Nothing to export: the view is empty" if there is nothing to draw.
 
 ### Opening a vector elevation (Vector View and Technical Illustration)
 
@@ -232,12 +309,11 @@ faces, gray poche on cut surfaces, shadows, material hatch and labels, according
 | Lines | Heavy, medium and light weights; cut lines heaviest | The same, heavier |
 | Shadows | When the camera's Shadows option is on, or the Sun Angle toggle is on | Always: from the Sun Angle when it is on, else from the camera's own sun |
 
-The panel's bar has the technique box, **Refresh**, **Send to Layout**, **Layout PDF...**, **Ray Trace...** and **Back to Plan**. Drag to pan, scroll to zoom at the pointer, double-click to fit
+The panel's bar has the technique box, **Refresh**, **Export DXF...**, **Send to Layout**, **Layout PDF...**, **Ray Trace...** and **Back to Plan**. Drag to pan, scroll to zoom at the pointer, double-click to fit
 the drawing. The drawing is made on a worker thread (the bar shows a spinner and the view says "Drawing the view..."), remade when the plan, the camera, the technique or the Sun Angle changes, and
 **Refresh** remakes it on demand. "Nothing to draw: the view is empty." appears for an empty plan.
 
-Limits. The drawing is made from the nearest axis: a cross section or wall elevation drawn at an angle is cut square to the nearest of the four sides, through the center of its line, so its drawing
-does not follow an angled cut. Everything in "What the engine draws" below applies.
+Limits. Everything in "What the engine draws" below applies.
 
 ### What the engine draws
 
@@ -249,7 +325,7 @@ does not follow an angled cut. Everything in "What the engine draws" below appli
   only drawn (and shadowed) in the plan overhead view. It is an approximation.
 - **Depth weights** and **labels** as in the table. **Sections**: the cut line is Heavy and the cut faces are filled.
 - **Limits**: accuracy is about one pixel of the depth buffer, so fine detail is dropped; glass occludes like a solid; sections assume
-  closed meshes; there are no curves (a curved wall is its facets); the 3D scene it reads includes cabinets, stairs and terrain but not electrical devices.
+  closed meshes; there are no curves (a curved wall is its facets, and the openings cut in it follow the arc, chapter 2.2); the 3D scene it reads includes cabinets, stairs and terrain but not electrical devices.
 
 ## 10.8 Materials
 
@@ -258,8 +334,61 @@ Drywall, Fir Framing, OSB-Hrz, siding, masonry, roofing, flooring, glass, metals
 2D hatches (brick, block, shingle, lap siding, tile, herringbone, insulation, concrete, earth,
 grass), deterministic procedural textures, default assignments per object (Wall, Door, Window,
 Room, Cabinet, Roof), the nine rendering techniques, and sun position from date, time and
-location. The editor uses its technique list and sun calculation; the rest (Material Painter,
-material tabs on objects, textures in the viewport) is (planned).
+location. The editor uses its technique list and sun calculation, the textures (10.8a) and the material tools below;
+material tabs on objects are (planned).
+
+### Material tools (3D menu and row 1 of the 3D buttons)
+
+- **Materials...** lists the library (the 45 core materials plus your own) by category, with a search box; click one to make it
+  the **active material**.
+- **Material Painter** is a mode of the 3D view. With it on, a click on a surface applies the active material to the object that surface
+  belongs to (a wall, a door, a window, a cabinet, a roof plane, ...) instead of selecting it; one undo step, "Paint Material". The
+  **Material Eyedropper** makes the clicked object's painted material the active one, and **Delete Surface** removes it. The row-1
+  buttons toggle the same modes; the pick uses the object id of the mesh under the pointer (chapter 10.2, Selecting in 3D).
+- **Adjust Materials...** works on the selected object: a **Whole object** row and one row per part of the object's kind
+  (a wall's Exterior and Interior Wall Surface, a door's Door Panel, Casing, Jamb and Hardware, a window's Frame, Sash and Glass, ...)
+  with a drop-down of the library. A part without its own material takes the whole-object one; window glass stays clear unless
+  the material is glass. Overrides are stored per object in the plan (`object_materials`).
+- **Material Builder...** makes a material: name, category, color, roughness, metallic, transparency, a 2D hatch pattern and an optional
+  texture image path. **Save to My Materials** adds it to `~/.plan-studio/materials.json`; it replaces a core material of the same name.
+- The viewport shades with 23 fixed scene materials, so a painted object shows the scene material **closest** to the library one (by what it
+  is, such as brick, shingle or floor, else by color), with that scene material's texture if it has one (10.8a); the library material's own exact color and texture image are not drawn (`DECISIONS.md` item 17).
+
+## 10.8a Textures
+
+Since Round 11 the 3D view and the ray tracer paint surfaces with bitmaps instead of flat colors. The scene still has 23 fixed scene materials (`plan_3d::Material`); **16 of them are textured** and the other seven (interior wall, ceiling, window glass and frame, door glass, trim and foliage) and the selection tint stay flat. The textured ones are
+exterior wall and siding, floor, door panel, roof, stucco, brick, stone, concrete, metal, framing, grass, mulch, water, asphalt and gravel.
+
+**Where a texture comes from** (`plan-materials/src/textures.rs`), for each textured material in this order:
+
+1. **Chief's own texture file**, read at run time from your Chief install when it is there, by file name, in these folders (a missing folder is skipped):
+   the folder named by the `PLAN_STUDIO_TEXTURES` environment variable (searched first, if you set it), `~/Documents/Chief Architect Premier X18 Data/Textures`, then
+   `/Library/Application Support/Chief Architect Premier X18/Referenced Files`. The names tried are Chief's stock ones, for example `Brick(36).jpg`, `LapSidingCRCAAB.jpg`, `Stucco(48).jpg`, `OakHardwoodHoney.jpg` (then `Oak.jpg`),
+   `Asphalt Roofing Grey 2016.jpg` (then `Shingle - Grey.JPG`), `StoneVeneer.jpg`, `Concrete(72).jpg`, `BrushedMetal.jpg`, `Fir(36).jpg`, `Grass5.jpg`, `Mulch(dark).jpg`, `Water3(48).jpg`, `Asphalt-01.jpg` and `Gravel.jpg`.
+   A number in parentheses is the size one repeat covers in inches (`Brick(36).jpg` repeats every 36"). The files are Chief's licensed content: they are decoded in memory, never copied, written or committed, and a file larger than 1024 pixels on a side is shrunk on load.
+2. A **procedural fallback** generated in code (lap siding, brick with mortar, stucco, shingles, wood grain, stone, concrete, metal, grass, carpet-like mulch, water ripples), tinted from the material's flat color. The repository ships no Chief image, and a machine without Chief looks textured anyway.
+   If a Chief file is not found (a different install, a renamed file) or does not decode, the fallback is used for that material alone.
+
+The decoded pictures are cached (least recently used out first, 512 MB), shared by the viewport and the ray tracer. Textures load on a background thread the first time a scene needs them, and at most two are sent to the graphics card per frame, so the view of a big house may fill in a moment after it opens instead of stalling.
+
+**Mapping.** There are no UV coordinates on the meshes. Each fragment is mapped planarly (`planar_uv`, shared by the OpenGL shader, the ray tracer and the tests): a wall or roof face is mapped in **its own plane**, with the picture's top pointing up the wall or up the slope and one repeat covering the tile size in real inches, so siding courses run level on every wall and shingles run down every roof plane;
+a flat face, and the floor, ceiling, grass, mulch, water, asphalt and gravel materials, are mapped on **plan X and Z**. (A fully triplanar mapping, blending three projections, is not built.) The graphics card filters with mipmaps and, where the driver offers it, anisotropic filtering; surfaces are lit as before, so a texture darkens in shade like a flat color.
+
+**The Textures switch.** The floating bar of a 3D view has a **Textures** box (on by default; not saved with the plan): off shows the flat scene colors. It works in the **Standard** and **Physically Based** techniques; the other techniques never show textures.
+
+**Pictures.** A picture or billboard (chapter 6.7) shows its own PNG or JPEG bitmap on its quad in the viewport: straight RGBA, the "make one color transparent" key cut out, mirrored if the picture is flipped, shrunk to at most 2048 pixels on a side, decoded once and cached by file, modification time and transparency settings. A file that is missing or cannot be read stays a flat-colored quad. The ray tracer still draws a picture as a flat-colored quad.
+
+**The ray tracer** looks up the same bitmap for a textured material and maps it with the same function (bilinear, repeating). It scales the bitmap's brightness to the material's flat albedo (between 1/4 and 4 times, never above 0.95), so turning textures on changes the pattern and not the exposure. Only the Physically Based technique does this, and only for opaque materials.
+
+**Image formats.** Textures, 3D pictures and layout picture boxes go through a decoder written for the program (`plan-library/src/image`, no external image crate): **PNG** of every color type and bit depth (palette, transparency chunks, interlaced), and **JPEG** baseline and **progressive**, grayscale, YCbCr, RGB and Adobe CMYK/YCCK, any chroma subsampling, restart markers; the EXIF orientation tag is ignored. A 2048 x 2048 JPEG decodes in well under a second even in a debug build. Underlay pictures (12.4a) and the pictures drawn in the plan (6.7) still use their own, older decoders: a JPEG in the plan view is still a framed placeholder.
+
+**Limits.**
+
+- No bump or normal maps, and no texture rotation, offset or mirror (Chief's Material Definition has them).
+- A painted object (Material Painter, Adjust Materials; 10.8) takes the texture of the scene material it maps to, not the library material's own image; Material Builder's texture path is kept with the material but is not drawn in the view.
+- Pictures are flat quads in the ray tracer, and the selection tint is never textured.
+- The mapping is planar: a curved wall's facets and the sides of a stair tread each take the plane of their own face, so a texture can show a seam where faces meet at an angle.
+- A texture follows the scene material a mesh carries, so a cabinet, stair or library object is textured only where its mesh uses one of the 16 materials (a countertop in Stone, a stair tread in Framing); glTF export stays untextured (flat material colors, UVs in feet).
 
 ## 10.9 Export: glTF
 
@@ -268,13 +397,12 @@ material tabs on objects, textures in the viewport) is (planned).
 
 ## 10.10 Differences from Chief
 
-- No textures or material assignment in the view; surfaces use flat material colors.
+- Textures (10.8a) come from 16 scene materials, Chief's own files when your install has them and generated ones otherwise, with no bump maps; there are still no exact colors: a painted object shows the closest of the viewport's 23 fixed scene materials (10.8, `DECISIONS.md` item 17). Pictures are flat in the ray tracer.
 - Many Chief techniques are approximations of the real look.
-- Cameras do not yet carry shadows (perspective), lock, or per-camera lighting. Elevation hatch is fixed at a 1/4" scale, and a vector elevation is cut square to the nearest axis.
-- No electrical devices in 3D, and Build Framing's wall, floor and roof members are not drawn in 3D. Landscape materials are stand-ins (no green grass). Clicking an object in 3D does not select it in the plan yet (3D picking is planned; Round 9).
-- Curved walls have no door or window cuts in 3D.
+- Cameras do not yet carry shadows (perspective), lock, or per-camera lighting. Elevation hatch is fixed at a 1/4" scale.
+- Electrical devices and Build Framing's wall, floor and roof members are in the live 3D view, but not in the vector elevations and sections (except the wall framing of the Framing Overview, chapter 11.11). 3D objects cannot be dragged, Alt-click does not set the orbit center, and there is no hover highlight (see Selecting in 3D under 10.2).
 - Walkthrough recording uses the path tracer at low quality (640 x 480, 8 samples per pixel, denoised, 12 frames a second) and writes a PNG sequence, not a video file (10.12).
-- The Lighting submenu, per-light color temperature and the other lighting tools of Chief are not built; lights are simple point lights (10.13).
+- Per-light color temperature and the other lighting tools of Chief are not built; lights are simple point lights (10.13). The live view's shadows are one sun shadow map with PCF; there are no shadows from point lights.
 
 ## 10.11 Auto Elevations and Wall Elevation cameras
 
@@ -285,8 +413,9 @@ These make the elevation cameras whose drawings 10.7 describes. They are on the 
 | Wall Elevation Camera | Click a wall. | An elevation camera named "Wall Elevation" (numbered if the name is taken) standing on the side of the wall you clicked and looking at that face. Its cut line sits 1/2" in front of the face and reaches 2" past the far face, and the drawing is back-clipped to the wall's thickness. "Click a wall to make its elevation" if nothing is under the pointer. |
 | Auto Elevations | One click. | The four exterior elevation cameras (north, east, south and west) 24" outside the building, made or, if they exist, updated. The status bar says "Auto Elevations: 4 cameras". "Draw some walls first" with no walls. |
 | Auto Back-Clipped Elevations | One click. | Four back-clipped sections outside the building that draw 60" behind the building face. |
+| Auto Interior Elevations | Click inside a room. | Four wall elevation cameras for that room (the smallest room when rooms nest), named `<room> North Wall`, `<room> East Wall`, `<room> South Wall`, `<room> West Wall` after the wall each looks at (north is plan +Y; a room without a name is called "Room"). Each stands 1" inside the opposite wall's surface, looks at its wall and reaches 8" past the wall's far face, so the drawing shows the wall, its openings, cabinets and fixtures. Run it again and the same cameras are updated instead of doubled. "Click inside a closed room to make its interior elevations" if no room is there (a room side under 12" gets none). It is in 3D > Create Auto Elevations and on the Full Camera flyout. |
 
-Each new camera is selected, the tool returns to Select Objects and the first camera's 3D view opens. Open the Camera Specification (double-click the camera symbol) to change its name, its Elevation rendering options and its
+Each new camera is selected (and gets a plan callout, 10.7), the tool returns to Select Objects and the first camera's 3D view opens. Open the Camera Specification (double-click the camera symbol) to change its name, its Elevation rendering options and its
 back clip. In a layout, send a camera with the Send to Layout dialog (chapter 11.3).
 
 ## 10.12 Walkthroughs
@@ -320,5 +449,5 @@ A walk of a minute is about 720 frames. Expect soft, noisy stills; raise the qua
 
 OK stores the changes as one undo step.
 
-Lights are used by the **ray tracer** (Ray Trace... and the recorded walkthroughs), alongside the sun; the live OpenGL view does not draw them. Chief's Lighting submenu, color temperature and
+Lights are used by the **ray tracer** (Ray Trace... and the recorded walkthroughs), alongside the sun, and by the **live OpenGL view**, which lights each pixel from the nearest 8 point lights (the plan's lights and the electrical fixtures, 10.4a) without shadows from them. Chief's Lighting submenu, color temperature and
 light sets are not built. The Sun Angle (10.5) is the sun for the ray tracer, the viewport's key light and the shadows of vector elevations.

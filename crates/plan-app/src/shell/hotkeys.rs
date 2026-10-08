@@ -20,12 +20,14 @@
 //! [`handle`] is the per-frame entry point used by `main.rs`; it keeps the
 //! 1.5 s multi-key buffer.
 
+use crate::editor::edit_commands::ids;
 use crate::editor::EditorContext;
 use crate::shell::view3d_panel::View3dCommand;
 use crate::toolbar::{self, Action, Binding, Slot, Toolbars, ViewFlag, BINDINGS, SEQUENCE_TIMEOUT};
 use eframe::egui::{self, Key, Modifiers};
 use plan_config::KeyChord;
 use plan_config::{format_sequence, load_daniel_config, normalize_key, to_plan_studio_bindings};
+use plan_core::transform::AlignMode;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -210,6 +212,84 @@ fn extra_commands() -> Vec<Command> {
         ),
         c("Tools", "Current Wall Tool", Action::CurrentWall),
         c("Tools", "Customize Hotkeys", Action::OpenHotkeyDialog),
+        // The Edit menu (`editor::edit_commands`).
+        c("Edit", "Cut", Action::Custom(ids::CUT)),
+        c("Edit", "Copy", Action::Custom(ids::COPY)),
+        c("Edit", "Paste", Action::Custom(ids::PASTE)),
+        c("Edit", "Paste as Group", Action::Custom(ids::PASTE_GROUP)),
+        c(
+            "Edit",
+            "Copy and Paste in Place",
+            Action::Custom(ids::COPY_PASTE_IN_PLACE),
+        ),
+        c("Edit", "Duplicate", Action::Custom(ids::DUPLICATE)),
+        c(
+            "Edit",
+            "Delete Objects",
+            Action::Custom(ids::DELETE_OBJECTS),
+        ),
+        c("Edit", "Select All", Action::Custom(ids::SELECT_ALL)),
+        c("Edit", "Select Same Type", Action::Custom(ids::SELECT_SAME)),
+        c("Edit", "Group", Action::Custom(ids::GROUP)),
+        c("Edit", "Ungroup", Action::Custom(ids::UNGROUP)),
+        c(
+            "Edit",
+            "Transform/Replicate Object",
+            Action::Custom(ids::TRANSFORM),
+        ),
+        c("Edit", "Rotate Selection", Action::Custom(ids::ROTATE)),
+        c("Edit", "Reflect About Object", Action::Custom(ids::REFLECT)),
+        c(
+            "Edit",
+            "Reflect Copy About Object",
+            Action::Custom(ids::REFLECT_COPY),
+        ),
+        c(
+            "Edit",
+            "Point to Point Move",
+            Action::Custom(ids::POINT_TO_POINT),
+        ),
+        c("Edit", "Center Object", Action::Custom(ids::CENTER)),
+        c("Edit", "Make Parallel", Action::Custom(ids::PARALLEL)),
+        c(
+            "Edit",
+            "Make Perpendicular",
+            Action::Custom(ids::PERPENDICULAR),
+        ),
+        c(
+            "Edit",
+            "Distribute Horizontally",
+            Action::Custom(ids::DISTRIBUTE_H),
+        ),
+        c(
+            "Edit",
+            "Distribute Vertically",
+            Action::Custom(ids::DISTRIBUTE_V),
+        ),
+        c("Edit", "Move to Front", Action::Custom(ids::FRONT)),
+        c("Edit", "Move to Back", Action::Custom(ids::BACK)),
+        c("Edit", "Lock Selection", Action::Custom(ids::LOCK)),
+        c("Edit", "Unlock Selection", Action::Custom(ids::UNLOCK)),
+        c("Edit", "Send to Layer", Action::Custom(ids::LAYER)),
+        c("Edit", "Action History", Action::Custom(ids::HISTORY)),
+        c("Edit", "Align Left", Action::Custom(AlignMode::Left.id())),
+        c(
+            "Edit",
+            "Align Center",
+            Action::Custom(AlignMode::Center.id()),
+        ),
+        c("Edit", "Align Right", Action::Custom(AlignMode::Right.id())),
+        c("Edit", "Align Top", Action::Custom(AlignMode::Top.id())),
+        c(
+            "Edit",
+            "Align Middle",
+            Action::Custom(AlignMode::Middle.id()),
+        ),
+        c(
+            "Edit",
+            "Align Bottom",
+            Action::Custom(AlignMode::Bottom.id()),
+        ),
         c("Tools", "Layer Display Options", Action::OpenLayerDisplay),
         c("Help", "About Plan Studio", Action::ShowAbout),
     ]
@@ -352,10 +432,79 @@ fn adjust_lights_chord(mac: bool) -> Chord {
 /// Chief defaults that need the Option (alt) key, which a
 /// [`toolbar::Binding`] cannot express: command name and sequence.
 fn alt_defaults() -> Vec<(&'static str, Vec<Chord>)> {
-    vec![(
-        "Adjust Lights",
-        vec![adjust_lights_chord(cfg!(target_os = "macos"))],
-    )]
+    vec![
+        (
+            "Adjust Lights",
+            vec![adjust_lights_chord(cfg!(target_os = "macos"))],
+        ),
+        ("Floor Defaults", vec![floor_defaults_chord()]),
+    ]
+}
+
+/// Shift+Cmd+Y (Floor Defaults, Chief's default for the toolbar button).
+fn floor_defaults_chord() -> Chord {
+    Chord {
+        ctrl: false,
+        alt: false,
+        shift: true,
+        meta: true,
+        key: Key::Y,
+    }
+    .normalized()
+}
+
+/// The Edit menu's default hotkeys: Chief's clipboard keys (`Cmd+X`, `Cmd+C`,
+/// `Cmd+V`, `Cmd+A`, `C, P, P`), Duplicate and Group, and Delete Objects.
+/// Daniel's own bindings take their chords away from these.
+fn edit_defaults() -> Vec<(&'static str, Vec<Chord>)> {
+    let key = |meta: bool, shift: bool, key: Key| {
+        Chord {
+            ctrl: false,
+            alt: false,
+            shift,
+            meta,
+            key,
+        }
+        .normalized()
+    };
+    vec![
+        ("Cut", vec![key(true, false, Key::X)]),
+        ("Copy", vec![key(true, false, Key::C)]),
+        ("Paste", vec![key(true, false, Key::V)]),
+        (
+            "Copy and Paste in Place",
+            vec![
+                key(false, false, Key::C),
+                key(false, false, Key::P),
+                key(false, false, Key::P),
+            ],
+        ),
+        ("Duplicate", vec![key(true, false, Key::D)]),
+        ("Select All", vec![key(true, false, Key::A)]),
+        ("Group", vec![key(true, false, Key::G)]),
+        ("Delete Objects", vec![key(false, true, Key::Space)]),
+    ]
+}
+
+/// The chord of a clipboard event: egui turns Cmd+C, Cmd+X and Cmd+V into
+/// `Copy`, `Cut` and `Paste` events instead of key presses.
+fn clipboard_chord(e: &egui::Event) -> Option<Chord> {
+    let key = match e {
+        egui::Event::Copy => Key::C,
+        egui::Event::Cut => Key::X,
+        egui::Event::Paste(_) => Key::V,
+        _ => return None,
+    };
+    Some(
+        Chord {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            meta: true,
+            key,
+        }
+        .normalized(),
+    )
 }
 
 /// Plan Studio's own extras (number keys, Shift+Cmd+Z) survive Daniel's
@@ -386,6 +535,11 @@ impl HotkeyMap {
             }
         }
         for (name, seq) in alt_defaults() {
+            if commands.iter().any(|c| c.name == name) {
+                push_unique(bindings.entry(name.to_string()).or_default(), seq);
+            }
+        }
+        for (name, seq) in edit_defaults() {
             if commands.iter().any(|c| c.name == name) {
                 push_unique(bindings.entry(name.to_string()).or_default(), seq);
             }
@@ -824,8 +978,11 @@ pub fn handle(
                     repeat: false,
                     modifiers,
                     ..
-                } => Some(Chord::from_event(*key, modifiers)),
-                _ => None,
+                } if !cx.typed_input.swallows(*key, modifiers) => {
+                    Some(Chord::from_event(*key, modifiers))
+                }
+                // Cmd+C, Cmd+X and Cmd+V arrive as clipboard events.
+                other => clipboard_chord(other),
             })
             .collect()
     });
@@ -962,6 +1119,24 @@ mod tests {
         map.assign("Zoom In", vec![chord], true).unwrap();
         assert_eq!(map.lookup(&[chord]), Some(Action::ZoomIn));
         assert!(map.sequences("Adjust Lights").is_empty());
+    }
+
+    #[test]
+    fn shift_command_y_opens_floor_defaults() {
+        let map = HotkeyMap::defaults();
+        let chord = floor_defaults_chord();
+        assert!(chord.shift && chord.meta && !chord.alt);
+        let action = map.lookup(&[chord]).expect("Shift+Cmd+Y is bound");
+        assert_eq!(action, Action::FloorDefaults);
+        assert!(map.sequences("Floor Defaults").contains(&vec![chord]));
+        // The chord a key press builds is the same one.
+        let pressed = Modifiers {
+            shift: true,
+            mac_cmd: cfg!(target_os = "macos"),
+            command: true,
+            ..Modifiers::NONE
+        };
+        assert_eq!(Chord::from_event(Key::Y, &pressed), chord);
     }
 
     #[test]
@@ -1176,5 +1351,86 @@ mod tests {
         }
         assert!(map.command("Zoom In").unwrap().is_live());
         assert!(map.command("New Project").is_some(), "alias");
+    }
+
+    #[test]
+    fn edit_hotkeys_route_to_the_edit_commands() {
+        let map = HotkeyMap::defaults();
+        let custom = |id| Some(Action::Custom(id));
+        // Cmd+X / C / V / A / D and the C, P, P chord.
+        assert_eq!(map.lookup(&[cmd_chord(Key::X)]), custom(ids::CUT));
+        assert_eq!(map.lookup(&[cmd_chord(Key::C)]), custom(ids::COPY));
+        assert_eq!(map.lookup(&[cmd_chord(Key::V)]), custom(ids::PASTE));
+        assert_eq!(map.lookup(&[cmd_chord(Key::A)]), custom(ids::SELECT_ALL));
+        assert_eq!(map.lookup(&[cmd_chord(Key::D)]), custom(ids::DUPLICATE));
+        let cpp = [plain(Key::C), plain(Key::P), plain(Key::P)];
+        assert_eq!(map.lookup(&cpp), custom(ids::COPY_PASTE_IN_PLACE));
+        assert!(map.is_prefix(&[plain(Key::C)]));
+        assert!(map.is_prefix(&[plain(Key::C), plain(Key::P)]));
+        // Paste Hold Position is Daniel's Alt+Cmd+V and a live command now.
+        assert!(map.command("Paste Hold Position").unwrap().is_live());
+        assert_eq!(map.hotkey_text("Copy and Paste in Place"), "C, P, P");
+        // The key sequence fires on the third press.
+        let mut st = HotkeyState::new(HotkeyMap::defaults());
+        let mut out = Vec::new();
+        let now = Instant::now();
+        st.press(plain(Key::C), now, &mut out);
+        st.press(plain(Key::P), now, &mut out);
+        assert!(out.is_empty(), "two presses are only a prefix");
+        st.press(plain(Key::P), now, &mut out);
+        assert_eq!(out, vec![Action::Custom(ids::COPY_PASTE_IN_PLACE)]);
+    }
+
+    #[test]
+    fn egui_clipboard_events_become_the_command_chords() {
+        let copy = clipboard_chord(&egui::Event::Copy).unwrap();
+        assert_eq!(copy, cmd_chord(Key::C).normalized());
+        assert_eq!(
+            clipboard_chord(&egui::Event::Cut),
+            Some(cmd_chord(Key::X).normalized())
+        );
+        assert_eq!(
+            clipboard_chord(&egui::Event::Paste("x".into())),
+            Some(cmd_chord(Key::V).normalized())
+        );
+        assert!(clipboard_chord(&egui::Event::Zoom(1.0)).is_none());
+        // And they find their commands in the map.
+        let map = HotkeyMap::defaults();
+        assert_eq!(map.lookup(&[copy]), Some(Action::Custom(ids::COPY)));
+    }
+
+    #[test]
+    fn every_edit_command_has_a_name_in_the_map() {
+        let map = HotkeyMap::defaults();
+        for name in [
+            "Cut",
+            "Copy",
+            "Paste",
+            "Duplicate",
+            "Select All",
+            "Select Same Type",
+            "Group",
+            "Ungroup",
+            "Transform/Replicate Object",
+            "Reflect About Object",
+            "Point to Point Move",
+            "Center Object",
+            "Make Parallel",
+            "Make Perpendicular",
+            "Align Left",
+            "Align Middle",
+            "Distribute Horizontally",
+            "Move to Front",
+            "Lock Selection",
+            "Send to Layer",
+            "Action History",
+            "Delete Objects",
+        ] {
+            let c = map
+                .command(name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            assert!(c.is_live(), "{name}");
+        }
+        assert_eq!(map.hotkey_text("Delete Objects"), "Shift+Space");
     }
 }

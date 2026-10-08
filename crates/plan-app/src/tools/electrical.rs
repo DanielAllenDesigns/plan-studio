@@ -1,8 +1,11 @@
 //! Electrical tools (CB-62..CB-67 in `docs/parity/cabinets-stairs-framing-terrain-library.md`).
 //!
 //! One tool object with a flavor per flyout entry ([`ElecVariant`]): 110V,
-//! 220V and GFCI outlets, lights, rope lights, switches, ceiling fans, smoke
-//! detectors, Electrical Connection and Auto Place Outlets.
+//! quad, 220V, GFCI and floor outlets, switches (single, 3-way, 4-way,
+//! dimmer), ceiling, recessed, pendant and wall lights, rope lights, ceiling
+//! fans, smoke and CO detectors, thermostats, doorbells, data, phone and TV
+//! jacks, the electrical panel, Electrical Connection, Auto Place Outlets and
+//! Auto Place Switches.
 //!
 //! * Wall devices snap to the nearest wall within 12" and sit on the face
 //!   nearest the cursor at the kind's default height (CB-63); the status bar
@@ -13,8 +16,14 @@
 //!   devices move freely), Tab flips the side, Left/Right turn a free device
 //!   (Shift = 90 degrees), Delete removes it and a double-click opens the
 //!   Electrical Service Specification.
-//! * Electrical Connection: click a switch (or outlet), then the light; the
-//!   dashed arc is stored with the layer (CB-67).
+//! * Electrical Connection: click a switch (or outlet), then every light it
+//!   controls (Esc ends the run); the dashed arcs are stored with the layer
+//!   (CB-67). Two 3-way (or 4-way) switches clicked in turn are wired as a
+//!   pair and both control the lights of either. Drag the handle at an arc's
+//!   midpoint to bend it.
+//! * Auto Place Switches: a switch 6" past the latch jamb of every door of
+//!   every room, a ceiling light for a room that has none and the connections
+//!   (CB-65); a room with two doors gets a 3-way pair.
 //! * Auto Place Outlets: one click places outlets for every room of the
 //!   current floor from its name and type (CB-64).
 //!
@@ -28,11 +37,13 @@ use crate::editor::site_view::{
 };
 use crate::editor::{Camera, EditorContext};
 use eframe::egui::{self, Key, Pos2, Shape};
-use plan_core::geometry::{dist_to_segment, point_in_polygon, project_on_segment, Point};
+use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
 use plan_core::{Floor, Id};
+use plan_core::geometry::point_in_polygon;
+use plan_core::OpeningKind;
 use plan_electrical::{
-    auto_place_outlets, auto_place_room_light, connect_in, place_free, place_on_wall,
-    AutoOutletOptions, Device, DeviceKind, RoomFunction, WallSide,
+    auto_place_outlets, auto_place_room_light, auto_place_switch, connect_in, place_free,
+    place_on_wall, AutoOutletOptions, Device, DeviceKind, RoomFunction, WallSide,
 };
 use std::cell::RefCell;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -51,56 +62,116 @@ const DEFAULT_ROPE: f64 = 96.0;
 const TURN_STEP: f64 = PI / 12.0;
 /// Outlets closer than this to an existing one of the same kind are skipped, inches.
 const DUPLICATE_DIST: f64 = 2.0;
+/// How near a click must be to an arc's midpoint handle to bend it, inches.
+const BEND_PICK: f64 = 6.0;
 
 /// The flavors of the electrical tool, one per flyout entry.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ElecVariant {
     Outlet110,
+    Outlet110Quad,
     Outlet220,
     Gfci,
+    OutletFloor,
     Light,
+    RecessedLight,
+    PendantLight,
+    WallLight,
     RopeLight,
     Switch,
     Switch3Way,
+    Switch4Way,
+    SwitchDimmer,
     CeilingFan,
     SmokeDetector,
+    CoDetector,
+    Thermostat,
+    Doorbell,
+    DataJack,
+    PhoneJack,
+    TvJack,
+    Panel,
     Connection,
     AutoOutlets,
+    AutoSwitches,
 }
 
 impl ElecVariant {
+    /// Every flavor, in flyout order.
+    pub const ALL: [ElecVariant; 26] = [
+        ElecVariant::Outlet110,
+        ElecVariant::Outlet110Quad,
+        ElecVariant::Outlet220,
+        ElecVariant::Gfci,
+        ElecVariant::OutletFloor,
+        ElecVariant::Switch,
+        ElecVariant::Switch3Way,
+        ElecVariant::Switch4Way,
+        ElecVariant::SwitchDimmer,
+        ElecVariant::Light,
+        ElecVariant::RecessedLight,
+        ElecVariant::PendantLight,
+        ElecVariant::WallLight,
+        ElecVariant::RopeLight,
+        ElecVariant::CeilingFan,
+        ElecVariant::SmokeDetector,
+        ElecVariant::CoDetector,
+        ElecVariant::Thermostat,
+        ElecVariant::Doorbell,
+        ElecVariant::DataJack,
+        ElecVariant::PhoneJack,
+        ElecVariant::TvJack,
+        ElecVariant::Panel,
+        ElecVariant::Connection,
+        ElecVariant::AutoOutlets,
+        ElecVariant::AutoSwitches,
+    ];
+
     /// The device a click places, if this flavor places one.
     pub fn kind(self) -> Option<DeviceKind> {
         Some(match self {
             ElecVariant::Outlet110 => DeviceKind::Outlet110,
+            ElecVariant::Outlet110Quad => DeviceKind::Outlet110Quad,
             ElecVariant::Outlet220 => DeviceKind::Outlet220,
             ElecVariant::Gfci => DeviceKind::Gfci,
+            ElecVariant::OutletFloor => DeviceKind::OutletFloor,
             ElecVariant::Light => DeviceKind::CeilingLight,
+            ElecVariant::RecessedLight => DeviceKind::RecessedCan,
+            ElecVariant::PendantLight => DeviceKind::PendantLight,
+            ElecVariant::WallLight => DeviceKind::WallSconce,
             ElecVariant::RopeLight => DeviceKind::RopeLight {
                 length: DEFAULT_ROPE,
             },
             ElecVariant::Switch => DeviceKind::Switch,
             ElecVariant::Switch3Way => DeviceKind::Switch3Way,
+            ElecVariant::Switch4Way => DeviceKind::Switch4Way,
+            ElecVariant::SwitchDimmer => DeviceKind::SwitchDimmer,
             ElecVariant::CeilingFan => DeviceKind::CeilingFan,
             ElecVariant::SmokeDetector => DeviceKind::SmokeDetector,
-            ElecVariant::Connection | ElecVariant::AutoOutlets => return None,
+            ElecVariant::CoDetector => DeviceKind::CoDetector,
+            ElecVariant::Thermostat => DeviceKind::Thermostat,
+            ElecVariant::Doorbell => DeviceKind::Doorbell,
+            ElecVariant::DataJack => DeviceKind::DataJack,
+            ElecVariant::PhoneJack => DeviceKind::PhoneJack,
+            ElecVariant::TvJack => DeviceKind::TvJack,
+            ElecVariant::Panel => DeviceKind::Panel,
+            ElecVariant::Connection | ElecVariant::AutoOutlets | ElecVariant::AutoSwitches => {
+                return None
+            }
         })
     }
 
     /// Chief's name of the flyout entry.
     pub fn name(self) -> &'static str {
         match self {
-            ElecVariant::Outlet110 => "110V Outlet",
-            ElecVariant::Outlet220 => "220V Outlet",
-            ElecVariant::Gfci => "GFCI Outlet",
             ElecVariant::Light => "Light",
-            ElecVariant::RopeLight => "Rope Light",
-            ElecVariant::Switch => "Switch",
-            ElecVariant::Switch3Way => "3-Way Switch",
-            ElecVariant::CeilingFan => "Ceiling Fan",
-            ElecVariant::SmokeDetector => "Smoke Detector",
+            ElecVariant::RecessedLight => "Recessed Light",
+            ElecVariant::WallLight => "Wall Light",
+            ElecVariant::Panel => "Electrical Panel",
             ElecVariant::Connection => "Electrical Connection",
             ElecVariant::AutoOutlets => "Auto Place Outlets",
+            ElecVariant::AutoSwitches => "Auto Place Switches",
+            v => v.kind().map_or("Electrical", |k| k.name()),
         }
     }
 }
@@ -121,6 +192,8 @@ pub struct ElectricalTool {
     rope: Option<(Point, Point)>,
     /// Electrical Connection: the switch picked first.
     connect_from: Option<Id>,
+    /// A connection arc's bend handle being dragged: its index and whether it moved.
+    bend: Option<(usize, bool)>,
     /// The specification dialog, drawn from `draw_overlay` (which only has `&self`).
     dialog: RefCell<Option<ElectricalDialog>>,
     /// An OK from the dialog, applied at the next tool event.
@@ -136,6 +209,7 @@ impl Default for ElectricalTool {
             drag: None,
             rope: None,
             connect_from: None,
+            bend: None,
             dialog: RefCell::new(None),
             applied: RefCell::new(None),
         }
@@ -254,11 +328,8 @@ pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
     let types: Vec<(String, RoomFunction)> = rooms
         .iter()
         .map(|r| {
-            let (name, ty) = cx
-                .floor()
-                .room_names
-                .iter()
-                .find(|n| point_in_polygon(n.anchor, &r.polygon))
+            let (name, ty) = r
+                .name_entry(&cx.floor().room_names)
                 .map_or((r.label.clone(), String::new()), |n| {
                     (n.name.clone(), n.room_type.clone())
                 });
@@ -292,7 +363,14 @@ pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
     n
 }
 
-/// Connects `from` (a switch or outlet) to `to` with a dashed arc (CB-67).
+/// 3-way and 4-way switches wire to each other as a pair.
+fn is_traveler(k: DeviceKind) -> bool {
+    matches!(k, DeviceKind::Switch3Way | DeviceKind::Switch4Way)
+}
+
+/// Connects `from` (a switch or outlet) to `to` with a dashed arc (CB-67). `to`
+/// is a light or an outlet, or another 3-way / 4-way switch when `from` is one
+/// (a pair: both then control the same lights).
 pub fn connect_devices(cx: &mut EditorContext, from: Id, to: Id) -> Result<(), &'static str> {
     let layer = load_electrical(cx.floor());
     let (Some(a), Some(b)) = (layer.device(from), layer.device(to)) else {
@@ -301,13 +379,16 @@ pub fn connect_devices(cx: &mut EditorContext, from: Id, to: Id) -> Result<(), &
     if !(a.kind.is_switch() || a.kind.is_outlet()) {
         return Err("Start the connection at a switch or an outlet");
     }
-    if from == to || b.kind.is_switch() {
+    if from == to {
+        return Err("Click the light or outlet the switch controls");
+    }
+    if b.kind.is_switch() && !(is_traveler(a.kind) && is_traveler(b.kind)) {
         return Err("Click the light or outlet the switch controls");
     }
     if layer
         .connections
         .iter()
-        .any(|c| c.from == from && c.to == to)
+        .any(|c| (c.from == from && c.to == to) || (c.from == to && c.to == from))
     {
         return Err("Those two are already connected");
     }
@@ -315,6 +396,96 @@ pub fn connect_devices(cx: &mut EditorContext, from: Id, to: Id) -> Result<(), &
         connect_in(layer, from, to, &floor.walls);
     });
     Ok(())
+}
+
+/// Tolerance when matching a door to the edge of a room, inches.
+const DOOR_ON_ROOM: f64 = 12.0;
+
+/// Auto Place Switches (CB-65): for every room, a switch on the room side of
+/// each of its doors, 6" past the latch jamb at 48"; a ceiling light at the
+/// room's center when the room has none; and the connections. A room with two
+/// doors gets a 3-way pair wired together, one with more also 4-way switches
+/// in between. Doors that already have a switch are skipped. Returns the
+/// number of switches added; the whole run is one undo step.
+pub fn auto_place_floor_switches(cx: &mut EditorContext) -> usize {
+    cx.refresh();
+    let rooms = cx.rooms.clone();
+    let floor = cx.floor().clone();
+    let existing = load_electrical(&floor);
+    let mut added: Vec<(usize, Vec<Device>)> = Vec::new(); // room index, new switches
+    for (ri, room) in rooms.iter().enumerate() {
+        let mut here: Vec<Device> = Vec::new();
+        for o in floor.openings.iter().filter(|o| o.kind == OpeningKind::Door) {
+            let Some(wall) = floor.wall(o.wall_id) else {
+                continue;
+            };
+            let mid = wall.point_at((o.start_offset() + o.end_offset()) * 0.5);
+            let n = room.polygon.len();
+            let on_edge = (0..n).any(|i| {
+                dist_to_segment(mid, room.polygon[i], room.polygon[(i + 1) % n]) <= DOOR_ON_ROOM
+            });
+            if !on_edge {
+                continue;
+            }
+            let d = auto_place_switch(room, o, wall);
+            let taken = existing
+                .devices
+                .iter()
+                .chain(here.iter())
+                .any(|e| e.kind.is_switch() && e.position.dist(d.position) < DUPLICATE_DIST);
+            if !taken {
+                here.push(d);
+            }
+        }
+        if !here.is_empty() {
+            added.push((ri, here));
+        }
+    }
+    if added.is_empty() {
+        cx.status = if rooms.is_empty() {
+            "Auto Place Switches: no rooms found (close the walls of a room first)".into()
+        } else {
+            "Auto Place Switches: every door already has its switch".into()
+        };
+        return 0;
+    }
+    let mut count = 0;
+    edit_electrical(cx, "Auto Place Switches", |layer, floor| {
+        for (ri, mut switches) in added {
+            let room = &rooms[ri];
+            let last = switches.len() - 1;
+            if last > 0 {
+                for (i, s) in switches.iter_mut().enumerate() {
+                    s.kind = if i == 0 || i == last {
+                        DeviceKind::Switch3Way
+                    } else {
+                        DeviceKind::Switch4Way
+                    };
+                }
+            }
+            count += switches.len();
+            let ids = layer.add_all(switches);
+            // The room's lights: those already in it, or a new ceiling light.
+            let mut lights: Vec<Id> = layer
+                .devices
+                .iter()
+                .filter(|d| d.kind.is_light() && d.wall_id.is_none())
+                .filter(|d| point_in_polygon(d.position, &room.polygon))
+                .map(|d| d.id)
+                .collect();
+            if lights.is_empty() {
+                lights.push(layer.add(auto_place_room_light(room)));
+            }
+            for w in ids.windows(2) {
+                connect_in(layer, w[0], w[1], &floor.walls);
+            }
+            for l in lights {
+                connect_in(layer, ids[0], l, &floor.walls);
+            }
+        }
+    });
+    cx.status = format!("Auto Place Switches: placed {count} switches");
+    count
 }
 
 // ----- the tool -----
@@ -332,6 +503,7 @@ impl ElectricalTool {
         self.drag = None;
         self.rope = None;
         self.connect_from = None;
+        self.bend = None;
     }
 
     /// The dialog is open: the canvas is not in use.
@@ -349,10 +521,8 @@ impl ElectricalTool {
         if load_electrical(cx.floor()).device(draft.id).is_none() {
             return ToolResult::consumed();
         }
-        edit_electrical(cx, "Electrical Service Specification", |layer, _| {
-            if let Some(d) = layer.device_mut(draft.id) {
-                draft.apply(d);
-            }
+        edit_electrical(cx, "Electrical Service Specification", |layer, floor| {
+            draft.apply_to_layer(layer, &floor.walls);
         });
         ToolResult::committed("Electrical Service Specification")
     }
@@ -408,33 +578,87 @@ impl ElectricalTool {
     fn connection_click(&mut self, cx: &mut EditorContext, hit: Option<Id>) -> ToolResult {
         let Some(hit) = hit else {
             cx.status = match self.connect_from {
-                Some(_) => "Click the light or outlet the switch controls".into(),
+                Some(_) => "Click the next light or outlet, or press Esc to finish".into(),
                 None => "Click a switch to start the connection".into(),
             };
             return ToolResult::consumed();
         };
+        let layer = load_electrical(cx.floor());
+        let start = |this: &mut Self, cx: &mut EditorContext| {
+            this.connect_from = Some(hit);
+            this.selected = Some(hit);
+            cx.status = "Now click each light it controls (Esc finishes)".into();
+        };
         let Some(from) = self.connect_from else {
-            let layer = load_electrical(cx.floor());
             match layer.device(hit) {
-                Some(d) if d.kind.is_switch() || d.kind.is_outlet() => {
-                    self.connect_from = Some(hit);
-                    self.selected = Some(hit);
-                    cx.status = "Now click the light it controls".into();
-                }
+                Some(d) if d.kind.is_switch() || d.kind.is_outlet() => start(self, cx),
                 _ => cx.status = "Start the connection at a switch or an outlet".into(),
             }
             return ToolResult::consumed();
         };
+        // A click on another switch starts a new run, except that two 3-way /
+        // 4-way switches wire together as a pair.
+        let hit_switch = layer.device(hit).is_some_and(|d| d.kind.is_switch());
+        let pair = hit_switch
+            && layer.device(from).zip(layer.device(hit)).is_some_and(|(a, b)| {
+                is_traveler(a.kind) && is_traveler(b.kind)
+            })
+            && !layer
+                .connections
+                .iter()
+                .any(|c| (c.from == from && c.to == hit) || (c.from == hit && c.to == from));
+        if hit == from || (hit_switch && !pair) {
+            start(self, cx);
+            return ToolResult::consumed();
+        }
         match connect_devices(cx, from, hit) {
             Ok(()) => {
-                self.connect_from = None;
-                cx.status.clear();
+                // The run goes on from the same switch, so every light of the
+                // room can be clicked in turn.
+                cx.status = if pair {
+                    "3-way pair wired; click the light, or press Esc".into()
+                } else {
+                    "Click the next light or outlet, or press Esc to finish".into()
+                };
                 ToolResult::committed("Electrical Connection")
             }
             Err(msg) => {
                 cx.status = msg.into();
                 ToolResult::consumed()
             }
+        }
+    }
+
+    /// A press on the bend handle at the midpoint of a connection arc.
+    fn start_bend(&mut self, cx: &EditorContext, layer: &plan_electrical::ElectricalLayer, p: Point) -> bool {
+        let tol = cx.pick_tol().max(BEND_PICK);
+        let near_selection = |i: usize| {
+            let c = &layer.connections[i];
+            self.variant == ElecVariant::Connection
+                || self.selected.is_some_and(|s| c.from == s || c.to == s)
+        };
+        match layer.connection_handle_at(p, tol) {
+            Some(i) if near_selection(i) => {
+                self.bend = Some((i, false));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn bend_to(&mut self, cx: &mut EditorContext, p: Point) {
+        let Some((i, moved)) = self.bend else {
+            return;
+        };
+        if !moved {
+            cx.begin_change("Bend Connection");
+            self.bend = Some((i, true));
+        }
+        let mut layer = load_electrical(cx.floor());
+        if layer.bend_connection(i, p) {
+            let fl = cx.floor;
+            crate::editor::site_view::save_electrical(&mut cx.project, fl, &layer);
+            cx.mark_dirty();
         }
     }
 
@@ -525,8 +749,11 @@ impl Tool for ElectricalTool {
 
     fn hint(&self) -> String {
         match self.variant {
-            ElecVariant::Connection => {
-                "Electrical Connection: click a switch, then click the light it controls".into()
+            ElecVariant::Connection => "Electrical Connection: click a switch, then each light it \
+                 controls (drag an arc's handle to bend it)"
+                .into(),
+            ElecVariant::AutoSwitches => {
+                "Auto Place Switches: click to place a switch at every door, with a light".into()
             }
             ElecVariant::AutoOutlets => {
                 "Auto Place Outlets: click to place outlets in every room of this floor".into()
@@ -575,6 +802,9 @@ impl Tool for ElectricalTool {
             return r;
         }
         self.hover = Some(p.world);
+        if self.bend.is_some() && p.down {
+            self.bend_to(cx, p.world);
+        }
         if let Some(drag) = &mut self.drag {
             if p.down && !drag.moved && (p.screen - drag.start).length() >= DRAG_PX {
                 drag.moved = true;
@@ -603,11 +833,21 @@ impl Tool for ElectricalTool {
         }
         let layer = load_electrical(cx.floor());
         let hit = device_at(&layer, p.world, cx.pick_tol());
+        if hit.is_none() && self.start_bend(cx, &layer, p.world) {
+            return ToolResult::consumed();
+        }
         match self.variant {
             ElecVariant::Connection => self.connection_click(cx, hit),
             ElecVariant::AutoOutlets => {
                 if auto_place_floor_outlets(cx) > 0 {
                     ToolResult::committed("Auto Place Outlets")
+                } else {
+                    ToolResult::consumed()
+                }
+            }
+            ElecVariant::AutoSwitches => {
+                if auto_place_floor_switches(cx) > 0 {
+                    ToolResult::committed("Auto Place Switches")
                 } else {
                     ToolResult::consumed()
                 }
@@ -639,6 +879,14 @@ impl Tool for ElectricalTool {
     fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         if let Some((a, _)) = self.rope.take() {
             return self.place_rope(cx, a, p.snapped);
+        }
+        if let Some((_, moved)) = self.bend.take() {
+            return if moved {
+                cx.mark_dirty();
+                ToolResult::committed("Bend Connection")
+            } else {
+                ToolResult::consumed()
+            };
         }
         match self.drag.take() {
             Some(d) if d.moved => {
@@ -770,6 +1018,23 @@ impl Tool for ElectricalTool {
                 if pts.len() >= 2 {
                     painter.add(Shape::line(pts, egui::Stroke::new(2.0_f32, pal.selection)));
                 }
+            }
+        }
+        // The bend handle at the midpoint of every connection that can be bent.
+        for c in layer.connections.iter().filter(|c| {
+            self.variant == ElecVariant::Connection
+                || self.selected.is_some_and(|s| c.from == s || c.to == s)
+        }) {
+            if let Some(m) = layer.arc_midpoint(c) {
+                let at = cam.world_to_screen(m);
+                let r = egui::Rect::from_center_size(at, egui::vec2(7.0, 7.0));
+                painter.rect_filled(r, 0.0, pal.selection);
+                painter.rect_stroke(
+                    r,
+                    0.0,
+                    egui::Stroke::new(1.0_f32, ghost),
+                    egui::StrokeKind::Middle,
+                );
             }
         }
         // The Electrical Service Specification.
@@ -1185,5 +1450,231 @@ mod tests {
                 });
             });
         }
+    }
+
+    // ----- Chief's full flyout, multi-light connections, 3-way pairs, bending -----
+
+    #[test]
+    fn every_flyout_variant_places_its_kind_at_its_default_height() {
+        let mut placed = 0;
+        for v in ElecVariant::ALL {
+            let Some(kind) = v.kind() else { continue };
+            if matches!(kind, DeviceKind::RopeLight { .. }) {
+                continue; // a press starts the drag; covered by its own test
+            }
+            // A fresh room per kind: wall devices on the south wall, the others
+            // away from the room's center.
+            let (mut cx, _) = cx_with_room();
+            let mut t = tool(v);
+            let (x, y) = if kind.is_wall_mounted() {
+                (60.0, 0.0)
+            } else {
+                (40.0, 30.0)
+            };
+            let r = click(&mut t, &mut cx, x, y);
+            assert!(r.commit.is_some(), "{v:?} did not place: {}", cx.status);
+            placed += 1;
+            let ds = devices(&cx);
+            assert_eq!(ds.len(), 1, "{v:?}");
+            let d = &ds[0];
+            assert_eq!(std::mem::discriminant(&d.kind), std::mem::discriminant(&kind));
+            assert_eq!(d.height, kind.default_height(), "{v:?}");
+            assert_eq!(d.wall_id.is_some(), kind.is_wall_mounted(), "{v:?}");
+            assert_eq!(cx.undo().as_deref(), Some(format!("Place {}", kind.name()).as_str()));
+        }
+        assert_eq!(placed, 22);
+        // The flyout names are unique and Chief-like.
+        let names: Vec<_> = ElecVariant::ALL.iter().map(|v| v.name()).collect();
+        for n in &names {
+            assert_eq!(names.iter().filter(|m| *m == n).count(), 1, "{n}");
+        }
+        assert!(names.contains(&"Quad Outlet") && names.contains(&"Auto Place Switches"));
+    }
+
+    #[test]
+    fn a_connection_run_wires_several_lights_to_one_switch() {
+        let (mut cx, _) = cx_with_room();
+        click(&mut tool(ElecVariant::Switch), &mut cx, 30.0, 0.0);
+        click(&mut tool(ElecVariant::Light), &mut cx, 60.0, 40.0);
+        click(&mut tool(ElecVariant::RecessedLight), &mut cx, 160.0, 100.0);
+        let mut t = tool(ElecVariant::Connection);
+        click(&mut t, &mut cx, 30.0, 2.25);
+        click(&mut t, &mut cx, 60.0, 40.0);
+        assert!(t.connect_from.is_some(), "the run continues from the switch");
+        click(&mut t, &mut cx, 160.0, 100.0);
+        let layer = load_electrical(cx.floor());
+        assert_eq!(layer.connections.len(), 2);
+        let sw = layer.devices.iter().find(|d| d.kind.is_switch()).unwrap().id;
+        assert!(layer
+            .devices
+            .iter()
+            .filter(|d| d.kind.is_light())
+            .all(|d| d.switched_by == vec![sw]));
+        // Esc ends the run.
+        assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
+        assert!(t.connect_from.is_none());
+        // Both arcs undo one at a time.
+        assert_eq!(cx.undo().as_deref(), Some("Electrical Connection"));
+        assert_eq!(load_electrical(cx.floor()).connections.len(), 1);
+    }
+
+    #[test]
+    fn two_three_way_switches_wire_as_a_pair() {
+        let (mut cx, _) = cx_with_room();
+        click(&mut tool(ElecVariant::Switch3Way), &mut cx, 30.0, 0.0);
+        click(&mut tool(ElecVariant::Switch3Way), &mut cx, 200.0, 0.0);
+        click(&mut tool(ElecVariant::Light), &mut cx, 120.0, 72.0);
+        let mut t = tool(ElecVariant::Connection);
+        click(&mut t, &mut cx, 30.0, 2.25);
+        click(&mut t, &mut cx, 120.0, 72.0);
+        // Clicking the other 3-way switch wires the pair.
+        let r = click(&mut t, &mut cx, 200.0, 2.25);
+        assert_eq!(r.commit.as_deref(), Some("Electrical Connection"));
+        let layer = load_electrical(cx.floor());
+        let ids: Vec<Id> = layer
+            .devices
+            .iter()
+            .filter(|d| d.kind.is_switch())
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        let layer = load_electrical(cx.floor());
+        assert_eq!(layer.connections.len(), 2, "one arc to the light, one traveler");
+        let light = layer.devices.iter().find(|d| d.kind.is_light()).unwrap();
+        let mut by = light.switched_by.clone();
+        by.sort();
+        let mut want = ids.clone();
+        want.sort();
+        assert_eq!(by, want, "both ends control the light");
+        // Two plain switches do not pair.
+        click(&mut tool(ElecVariant::Switch), &mut cx, 60.0, 144.0);
+        click(&mut tool(ElecVariant::Switch), &mut cx, 90.0, 144.0);
+        click(&mut t, &mut cx, 60.0, 141.75);
+        click(&mut t, &mut cx, 90.0, 141.75);
+        assert_eq!(load_electrical(cx.floor()).connections.len(), 2);
+    }
+
+    #[test]
+    fn dragging_the_handle_bends_the_arc_in_one_undo_step() {
+        let (mut cx, _) = cx_with_room();
+        click(&mut tool(ElecVariant::Switch), &mut cx, 30.0, 0.0);
+        click(&mut tool(ElecVariant::Light), &mut cx, 120.0, 72.0);
+        let mut t = tool(ElecVariant::Connection);
+        click(&mut t, &mut cx, 30.0, 2.25);
+        click(&mut t, &mut cx, 120.0, 72.0);
+        t.key(&mut cx, KeyEvent::escape());
+        let layer = load_electrical(cx.floor());
+        let handle = layer.arc_midpoint(&layer.connections[0]).unwrap();
+        let before = layer.connections[0].arc_bulge;
+        // Press on the handle, drag, release.
+        let down = PointerEvent::at(&cx, handle);
+        t.pointer_down(&mut cx, down.with_down(true));
+        assert!(t.bend.is_some());
+        let target = handle + Point::new(0.0, 20.0);
+        let mut mv = PointerEvent::at(&cx, target);
+        mv.screen = down.screen + egui::vec2(0.0, -40.0);
+        t.pointer_move(&mut cx, mv.with_down(true));
+        let r = t.pointer_up(&mut cx, mv);
+        assert_eq!(r.commit.as_deref(), Some("Bend Connection"));
+        let layer = load_electrical(cx.floor());
+        assert!((layer.connections[0].arc_bulge - before).abs() > 1.0);
+        let m = layer.arc_midpoint(&layer.connections[0]).unwrap();
+        // The arc bows to the pointer's side of the chord by the pointer's
+        // distance from it.
+        let (a, b) = (
+            layer.device(layer.connections[0].from).unwrap().position,
+            layer.device(layer.connections[0].to).unwrap().position,
+        );
+        let n = b.sub(a).perp().normalized();
+        let want = Point::lerp(a, b, 0.5) + n * target.sub(Point::lerp(a, b, 0.5)).dot(n);
+        assert!(m.dist(want) < 1e-6, "the handle follows the pointer");
+        assert_eq!(cx.undo().as_deref(), Some("Bend Connection"));
+        assert!((load_electrical(cx.floor()).connections[0].arc_bulge - before).abs() < 1e-9);
+        // A press away from every handle bends nothing.
+        let far = PointerEvent::at(&cx, Point::new(200.0, 120.0));
+        t.pointer_down(&mut cx, far.with_down(true));
+        assert!(t.bend.is_none());
+    }
+
+    #[test]
+    fn auto_place_switches_puts_one_at_each_door_with_a_light() {
+        let (mut cx, ids) = cx_with_room();
+        // One door on the south wall: a plain switch and a ceiling light.
+        cx.project
+            .add_opening(0, ids[0], 120.0, plan_core::OpeningKind::Door)
+            .unwrap();
+        cx.refresh();
+        let mut t = tool(ElecVariant::AutoSwitches);
+        let r = click(&mut t, &mut cx, 10.0, 10.0);
+        assert_eq!(r.commit.as_deref(), Some("Auto Place Switches"));
+        let layer = load_electrical(cx.floor());
+        let switches: Vec<_> = layer.devices.iter().filter(|d| d.kind.is_switch()).collect();
+        assert_eq!(switches.len(), 1);
+        let s = switches[0];
+        assert_eq!((s.kind, s.height, s.wall_id), (DeviceKind::Switch, 48.0, Some(ids[0])));
+        // Beside the latch-side jamb (door spans 102..138): 6" past 138 is 144.
+        assert!((s.position.x - 144.0).abs() < 1e-6 || (s.position.x - 96.0).abs() < 1e-6, "{}", s.position.x);
+        assert!(s.position.y > 0.0, "on the room side");
+        let light = layer.devices.iter().find(|d| d.kind.is_light()).unwrap();
+        assert_eq!(light.position, Point::new(120.0, 72.0));
+        assert_eq!(layer.connections.len(), 1);
+        assert_eq!(light.switched_by, vec![s.id]);
+        // A second click adds nothing.
+        click(&mut t, &mut cx, 10.0, 10.0);
+        assert_eq!(load_electrical(cx.floor()).devices.len(), 2);
+        assert!(cx.status.contains("already"));
+        // Undo takes the whole run back.
+        assert_eq!(cx.undo().as_deref(), Some("Auto Place Switches"));
+        assert!(devices(&cx).is_empty());
+    }
+
+    #[test]
+    fn a_room_with_two_doors_gets_a_three_way_pair() {
+        let (mut cx, ids) = cx_with_room();
+        cx.project
+            .add_opening(0, ids[0], 60.0, plan_core::OpeningKind::Door)
+            .unwrap();
+        cx.project
+            .add_opening(0, ids[2], 180.0, plan_core::OpeningKind::Door)
+            .unwrap();
+        cx.refresh();
+        assert_eq!(auto_place_floor_switches(&mut cx), 2);
+        let layer = load_electrical(cx.floor());
+        let kinds: Vec<_> = layer
+            .devices
+            .iter()
+            .filter(|d| d.kind.is_switch())
+            .map(|d| d.kind)
+            .collect();
+        assert_eq!(kinds, [DeviceKind::Switch3Way, DeviceKind::Switch3Way]);
+        let light = layer.devices.iter().find(|d| d.kind.is_light()).unwrap();
+        assert_eq!(light.switched_by.len(), 2, "both doors switch the light");
+        assert_eq!(layer.connections.len(), 2);
+    }
+
+    #[test]
+    fn the_dialog_applies_connections_and_a_new_kind() {
+        let (mut cx, _) = cx_with_room();
+        click(&mut tool(ElecVariant::Switch), &mut cx, 30.0, 0.0);
+        click(&mut tool(ElecVariant::Light), &mut cx, 120.0, 72.0);
+        let mut t = tool(ElecVariant::Switch);
+        let p = PointerEvent::at(&cx, Point::new(30.0, 2.25));
+        assert!(t.double_click(&mut cx, p).consumed);
+        let mut draft = t.dialog.borrow().as_ref().unwrap().draft().clone();
+        let light = load_electrical(cx.floor())
+            .devices
+            .iter()
+            .find(|d| d.kind.is_light())
+            .unwrap()
+            .id;
+        draft.controls = vec![light];
+        draft.kind = DeviceKind::SwitchDimmer;
+        *t.applied.borrow_mut() = Some(draft);
+        let r = t.pointer_move(&mut cx, p);
+        assert_eq!(r.commit.as_deref(), Some("Electrical Service Specification"));
+        let layer = load_electrical(cx.floor());
+        assert_eq!(layer.connections.len(), 1);
+        assert!(layer.devices.iter().any(|d| d.kind == DeviceKind::SwitchDimmer));
+        assert_eq!(layer.device(light).unwrap().switched_by.len(), 1);
     }
 }

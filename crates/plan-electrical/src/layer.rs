@@ -71,6 +71,106 @@ impl ElectricalLayer {
         let b = self.device(c.to)?.position;
         Some(arc_through(a, b, c.arc_bulge))
     }
+
+    /// The point halfway along a connection's arc: its bend handle.
+    pub fn arc_midpoint(&self, c: &Connection) -> Option<Point> {
+        let a = self.device(c.from)?.position;
+        let b = self.device(c.to)?.position;
+        let n = b.sub(a).perp().normalized();
+        Some(Point::lerp(a, b, 0.5) + n * c.arc_bulge)
+    }
+
+    /// The connection whose bend handle is nearest `p`, within `tol` inches.
+    pub fn connection_handle_at(&self, p: Point, tol: f64) -> Option<usize> {
+        self.connections
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| Some((i, self.arc_midpoint(c)?.dist(p))))
+            .filter(|(_, d)| *d <= tol)
+            .min_by(|x, y| x.1.total_cmp(&y.1))
+            .map(|(i, _)| i)
+    }
+
+    /// Bend connection `index` so its arc passes through `to`: the bulge becomes
+    /// the signed distance of `to` from the chord (at most half the chord).
+    /// Returns `false` for an unknown connection or devices at one spot.
+    pub fn bend_connection(&mut self, index: usize, to: Point) -> bool {
+        let Some(c) = self.connections.get(index) else {
+            return false;
+        };
+        let (Some(a), Some(b)) = (self.device(c.from), self.device(c.to)) else {
+            return false;
+        };
+        let (a, b) = (a.position, b.position);
+        let chord = a.dist(b);
+        if chord < 1e-6 {
+            return false;
+        }
+        let n = b.sub(a).perp().normalized();
+        let bulge = to.sub(Point::lerp(a, b, 0.5)).dot(n);
+        self.connections[index].arc_bulge = bulge.clamp(-chord * 0.5, chord * 0.5);
+        true
+    }
+
+    /// `switch` and every switch wired to it by a traveler connection (a link
+    /// between two 3-way or 4-way switches): the switches that all control the
+    /// same loads. The switch itself comes first.
+    pub fn switch_group(&self, switch: Id) -> Vec<Id> {
+        let mut group = vec![switch];
+        let mut i = 0;
+        while i < group.len() {
+            let at = group[i];
+            for c in &self.connections {
+                let other = if c.from == at {
+                    c.to
+                } else if c.to == at {
+                    c.from
+                } else {
+                    continue;
+                };
+                let both = self.device(at).is_some_and(|d| d.kind.is_switch())
+                    && self.device(other).is_some_and(|d| d.kind.is_switch());
+                if both && !group.contains(&other) {
+                    group.push(other);
+                }
+            }
+            i += 1;
+        }
+        group
+    }
+
+    /// Makes every load wired to a switch also switched by the rest of that
+    /// switch's group (so both ends of a 3-way pair control the light).
+    fn spread_switches(&mut self) {
+        let wired: Vec<(Id, Id)> = self
+            .connections
+            .iter()
+            .filter(|c| self.device(c.to).is_some_and(|d| !d.kind.is_switch()))
+            .map(|c| (c.from, c.to))
+            .collect();
+        for (from, to) in wired {
+            if !self.device(from).is_some_and(|d| d.kind.is_switch()) {
+                continue;
+            }
+            for s in self.switch_group(from) {
+                if let Some(d) = self.device_mut(to) {
+                    if !d.switched_by.contains(&s) {
+                        d.switched_by.push(s);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The loads a switch controls: its own connections plus those of its
+    /// group, in device order.
+    pub fn loads_of(&self, switch: Id) -> Vec<Id> {
+        self.devices
+            .iter()
+            .filter(|d| !d.kind.is_switch() && d.switched_by.contains(&switch))
+            .map(|d| d.id)
+            .collect()
+    }
 }
 
 /// Arc from `a` to `b` whose midpoint sits `bulge` inches off the chord.
@@ -123,13 +223,20 @@ fn link(
         || layer
             .connections
             .iter()
-            .any(|c| c.from == switch && c.to == device)
+            .any(|c| (c.from == switch && c.to == device) || (c.from == device && c.to == switch))
     {
         return false;
     }
     let (Some(from), Some(to)) = (layer.device(switch), layer.device(device)) else {
         return false;
     };
+    // A switch only wires to another switch as a 3-way / 4-way traveler pair.
+    let traveler = |k: crate::DeviceKind| {
+        matches!(k, crate::DeviceKind::Switch3Way | crate::DeviceKind::Switch4Way)
+    };
+    if to.kind.is_switch() && !(traveler(from.kind) && traveler(to.kind)) {
+        return false;
+    }
     let arc_bulge = bulge(from, to);
     layer.connections.push(Connection {
         from: switch,
@@ -137,9 +244,36 @@ fn link(
         arc_bulge,
     });
     if let Some(d) = layer.device_mut(device) {
-        if !d.switched_by.contains(&switch) {
+        if !d.kind.is_switch() && !d.switched_by.contains(&switch) {
             d.switched_by.push(switch);
         }
+    }
+    layer.spread_switches();
+    true
+}
+
+/// Removes the connection from `from` to `to` (either direction between two
+/// switches) and the control it gave: `to` is no longer switched by `from`
+/// or by its 3-way partners, unless another connection still wires them.
+/// Returns `false` when there was no such connection.
+pub fn disconnect(layer: &mut ElectricalLayer, from: Id, to: Id) -> bool {
+    let group = layer.switch_group(from);
+    let before = layer.connections.len();
+    layer
+        .connections
+        .retain(|c| !(c.from == from && c.to == to) && !(c.from == to && c.to == from));
+    if layer.connections.len() == before {
+        return false;
+    }
+    let keep: Vec<Id> = layer
+        .connections
+        .iter()
+        .filter(|c| c.to == to)
+        .flat_map(|c| layer.switch_group(c.from))
+        .collect();
+    if let Some(d) = layer.device_mut(to) {
+        d.switched_by
+            .retain(|s| keep.contains(s) || !group.contains(s));
     }
     true
 }

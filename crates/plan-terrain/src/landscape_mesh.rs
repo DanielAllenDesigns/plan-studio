@@ -188,14 +188,20 @@ fn wall_mesh(w: &TerrainWall, ground: &Ground) -> Option<Mesh> {
     }
     let mut rows = Vec::new();
     let mut along = 0.0;
+    // The surface is read just outside each face: a wall that cuts the terrain
+    // has the retained grade on its left and the cut grade on its right. The top
+    // stands `height` above the retained side, the bottom `depth` below the
+    // lower one.
     let row = |l: Point, r: Point, along: f64| {
-        let g = ground.z(Point::lerp(l, r, 0.5));
+        let across = r.sub(l).normalized();
+        let gl = ground.z(l.sub(across));
+        let gr = ground.z(r.add(across));
         WRow {
             l,
             r,
             along,
-            top: g + w.height,
-            bottom: g - w.depth,
+            top: gl + w.height,
+            bottom: gl.min(gr) - w.depth,
         }
     };
     for i in 0..edges.center.len() - 1 {
@@ -315,6 +321,20 @@ fn feature_meshes(f: &Feature, ground: &Ground) -> Vec<Mesh> {
     if outline.len() < 3 {
         return Vec::new();
     }
+    if f.pad {
+        // The graded surface already is the flat pad with its sloped sides:
+        // only the paving lies on top of it.
+        let top = ground.z(centroid_of(&outline)).max(
+            outline
+                .iter()
+                .map(|p| ground.z(*p))
+                .fold(f64::NEG_INFINITY, f64::max),
+        );
+        let material = named_material(&f.material, Material::Concrete);
+        return flat_polygon(&outline, top + LIFT, material)
+            .into_iter()
+            .collect();
+    }
     let zs: Vec<f64> = outline.iter().map(|p| ground.z(*p)).collect();
     let mean = zs.iter().sum::<f64>() / zs.len() as f64;
     let top = mean + f.height.max(LIFT);
@@ -372,6 +392,12 @@ fn skirt(rows: &[WRow], material: Material) -> Option<Mesh> {
         quad(&mut b, [ids[i][0], ids[j][0], ids[j][1], ids[i][1]], out);
     }
     Some(b.finish(material))
+}
+
+fn centroid_of(pts: &[Point]) -> Point {
+    let n = pts.len().max(1) as f64;
+    let sum = pts.iter().fold(Point::ZERO, |a, p| a.add(*p));
+    Point::new(sum.x / n, sum.y / n)
 }
 
 // ----- landscape objects -----

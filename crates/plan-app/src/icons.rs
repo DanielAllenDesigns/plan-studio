@@ -167,3 +167,104 @@ pub fn icon(id: &str) -> egui::ImageSource<'static> {
         _ => egui::include_image!("../assets/icons/select.svg"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    fn icon_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons")
+    }
+
+    fn svgs() -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = std::fs::read_dir(icon_dir())
+            .expect("assets/icons exists")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "svg"))
+            .map(|e| {
+                (
+                    e.file_name().to_string_lossy().into_owned(),
+                    std::fs::read_to_string(e.path()).unwrap(),
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Every `#RRGGBB` color written in the SVG, upper-cased.
+    fn colors(svg: &str) -> Vec<[u8; 3]> {
+        let mut out = Vec::new();
+        let b = svg.as_bytes();
+        for (i, _) in svg.match_indices('#') {
+            if let Some(hex) = svg.get(i + 1..i + 7) {
+                if hex.bytes().all(|c| c.is_ascii_hexdigit())
+                    && !b.get(i + 7).is_some_and(u8::is_ascii_hexdigit)
+                {
+                    let v = |k: usize| u8::from_str_radix(&hex[k..k + 2], 16).unwrap();
+                    out.push([v(0), v(2), v(4)]);
+                }
+            }
+        }
+        out
+    }
+
+    /// A colored glyph: some ink has a clear hue (channel spread above 40).
+    fn has_color_ink(svg: &str) -> bool {
+        colors(svg)
+            .iter()
+            .any(|c| c.iter().max().unwrap() - c.iter().min().unwrap() > 40)
+    }
+
+    /// The halo marker: a white stroke with a stroke-opacity, drawn under (or
+    /// as an edge around) the glyph's own strokes.
+    fn has_halo(svg: &str) -> bool {
+        svg.split('<')
+            .any(|el| el.contains("stroke=\"#FFFFFF\"") && el.contains("stroke-opacity"))
+    }
+
+    /// White and light-gray glyphs are their own halo on the dark chrome; any
+    /// icon with colored ink must carry the white halo stroke.
+    #[test]
+    fn every_colored_icon_has_the_white_halo() {
+        let offenders: Vec<String> = svgs()
+            .into_iter()
+            .filter(|(_, s)| has_color_ink(s) && !has_halo(s))
+            .map(|(n, _)| n)
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "icons with colored ink and no white halo stroke: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn every_icon_file_is_valid_enough_and_square() {
+        let all = svgs();
+        assert!(all.len() >= 150, "{} icons", all.len());
+        for (name, svg) in all {
+            assert!(svg.starts_with("<svg "), "{name}");
+            assert!(svg.contains("viewBox=\"0 0 24 24\""), "{name} is not 24x24");
+            assert!(svg.trim_end().ends_with("</svg>"), "{name}");
+            // Balanced group tags.
+            assert_eq!(
+                svg.matches("<g").count(),
+                svg.matches("</g>").count(),
+                "{name}"
+            );
+        }
+    }
+
+    /// Every file has a lookup entry and every entry a file.
+    #[test]
+    fn every_icon_file_is_registered_in_the_lookup() {
+        let src = include_str!("icons.rs");
+        for (name, _) in svgs() {
+            let stem = name.trim_end_matches(".svg");
+            assert!(
+                src.contains(&format!("\"{stem}\" =>")),
+                "{name} is not in icons::icon"
+            );
+        }
+    }
+}

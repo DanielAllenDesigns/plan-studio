@@ -8,7 +8,12 @@
 //!   wall's endpoint, intersection, midpoint, perpendicular foot, centerline,
 //!   the axes through the chain's first point, alignment with the previous
 //!   wall (collinear or perpendicular), the 15 degree angle and the grid;
-//!   Alt suspends the angle snap;
+//!   Alt suspends every snap (S-74, W-17) and Shift holds the angle snap
+//!   increment (W-18, `editing.angle_snap_deg`) even where angle snaps are off;
+//! * after the first click, typing digits fills the length (feet-inches), Tab
+//!   switches to the angle (degrees counter-clockwise from east) and Enter
+//!   draws the wall from the start point at exactly that length and angle
+//!   (W-15, W-16); the readout shows both live;
 //! * every wall is connected on commit (`editor::connect::auto_connect`,
 //!   W-31..W-45): corners close exactly, a wall ending near another wall's
 //!   centerline becomes a T that splits the through wall, crossing walls are
@@ -22,8 +27,9 @@
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::connect;
 use crate::editor::ops::{make_wall, JOIN_TOL};
-use crate::editor::snap::SnapKind;
-use crate::editor::{render, Camera, EditorContext, ObjectRef, SnapResult};
+use crate::editor::snap::{self, SnapKind};
+use crate::editor::typed_input::{angle_deg, TypedField, TypedKey};
+use crate::editor::{render, tempdim, Camera, EditorContext, ObjectRef, SnapResult};
 use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Align2, FontId, Pos2, Shape, Stroke, Vec2};
 use plan_core::geometry::Point;
@@ -278,6 +284,32 @@ struct PendingArc {
     closing: bool,
 }
 
+/// The bulge of the arc through `start`, `end` and `through`: the distance
+/// from the chord's middle to the arc's apex, positive on the left of
+/// start-to-end. A point on the chord's line gives 0; the sweep is held to
+/// what a wall can have (just under 340 degrees).
+fn bulge_through(start: Point, end: Point, through: Point) -> f64 {
+    let chord = start.dist(end);
+    if chord < 1e-9 {
+        return 0.0;
+    }
+    let along = (end - start).normalized();
+    let mid = Point::lerp(start, end, 0.5);
+    let (x, h) = (
+        (through - mid).dot(along),
+        (through - mid).dot(along.perp()),
+    );
+    if h.abs() < 1e-9 {
+        return 0.0;
+    }
+    // The circle through the chord's ends and the point has its center on
+    // the chord's bisector, `k` over the chord.
+    let half = chord * 0.5;
+    let k = (x * x + h * h - half * half) / (2.0 * h);
+    let apex = k + half.hypot(k) * h.signum();
+    apex.clamp(-5.5 * chord, 5.5 * chord)
+}
+
 struct Press {
     screen: Pos2,
     /// The press placed the first point of a new chain.
@@ -297,6 +329,8 @@ pub struct WallTool {
     chain_walls: usize,
     /// Unit direction of the previous wall of the chain.
     last_dir: Option<Point>,
+    /// The pointer's snapped point; typed values replace its length or angle.
+    live_to: Option<Point>,
 }
 
 impl Default for WallTool {
@@ -310,6 +344,7 @@ impl Default for WallTool {
             chain_first: None,
             chain_walls: 0,
             last_dir: None,
+            live_to: None,
         }
     }
 }
@@ -321,12 +356,58 @@ impl WallTool {
     }
 
     /// Forgets the chain (it closed, was cancelled or the tool left).
-    fn end_chain(&mut self) {
+    fn end_chain(&mut self, cx: &mut EditorContext) {
         self.arc = None;
         self.pending = None;
         self.chain_first = None;
         self.chain_walls = 0;
         self.last_dir = None;
+        self.live_to = None;
+        cx.typed_input.disarm();
+    }
+
+    /// The end point the typed length and angle give, when anything was typed.
+    fn typed_end(&self, cx: &EditorContext) -> Option<Point> {
+        let start = self.pending?;
+        if !cx.typed_input.has_text() {
+            return None;
+        }
+        let toward = self.live_to.unwrap_or(start + Point::new(1.0, 0.0));
+        tempdim::typed_point(cx, start, toward)
+    }
+
+    /// Redraws the ghost and the readout after the typed text changed.
+    fn refresh_typed(&mut self, cx: &mut EditorContext) {
+        if self.arc.is_some() {
+            return;
+        }
+        let to = self.typed_end(cx).or(self.live_to);
+        if let Some(to) = to {
+            self.hover = Some(to);
+            self.update_readout(cx, to);
+        }
+    }
+
+    /// Enter with typed text: the wall from the start at the typed length and
+    /// angle (W-16).
+    fn commit_typed(&mut self, cx: &mut EditorContext) -> ToolResult {
+        let Some(start) = self.pending else {
+            return ToolResult::consumed();
+        };
+        let end = self.typed_end(cx).unwrap_or(start);
+        if start.dist(end) < MIN_LENGTH {
+            cx.status = "Type a length of at least 1\"".into();
+            return ToolResult::consumed();
+        }
+        cx.typed_input.clear();
+        if self.variant.curved {
+            return self.start_arc(cx, start, end, false, false);
+        }
+        let Some((_, next, room)) = self.create(cx, start, end, None) else {
+            return ToolResult::consumed();
+        };
+        self.advance_chain(cx, start, end, next, room, false, None);
+        ToolResult::committed("Draw Wall")
     }
 
     /// The snapped end point for the pointer, and whether it closes the loop
@@ -352,6 +433,29 @@ impl WallTool {
         let Some(start) = self.pending else {
             return (base, false);
         };
+        // Shift holds the angle increment (W-18), over the object snaps.
+        if p.modifiers.shift && !alt {
+            let inc = cx.defaults.editing.angle_snap_deg;
+            let inc = if inc >= 1.0 { inc } else { 15.0 };
+            let held = if cx.defaults.editing.snap_angles.is_empty() {
+                snap::angle_snap(start, raw, cx.defaults.grid.snap, inc)
+            } else {
+                snap::angle_snap_list(
+                    start,
+                    raw,
+                    cx.defaults.grid.snap,
+                    &cx.defaults.editing.snap_angles,
+                )
+            };
+            if let Some(point) = held {
+                let r = SnapResult {
+                    point,
+                    kind: SnapKind::Angle,
+                    source: None,
+                };
+                return (r, false);
+            }
+        }
         if alt || base.kind.is_object_snap() {
             return (base, false);
         }
@@ -409,9 +513,23 @@ impl WallTool {
     }
 
     fn update_readout(&self, cx: &mut EditorContext, to: Point) {
-        cx.readout = self
-            .pending
-            .map(|s| format!("Length: {}", cx.fmt_dim(s.dist(to))));
+        cx.readout = self.pending.map(|s| {
+            let ti = &cx.typed_input;
+            let (len, ang) = (
+                cx.fmt_dim(s.dist(to)),
+                format!("{:.1}\u{b0}", angle_deg(s, to)),
+            );
+            // The field being typed shows what was typed, with a caret.
+            let len = match (ti.field(), ti.length_text()) {
+                (TypedField::Length, t) if ti.has_text() => format!("{t}|"),
+                _ => len,
+            };
+            let ang = match (ti.field(), ti.angle_text()) {
+                (TypedField::Angle, t) if ti.has_text() => format!("{t}|"),
+                _ => ang,
+            };
+            format!("Length: {len}   Angle: {ang}")
+        });
     }
 
     /// Adds the wall `start`..`end` and connects it to the plan (corners, Ts,
@@ -476,12 +594,26 @@ impl WallTool {
     }
 
     /// The bulge for an arc whose chord is set, with the pointer at `world`:
-    /// its distance from the chord, positive on the left, on the grid.
+    /// the arc passes through the pointer (W-64), its apex's distance from the
+    /// chord, positive on the left, on the grid.
     fn arc_bulge(&self, cx: &EditorContext, arc: PendingArc, world: Point) -> f64 {
-        let normal = (arc.end - arc.start).normalized().perp();
-        let mid = Point::lerp(arc.start, arc.end, 0.5);
         let unit = cx.snap_unit();
-        (((world - mid).dot(normal)) / unit).round() * unit
+        (bulge_through(arc.start, arc.end, world) / unit).round() * unit
+    }
+
+    /// The status line of an arc being set: its radius, arc length and chord.
+    fn arc_readout(&self, cx: &EditorContext, arc: PendingArc, bulge: f64) -> String {
+        let chord = arc.start.dist(arc.end);
+        let curve = WallCurve { bulge };
+        match curve.radius(chord) {
+            Some(r) => format!(
+                "Radius: {}   Arc: {}   Chord: {}",
+                cx.fmt_dim(r),
+                cx.fmt_dim(curve.arc_length(arc.start, arc.end)),
+                cx.fmt_dim(chord)
+            ),
+            None => format!("Straight   Chord: {}", cx.fmt_dim(chord)),
+        }
     }
 
     /// The chord of a curved wall is set: wait for the click that sets the arc.
@@ -514,7 +646,7 @@ impl WallTool {
         let curve = (bulge.abs() >= 0.5).then_some(WallCurve { bulge });
         let made = self.create(cx, arc.start, arc.end, curve);
         if arc.single {
-            self.end_chain();
+            self.end_chain(cx);
             cx.readout = None;
             return match made {
                 Some((_, _, room)) => {
@@ -555,13 +687,15 @@ impl WallTool {
             closing || first.is_some_and(|f| self.chain_walls >= 3 && next.dist(f) <= JOIN_TOL);
         if closed {
             // The loop is closed: the chain ends and nothing stays selected.
-            self.end_chain();
+            self.end_chain(cx);
             cx.selection.clear();
             cx.readout = None;
             cx.last_snap = None;
             self.hover = None;
         } else {
             self.pending = Some(next);
+            self.live_to = Some(next);
+            cx.typed_input.clear();
             self.update_readout(cx, next);
         }
     }
@@ -577,7 +711,8 @@ impl Tool for WallTool {
     }
 
     fn hint(&self) -> String {
-        "Wall: click to place points; Alt disables angle snap; Esc/right-click ends".into()
+        "Wall: click to place points; type a length, Tab, an angle, Enter; Shift holds the angle; Alt disables snaps; Esc/right-click ends"
+            .into()
     }
 
     fn cursor(&self) -> egui::CursorIcon {
@@ -595,7 +730,7 @@ impl Tool for WallTool {
     }
 
     fn deactivate(&mut self, cx: &mut EditorContext) {
-        self.end_chain();
+        self.end_chain(cx);
         self.press = None;
         self.hover = None;
         cx.readout = None;
@@ -606,16 +741,18 @@ impl Tool for WallTool {
         if let Some(arc) = self.arc {
             self.hover = Some(p.world);
             let bulge = self.arc_bulge(cx, arc, p.world);
-            cx.readout = Some(format!("Bulge: {}", cx.fmt_dim(bulge.abs())));
+            cx.readout = Some(self.arc_readout(cx, arc, bulge));
             return ToolResult {
                 repaint: true,
                 ..ToolResult::default()
             };
         }
         let (s, _) = self.snap(cx, &p);
-        self.hover = Some(s.point);
+        self.live_to = Some(s.point);
+        let to = self.typed_end(cx).unwrap_or(s.point);
+        self.hover = Some(to);
         cx.last_snap = Some(s);
-        self.update_readout(cx, s.point);
+        self.update_readout(cx, to);
         ToolResult {
             repaint: true,
             ..ToolResult::default()
@@ -634,7 +771,10 @@ impl Tool for WallTool {
             self.chain_first = Some(s.point);
             self.chain_walls = 0;
             self.last_dir = None;
+            cx.typed_input.arm();
         }
+        // A click ends whatever was being typed.
+        cx.typed_input.clear();
         self.press = Some(Press {
             screen: p.screen,
             started_chain,
@@ -662,7 +802,7 @@ impl Tool for WallTool {
                 return self.start_arc(cx, start, end, true, false);
             }
             let made = self.create(cx, start, end, None);
-            self.end_chain();
+            self.end_chain(cx);
             cx.readout = None;
             return match made {
                 Some((_, _, room)) => {
@@ -685,8 +825,22 @@ impl Tool for WallTool {
     }
 
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        if self.pending.is_some() && self.arc.is_none() {
+            match cx.typed_input.handle(k.key, k.text.as_deref()) {
+                TypedKey::Edited | TypedKey::Cancelled => {
+                    self.refresh_typed(cx);
+                    return ToolResult::consumed();
+                }
+                TypedKey::Commit => return self.commit_typed(cx),
+                TypedKey::Ignored => {}
+            }
+            // Backspace edits the typed text, never the wall just drawn.
+            if k.is(egui::Key::Backspace) {
+                return ToolResult::consumed();
+            }
+        }
         if k.is(egui::Key::Escape) && self.pending.is_some() {
-            self.end_chain();
+            self.end_chain(cx);
             self.press = None;
             cx.readout = None;
             return ToolResult::consumed();
@@ -738,12 +892,30 @@ impl Tool for WallTool {
                 if cx.view_flags.contains(&ViewFlag::TemporaryDimensions) {
                     let mid = Point::lerp(start, to, 0.5)
                         .add(ghost.normal().scale(ghost.thickness * 0.5));
+                    let ti = &cx.typed_input;
+                    let typing = ti.has_text();
+                    let len_text = match ti.field() {
+                        TypedField::Length if typing => format!("{}|", ti.length_text()),
+                        _ => cx.fmt_dim(len),
+                    };
                     painter.text(
                         cam.world_to_screen(mid)
                             + Vec2::new(0.0, -8.0) * ghost.normal().y.signum() as f32,
                         Align2::CENTER_CENTER,
-                        cx.fmt_dim(len),
+                        len_text,
                         FontId::proportional(13.0),
+                        pal.dimension_text,
+                    );
+                    // The angle readout rides beside the start point (W-15).
+                    let ang_text = match ti.field() {
+                        TypedField::Angle if typing => format!("{}|", ti.angle_text()),
+                        _ => format!("{:.1}\u{b0}", angle_deg(start, to)),
+                    };
+                    painter.text(
+                        cam.world_to_screen(start) + Vec2::new(14.0, -14.0),
+                        Align2::LEFT_BOTTOM,
+                        ang_text,
+                        FontId::proportional(12.0),
                         pal.dimension_text,
                     );
                 }
@@ -1097,6 +1269,58 @@ mod tests {
     }
 
     #[test]
+    fn the_arc_passes_through_the_third_point() {
+        // The apex is where the pointer is when it is over the middle ...
+        let (a, b) = (Point::new(0.0, 0.0), Point::new(120.0, 0.0));
+        assert!((bulge_through(a, b, Point::new(60.0, 30.0)) - 30.0).abs() < 1e-9);
+        assert!((bulge_through(a, b, Point::new(60.0, -20.0)) + 20.0).abs() < 1e-9);
+        // ... and off to one side the arc still goes through it.
+        let p = Point::new(90.0, 25.0);
+        let bulge = bulge_through(a, b, p);
+        let w = WallCurve { bulge };
+        let (c, r) = w.arc_center_radius(a, b).unwrap();
+        assert!((p.dist(c) - r).abs() < 1e-9, "{p:?} is off the arc");
+        assert!(
+            bulge > 25.0,
+            "an off-center point means a deeper arc: {bulge}"
+        );
+        // On the chord's line it is straight; far outside it is held in range.
+        assert_eq!(bulge_through(a, b, Point::new(30.0, 0.0)), 0.0);
+        assert!(bulge_through(a, b, Point::new(60.0, 1.0e-3)).abs() <= 5.5 * 120.0);
+        // The held bulge is still an arc a wall can have.
+        let far = WallCurve {
+            bulge: bulge_through(a, b, Point::new(60.0, 1.0e-3)),
+        };
+        assert!(far.sweep_abs(120.0) < 340.0_f64.to_radians());
+    }
+
+    #[test]
+    fn the_arc_readout_gives_radius_arc_length_and_chord() {
+        let mut cx = new_cx();
+        let mut t = variant_tool(WallStyle::Exterior, true);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        click(&mut t, &mut cx, 240.0, 0.0);
+        // A semicircle: 120" radius, 188.5" of arc, the 240" chord.
+        let top = PointerEvent::at(&cx, Point::new(120.0, 120.0));
+        t.pointer_move(&mut cx, top);
+        let text = cx.readout.clone().unwrap();
+        assert!(
+            text.contains("Radius") && text.contains("Arc") && text.contains("Chord"),
+            "{text}"
+        );
+        assert!(text.contains(&cx.fmt_dim(120.0)), "{text}");
+        assert!(
+            text.contains(&cx.fmt_dim(std::f64::consts::PI * 120.0)),
+            "{text}"
+        );
+        assert!(text.contains(&cx.fmt_dim(240.0)), "{text}");
+        // The pointer on the chord's line reads straight.
+        let flat = PointerEvent::at(&cx, Point::new(120.0, 0.0));
+        t.pointer_move(&mut cx, flat);
+        assert!(cx.readout.clone().unwrap().starts_with("Straight"));
+    }
+
+    #[test]
     fn a_dragged_curved_wall_is_one_wall_then_the_chain_ends() {
         let mut cx = new_cx();
         let mut t = variant_tool(WallStyle::Exterior, true);
@@ -1183,5 +1407,144 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn key_text(t: &mut WallTool, cx: &mut EditorContext, s: &str) {
+        t.key(cx, KeyEvent::text(s));
+    }
+
+    #[test]
+    fn typed_length_and_angle_draw_exactly_that_wall() {
+        let mut cx = new_cx();
+        let mut t = WallTool::default();
+        assert!(!cx.typed_input.is_armed());
+        click(&mut t, &mut cx, 0.0, 0.0);
+        // The shell forwards typed text only while the input is armed.
+        assert!(cx.typed_input.is_armed());
+        key_text(&mut t, &mut cx, "12'");
+        assert!(cx.readout.as_deref().unwrap().contains("12'|"));
+        t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        key_text(&mut t, &mut cx, "90");
+        let readout = cx.readout.clone().unwrap();
+        assert!(readout.contains("Angle: 90|"), "{readout}");
+        let r = t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert_eq!(r.commit.as_deref(), Some("Draw Wall"));
+        let w = &cx.floor().walls[0];
+        assert_eq!(
+            (w.start, w.end),
+            (Point::new(0.0, 0.0), Point::new(0.0, 144.0))
+        );
+        // The chain goes on from the new end; the typed text is gone.
+        assert_eq!(t.pending_start(), Some(Point::new(0.0, 144.0)));
+        assert!(!cx.typed_input.has_text() && cx.typed_input.is_armed());
+        key_text(&mut t, &mut cx, "6'");
+        t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        key_text(&mut t, &mut cx, "0");
+        t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert_eq!(cx.floor().walls.len(), 2);
+        assert_eq!(cx.floor().walls[1].end, Point::new(72.0, 144.0));
+        // Undo takes one wall at a time.
+        assert_eq!(cx.undo().as_deref(), Some("Draw Wall"));
+        assert_eq!(cx.floor().walls.len(), 1);
+    }
+
+    #[test]
+    fn typed_length_alone_follows_the_pointer_direction() {
+        let mut cx = new_cx();
+        let mut t = WallTool::default();
+        click(&mut t, &mut cx, 0.0, 0.0);
+        let p = PointerEvent::at(&cx, Point::new(0.0, 60.0));
+        t.pointer_move(&mut cx, p);
+        key_text(&mut t, &mut cx, "10'");
+        // Moving the pointer keeps the typed length and turns the wall.
+        let p = PointerEvent::at(&cx, Point::new(-60.0, 0.0));
+        t.pointer_move(&mut cx, p);
+        t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert_eq!(cx.floor().walls[0].end, Point::new(-120.0, 0.0));
+        // Esc drops typed text first, then the chain.
+        key_text(&mut t, &mut cx, "5");
+        assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
+        assert!(t.pending_start().is_some() && !cx.typed_input.has_text());
+        t.key(&mut cx, KeyEvent::escape());
+        assert!(t.pending_start().is_none() && !cx.typed_input.is_armed());
+    }
+
+    #[test]
+    fn typed_enter_with_nothing_typed_or_too_short_draws_nothing() {
+        let mut cx = new_cx();
+        let mut t = WallTool::default();
+        click(&mut t, &mut cx, 0.0, 0.0);
+        let r = t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert!(!r.consumed && cx.floor().walls.is_empty());
+        key_text(&mut t, &mut cx, "0");
+        let r = t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert!(r.consumed && r.commit.is_none() && cx.floor().walls.is_empty());
+        assert!(cx.status.contains("at least"));
+    }
+
+    #[test]
+    fn shift_holds_the_angle_increment_even_with_angle_snaps_off() {
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        };
+        let draw = |shift_held: bool| {
+            let mut cx = new_cx();
+            cx.defaults.editing.angle_snaps = false;
+            cx.defaults.editing.angle_snap_deg = 45.0;
+            let mut t = WallTool::default();
+            click(&mut t, &mut cx, 0.0, 0.0);
+            let mut p = PointerEvent::at(&cx, Point::new(100.0, 60.0));
+            if shift_held {
+                p = p.with_modifiers(shift);
+            }
+            t.pointer_down(&mut cx, p.with_down(true));
+            t.pointer_up(&mut cx, p);
+            cx.floor().walls[0].end
+        };
+        assert_eq!(draw(false), Point::new(100.0, 60.0));
+        let held = draw(true);
+        assert!((held.x - held.y).abs() < 1e-9 && held.x > 50.0, "{held:?}");
+        // 15 degrees by default.
+        let mut cx = new_cx();
+        cx.defaults.editing.angle_snaps = false;
+        let mut t = WallTool::default();
+        click(&mut t, &mut cx, 0.0, 0.0);
+        let p = PointerEvent::at(&cx, Point::new(100.0, 22.0)).with_modifiers(shift);
+        t.pointer_down(&mut cx, p.with_down(true));
+        t.pointer_up(&mut cx, p);
+        let e = cx.floor().walls[0].end;
+        let deg = angle_deg(Point::ZERO, e);
+        assert!((deg - 15.0).abs() < 1e-6, "{deg}");
+    }
+
+    #[test]
+    fn alt_suspends_every_snap_while_drawing() {
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::NONE
+        };
+        let start_with = |alt_held: bool| {
+            let mut cx = new_cx();
+            cx.project.add_wall(
+                0,
+                Point::new(0.0, 0.0),
+                Point::new(120.0, 0.0),
+                7.625,
+                109.0,
+                WallKind::Exterior,
+            );
+            let mut t = WallTool::default();
+            let mut p = PointerEvent::at(&cx, Point::new(121.3, 2.2));
+            if alt_held {
+                p = p.with_modifiers(alt);
+            }
+            t.pointer_move(&mut cx, p);
+            t.pointer_down(&mut cx, p.with_down(true));
+            t.pointer_up(&mut cx, p);
+            t.pending_start().unwrap()
+        };
+        assert_eq!(start_with(false), Point::new(120.0, 0.0));
+        assert_eq!(start_with(true), Point::new(121.3, 2.2));
     }
 }

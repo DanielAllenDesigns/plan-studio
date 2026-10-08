@@ -1,7 +1,10 @@
 //! The layout data model: pages, boxes and their sources.
 
+use crate::annot::{PageLeader, RevisionCloud};
+use crate::layers::{LayoutLayers, LAYER_CAD, LAYER_TEXT};
+use crate::textfit::TextFit;
 use crate::titleblock::{TitleBlockStyle, TitleBlockTemplate};
-use plan_core::{CadObject, Id, Point};
+use plan_core::{CadItem, CadObject, Id, Point};
 use plan_docs::{Scale, SheetSize};
 use plan_elevation::{SectionCut, ViewDir};
 use serde::{Deserialize, Serialize};
@@ -46,6 +49,15 @@ pub enum ScheduleKind {
     Wall,
 }
 
+/// Horizontal alignment of a text box's lines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
 /// What a layout box shows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BoxSource {
@@ -85,8 +97,43 @@ pub enum BoxSource {
         height: u32,
         rgba: Vec<u8>,
     },
-    /// Plain text, drawn in paper points.
-    Text { text: String, height_pt: f64 },
+    /// A text box: lines of text in paper points, aligned within the box,
+    /// optionally bold. Double-click a text box in the layout view to edit it.
+    Text {
+        text: String,
+        height_pt: f64,
+        #[serde(default)]
+        align: TextAlign,
+        #[serde(default)]
+        bold: bool,
+    },
+    /// A perspective (full camera) view of camera `camera_id`, ray traced at
+    /// low sample counts by the hook the application sets on
+    /// [`crate::LayoutRenderContext::perspective_image`] and embedded as an
+    /// image. Without the hook the box is a placeholder frame.
+    Perspective { camera_id: Id },
+    /// The Materials List as a table: one `category` (`None` = all) of one
+    /// `floor` (`None` = every floor), priced from the render context's master
+    /// list. It follows the plan like a placed schedule.
+    Materials {
+        floor: Option<usize>,
+        category: Option<String>,
+    },
+    /// The sheet index as a table (sheet number and title of every printed
+    /// page), kept up to date as pages are added, renamed or reordered.
+    SheetIndex,
+}
+
+impl BoxSource {
+    /// A left-aligned, regular-weight text box source.
+    pub fn text(text: impl Into<String>, height_pt: f64) -> Self {
+        BoxSource::Text {
+            text: text.into(),
+            height_pt,
+            align: TextAlign::Left,
+            bold: false,
+        }
+    }
 }
 
 fn one() -> f64 {
@@ -130,6 +177,46 @@ pub struct LayoutBox {
     /// itself, its frame and its caption stay where they are.
     #[serde(default)]
     pub rotation_deg: f64,
+    /// Perspective boxes: the resolution the view is rendered at, dots per
+    /// paper inch (`0` = [`DEFAULT_PERSPECTIVE_DPI`]).
+    #[serde(default)]
+    pub dpi: u32,
+    /// Perspective boxes: ray-trace samples per pixel (`0` =
+    /// [`DEFAULT_PERSPECTIVE_SAMPLES`]).
+    #[serde(default)]
+    pub samples: u32,
+    /// Text boxes: wrap at the box width, shrink to fit, or leave as typed.
+    #[serde(default)]
+    pub text_fit: TextFit,
+}
+
+/// Resolution of a perspective box that has no DPI of its own: a 6" x 4.5"
+/// box is rendered at 480 x 360.
+pub const DEFAULT_PERSPECTIVE_DPI: u32 = 80;
+/// Samples per pixel of a perspective box that has none of its own.
+pub const DEFAULT_PERSPECTIVE_SAMPLES: u32 = 8;
+/// Most pixels along one side of a perspective render.
+pub const MAX_PERSPECTIVE_SIDE_PX: u32 = 4096;
+/// Most pixels in one perspective render (the ray tracer's budget).
+pub const MAX_PERSPECTIVE_PIXELS: u64 = 8_000_000;
+
+/// The pixel size of a perspective render for a `w_in` x `h_in` box at `dpi`
+/// dots per inch (`0` = the default), scaled down to the render budget. At
+/// least 8 x 8.
+pub fn perspective_pixels(w_in: f64, h_in: f64, dpi: u32) -> (u32, u32) {
+    let dpi = if dpi == 0 {
+        DEFAULT_PERSPECTIVE_DPI
+    } else {
+        dpi
+    };
+    let (mut w, mut h) = (w_in * f64::from(dpi), h_in * f64::from(dpi));
+    let side = f64::from(MAX_PERSPECTIVE_SIDE_PX);
+    let k = (side / w.max(h).max(1.0))
+        .min((MAX_PERSPECTIVE_PIXELS as f64 / (w * h).max(1.0)).sqrt())
+        .min(1.0);
+    w *= k;
+    h *= k;
+    ((w.round() as u32).max(8), (h.round() as u32).max(8))
 }
 
 impl LayoutBox {
@@ -146,6 +233,27 @@ impl LayoutBox {
             clip: true,
             hatch_materials: true,
             rotation_deg: 0.0,
+            dpi: 0,
+            samples: 0,
+            text_fit: TextFit::Wrap,
+        }
+    }
+
+    /// Resolution of a perspective box, dots per inch.
+    pub fn effective_dpi(&self) -> u32 {
+        if self.dpi == 0 {
+            DEFAULT_PERSPECTIVE_DPI
+        } else {
+            self.dpi
+        }
+    }
+
+    /// Samples per pixel of a perspective box.
+    pub fn effective_samples(&self) -> u32 {
+        if self.samples == 0 {
+            DEFAULT_PERSPECTIVE_SAMPLES
+        } else {
+            self.samples
         }
     }
 
@@ -181,9 +289,73 @@ pub struct LayoutPage {
     /// CAD repeat on every other page (under that page's own content).
     #[serde(default)]
     pub template_page: bool,
+    /// Leaders (text with an arrow) in paper inches; they share the id space
+    /// of [`cad`](Self::cad).
+    #[serde(default)]
+    pub leaders: Vec<PageLeader>,
+    /// Revision clouds in paper inches; they share the id space of
+    /// [`cad`](Self::cad).
+    #[serde(default)]
+    pub clouds: Vec<RevisionCloud>,
 }
 
 impl LayoutPage {
+    /// An id not used by any annotation of the page (CAD, leader or cloud).
+    pub fn next_cad_id(&self) -> Id {
+        self.cad
+            .iter()
+            .map(|o| o.id)
+            .chain(self.leaders.iter().map(|l| l.id))
+            .chain(self.clouds.iter().map(|c| c.id))
+            .max()
+            .map_or(1, |m| m + 1)
+    }
+
+    /// Adds layout CAD (paper inches) to the page and returns its id. Text goes
+    /// on the `Text` layout layer, everything else on `Layout CAD`.
+    pub fn add_cad(&mut self, item: CadItem) -> Id {
+        let id = self.next_cad_id();
+        let layer = if matches!(item, CadItem::Text { .. }) {
+            LAYER_TEXT
+        } else {
+            LAYER_CAD
+        };
+        self.cad.push(CadObject {
+            id,
+            layer: layer.to_string(),
+            item,
+        });
+        id
+    }
+
+    /// A line on the page.
+    pub fn add_line(&mut self, a: Point, b: Point) -> Id {
+        self.add_cad(CadItem::Line { a, b })
+    }
+
+    /// A rectangle on the page from two opposite corners.
+    pub fn add_rect(&mut self, a: Point, b: Point) -> Id {
+        self.add_cad(CadItem::Polyline {
+            points: vec![a, Point::new(b.x, a.y), b, Point::new(a.x, b.y)],
+            closed: true,
+        })
+    }
+
+    /// A polyline on the page.
+    pub fn add_polyline(&mut self, points: Vec<Point>, closed: bool) -> Id {
+        self.add_cad(CadItem::Polyline { points, closed })
+    }
+
+    /// Text on the page, bottom-left at `pos`, `height_in` paper inches tall.
+    pub fn add_text(&mut self, pos: Point, text: impl Into<String>, height_in: f64) -> Id {
+        self.add_cad(CadItem::Text {
+            pos,
+            text: text.into(),
+            height: height_in,
+            angle: 0.0,
+        })
+    }
+
     /// Sheet number text, e.g. `A-2`.
     pub fn sheet_number(&self) -> String {
         format!("A-{}", self.number)
@@ -211,6 +383,10 @@ pub struct Layout {
     /// Portrait orientation: the sheet is as tall as `sheet` is wide.
     #[serde(default)]
     pub portrait: bool,
+    /// Layer Display Options of the layout: which layout layers show and
+    /// their line weights.
+    #[serde(default)]
+    pub layers: LayoutLayers,
 }
 
 impl Layout {
@@ -226,6 +402,7 @@ impl Layout {
             page_background: true,
             edge_line_weight: LAYOUT_EDGE_WEIGHT,
             portrait: false,
+            layers: LayoutLayers::default(),
         }
     }
 
@@ -258,6 +435,8 @@ impl Layout {
             boxes: Vec::new(),
             cad: Vec::new(),
             template_page: false,
+            leaders: Vec::new(),
+            clouds: Vec::new(),
         });
         self.pages.last_mut().expect("just pushed")
     }

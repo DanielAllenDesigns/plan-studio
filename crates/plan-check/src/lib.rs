@@ -13,9 +13,16 @@
 mod ctx;
 mod footprint;
 mod geom;
+mod report;
 mod rules;
+mod rules_code;
+mod rules_fixtures;
+mod rules_mep;
+mod settings;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_code;
 
 use plan_core::{detect_rooms, Id, Point, Project, Room};
 use plan_stairs::Stair;
@@ -23,6 +30,11 @@ use serde::{Deserialize, Serialize};
 
 use ctx::Ctx;
 pub use footprint::{plan_footprint, Footprint};
+pub use report::{report_table, ReportTable};
+pub use settings::{
+    filter_findings, finding_key, ignored_keys, rule_catalog, run_plan_check, set_ignored_keys,
+    summary_line, CheckRun, CheckSettings, RuleInfo, JURISDICTIONS,
+};
 
 /// How serious a finding is. Ordered most severe first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -36,6 +48,15 @@ pub enum Severity {
 }
 
 impl Severity {
+    /// One finding's severity as a word.
+    pub fn singular(self) -> &'static str {
+        match self {
+            Severity::Error => "Error",
+            Severity::Warning => "Warning",
+            Severity::Info => "Info",
+        }
+    }
+
     /// Heading text used in reports.
     pub fn label(self) -> &'static str {
         match self {
@@ -57,6 +78,14 @@ pub enum Target {
     Room(usize),
     /// A stair, by id.
     Stair(Id),
+    /// A placed library symbol (a plumbing fixture), by id.
+    Symbol(Id),
+    /// A cabinet, by id.
+    Cabinet(Id),
+    /// A roof plane, by id.
+    Roof(Id),
+    /// A detail object (a deck), by id.
+    Detail(Id),
 }
 
 /// One result of a check.
@@ -118,6 +147,42 @@ pub struct CheckOptions {
     pub garage_house_door_min: f64,
     /// Glazing to exterior wall area ratio below which natural light is flagged.
     pub window_to_wall_ratio_warn: f64,
+    /// Minimum ceiling height of a bathroom or laundry (R305.1 exception).
+    pub min_ceiling_bath: f64,
+    /// Drop above which a walking surface needs a guard (R312.1.1).
+    pub guard_drop: f64,
+    /// Minimum guard height (R312.1.2).
+    pub guard_height: f64,
+    /// Minimum guard height on the open side of a stair (R312.1.2 exception).
+    pub stair_guard_height: f64,
+    /// Flights with this many risers or more need a handrail (R311.7.8).
+    pub handrail_risers: u32,
+    /// Nominal height of an egress door (R311.2).
+    pub entry_door_height: f64,
+    /// Depth of the landing outside an exterior door (R311.3).
+    pub exit_landing: f64,
+    /// Openable glazing as a share of the floor area of a habitable room (R303.1).
+    pub vent_ratio: f64,
+    /// Water closet: centerline to side wall or fixture (P2705.1).
+    pub wc_side_clear: f64,
+    /// Water closet: clear space in front (P2705.1).
+    pub wc_front_clear: f64,
+    /// Shower and tub: smallest side (P2708.1).
+    pub shower_min_dim: f64,
+    /// Shower: smallest floor area, sq in (P2708.1).
+    pub shower_min_area: f64,
+    /// Kitchen walkway width (NKBA).
+    pub kitchen_walkway: f64,
+    /// Kitchen work aisle width, one cook (NKBA).
+    pub kitchen_work_aisle: f64,
+    /// Smallest counter depth including the overhangs.
+    pub counter_depth_min: f64,
+    /// Roof pitch (rise per 12) under which shingles are not allowed (R905.2.2).
+    pub roof_pitch_min: f64,
+    /// Roof pitch (rise per 12) under which double underlayment is required (R905.1.1).
+    pub roof_pitch_underlay: f64,
+    /// Roof pitch (rise per 12) over which a steep-slope advisory is shown.
+    pub roof_pitch_steep: f64,
 }
 
 impl Default for CheckOptions {
@@ -142,6 +207,24 @@ impl Default for CheckOptions {
             landing_min: 36.0,
             garage_house_door_min: 32.0,
             window_to_wall_ratio_warn: 0.15,
+            min_ceiling_bath: 80.0,
+            guard_drop: 30.0,
+            guard_height: 36.0,
+            stair_guard_height: 34.0,
+            handrail_risers: 4,
+            entry_door_height: 80.0,
+            exit_landing: 36.0,
+            vent_ratio: 0.04,
+            wc_side_clear: 15.0,
+            wc_front_clear: 21.0,
+            shower_min_dim: 30.0,
+            shower_min_area: 900.0,
+            kitchen_walkway: 36.0,
+            kitchen_work_aisle: 42.0,
+            counter_depth_min: 24.0,
+            roof_pitch_min: 2.0,
+            roof_pitch_underlay: 4.0,
+            roof_pitch_steep: 12.0,
         }
     }
 }
@@ -178,6 +261,10 @@ pub fn plan_check(
     rules::opening_geometry(&ctx, &mut out);
     rules::room_access(&ctx, &mut out);
     rules::natural_light(&ctx, &mut out);
+    rules_mep::electrical(&ctx, &mut out);
+    rules_mep::framing(&ctx, &mut out);
+    rules_code::run(&ctx, &mut out);
+    rules_fixtures::run(&ctx, &mut out);
     out.sort_by_key(|f| f.severity);
     out
 }

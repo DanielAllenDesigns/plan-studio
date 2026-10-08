@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub enum DeviceKind {
     /// Duplex 110 V receptacle.
     Outlet110,
+    /// Quad (two duplex) 110 V receptacle.
+    Outlet110Quad,
     /// 220 V receptacle (dryer, range, EV charger).
     Outlet220,
     /// Ground-fault circuit-interrupter receptacle.
@@ -17,6 +19,8 @@ pub enum DeviceKind {
     OutletFloor,
     Switch,
     Switch3Way,
+    /// Four-way switch (the middle of a three-way run).
+    Switch4Way,
     SwitchDimmer,
     CeilingLight,
     RecessedCan,
@@ -27,6 +31,12 @@ pub enum DeviceKind {
     CoDetector,
     Thermostat,
     Doorbell,
+    /// Data (network) jack.
+    DataJack,
+    /// Telephone jack.
+    PhoneJack,
+    /// Coax / TV jack.
+    TvJack,
     /// Main or sub panel.
     Panel,
     /// Strip light; `length` is in inches along the device's local Y axis.
@@ -35,10 +45,21 @@ pub enum DeviceKind {
     },
 }
 
+/// Plate and fixture finishes offered by the Materials tab of the Electrical
+/// Service Specification (the first is the default).
+pub const FINISHES: [&str; 6] = [
+    "White",
+    "Ivory",
+    "Light Almond",
+    "Brown",
+    "Black",
+    "Stainless Steel",
+];
+
 /// Receptacle height to the center of the plate, inches.
 pub const OUTLET_HEIGHT: f64 = 12.0;
-/// Counter-height receptacle (kitchen backsplash), inches.
-pub const COUNTER_OUTLET_HEIGHT: f64 = 44.0;
+/// Counter-height receptacle (kitchen backsplash), inches to the plate center.
+pub const COUNTER_OUTLET_HEIGHT: f64 = 42.0;
 /// Switch height to the center of the plate, inches.
 pub const SWITCH_HEIGHT: f64 = 48.0;
 
@@ -47,11 +68,13 @@ impl DeviceKind {
     pub fn name(&self) -> &'static str {
         match self {
             DeviceKind::Outlet110 => "110V Outlet",
+            DeviceKind::Outlet110Quad => "Quad Outlet",
             DeviceKind::Outlet220 => "220V Outlet",
             DeviceKind::Gfci => "GFCI Outlet",
             DeviceKind::OutletFloor => "Floor Outlet",
             DeviceKind::Switch => "Switch",
             DeviceKind::Switch3Way => "3-Way Switch",
+            DeviceKind::Switch4Way => "4-Way Switch",
             DeviceKind::SwitchDimmer => "Dimmer Switch",
             DeviceKind::CeilingLight => "Ceiling Light",
             DeviceKind::RecessedCan => "Recessed Light",
@@ -62,6 +85,9 @@ impl DeviceKind {
             DeviceKind::CoDetector => "CO Detector",
             DeviceKind::Thermostat => "Thermostat",
             DeviceKind::Doorbell => "Doorbell",
+            DeviceKind::DataJack => "Data Jack",
+            DeviceKind::PhoneJack => "Phone Jack",
+            DeviceKind::TvJack => "TV Jack",
             DeviceKind::Panel => "Electrical Panel",
             DeviceKind::RopeLight { .. } => "Rope Light",
         }
@@ -71,11 +97,13 @@ impl DeviceKind {
     pub fn description(&self) -> &'static str {
         match self {
             DeviceKind::Outlet110 => "Duplex receptacle, 110 V",
+            DeviceKind::Outlet110Quad => "Quad receptacle, 110 V",
             DeviceKind::Outlet220 => "Receptacle, 220 V dedicated",
             DeviceKind::Gfci => "Duplex receptacle, GFCI protected",
             DeviceKind::OutletFloor => "Floor receptacle",
             DeviceKind::Switch => "Single-pole switch",
             DeviceKind::Switch3Way => "Three-way switch",
+            DeviceKind::Switch4Way => "Four-way switch",
             DeviceKind::SwitchDimmer => "Dimmer switch",
             DeviceKind::CeilingLight => "Ceiling light fixture",
             DeviceKind::RecessedCan => "Recessed can light",
@@ -86,20 +114,25 @@ impl DeviceKind {
             DeviceKind::CoDetector => "Carbon monoxide detector",
             DeviceKind::Thermostat => "Thermostat",
             DeviceKind::Doorbell => "Doorbell button",
+            DeviceKind::DataJack => "Data jack",
+            DeviceKind::PhoneJack => "Telephone jack",
+            DeviceKind::TvJack => "TV / coax jack",
             DeviceKind::Panel => "Electrical panel",
             DeviceKind::RopeLight { .. } => "Rope light",
         }
     }
 
     /// One of each kind, in schedule/legend order (`RopeLight` has length 0).
-    pub fn all() -> [DeviceKind; 18] {
+    pub fn all() -> [DeviceKind; 23] {
         [
             DeviceKind::Outlet110,
+            DeviceKind::Outlet110Quad,
             DeviceKind::Outlet220,
             DeviceKind::Gfci,
             DeviceKind::OutletFloor,
             DeviceKind::Switch,
             DeviceKind::Switch3Way,
+            DeviceKind::Switch4Way,
             DeviceKind::SwitchDimmer,
             DeviceKind::CeilingLight,
             DeviceKind::RecessedCan,
@@ -110,6 +143,9 @@ impl DeviceKind {
             DeviceKind::CoDetector,
             DeviceKind::Thermostat,
             DeviceKind::Doorbell,
+            DeviceKind::DataJack,
+            DeviceKind::PhoneJack,
+            DeviceKind::TvJack,
             DeviceKind::Panel,
             DeviceKind::RopeLight { length: 0.0 },
         ]
@@ -121,10 +157,18 @@ impl DeviceKind {
     /// the height of the fixture face (flush ones sit at the default ceiling).
     pub fn default_height(&self) -> f64 {
         match self {
-            DeviceKind::Outlet110 | DeviceKind::Outlet220 | DeviceKind::Gfci => OUTLET_HEIGHT,
+            DeviceKind::Outlet110
+            | DeviceKind::Outlet110Quad
+            | DeviceKind::Outlet220
+            | DeviceKind::Gfci
+            | DeviceKind::DataJack
+            | DeviceKind::PhoneJack => OUTLET_HEIGHT,
             DeviceKind::OutletFloor => 0.0,
-            DeviceKind::Switch | DeviceKind::Switch3Way | DeviceKind::SwitchDimmer => SWITCH_HEIGHT,
-            DeviceKind::Doorbell => SWITCH_HEIGHT,
+            DeviceKind::Switch
+            | DeviceKind::Switch3Way
+            | DeviceKind::Switch4Way
+            | DeviceKind::SwitchDimmer => SWITCH_HEIGHT,
+            DeviceKind::Doorbell | DeviceKind::TvJack => SWITCH_HEIGHT,
             DeviceKind::Thermostat => 52.0,
             DeviceKind::WallSconce => 66.0,
             DeviceKind::Panel | DeviceKind::CoDetector => 60.0,
@@ -141,15 +185,20 @@ impl DeviceKind {
         matches!(
             self,
             DeviceKind::Outlet110
+                | DeviceKind::Outlet110Quad
                 | DeviceKind::Outlet220
                 | DeviceKind::Gfci
                 | DeviceKind::Switch
                 | DeviceKind::Switch3Way
+                | DeviceKind::Switch4Way
                 | DeviceKind::SwitchDimmer
                 | DeviceKind::WallSconce
                 | DeviceKind::CoDetector
                 | DeviceKind::Thermostat
                 | DeviceKind::Doorbell
+                | DeviceKind::DataJack
+                | DeviceKind::PhoneJack
+                | DeviceKind::TvJack
                 | DeviceKind::Panel
         )
     }
@@ -166,11 +215,56 @@ impl DeviceKind {
         )
     }
 
+    /// Telephone, data and TV jacks.
+    pub fn is_low_voltage(&self) -> bool {
+        matches!(
+            self,
+            DeviceKind::DataJack | DeviceKind::PhoneJack | DeviceKind::TvJack
+        )
+    }
+
+    /// The kinds the Electrical Service Specification can change this device
+    /// into: the same family (receptacles, switches, ceiling fixtures,
+    /// detectors, low-voltage jacks), so the mounting stays valid.
+    pub fn family(&self) -> Vec<DeviceKind> {
+        let group = |k: &DeviceKind| -> u8 {
+            match k {
+                _ if k.is_outlet() => 0,
+                _ if k.is_switch() => 1,
+                DeviceKind::CeilingLight
+                | DeviceKind::RecessedCan
+                | DeviceKind::PendantLight
+                | DeviceKind::CeilingFan => 2,
+                DeviceKind::SmokeDetector | DeviceKind::CoDetector => 3,
+                _ if k.is_low_voltage() => 4,
+                DeviceKind::WallSconce => 5,
+                DeviceKind::Thermostat => 6,
+                DeviceKind::Doorbell => 7,
+                DeviceKind::Panel => 8,
+                _ => 9,
+            }
+        };
+        let g = group(self);
+        let mounted = |k: &DeviceKind| (k.is_wall_mounted(), k.is_ceiling());
+        DeviceKind::all()
+            .into_iter()
+            .filter(|k| {
+                (group(k) == g && mounted(k) == mounted(self))
+                    || (std::mem::discriminant(k) == std::mem::discriminant(self))
+            })
+            // Keep the rope light's own length; the others are zero-sized.
+            .map(|k| if matches!(k, DeviceKind::RopeLight { .. }) { *self } else { k })
+            .collect()
+    }
+
     /// Any switch kind.
     pub fn is_switch(&self) -> bool {
         matches!(
             self,
-            DeviceKind::Switch | DeviceKind::Switch3Way | DeviceKind::SwitchDimmer
+            DeviceKind::Switch
+                | DeviceKind::Switch3Way
+                | DeviceKind::Switch4Way
+                | DeviceKind::SwitchDimmer
         )
     }
 
@@ -179,6 +273,7 @@ impl DeviceKind {
         matches!(
             self,
             DeviceKind::Outlet110
+                | DeviceKind::Outlet110Quad
                 | DeviceKind::Outlet220
                 | DeviceKind::Gfci
                 | DeviceKind::OutletFloor
@@ -217,6 +312,13 @@ pub struct Device {
     pub label: String,
     /// Switches that control this device.
     pub switched_by: Vec<Id>,
+    /// Plate or fixture finish ("White", "Ivory", "Stainless Steel", ...);
+    /// empty means the default white.
+    #[serde(default)]
+    pub finish: String,
+    /// Hide the label in the plan (the label is still kept).
+    #[serde(default)]
+    pub hide_label: bool,
 }
 
 impl Device {

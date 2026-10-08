@@ -9,6 +9,8 @@
 //!   placed in the plan (`plan_core::schedules`): door, window, room, wall,
 //!   cabinet, electrical, framing, fixture, furniture, plant and general.
 //! * [`materials`]: a framing / finish quantity take-off and its CSV export.
+//! * [`terrain_report`]: the terrain's cut/fill table (cubic yards per graded pad and in
+//!   total) and the soil lines of the Materials List.
 //! * [`pdf`]: a PDF 1.4 writer (RGB colour, dashes, clipping, rotated and
 //!   bold text, Bezier curves, hatches, embedded RGB images, mixed page
 //!   sizes) plus [`pdf::plan_sheet`], a scaled floor-plan sheet with a
@@ -21,10 +23,16 @@ pub mod materials;
 pub mod pdf;
 pub mod schedule;
 pub mod schedule_kinds;
+pub mod terrain_report;
 
-pub use materials::{materials_list, to_csv as materials_to_csv, MaterialLine};
+pub use materials::{
+    fmt_money, materials_list, materials_report, price_keys, row_cells as materials_cells, to_csv as materials_to_csv,
+    to_schedule as materials_to_schedule, total_price as materials_total, MaterialLine,
+    MaterialsScope, MasterItem, MasterList, CATEGORIES as MATERIAL_CATEGORIES,
+    COLUMNS as MATERIAL_COLUMNS,
+};
 pub use pdf::{
-    plan_sheet, plan_sheet_with, LineCap, LineJoin, PdfColor, PdfDoc, PlanSheetOptions,
+    plan_sheet, plan_sheet_with, LineCap, LineJoin, PdfColor, PdfColorMode, PdfDoc, PlanSheetOptions,
     PlanSheetResult, RoomAreaBasis, Scale, SheetSize, TitleBlock, CHIEF_SHEET_BACKGROUND,
 };
 pub use schedule::{

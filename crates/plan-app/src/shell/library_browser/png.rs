@@ -1,10 +1,9 @@
-//! A small dependency-free PNG decoder for Chief's catalog thumbnails.
+//! PNG decoding for Chief's catalog thumbnails and the pictures tools.
 //!
-//! Handles every colour type (grey, RGB, palette, grey+alpha, RGBA) at 8 or
-//! 16 bits, plus 1/2/4-bit grey and palette, all five scanline filters and
-//! `tRNS`. Interlaced images are rejected (Chief's thumbnails are 256 x 256
-//! RGBA, not interlaced). Inflate comes from `plan_calib`; chunk CRCs and the
-//! zlib checksum are not verified (the source is a local file).
+//! The decoder itself is `plan_library::image::png` (every color type and bit
+//! depth, `tRNS`, interlacing; no checksums verified, the source is a local
+//! file). This module keeps the [`Rgba`] type the Library Browser and the
+//! pictures, underlay and material tools share.
 
 use eframe::egui::ColorImage;
 
@@ -77,180 +76,22 @@ impl Rgba {
 
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
-fn be32(b: &[u8]) -> usize {
-    u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize
-}
-
-/// Decodes PNG bytes to RGBA8.
+/// Decodes PNG bytes to RGBA8 with the shared decoder in
+/// `plan_library::image` (all color types and depths, palettes, `tRNS` and
+/// interlaced files).
 pub fn decode(png: &[u8]) -> Result<Rgba, String> {
     if png.len() < 8 || png[..8] != SIGNATURE {
         return Err("not a PNG".into());
     }
-    let (mut w, mut h, mut depth, mut ctype, mut interlace) = (0, 0, 0u8, 0u8, 0u8);
-    let mut have_header = false;
-    let mut palette: Vec<[u8; 3]> = Vec::new();
-    let mut trns: Vec<u8> = Vec::new();
-    let mut idat: Vec<u8> = Vec::new();
-    let mut pos = 8;
-    while pos + 8 <= png.len() {
-        let len = be32(&png[pos..]);
-        let kind = &png[pos + 4..pos + 8];
-        let start = pos + 8;
-        let end = start.checked_add(len).filter(|&e| e <= png.len());
-        let Some(end) = end else {
-            return Err("truncated chunk".into());
-        };
-        let body = &png[start..end];
-        match kind {
-            b"IHDR" => {
-                if body.len() < 13 {
-                    return Err("short IHDR".into());
-                }
-                w = be32(body);
-                h = be32(&body[4..]);
-                depth = body[8];
-                ctype = body[9];
-                interlace = body[12];
-                have_header = true;
-            }
-            b"PLTE" => palette = body.as_chunks::<3>().0.to_vec(),
-            b"tRNS" => trns = body.to_vec(),
-            b"IDAT" => idat.extend_from_slice(body),
-            b"IEND" => break,
-            _ => {}
-        }
-        pos = end + 4;
-    }
-    if !have_header || w == 0 || h == 0 || w > 16384 || h > 16384 {
-        return Err("bad image size".into());
-    }
-    if interlace != 0 {
-        return Err("interlaced PNG".into());
-    }
-    let channels = match ctype {
-        0 | 3 => 1,
-        2 => 3,
-        4 => 2,
-        6 => 4,
-        _ => return Err("bad colour type".into()),
-    };
-    let ok_depth = match ctype {
-        0 | 3 => matches!(depth, 1 | 2 | 4 | 8) || (ctype == 0 && depth == 16),
-        _ => matches!(depth, 8 | 16),
-    };
-    if !ok_depth {
-        return Err("unsupported bit depth".into());
-    }
-    if idat.len() < 6 {
-        return Err("no image data".into());
-    }
-    let raw = plan_calib::inflate::inflate_vec(&idat[2..]).map_err(|e| e.to_string())?;
-    let bits_per_px = channels * usize::from(depth);
-    let stride = (w * bits_per_px).div_ceil(8);
-    let bpp = bits_per_px.div_ceil(8).max(1);
-    if raw.len() < (stride + 1) * h {
-        return Err("image data too short".into());
-    }
-
-    // Undo the filters.
-    let mut img = vec![0u8; stride * h];
-    for y in 0..h {
-        let line = &raw[y * (stride + 1)..(y + 1) * (stride + 1)];
-        let (ft, src) = (line[0], &line[1..]);
-        let (done, rest) = img.split_at_mut(y * stride);
-        let prev: &[u8] = if y == 0 {
-            &[]
-        } else {
-            &done[(y - 1) * stride..]
-        };
-        let cur = &mut rest[..stride];
-        for x in 0..stride {
-            let a = if x >= bpp { cur[x - bpp] } else { 0 };
-            let b = prev.get(x).copied().unwrap_or(0);
-            let c = if x >= bpp {
-                prev.get(x - bpp).copied().unwrap_or(0)
-            } else {
-                0
-            };
-            let add = match ft {
-                0 => 0,
-                1 => a,
-                2 => b,
-                3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
-                4 => paeth(a, b, c),
-                _ => return Err("bad filter".into()),
-            };
-            cur[x] = src[x].wrapping_add(add);
-        }
-    }
-
-    // Expand to RGBA8.
-    let sample = |row: &[u8], i: usize| -> u8 {
-        // The i-th sample of a row, scaled for sub-byte depths only by the
-        // caller (palette indices stay raw).
-        match depth {
-            8 => row[i],
-            16 => row[i * 2],
-            d => {
-                let per = 8 / usize::from(d);
-                let byte = row[i / per];
-                let shift = 8 - usize::from(d) * (i % per + 1);
-                (byte >> shift) & ((1u8 << d) - 1)
-            }
-        }
-    };
-    let mut out = vec![0u8; w * h * 4];
-    let grey_key = (ctype == 0 && trns.len() >= 2).then(|| u16::from_be_bytes([trns[0], trns[1]]));
-    for y in 0..h {
-        let row = &img[y * stride..(y + 1) * stride];
-        for x in 0..w {
-            let o = (y * w + x) * 4;
-            let px: [u8; 4] = match ctype {
-                0 => {
-                    let raw_v = sample(row, x);
-                    let v = if depth < 8 {
-                        raw_v * (255 / ((1u8 << depth) - 1))
-                    } else {
-                        raw_v
-                    };
-                    let key_hit = grey_key.is_some_and(|k| match depth {
-                        16 => u16::from(raw_v) == k >> 8,
-                        _ => u16::from(raw_v) == k,
-                    });
-                    [v, v, v, if key_hit { 0 } else { 255 }]
-                }
-                2 => [
-                    sample(row, x * 3),
-                    sample(row, x * 3 + 1),
-                    sample(row, x * 3 + 2),
-                    255,
-                ],
-                3 => {
-                    let i = usize::from(sample(row, x));
-                    let c = palette.get(i).copied().unwrap_or([0, 0, 0]);
-                    [c[0], c[1], c[2], trns.get(i).copied().unwrap_or(255)]
-                }
-                4 => {
-                    let v = sample(row, x * 2);
-                    [v, v, v, sample(row, x * 2 + 1)]
-                }
-                _ => [
-                    sample(row, x * 4),
-                    sample(row, x * 4 + 1),
-                    sample(row, x * 4 + 2),
-                    sample(row, x * 4 + 3),
-                ],
-            };
-            out[o..o + 4].copy_from_slice(&px);
-        }
-    }
+    let img = plan_library::image::png::decode(png).map_err(|e| e.to_string())?;
     Ok(Rgba {
-        width: w,
-        height: h,
-        pixels: out,
+        width: img.width as usize,
+        height: img.height as usize,
+        pixels: img.rgba,
     })
 }
 
+#[cfg(test)]
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
     let (ia, ib, ic) = (i32::from(a), i32::from(b), i32::from(c));
     let p = ia + ib - ic;

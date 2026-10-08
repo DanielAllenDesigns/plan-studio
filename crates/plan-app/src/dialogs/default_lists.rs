@@ -20,7 +20,7 @@ use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers, Painter, Pos2, R
 use plan_core::defaults::{DimensionDefaultSet, RoomTypeDef};
 use plan_core::text_styles::{TextStyles, DEFAULT_TEXT_STYLE_NAME};
 use plan_core::units::{LengthFormat, LengthUnit};
-use plan_core::PlanDefaults;
+use plan_core::{AutoString, ObjectLocate, OpeningLocate, PlanDefaults, WallLocate};
 
 /// The Default Settings list dialog that is open.
 pub enum DefaultsList {
@@ -442,6 +442,7 @@ const DIM_TABS: &[Tab] = &[
     on("Extensions"),
     on("Arrow"),
     on("Text Style"),
+    on("Locate Objects"),
 ];
 
 const UNITS: [(LengthUnit, &str); 6] = [
@@ -465,6 +466,9 @@ fn unit_label(u: LengthUnit) -> &'static str {
 pub struct DimensionSetForm {
     draft: DimensionDefaultSet,
     fields: Fields,
+    /// Locate Objects group shown: 0 manual and automatic, 1 temporary,
+    /// 2 elevation.
+    locate_group: u8,
 }
 
 impl DimensionSetForm {
@@ -473,6 +477,7 @@ impl DimensionSetForm {
         Self {
             draft: set,
             fields: Fields::default(),
+            locate_group: 0,
         }
     }
 
@@ -569,10 +574,35 @@ impl SpecPages for DimensionSetForm {
                     "auto_separation",
                     &mut set.auto.auto_line_separation,
                 );
-                ui.checkbox(
-                    &mut set.auto.locate_openings_centers,
-                    "Locate Openings at Centers",
-                );
+                // The strings of Auto Exterior Dimensions, nearest the wall first.
+                section(ui, "Exterior Strings (nearest the wall first)");
+                let current = set.auto.exterior_strings();
+                let mut slots: [Option<AutoString>; 3] = [None; 3];
+                for (i, st) in current.iter().take(3).enumerate() {
+                    slots[i] = Some(*st);
+                }
+                for (i, slot) in slots.iter_mut().enumerate() {
+                    row(ui, &format!("String {}", i + 1), |ui| {
+                        egui::ComboBox::from_id_salt(format!("auto_string_{i}"))
+                            .selected_text(slot.map_or("None", AutoString::label))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(slot, None, "None");
+                                for st in [
+                                    AutoString::Openings,
+                                    AutoString::WallToWall,
+                                    AutoString::Overall,
+                                ] {
+                                    ui.selectable_value(slot, Some(st), st.label());
+                                }
+                            });
+                    });
+                }
+                let picked: Vec<AutoString> = slots.iter().flatten().copied().collect();
+                set.auto.auto_strings = if picked.is_empty() {
+                    vec![AutoString::Overall]
+                } else {
+                    picked
+                };
             }
             2 => {
                 section(ui, "Extension Lines");
@@ -597,8 +627,90 @@ impl SpecPages for DimensionSetForm {
                     string_combo(ui, "dim_leader", &mut set.auto.leader_style, &LEADER_STYLES);
                 });
             }
+            5 => {
+                // Three groups: the manual and automatic dimensions' (the
+                // set's own), the temporary dimensions' and the elevation
+                // dimensions' (DIM-40).
+                ui.horizontal(|ui| {
+                    for (i, name) in ["Manual and Automatic", "Temporary", "Elevation"]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        ui.selectable_value(&mut self.locate_group, i as u8, name);
+                    }
+                });
+                if self.locate_group > 0 {
+                    let mut g = if self.locate_group == 1 {
+                        set.auto.temp_group()
+                    } else {
+                        set.auto.elevation_group()
+                    };
+                    section(ui, "Walls");
+                    for m in WallLocate::ALL {
+                        ui.radio_value(&mut g.walls, m, m.label());
+                    }
+                    section(ui, "Openings");
+                    for m in OpeningLocate::ALL {
+                        ui.radio_value(&mut g.openings, m, m.label());
+                    }
+                    section(ui, "Cabinets");
+                    for m in ObjectLocate::ALL {
+                        ui.radio_value(&mut g.cabinets, m, m.label());
+                    }
+                    section(ui, "Fixtures");
+                    for m in ObjectLocate::ALL {
+                        ui.radio_value(&mut g.fixtures, m, m.label());
+                    }
+                    if self.locate_group == 1 {
+                        if g != set.auto.temp_group() {
+                            set.auto.temp_locate = Some(g);
+                        }
+                    } else if g != set.auto.elevation_group() {
+                        set.auto.elevation_locate = Some(g);
+                    }
+                    return;
+                }
+                section(ui, "Walls");
+                for m in WallLocate::ALL {
+                    ui.radio_value(&mut set.auto.locate_walls, m, m.label());
+                }
+                ui.checkbox(
+                    &mut set.auto.interior_locates_interior_surfaces,
+                    "Interior dimensions locate interior surfaces",
+                );
+                section(ui, "Openings");
+                let mut mode = set.auto.opening_locate();
+                for m in OpeningLocate::ALL {
+                    ui.radio_value(&mut mode, m, m.label());
+                }
+                if Some(mode) != set.auto.locate_openings {
+                    set.auto.set_opening_locate(mode);
+                }
+                section(ui, "Cabinets");
+                for m in ObjectLocate::ALL {
+                    ui.radio_value(&mut set.auto.locate_cabinets, m, m.label());
+                }
+                section(ui, "Fixtures");
+                for m in ObjectLocate::ALL {
+                    ui.radio_value(&mut set.auto.locate_fixtures, m, m.label());
+                }
+            }
             _ => {
                 section(ui, "Text Style");
+                row(ui, "Text Style", |ui| {
+                    let mut name = set.auto.text_style.clone();
+                    let hint = "Dimension Text Style";
+                    ui.add(
+                        egui::TextEdit::singleline(&mut name)
+                            .hint_text(hint)
+                            .desired_width(180.0),
+                    );
+                    set.auto.text_style = name;
+                });
+                ui.checkbox(
+                    &mut set.auto.printed_size,
+                    "Printed Size (text and arrows keep their size on paper at any scale)",
+                );
                 ui.checkbox(&mut set.auto.text_above_line, "Text Above Dimension Line");
                 row(ui, "Fraction Text Size", |ui| {
                     ui.add(
@@ -1217,13 +1329,41 @@ fn style_form(ui: &mut Ui, list: &mut TextStyles, idx: usize) -> Option<&'static
         string_combo(ui, "text_style_font", &mut s.font, &FONTS);
     });
     row(ui, "Height", |ui| {
-        ui.add(
+        let r = ui.add(
             egui::DragValue::new(&mut s.height_in)
                 .speed(0.1)
                 .range(0.25..=96.0)
                 .suffix("\""),
         );
+        // A character-height style prints this tall at 1/4" scale.
+        if r.changed() && !s.is_printed_size() {
+            s.printed_pt = Some(s.height_in * 0.25 / 12.0 * 72.0);
+        }
     });
+    row(ui, "Size by", |ui| {
+        let mut printed = s.is_printed_size();
+        ui.radio_value(&mut printed, false, "Character Height");
+        ui.radio_value(&mut printed, true, "Printed Size");
+        if printed != s.is_printed_size() {
+            s.use_printed_size(printed);
+        }
+    });
+    if s.is_printed_size() {
+        row(ui, "Printed Size", |ui| {
+            let mut inches = s.printed_in();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut inches)
+                        .speed(0.005)
+                        .range(0.02..=2.0)
+                        .suffix("\" on paper"),
+                )
+                .changed()
+            {
+                s.set_printed_in(inches);
+            }
+        });
+    }
     row(ui, "Style", |ui| {
         ui.checkbox(&mut s.bold, "Bold");
         ui.checkbox(&mut s.italic, "Italic");
@@ -1231,9 +1371,6 @@ fn style_form(ui: &mut Ui, list: &mut TextStyles, idx: usize) -> Option<&'static
     });
     row(ui, "Color", |ui| {
         ui.color_edit_button_srgb(&mut s.color);
-    });
-    row(ui, "Size", |ui| {
-        ui.checkbox(&mut s.size_by_scale, "Follows the drawing scale");
     });
     if s != style {
         list.styles[idx] = s;

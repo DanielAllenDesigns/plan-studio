@@ -15,6 +15,7 @@
 
 mod ceiling;
 mod dormer;
+mod edges;
 mod footprint;
 mod gable;
 mod geom;
@@ -29,6 +30,7 @@ pub use dormer::{
     auto_dormer, explode_dormer, Dormer, DormerKind, DormerSpec, DormerWall, ExplodedDormer,
     WindowOpening,
 };
+pub use edges::{classify_edges, EdgeRole, PlaneEdge};
 pub use footprint::footprint_from_walls;
 pub use gable::{
     apply_gable_line, roof_return, roof_return_at, ReturnKind, ReturnSpec, RoofReturn,
@@ -37,7 +39,9 @@ pub use hole::{
     roof_plane_with_holes, HoleKind, RoofHole, RoofPolygonWithHoles, Skylight, SkylightSpec,
 };
 pub use join::join_planes;
-pub use spec::{build_roof_with_specs, EdgeRoofSpec};
+pub use spec::{
+    build_roof_at_plate, build_roof_with_specs, flat_roof_plane, plate_baseline, EdgeRoofSpec,
+};
 pub use staged::DEFAULT_BREAK_FRACTION;
 
 use plan_core::geometry::polygon_area;

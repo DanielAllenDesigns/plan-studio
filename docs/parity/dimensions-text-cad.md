@@ -1,6 +1,6 @@
 # Parity spec: dimensions, text, CAD drawing, layers
 
-> Status (2026-10-08): 121 ids: 68 Works, 41 Partial, 11 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+> Status (2026-10-08): 121 ids: 79 Works, 37 Partial, 4 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
 
 Reference: Chief Architect X18 dimension, text and CAD tools, layers and layer sets, Reference Display. Source:
 Chief's Reference Manual and documented behavior, plus the tool names and hotkeys captured in

@@ -107,7 +107,10 @@ pub fn move_terrain_element(t: &mut Terrain, hit: TerrainHit, delta: Point) -> b
         TerrainHit::Line(i) => t
             .elevation_lines
             .get_mut(i)
-            .map(|l| shift(&mut l.points, delta))
+            .map(|l| {
+                shift(&mut l.points, delta);
+                shift(&mut l.control, delta);
+            })
             .is_some(),
         TerrainHit::Region(i) => t
             .elevation_regions
@@ -122,7 +125,10 @@ pub fn move_terrain_element(t: &mut Terrain, hit: TerrainHit, delta: Point) -> b
         TerrainHit::Feature(i) => t
             .features
             .get_mut(i)
-            .map(|f| shift(&mut f.polygon, delta))
+            .map(|f| {
+                shift(&mut f.polygon, delta);
+                shift(&mut f.control, delta);
+            })
             .is_some(),
         TerrainHit::Road(i) => t
             .roads
@@ -142,7 +148,10 @@ pub fn move_terrain_element(t: &mut Terrain, hit: TerrainHit, delta: Point) -> b
         TerrainHit::Landscape(i) => t
             .landscape
             .get_mut(i)
-            .map(|l| shift(&mut l.points, delta))
+            .map(|l| {
+                shift(&mut l.points, delta);
+                shift(&mut l.control, delta);
+            })
             .is_some(),
     }
 }
@@ -195,7 +204,13 @@ pub fn hit_points(t: &Terrain, hit: TerrainHit) -> Vec<Point> {
         TerrainHit::Line(i) => t
             .elevation_lines
             .get(i)
-            .map(|l| l.points.clone())
+            .map(|l| {
+                if l.control.is_empty() {
+                    l.points.clone()
+                } else {
+                    l.control.clone()
+                }
+            })
             .unwrap_or_default(),
         TerrainHit::Region(i) => t
             .elevation_regions
@@ -210,7 +225,13 @@ pub fn hit_points(t: &Terrain, hit: TerrainHit) -> Vec<Point> {
         TerrainHit::Feature(i) => t
             .features
             .get(i)
-            .map(|f| f.polygon.clone())
+            .map(|f| {
+                if f.control.is_empty() {
+                    f.polygon.clone()
+                } else {
+                    f.control.clone()
+                }
+            })
             .unwrap_or_default(),
         TerrainHit::Road(i) => t
             .roads
@@ -226,7 +247,13 @@ pub fn hit_points(t: &Terrain, hit: TerrainHit) -> Vec<Point> {
         TerrainHit::Landscape(i) => t
             .landscape
             .get(i)
-            .map(|l| l.points.clone())
+            .map(|l| {
+                if l.control.is_empty() {
+                    l.points.clone()
+                } else {
+                    l.control.clone()
+                }
+            })
             .unwrap_or_default(),
     }
 }
@@ -253,10 +280,16 @@ pub fn move_terrain_vertex(t: &mut Terrain, hit: TerrainHit, n: usize, to: Point
         TerrainHit::Point(i) => {
             n == 0 && t.elevation_points.get_mut(i).map(|e| e.pos = to).is_some()
         }
-        TerrainHit::Line(i) => t
-            .elevation_lines
-            .get_mut(i)
-            .is_some_and(|l| put(&mut l.points, n, to)),
+        TerrainHit::Line(i) => t.elevation_lines.get_mut(i).is_some_and(|l| {
+            if l.control.is_empty() {
+                put(&mut l.points, n, to)
+            } else {
+                // A spline: the handles are its control points.
+                let moved = put(&mut l.control, n, to);
+                l.reflatten(crate::tools::terrain::SPLINE_SAMPLES);
+                moved
+            }
+        }),
         TerrainHit::Region(i) => t
             .elevation_regions
             .get_mut(i)
@@ -265,10 +298,15 @@ pub fn move_terrain_vertex(t: &mut Terrain, hit: TerrainHit, n: usize, to: Point
             .modifiers
             .get_mut(i)
             .is_some_and(|m| put(&mut m.polygon, n, to)),
-        TerrainHit::Feature(i) => t
-            .features
-            .get_mut(i)
-            .is_some_and(|f| put(&mut f.polygon, n, to)),
+        TerrainHit::Feature(i) => t.features.get_mut(i).is_some_and(|f| {
+            if f.control.is_empty() {
+                put(&mut f.polygon, n, to)
+            } else {
+                let moved = put(&mut f.control, n, to);
+                f.reflatten();
+                moved
+            }
+        }),
         TerrainHit::Road(i) => t
             .roads
             .get_mut(i)
@@ -281,10 +319,16 @@ pub fn move_terrain_vertex(t: &mut Terrain, hit: TerrainHit, n: usize, to: Point
             .walls
             .get_mut(i)
             .is_some_and(|w| put(&mut w.points, n, to)),
-        TerrainHit::Landscape(i) => t
-            .landscape
-            .get_mut(i)
-            .is_some_and(|l| put(&mut l.points, n, to)),
+        TerrainHit::Landscape(i) => t.landscape.get_mut(i).is_some_and(|l| {
+            if l.control.is_empty() {
+                put(&mut l.points, n, to)
+            } else {
+                // A kidney or spline: the handles are its control points.
+                let moved = put(&mut l.control, n, to);
+                l.reflatten();
+                moved
+            }
+        }),
     }
 }
 
@@ -786,5 +830,140 @@ mod element_tests {
         }
         assert_eq!(hit_mesh_id(TerrainHit::Point(1)), 0);
         assert_eq!(hit_for_mesh_id(17), None);
+    }
+
+    #[test]
+    fn kidney_and_spline_handles_are_their_control_points() {
+        let (a, b, c) = (pt(0.0, 0.0), pt(300.0, 0.0), pt(150.0, 100.0));
+        let control = plan_terrain::kidney_control_points(a, b, c).unwrap();
+        let mut t = Terrain::default();
+        let mut bed = Landscape::new(
+            LandscapeKind::GardenBed,
+            ShapeKind::Kidney,
+            plan_terrain::closed_spline(&control),
+        );
+        bed.control = control.clone();
+        t.landscape.push(bed);
+        let hit = TerrainHit::Landscape(0);
+        // Handles sit on the control points, not the 80 flattened ones.
+        assert_eq!(hit_points(&t, hit), control);
+        let outline = t.landscape[0].points.clone();
+        assert!(move_terrain_vertex(&mut t, hit, 2, pt(200.0, -80.0)));
+        assert_eq!(t.landscape[0].control[2], pt(200.0, -80.0));
+        assert_ne!(t.landscape[0].points, outline, "the curve followed");
+        assert_eq!(t.landscape[0].points.len(), outline.len());
+        assert!(t.landscape[0].points[2 * 8].dist(pt(200.0, -80.0)) < 1e-9);
+        // The whole element moves with its controls.
+        assert!(move_terrain_element(&mut t, hit, pt(10.0, 10.0)));
+        assert_eq!(t.landscape[0].control[2], pt(210.0, -70.0));
+        assert!(t.landscape[0].points[2 * 8].dist(pt(210.0, -70.0)) < 1e-9);
+
+        // A kidney feature and an elevation spline work the same way.
+        t.features.push(Feature {
+            kind: plan_terrain::FeatureKind::Kidney,
+            polygon: plan_terrain::closed_spline(&control),
+            control: control.clone(),
+            ..Feature::default()
+        });
+        assert!(move_terrain_vertex(
+            &mut t,
+            TerrainHit::Feature(0),
+            0,
+            pt(310.0, 5.0)
+        ));
+        assert!(t.features[0].polygon[0].dist(pt(310.0, 5.0)) < 1e-9);
+        t.elevation_lines.push(plan_terrain::ElevationLine::spline(
+            vec![pt(0.0, 0.0), pt(100.0, 50.0), pt(200.0, 0.0)],
+            24.0,
+            0.5,
+            8,
+        ));
+        let line = TerrainHit::Line(0);
+        assert_eq!(hit_points(&t, line).len(), 3);
+        assert!(move_terrain_vertex(&mut t, line, 1, pt(100.0, 90.0)));
+        assert!(t.elevation_lines[0].points[8].dist(pt(100.0, 90.0)) < 1e-9);
+    }
+
+    #[test]
+    fn auto_rebuild_off_keeps_the_built_surface_until_build_terrain_runs_again() {
+        use crate::editor::site_view::{edit_terrain, terrain_key, terrain_view};
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        let elevation = |cx: &EditorContext| {
+            crate::editor::site_view::terrain_elevation_at(&cx.project, pt(600.0, 480.0))
+        };
+        edit_terrain(&mut cx, "Build", |r| {
+            r.terrain.perimeter = Terrain::default().perimeter;
+            r.built = true;
+            r.terrain
+                .elevation_points
+                .push(plan_terrain::ElevationPoint {
+                    pos: pt(600.0, 480.0),
+                    z: 24.0,
+                });
+            r.built_key = terrain_key(r);
+        });
+        assert_eq!(elevation(&cx).map(f64::round), Some(24.0));
+
+        // With auto rebuild on, an edit shows at once.
+        edit_terrain(&mut cx, "Edit", |r| r.terrain.elevation_points[0].z = 48.0);
+        assert_eq!(elevation(&cx).map(f64::round), Some(48.0));
+        assert!(!terrain_view(&cx.project).unwrap().stale);
+
+        // Off: the edit leaves the surface as built and marks the view stale.
+        edit_terrain(&mut cx, "Spec", |r| {
+            let mut draft = r.clone();
+            draft.auto_rebuild = false;
+            r.apply_spec(&draft);
+        });
+        assert_eq!(elevation(&cx).map(f64::round), Some(48.0));
+        edit_terrain(&mut cx, "Edit", |r| r.terrain.elevation_points[0].z = 96.0);
+        assert_eq!(
+            elevation(&cx).map(f64::round),
+            Some(48.0),
+            "still the built surface"
+        );
+        assert!(terrain_view(&cx.project).unwrap().stale);
+        // Build Terrain brings it up to date.
+        crate::tools::terrain::build_terrain_now(&mut cx).unwrap();
+        assert_eq!(elevation(&cx).map(f64::round), Some(96.0));
+        assert!(!terrain_view(&cx.project).unwrap().stale);
+        // The switch survives a save.
+        let back = plan_core::Project::from_json(&cx.project.to_json().unwrap()).unwrap();
+        assert!(
+            !crate::editor::site_view::load_terrain(&back)
+                .unwrap()
+                .auto_rebuild
+        );
+    }
+
+    #[test]
+    fn the_building_pad_comes_from_the_walls_and_the_first_floor() {
+        use crate::editor::site_view::auto_building_pad;
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        assert!(!auto_building_pad(&mut cx), "no building yet");
+        assert!(cx.status.contains("walls"));
+        for (a, b) in [
+            (pt(500.0, 400.0), pt(700.0, 400.0)),
+            (pt(700.0, 400.0), pt(700.0, 560.0)),
+            (pt(700.0, 560.0), pt(500.0, 560.0)),
+            (pt(500.0, 560.0), pt(500.0, 400.0)),
+        ] {
+            cx.project
+                .add_wall(0, a, b, 6.0, 109.0, plan_core::WallKind::Exterior);
+        }
+        assert!(auto_building_pad(&mut cx));
+        let rec = crate::editor::site_view::load_terrain(&cx.project).unwrap();
+        let pad = rec.terrain.building_pad.as_ref().unwrap();
+        assert!(pad.footprint.len() >= 4);
+        assert_eq!(pad.first_floor, Some(cx.project.floors[0].elevation));
+        assert_eq!(
+            rec.terrain.building_pad_elevation,
+            cx.project.floors[0].elevation - rec.terrain.subfloor_height_above_terrain
+        );
+        // Same walls, same pad: nothing changes and there is no new undo step.
+        let undo = cx.undo_label().map(str::to_string);
+        assert!(!auto_building_pad(&mut cx));
+        assert_eq!(cx.undo_label().map(str::to_string), undo);
+        assert_eq!(cx.undo().as_deref(), Some("Building Pad"));
     }
 }

@@ -24,6 +24,18 @@ mod s09_scene_3d;
 mod s10_documents;
 mod s11_every_tool;
 mod s12_hotkeys;
+mod s13_opening_variants;
+mod s14_wall_edit_and_snaps;
+mod s15_edit_commands;
+mod s16_walls_typed_and_edit;
+mod s17_dimensions;
+mod s18_doors_windows_3d;
+mod s19_rooms_floors;
+mod s20_roofs_3d;
+mod s21_layout_print;
+mod s22_files;
+mod s23_cabinets_underlays_prefs;
+mod s24_view3d_picking_textures;
 
 use crate::editor::{EditorContext, EditorRequest, ObjectRef};
 use crate::tools::{KeyEvent, PointerEvent, ToolId, ToolResult};

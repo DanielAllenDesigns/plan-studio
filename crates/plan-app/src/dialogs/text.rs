@@ -48,6 +48,11 @@ struct TextForm {
     layers: Vec<String>,
     font: String,
     fields: Fields,
+    /// The plan's text styles, the style of the layer the text is on, and
+    /// the sheet's paper scale (inches per foot): the size on paper (TXT-2).
+    style_defs: plan_core::TextStyles,
+    layer_style: String,
+    ipf: f64,
 }
 
 impl TextDialog {
@@ -68,6 +73,9 @@ impl TextDialog {
                 layers,
                 font,
                 fields: Fields::default(),
+                style_defs: plan_core::TextStyles::default(),
+                layer_style: String::new(),
+                ipf: 0.25,
             },
         }
     }
@@ -81,6 +89,21 @@ impl TextDialog {
         self.form.orig_attrs = attrs.clone();
         self.form.attrs = attrs;
         self.form.styles = styles;
+        self
+    }
+
+    /// The text styles, the text style of the object's layer and the sheet
+    /// scale in inches per foot, so the dialog can say how big the text is
+    /// on paper (a printed-size style holds its size at any scale).
+    pub fn with_sizing(
+        mut self,
+        styles: &plan_core::TextStyles,
+        layer_style: &str,
+        ipf: f64,
+    ) -> Self {
+        self.form.style_defs = styles.clone();
+        self.form.layer_style = layer_style.to_string();
+        self.form.ipf = ipf;
         self
     }
 
@@ -158,13 +181,24 @@ pub fn open_for(cx: &EditorContext, o: ObjectRef) -> Option<TextDialog> {
         .into_iter()
         .map(str::to_string)
         .collect();
+    let layer_style = cx
+        .layers()
+        .get(&obj.layer)
+        .map(|l| l.text_style.clone())
+        .unwrap_or_default();
     Some(
-        TextDialog::new(obj.clone(), layers, cx.defaults.text.font.clone()).with_attrs(
-            cx.floor()
-                .cad_attrs(id)
-                .unwrap_or_else(|| CadAttrs::new(id)),
-            styles,
-        ),
+        TextDialog::new(obj.clone(), layers, cx.defaults.text.font.clone())
+            .with_attrs(
+                cx.floor()
+                    .cad_attrs(id)
+                    .unwrap_or_else(|| CadAttrs::new(id)),
+                styles,
+            )
+            .with_sizing(
+                &cx.project.text_styles,
+                &layer_style,
+                cx.sheet.scale.inches_per_foot(),
+            ),
     )
 }
 
@@ -304,7 +338,35 @@ impl TextForm {
         };
         section(ui, "Size");
         self.fields.length_row(ui, "Text Height", "height", height);
-        ui.weak("Plan inches; the printed size follows the plan scale.");
+        // The style the text is set in decides whether that height is a
+        // plan height or follows the paper size.
+        let name = self
+            .attrs
+            .text_style
+            .clone()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| self.layer_style.clone());
+        match self.style_defs.resolve(&name) {
+            Some(st) if st.is_printed_size() => {
+                let plan_h = st.text_height(*height, self.ipf);
+                let on_paper = plan_h * self.ipf / 12.0;
+                ui.weak(format!(
+                    "Printed Size style \"{}\": {on_paper:.3}\" on paper at any scale, {} in the plan at this sheet scale.",
+                    st.name,
+                    fmt_short(plan_h)
+                ));
+            }
+            Some(st) => {
+                let on_paper = *height * self.ipf / 12.0;
+                ui.weak(format!(
+                    "Character Height style \"{}\": plan inches, {on_paper:.3}\" on paper at this sheet scale.",
+                    st.name
+                ));
+            }
+            None => {
+                ui.weak("Plan inches; the printed size follows the plan scale.");
+            }
+        }
         section(ui, "Alignment");
         ui.horizontal(|ui| {
             dis_radio(ui, "Left", true);

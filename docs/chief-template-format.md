@@ -394,3 +394,18 @@ Every full room type definition (53 of 54 in the x17 plan, 7 in each stock plan 
 * Floor, foundation, rough ceiling and stem wall heights; the second room-type `f64` (23.25 and friends); roof and floor finish materials.
 * Layout page, box, scale and title block geometry; the `Page Template` object's contents.
 * Material categories (the strings before the name), material textures (referenced by GUID in the tail table) and the 404 unnamed materials.
+
+## 8. Project files (geometry): see `docs/chief-plan-format.md`
+
+A project `.plan` is the same object stream with the template's objects at the front (materials, wall types, text styles, defaults) and the model after them. Phase D (`plan_chiefplan::import`) adds these classes, with offsets, evidence and confidence in `docs/chief-plan-format.md`:
+
+| Class | Meaning | Confidence |
+|---|---|---|
+| 30 | floor (elevation at +0x278, ceiling at +0x281; X17: +0x1FC, +0x205) | High |
+| 6 | wall; children 31 (line), 40 (arc line), 4 (point), 215 (wall type copy), 9, 10 (openings) | High |
+| 9, 10 | door, window: centre, width, height, head height; door hinge and swing bytes | High / Medium |
+| 23 (inside a floor) | room: type, own name, bounding box centre | Medium |
+| 24, 25 | dimension string points; text note position and string | Medium |
+
+Two corrections to this document found while reading projects: wall type layer records are **518 bytes in X18 files but 377 bytes in X17 files** (cumulative layer starts instead of thicknesses, section 4.2 of the plan notes), and a wall refers to its type by the serial id written before the class 215 object (`01 <u32 id> 00 00 00 00`), not by name or GUID. This also partly answers the open question of section 7.7: the template's own four class 30 floors hold Daniel's per-floor defaults as the triple (elevation, ceiling, third value): foundation (-125.875, 109.125, 111.625), first floor (0, 121.125, 111.625), second (137.875, 109.125, 114.5), third (252.5, 97.125, 23.25). Foundation, rough ceiling and stem wall heights as separate fields, floor names, door styles and dimension line offsets are still unknown.
+

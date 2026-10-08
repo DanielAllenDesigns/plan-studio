@@ -45,15 +45,20 @@ pub mod geometry;
 pub mod groups;
 pub mod history;
 pub mod images;
+pub mod io;
 pub mod joins;
 pub mod layer_sets;
 pub mod layers;
 pub mod model;
+pub mod object_materials;
+pub mod opening_symbol;
 pub mod openings;
 pub mod rooms;
 pub mod schedules;
 pub mod symbols;
 pub mod text_styles;
+pub mod transform;
+pub mod underlay;
 pub mod units;
 pub mod walls;
 
@@ -62,8 +67,13 @@ pub use camera::{CameraKind, CameraObject};
 pub use defaults::{
     DimensionDefaultSet, EditingDefaults, PlanDefaults, WallConnectDefaults, WallLayer, WallTypeDef,
 };
-pub use dimension::{auto_exterior_dimensions, DimFormat, Dimension, DimensionKind};
-pub use export::dxf::{write_dxf, DxfExport};
+pub use dimension::{
+    align_dimensions, auto_exterior_dimensions, auto_exterior_set, auto_nkba_dimensions,
+    distribute_dimensions, AutoGroup, AutoString,
+    DimFormat, Dimension, DimensionKind, ExteriorSetup, LocateGroup, NkbaItem, NkbaKind,
+    NkbaSetup, ObjectLocate, OpeningLocate, WallLocate,
+};
+pub use export::dxf::{write_dxf, DxfAnnotation, DxfExport};
 pub use extras::{
     AreaKind, ElevationRender, MoldingKind, MoldingRef, OpeningExtras, RoomFill, RoomLabelOptions,
     SectionLine, WallExtras,
@@ -80,7 +90,10 @@ pub use joins::{
 pub use layer_sets::{LayerSetDef, LayerSets, LayerState, SavedPlanView};
 pub use layers::{Layer, LayerSet, LineStyle};
 pub use model::*;
-pub use openings::{Casing, OpeningStyle};
+pub use openings::{
+    exterior_sign, Casing, Jamb, LabelMode, LabelPlacement, LabelSettings, OpeningLabelDefaults,
+    OpeningStyle, OpeningVariantDefaults, SizeFormat, SizeStyle,
+};
 pub use rooms::{detect_rooms, detect_rooms_inner, Room};
 pub use symbols::PlacedSymbol;
 pub use text_styles::{TextStyle, TextStyles};

@@ -19,11 +19,13 @@ use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::handles::{self, hit_handle, HandleKind};
 use crate::editor::ops::{self, cad_center, JOIN_TOL};
 use crate::editor::rooms_edit;
-use crate::editor::selection::{extra_in_rect, hit_test_cx, layer_of};
+use crate::editor::selection::{expand_groups, extra_in_rect, hit_test_cx, layer_of};
 use crate::editor::snap::snap_to_grid;
 use crate::editor::stairs_view::{self, StairHandleKind};
+use crate::editor::transform;
 use crate::editor::{
-    details_view, foundation_view, framing_view, placed, roof_view, site_view, tempdim,
+    behaviors, details_view, foundation_view, framing_view, opening_edit, opening_view, placed,
+    roof_view, site_view, tempdim, wall_edit,
 };
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, EditorRequest, ObjectRef};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
@@ -36,7 +38,7 @@ use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::{
     dist_to_segment, point_in_polygon, project_on_segment, segment_intersection, Point,
 };
-use plan_core::{Id, OpeningKind, Project, WallEnd};
+use plan_core::{Id, Jamb, OpeningKind, Project, WallEnd};
 
 /// Pixels the pointer must travel before a press becomes a drag (S-26).
 const DRAG_THRESHOLD_PX: f32 = 3.0;
@@ -46,7 +48,13 @@ enum Op {
     /// Perpendicular move of one wall (free with Alt).
     WallMove(Id),
     WallEnd(Id, WallEnd),
+    /// The bulge handle of a curved wall (W-67).
+    WallBulge(Id),
     OpeningSlide(Id),
+    /// A jamb of an opening: the other jamb stays (DW-26).
+    OpeningResize(Id, Jamb),
+    /// The label of an opening, moved off its spot (DW-63).
+    OpeningLabel(Id),
     /// Offset of a dimension line.
     DimOffset(Id),
     CadRotate(Id),
@@ -54,6 +62,9 @@ enum Op {
     CadVertex(Id, HandleKind),
     /// Plain translate of the whole selection.
     Group,
+    /// The Rotate handle of a multi-object selection: turns every object
+    /// about the point (S-101, S-102).
+    GroupRotate(Point),
     /// Click-only handle: flip the door swing.
     Swing(Id),
     /// A handle (or the body, `Move`) of a stair.
@@ -82,11 +93,15 @@ impl Op {
         match self {
             Op::WallMove(_) => "Move Wall",
             Op::WallEnd(..) => "Stretch Wall",
+            Op::WallBulge(_) => "Curve Wall",
             Op::OpeningSlide(_) | Op::Swing(_) => "Move Opening",
+            Op::OpeningResize(..) => "Resize Opening",
+            Op::OpeningLabel(_) => "Move Opening Label",
             Op::DimOffset(_) => "Move Dimension",
             Op::CadRotate(_) => "Rotate",
             Op::CadVertex(..) => "Reshape",
             Op::Group => "Move Objects",
+            Op::GroupRotate(_) => "Rotate Objects",
             Op::Stair(_, k) => stairs_view::drag_label(k),
             Op::Cabinet(..) => "Edit Cabinet",
             Op::Symbol(..) => "Edit Symbol",
@@ -179,7 +194,35 @@ fn slide_opening_by(cx: &mut EditorContext, id: Id, delta: Point) {
         return;
     };
     let center = snap_unit_round(o.center_offset + delta.dot(dir), unit);
-    ops::place_opening_at(&mut cx.project, fl, id, o.wall_id, center);
+    // Slides the whole mulled unit when the window belongs to one.
+    cx.project.slide_opening(fl, id, center);
+}
+
+/// While an opening is dragged, a typed length sets the gap between its
+/// nearer jamb and the wall end or neighbouring opening on that side (DW-12);
+/// the center that makes it so, when a length was typed. Measured on the
+/// project as it was before the drag (`cx.floor()` is that copy while a drag
+/// is applied).
+fn typed_slide_center(cx: &EditorContext, id: Id) -> Option<f64> {
+    let v = tempdim::typed_value(cx)?;
+    let f = cx.floor();
+    let o = f.openings.iter().find(|o| o.id == id)?;
+    let w = f.wall(o.wall_id)?;
+    let dims = tempdim::opening_temp_dims(
+        f,
+        w,
+        o,
+        ObjectRef::Opening(id),
+        &tempdim::TempLocate::of(cx),
+    );
+    let gap = |kind| dims.iter().find(|d| d.kind == kind).map(|d| d.value);
+    let (start, end) = (
+        gap(tempdim::TempDimKind::OpeningToStart)?,
+        gap(tempdim::TempDimKind::OpeningToEnd)?,
+    );
+    // The side the opening is nearer to is the one being set.
+    let delta = if start <= end { v - start } else { end - v };
+    Some(o.center_offset + delta)
 }
 
 /// Translates every selected object by `delta`.
@@ -427,8 +470,12 @@ impl SelectTool {
             (ObjectRef::Wall(id), HandleKind::ResizeStart) => Op::WallEnd(id, WallEnd::Start),
             (ObjectRef::Wall(id), HandleKind::ResizeEnd) => Op::WallEnd(id, WallEnd::End),
             (ObjectRef::Wall(id), HandleKind::PerpendicularMove) => Op::WallMove(id),
+            (ObjectRef::Wall(id), HandleKind::Bulge) => Op::WallBulge(id),
             (ObjectRef::Opening(id), HandleKind::PerpendicularMove) => Op::OpeningSlide(id),
             (ObjectRef::Opening(id), HandleKind::Swing) => Op::Swing(id),
+            (ObjectRef::Opening(id), HandleKind::Label) => Op::OpeningLabel(id),
+            (ObjectRef::Opening(id), HandleKind::ResizeStart) => Op::OpeningResize(id, Jamb::Start),
+            (ObjectRef::Opening(id), HandleKind::ResizeEnd) => Op::OpeningResize(id, Jamb::End),
             (ObjectRef::Dimension(id), HandleKind::PerpendicularMove) => Op::DimOffset(id),
             (ObjectRef::Cad(_) | ObjectRef::Text(_), HandleKind::Move) => Op::Group,
             (ObjectRef::Cad(id) | ObjectRef::Text(id), HandleKind::Rotate) => Op::CadRotate(id),
@@ -447,8 +494,37 @@ impl SelectTool {
         let fl = cx.floor;
         let alt = p.modifiers.alt;
         let total = p.world - a.start;
+        // Edit Behaviors (S-65) that replace the plain move or reshape.
+        let handled = match a.op {
+            Op::Group => {
+                let items = cx.selection.items.clone();
+                behaviors::apply_group(cx, &items, a.start, p.world, p.modifiers.shift)
+            }
+            Op::CadVertex(id, kind) => behaviors::apply_vertex(cx, id, kind, p.world),
+            _ => false,
+        };
+        if handled {
+            cx.mark_dirty();
+            return;
+        }
         match a.op {
             Op::WallMove(id) => move_wall(cx, id, total, alt),
+            Op::WallBulge(id) => {
+                let Some(w) = cx.floor().wall(id).cloned() else {
+                    return;
+                };
+                // The bulge is the pointer's distance from the chord midpoint
+                // along the wall normal, on the grid unless Alt is held.
+                let mid = Point::lerp(w.start, w.end, 0.5);
+                let mut b = (p.world - mid).dot(w.normal());
+                if !alt {
+                    b = snap_unit_round(b, cx.snap_unit());
+                }
+                let max = w.length() * 0.5;
+                b = b.clamp(-max, max);
+                let curve = (b.abs() >= 0.5).then_some(plan_core::WallCurve { bulge: b });
+                cx.project.set_wall_curve(fl, id, curve);
+            }
             Op::WallEnd(id, end) => {
                 let Some(w) = cx.floor().wall(id).cloned() else {
                     return;
@@ -460,8 +536,11 @@ impl SelectTool {
                 };
                 let s = cx.snap_at(p.world, Some(fixed), alt, &a.exclude);
                 cx.last_snap = Some(s);
-                if s.point.dist(fixed) >= 1.0 {
-                    ops::move_wall_end_joined(&mut cx.project, fl, id, end, s.point);
+                // Shift holds the angle increment; a typed length and angle
+                // replace the pointer's (W-15..W-18).
+                let to = wall_edit::drag_end(cx, fixed, p.world, s.point, p.modifiers.shift, alt);
+                if to.dist(fixed) >= 1.0 {
+                    ops::move_wall_end_joined(&mut cx.project, fl, id, end, to);
                 }
             }
             Op::OpeningSlide(id) => {
@@ -484,9 +563,38 @@ impl SelectTool {
                     let (t, _) = project_on_segment(p.world, s0, s1);
                     let center = snap_unit_round(t * len, unit);
                     ops::place_opening_at(&mut cx.project, fl, id, wid, center);
+                } else if let Some(center) = typed_slide_center(cx, id) {
+                    cx.project.slide_opening(fl, id, center);
                 } else {
                     slide_opening_by(cx, id, total);
                 }
+            }
+            Op::OpeningResize(id, jamb) => {
+                let unit = cx.snap_unit();
+                let Some(o) = cx.floor().openings.iter().find(|o| o.id == id).cloned() else {
+                    return;
+                };
+                let Some(w) = cx.floor().wall(o.wall_id).cloned() else {
+                    return;
+                };
+                let t = p.world.sub(w.start).dot(w.direction());
+                let mut edge = if alt { t } else { snap_unit_round(t, unit) };
+                // With the standard widths on, the width lands on the nearest
+                // manufacturer width of the style (DW-27); Alt skips it.
+                if !alt {
+                    edge = opening_edit::standard_widths(cx, o.kind).snap_edge(&o, jamb, edge);
+                }
+                // A typed number is the new width (the other jamb stays).
+                if let Some(width) = tempdim::typed_value(cx) {
+                    edge = match jamb {
+                        Jamb::Start => o.end_offset() - width,
+                        Jamb::End => o.start_offset() + width,
+                    };
+                }
+                cx.project.resize_opening(fl, id, jamb, edge);
+            }
+            Op::OpeningLabel(id) => {
+                opening_view::drag_label(cx, id, p.world);
             }
             Op::DimOffset(id) => {
                 let unit = cx.snap_unit();
@@ -533,7 +641,20 @@ impl SelectTool {
             }
             Op::Group => {
                 let items = cx.selection.items.clone();
-                move_group(cx, &items, total);
+                move_group(cx, &items, behaviors::group_delta(cx, total));
+            }
+            Op::GroupRotate(center) => {
+                let mut angle = (p.world - center).angle() - (a.start - center).angle();
+                if !alt {
+                    let inc = cx.defaults.grid.angle_snap_deg.max(1.0).to_radians();
+                    angle = (angle / inc).round() * inc;
+                }
+                let items = cx.selection.items.clone();
+                transform::apply_xform(
+                    cx,
+                    &items,
+                    &plan_core::transform::Xform::rotate(center, angle),
+                );
             }
             Op::Swing(_) => {}
             Op::Stair(id, kind) => {
@@ -705,7 +826,18 @@ impl SelectTool {
                 );
             }
         }
-        cx.begin_change(op.label());
+        let label = if matches!(op, Op::Group) {
+            behaviors::group_label(cx)
+        } else {
+            op.label()
+        };
+        cx.begin_change(label);
+        if matches!(
+            op,
+            Op::WallEnd(..) | Op::OpeningSlide(_) | Op::OpeningResize(..)
+        ) {
+            cx.typed_input.arm();
+        }
         self.drag = Drag::Active(Box::new(Active {
             op,
             original: cx.project.clone(),
@@ -716,6 +848,8 @@ impl SelectTool {
 
     fn finish(&mut self, cx: &mut EditorContext, a: Active) -> ToolResult {
         let fl = cx.floor;
+        cx.typed_input.disarm();
+        cx.readout = None;
         // Dropping a wall end on the middle of another wall splits it there.
         if let Op::WallEnd(id, end) = a.op {
             if let Some(w) = cx.floor().wall(id) {
@@ -744,6 +878,10 @@ impl SelectTool {
         if matches!(a.op, Op::Group | Op::Symbol(..)) {
             crate::editor::placed::sync_distributions(cx);
         }
+        // Moved or resized cabinets regenerate the countertop they join (CB-14).
+        if matches!(a.op, Op::Group | Op::Cabinet(..)) {
+            crate::editor::placed::rejoin_if_enabled(cx);
+        }
         cx.last_snap = None;
         cx.mark_dirty();
         if a.original.to_json().ok() == cx.project.to_json().ok() {
@@ -753,7 +891,11 @@ impl SelectTool {
         if let Op::Camera(id, _) = a.op {
             Outbox::global().post(ViewRequest::RefreshCamera(id));
         }
-        ToolResult::committed(a.op.label())
+        ToolResult::committed(if matches!(a.op, Op::Group) {
+            behaviors::group_label(cx)
+        } else {
+            a.op.label()
+        })
     }
 
     fn cancel_drag(&mut self, cx: &mut EditorContext) -> bool {
@@ -761,6 +903,8 @@ impl SelectTool {
             Drag::Active(a) => {
                 cx.project = a.original;
                 cx.cancel_change();
+                cx.typed_input.disarm();
+                cx.readout = None;
                 cx.last_snap = None;
                 cx.mark_dirty();
                 true
@@ -816,6 +960,38 @@ impl SelectTool {
         ToolResult::committed("Nudge")
     }
 
+    /// Typed length and angle while a wall end is dragged (W-15, W-16): the
+    /// drag follows the typed values, Enter drops the end there.
+    fn typed_key(&mut self, cx: &mut EditorContext, k: &KeyEvent) -> Option<ToolResult> {
+        use crate::editor::typed_input::TypedKey;
+        let Drag::Active(a) = &self.drag else {
+            return None;
+        };
+        if !matches!(
+            a.op,
+            Op::WallEnd(..) | Op::OpeningSlide(_) | Op::OpeningResize(..)
+        ) || !cx.typed_input.is_armed()
+        {
+            return None;
+        }
+        let res = cx.typed_input.handle(k.key, k.text.as_deref());
+        if res == TypedKey::Ignored {
+            return None;
+        }
+        if let Drag::Active(a) = std::mem::replace(&mut self.drag, Drag::None) {
+            let at = cx.cursor_world.unwrap_or(a.start);
+            let p = PointerEvent::at(cx, at)
+                .with_modifiers(k.modifiers)
+                .with_down(true);
+            self.apply(cx, &a, &p);
+            if res == TypedKey::Commit {
+                return Some(self.finish(cx, *a));
+            }
+            self.drag = Drag::Active(a);
+        }
+        Some(ToolResult::consumed())
+    }
+
     fn key_while_editing(&mut self, cx: &mut EditorContext, k: &KeyEvent) -> ToolResult {
         if let Some(t) = &k.text {
             let ok: String = t
@@ -858,13 +1034,43 @@ impl Tool for SelectTool {
 
     fn deactivate(&mut self, cx: &mut EditorContext) {
         self.cancel_drag(cx);
+        transform::cancel_mode(cx);
+        wall_edit::cancel_break();
         cx.temp.cancel();
         cx.hover = None;
     }
 
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        // A hanging Paste, Point to Point Move, Reflect, Center or Make
+        // Parallel takes the click.
+        if let Some(res) = transform::mode_pointer_down(cx, &p) {
+            return res;
+        }
+        // The Rotate handle of a multi-object selection (S-101).
+        if let Some((center, handle)) = transform::group_rotate_handle(cx) {
+            if p.world.dist(handle) <= cx.pick_tol() * 1.5 {
+                self.drag = Drag::Armed {
+                    op: Op::GroupRotate(center),
+                    start: p.world,
+                    screen: p.screen,
+                };
+                return ToolResult::consumed();
+            }
+        }
+        // Break Wall waits for the click that sets the break point (W-43).
+        if wall_edit::break_pending() {
+            return if wall_edit::break_click(cx, p.world) {
+                ToolResult::committed("Break Wall")
+            } else {
+                ToolResult::consumed()
+            };
+        }
         // Space Planning boxes sit on top of the plan and are dragged first.
         if rooms_edit::space_pointer_down(cx, p.world) {
+            return ToolResult::consumed();
+        }
+        // A room label picks its room and drags (R-44).
+        if rooms_edit::label_pointer_down(cx, p.world) {
             return ToolResult::consumed();
         }
         self.room_click = None;
@@ -892,12 +1098,20 @@ impl Tool for SelectTool {
             .filter(|o| !matches!(o, ObjectRef::Room(_)));
         if let Some(top) = top_hit {
             rooms_edit::clear_room_selection();
+            // A click on a group member names the whole group (S-35).
+            let members = expand_groups(cx, &[top]);
             if shift {
-                cx.selection.toggle(top);
+                if cx.selection.contains(top) {
+                    cx.selection.items.retain(|o| !members.contains(o));
+                } else {
+                    for m in members {
+                        cx.selection.add(m);
+                    }
+                }
                 return ToolResult::consumed();
             }
             if !cx.selection.contains(top) {
-                cx.selection.set(top);
+                cx.selection.items = members;
             }
             let op = if cx.selection.len() == 1 {
                 single_op_for_body(top)
@@ -926,8 +1140,13 @@ impl Tool for SelectTool {
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        transform::mode_pointer_move(&p);
         if p.down && rooms_edit::space_dragging() {
             rooms_edit::space_pointer_move(p.world);
+            return ToolResult::consumed();
+        }
+        if p.down && rooms_edit::label_dragging() {
+            rooms_edit::label_pointer_move(cx, p.world);
             return ToolResult::consumed();
         }
         if !p.down {
@@ -977,16 +1196,28 @@ impl Tool for SelectTool {
         if rooms_edit::space_pointer_up() {
             return ToolResult::consumed();
         }
+        if rooms_edit::label_pointer_up() {
+            return ToolResult::consumed();
+        }
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Active(a) => self.finish(cx, *a),
             Drag::Armed {
                 op: Op::Swing(id), ..
             } => {
+                // Click reverses the swing; Shift-click moves the hinge (DW-33).
+                let hinge = p.modifiers.shift;
                 if cx.check_unlocked(ObjectRef::Opening(id)) {
                     cx.selection.set(ObjectRef::Opening(id));
-                    cx.reverse_swing();
+                    if hinge {
+                        cx.begin_change("Flip Hinge");
+                        let fl = cx.floor;
+                        cx.project.flip_hinge(fl, id);
+                        cx.mark_dirty();
+                    } else {
+                        cx.reverse_swing();
+                    }
                 }
-                ToolResult::committed("Reverse Swing")
+                ToolResult::committed(if hinge { "Flip Hinge" } else { "Reverse Swing" })
             }
             Drag::Marquee {
                 start, screen, add, ..
@@ -1037,6 +1268,17 @@ impl Tool for SelectTool {
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
         if cx.temp.editing.is_some() {
             return self.key_while_editing(cx, &k);
+        }
+        if let Some(r) = self.typed_key(cx, &k) {
+            return r;
+        }
+        // Esc ends a hanging Paste or a click-driven edit mode.
+        if k.is(Key::Escape) && transform::mode_escape(cx) {
+            return ToolResult::consumed();
+        }
+        if k.is(Key::Escape) && wall_edit::cancel_break() {
+            cx.status.clear();
+            return ToolResult::consumed();
         }
         if k.is(Key::Escape) {
             if self.cancel_drag(cx) {
@@ -1098,6 +1340,10 @@ impl Tool for SelectTool {
             tempdim::draw(&cx.temp, painter, cam, pal, &cx.dim_format());
         }
         draw_terrain_selection(cx, painter, cam);
+        transform::draw_mode_overlay(cx, painter, cam);
+        if !transform::mode_active() {
+            transform::draw_group_rotate_handle(cx, painter, cam);
+        }
         let hs = handles::handles_for(cx, cam.px_per_in);
         handles::draw(&hs, painter, cam, pal);
         if let (Drag::Active(_), Some(s)) = (&self.drag, cx.last_snap) {
@@ -1283,6 +1529,107 @@ mod tests {
         assert_eq!(cx.selection.single(), Some(ObjectRef::Opening(o)));
         let op = cx.floor().openings.iter().find(|x| x.id == o).unwrap();
         assert_eq!(op.center_offset, 80.0);
+    }
+
+    #[test]
+    fn a_jamb_drag_lands_on_a_standard_width_when_snapping_is_on() {
+        let (mut cx, ids) = room();
+        let o = cx
+            .project
+            .add_opening(0, ids[0], 60.0, OpeningKind::Door)
+            .unwrap();
+        let span = |cx: &EditorContext| {
+            let o = cx.floor().openings.iter().find(|x| x.id == o).unwrap();
+            (o.start_offset(), o.end_offset())
+        };
+        let mut t = SelectTool::default();
+        // Spans 42..78 (36 wide). Off: the start jamb follows the grid.
+        cx.selection.set(ObjectRef::Opening(o));
+        drag(&mut t, &mut cx, (42.0, 0.0), (53.0, 0.0));
+        assert_eq!(span(&cx), (53.0, 78.0));
+        cx.undo();
+        // On: 78 - 53 = 25" snaps to the 24" hinged-door width.
+        cx.defaults.opening_variants.widths.snap = true;
+        cx.selection.set(ObjectRef::Opening(o));
+        drag(&mut t, &mut cx, (42.0, 0.0), (53.0, 0.0));
+        assert_eq!(span(&cx), (54.0, 78.0));
+        cx.undo();
+        // Windows use the window list: a 36" window dragged to 44" wide
+        // lands on the 48" size.
+        let win = cx
+            .project
+            .add_opening(0, ids[2], 60.0, OpeningKind::Window)
+            .unwrap();
+        let width = |cx: &EditorContext| {
+            cx.floor()
+                .openings
+                .iter()
+                .find(|x| x.id == win)
+                .unwrap()
+                .width
+        };
+        assert_eq!(width(&cx), 36.0);
+        cx.selection.set(ObjectRef::Opening(win));
+        // The wall runs the other way; drag the end jamb along it.
+        let w = cx.floor().wall(ids[2]).unwrap().clone();
+        let hs = handles::handles_for(&cx, cx.px_per_in);
+        let end = hs
+            .iter()
+            .find(|h| h.kind == HandleKind::ResizeEnd)
+            .unwrap()
+            .pos;
+        let along = w.direction();
+        let to = Point::new(end.x + along.x * 8.0, end.y + along.y * 8.0);
+        drag(&mut t, &mut cx, (end.x, end.y), (to.x, to.y));
+        assert_eq!(width(&cx), 48.0);
+        cx.undo();
+        cx.defaults.opening_variants.widths.snap = false;
+        cx.selection.set(ObjectRef::Opening(win));
+        drag(&mut t, &mut cx, (end.x, end.y), (to.x, to.y));
+        assert_eq!(width(&cx), 44.0);
+    }
+
+    #[test]
+    fn the_label_handle_drags_the_label_as_one_undo_step() {
+        let (mut cx, ids) = room();
+        cx.project.ensure_opening_label_layers();
+        let o = cx
+            .project
+            .add_opening(0, ids[0], 60.0, OpeningKind::Door)
+            .unwrap();
+        cx.refresh();
+        cx.selection.set(ObjectRef::Opening(o));
+        let label_at = |cx: &EditorContext| {
+            handles::handles_for(cx, cx.px_per_in)
+                .into_iter()
+                .find(|h| h.kind == HandleKind::Label)
+                .map(|h| h.pos)
+        };
+        let home = label_at(&cx).expect("a label handle while the label is shown");
+        let mut t = SelectTool::default();
+        drag(
+            &mut t,
+            &mut cx,
+            (home.x, home.y),
+            (home.x + 18.0, home.y - 7.0),
+        );
+        assert_eq!(cx.undo_label(), Some("Move Opening Label"));
+        cx.refresh();
+        let there = label_at(&cx).unwrap();
+        assert!(
+            (there.x - (home.x + 18.0)).abs() < 1e-6 && (there.y - (home.y - 7.0)).abs() < 1e-6
+        );
+        let off = cx.floor().openings[0].extras.spec.label_offset;
+        assert!(off.0.abs() > 1.0 || off.1.abs() > 1.0);
+        // The opening itself did not move.
+        assert_eq!(cx.floor().openings[0].center_offset, 60.0);
+        cx.undo();
+        assert_eq!(cx.floor().openings[0].extras.spec.label_offset, (0.0, 0.0));
+        // No handle while the label layer is hidden.
+        cx.project.layers.set_display("Doors, Labels", false);
+        cx.mark_dirty();
+        cx.refresh();
+        assert!(label_at(&cx).is_none());
     }
 
     #[test]
@@ -2149,5 +2496,35 @@ mod tests {
         let snap = cx.snap_unit();
         t.key(&mut cx, KeyEvent::key(Key::ArrowDown));
         assert_eq!(top(&cx), vec![99.0 - snap, 99.0 - snap]);
+    }
+
+    #[test]
+    fn moving_a_cabinet_with_select_takes_its_joined_top_apart() {
+        use plan_cabinets::Cabinet;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        placed::set_auto_join(true);
+        for x in [0.0, 24.0] {
+            let mut c = Cabinet::base(24.0);
+            c.position = Point::new(x, 0.0);
+            placed::add_cabinet(&mut cx.project, 0, c).unwrap();
+        }
+        assert_eq!(placed::rejoin_countertops(&mut cx), 1);
+        let mut t = SelectTool::default();
+        // Pick the first base cabinet (not the top over it) and drag it away.
+        drag(&mut t, &mut cx, (12.0, 12.0), (12.0, 212.0));
+        let list = placed::load_cabinets(cx.floor());
+        assert_eq!(list.len(), 2, "the top is gone: {list:?}");
+        assert!(list
+            .iter()
+            .all(|c| c.joined.is_empty() && c.countertop.is_some()));
+        assert!(list.iter().any(|c| c.position.y > 100.0));
+        assert_eq!(cx.undo_label(), Some("Edit Cabinet"));
+        cx.undo();
+        assert_eq!(
+            placed::load_cabinets(cx.floor()).len(),
+            3,
+            "undo brings the top back"
+        );
+        placed::set_auto_join(false);
     }
 }

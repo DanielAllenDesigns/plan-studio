@@ -20,8 +20,11 @@
 //!   **back-center** of the item, so the back edge lies on `y = 0` and the
 //!   symbol extends towards `+y`. All other placements are drawn about their
 //!   **center**.
-//! * 3D models are not implemented yet; [`CatalogItem::model3d`] reserves a
-//!   field for a future glTF path.
+//! * User-library items may carry a 3D model ([`Model3d`], `.psm` files named
+//!   by [`CatalogItem::model3d`]); [`manage`] holds folders, favorites and
+//!   recents, [`browse`] the filters and sorting, [`archive`] the export and
+//!   import of a whole user library, [`rules`] the placement rules and
+//!   default layers, and [`preview`] a software-shaded thumbnail of a model.
 //!
 //! ```
 //! use plan_library::{core_catalog, Library};
@@ -32,18 +35,26 @@
 //! assert_eq!(hits[0].id, "core.plumbing.toilet_elongated");
 //! ```
 
+pub mod archive;
+pub mod browse;
 mod catalog;
 pub mod catalog_bath_kitchen;
 pub mod catalog_furniture_exterior;
 pub mod catalog_lighting_electrical;
 pub mod catalog_plants;
+pub mod image;
 mod library;
+pub mod manage;
+pub mod model;
+pub mod preview;
+pub mod rules;
 mod shapes;
 mod starter;
 mod symbol;
 pub mod user;
 
-pub use catalog::{Catalog, CatalogItem, Placement};
+pub use catalog::{Catalog, CatalogItem, ItemKind, Placement};
+pub use model::{Model3d, ModelPart};
 pub use library::{CategoryNode, Library};
 pub use starter::core_catalog;
 pub use symbol::{Bounds, Stroke, Symbol2d};

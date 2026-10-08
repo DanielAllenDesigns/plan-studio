@@ -77,6 +77,58 @@ impl TextStyle {
             _ => self.height_in,
         }
     }
+
+    /// The size on paper, inches: `printed_pt` where set, else what
+    /// `height_in` prints at 1/4" scale.
+    pub fn printed_in(&self) -> f64 {
+        self.printed_pt
+            .unwrap_or(self.height_in * 0.25 / 12.0 * 72.0)
+            / 72.0
+    }
+
+    /// Sets the printed size, paper inches (Chief "Use Printed Size").
+    pub fn set_printed_in(&mut self, printed_in: f64) {
+        self.printed_pt = Some(printed_in * 72.0);
+    }
+
+    /// Chooses between "Printed Size" (`true`: the size on paper holds at
+    /// any scale) and "Character Height" (`false`: the plan height holds).
+    /// The printed size starts from what the plan height prints at 1/4".
+    pub fn use_printed_size(&mut self, on: bool) {
+        if on && self.printed_pt.is_none() {
+            self.printed_pt = Some(self.printed_in() * 72.0);
+        }
+        self.size_by_scale = !on;
+    }
+
+    pub fn is_printed_size(&self) -> bool {
+        !self.size_by_scale
+    }
+
+    /// Plan character height at `inches_per_foot` paper scale, using the
+    /// printed size when `force_printed` is set even for a character-height
+    /// style (a dimension set that holds its sizes on paper).
+    pub fn plan_height_at(&self, inches_per_foot: f64, force_printed: bool) -> f64 {
+        if (force_printed || !self.size_by_scale) && inches_per_foot > 0.0 {
+            plan_height_for_printed(self.printed_in(), inches_per_foot)
+        } else {
+            self.height_in
+        }
+    }
+
+    /// The plan height of a text object of `item_height` set in this style
+    /// at `inches_per_foot`: a printed-size style keeps its size on paper
+    /// whatever the scale, keeping the object's relation to the style (an
+    /// object twice the style's height stays twice it); a character-height
+    /// style leaves the object's height alone.
+    pub fn text_height(&self, item_height: f64, inches_per_foot: f64) -> f64 {
+        if self.size_by_scale || inches_per_foot <= 0.0 || self.height_in <= 0.0 {
+            item_height
+        } else {
+            item_height * plan_height_for_printed(self.printed_in(), inches_per_foot)
+                / self.height_in
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -149,6 +201,52 @@ impl TextStyles {
     /// default style.
     pub fn resolve_for_layer(&self, layers: &LayerSet, layer: &str) -> Option<&TextStyle> {
         self.resolve(layers.get(layer).map_or("", |l| l.text_style.as_str()))
+    }
+
+    /// The style a text object on `layer` is set in: its own style name when
+    /// it has one, else the layer's.
+    pub fn style_of_text(
+        &self,
+        layers: &LayerSet,
+        layer: &str,
+        own: Option<&str>,
+    ) -> Option<&TextStyle> {
+        match own {
+            Some(name) if !name.is_empty() => self.resolve(name),
+            _ => self.resolve_for_layer(layers, layer),
+        }
+    }
+
+    /// The plan character height a text object of stored `item_height` is
+    /// drawn (and picked, and exported) at for `inches_per_foot` of paper
+    /// scale: a printed-size style holds its size on paper, a
+    /// character-height style (or no scale) leaves `item_height` alone.
+    pub fn drawn_height(
+        &self,
+        layers: &LayerSet,
+        layer: &str,
+        own: Option<&str>,
+        item_height: f64,
+        inches_per_foot: f64,
+    ) -> f64 {
+        self.style_of_text(layers, layer, own)
+            .map_or(item_height, |s| s.text_height(item_height, inches_per_foot))
+    }
+
+    /// The height to store in a new text placed on `layer`: a printed-size
+    /// style's own character height (so the text draws exactly at the printed
+    /// size at any scale), else `default_height`, the Text tool's height.
+    pub fn placed_height(
+        &self,
+        layers: &LayerSet,
+        layer: &str,
+        own: Option<&str>,
+        default_height: f64,
+    ) -> f64 {
+        match self.style_of_text(layers, layer, own) {
+            Some(s) if !s.size_by_scale && s.height_in > 0.0 => s.height_in,
+            _ => default_height,
+        }
     }
 }
 
@@ -761,6 +859,59 @@ mod tests {
         s.size_by_scale = false;
         assert!((s.height_for_scale(0.25) - 6.0).abs() < 1e-9);
         assert!((s.height_for_scale(0.125) - 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn printed_size_holds_on_paper_at_any_scale() {
+        let mut s = TextStyle::default();
+        // Character height: the object's plan height stays.
+        assert_eq!(s.text_height(9.0, 0.125), 9.0);
+        assert!((s.printed_in() - 0.125).abs() < 1e-9);
+        s.use_printed_size(true);
+        assert!(s.is_printed_size());
+        // 1/8" on paper: 6" at 1/4" scale, 12" at 1/8", 3" at 1/2".
+        assert!((s.text_height(6.0, 0.25) - 6.0).abs() < 1e-9);
+        assert!((s.text_height(6.0, 0.125) - 12.0).abs() < 1e-9);
+        assert!((s.text_height(6.0, 0.5) - 3.0).abs() < 1e-9);
+        // An object 1.5 times the style stays 1.5 times it.
+        assert!((s.text_height(9.0, 0.125) - 18.0).abs() < 1e-9);
+        s.set_printed_in(0.25);
+        assert!((s.plan_height_at(0.25, false) - 12.0).abs() < 1e-9);
+        // A character-height style can still be forced to print size.
+        let mut c = TextStyle::plan_sized("c", 4.5, false);
+        assert_eq!(c.plan_height_at(0.125, false), 4.5);
+        assert!((c.plan_height_at(0.125, true) - 9.0).abs() < 1e-9);
+        c.use_printed_size(false);
+        assert!(!c.is_printed_size());
+    }
+
+    #[test]
+    fn drawn_and_placed_heights_follow_the_layer_style() {
+        use crate::layers::LayerSet;
+        let layers = LayerSet::default();
+        let mut t = TextStyles::default();
+        // Character height: placed at the tool's height, drawn as stored.
+        assert_eq!(t.placed_height(&layers, "Text", None, 7.0), 7.0);
+        assert_eq!(t.drawn_height(&layers, "Text", None, 7.0, 0.125), 7.0);
+        let i = t
+            .styles
+            .iter()
+            .position(|s| s.name == DEFAULT_TEXT_STYLE_NAME)
+            .unwrap();
+        t.styles[i].use_printed_size(true);
+        // Printed size: placed at the style's own height, which draws at
+        // 1/8" on paper at any scale.
+        let h = t.placed_height(&layers, "Text", None, 7.0);
+        assert_eq!(h, 6.0);
+        for (ipf, plan) in [(0.25, 6.0), (0.125, 12.0), (0.5, 3.0)] {
+            let d = t.drawn_height(&layers, "Text", None, h, ipf);
+            assert!((d - plan).abs() < 1e-9, "{ipf}: {d}");
+        }
+        // An object's own style name wins over the layer's.
+        assert_eq!(
+            t.drawn_height(&layers, "Text", Some("Schedule Style"), 4.5, 0.125),
+            4.5
+        );
     }
 
     #[test]

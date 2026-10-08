@@ -19,6 +19,16 @@ pub enum ObjectRef {
     Cad(Id),
     Symbol(Id),
     Camera(Id),
+    // Kinds the editor stores as opaque records; a group may hold them but
+    // the clipboard here does not copy them (the editor's clipboard does).
+    Cabinet(Id),
+    Stair(Id),
+    Device(Id),
+    RoofPlane(Id),
+    Foundation(Id),
+    Framing(Id),
+    Detail(Id),
+    Schedule(Id),
 }
 
 /// A set of objects that select and move together (S-35).
@@ -32,6 +42,39 @@ impl crate::model::Floor {
     /// The group containing `r`, if any (S-35).
     pub fn group_of(&self, r: ObjectRef) -> Option<&ObjectGroup> {
         self.groups.iter().find(|g| g.members.contains(&r))
+    }
+
+    /// Every member of the group holding `r` (itself included), or just `r`
+    /// when it is in no group: what a click on `r` selects (S-35).
+    pub fn group_members_of(&self, r: ObjectRef) -> Vec<ObjectRef> {
+        self.group_of(r)
+            .map_or_else(|| vec![r], |g| g.members.clone())
+    }
+
+    /// `refs` with the rest of every group they touch, without repeats and in
+    /// first-seen order.
+    pub fn expand_groups(&self, refs: &[ObjectRef]) -> Vec<ObjectRef> {
+        let mut out: Vec<ObjectRef> = Vec::new();
+        for r in refs {
+            for m in self.group_members_of(*r) {
+                if !out.contains(&m) {
+                    out.push(m);
+                }
+            }
+        }
+        out
+    }
+
+    /// Drops the members for which `alive` is false and dissolves groups left
+    /// with fewer than two members (after objects were deleted). Returns how
+    /// many groups went.
+    pub fn prune_groups(&mut self, alive: impl Fn(ObjectRef) -> bool) -> usize {
+        let before = self.groups.len();
+        for g in &mut self.groups {
+            g.members.retain(|m| alive(*m));
+        }
+        self.groups.retain(|g| g.members.len() >= 2);
+        before - self.groups.len()
     }
 }
 
@@ -153,6 +196,7 @@ impl Project {
                         }
                     }
                 }
+                _ => {}
             }
         }
         for g in &f.groups {
@@ -410,5 +454,42 @@ mod tests {
         let oid = p.floors[0].openings[0].id;
         let clip = p.copy_objects(0, &[ObjectRef::Opening(oid)]);
         assert!(clip.is_empty() && clip.openings.is_empty());
+    }
+
+    #[test]
+    fn groups_expand_a_click_and_dissolve_when_members_go() {
+        let (mut p, a, b) = plan();
+        let c = p.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Circle {
+                center: Point::ZERO,
+                radius: 5.0,
+            },
+        );
+        p.make_group(
+            0,
+            &[
+                ObjectRef::Wall(a),
+                ObjectRef::Wall(b),
+                ObjectRef::Cabinet(77),
+            ],
+        )
+        .unwrap();
+        let f = &p.floors[0];
+        // A click on any member names the whole group; a loose object stays alone.
+        assert_eq!(f.group_members_of(ObjectRef::Wall(b)).len(), 3);
+        assert_eq!(
+            f.group_members_of(ObjectRef::Cad(c)),
+            vec![ObjectRef::Cad(c)]
+        );
+        let both = f.expand_groups(&[ObjectRef::Wall(a), ObjectRef::Cad(c), ObjectRef::Wall(b)]);
+        assert_eq!(both.len(), 4);
+        // The cabinet vanishes: two members remain. A second loss dissolves it.
+        let f = &mut p.floors[0];
+        assert_eq!(f.prune_groups(|r| r != ObjectRef::Cabinet(77)), 0);
+        assert_eq!(f.groups[0].members.len(), 2);
+        assert_eq!(f.prune_groups(|r| r != ObjectRef::Wall(b)), 1);
+        assert!(f.groups.is_empty());
     }
 }

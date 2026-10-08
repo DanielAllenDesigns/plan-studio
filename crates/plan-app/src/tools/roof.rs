@@ -2252,6 +2252,7 @@ mod tests {
         }
         let mut t = RoofTool::default();
         let mut s = RoofSettings::from_defaults(&cx.defaults);
+        s.detail.baseline_at_plate = false;
         assert!(t.build(&mut cx, s.clone()).is_some());
         assert_eq!(load(&cx.project.floors[1]).planes.len(), 4);
         assert!(load(&cx.project.floors[0]).planes.is_empty());

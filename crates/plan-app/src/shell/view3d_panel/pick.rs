@@ -160,6 +160,14 @@ pub fn object_under(
 /// toggles it in the selection), on its floor; a miss clears the selection
 /// unless Shift is down.
 pub fn apply_pick(cx: &mut EditorContext, hit: Option<(usize, ObjectRef)>, add: bool) {
+    // With the Material Painter on a click paints (or samples, or erases) the
+    // object under it instead of selecting it.
+    if crate::tools::materials::painter_active() {
+        if let Some((floor, obj)) = hit {
+            crate::tools::materials::paint_object(cx, floor, obj);
+        }
+        return;
+    }
     match hit {
         Some((floor, obj)) => {
             if floor != cx.floor && floor < cx.project.floors.len() {
@@ -690,5 +698,51 @@ mod tests {
         let overlay = overlay_meshes(&base, pictures, &sel, false);
         assert_eq!(overlay.len(), 2, "the picture and its tint");
         assert_eq!(overlay[1].material, Material::Selection);
+    }
+
+    #[test]
+    fn the_material_painter_paints_the_object_under_the_click() {
+        use crate::tools::materials::{self, PainterMode};
+        use plan_core::object_materials::WHOLE_OBJECT;
+        let (p, wall) = one_wall();
+        let scene = scene_of(&p);
+        let cam = camera_for(CameraMode::Orbit, &scene);
+        let at = pixel_of(&cam, [120.0, 48.0, 3.0]);
+        let hit = object_under(&p, 0, &cam, rect(), at, &scene, &[]);
+        assert_eq!(hit, Some((0, ObjectRef::Wall(wall))));
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = p;
+        // The material the Materials list would have made active.
+        let name = materials::library()
+            .materials
+            .iter()
+            .find(|m| m.category.first().map(String::as_str) == Some("Masonry"))
+            .unwrap()
+            .name
+            .clone();
+        materials::set_active(Some(name.clone()));
+        materials::set_painter_mode(PainterMode::Paint);
+        apply_pick(&mut cx, hit, false);
+        materials::set_painter_mode(PainterMode::Off);
+        assert_eq!(
+            cx.project.object_material(wall, WHOLE_OBJECT),
+            Some(name.as_str())
+        );
+        assert!(
+            cx.selection.items.is_empty(),
+            "a painter click never selects"
+        );
+        // The 3D scene of the painted plan shows it, and the view rebuilds.
+        let painted = scene_of(&cx.project);
+        let before: Vec<Material> = scene.meshes.iter().map(|m| m.material).collect();
+        let after: Vec<Material> = painted.meshes.iter().map(|m| m.material).collect();
+        assert_ne!(before, after);
+        assert_ne!(
+            super::super::project_hash(&cx.project),
+            super::super::project_hash(&Project::new("t"))
+        );
+        // With the painter off a pick selects again.
+        apply_pick(&mut cx, hit, false);
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Wall(wall)));
     }
 }

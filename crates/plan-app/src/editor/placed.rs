@@ -102,6 +102,8 @@ pub fn add_cabinet(project: &mut Project, floor: usize, mut cab: Cabinet) -> Opt
     let id = project.alloc_id();
     cab.id = id;
     edit_cabinets(project, floor, |v| v.push(cab))?;
+    // The labels live on their own layer from the first cabinet on.
+    project.layers.ensure_cabinet_label_layer();
     Some(id)
 }
 
@@ -275,11 +277,24 @@ pub fn hit_cabinet(
     tol: f64,
     filter: impl Fn(&Cabinet) -> bool,
 ) -> Option<Id> {
-    load_cabinets(cx.floor())
-        .iter()
+    let cabs = load_cabinets(cx.floor());
+    let near = |c: &&Cabinet| {
+        cx.layers().is_visible(cabinet_layer(c.kind))
+            && filter(c)
+            && poly_dist(p, &c.footprint()) <= tol
+    };
+    // A joined countertop covers the cabinets under it; they win the pick so
+    // that a base cabinet in a run can still be selected.
+    cabs.iter()
         .rev()
-        .filter(|c| cx.layers().is_visible(cabinet_layer(c.kind)) && filter(c))
-        .find(|c| poly_dist(p, &c.footprint()) <= tol)
+        .filter(|c| c.joined.is_empty())
+        .find(near)
+        .or_else(|| {
+            cabs.iter()
+                .rev()
+                .filter(|c| !c.joined.is_empty())
+                .find(near)
+        })
         .map(|c| c.id)
 }
 
@@ -310,6 +325,32 @@ pub fn hit_placed(cx: &EditorContext, p: Point, tol: f64) -> Option<PlacedRef> {
 }
 
 // ----- handles -----
+
+/// `Reshape(n)` of the handle on the middle of the front edge: drags the
+/// depth, the back staying put.
+pub const DEPTH_FRONT: usize = 1;
+/// The middle of the back edge: drags the depth, the front staying put.
+pub const DEPTH_BACK: usize = 2;
+/// The corner handles: width and depth change together, the opposite corner
+/// staying put.
+pub const CORNER_BACK_LEFT: usize = 3;
+pub const CORNER_BACK_RIGHT: usize = 4;
+pub const CORNER_FRONT_RIGHT: usize = 5;
+pub const CORNER_FRONT_LEFT: usize = 6;
+
+/// The resize cursor along (or across) a direction.
+fn axis_cursor(dir: Point) -> CursorIcon {
+    let (ax, ay) = (dir.x.abs(), dir.y.abs());
+    if ay < ax * 0.3827 {
+        CursorIcon::ResizeHorizontal
+    } else if ax < ay * 0.3827 {
+        CursorIcon::ResizeVertical
+    } else if dir.x * dir.y > 0.0 {
+        CursorIcon::ResizeNeSw
+    } else {
+        CursorIcon::ResizeNwSe
+    }
+}
 
 /// Edit handles of a placed object (Move, width resize on both ends,
 /// Rotate; symbols also get a depth handle, `Reshape(1)`).
@@ -346,12 +387,52 @@ pub fn placed_handles(floor: &Floor, r: PlacedRef, scale: f64) -> Vec<Handle> {
                     c.to_plan(Point::new(w, d / 2.0)),
                     CursorIcon::ResizeHorizontal,
                 ));
+                // Depth from the front and the back, and the four corners
+                // (width and depth together), CB-8. They are `Reshape(n)`
+                // handles, see [`DEPTH_FRONT`] and friends.
+                let u = unit(c.angle);
+                let side = axis_cursor(v);
+                hs.push(h(
+                    HandleKind::Reshape(DEPTH_FRONT),
+                    c.to_plan(Point::new(w / 2.0, d)),
+                    side,
+                ));
+                hs.push(h(
+                    HandleKind::Reshape(DEPTH_BACK),
+                    c.to_plan(Point::new(w / 2.0, 0.0)),
+                    side,
+                ));
+                for (n, x, y) in [
+                    (CORNER_BACK_LEFT, 0.0, 0.0),
+                    (CORNER_BACK_RIGHT, w, 0.0),
+                    (CORNER_FRONT_RIGHT, w, d),
+                    (CORNER_FRONT_LEFT, 0.0, d),
+                ] {
+                    let out = u * (if x > 0.0 { 1.0 } else { -1.0 })
+                        + v * (if y > 0.0 { 1.0 } else { -1.0 });
+                    hs.push(h(
+                        HandleKind::Reshape(n),
+                        c.to_plan(Point::new(x, y)),
+                        axis_cursor(out),
+                    ));
+                }
             }
             hs.push(h(
                 HandleKind::Rotate,
                 c.to_plan(Point::new(w / 2.0, d)) + v * off,
                 CursorIcon::Grab,
             ));
+            // The label's drag handle sits just past the end of the text so
+            // it never covers the Move handle at the centre.
+            if let Some((at, text, height, angle)) = cabinet_label_spot(&c) {
+                let along = unit(angle);
+                let half = text.chars().count() as f64 * height * 0.3;
+                hs.push(h(
+                    HandleKind::Label,
+                    at + along * (half + 6.0 / scale.max(1e-6)),
+                    CursorIcon::Grab,
+                ));
+            }
             hs
         }
         PlacedRef::Symbol(id) => {
@@ -495,6 +576,19 @@ pub fn draw_cabinet(
     color: Color32,
     merged_tops: bool,
 ) {
+    draw_cabinet_parts(painter, cam, cab, color, merged_tops, true);
+}
+
+/// [`draw_cabinet`] with the label optional: it belongs to the layer
+/// "Cabinets, Labels", which can be hidden apart from the cabinets.
+pub fn draw_cabinet_parts(
+    painter: &egui::Painter,
+    cam: &Camera,
+    cab: &Cabinet,
+    color: Color32,
+    merged_tops: bool,
+    labels: bool,
+) {
     let stroke = egui::Stroke::new(1.2_f32, color);
     for (i, k) in plan_symbol(cab).iter().enumerate() {
         match k {
@@ -529,9 +623,27 @@ pub fn draw_cabinet(
                 text,
                 height,
                 angle,
-            } => draw_text(painter, cam, *at, text, *height, *angle, color),
+            } => {
+                if labels {
+                    draw_text(painter, cam, *at, text, *height, *angle, color);
+                }
+            }
         }
     }
+}
+
+/// Where a cabinet's label is drawn, its text height and angle (plan inches
+/// and radians), as the plan symbol places it with the label offset.
+pub fn cabinet_label_spot(c: &Cabinet) -> Option<(Point, String, f64, f64)> {
+    plan_symbol(c).into_iter().rev().find_map(|k| match k {
+        CabStroke::Text {
+            at,
+            text,
+            height,
+            angle,
+        } => Some((at, text, height, angle)),
+        _ => None,
+    })
 }
 
 /// Dashed closed outline (Chief shows countertops dashed).
@@ -556,6 +668,9 @@ fn draw_outline(painter: &egui::Painter, cam: &Camera, poly: &[Point], stroke: e
 pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     let pal = &cx.palette;
     let floor = cx.floor();
+    let labels_visible = cx
+        .layers()
+        .is_visible(plan_core::layers::CABINET_LABEL_LAYER);
     let cabs: Vec<Cabinet> = load_cabinets(floor)
         .into_iter()
         .filter(|c| cx.layers().is_visible(cabinet_layer(c.kind)))
@@ -566,7 +681,7 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         } else {
             pal.text
         };
-        draw_cabinet(painter, cam, c, color, true);
+        draw_cabinet_parts(painter, cam, c, color, true, labels_visible);
     }
     let tops: Vec<Cabinet> = cabs
         .iter()
@@ -655,6 +770,19 @@ pub fn delete_placed(cx: &mut EditorContext) -> usize {
     cx.begin_change("Delete");
     let fl = cx.floor;
     let mut n = 0;
+    // Deleting a generated countertop gives the cabinets under it their own
+    // slabs back (and the top is not regenerated by this step).
+    let mut deleted_top = false;
+    for r in &refs {
+        if let PlacedRef::Cabinet(id) = r {
+            if let Some(top) = cabinet_by_id(cx.floor(), *id).filter(|c| !c.joined.is_empty()) {
+                deleted_top = true;
+                let _ = edit_cabinets(&mut cx.project, fl, |v| {
+                    plan_cabinets::release_joined_top(&top, v);
+                });
+            }
+        }
+    }
     for r in &refs {
         n += usize::from(match r {
             PlacedRef::Cabinet(id) => remove_cabinet(&mut cx.project, fl, *id),
@@ -668,6 +796,9 @@ pub fn delete_placed(cx: &mut EditorContext) -> usize {
     cx.selection
         .items
         .retain(|o| PlacedRef::from_object(*o).is_none());
+    if !deleted_top {
+        rejoin_if_enabled(cx);
+    }
     cx.mark_dirty();
     n
 }
@@ -743,6 +874,7 @@ pub fn paste_placed(cx: &mut EditorContext) -> usize {
     }
     let n = sel.len();
     cx.selection.items = sel;
+    rejoin_if_enabled(cx);
     cx.mark_dirty();
     n
 }
@@ -809,7 +941,20 @@ pub fn reverse_door_swing(cx: &mut EditorContext) -> usize {
 pub fn apply_cabinet(cx: &mut EditorContext, draft: &Cabinet) -> bool {
     cx.begin_change("Cabinet Specification");
     let fl = cx.floor;
+    // The shaping of a generated countertop (edge, corners) is kept on the
+    // slabs it replaced, so the next join gives the same look.
+    let mut draft = draft.clone();
+    if let Some(custom) = draft.custom.clone() {
+        for j in &mut draft.joined {
+            j.countertop.edge = custom.edge;
+            j.countertop.edge_size = custom.edge_size;
+            j.countertop.corner = custom.corner;
+            j.countertop.corner_size = custom.corner_size;
+        }
+    }
+    let draft = &draft;
     if replace_cabinet(&mut cx.project, fl, draft) {
+        rejoin_if_enabled(cx);
         cx.mark_dirty();
         true
     } else {
@@ -840,6 +985,78 @@ pub fn apply_symbol(cx: &mut EditorContext, draft: &PlacedSymbol) -> bool {
             false
         }
     }
+}
+
+// ----- appliances snapping into bays -----
+
+/// How far from a bay's centre a dropped appliance still snaps into it, in.
+pub const BAY_SNAP_REACH: f64 = 30.0;
+
+/// The appliance a library item stands for, from its catalog id
+/// (`core.appliances.dishwasher_24`): "Dishwasher", "Range", "Oven",
+/// "Refrigerator" or "Microwave".
+pub fn appliance_of_catalog(catalog_id: &str) -> Option<&'static str> {
+    let id = catalog_id.to_ascii_lowercase();
+    [
+        ("dishwasher", "Dishwasher"),
+        ("refrigerator", "Refrigerator"),
+        ("fridge", "Refrigerator"),
+        ("microwave", "Microwave"),
+        ("range", "Range"),
+        ("cooktop", "Range"),
+        ("oven", "Oven"),
+    ]
+    .into_iter()
+    .find(|(k, _)| id.contains(k))
+    .map(|(_, name)| name)
+}
+
+/// Does a bay made for `bay` take an appliance called `appliance`? A range
+/// bay takes an oven and the other way round.
+fn bay_takes(bay: &str, appliance: &str) -> bool {
+    let (b, a) = (bay.to_ascii_lowercase(), appliance.to_ascii_lowercase());
+    b == a || matches!((b.as_str(), a.as_str()), ("range", "oven") | ("oven", "range"))
+}
+
+/// Snaps an appliance symbol dropped within `reach` of a matching bay (a
+/// dishwasher near a Dishwasher opening, a refrigerator near a refrigerator
+/// cabinet, a range near a Range opening...) into it: turned to the cabinet,
+/// centred in the bay, its back on the cabinet's back, no wider or deeper
+/// than the bay. Returns whether it snapped.
+pub fn snap_symbol_to_bay(floor: &Floor, sym: &mut PlacedSymbol, reach: f64) -> bool {
+    let Some(appliance) = appliance_of_catalog(&sym.catalog_id) else {
+        return false;
+    };
+    let at = symbol_center(sym);
+    let mut best: Option<(f64, Cabinet, plan_cabinets::ApplianceBay)> = None;
+    for c in load_cabinets(floor) {
+        for bay in c.appliance_bays() {
+            if !bay_takes(&bay.name, appliance) {
+                continue;
+            }
+            let mid = c.to_plan(Point::new((bay.x.0 + bay.x.1) / 2.0, c.depth / 2.0));
+            let d = mid.dist(at);
+            if d <= reach && best.as_ref().is_none_or(|(bd, _, _)| d < *bd) {
+                best = Some((d, c.clone(), bay));
+            }
+        }
+    }
+    let Some((_, c, bay)) = best else {
+        return false;
+    };
+    let inside = bay.x.1 - bay.x.0;
+    sym.angle = c.angle.to_degrees();
+    sym.width = sym.width.min(inside);
+    sym.depth = sym.depth.min(c.depth);
+    sym.position = c.to_plan(Point::new((bay.x.0 + bay.x.1) / 2.0, 0.0));
+    let toe = c.toe_kick.map_or(0.0, |t| t.height);
+    let floor_bay = (bay.z.0 - toe).abs() < 1e-6;
+    sym.elevation = c.elevation + if floor_bay { 0.0 } else { bay.z.0 };
+    let room = bay.z.1 - if floor_bay { 0.0 } else { bay.z.0 };
+    if sym.height > room && room > 1.0 {
+        sym.height = room;
+    }
+    true
 }
 
 // ----- pictures, distributions and solids in 3D -----
@@ -917,8 +1134,21 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             generate_countertops(cx);
             true
         }
-        // The CAD edit tools (Fillet, Trim, ...) are Edit toolbar commands too.
-        _ => crate::tools::cad::run_edit_command(cx, id),
+        // Underlays, Preferences and the material tools (their menu rows
+        // carry these ids), then the CAD edit tools (Fillet, Trim, ...),
+        // which are Edit toolbar commands too.
+        _ => {
+            crate::tools::underlay::run_command(cx, id)
+                || crate::tools::library::user::run_command(cx, id)
+                || crate::tools::materials::run_command(cx, id)
+                || crate::dialogs::preferences::run_command(cx, id)
+                || crate::dialogs::app_info::run_command(cx, id)
+                || crate::dialogs::layer_sets::run_command(cx, id)
+                || crate::dialogs::plan_views::run_command(cx, id)
+                || crate::dialogs::defaults::run_command(cx, id)
+                || crate::tools::cad::run_edit_command(cx, id)
+                || crate::tools::dimension::run_command(cx, id)
+        }
     }
 }
 
@@ -974,6 +1204,134 @@ pub fn generate_countertops(cx: &mut EditorContext) -> usize {
     cx.mark_dirty();
     cx.status = format!("Generated {n} countertop{}", if n == 1 { "" } else { "s" });
     n
+}
+
+// ----- automatic countertop join (CB-14) -----
+
+thread_local! {
+    /// Join the countertops of touching base cabinets automatically (the
+    /// Preferences > Architectural switch). Off until the app turns it on
+    /// from its settings, so a bare editor context never rewrites cabinets.
+    static AUTO_JOIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Turns the automatic countertop join on or off.
+pub fn set_auto_join(on: bool) {
+    AUTO_JOIN.with(|a| a.set(on));
+}
+
+/// Is the automatic countertop join on?
+pub fn auto_join_enabled() -> bool {
+    AUTO_JOIN.with(std::cell::Cell::get)
+}
+
+/// Brings the generated countertops up to date with the cabinets under them:
+/// every generated top is taken apart (the cabinets get their own slabs and
+/// holes back) and the touching base cabinets are joined again, so a moved,
+/// resized, added or deleted cabinet changes the top it belongs to. A top
+/// keeps its id while the same cabinets stand under it. Part of the undo step
+/// the caller has begun; changes nothing (and writes nothing) when the result
+/// equals what is stored. Returns how many countertops stand after the call,
+/// 0 when the base layer is locked or the cabinets cannot be read.
+pub fn rejoin_countertops(cx: &mut EditorContext) -> usize {
+    let fl = cx.floor;
+    if cx.layers().is_locked("Cabinets, Base") {
+        return 0;
+    }
+    let Ok(stored) = cx.project.floors[fl].cabinets_as::<Cabinet>() else {
+        return 0;
+    };
+    let mut cabs = stored.clone();
+    // Take every generated top apart.
+    let old_tops: Vec<Cabinet> = cabs
+        .iter()
+        .filter(|c| !c.joined.is_empty())
+        .cloned()
+        .collect();
+    for top in &old_tops {
+        plan_cabinets::release_joined_top(top, &mut cabs);
+    }
+    cabs.retain(|c| c.joined.is_empty());
+    // Join what touches now.
+    let mut tops = plan_cabinets::join_touching_countertops(&cabs);
+    let mut claimed: Vec<Id> = Vec::new();
+    for g in &mut tops {
+        let mut ids: Vec<Id> = g.sources.clone();
+        ids.sort_unstable();
+        // A top keeps its id while its cabinets stand: the old top with the
+        // same cabinets, else the unclaimed one that shares the most of them
+        // (a cabinet moved off or added to the run).
+        let shared = |t: &Cabinet| t.joined.iter().filter(|j| ids.contains(&j.id)).count();
+        let reuse = old_tops
+            .iter()
+            .find(|t| {
+                let mut have: Vec<Id> = t.joined.iter().map(|j| j.id).collect();
+                have.sort_unstable();
+                !claimed.contains(&t.id) && have == ids
+            })
+            .or_else(|| {
+                old_tops
+                    .iter()
+                    .filter(|t| !claimed.contains(&t.id) && shared(t) > 0)
+                    .max_by_key(|t| (shared(t), std::cmp::Reverse(t.id)))
+            });
+        g.top.id = match reuse {
+            Some(t) => {
+                claimed.push(t.id);
+                t.id
+            }
+            None => cx.project.alloc_id(),
+        };
+        for sid in &g.sources {
+            if let Some(src) = cabs.iter_mut().find(|c| c.id == *sid) {
+                src.hand_over_top();
+            }
+        }
+    }
+    let count = tops.len();
+    cabs.extend(tops.into_iter().map(|g| g.top));
+    let sorted = |v: &[Cabinet]| {
+        let mut v = v.to_vec();
+        v.sort_by_key(|c| c.id);
+        v
+    };
+    if sorted(&cabs) == sorted(&stored) {
+        return count;
+    }
+    if cx.project.floors[fl].set_cabinets(&cabs).is_err() {
+        return 0;
+    }
+    let project = &cx.project;
+    cx.selection.items.retain(|o| o.exists_in(project, fl));
+    cx.mark_dirty();
+    count
+}
+
+/// Keeps full-height backsplashes as high as the wall cabinets over them
+/// (`plan_cabinets::fit_full_height_backsplashes`). Part of the undo step the
+/// caller has begun. Returns how many changed.
+pub fn refresh_backsplashes(cx: &mut EditorContext) -> usize {
+    let fl = cx.floor;
+    let Ok(mut cabs) = cx.project.floors[fl].cabinets_as::<Cabinet>() else {
+        return 0;
+    };
+    let n = plan_cabinets::fit_full_height_backsplashes(&mut cabs);
+    if n > 0 && cx.project.floors[fl].set_cabinets(&cabs).is_ok() {
+        cx.mark_dirty();
+        return n;
+    }
+    0
+}
+
+/// [`rejoin_countertops`] when the automatic join is on; full-height
+/// backsplashes follow the wall cabinets either way.
+pub fn rejoin_if_enabled(cx: &mut EditorContext) -> usize {
+    refresh_backsplashes(cx);
+    if auto_join_enabled() {
+        rejoin_countertops(cx)
+    } else {
+        0
+    }
 }
 
 /// A plan point in the cabinet's local frame.
@@ -1151,10 +1509,23 @@ mod tests {
                 HandleKind::Move,
                 HandleKind::ResizeStart,
                 HandleKind::ResizeEnd,
-                HandleKind::Rotate
+                HandleKind::Reshape(DEPTH_FRONT),
+                HandleKind::Reshape(DEPTH_BACK),
+                HandleKind::Reshape(CORNER_BACK_LEFT),
+                HandleKind::Reshape(CORNER_BACK_RIGHT),
+                HandleKind::Reshape(CORNER_FRONT_RIGHT),
+                HandleKind::Reshape(CORNER_FRONT_LEFT),
+                HandleKind::Rotate,
+                HandleKind::Label
             ]
         );
         assert!(hs[2].pos.dist(Point::new(24.0, 12.0)) < 1e-9);
+        // Depth handles sit on the middle of the front and back edges, the
+        // corner handles on the corners.
+        assert!(hs[3].pos.dist(Point::new(12.0, 24.0)) < 1e-9);
+        assert!(hs[4].pos.dist(Point::new(12.0, 0.0)) < 1e-9);
+        assert!(hs[5].pos.dist(Point::new(0.0, 0.0)) < 1e-9);
+        assert!(hs[7].pos.dist(Point::new(24.0, 24.0)) < 1e-9);
         let s = cx
             .project
             .add_symbol(0, PlacedSymbol::new("x", Point::ZERO, 20.0, 30.0, 10.0));
@@ -1409,7 +1780,10 @@ mod tests {
             .iter()
             .map(|h| h.kind)
             .collect();
-        assert_eq!(kinds, [HandleKind::Move, HandleKind::Rotate]);
+        assert_eq!(
+            kinds,
+            [HandleKind::Move, HandleKind::Rotate, HandleKind::Label]
+        );
         assert_eq!(cabinet_layer(CabinetKind::CornerWall), "Cabinets, Wall");
         assert_eq!(cabinet_layer(CabinetKind::BaseFiller), "Cabinets, Base");
         assert_eq!(
@@ -1427,5 +1801,314 @@ mod tests {
         assert_eq!(cabinet_label(&c), "W24/30");
         assert_eq!(cabinet_label(&Cabinet::base(36.0)), "B36");
         assert!(!run_command(&mut cx(), "nope"));
+    }
+
+    // ----- automatic countertop join -----
+
+    fn bases(cx: &mut EditorContext, xs: &[f64]) -> Vec<Id> {
+        xs.iter()
+            .map(|x| add_cabinet(&mut cx.project, 0, base_at(*x, 24.0)).unwrap())
+            .collect()
+    }
+
+    fn joined_tops(cx: &EditorContext) -> Vec<Cabinet> {
+        load_cabinets(cx.floor())
+            .into_iter()
+            .filter(|c| !c.joined.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn rejoining_joins_touching_bases_and_takes_the_top_apart_when_they_part() {
+        let mut cx = cx();
+        set_auto_join(true);
+        let ids = bases(&mut cx, &[0.0, 24.0, 100.0]);
+        assert_eq!(rejoin_countertops(&mut cx), 1);
+        let tops = joined_tops(&cx);
+        assert_eq!(tops.len(), 1);
+        let mut sources: Vec<Id> = tops[0].joined.iter().map(|j| j.id).collect();
+        sources.sort_unstable();
+        assert_eq!(sources, &ids[..2]);
+        // The two cabinets under it gave up their slabs; the lone one kept its.
+        let list = load_cabinets(cx.floor());
+        let by = |id: Id| list.iter().find(|c| c.id == id).unwrap();
+        assert!(by(ids[0]).countertop.is_none() && by(ids[1]).countertop.is_none());
+        assert!(by(ids[2]).countertop.is_some());
+        assert!((by(ids[0]).height - 34.5).abs() < 1e-9);
+        // Nothing changed: nothing is rewritten, and the top keeps its id.
+        let before = cx.project.floors[0].cabinets.clone();
+        assert_eq!(rejoin_countertops(&mut cx), 1);
+        assert_eq!(cx.project.floors[0].cabinets, before);
+        // Move the second cabinet away: the top comes apart and both get
+        // their slabs (and heights) back.
+        let mut c = cabinet_by_id(cx.floor(), ids[1]).unwrap();
+        c.position = Point::new(60.0, 0.0);
+        assert!(replace_cabinet(&mut cx.project, 0, &c));
+        assert_eq!(rejoin_countertops(&mut cx), 0);
+        let list = load_cabinets(cx.floor());
+        assert_eq!(list.len(), 3);
+        assert!(list
+            .iter()
+            .all(|c| c.countertop.is_some() && c.joined.is_empty()));
+        assert!(list.iter().all(|c| (c.height - 36.0).abs() < 1e-9));
+        set_auto_join(false);
+    }
+
+    #[test]
+    fn a_joined_top_keeps_its_id_while_the_same_cabinets_stand_under_it() {
+        let mut cx = cx();
+        let ids = bases(&mut cx, &[0.0, 24.0]);
+        rejoin_countertops(&mut cx);
+        let top = joined_tops(&cx)[0].id;
+        // Widen the first cabinet by 6": the same two cabinets, a new outline.
+        let mut c = cabinet_by_id(cx.floor(), ids[0]).unwrap();
+        c.width = 30.0;
+        c.position = Point::new(-6.0, 0.0);
+        replace_cabinet(&mut cx.project, 0, &c);
+        rejoin_countertops(&mut cx);
+        let tops = joined_tops(&cx);
+        assert_eq!(tops.len(), 1);
+        assert_eq!(tops[0].id, top);
+        let area = plan_cabinets::ring_area(&tops[0].top_polygon().unwrap());
+        assert!(area > 54.0 * 24.0, "{area}");
+    }
+
+    #[test]
+    fn sinks_ride_the_joined_top_and_come_back_to_their_cabinet() {
+        let mut cx = cx();
+        let ids = bases(&mut cx, &[0.0, 24.0]);
+        assert!(add_fixture(&mut cx, ids[0], CutoutKind::Sink));
+        let sink = cabinet_by_id(cx.floor(), ids[0]).unwrap().cutouts.clone();
+        assert_eq!(sink.len(), 1);
+        rejoin_countertops(&mut cx);
+        assert_eq!(joined_tops(&cx)[0].cutouts.len(), 1);
+        assert!(cabinet_by_id(cx.floor(), ids[0])
+            .unwrap()
+            .cutouts
+            .is_empty());
+        let mut c = cabinet_by_id(cx.floor(), ids[1]).unwrap();
+        c.position = Point::new(80.0, 0.0);
+        replace_cabinet(&mut cx.project, 0, &c);
+        rejoin_countertops(&mut cx);
+        let back = cabinet_by_id(cx.floor(), ids[0]).unwrap();
+        assert_eq!(back.cutouts.len(), 1);
+        assert_eq!(back.cutouts[0].kind, CutoutKind::Sink);
+        for (a, b) in back.cutouts[0].outline.iter().zip(&sink[0].outline) {
+            assert!(a.dist(*b) < 1e-6, "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn deleting_the_top_restores_the_slabs_and_it_stays_deleted() {
+        let mut cx = cx();
+        set_auto_join(true);
+        let ids = bases(&mut cx, &[0.0, 24.0]);
+        rejoin_countertops(&mut cx);
+        let top = joined_tops(&cx)[0].id;
+        cx.selection.set(ObjectRef::Cabinet(top));
+        assert_eq!(delete_placed(&mut cx), 1);
+        let list = load_cabinets(cx.floor());
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().all(|c| c.countertop.is_some() && c.id != top));
+        assert!(ids.iter().all(|i| list.iter().any(|c| c.id == *i)));
+        set_auto_join(false);
+    }
+
+    #[test]
+    fn auto_join_off_leaves_the_cabinets_alone_and_sources_win_the_pick() {
+        let mut cx = cx();
+        set_auto_join(false);
+        let ids = bases(&mut cx, &[0.0, 24.0]);
+        let before = cx.project.floors[0].cabinets.clone();
+        assert_eq!(rejoin_if_enabled(&mut cx), 0);
+        assert_eq!(cx.project.floors[0].cabinets, before);
+        // Joined by hand, a click on a base cabinet still picks the cabinet,
+        // not the top that covers it; the overhang past the cabinets picks
+        // the top.
+        rejoin_countertops(&mut cx);
+        let top = joined_tops(&cx)[0].id;
+        assert_eq!(
+            hit_cabinet(&cx, Point::new(12.0, 12.0), 0.5, |_| true),
+            Some(ids[0])
+        );
+        assert_eq!(
+            hit_cabinet(&cx, Point::new(36.0, 24.5), 0.2, |_| true),
+            Some(top)
+        );
+    }
+
+    // ----- appliances, backsplashes and labels -----
+
+    fn dishwasher_symbol(at: Point, angle_deg: f64) -> PlacedSymbol {
+        let mut s = PlacedSymbol::new("core.appliances.dishwasher_24", at, 24.0, 24.0, 34.0);
+        s.angle = angle_deg;
+        s
+    }
+
+    #[test]
+    fn a_dishwasher_dropped_near_its_bay_snaps_into_it() {
+        let mut cx = cx();
+        let mut bay = Cabinet::dishwasher_opening();
+        bay.position = Point::new(48.0, 3.0);
+        add_cabinet(&mut cx.project, 0, bay).unwrap();
+        // 10" off to the side and a little in front.
+        let mut s = dishwasher_symbol(Point::new(70.0, 20.0), 12.0);
+        assert!(snap_symbol_to_bay(cx.floor(), &mut s, BAY_SNAP_REACH));
+        assert!(s.position.dist(Point::new(60.0, 3.0)) < 1e-9, "{:?}", s.position);
+        assert_eq!((s.angle, s.elevation), (0.0, 0.0));
+        assert!(s.width <= 22.5, "{}", s.width);
+        // Out of reach it stays where it was dropped.
+        let mut far = dishwasher_symbol(Point::new(300.0, 20.0), 12.0);
+        assert!(!snap_symbol_to_bay(cx.floor(), &mut far, BAY_SNAP_REACH));
+        assert_eq!(far.angle, 12.0);
+        // A refrigerator does not take a dishwasher bay, nor a stool anything.
+        let mut fridge = PlacedSymbol::new(
+            "core.appliances.refrigerator_36x30",
+            Point::new(60.0, 10.0),
+            36.0,
+            30.0,
+            70.0,
+        );
+        assert!(!snap_symbol_to_bay(cx.floor(), &mut fridge, BAY_SNAP_REACH));
+        let mut stool = PlacedSymbol::new("core.furniture.stool", Point::new(60.0, 10.0), 12.0, 12.0, 24.0);
+        assert!(!snap_symbol_to_bay(cx.floor(), &mut stool, BAY_SNAP_REACH));
+        assert_eq!(appliance_of_catalog("core.appliances.range_30"), Some("Range"));
+    }
+
+    #[test]
+    fn a_refrigerator_snaps_into_the_refrigerator_cabinet_bay_and_a_range_into_a_range_bay() {
+        let mut cx = cx();
+        let mut f = Cabinet::refrigerator(36.0);
+        f.position = Point::new(0.0, 3.0);
+        add_cabinet(&mut cx.project, 0, f).unwrap();
+        let mut r = Cabinet::range_opening(30.0);
+        r.position = Point::new(100.0, 3.0);
+        add_cabinet(&mut cx.project, 0, r).unwrap();
+        let mut fridge = PlacedSymbol::new(
+            "core.appliances.refrigerator_36x30",
+            Point::new(30.0, 40.0),
+            36.0,
+            30.0,
+            70.0,
+        );
+        fridge.angle = 90.0;
+        assert!(snap_symbol_to_bay(cx.floor(), &mut fridge, BAY_SNAP_REACH));
+        assert!(fridge.position.dist(Point::new(18.0, 3.0)) < 1e-9);
+        assert_eq!(fridge.angle, 0.0);
+        assert!(fridge.depth <= 25.0 && fridge.width <= 34.5);
+        let mut range = PlacedSymbol::new("core.appliances.range_30", Point::new(120.0, 25.0), 30.0, 26.0, 36.0);
+        assert!(snap_symbol_to_bay(cx.floor(), &mut range, BAY_SNAP_REACH));
+        assert!(range.position.dist(Point::new(115.0, 3.0)) < 1e-9, "{:?}", range.position);
+    }
+
+    #[test]
+    fn full_height_backsplashes_follow_the_wall_cabinet_over_them() {
+        let mut cx = cx();
+        set_auto_join(false);
+        let mut base = Cabinet::base(48.0);
+        base.position = Point::new(0.0, 3.0);
+        let mut bs = plan_cabinets::Backsplash::new(4.0, 0.5);
+        bs.full_height = true;
+        base.backsplash = Some(bs);
+        let id = add_cabinet(&mut cx.project, 0, base).unwrap();
+        let mut wall = Cabinet::wall(36.0);
+        wall.position = Point::new(6.0, 3.0);
+        wall.elevation = 57.0;
+        add_cabinet(&mut cx.project, 0, wall).unwrap();
+        cx.begin_change("t");
+        assert_eq!(refresh_backsplashes(&mut cx), 1);
+        let b = cabinet_by_id(cx.floor(), id).unwrap().backsplash.unwrap();
+        assert!((b.height - 21.0).abs() < 1e-9, "{}", b.height);
+        assert_eq!(refresh_backsplashes(&mut cx), 0);
+        // Edits keep it fitted.
+        let mut w = load_cabinets(cx.floor()).into_iter().find(|c| c.kind == CabinetKind::Wall).unwrap();
+        w.elevation = 60.0;
+        replace_cabinet(&mut cx.project, 0, &w);
+        rejoin_if_enabled(&mut cx);
+        let b = cabinet_by_id(cx.floor(), id).unwrap().backsplash.unwrap();
+        assert!((b.height - 24.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_joined_run_keeps_its_backsplash_standing_on_the_generated_top() {
+        let mut cx = cx();
+        set_auto_join(true);
+        let ids = bases(&mut cx, &[0.0, 24.0]);
+        for id in &ids {
+            let mut c = cabinet_by_id(cx.floor(), *id).unwrap();
+            c.backsplash = Some(plan_cabinets::Backsplash::new(4.0, 0.5));
+            replace_cabinet(&mut cx.project, 0, &c);
+        }
+        cx.begin_change("t");
+        assert_eq!(rejoin_countertops(&mut cx), 1);
+        for id in &ids {
+            let c = cabinet_by_id(cx.floor(), *id).unwrap();
+            assert!(c.countertop.is_none());
+            let b = c.backsplash.expect("the strip stays");
+            assert!((b.lift - 1.5).abs() < 1e-9, "stands on the 1 1/2\" top");
+            // The mesh reaches the old top height plus the strip: 36 + 4.
+            let top = plan_cabinets::meshes(&c)
+                .iter()
+                .filter_map(|m| m.bounds())
+                .map(|(_, hi)| hi[1])
+                .fold(0.0f32, f32::max);
+            assert!((top - 40.0).abs() < 1e-3, "{top}");
+        }
+        // Taking the top apart gives each cabinet its slab and strip back.
+        set_auto_join(false);
+        cx.begin_change("t2");
+        for id in &ids {
+            let mut c = cabinet_by_id(cx.floor(), *id).unwrap();
+            c.position.y += 60.0;
+            replace_cabinet(&mut cx.project, 0, &c);
+        }
+        set_auto_join(true);
+        rejoin_countertops(&mut cx);
+        for id in &ids {
+            let c = cabinet_by_id(cx.floor(), *id).unwrap();
+            if c.countertop.is_some() {
+                assert_eq!(c.backsplash.unwrap().lift, 0.0);
+            }
+        }
+        set_auto_join(false);
+    }
+
+    #[test]
+    fn labels_belong_to_the_label_layer_and_the_ghost_draws_without_them() {
+        let mut cx = cx();
+        add_cabinet(&mut cx.project, 0, base_at(0.0, 24.0)).unwrap();
+        assert!(cx.project.layers.get("Cabinets, Labels").is_some());
+        let c = load_cabinets(cx.floor())[0].clone();
+        let (at, text, _, _) = cabinet_label_spot(&c).unwrap();
+        assert_eq!(text, "B24");
+        assert!(at.dist(c.to_plan(Point::new(12.0, 12.0))) < 1e-9);
+        let mut moved = c.clone();
+        moved.label_offset = Point::new(5.0, 2.0);
+        let (at2, _, _, _) = cabinet_label_spot(&moved).unwrap();
+        assert!((at2.x - at.x - 5.0).abs() < 1e-9 && (at2.y - at.y - 2.0).abs() < 1e-9);
+        // Hidden label layer: the draw skips the text but not the cabinet.
+        cx.project.layers.set_display("Cabinets, Labels", false);
+        assert!(!cx.layers().is_visible("Cabinets, Labels"));
+        assert!(cx.layers().is_visible("Cabinets, Base"));
+        let egui_ctx = egui::Context::default();
+        let _ = egui_ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (_, painter) =
+                    ui.allocate_painter(Vec2::new(400.0, 300.0), egui::Sense::hover());
+                let mut cam = Camera::default_view();
+                cam.rect = painter.clip_rect();
+                for labels in [true, false] {
+                    draw_cabinet_parts(&painter, &cam, &c, Color32::BLACK, false, labels);
+                }
+                draw_placed(&cx, &painter, &cam);
+            });
+        });
+        // Pre-existing plans gain the layer once, after the wall cabinets'.
+        let mut set = plan_core::LayerSet::default_floor_plan();
+        assert!(set.ensure_cabinet_label_layer());
+        assert!(!set.ensure_cabinet_label_layer());
+        let names: Vec<_> = set.layers.iter().map(|l| l.name.as_str()).collect();
+        let i = names.iter().position(|n| *n == "Cabinets, Wall").unwrap();
+        assert_eq!(names[i + 1], "Cabinets, Labels");
     }
 }

@@ -702,10 +702,12 @@ pub fn combined_takeoff(auto: &[Member], manual: &[FramingMember]) -> Takeoff {
             );
             t.board_feet += p.board_feet;
             merge_linear(&mut t.linear_feet_by_size, &p.size, p.length / 12.0);
+            crate::takeoff::add_cut(&mut t.cuts, p.kind, &p.size, p.length, 1);
         }
     }
     t.linear_feet_by_size
         .sort_by_key(|(name, _)| size_key(name));
+    crate::takeoff::sort_cuts(&mut t.cuts);
     t
 }
 

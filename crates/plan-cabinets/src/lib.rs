@@ -23,14 +23,17 @@ mod mesh_extra;
 mod symbol;
 mod top;
 
+#[cfg(test)]
+mod extras_tests;
+
 pub use cabinet::{
-    auto_label, expand_label, run_along_wall, type_code, Backsplash, BlindSide, BlindSpec, Cabinet,
-    CabinetKind, CornerSpec, CornerStyle, Countertop, DoorProfile, DoorStyle, DrawerStyle,
-    FaceSide, HandleStyle, HingeStyle, MaterialChoice, Molding, MoldingKind, Overlay,
-    PartMaterials, SideFace, SideKind, ToeKick,
+    auto_label, expand_label, run_along_wall, type_code, ApplianceBay, Backsplash, BlindSide,
+    BlindSpec, Cabinet, CabinetKind, CabinetPreset, CornerSpec, CornerStyle, Countertop,
+    DoorProfile, DoorStyle, DrawerStyle, FaceSide, HandleStyle, HingeStyle, MaterialChoice,
+    Molding, MoldingKind, Overlay, PartMaterials, SideFace, SideKind, ToeKick, FULL_HEIGHT_TO,
 };
 pub use face::{Divider, DividerHandle, FaceCell, FaceItem, FaceLayout, ResolvedFace, MIN_ITEM};
-pub use filler::{fit_between, wall_polygon, MAX_FILLER_GAP};
+pub use filler::{fit_between, fit_to_gap, wall_polygon, MAX_FILLER_GAP};
 pub use geom::{
     area as ring_area, bbox as ring_bbox, ccw as ring_ccw, free_span, offset_ring, thicken_path,
     triangulate, union_polygons, InsideObstacle,
@@ -38,6 +41,7 @@ pub use geom::{
 pub use mesh3d::meshes;
 pub use symbol::{plan_symbol, Stroke};
 pub use top::{
-    generate_countertops, treat_corners, CornerTreatment, CustomTop, Cutout, CutoutKind,
-    EdgeProfile, GeneratedTop,
+    fit_full_height_backsplashes, generate_countertops, join_touching_countertops,
+    release_joined_top, treat_corners, CornerTreatment, CustomTop, Cutout, CutoutKind, EdgeProfile,
+    GeneratedTop, JoinedSource,
 };

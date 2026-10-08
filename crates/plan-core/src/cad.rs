@@ -1036,6 +1036,8 @@ impl Project {
             R::Cad(id) => live.contains(&id),
             R::Symbol(id) => f.symbols.iter().any(|s| s.id == id),
             R::Camera(id) => cameras.contains(&id),
+            // Kinds kept as opaque records: the editor prunes those groups.
+            _ => true,
         };
         let keep: Vec<bool> = f
             .groups

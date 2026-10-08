@@ -10,12 +10,18 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 
 | Format | Direction | In the editor | Where it lives |
 |---|---|---|---|
-| `.psplan` (Plan Studio JSON) | Read and write | Yes: File > Open Plan, Save, Save As | `plan-core` |
+| `.psplan` (Plan Studio JSON) | Read and write | Yes: File > Open Plan, Open Recent, Save, Save As, Save a Copy, Revert to Saved, Close Plan (12.2a); a Finder double-click or a drop on the window opens one | `plan-core` (`io`), `plan-app` (`files`) |
+| Backup zip (`<name>-backup-<time>.zip`) | Write | Yes: File > Backup Entire Plan... (12.2a) | `plan-app` (`files`) |
 | glTF 2.0 (`.gltf` + `.bin`) | Write | Yes: 3D > Export > glTF... | `plan-3d` |
 | PDF (construction set) | Write | Yes: Tools > Schedules > Create Construction Set... | `plan-layout`, `plan-docs` |
-| PDF (the plan's layout) | Write | Yes: File > Print > Print Layout... and Export Layout PDF... (chapter 11.3) | `plan-layout`, `plan-docs` |
+| PDF (the plan's layout, or a plan view) | Write | Yes: File > Print > Print..., Print Layout... and Export Layout PDF... (chapter 11.3) | `plan-layout`, `plan-docs` |
+| PDF (the Materials List) | Write | Yes: Materials List > Export PDF... (chapter 11.5) | `plan-docs` |
 | PNG (ray-traced stills) | Write | Yes: Ray Trace > Save PNG... | `plan-render` |
+| PNG (the plan's lines) | Write | Yes: File > Print > Print Image... (chapter 11.3) | `plan-app` |
+| PNG, baseline JPEG, scanned PDF (underlay pictures for tracing) | Read | Yes: File > Import > Underlay Picture... (12.4a) | `plan-app` |
+| PNG and JPEG (baseline and progressive) as textures and pictures | Read | Yes, in 3D: the textures of the 3D view and the ray tracer (Chief's own texture files when your install has them, else generated ones), the bitmaps of pictures and billboards, and picture boxes in a layout (10.8a) | `plan-library` (`image`), `plan-materials` (`textures`) |
 | CSV (schedules, materials list) | Write | Yes: Export CSV... buttons | `plan-docs` |
+| Layout JSON | Read and write | Yes: File > Export > Layout (JSON)... and File > Import > Layout (JSON)... | `plan-layout` |
 | Markdown (Plan Check report) | Write | Yes: Save Report... | `plan-check` |
 | DXF (ASCII, R12) | Write | Yes: File > Export > DXF..., Elevation DXF... | `plan-core::export::dxf`, `plan-elevation` |
 | DXF import, CAD to Walls | Read | Yes: File > Import > Import Drawing (DXF)..., CAD > CAD to Walls... | `plan-import` |
@@ -23,35 +29,46 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 | Chief catalogs `.calib`, `.calibz` | Read in place | Yes: the Library Browser's Chief nodes (chapter 6.6); no import command | `plan-calib` |
 | Chief templates `.plan`, `.tpl`, `.layout` | Read names and some values | Yes: File > Templates > Import Chief Template... | `plan-chiefplan` |
 | Chief hotkeys, toolbars, preferences | Read | Hotkeys (chapter 13), and the default plan and layout template names from the preferences INI (chapter 1.7.1) | `plan-config` |
-| IFC, SketchUp, Revit, OBJ | Neither | (planned) | |
+| OBJ and glTF 3D models into the user library | Read | In progress (Round 11, the Library Browser work: `plan-import::{obj, gltf}` and the library's Import Model command); not described in this chapter yet | `plan-import` |
+| IFC, SketchUp, Revit | Neither | (planned) | |
 
 ### Tools: the commands that read and write files
 
 | Menu command | Hotkey | Does | Today |
 |---|---|---|---|
-| File > Open Plan... | `Cmd+O` | Opens a `.psplan`. | Works. |
-| File > Save, Save As... | `Cmd+S` | Writes a `.psplan`. | Works. |
+| File > Open Plan... | `Cmd+O` | Opens a `.psplan`; asks first when the open plan has unsaved changes (12.2a). | Works. |
+| File > Open Recent Documents | | The last ten plans opened or saved, newest first; Clear Menu empties the list. | Works. |
+| File > Close Plan | | Replaces the plan with an empty one, asking first about unsaved changes. | Works. |
+| File > Save, Save As... | `Cmd+S` | Writes a `.psplan` safely: a temporary file renamed over the plan, the old version kept in `Archives/` (12.2a). | Works. |
+| File > Save a Copy... | | Writes the plan to another file and goes on editing the original. | Works. |
+| File > Revert to Saved | | Reloads the saved file after a confirmation. | Works. |
+| File > Backup Entire Plan... | | A zip of the plan and the pictures it uses, in a folder you pick. | Works. |
+| File > Manage Auto Archives... | | The autosave and archive settings and the archive copies of this plan. | Works. |
 | File > Export > DXF... | | Writes the active floor as an ASCII R12 DXF (12.3). | Works. |
 | File > Export > Elevation DXF... (also 3D > Create Orthographic View > Export Elevations (DXF)...) | | Writes the four elevations as one DXF (12.3). | Works. |
 | File > Export > Construction Set PDF... | | The same as Create Construction Set. | Works. |
 | File > Export > glTF... | | The same as 3D > Export > glTF.... | Works. |
 | File > Export > (image, DWG) | | Not in the menu. | (planned) |
 | File > Import > Import Drawing (DXF)... | | Adds a DXF drawing to the active floor as CAD objects (12.4). | Works. |
-| File > Import > (DWG, image underlay) | | Not in the menu. | (planned) |
+| File > Import > Underlay Picture (PNG, JPEG, PDF)... (also Tools > Underlays...) | | Places a picture under the plan for tracing (12.4a). | Works. |
+| File > Import > (DWG) | | Not in the menu. | (planned) |
 | File > Templates > Import Chief Template... | | Seeds your defaults from a Chief `.plan`, `.tpl` or `.layout` (12.8). | Works. |
 | File > New Layout | | Makes the plan's layout and shows the layout view (11.3). | Works. |
 | File > Open Layout... | | Shows the layout view. | Works. |
-| File > Print > Print Layout... | | Saves the layout's printed pages (all, or a range) as a PDF (11.3). | Works. |
+| File > Print > Print... (the row 1 Print button) | `Cmd+P` | The Print dialog: a PDF file, the system printer or the viewer (11.3). | Works. |
+| File > Print > Print Layout... | | The same dialog for the layout's printed pages (all, or a range). | Works. |
 | File > Print > Export Layout PDF... | | Saves every printed page as a PDF. | Works. |
-| Row 1 Print button | `Cmd+P` | Prints the active view. | (planned) dimmed |
+| File > Print > Print Image... | | Saves the active floor's plan lines as a PNG. | Works. |
+| File > Export > Layout (JSON)..., File > Import > Layout (JSON)... | | Writes or reads the plan's layout as JSON. | Works. |
 | 3D > Export > glTF... | | Writes `.gltf` and `.bin`. | Works. |
 | Tools > Schedules > Create Construction Set... | | Writes a PDF set. | Works. |
 | Door/Window/Room/Wall Schedule > Export CSV... | | Writes a CSV. | Works. |
 | Schedule Specification > Export CSV... (a schedule placed in the plan) | | Writes a CSV of the placed schedule (11.2). | Works. |
-| Materials List... > Export CSV... | | Writes a CSV. | Works. |
+| Materials List... > Export CSV..., Export PDF... | | Writes the priced take-off as a CSV or a PDF (11.5). | Works. |
 | Checks window > Save Report... | | Writes Markdown. | Works. |
 | Ray Trace... > Save PNG... | | Writes a PNG. | Works. |
-| Library > Import Library (.calib, .calibz)... | | Adds a Chief catalog. | (planned) dimmed |
+| Library > Import Library..., Export Library... | | Writes or reads the User catalog as a `.calibz` zip (JSON + `.psm` models). Plan Studio only: Chief cannot open it, and Chief `.calib` files are read in place instead (`DECISIONS.md` item 19). | Works. |
+| Library > Import 3D Model (OBJ, glTF)... | | Adds an OBJ, glTF or GLB model to the User catalog with unit and up-axis options (6.4a). | Works. |
 | CAD > CAD to Walls... | | Converts pairs of parallel CAD lines to walls (12.4). | Works. |
 
 ## 12.2 Plan files (`.psplan`)
@@ -80,6 +97,8 @@ layout and the wall types stored in the plan. Lengths are inches.
   | `Floor.cad_attrs`, `Floor.cad_blocks` | Own style (color, weight, dash, fill, arrows, rich text) of CAD objects, and the names and insertion points of CAD blocks (chapter 5.5). Typed lists, not JSON |
   | `Project.text_macros`, `Project.note_types` | The plan's user text macros and note types (chapter 5.3). Typed values |
   | `Project.terrain` | The terrain, its contour interval, whether it is built, and the terrain walls, breaks and landscape objects (chapter 9) |
+  | `Floor.underlays` | Underlay pictures placed under the plan: file path, pixel size, placement, opacity, show and lock (12.4a). Typed list |
+  | `Project.object_materials` | Per-object material overrides from the Material Painter and Adjust Materials (chapter 10.8). Typed values |
   | `Project.layout` | The plan's one layout: pages, boxes, title block and page setup (chapter 11.3) |
   | `Project.info` | Project Information: client, designer, job number, date, revisions, custom fields (chapter 11.4) |
   | `Project.lights`, `Project.light_options` | The lights Add Lights places, and whether electrical light fixtures emit light (chapter 10.13) |
@@ -95,7 +114,65 @@ layout and the wall types stored in the plan. Lengths are inches.
 - Per-session settings (the "session only" fields that remain in the dialogs) are not in the file.
 - The file is readable and diff-friendly; keep it under version control if you like.
 
-Autosave, backups and an Open Recent list are (planned).
+File > Open Recent Documents lists the last ten plans (`recent_files` in `~/.plan-studio/settings.json`; a plan that has moved is left out). Saving is safe, there is an autosave and crash recovery, and the unsaved-changes prompts guard New, Open, Close and Quit: all of that is in 12.2a.
+
+## 12.2a File management: safe saves, archives, autosave and recovery
+
+Round 11 added `crates/plan-app/src/files.rs` (with `plan-core/src/io.rs` and the prompts in `dialogs/unsaved.rs`). It makes a crash, a full disk or a mistaken click lose as little as possible. All times in file names and prompts are **UTC**.
+
+### Saving
+
+- **Save** (`Cmd+S`) first copies the file now on disk into `Archives/<plan name>/` beside the plan, named `<plan name>-<yyyymmdd-hhmmss>.psplan`, then writes the new version to a temporary file next to the plan, flushes it to disk and **renames it over the plan**. The plan on disk is therefore always either the old version or the new one, never half of each.
+  If the write fails (a full disk, a locked folder) the status bar says "Save failed: ...; the file on disk is unchanged" and nothing was replaced. If only the archive copy fails, the save still happens and the status bar adds "(could not archive the old version: ...)".
+- The newest **20** archive copies of each plan stay; older ones are deleted when you save. Two saves inside one second both keep their copy (the second gets `-2`, `-3` ...). A first save (no file yet) has nothing to archive; Save As over an existing file archives the file it replaces, and Save As to a new name archives nothing.
+- **Save As...** adds `.psplan` if you leave it off. **Save a Copy...** (suggested name `<project> copy.psplan`) writes the plan elsewhere with the same safe write, keeps the original as the open plan and does not archive or mark anything saved.
+- The window title reads `Plan Studio — <file name>` (`Untitled` before the first save) and gets a dot (•) after the name while there are **unsaved changes**. The dot follows the plan's contents, not a flag: undo back to the saved state and it goes away. The status bar also shows how long ago you last saved, as "Saved just now", "Saved 2 min ago", "Saved 3 hr ago" and so on, with ", edited since" while there are unsaved changes (the time counts from the last save or open, or from when the new plan was made).
+
+### File menu commands
+
+| Command | What it does |
+|---|---|
+| **Close Plan** | Replaces the plan with an empty new one ("Closed the plan"). With unsaved changes it asks first. |
+| **Revert to Saved** | Reloads the file on disk. Needs a saved plan ("This plan has not been saved yet; there is nothing to revert to" otherwise). With unsaved changes it asks "Revert “name” to the last saved version? Changes made since then are lost." Revert is the default button. |
+| **Save a Copy...** | As above. |
+| **Backup Entire Plan...** | Asks for a folder and writes `<plan name>-backup-<yyyymmdd-hhmmss>.zip` there: the plan as `<plan name>.psplan`, a copy of every picture file the plan refers to under `assets/` (numbered `01-name.png`, ...), and a `README.txt` that lists each copy and the original path it came from. The plan itself still refers to pictures by their original paths; the zip is a safe copy, not a relocated plan. It finds underlay pictures, placed images and library items (PNG, JPEG, PDF, GIF, BMP, TIFF paths in the plan) that exist on disk; the status bar reports "Backed up to <file> (n picture(s), m not found)". The zip is stored without compression. |
+| **Manage Auto Archives...** | The window below. |
+| **Open Recent Documents > Clear Menu** | Empties the recent list ("Cleared the recent plans list"). |
+
+**Manage Auto Archives** (File menu) holds the settings and the archive copies of the open plan:
+
+| Control | Meaning |
+|---|---|
+| Autosave while there are unsaved changes | On by default. |
+| Every n minutes | 5 by default, 1 to 120. |
+| Keep the last n archive copies of each plan | 20 by default, 1 to 500. |
+| The archives list | The ten newest copies of this plan, each with an **Open** button (it asks first if the open plan has unsaved changes), **Show Archives Folder** (opens `Archives/<plan name>/` in the system file manager) and **Back Up Entire Plan...**. "None yet; a copy is kept each time you save over a saved plan." before the second save, and "Save the plan to start its archive." for an unsaved plan. |
+
+The settings are the `files` key of `~/.plan-studio/settings.json` (`autosave`, `autosave_minutes`, `archive_keep`) and are written when you change them.
+
+### Autosave and recovery
+
+- **Autosave.** While the plan has unsaved changes and the interval has passed, the program writes `Archives/<plan name>/autosave.psplan` (for a plan never saved, `~/.plan-studio/recovery/untitled-autosave.psplan`). It **never touches the real file**. The autosave is deleted when you save, when you answer Don't Save, and when you undo back to the saved state.
+- **Opening a plan whose autosave is newer than the file** (the program or the machine stopped after the last save) shows **Recover Unsaved Work**: "An autosave of “name” from <time> UTC is newer than the saved file." **Recover** (`Enter`) loads the autosave as the open plan, marks it unsaved and says "Recovered the unsaved work; save it to keep it"; the autosave is deleted when you next save. **Discard** deletes it. Discard has no key, so a stray `Enter` cannot throw work away.
+- **After a crash.** A panic in the editor, and an exit that skips the unsaved-changes prompt (`Cmd+Q` on macOS is handled by the system and quits at once), write the unsaved plan to `~/.plan-studio/recovery/recovery-<yyyymmdd-hhmmss>.psplan` (the newest 10 stay). The next launch, when no plan is named on the command line, offers the newest one: "Plan Studio did not close normally. A copy of an untitled plan from <time> UTC was kept." Recover opens it as an untitled plan (Save asks for a name); Discard deletes it and the older crash copies. A plan that was open and had no changes writes nothing, and neither does a new plan nobody touched.
+
+### Unsaved-changes prompts
+
+New Plan, Open (including Open Recent, a dropped file, a Finder open and an archive copy), Close Plan and Quit all stop with **Unsaved Changes** when the plan has unsaved changes: "Do you want to save the changes you made to “name” before you start a new plan / open another plan / close it / quit?" The window's close button asks too. The buttons and keys:
+
+| Button | Key | Does |
+|---|---|---|
+| Save | `Enter` | Saves (Save As for a plan with no file; cancelling that dialog stays where you were), then carries on. |
+| Don't Save | `Cmd+D` (`Ctrl+D` off macOS) | Carries on and discards the changes and the autosave. |
+| Cancel | `Esc` | Stays. |
+
+### Opening a plan from outside the program
+
+- **Drag and drop.** Dropping a `.psplan` on the window opens it (with the prompt above if needed); any other file is refused with "Drop a .psplan file to open it".
+- **Command line.** `plan-studio house.psplan` opens that plan at the first frame. On Windows and Linux a double-click passes the path this way, as a plain path or a `file://` URL (`%20`-style escapes are decoded); options and macOS's `-psn_...` argument are skipped.
+- **Finder (macOS).** A double-click on a `.psplan`, a drop on the Dock icon and `open -a "Plan Studio" file.psplan` open the plan, both when the program starts and when it is already running (in which case the unsaved-changes prompt applies). Finder does not put the file on the command line: it sends an "open documents" Apple Event, and `mac_open.rs` registers its own handler for it through the Objective-C runtime (winit does not). The `.app` built by `scripts/macos-bundle.sh` declares the `.psplan` type (identifier `com.danielallendesigns.plan-studio.psplan`, conforming to JSON) and makes Plan Studio its owner, so the extension opens here. On Linux, copy `scripts/linux/plan-studio-psplan.xml` to `~/.local/share/mime/packages/` and run `update-mime-database ~/.local/share/mime` for the same (see the comment in `plan-studio.desktop`).
+
+Limits: the dirty check hashes the whole plan, which takes a moment on a very large one, so it runs a short while after the last change and never during a drag. Archives and autosaves are `.psplan` files like any other; the program does not clean `Archives/` folders of plans you deleted. The pictures a plan uses are not copied into archives or autosaves (Backup Entire Plan does copy them).
 
 ## 12.3 DXF export (works)
 
@@ -150,9 +227,16 @@ Pick a `.dxf` file; the **Import Drawing (DXF)** window opens before anything is
 - **Units**: As the file says (default), Inches, Feet, Millimeters, Centimeters or Meters. A file with no
   units reads as inches. **Layer name prefix** is put in front of every imported layer name (blank by default).
   "Size in the plan" shows the drawing's declared extents in the current units, updating as you change Units.
+- **Scale** (on top of the units), **Rotation** (degrees, about the insertion point), **Base point** (the drawing's
+  origin or the lower-left corner of its extents) and **Insert it at** (x and y, feet-inches) place the drawing in the plan.
+- **Layer mapping**: every DXF layer is listed with its object count and a choice of where it goes: Keep (under the prefix),
+  Do not import, one of the plan's layers (a layer named like a plan layer is preselected), or a new layer of a name you type.
+  Blocks (INSERTs) are always exploded.
+- **Convert to walls** (with the layer to read, "A-WALL" preselected when there is a wall layer) also runs the CAD to Walls matcher
+  with its default options on that layer's lines and adds the walls in the same undo step.
 - **Import** adds the drawing to the active floor as CAD objects, as one undo step ("Import Drawing"). Layers the
   plan does not have are created, hidden when the DXF layer was off. The status bar says "Imported n objects (k
-  new layers)", or "The drawing had nothing to import".
+  new layers)", or "The drawing had nothing to import", and the number of walls when it made some.
 
 ### CAD > CAD to Walls...
 
@@ -185,6 +269,26 @@ lines on the floor the status bar says "CAD to Walls: there are no CAD lines on 
 - The reader round-trips what `write_dxf` writes.
 
 
+## 12.4a Underlays (PNG, JPEG, scanned PDF)
+
+An **underlay** is a picture placed under the plan for tracing: a scanned survey, an existing-house drawing, a photo
+of a sketch. File > Import > Underlay Picture and Tools > Underlays... open the **Underlays** window. Underlays live on the floor
+(`Floor.underlays`), on the **Underlays** layer (created on the first import; hide or lock it like any layer), and are drawn above the
+grid and under everything else.
+
+- **Pictures**: PNG; baseline JPEG (sequential Huffman, grayscale or YCbCr; a progressive JPEG is refused with a message, save it
+  as PNG; the shared decoder in `plan-library` reads progressive files too, but the underlay tool still has its own baseline-only decoder); and PDF files that hold scanned pages as JPEG pictures (the **PDF page** box picks which). This build has no PDF renderer, so
+  a PDF drawn with vector lines and text cannot be used: print its page to a PNG first. The picture is kept by file path (pictures taken
+  out of a PDF are saved under `~/.plan-studio/underlays/`), decoded on a thread, and drawn at 2,048 pixels on its long side at most.
+  While it loads, or when it cannot be shown, a framed placeholder with the reason is drawn; it still moves, scales and calibrates.
+- A new picture is centered on the walls (else the origin) at a placeholder scale of 40 feet on its long side. **Calibrate**: with the
+  Underlay tool click two points on the picture (a printed dimension, a wall of known length), type the real distance
+  (`24'-0"`) in the window and Apply. The picture is scaled about the first point so those two points are exactly that far apart
+  (one undo step, "Calibrate Underlay"). **Real width** sets the width directly, for pictures with no good second point.
+- **Opacity** (0-100%, default 60%), **Rotation** (about the picture's middle), **Show** and **Lock** (a locked underlay, or a locked
+  Underlays layer, refuses to move, scale or calibrate), **Move** (the Underlay tool: drag the picture; click another to pick it) and Delete.
+  Every change is one named undo step. Underlays are not printed or exported.
+
 ## 12.5 glTF export (works)
 
 3D > Export > **glTF...** asks for a file name and writes `<name>.gltf` (JSON) and `<name>.bin`
@@ -198,10 +302,11 @@ empty" if the plan has no geometry. Open the file in Blender, a glTF viewer or a
 
 - **PDF**: Tools > Schedules > Create Construction Set... (chapter 11.5) writes the automatic set; File > Print > Print Layout... and
   Export Layout PDF... write the plan's own layout (chapter 11.3), and a vector elevation or section view has a Layout PDF... button (chapter 10.7).
-  The PDF writer is the same dependency-free PDF 1.4 one for all of them; Print means "save a PDF", not a printer dialog.
+  File > Print > Print... opens the Print dialog (paper, scale, tiling, color, page range) and sends the PDF to a file, the system printer (CUPS `lp`) or the viewer.
+  The PDF writer is the same dependency-free PDF 1.4 one for all of them. A layout PDF carries one bookmark per printed sheet.
 - **PNG**: the Ray Trace window's Save PNG... (chapter 10.6), uncompressed 8-bit RGBA.
 - **CSV**: every schedule window and the Materials List window have Export CSV.... Fields are
-  quoted as needed; open them in any spreadsheet.
+  quoted as needed; open them in any spreadsheet. The Materials List CSV has the columns Category, ID, Description, Size, Count, Unit, Unit Price and Price, and a Total row when any row is priced; the Materials List window also has Export PDF....
 - **Markdown**: the Plan Check window's Save Report... writes findings grouped by severity.
 
 ## 12.7 Chief catalogs (`.calib`, `.calibz`)
@@ -246,7 +351,7 @@ What is not decoded yet (so some items stay placeholders):
 - Elevation (floor to bottom) is always 0; plant spread and height are inferred, and a plant's plan symbol is a
   canopy circle where Chief draws a textured image.
 - Textures: the placed object's 3D mesh is drawn untextured (the editor fits the decoded meshes to the symbol, and shows a box when the
-  geometry is partial; chapter 6.6). `LibraryObjects.Type`, texture link tables and `Content/<hash>-01` image resolution are not decoded.
+  geometry is partial; chapter 6.6). `LibraryObjects.Type`, texture link tables and `Content/<hash>-01` image resolution are not decoded. (The textures of walls, roofs, floors and the landscape in the 3D view are a different thing: they come from Chief's texture folders, chapter 10.8a.)
 
 Opening a `.calibz` writes its embedded `.calib` to `<temp dir>/plan-studio/` as a cache, a derived copy
 of your own file outside the repository; delete it any time. Details: `docs/chief-library-format.md`.
@@ -254,7 +359,8 @@ of your own file outside the repository; delete it any time. Details: `docs/chie
 ### Licensing rule
 
 Chief catalogs, their thumbnails and textures are Chief Architect and manufacturer licensed content.
-Plan Studio **reads them in place** from your installation; it never ships, copies or commits any of it.
+Plan Studio **reads them in place** from your installation; it never ships, copies or commits any of it. That includes the texture files the 3D view and the ray tracer
+use when your Chief install is present (chapter 10.8a): they are decoded in memory at run time, never written anywhere, and the program works without them.
 `.gitignore` excludes `*.calib`, `*.calibz`, `*.calib_error`, `*.plan` and `*.layout`. Tests use synthetic
 fixtures built at test time; tests against a real install are marked `#[ignore]`. This is decision 3 in
 `DECISIONS.md`.
@@ -282,6 +388,8 @@ uses the decoded wall stacks first, then a stack found by the older name scan, t
 rough ceiling and stem wall heights), roof and floor finish materials, arrow style, text colour, and the layout template's pages, boxes and title block
 (the template stores no page or box objects the reader could identify). Chief's own `Default Text Style` is 6" Arial in the stock template but 4.5"
 Avenir in Daniel's; the seed keeps the names Plan Studio already ships at their current values.
+
+**Reading a plan's content (Round 11, in progress).** Everything above reads a template's *defaults*. A new module, `plan_chiefplan::import` (`import_plan(path, &ImportOptions)`), reads the *content* of a Chief `.plan`: floors (count, order, elevation and ceiling height), walls (line, wall type, height, side), the doors and windows that are children of a wall (center, width, height), named rooms and dimensions, plus an `ImportReport` with the counts, warnings and the classes it skipped. Confidence is uneven (floor names, door styles and dimension line offsets are guesses) and everything else in the file is counted, not imported. As of this writing no menu command calls it and the format notes it cites are still being written, so File > Import has no `.plan` entry: the builder is still working, and this paragraph describes only what the code in the working tree shows.
 
 **Automatic seeding.** You do not have to import to use these values. Plan Studio finds your default plan and layout templates (from Chief's preferences INI,
 else by their stock names), decodes them once into `~/.plan-studio/template-seed.json`, and lays the decoded wall types, text styles, dimension sets and default height over its

@@ -18,6 +18,74 @@ pub enum Placement {
     Countertop,
 }
 
+/// What kind of object a library item is (the Library Browser "type" filter
+/// and the default layer follow from it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    /// A plain plan symbol (furniture, fixtures drawn from a block).
+    #[default]
+    Symbol,
+    /// A saved cabinet; placing it makes a cabinet object.
+    Cabinet,
+    /// A plumbing or appliance fixture.
+    Fixture,
+    /// An electrical device.
+    Device,
+    /// A saved group of CAD lines, arcs and circles.
+    CadBlock,
+    /// A saved text note.
+    Text,
+    /// A material swatch.
+    Material,
+    /// A picture (Create Image Library).
+    Image,
+    /// An imported 3D model (OBJ or glTF).
+    Model,
+}
+
+impl ItemKind {
+    /// Every kind, in the order the type filter lists them.
+    pub const ALL: [ItemKind; 9] = [
+        ItemKind::Symbol,
+        ItemKind::Cabinet,
+        ItemKind::Fixture,
+        ItemKind::Device,
+        ItemKind::CadBlock,
+        ItemKind::Text,
+        ItemKind::Material,
+        ItemKind::Image,
+        ItemKind::Model,
+    ];
+
+    /// Display name.
+    pub fn label(self) -> &'static str {
+        match self {
+            ItemKind::Symbol => "Symbol",
+            ItemKind::Cabinet => "Cabinet",
+            ItemKind::Fixture => "Fixture",
+            ItemKind::Device => "Device",
+            ItemKind::CadBlock => "CAD Block",
+            ItemKind::Text => "Text",
+            ItemKind::Material => "Material",
+            ItemKind::Image => "Image",
+            ItemKind::Model => "3D Model",
+        }
+    }
+
+    fn is_symbol(&self) -> bool {
+        *self == ItemKind::Symbol
+    }
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+fn is_zero3(v: &[f64; 3]) -> bool {
+    v.iter().all(|c| *c == 0.0)
+}
+
 /// One placeable object in a catalog (a Library Browser entry).
 ///
 /// `width` is the extent along the symbol's X axis and `depth` the extent
@@ -46,12 +114,39 @@ pub struct CatalogItem {
     pub tags: Vec<String>,
     /// The plan-view block.
     pub symbol: Symbol2d,
-    /// Reserved: path to a glTF model for 3D views (not used yet).
+    /// Path of the 3D model file for 3D views. User-library items keep their
+    /// mesh as a `.psm` file ([`crate::model::Model3d`]) relative to the
+    /// library folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model3d: Option<String>,
     /// Optional manufacturer name for product-specific items.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manufacturer: Option<String>,
+    /// What the item is (see [`ItemKind`]).
+    #[serde(default, skip_serializing_if = "ItemKind::is_symbol")]
+    pub kind: ItemKind,
+    /// Style keyword (`"modern"`, `"traditional"`), matched by the style
+    /// filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// Default layer of placed copies; `None` uses the category's layer
+    /// ([`crate::rules::default_layer`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// Overrides whether the item turns to face away from the nearest wall
+    /// when placed; `None` follows [`Placement`] (wall-mounted items do).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_rotate: Option<bool>,
+    /// Rotation of the 3D model about the vertical axis, degrees.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub model_rotation: f64,
+    /// Offset of the 3D model from the symbol origin (x, up, plan y), inches.
+    #[serde(default, skip_serializing_if = "is_zero3")]
+    pub model_origin: [f64; 3],
+    /// The saved object itself for kinds that place a real plan object: a
+    /// cabinet's JSON, or the CAD items of a block / text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 impl CatalogItem {
@@ -76,6 +171,13 @@ impl CatalogItem {
             symbol,
             model3d: None,
             manufacturer: None,
+            kind: ItemKind::Symbol,
+            style: None,
+            layer: None,
+            auto_rotate: None,
+            model_rotation: 0.0,
+            model_origin: [0.0; 3],
+            payload: None,
         }
     }
 

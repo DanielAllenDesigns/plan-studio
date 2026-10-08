@@ -3,28 +3,73 @@
 //! The opening is centered under the pointer's projection onto the wall and
 //! snaps to the grid snap unit (1"); new openings come from the defaults
 //! templates (exterior door on exterior walls, interior door otherwise,
-//! window). A ghost with temporary dimensions to both wall ends follows the
-//! pointer. The tool stays active after a placement.
+//! window), sized for their flavor by the variant defaults (Doorway, Sliding,
+//! Pocket, Bifold, Barn, Garage, Double and Shower doors; Casement, Fixed,
+//! Sliding, Awning, Hopper, Bay, Bow and Box windows, Pass-Through and Wall
+//! Niche). A ghost with temporary dimensions to both wall ends (and the width
+//! and neighbouring openings) follows the pointer. The tool stays active after
+//! a placement.
 //!
 //! Door swing and hinge (DW-8, DW-76) are derived from the pointer, not copied
 //! from the template: the door swings toward the side of the wall the pointer
 //! is on (`swing_flipped` false for the wall's left side, true for the right;
 //! a pointer exactly on the centerline keeps the left), and the hinge goes to
 //! the jamb nearer the closer wall end (`hinge_at_end` when the center is in
-//! the far half of the wall). Windows are unaffected.
+//! the far half of the wall). The plain window is unaffected; casements follow
+//! the pointer like doors.
 
-use super::{PointerEvent, Tool, ToolId, ToolResult};
+use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::place_from_template;
-use crate::editor::tempdim::{self, jamb_dims, TempDims};
-use crate::editor::{render, Camera, EditorContext, ObjectRef};
+use crate::editor::opening_view::draw_opening;
+use crate::editor::tempdim::{self, opening_temp_dims, TempDims};
+use crate::editor::{render, Camera, EditAction, EditorContext, ObjectRef};
 use crate::toolbar::ViewFlag;
 use eframe::egui;
 use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
 use plan_core::openings::door_defaults_for_pointer;
-use plan_core::{Id, OpeningKind};
+use plan_core::{Id, OpeningKind, OpeningStyle};
+
+/// Which flavor of door or window a tool places.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OpeningVariant {
+    pub kind: OpeningKind,
+    pub style: OpeningStyle,
+}
+
+impl OpeningVariant {
+    pub const fn door(style: OpeningStyle) -> Self {
+        Self {
+            kind: OpeningKind::Door,
+            style,
+        }
+    }
+
+    pub const fn window(style: OpeningStyle) -> Self {
+        Self {
+            kind: OpeningKind::Window,
+            style,
+        }
+    }
+
+    /// The tool id a flyout entry for this flavor uses: the plain Hinged Door
+    /// and Window keep `Door` and `Window`.
+    pub fn tool_id(self) -> ToolId {
+        match (self.kind, self.style) {
+            (OpeningKind::Door, OpeningStyle::Hinged) => ToolId::Door,
+            (OpeningKind::Window, OpeningStyle::Window) => ToolId::Window,
+            _ => ToolId::OpeningVariant(self),
+        }
+    }
+
+    /// Chief's name of the tool.
+    pub fn name(self) -> &'static str {
+        self.style.name(self.kind)
+    }
+}
 
 pub struct OpeningTool {
     kind: OpeningKind,
+    style: OpeningStyle,
     hover: Option<(Id, f64)>,
     /// World position of the last pointer move (drives the ghost's swing).
     hover_pointer: Point,
@@ -34,6 +79,7 @@ impl Default for OpeningTool {
     fn default() -> Self {
         Self {
             kind: OpeningKind::Door,
+            style: OpeningStyle::Hinged,
             hover: None,
             hover_pointer: Point::new(0.0, 0.0),
         }
@@ -61,6 +107,42 @@ fn target(cx: &EditorContext, p: Point, alt: bool) -> Option<(Id, f64)> {
     Some((wall.id, offset))
 }
 
+impl OpeningTool {
+    /// The opening a click at `center` on `wall` would place: the defaults
+    /// template of the wall, sized for the flavor, its swing and hinge taken
+    /// from the pointer where the flavor has them.
+    fn opening_for(
+        &self,
+        cx: &EditorContext,
+        wall: &plan_core::Wall,
+        pointer: Point,
+        center: f64,
+    ) -> (crate::dialogs::OpeningTarget, plan_core::Opening) {
+        let (target_key, template) = cx.opening_template(self.kind, wall.kind);
+        let mut o = cx.defaults.opening_variants.apply(&template, self.style);
+        if self.swings() {
+            (o.swing_flipped, o.hinge_at_end) = door_defaults_for_pointer(wall, pointer, center);
+        }
+        o.wall_id = wall.id;
+        (target_key, o)
+    }
+
+    /// Does the flavor have a swing side and a hinge to take from the pointer?
+    fn swings(&self) -> bool {
+        match self.kind {
+            OpeningKind::Door => true,
+            OpeningKind::Window => self.style == OpeningStyle::Casement,
+        }
+    }
+
+    fn variant(&self) -> OpeningVariant {
+        OpeningVariant {
+            kind: self.kind,
+            style: self.style,
+        }
+    }
+}
+
 impl Tool for OpeningTool {
     fn id(&self) -> ToolId {
         match self.kind {
@@ -70,16 +152,22 @@ impl Tool for OpeningTool {
     }
 
     fn name(&self) -> &'static str {
-        match self.kind {
-            OpeningKind::Door => "Hinged Door",
-            OpeningKind::Window => "Window",
-        }
+        self.variant().name()
     }
 
     fn hint(&self) -> String {
-        match self.kind {
-            OpeningKind::Door => "Door: click on a wall to place a door".into(),
-            OpeningKind::Window => "Window: click on a wall to place a window".into(),
+        let what = match self.kind {
+            OpeningKind::Door => "a door",
+            OpeningKind::Window => "a window",
+        };
+        let kind = match self.kind {
+            OpeningKind::Door => "Door",
+            OpeningKind::Window => "Window",
+        };
+        if self.style == OpeningStyle::default_for(self.kind) {
+            format!("{kind}: click on a wall to place {what}")
+        } else {
+            format!("{}: click on a wall to place {what}", self.name())
         }
     }
 
@@ -89,8 +177,18 @@ impl Tool for OpeningTool {
 
     fn set_variant(&mut self, id: ToolId) {
         match id {
-            ToolId::Door => self.kind = OpeningKind::Door,
-            ToolId::Window => self.kind = OpeningKind::Window,
+            ToolId::Door => {
+                self.kind = OpeningKind::Door;
+                self.style = OpeningStyle::Hinged;
+            }
+            ToolId::Window => {
+                self.kind = OpeningKind::Window;
+                self.style = OpeningStyle::Window;
+            }
+            ToolId::OpeningVariant(v) => {
+                self.kind = v.kind;
+                self.style = v.style;
+            }
             _ => {}
         }
     }
@@ -112,16 +210,10 @@ impl Tool for OpeningTool {
         let Some((wid, center)) = target(cx, p.world, p.modifiers.alt) else {
             return ToolResult::consumed();
         };
-        let Some(wall_kind) = cx.floor().wall(wid).map(|w| w.kind) else {
+        let Some(wall) = cx.floor().wall(wid).cloned() else {
             return ToolResult::consumed();
         };
-        let (target_key, mut template) = cx.opening_template(self.kind, wall_kind);
-        if self.kind == OpeningKind::Door {
-            if let Some(wall) = cx.floor().wall(wid) {
-                (template.swing_flipped, template.hinge_at_end) =
-                    door_defaults_for_pointer(wall, p.world, center);
-            }
-        }
+        let (target_key, template) = self.opening_for(cx, &wall, p.world, center);
         let extras = cx.default_opening_extras(target_key);
         let label = match self.kind {
             OpeningKind::Door => "Place Door",
@@ -131,8 +223,21 @@ impl Tool for OpeningTool {
         let fl = cx.floor;
         match place_from_template(&mut cx.project, fl, wid, center, &template) {
             Some(id) => {
+                // The tab values the Default Settings dialog set this
+                // session go onto the new opening.
+                if let Some(spec) = extras.default_spec().cloned() {
+                    if let Some(o) = cx.project.floors[fl]
+                        .openings
+                        .iter_mut()
+                        .find(|o| o.id == id)
+                    {
+                        o.extras.spec = spec;
+                    }
+                }
                 cx.extras.openings.insert(id, extras);
-                cx.selection.set(ObjectRef::Wall(wid));
+                // The new opening is selected (DW-77) so its Edit toolbar
+                // shows; the tool stays active for the next one.
+                cx.selection.set(ObjectRef::Opening(id));
                 cx.status.clear();
                 cx.mark_dirty();
                 ToolResult::committed(label)
@@ -143,6 +248,41 @@ impl Tool for OpeningTool {
                 ToolResult::consumed()
             }
         }
+    }
+
+    /// Esc first lets go of the opening just placed, leaving the tool ready
+    /// for the next one; a second Esc ends the tool.
+    fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        if k.is(egui::Key::Escape)
+            && cx
+                .selection
+                .items
+                .iter()
+                .any(|o| matches!(o, ObjectRef::Opening(_)))
+        {
+            cx.selection.clear();
+            return ToolResult {
+                repaint: true,
+                ..ToolResult::consumed()
+            };
+        }
+        ToolResult::ignored()
+    }
+
+    /// The Edit toolbar of the opening just placed: Center on Wall Segment,
+    /// Flip Hinge, Mull... as under Select.
+    fn edit_toolbar(&self, cx: &EditorContext) -> Vec<EditAction> {
+        if !cx
+            .selection
+            .items
+            .iter()
+            .any(|o| matches!(o, ObjectRef::Opening(_)))
+        {
+            return Vec::new();
+        }
+        let mut v = cx.common_edit_actions();
+        v.extend(cx.extra_edit_actions());
+        v
     }
 
     fn draw_overlay(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
@@ -160,22 +300,24 @@ impl Tool for OpeningTool {
             wall,
             egui::Stroke::new(3.0_f32, pal.hover),
         );
-        let (_, mut ghost) = cx.opening_template(self.kind, wall.kind);
-        ghost.wall_id = wid;
-        if self.kind == OpeningKind::Door {
-            (ghost.swing_flipped, ghost.hinge_at_end) =
-                door_defaults_for_pointer(wall, self.hover_pointer, center);
-        }
+        let (_, mut ghost) = self.opening_for(cx, wall, self.hover_pointer, center);
         let half = ghost.width * 0.5;
         let len = wall.length();
         if len < ghost.width + 4.0 {
             return;
         }
         ghost.center_offset = center.clamp(half + 2.0, len - half - 2.0);
-        render::draw_opening(painter, cam, wall, &ghost, pal, true);
+        let exterior = plan_core::exterior_sign(wall, &cx.rooms);
+        draw_opening(painter, cam, wall, &ghost, pal, exterior, true);
         if cx.view_flags.contains(&ViewFlag::TemporaryDimensions) {
             let dims = TempDims {
-                dims: jamb_dims(wall, &ghost, ObjectRef::Wall(wid)).to_vec(),
+                dims: opening_temp_dims(
+                    cx.floor(),
+                    wall,
+                    &ghost,
+                    ObjectRef::Wall(wid),
+                    &tempdim::TempLocate::of(cx),
+                ),
                 editing: None,
             };
             tempdim::draw(&dims, painter, cam, pal, &cx.dim_format());
@@ -288,5 +430,131 @@ mod tests {
         assert_eq!(cx.undo().as_deref(), Some("Place Door"));
         assert!(cx.floor().openings.is_empty());
         assert!(!cx.can_undo());
+    }
+
+    #[test]
+    fn the_new_opening_is_selected_with_its_edit_toolbar_and_esc_lets_go() {
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        assert!(t.edit_toolbar(&cx).is_empty());
+        click(&mut t, &mut cx, 120.0, 0.0);
+        let id = cx.floor().openings_on(w).next().unwrap().id;
+        // The opening, not the wall, is selected (DW-77).
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Opening(id)));
+        // Its Edit toolbar shows while the tool stays active.
+        let labels: Vec<&str> = t.edit_toolbar(&cx).iter().map(|a| a.label).collect();
+        assert!(labels.contains(&"Center on Wall Segment"), "{labels:?}");
+        assert!(labels.contains(&"Flip Hinge"), "{labels:?}");
+        assert_eq!(t.id(), ToolId::Door);
+        // A second click places another one and selects that.
+        click(&mut t, &mut cx, 40.0, 0.0);
+        let other = cx.floor().openings_on(w).find(|o| o.id != id).unwrap().id;
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Opening(other)));
+        // Esc lets go of the selection and the tool is still the tool; the
+        // next Esc is the app's, which returns to Select.
+        let r = t.key(&mut cx, KeyEvent::escape());
+        assert!(r.consumed);
+        assert!(cx.selection.is_empty());
+        assert!(t.edit_toolbar(&cx).is_empty());
+        assert!(!t.key(&mut cx, KeyEvent::escape()).consumed);
+        // One undo step removes the opening again and clears the selection.
+        click(&mut t, &mut cx, 200.0, 0.0);
+        assert_eq!(cx.undo().as_deref(), Some("Place Door"));
+    }
+
+    #[test]
+    fn a_placed_opening_carries_the_tab_values_of_the_default_dialog() {
+        use plan_core::openings::{ArchType, ShutterStyle};
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        t.set_variant(ToolId::Window);
+        // The Default Settings dialog kept shutters and an arch this session.
+        let key = crate::dialogs::OpeningTarget::DefaultWindow;
+        let mut ex = cx.default_opening_extras(key);
+        let mut dialog = crate::dialogs::OpeningDialog::for_default(
+            key,
+            plan_core::Opening::default_window(0, 0, 0.0),
+            ex.clone(),
+        );
+        dialog.draft_mut().extras.spec.shutters.style = ShutterStyle::Louver;
+        dialog.draft_mut().extras.spec.arch.kind = ArchType::RoundTop;
+        dialog.sync_stored_for_test();
+        ex = dialog.extras().clone();
+        cx.extras.openings.insert(key.key(), ex);
+        click(&mut t, &mut cx, 120.0, 0.0);
+        let o = cx.floor().openings_on(w).next().unwrap();
+        assert_eq!(o.extras.spec.shutters.style, ShutterStyle::Louver);
+        assert_eq!(o.extras.spec.arch.kind, ArchType::RoundTop);
+        // Without a dialog edit, the variant defaults supply the spec.
+        let (mut cx2, w2) = setup();
+        cx2.defaults.opening_variants.window_spec.sill.enabled = true;
+        click(&mut t, &mut cx2, 120.0, 0.0);
+        assert!(
+            cx2.floor()
+                .openings_on(w2)
+                .next()
+                .unwrap()
+                .extras
+                .spec
+                .sill
+                .enabled
+        );
+    }
+
+    #[test]
+    fn placing_the_first_opening_gives_an_old_plan_its_label_layers() {
+        let (mut cx, _) = setup();
+        cx.project
+            .layers
+            .layers
+            .retain(|l| !l.name.ends_with(", Labels"));
+        assert!(cx.project.layers.get("Doors, Labels").is_none());
+        let mut t = OpeningTool::default();
+        click(&mut t, &mut cx, 120.0, 0.0);
+        assert!(cx.project.layers.get("Doors, Labels").is_some());
+        assert!(cx.project.layers.get("Windows, Labels").is_some());
+        // And it is part of the same undo step.
+        cx.undo();
+        assert!(cx.project.layers.get("Doors, Labels").is_none());
+    }
+
+    #[test]
+    fn shutters_show_in_the_elevation_of_the_outside() {
+        use plan_core::openings::ShutterStyle;
+        use plan_elevation::{elevation_from_project, Options, ViewDir};
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        t.set_variant(ToolId::Window);
+        click(&mut t, &mut cx, 120.0, 0.0);
+        let before = elevation_from_project(&cx.project, ViewDir::Back, &Options::default());
+        cx.project.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.wall_id == w)
+            .unwrap()
+            .extras
+            .spec
+            .shutters
+            .style = ShutterStyle::Louver;
+        let after = elevation_from_project(&cx.project, ViewDir::Back, &Options::default());
+        // Louvered shutters stand each side of the window: more lines, and
+        // the drawing is no narrower than the window's frame.
+        assert!(
+            after.lines.len() > before.lines.len() + 20,
+            "{} vs {}",
+            after.lines.len(),
+            before.lines.len()
+        );
+        let louver_x = after
+            .lines
+            .iter()
+            .map(|l| l.a.x.min(l.b.x))
+            .fold(f64::MAX, f64::min);
+        let wall_x = before
+            .lines
+            .iter()
+            .map(|l| l.a.x.min(l.b.x))
+            .fold(f64::MAX, f64::min);
+        assert!(louver_x >= wall_x - 1e-6);
     }
 }

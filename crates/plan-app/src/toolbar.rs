@@ -7,6 +7,8 @@
 //! hotkey tooltips all read those same tables. Rendering returns [`Action`]s;
 //! the app applies them.
 
+pub mod config;
+
 use crate::icons;
 use crate::shell::view3d_panel::View3dCommand;
 use crate::theme::{scale, CanvasTheme};
@@ -15,6 +17,7 @@ use crate::tools::details::DetailsVariant;
 use crate::tools::foundation::FoundationVariant;
 use crate::tools::framing::FramingVariant;
 use crate::tools::images::ImageMode;
+use crate::tools::opening::OpeningVariant;
 use crate::tools::wall::{WallStyle as Style, WallVariant};
 use crate::tools::ToolId;
 
@@ -33,8 +36,11 @@ const ARROW_PX: f32 = 12.0;
 const GAP_PX: f32 = 4.0;
 const VIEW_SELECTOR_PX: f32 = 270.0;
 const FLOOR_LABEL_PX: f32 = 20.0;
-const ACTIVE_FILL: Color32 = Color32::from_rgb(0x5A, 0x5A, 0x5A);
-const HOVER_FILL: Color32 = Color32::from_rgb(0x4A, 0x4A, 0x4A);
+/// Flyout popups: row height (bigger than a menu row) and minimum width.
+const FLYOUT_ROW_PX: f32 = 30.0;
+const FLYOUT_MIN_WIDTH: f32 = 280.0;
+/// The plate behind toolbar icons when Preferences > Icon halo is on.
+const HALO_FILL: Color32 = Color32::from_rgb(0x41, 0x41, 0x41);
 const SEPARATOR_COLOR: Color32 = Color32::from_rgb(0x70, 0x70, 0x70);
 /// How long a multi-key hotkey prefix (like the `D` of `D, H`) stays pending.
 pub const SEQUENCE_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -118,6 +124,8 @@ pub enum Action {
     /// The wall flyout's currently selected variant (hotkey alias `2`).
     CurrentWall,
     FileNew,
+    /// File > Import > Chief Plan... (walls, openings, floors, rooms from a .plan).
+    ImportChiefPlan,
     /// File > New Layout: a layout from Daniel's layout template.
     FileNewLayout,
     FileOpen,
@@ -151,6 +159,10 @@ pub enum Action {
     ProjectInfo,
     /// Edit > Find/Replace Text...
     FindReplaceText,
+    /// Edit > Snap Settings...
+    SnapSettings,
+    /// Edit > Edit Behaviors...
+    EditBehaviors,
     /// Tools > Toolbars and Hotkeys > Customize Hotkeys...
     OpenHotkeyDialog,
     /// Tools > Layer Settings > Display Options...
@@ -158,6 +170,14 @@ pub enum Action {
     // Build > Floor, Tools > Space Planning / Checks / Schedules (build_tools).
     BuildNewFloor,
     InsertFloor,
+    /// Build > Floor > Insert New Floor Below.
+    InsertFloorBelow,
+    /// Floor Defaults of the active floor (toolbar button, Build > Floor).
+    FloorDefaults,
+    /// Edit > Default Settings > Floors and Rooms > Floor Defaults.
+    PlanFloorDefaults,
+    /// The Reference Display dialog (Tools > Floor/Reference Display).
+    ReferenceDisplayOptions,
     DeleteFloor,
     DeleteFoundation,
     ExchangeFloorAbove,
@@ -298,6 +318,16 @@ const INTERIOR_WALL: Action = Action::SetTool(ToolId::Wall {
     kind: WallKind::Interior,
 });
 const DOOR: Action = Action::SetTool(ToolId::Door);
+const DOORWAY: Action = door_action(plan_core::OpeningStyle::Doorway);
+const SLIDING_DOOR: Action = door_action(plan_core::OpeningStyle::Sliding);
+const POCKET_DOOR: Action = door_action(plan_core::OpeningStyle::Pocket);
+const GARAGE_DOOR: Action = door_action(plan_core::OpeningStyle::Garage);
+
+/// The action of a Door flyout entry (a `const` form of
+/// `OpeningVariant::door(style).tool_id()` for the binding table).
+const fn door_action(style: plan_core::OpeningStyle) -> Action {
+    Action::SetTool(ToolId::OpeningVariant(OpeningVariant::door(style)))
+}
 const WINDOW: Action = Action::SetTool(ToolId::Window);
 
 /// One keyboard binding: a key (or key sequence) plus its modifiers.
@@ -345,6 +375,11 @@ pub const BINDINGS: &[Binding] = &[
     bind("\u{21E7}W", &[Key::W], SHIFT, WINDOW),
     // Hinged Door is a two-key sequence.
     bind("D, H", &[Key::D, Key::H], NONE, DOOR),
+    // The other door flavors with a two-key Chief hotkey.
+    bind("D, W", &[Key::D, Key::W], NONE, DOORWAY),
+    bind("S, D", &[Key::S, Key::D], NONE, SLIDING_DOOR),
+    bind("D, P", &[Key::D, Key::P], NONE, POCKET_DOOR),
+    bind("G, D", &[Key::G, Key::D], NONE, GARAGE_DOOR),
     // Chief hotkeys for the build, CAD and 3D tools.
     bind(
         "\u{21E7}Y",
@@ -589,11 +624,6 @@ fn todo(icon: &'static str, name: &'static str) -> Item {
     item(icon, name, Action::NotImplemented(name))
 }
 
-/// An unimplemented entry that has a Chief hotkey.
-fn todo_k(icon: &'static str, name: &'static str, key: &'static str) -> Item {
-    with_hotkey(todo(icon, name), key)
-}
-
 fn with_hotkey(mut it: Item, key: &'static str) -> Item {
     it.hotkey = Some(key);
     it
@@ -702,33 +732,75 @@ pub fn fencing() -> Flyout {
     )
 }
 
+/// A Door or Window flyout entry that places `v`.
+fn opening_item(icon: &'static str, v: OpeningVariant, key: Option<&'static str>) -> Item {
+    let it = item(icon, v.name(), Action::SetTool(v.tool_id()));
+    match key {
+        Some(k) => with_hotkey(it, k),
+        None => it,
+    }
+}
+
 pub fn door() -> Flyout {
+    use plan_core::OpeningStyle as S;
+    let d = |icon, style, key| opening_item(icon, OpeningVariant::door(style), key);
     fly(
         "Door",
         vec![
-            with_hotkey(item("door_hinged", "Hinged Door", DOOR), "D, H"),
-            todo_k("doorway", "Doorway", "D, W"),
-            todo_k("door_sliding", "Sliding Door", "S, D"),
-            todo_k("door_pocket", "Pocket Door", "D, P"),
-            todo_k("door_bifold", "Bifold Door", "\u{2303}\u{2325}\u{2318}O"),
-            todo_k("door_barn", "Barn Door", "\u{2303}\u{2325}\u{2318}P"),
-            todo_k("door_hinged", "Fixed Door", "\u{2303}\u{2325}\u{2318}R"),
-            todo_k("door_garage", "Garage Door", "G, D"),
-            todo_k("door_hinged", "Shower Door", "\u{2303}\u{2325}\u{2318}Q"),
+            d("door_hinged", S::Hinged, Some("D, H")),
+            d("doorway", S::Doorway, Some("D, W")),
+            d("door_sliding", S::Sliding, Some("S, D")),
+            d("door_pocket", S::Pocket, Some("D, P")),
+            d("door_bifold", S::Bifold, Some("\u{2303}\u{2325}\u{2318}O")),
+            d("door_barn", S::Barn, Some("\u{2303}\u{2325}\u{2318}P")),
+            d("door_hinged", S::Fixed, Some("\u{2303}\u{2325}\u{2318}R")),
+            d("door_garage", S::Garage, Some("G, D")),
+            d("door_hinged", S::Shower, Some("\u{2303}\u{2325}\u{2318}Q")),
+            // Plan Studio's own entry: Chief picks double doors in the dialog.
+            sep(d("door_hinged", S::DoubleDoor, None)),
         ],
     )
 }
 
 pub fn window() -> Flyout {
+    use plan_core::OpeningStyle as S;
+    let w = |icon, style, key| opening_item(icon, OpeningVariant::window(style), key);
     fly(
         "Window",
         vec![
-            with_hotkey(item("window", "Window", WINDOW), "\u{21E7}W"),
-            todo_k("window_bay", "Bay Window", "\u{2303}\u{2325}\u{2318}S"),
-            todo_k("window_bow", "Bow Window", "\u{2303}\u{2325}\u{2318}T"),
-            todo_k("window_box", "Box Window", "\u{2303}\u{2325}\u{2318}U"),
-            todo_k("pass_through", "Pass-Through", "\u{2303}\u{2325}\u{2318}V"),
-            todo_k("pass_through", "Wall Niche", "\u{2303}\u{2325}\u{2318}W"),
+            w("window", S::Window, Some("\u{21E7}W")),
+            w(
+                "window_bay",
+                S::BayWindow,
+                Some("\u{2303}\u{2325}\u{2318}S"),
+            ),
+            w(
+                "window_bow",
+                S::BowWindow,
+                Some("\u{2303}\u{2325}\u{2318}T"),
+            ),
+            w(
+                "window_box",
+                S::BoxWindow,
+                Some("\u{2303}\u{2325}\u{2318}U"),
+            ),
+            w(
+                "pass_through",
+                S::PassThrough,
+                Some("\u{2303}\u{2325}\u{2318}V"),
+            ),
+            w(
+                "pass_through",
+                S::WallNiche,
+                Some("\u{2303}\u{2325}\u{2318}W"),
+            ),
+            // Plan Studio's own entries: Chief picks the window type in the
+            // dialog.
+            sep(w("window", S::Casement, None)),
+            w("window", S::Fixed, None),
+            w("window", S::SlidingWindow, None),
+            w("window", S::Awning, None),
+            w("window", S::Hopper, None),
         ],
     )
 }
@@ -813,7 +885,21 @@ pub fn cabinet() -> Flyout {
             cab("cabinet_wall", "Corner Wall Cabinet", None, K::CornerWall),
             cab("cabinet_base", "Blind Base Cabinet", None, K::BlindBase),
             cab("cabinet_wall", "Blind Wall Cabinet", None, K::BlindWall),
+            // Library types: Vanity, Pantry, Tall Oven and Refrigerator cabinets.
+            sep(preset("cabinet_base", plan_cabinets::CabinetPreset::Vanity)),
+            preset("cabinet_full", plan_cabinets::CabinetPreset::Pantry),
+            preset("cabinet_full", plan_cabinets::CabinetPreset::TallOven),
+            preset("cabinet_full", plan_cabinets::CabinetPreset::Refrigerator),
         ],
+    )
+}
+
+/// A cabinet flyout entry that places a library type (Vanity, Pantry, ...).
+fn preset(icon: &'static str, p: plan_cabinets::CabinetPreset) -> Item {
+    item(
+        icon,
+        p.name(),
+        Action::Custom(crate::tools::cabinet::preset_command(p)),
     )
 }
 
@@ -832,10 +918,19 @@ fn elec(
 
 pub fn electrical() -> Flyout {
     use crate::tools::electrical::ElecVariant as E;
+    // Entries without a Chief hotkey.
+    let plain = |icon: &'static str, v: E| {
+        item(
+            icon,
+            v.name(),
+            Action::SetTool(ToolId::ElectricalVariant(v)),
+        )
+    };
     fly(
         "Electrical",
         vec![
             elec("outlet_110", "110V Outlet", "E, O", E::Outlet110),
+            plain("outlet_110", E::Outlet110Quad),
             elec(
                 "outlet_220",
                 "220V Outlet",
@@ -848,29 +943,30 @@ pub fn electrical() -> Flyout {
                 "\u{2303}\u{2325}\u{21E7}\u{2318}Y",
                 E::Gfci,
             ),
+            plain("outlet_110", E::OutletFloor),
+            elec("switch", "Switch", "E, S", E::Switch),
+            plain("switch", E::Switch3Way),
+            plain("switch", E::Switch4Way),
+            plain("switch", E::SwitchDimmer),
             elec("light", "Light", "E, L", E::Light),
+            plain("light", E::RecessedLight),
+            plain("light", E::PendantLight),
+            plain("light", E::WallLight),
             elec(
                 "light",
                 "Rope Light",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}A",
                 E::RopeLight,
             ),
-            elec("switch", "Switch", "E, S", E::Switch),
-            item(
-                "switch",
-                "3-Way Switch",
-                Action::SetTool(ToolId::ElectricalVariant(E::Switch3Way)),
-            ),
-            item(
-                "light",
-                "Ceiling Fan",
-                Action::SetTool(ToolId::ElectricalVariant(E::CeilingFan)),
-            ),
-            item(
-                "light",
-                "Smoke Detector",
-                Action::SetTool(ToolId::ElectricalVariant(E::SmokeDetector)),
-            ),
+            plain("light", E::CeilingFan),
+            plain("light", E::SmokeDetector),
+            plain("light", E::CoDetector),
+            plain("switch", E::Thermostat),
+            plain("switch", E::Doorbell),
+            plain("outlet_110", E::DataJack),
+            plain("outlet_110", E::PhoneJack),
+            plain("outlet_110", E::TvJack),
+            plain("outlet_220", E::Panel),
             elec(
                 "connect_electrical",
                 "Electrical Connection",
@@ -883,6 +979,7 @@ pub fn electrical() -> Flyout {
                 "E, A, O",
                 E::AutoOutlets,
             ),
+            plain("switch", E::AutoSwitches),
         ],
     )
 }
@@ -940,6 +1037,12 @@ pub fn floor() -> Flyout {
                 item("floor_insert", "Insert New Floor", Action::InsertFloor),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}I",
             ),
+            item(
+                "floor_insert",
+                "Insert New Floor Below",
+                Action::InsertFloorBelow,
+            ),
+            item("floor_defaults", "Floor Defaults", Action::FloorDefaults),
             with_hotkey(
                 item("foundation", "Build Foundation", Action::BuildFoundation),
                 "\u{2318}F",
@@ -1291,6 +1394,11 @@ pub fn auto_dimensions() -> Flyout {
                 D::AutoInterior.name(),
                 Action::SetTool(ToolId::DimensionVariant(D::AutoInterior)),
             ),
+            item(
+                "dim_auto_interior",
+                D::AutoNkba.name(),
+                Action::SetTool(ToolId::DimensionVariant(D::AutoNkba)),
+            ),
             with_hotkey(
                 item(
                     "dim_auto_exterior",
@@ -1468,6 +1576,18 @@ use crate::tools::terrain::TerrainVariant as T;
 /// A terrain entry that starts the terrain tool in `v`.
 fn terr(icon: &'static str, name: &'static str, v: crate::tools::terrain::TerrainVariant) -> Item {
     item(icon, name, Action::SetTool(ToolId::TerrainVariant(v)))
+}
+
+/// North Pointer, Scale Bar and Building Pad: the site objects of the Terrain menu.
+pub fn site_objects() -> Flyout {
+    fly(
+        "Site Objects",
+        vec![
+            terr("terrain", "North Pointer", T::NorthPointer),
+            terr("terrain", "Scale Bar", T::ScaleBar),
+            terr("terrain", "Building Pad", T::BuildingPad),
+        ],
+    )
 }
 
 pub fn elevation_data() -> Flyout {
@@ -1696,6 +1816,7 @@ pub fn terrain_menu() -> Vec<Flyout> {
         sidewalk(),
         plant(),
         sprinkler(),
+        site_objects(),
     ]
 }
 
@@ -1765,6 +1886,11 @@ pub fn full_camera() -> Flyout {
                 "cross_section",
                 "Auto Back-Clipped Elevations",
                 V::AutoBackclipped,
+            ),
+            camera_tool(
+                "cross_section",
+                "Auto Interior Elevations",
+                V::AutoInterior,
             ),
         ],
     )
@@ -1848,7 +1974,11 @@ fn row1_slots() -> Vec<Slot> {
         Slot::Button(item("file_open", "Open Plan", Action::FileOpen)),
         Slot::Button(item("file_save", "Save", Action::FileSave)),
         Sep,
-        button("file_print", "Print"),
+        Slot::Button(item(
+            "file_print",
+            "Print",
+            Action::Layout(crate::shell::layout_window::LayoutCommand::PrintDialog),
+        )),
         Slot::Button(item(
             "send_to_layout",
             "Send to Layout",
@@ -1858,12 +1988,32 @@ fn row1_slots() -> Vec<Slot> {
         Slot::Button(with_hotkey(item("undo", "Undo", Action::Undo), "\u{2318}Z")),
         Slot::Button(with_hotkey(item("redo", "Redo", Action::Redo), "\u{2318}Y")),
         Sep,
-        button("preferences", "Preferences"),
-        button("help", "Launch Help"),
+        Slot::Button(item(
+            "preferences",
+            "Preferences",
+            Action::Custom(crate::dialogs::preferences::OPEN),
+        )),
+        Slot::Button(item(
+            "help",
+            "Launch Help",
+            Action::Custom(crate::dialogs::app_info::HELP),
+        )),
         Sep,
-        button("view_edit", "Edit Active View"),
-        button("view_save", "Save Active View"),
-        button("view_save_as", "Save Active View As"),
+        Slot::Button(item(
+            "view_edit",
+            "Edit Active View",
+            Action::Custom(crate::dialogs::plan_views::OPEN),
+        )),
+        Slot::Button(item(
+            "view_save",
+            "Save Active View",
+            Action::Custom(crate::dialogs::plan_views::SAVE),
+        )),
+        Slot::Button(item(
+            "view_save_as",
+            "Save Active View As",
+            Action::Custom(crate::dialogs::app_info::NEW_PLAN_VIEW),
+        )),
         Slot::ViewSelector,
         Sep,
         button("display_options", "Display Options"),
@@ -1873,7 +2023,11 @@ fn row1_slots() -> Vec<Slot> {
             Action::DefaultSettings,
         )),
         button("plan_database", "Plan Database"),
-        button("floor_defaults", "Floor Defaults"),
+        Slot::Button(item(
+            "floor_defaults",
+            "Floor Defaults",
+            Action::FloorDefaults,
+        )),
         Sep,
         Slot::Button(item("floor_down", "Down One Floor", Action::FloorDown)),
         Slot::FloorLabel,
@@ -1889,12 +2043,32 @@ fn row1_slots() -> Vec<Slot> {
         Sep,
         flag_toggle("sun_angle", "Sun Angle", ViewFlag::SunAngle),
         Sep,
-        button("material_painter", "Material Painter"),
-        toggle("material_eyedropper", "Material Eyedropper"),
+        Slot::Toggle(item(
+            "material_painter",
+            "Material Painter",
+            Action::Custom(crate::tools::materials::PAINTER),
+        )),
+        Slot::Toggle(item(
+            "material_eyedropper",
+            "Material Eyedropper",
+            Action::Custom(crate::tools::materials::EYEDROPPER),
+        )),
         toggle("object_eyedropper", "Object Eyedropper"),
-        toggle("delete_surface", "Delete Surface"),
-        toggle("adjust_material", "Adjust Material Definition"),
-        toggle("material_editor", "Interactive Material Editor"),
+        Slot::Toggle(item(
+            "delete_surface",
+            "Delete Surface",
+            Action::Custom(crate::tools::materials::ERASE),
+        )),
+        Slot::Button(item(
+            "adjust_material",
+            "Adjust Material Definition",
+            Action::Custom(crate::tools::materials::BUILDER),
+        )),
+        Slot::Button(item(
+            "material_editor",
+            "Interactive Material Editor",
+            Action::Custom(crate::tools::materials::LIST),
+        )),
         Sep,
         toggle("config_default", "Default Configuration"),
         toggle("config_space_planning", "Space Planning Configuration"),
@@ -1931,13 +2105,23 @@ fn row2_slots() -> Vec<Slot> {
         flyout_slot(slab()),
         flyout_slot(solid_3d()),
         Sep,
-        button("paste_hold", "Paste Hold Position"),
+        Slot::Button(item(
+            "paste_hold",
+            "Paste Hold Position",
+            Action::Custom(crate::editor::edit_commands::ids::PASTE_HOLD),
+        )),
         Sep,
         flyout_slot(dimensions()),
         flyout_slot(auto_dimensions()),
         Sep,
         flyout_slot(text_tools()),
-        toggle("revision_cloud", "Revision Cloud"),
+        Slot::Toggle(item(
+            "revision_cloud",
+            "Revision Cloud",
+            Action::SetTool(ToolId::CadVariant(
+                crate::tools::cad::CadMode::RevisionCloud,
+            )),
+        )),
         flyout_slot(schedule()),
         Sep,
         flyout_slot(points()),
@@ -1945,10 +2129,18 @@ fn row2_slots() -> Vec<Slot> {
         flyout_slot(arcs()),
         flyout_slot(circles()),
         flyout_slot(boxes()),
-        toggle("spline", "Spline"),
+        Slot::Toggle(item(
+            "spline",
+            "Spline",
+            Action::SetTool(ToolId::CadVariant(crate::tools::cad::CadMode::Spline)),
+        )),
         Sep,
         button("auto_detail", "Auto Detail"),
-        button("cad_layer", "Current CAD Layer"),
+        Slot::Button(item(
+            "cad_layer",
+            "Current CAD Layer",
+            Action::Custom(crate::dialogs::layer_sets::ACTIVE_LAYERS),
+        )),
     ]
 }
 
@@ -1992,6 +2184,11 @@ fn view_slots() -> Vec<Slot> {
             "Reference Display",
             ViewFlag::ReferenceDisplay,
         ),
+        Slot::Button(item(
+            "reference_display",
+            "Reference Display Options",
+            Action::ReferenceDisplayOptions,
+        )),
         flag_toggle("crosshairs", "Crosshairs", ViewFlag::Crosshairs),
         Slot::Toggle(with_hotkey(
             item("color", "Color", Action::ToggleFlag(ViewFlag::Color)),
@@ -2017,10 +2214,14 @@ pub fn row(ui: &mut egui::Ui, slots: &mut [Slot], state: &BarState) -> Vec<Actio
     let mut out = Vec::new();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(GAP_PX, 0.0);
-        for (i, slot) in slots.iter_mut().enumerate() {
-            show_slot(ui, i, slot, state, &mut out);
+        // The configured set (config.rs) decides which buttons show.
+        if !config::draw_bar(ui, slots, state, &mut out) {
+            for (i, slot) in slots.iter_mut().enumerate() {
+                show_slot(ui, i, slot, state, &mut out);
+            }
         }
     });
+    config::draw_custom_rows(ui, slots, state, &mut out);
     out
 }
 
@@ -2029,8 +2230,10 @@ pub fn column(ui: &mut egui::Ui, slots: &mut [Slot], state: &BarState) -> Vec<Ac
     let mut out = Vec::new();
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(0.0, GAP_PX);
-        for (i, slot) in slots.iter_mut().enumerate() {
-            show_slot(ui, i, slot, state, &mut out);
+        if !config::draw_bar(ui, slots, state, &mut out) {
+            for (i, slot) in slots.iter_mut().enumerate() {
+                show_slot(ui, i, slot, state, &mut out);
+            }
         }
     });
     out
@@ -2133,6 +2336,8 @@ fn is_active(action: &Action, state: &BarState) -> bool {
         Action::TogglePan => state.tool == ToolId::Pan,
         Action::ToggleFlag(f) => state.flags.contains(f),
         Action::ToggleDock(d) => state.dock == Some(*d),
+        // The Material Painter family are modes of the 3D view.
+        Action::Custom(id) => crate::tools::materials::is_mode_active(id),
         _ => false,
     }
 }
@@ -2179,6 +2384,8 @@ pub fn pretty_hotkey_for(k: &str, mac: bool) -> String {
     out
 }
 
+/// The tooltip: the name and hotkey, then a one-line description from the
+/// manual's command tables when it has one.
 fn tooltip(it: &Item) -> String {
     let base = match it.hotkey {
         Some(k) => format!("{}  ({})", it.name, pretty_hotkey(k)),
@@ -2186,6 +2393,8 @@ fn tooltip(it: &Item) -> String {
     };
     if matches!(it.action, Action::NotImplemented(_)) {
         format!("{base} \u{2014} not yet implemented")
+    } else if let Some(d) = crate::shell::tooltips::describe(it.name) {
+        format!("{base}\n{d}")
     } else {
         base
     }
@@ -2217,21 +2426,56 @@ fn entry_button(e: &Item, selected: bool, brightness: f32) -> egui::Button<'stat
     btn
 }
 
-/// Paints the 20 px glyph centered in `zone`, with the highlight behind it.
-fn paint_glyph(
-    ui: &egui::Ui,
-    zone: Rect,
-    id: &str,
-    (active, hovered, dimmed): (bool, bool, bool),
-    brightness: f32,
-) {
+/// What a toolbar zone looks like right now.
+#[derive(Clone, Copy, Default)]
+struct ZoneState {
+    active: bool,
+    hovered: bool,
+    dimmed: bool,
+    /// Has keyboard focus (Tab).
+    focused: bool,
+}
+
+/// Draws the rings of a zone: a light ring on hover, an accent ring on the
+/// active tool and a thick white ring on keyboard focus. All of them clear
+/// 3:1 against the panel (see `theme::chrome_colors`).
+fn paint_rings(ui: &egui::Ui, zone: Rect, st: ZoneState, brightness: f32) {
+    let chrome = crate::theme::current_chrome();
+    let ring = |color: Color32, width: f32, inset: f32| {
+        ui.painter().rect_stroke(
+            zone.shrink(inset),
+            3.0,
+            Stroke::new(width, scale(color, brightness)),
+            egui::StrokeKind::Inside,
+        );
+    };
+    if st.active {
+        ring(chrome.accent, 2.0, 0.5);
+    } else if st.hovered && !st.dimmed {
+        ring(chrome.outline, 1.5, 0.5);
+    }
+    if st.focused {
+        ring(chrome.text, 2.0, 0.0);
+    }
+}
+
+/// Paints the 20 px glyph centered in `zone`, with the highlight and rings
+/// around it.
+fn paint_glyph(ui: &egui::Ui, zone: Rect, id: &str, st: ZoneState, brightness: f32) {
+    let chrome = crate::theme::current_chrome();
+    let (active, hovered, dimmed) = (st.active, st.hovered, st.dimmed);
     if active {
         ui.painter()
-            .rect_filled(zone, 3.0, scale(ACTIVE_FILL, brightness));
+            .rect_filled(zone, 3.0, scale(chrome.active, brightness));
     } else if hovered && !dimmed {
         ui.painter()
-            .rect_filled(zone, 3.0, scale(HOVER_FILL, brightness));
+            .rect_filled(zone, 3.0, scale(chrome.hover, brightness));
+    } else if crate::dialogs::preferences::icon_halo() && !dimmed {
+        // Preferences > Appearance > Icon halo: a plate behind the icon.
+        ui.painter()
+            .rect_filled(zone.shrink(1.0), 4.0, scale(HALO_FILL, brightness));
     }
+    paint_rings(ui, zone, st, brightness);
     let img = Image::new(icons::icon(id)).tint(icon_tint(dimmed, brightness));
     img.paint_at(
         ui,
@@ -2257,7 +2501,12 @@ fn single_button(
         ui,
         rect,
         it.icon,
-        (active, resp.hovered(), is_dimmed(it, enabled)),
+        ZoneState {
+            active,
+            hovered: resp.hovered(),
+            dimmed: is_dimmed(it, enabled),
+            focused: resp.has_focus(),
+        },
         state.brightness,
     );
     if resp.clicked() {
@@ -2296,13 +2545,32 @@ fn show_flyout(
         ui,
         icon_zone,
         cur.icon,
-        (active, icon_resp.hovered(), dimmed),
+        ZoneState {
+            active,
+            hovered: icon_resp.hovered(),
+            dimmed,
+            focused: icon_resp.has_focus(),
+        },
         state.brightness,
     );
     if arrow_resp.hovered() && enabled {
-        ui.painter()
-            .rect_filled(arrow_zone, 3.0, scale(HOVER_FILL, state.brightness));
+        ui.painter().rect_filled(
+            arrow_zone,
+            3.0,
+            scale(crate::theme::current_chrome().hover, state.brightness),
+        );
     }
+    paint_rings(
+        ui,
+        arrow_zone,
+        ZoneState {
+            hovered: arrow_resp.hovered(),
+            dimmed: !enabled,
+            focused: arrow_resp.has_focus(),
+            ..ZoneState::default()
+        },
+        state.brightness,
+    );
     let c = arrow_zone.center();
     let tint = if dimmed {
         Color32::from_white_alpha(DIMMED_ALPHA)
@@ -2336,7 +2604,10 @@ fn show_flyout(
         &whole,
         PopupCloseBehavior::CloseOnClick,
         |ui| {
-            ui.set_min_width(260.0);
+            ui.set_min_width(FLYOUT_MIN_WIDTH);
+            // Larger hit targets than the menu bar's rows.
+            ui.spacing_mut().interact_size.y = FLYOUT_ROW_PX;
+            ui.spacing_mut().button_padding = Vec2::new(8.0, 5.0);
             ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
                 for (i, e) in fly.entries.iter().enumerate() {
                     if e.sep_before && i > 0 {
@@ -2627,5 +2898,113 @@ mod tests {
             .find(|e| e.name == "Adjust Lights")
             .unwrap();
         assert_eq!(adjust.action, Action::View3d(View3dCommand::AdjustLights));
+    }
+
+    #[test]
+    fn toolbar_buttons_are_28_to_32_px() {
+        const {
+            assert!(BUTTON_PX >= 28.0 && BUTTON_PX <= 32.0);
+            assert!(ICON_PX < BUTTON_PX);
+            // Flyout rows are bigger hit targets than the 24 pt menu rows.
+            assert!(FLYOUT_ROW_PX >= 30.0 && FLYOUT_MIN_WIDTH >= 260.0);
+        }
+    }
+
+    #[test]
+    fn tooltips_carry_the_hotkey_and_a_manual_description() {
+        let it = Item {
+            icon: "wall_exterior",
+            name: "Straight Exterior Wall",
+            hotkey: Some("\u{21E7}Q"),
+            action: EXTERIOR_WALL,
+            enabled: true,
+            sep_before: false,
+        };
+        let tip = tooltip(&it);
+        let mut lines = tip.lines();
+        assert_eq!(lines.next(), Some("Straight Exterior Wall  (Shift+Q)"));
+        assert_eq!(
+            lines.next(),
+            Some("Uses the Default Settings exterior wall type and height.")
+        );
+        // Without a manual entry the tooltip is just the name.
+        let plain = Item {
+            name: "Some Unlisted Tool",
+            hotkey: None,
+            ..it
+        };
+        assert_eq!(tooltip(&plain), "Some Unlisted Tool");
+    }
+
+    fn frame_with(ctx: &egui::Context, events: Vec<egui::Event>, slots: &mut [Slot]) {
+        let flags = HashSet::new();
+        let state = BarState {
+            tool: ToolId::Select,
+            flags: &flags,
+            dock: None,
+            floor: 0,
+            floor_count: 2,
+            view_name: "Floor Plan",
+            views: &[],
+            brightness: 1.0,
+            undo_label: None,
+            redo_label: None,
+            hotkeys: None,
+        };
+        let raw = egui::RawInput {
+            events,
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                Vec2::new(1600.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = row(ui, slots, &state);
+            });
+        });
+    }
+
+    fn tab(shift: bool) -> egui::Event {
+        egui::Event::Key {
+            key: Key::Tab,
+            physical_key: Some(Key::Tab),
+            pressed: true,
+            repeat: false,
+            modifiers: if shift {
+                Modifiers::SHIFT
+            } else {
+                Modifiers::NONE
+            },
+        }
+    }
+
+    #[test]
+    fn tab_walks_the_toolbar_buttons_and_draws_a_focus_ring() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        crate::theme::apply_settings(&ctx, &crate::theme::AppSettings::default());
+        let mut slots = row1_slots();
+        frame_with(&ctx, vec![], &mut slots);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            frame_with(&ctx, vec![tab(false)], &mut slots);
+            frame_with(&ctx, vec![], &mut slots);
+            seen.push(ctx.memory(|m| m.focused()).expect("Tab focuses a button"));
+        }
+        let mut unique = seen.clone();
+        unique.sort_by_key(|i| format!("{i:?}"));
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            4,
+            "Tab visits a new widget each time: {seen:?}"
+        );
+        // Shift+Tab goes back.
+        frame_with(&ctx, vec![tab(true)], &mut slots);
+        frame_with(&ctx, vec![], &mut slots);
+        assert_eq!(ctx.memory(|m| m.focused()), Some(seen[2]));
     }
 }

@@ -23,6 +23,7 @@ pub mod foundation;
 pub mod framing;
 pub mod images;
 pub mod library;
+pub mod materials;
 pub mod opening;
 pub mod pan;
 pub mod roof;
@@ -31,6 +32,7 @@ pub mod select;
 pub mod stairs;
 pub mod terrain;
 pub mod text;
+pub mod underlay;
 pub mod wall;
 
 /// Identifies a tool. Wall flavors share one tool object (so a chain survives
@@ -46,6 +48,10 @@ pub enum ToolId {
     WallVariant(wall::WallVariant),
     Door,
     Window,
+    /// A door or window flavor of the Door and Window flyouts (Doorway,
+    /// Sliding, Bay Window, ...); the plain Hinged Door and Window keep
+    /// `Door` and `Window`.
+    OpeningVariant(opening::OpeningVariant),
     Pan,
     Dimension,
     Text,
@@ -94,6 +100,8 @@ pub enum ToolId {
     Images,
     /// A flavor of the images tool (the flyout entry picked).
     ImagesVariant(images::ImageMode),
+    /// The Underlay tool (move a plan underlay, two-point calibration).
+    Underlay,
 }
 
 impl ToolId {
@@ -122,6 +130,10 @@ impl ToolId {
     pub fn base(self) -> ToolId {
         match self {
             ToolId::StairsVariant(_) => ToolId::Stairs,
+            ToolId::OpeningVariant(v) => match v.kind {
+                plan_core::OpeningKind::Door => ToolId::Door,
+                plan_core::OpeningKind::Window => ToolId::Window,
+            },
             ToolId::RoofVariant(_) => ToolId::Roof,
             ToolId::CabinetVariant(_) => ToolId::Cabinet,
             ToolId::DimensionVariant(_) => ToolId::Dimension,
@@ -319,6 +331,7 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(framing::FramingTool::default()),
         Box::new(schedule::ScheduleTool::default()),
         Box::new(images::ImagesTool::default()),
+        Box::new(underlay::UnderlayTool::default()),
     ]
 }
 
@@ -429,6 +442,7 @@ mod tests {
             ToolId::Details,
             ToolId::Framing,
             ToolId::Schedule,
+            ToolId::Underlay,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");
         }

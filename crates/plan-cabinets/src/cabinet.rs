@@ -4,9 +4,12 @@ use plan_core::geometry::Point;
 use plan_core::Id;
 use serde::{Deserialize, Serialize};
 
-use crate::face::FaceLayout;
+use crate::face::{FaceItem, FaceLayout};
 use crate::geom;
 use crate::top::{treat_corners, CornerTreatment, CustomTop, Cutout, CutoutKind, EdgeProfile};
+
+/// Carcass panel thickness, inches (an appliance bay starts inside it).
+const PANEL_IN: f64 = 0.75;
 
 /// What kind of cabinet this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -130,6 +133,89 @@ impl CabinetKind {
     }
 }
 
+/// A cabinet type that Chief's library offers as its own entry but that is
+/// built from one of the [`CabinetKind`]s with its own size and face. The
+/// preset is kept on the cabinet for labels and the schedule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CabinetPreset {
+    /// A base cabinet 21" deep and 34 1/2" high, with a 5" drawer over doors.
+    Vanity,
+    /// A full-height cabinet, 24" wide, with two stacked doors.
+    Pantry,
+    /// A full-height oven tower: upper door, oven and microwave openings and
+    /// a drawer below.
+    TallOven,
+    /// A refrigerator enclosure: a 70" open bay under an upper cabinet.
+    Refrigerator,
+}
+
+impl CabinetPreset {
+    pub const ALL: [CabinetPreset; 4] = [
+        CabinetPreset::Vanity,
+        CabinetPreset::Pantry,
+        CabinetPreset::TallOven,
+        CabinetPreset::Refrigerator,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CabinetPreset::Vanity => "Vanity Cabinet",
+            CabinetPreset::Pantry => "Pantry Cabinet",
+            CabinetPreset::TallOven => "Tall Oven Cabinet",
+            CabinetPreset::Refrigerator => "Refrigerator Cabinet",
+        }
+    }
+
+    /// The letters that open the cabinet's label.
+    pub fn code(self) -> &'static str {
+        match self {
+            CabinetPreset::Vanity => "VB",
+            CabinetPreset::Pantry => "PN",
+            CabinetPreset::TallOven => "OC",
+            CabinetPreset::Refrigerator => "REF",
+        }
+    }
+
+    /// The kind the preset is built from.
+    pub fn kind(self) -> CabinetKind {
+        match self {
+            CabinetPreset::Vanity => CabinetKind::Base,
+            _ => CabinetKind::FullHeight,
+        }
+    }
+
+    /// Chief's sizes: `(width, depth, height)`.
+    pub fn size(self) -> (f64, f64, f64) {
+        match self {
+            CabinetPreset::Vanity => (30.0, 21.0, 34.5),
+            CabinetPreset::Pantry => (24.0, 24.0, 84.0),
+            CabinetPreset::TallOven => (30.0, 24.0, 84.0),
+            CabinetPreset::Refrigerator => (36.0, 25.0, 84.0),
+        }
+    }
+
+    /// The appliance an open bay of this preset holds, if it has one.
+    pub fn bay_appliance(self) -> Option<&'static str> {
+        match self {
+            CabinetPreset::Refrigerator => Some("Refrigerator"),
+            CabinetPreset::TallOven => Some("Oven"),
+            _ => None,
+        }
+    }
+}
+
+/// An open bay for an appliance, in the cabinet's local frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApplianceBay {
+    /// The appliance it is meant for ("Dishwasher", "Range", "Refrigerator",
+    /// "Oven", ...).
+    pub name: String,
+    /// Inside width span `(x0, x1)`.
+    pub x: (f64, f64),
+    /// Bottom and top of the bay above the cabinet bottom.
+    pub z: (f64, f64),
+}
+
 /// Countertop slab sitting on top of the cabinet (inside its height).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Countertop {
@@ -176,6 +262,36 @@ impl Default for Countertop {
 pub struct Backsplash {
     pub height: f64,
     pub thickness: f64,
+    /// Full-height backsplash: it rises to the underside of the wall cabinet
+    /// above it (or to `full_height_to` when nothing hangs over it). The
+    /// stored `height` is kept in step by [`crate::fit_full_height_backsplashes`].
+    #[serde(default)]
+    pub full_height: bool,
+    /// How far above the cabinet's own top the strip stands: the thickness
+    /// of the generated countertop that took the cabinet's slab (see
+    /// `Cabinet::hand_over_top`), else 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lift: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// How high a full-height backsplash goes when no wall cabinet hangs above
+/// it: the bottom of a standard wall cabinet (54"), inches above the floor.
+pub const FULL_HEIGHT_TO: f64 = 54.0;
+
+impl Backsplash {
+    /// A backsplash `height` high and `thickness` thick.
+    pub fn new(height: f64, thickness: f64) -> Self {
+        Self {
+            height,
+            thickness,
+            full_height: false,
+            lift: 0.0,
+        }
+    }
 }
 
 /// Recessed toe kick under a base cabinet.
@@ -201,7 +317,47 @@ impl Default for ToeKick {
 pub enum HandleStyle {
     None,
     Knob,
+    /// A bar pull on two posts: vertical on a door, horizontal on a drawer.
     Pull,
+    /// A cup (bin) pull: a flat half-round plate at the top edge of a drawer.
+    Cup,
+    /// An edge pull: a thin lip along the free edge of a door or the top of
+    /// a drawer front.
+    Edge,
+}
+
+impl HandleStyle {
+    pub const ALL: [HandleStyle; 5] = [
+        HandleStyle::None,
+        HandleStyle::Knob,
+        HandleStyle::Pull,
+        HandleStyle::Cup,
+        HandleStyle::Edge,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HandleStyle::None => "None",
+            HandleStyle::Knob => "Knob",
+            HandleStyle::Pull => "Pull",
+            HandleStyle::Cup => "Cup Pull",
+            HandleStyle::Edge => "Edge Pull",
+        }
+    }
+
+    /// The style called `name` (any case; `None` for an unknown name).
+    pub fn from_name(name: &str) -> Option<HandleStyle> {
+        let n = name.trim().to_ascii_lowercase();
+        HandleStyle::ALL
+            .into_iter()
+            .find(|h| h.name().to_ascii_lowercase() == n)
+            .or(match n.as_str() {
+                "cup" => Some(HandleStyle::Cup),
+                "edge" => Some(HandleStyle::Edge),
+                "bar" | "bar pull" | "handle" => Some(HandleStyle::Pull),
+                _ => None,
+            })
+    }
 }
 
 /// How a door or drawer front is built.
@@ -256,6 +412,8 @@ pub struct DoorStyle {
     pub hinge: HingeStyle,
     /// Hinge distance from the top and bottom edge of the door.
     pub hinge_from_edge: f64,
+    /// Length of a pull (bar, edge or cup), inches.
+    pub handle_length: f64,
 }
 
 impl Default for DoorStyle {
@@ -272,6 +430,7 @@ impl Default for DoorStyle {
             handle_centered: false,
             hinge: HingeStyle::Hidden,
             hinge_from_edge: 3.0,
+            handle_length: 4.0,
         }
     }
 }
@@ -307,8 +466,13 @@ pub struct DrawerStyle {
     pub thickness: f64,
     pub handle: HandleStyle,
     pub profile: DoorProfile,
-    /// Centre the handle on the drawer front (otherwise it sits 1 1/2" below the top).
+    /// Centre the handle on the drawer front (otherwise it sits
+    /// `handle_from_top` below the top).
     pub handle_centered: bool,
+    /// Handle distance from the top of the drawer front when not centred.
+    pub handle_from_top: f64,
+    /// Length of a pull (bar, edge or cup), inches.
+    pub handle_length: f64,
 }
 
 impl Default for DrawerStyle {
@@ -319,6 +483,8 @@ impl Default for DrawerStyle {
             handle: HandleStyle::Knob,
             profile: DoorProfile::Slab,
             handle_centered: true,
+            handle_from_top: 1.5,
+            handle_length: 4.0,
         }
     }
 }
@@ -639,6 +805,26 @@ pub struct Cabinet {
     /// (rectangular cabinets).
     #[serde(default)]
     pub sides: Vec<SideFace>,
+    /// Generated countertops only: the cabinets whose slabs this top joined
+    /// and what they gave up (see [`crate::release_joined_top`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joined: Vec<crate::top::JoinedSource>,
+    /// The plan label's offset from its default place, plan inches (the
+    /// label's drag handle moves it). The label is drawn on the layer
+    /// "Cabinets, Labels".
+    #[serde(default, skip_serializing_if = "is_zero_point")]
+    pub label_offset: Point,
+    /// Opening Indicators in 3D: doors stand open with the shelves inside
+    /// showing, and drawers are pulled out with their boxes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub indicators_3d: bool,
+    /// The library type this cabinet was made from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<CabinetPreset>,
+}
+
+fn is_zero_point(p: &Point) -> bool {
+    p.x == 0.0 && p.y == 0.0
 }
 
 impl Cabinet {
@@ -670,6 +856,10 @@ impl Cabinet {
             materials: PartMaterials::default(),
             indicators: false,
             sides: Vec::new(),
+            joined: Vec::new(),
+            label_offset: Point::ZERO,
+            indicators_3d: false,
+            preset: None,
         }
     }
 
@@ -844,6 +1034,166 @@ impl Cabinet {
     /// A range bay (30" by default).
     pub fn range_opening(width: f64) -> Self {
         Self::appliance_opening("Range", width)
+    }
+
+    /// A vanity: a base cabinet 21" deep and 34 1/2" high (36" with its
+    /// 1 1/2" top is the kitchen standard; a vanity runs lower), a 5" drawer
+    /// over one door, or two doors from 30" wide.
+    pub fn vanity(width: f64) -> Self {
+        let (_, depth, height) = CabinetPreset::Vanity.size();
+        let mut c = Self::base(width);
+        c.depth = depth;
+        c.height = height;
+        c.preset = Some(CabinetPreset::Vanity);
+        let mut face = FaceLayout::base_default(c.face_height());
+        if width >= 30.0 {
+            face.items = vec![
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::Drawer { height: 5.0 },
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::DoubleDoor { height: 0.0 },
+                FaceItem::Separation { height: 1.5 },
+            ];
+        } else if let Some(FaceItem::Drawer { height }) = face.items.get_mut(1) {
+            *height = 5.0;
+        }
+        c.face = face;
+        c
+    }
+
+    /// A pantry: a full-height cabinet with two stacked doors.
+    pub fn pantry(width: f64) -> Self {
+        let (_, depth, height) = CabinetPreset::Pantry.size();
+        let mut c = Self::full_height(width);
+        c.depth = depth;
+        c.height = height;
+        c.preset = Some(CabinetPreset::Pantry);
+        c.face = FaceLayout::full_height_default(c.face_height());
+        c
+    }
+
+    /// A tall oven cabinet: an upper door, a 28 1/2" oven opening, a 17"
+    /// microwave opening and a drawer under them.
+    pub fn tall_oven(width: f64) -> Self {
+        let (_, depth, height) = CabinetPreset::TallOven.size();
+        let mut c = Self::full_height(width);
+        c.depth = depth;
+        c.height = height;
+        c.preset = Some(CabinetPreset::TallOven);
+        c.face = FaceLayout {
+            items: vec![
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::DoorAuto { height: 0.0 },
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::Opening { height: 17.0 },
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::Opening { height: 28.5 },
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::Drawer { height: 8.0 },
+                FaceItem::Separation { height: 1.5 },
+            ],
+            frame_width: 1.5,
+        };
+        c
+    }
+
+    /// A refrigerator enclosure: an open 70" bay (with the toe kick removed)
+    /// under one upper door.
+    pub fn refrigerator(width: f64) -> Self {
+        let (_, depth, height) = CabinetPreset::Refrigerator.size();
+        let mut c = Self::full_height(width);
+        c.depth = depth;
+        c.height = height;
+        c.toe_kick = None;
+        c.preset = Some(CabinetPreset::Refrigerator);
+        c.face = FaceLayout {
+            items: vec![
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::DoubleDoor { height: 0.0 },
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::Opening { height: 70.0 },
+            ],
+            frame_width: 1.5,
+        };
+        c
+    }
+
+    /// A cabinet made from a library type, `width` wide.
+    pub fn from_preset(preset: CabinetPreset, width: f64) -> Self {
+        match preset {
+            CabinetPreset::Vanity => Self::vanity(width),
+            CabinetPreset::Pantry => Self::pantry(width),
+            CabinetPreset::TallOven => Self::tall_oven(width),
+            CabinetPreset::Refrigerator => Self::refrigerator(width),
+        }
+    }
+
+    /// The open bays of this cabinet an appliance can sit in, local frame:
+    /// the whole inside of an appliance opening, or each `Opening` item of a
+    /// tall oven or refrigerator cabinet.
+    pub fn appliance_bays(&self) -> Vec<ApplianceBay> {
+        let inside = (PANEL_IN, (self.width - PANEL_IN).max(PANEL_IN));
+        let z0 = self.toe_kick.map_or(0.0, |t| t.height);
+        if let Some(name) = &self.appliance {
+            let top = self.height - self.countertop.map_or(0.0, |c| c.thickness);
+            return vec![ApplianceBay {
+                name: name.clone(),
+                x: inside,
+                z: (z0, top),
+            }];
+        }
+        let Some(name) = self.preset.and_then(CabinetPreset::bay_appliance) else {
+            return Vec::new();
+        };
+        let Ok(items) = self.face.resolve(self.face_height(), self.face_width()) else {
+            return Vec::new();
+        };
+        let mut bays: Vec<ApplianceBay> = items
+            .iter()
+            .filter(|r| matches!(r.item, FaceItem::Opening { .. }))
+            .map(|r| {
+                let (_, y, _, h) = r.rect;
+                ApplianceBay {
+                    name: name.to_string(),
+                    x: inside,
+                    z: (z0 + y, z0 + y + h),
+                }
+            })
+            .collect();
+        // A tall oven's two openings: the larger holds the oven, the smaller
+        // the microwave.
+        if self.preset == Some(CabinetPreset::TallOven) && bays.len() == 2 {
+            let small = if bays[0].z.1 - bays[0].z.0 < bays[1].z.1 - bays[1].z.0 {
+                0
+            } else {
+                1
+            };
+            bays[small].name = "Microwave".to_string();
+        }
+        bays
+    }
+
+    /// The hardware named in the schedule: the door handle style, with the
+    /// drawer handle after a slash when it differs.
+    pub fn hardware_name(&self) -> String {
+        let (d, w) = (self.door_style.handle, self.drawer_style.handle);
+        if d == w {
+            d.name().to_string()
+        } else {
+            format!("{} / {}", d.name(), w.name())
+        }
+    }
+
+    /// The finish named in the schedule: the door material, or the carcass
+    /// when the doors keep their default.
+    pub fn finish_name(&self) -> String {
+        let m = self.materials;
+        let pick = if m.door != MaterialChoice::Default {
+            m.door
+        } else {
+            m.carcass
+        };
+        pick.name().to_string()
     }
 
     /// A free-form countertop over `outline` (plan coordinates, any
@@ -1235,6 +1585,9 @@ fn appliance_code(name: &str) -> String {
 
 /// The letters that open a cabinet's label: `B`, `W`, `FH`, `BF`, `BDC`...
 pub fn type_code(cabinet: &Cabinet) -> String {
+    if let Some(p) = cabinet.preset {
+        return p.code().to_string();
+    }
     let style = cabinet.corner.map(|c| (c.style, c.lazy_susan));
     match cabinet.kind {
         CabinetKind::Base => cabinet
@@ -1292,15 +1645,38 @@ pub fn auto_label(cabinet: &Cabinet) -> String {
     }
 }
 
-/// Expands the label macros of `template`: `<W>` width, `<D>` depth, `<H>`
-/// height, `<T>` type code (`B`, `W`, `FH`...) and `<L>` the automatic label.
+/// Expands the label macros of `template` (Chief's cabinet label text):
+///
+/// | macro | value |
+/// |---|---|
+/// | `<L>` | the automatic label (`B36`, `W3030`) |
+/// | `<T>` | the type code (`B`, `W`, `FH`, `VB`...) |
+/// | `<W>` `<D>` `<H>` | width, depth, height, whole inches or trimmed decimals |
+/// | `<WxD>` `<WxH>` `<WxDxH>` | sizes joined with `x` |
+/// | `<N>` | the cabinet's name (`Base Cabinet`, `Vanity Cabinet`) |
+/// | `<S>` | the door style (`Shaker Door`) |
+/// | `<F>` | the finish (door material) |
+/// | `<HW>` | the hardware (`Knob`, `Pull / Knob`) |
+/// | `<A>` | the appliance a bay holds, if any |
 pub fn expand_label(template: &str, cabinet: &Cabinet) -> String {
+    let (w, d, h) = (num(cabinet.width), num(cabinet.depth), num(cabinet.height));
+    let name = cabinet
+        .preset
+        .map_or_else(|| cabinet.kind.name(), CabinetPreset::name);
     template
+        .replace("<WxDxH>", &format!("{w}x{d}x{h}"))
+        .replace("<WxD>", &format!("{w}x{d}"))
+        .replace("<WxH>", &format!("{w}x{h}"))
         .replace("<L>", &auto_label(cabinet))
-        .replace("<W>", &num(cabinet.width))
-        .replace("<D>", &num(cabinet.depth))
-        .replace("<H>", &num(cabinet.height))
+        .replace("<W>", &w)
+        .replace("<D>", &d)
+        .replace("<H>", &h)
         .replace("<T>", &type_code(cabinet))
+        .replace("<N>", name)
+        .replace("<S>", &cabinet.door_style.name)
+        .replace("<F>", &cabinet.finish_name())
+        .replace("<HW>", &cabinet.hardware_name())
+        .replace("<A>", cabinet.appliance.as_deref().unwrap_or(""))
 }
 
 /// Place a row of cabinets along a wall on its +side (the left of the

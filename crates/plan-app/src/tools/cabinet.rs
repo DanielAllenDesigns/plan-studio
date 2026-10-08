@@ -45,10 +45,13 @@ use crate::editor::placed::{
     self, add_cabinet, cabinet_by_id, hit_cabinet, load_cabinets, placed_handles, replace_cabinet,
     same_angle, PlacedRef,
 };
+use crate::editor::tempdim::{self, TempDims};
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, EditorRequest, ObjectRef};
+use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Key, Pos2};
 use plan_cabinets::{
-    fit_between, wall_polygon, BlindSide, Cabinet, CabinetKind, CornerSpec, FaceLayout, HandleStyle,
+    fit_between, wall_polygon, Backsplash, BlindSide, Cabinet, CabinetKind, CabinetPreset,
+    CornerSpec, CornerTreatment, EdgeProfile, FaceLayout, HandleStyle,
 };
 use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
 use plan_core::{Floor, Id};
@@ -64,6 +67,13 @@ pub const WIDTH_STEP: f64 = 3.0;
 const MIN_WIDTH: f64 = 3.0;
 /// Pixels the pointer must travel before a press becomes a drag.
 const DRAG_THRESHOLD_PX: f32 = 3.0;
+/// Depth resize steps, inches (CB-8).
+pub const DEPTH_STEP: f64 = 1.0;
+/// Smallest cabinet depth, inches.
+const MIN_DEPTH: f64 = 3.0;
+/// A cabinet dragged into a gap whose width is within this of its own takes
+/// the gap's width (CB-5, fit to gap), inches.
+pub const FIT_TOLERANCE: f64 = 2.0;
 /// Back-to-back and perpendicular snapping reach, inches.
 const ISLAND_REACH: f64 = 6.0;
 /// A blind cabinet hides its end this close to a perpendicular wall, in.
@@ -107,10 +117,84 @@ pub fn kind_name(kind: CabinetKind) -> &'static str {
 }
 
 fn handle_style(name: &str) -> HandleStyle {
-    match name.to_lowercase().as_str() {
-        "none" => HandleStyle::None,
-        "pull" => HandleStyle::Pull,
-        _ => HandleStyle::Knob,
+    HandleStyle::from_name(name).unwrap_or(HandleStyle::Knob)
+}
+
+fn edge_profile(name: &str) -> EdgeProfile {
+    EdgeProfile::ALL
+        .into_iter()
+        .find(|e| e.name().eq_ignore_ascii_case(name))
+        .unwrap_or(EdgeProfile::Square)
+}
+
+fn corner_treatment(name: &str) -> CornerTreatment {
+    CornerTreatment::ALL
+        .into_iter()
+        .find(|c| c.name().eq_ignore_ascii_case(name))
+        .unwrap_or(CornerTreatment::None)
+}
+
+/// A box-like cabinet of `kind` sized from `d`.
+fn boxed(kind: CabinetKind, d: &plan_core::defaults::BoxDefaults) -> Cabinet {
+    let mut c = Cabinet::new(kind, d.width);
+    c.depth = d.depth;
+    c.height = d.height;
+    c.elevation = d.elevation;
+    c
+}
+
+/// A new cabinet made from a library type (Vanity, Pantry, Tall Oven,
+/// Refrigerator), sized from the plan's cabinet defaults and dressed like a
+/// base or full-height cabinet (door and drawer styles, handle).
+pub fn default_preset_cabinet(cx: &EditorContext, preset: CabinetPreset) -> Cabinet {
+    let d = &cx.defaults.cabinets;
+    let size = match preset {
+        CabinetPreset::Vanity => &d.vanity,
+        CabinetPreset::Pantry => &d.pantry,
+        CabinetPreset::TallOven => &d.tall_oven,
+        CabinetPreset::Refrigerator => &d.refrigerator,
+    };
+    let mut c = Cabinet::from_preset(preset, size.width);
+    c.depth = size.depth;
+    c.height = size.height;
+    c.elevation = size.elevation;
+    let b = &d.base;
+    c.door_style.name = b.door_style.clone();
+    c.door_style.handle = handle_style(&b.handle);
+    c.drawer_style.name = b.drawer_style.clone();
+    c.drawer_style.handle = handle_style(&b.handle);
+    if let Some(t) = c.countertop.as_mut() {
+        t.thickness = b.countertop_thickness;
+        t.overhang_front = b.countertop_overhang;
+        apply_countertop_defaults(t, &d.countertop);
+    }
+    if c.preset == Some(CabinetPreset::Vanity) {
+        add_default_backsplash(&mut c, &d.backsplash);
+    }
+    // The fixed items of the type's face must still fit the new height.
+    if c.face.resolve(c.face_height(), c.face_width()).is_err() {
+        c.face = FaceLayout::base_default(c.face_height());
+    }
+    c
+}
+
+fn apply_countertop_defaults(
+    t: &mut plan_cabinets::Countertop,
+    d: &plan_core::defaults::CountertopDefaults,
+) {
+    t.overhang_sides = d.overhang_sides;
+    t.overhang_back = d.overhang_back;
+    t.edge = edge_profile(&d.edge);
+    t.edge_size = d.edge_size;
+    t.corner = corner_treatment(&d.corner);
+    t.corner_size = d.corner_size;
+}
+
+fn add_default_backsplash(c: &mut Cabinet, d: &plan_core::defaults::BacksplashDefaults) {
+    if d.enabled && c.countertop.is_some() {
+        let mut b = Backsplash::new(d.height, d.thickness);
+        b.full_height = d.full_height;
+        c.backsplash = Some(b);
     }
 }
 
@@ -128,6 +212,7 @@ pub fn default_cabinet(cx: &EditorContext, kind: CabinetKind) -> Cabinet {
             if let Some(t) = c.countertop.as_mut() {
                 t.thickness = b.countertop_thickness;
                 t.overhang_front = b.countertop_overhang;
+                apply_countertop_defaults(t, &d.countertop);
             }
             if let Some(t) = c.toe_kick.as_mut() {
                 t.height = b.toe_kick_height;
@@ -138,6 +223,7 @@ pub fn default_cabinet(cx: &EditorContext, kind: CabinetKind) -> Cabinet {
             c.drawer_style.name = b.drawer_style.clone();
             c.drawer_style.handle = handle_style(&b.handle);
             c.face = FaceLayout::base_default(c.face_height());
+            add_default_backsplash(&mut c, &d.backsplash);
             c
         }
         CabinetKind::Wall => {
@@ -214,6 +300,9 @@ pub fn default_cabinet(cx: &EditorContext, kind: CabinetKind) -> Cabinet {
             });
             c
         }
+        CabinetKind::Soffit => boxed(kind, &d.soffit),
+        CabinetKind::Shelf => boxed(kind, &d.shelf),
+        CabinetKind::Partition => boxed(kind, &d.partition),
         other => Cabinet::new(other, 24.0),
     }
 }
@@ -646,6 +735,8 @@ impl PolyDraw {
 
 pub struct CabinetTool {
     kind: CabinetKind,
+    /// A library type (Vanity, Pantry, ...) placed instead of the plain kind.
+    preset: Option<CabinetPreset>,
     ghost: Option<Cabinet>,
     press: Option<Press>,
     edit: Option<EditDrag>,
@@ -656,12 +747,33 @@ impl Default for CabinetTool {
     fn default() -> Self {
         Self {
             kind: CabinetKind::Base,
+            preset: None,
             ghost: None,
             press: None,
             edit: None,
             poly: PolyDraw::default(),
         }
     }
+}
+
+/// [`CabinetTool::new_cabinet`] without the tool (the borrow is elsewhere).
+fn self_new_cabinet(
+    preset: Option<CabinetPreset>,
+    cx: &EditorContext,
+    kind: CabinetKind,
+) -> Cabinet {
+    match preset {
+        Some(p) => default_preset_cabinet(cx, p),
+        None => default_cabinet(cx, kind),
+    }
+}
+
+/// Kinds that take the width of the gap they are placed or dropped into.
+fn fills_gaps(kind: CabinetKind) -> bool {
+    matches!(
+        kind,
+        CabinetKind::Base | CabinetKind::Wall | CabinetKind::FullHeight
+    )
 }
 
 /// Kinds whose click-drag sets a width in 3" steps.
@@ -677,14 +789,42 @@ impl CabinetTool {
 
     pub fn set_kind(&mut self, kind: CabinetKind) {
         self.kind = kind;
+        self.preset = None;
         self.ghost = None;
         self.poly = PolyDraw::default();
+    }
+
+    /// The library type being placed, if any.
+    pub fn preset(&self) -> Option<CabinetPreset> {
+        self.preset
+    }
+
+    /// Places a library type (Vanity, Pantry, Tall Oven, Refrigerator) until
+    /// another kind is chosen; `None` goes back to the plain kind.
+    pub fn set_preset(&mut self, preset: Option<CabinetPreset>) {
+        match preset {
+            Some(p) => {
+                self.kind = p.kind();
+                self.preset = Some(p);
+                self.ghost = None;
+                self.poly = PolyDraw::default();
+            }
+            None => self.preset = None,
+        }
+    }
+
+    /// A fresh cabinet of the active variant, at the origin.
+    fn new_cabinet(&self, cx: &EditorContext) -> Cabinet {
+        match self.preset {
+            Some(p) => default_preset_cabinet(cx, p),
+            None => default_cabinet(cx, self.kind),
+        }
     }
 
     /// A fresh cabinet of the active variant placed for a click at `p`.
     fn placed_at(&self, cx: &EditorContext, p: &PointerEvent) -> Cabinet {
         let kind = self.kind();
-        let mut cab = default_cabinet(cx, kind);
+        let mut cab = self.new_cabinet(cx);
         let alt = p.modifiers.alt;
         if kind.is_filler() {
             settle_filler(cx, &mut cab, p.world, p.snapped, WALL_REACH, true, alt, 0);
@@ -700,6 +840,11 @@ impl CabinetTool {
         settle(cx, &mut cab, p.world, p.snapped, WALL_REACH, true, alt, 0);
         if kind.is_blind() {
             orient_blind(cx, &mut cab);
+        }
+        // Chief's "fill between": a new cabinet placed into a gap within the
+        // tolerance of its width takes the gap (Alt places it as it is).
+        if !alt && fills_gaps(kind) {
+            fit_gap(cx, &mut cab);
         }
         cab
     }
@@ -904,9 +1049,85 @@ impl CabinetTool {
 fn op_label(op: HandleKind) -> &'static str {
     match op {
         HandleKind::Rotate => "Rotate Cabinet",
-        HandleKind::ResizeStart | HandleKind::ResizeEnd => "Resize Cabinet",
+        HandleKind::ResizeStart | HandleKind::ResizeEnd | HandleKind::Reshape(_) => {
+            "Resize Cabinet"
+        }
+        HandleKind::Label => "Move Cabinet Label",
         _ => "Move Cabinet",
     }
+}
+
+thread_local! {
+    /// Preferences > Architectural: fit a dragged cabinet to the gap it is in.
+    static FIT_TO_GAP: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// A gap within this many inches of a cabinet's width is filled.
+    static FIT_TOLERANCE_IN: std::cell::Cell<f64> = const { std::cell::Cell::new(FIT_TOLERANCE) };
+    /// The library type the next `set_variant` places.
+    static REQUESTED_PRESET: std::cell::Cell<Option<CabinetPreset>> = const { std::cell::Cell::new(None) };
+}
+
+/// Sets how far a gap may differ from a cabinet's width and still be filled
+/// (Preferences > Architectural; 2" until set). Clamped to 0..=12.
+pub fn set_fit_tolerance(inches: f64) {
+    FIT_TOLERANCE_IN.with(|f| f.set(inches.clamp(0.0, 12.0)));
+}
+
+/// The fit-to-gap tolerance, inches.
+pub fn fit_tolerance() -> f64 {
+    FIT_TOLERANCE_IN.with(std::cell::Cell::get)
+}
+
+/// Asks for a library type (Vanity, Pantry, ...) to be placed by the next
+/// `ToolId::CabinetVariant(preset.kind())` the tool receives; a toolbar entry
+/// for the type calls this before `set_active`.
+pub fn request_preset(preset: CabinetPreset) {
+    REQUESTED_PRESET.with(|r| r.set(Some(preset)));
+}
+
+/// The `Action::Custom` id of the toolbar and menu entry for a library type.
+pub fn preset_command(preset: CabinetPreset) -> &'static str {
+    match preset {
+        CabinetPreset::Vanity => "cabinet.preset.vanity",
+        CabinetPreset::Pantry => "cabinet.preset.pantry",
+        CabinetPreset::TallOven => "cabinet.preset.tall_oven",
+        CabinetPreset::Refrigerator => "cabinet.preset.refrigerator",
+    }
+}
+
+/// Runs a library-type entry (`preset_command`): asks for the type and starts
+/// the Cabinet tool on the kind it is built from. False for any other id.
+pub fn run_preset_command(cx: &mut EditorContext, id: &str) -> bool {
+    let Some(preset) = CabinetPreset::ALL
+        .into_iter()
+        .find(|p| preset_command(*p) == id)
+    else {
+        return false;
+    };
+    request_preset(preset);
+    cx.requests
+        .push(EditorRequest::SetTool(ToolId::CabinetVariant(preset.kind())));
+    true
+}
+
+/// Turns fit to gap on or off.
+pub fn set_fit_to_gap(on: bool) {
+    FIT_TO_GAP.with(|f| f.set(on));
+}
+
+/// Is fit to gap on?
+pub fn fit_to_gap_enabled() -> bool {
+    FIT_TO_GAP.with(std::cell::Cell::get)
+}
+
+/// Fit to gap: sizes `c` to the gap it sits in when that gap is within
+/// [`FIT_TOLERANCE`] of its width. True when it changed.
+pub fn fit_gap(cx: &EditorContext, c: &mut Cabinet) -> bool {
+    if !fit_to_gap_enabled() || c.kind.is_custom() || c.kind.is_filler() {
+        return false;
+    }
+    let others = load_cabinets(cx.floor());
+    plan_cabinets::fit_to_gap(c, &others, &wall_polys(cx), fit_tolerance())
+        .is_some_and(|w| w >= MIN_WIDTH)
 }
 
 /// The cabinet after dragging handle `op` from `start` to `p` (CB-8, CB-9).
@@ -957,6 +1178,11 @@ pub fn apply_edit(
                     alt,
                     orig.id,
                 );
+                // Between a wall and a cabinet (or two cabinets) with a gap
+                // within 2" of its width, the cabinet takes the gap (CB-5).
+                if !alt && !orig.kind.is_corner() && !orig.kind.is_blind() {
+                    fit_gap(cx, &mut c);
+                }
             }
         }
         HandleKind::ResizeEnd => {
@@ -968,6 +1194,44 @@ pub fn apply_edit(
             let w = snap_to(orig.width - s, WIDTH_STEP, alt).max(MIN_WIDTH);
             c.width = w;
             c.position = orig.position + u * (orig.width - w);
+        }
+        HandleKind::Reshape(n) => {
+            let v = u.perp();
+            let rel = p.world.sub(orig.position);
+            // Where each edge is dragged to, in the cabinet's frame.
+            let (sx, sy) = (rel.dot(u), rel.dot(v));
+            let drag_left = matches!(n, placed::CORNER_BACK_LEFT | placed::CORNER_FRONT_LEFT);
+            let drag_right = matches!(n, placed::CORNER_BACK_RIGHT | placed::CORNER_FRONT_RIGHT);
+            let drag_back = matches!(
+                n,
+                placed::DEPTH_BACK | placed::CORNER_BACK_LEFT | placed::CORNER_BACK_RIGHT
+            );
+            let drag_front = matches!(
+                n,
+                placed::DEPTH_FRONT | placed::CORNER_FRONT_LEFT | placed::CORNER_FRONT_RIGHT
+            );
+            let mut shift = Point::ZERO;
+            if drag_right {
+                c.width = snap_to(sx, WIDTH_STEP, alt).max(MIN_WIDTH);
+            }
+            if drag_left {
+                let w = snap_to(orig.width - sx, WIDTH_STEP, alt).max(MIN_WIDTH);
+                c.width = w;
+                shift = shift + u * (orig.width - w);
+            }
+            if drag_front {
+                c.depth = snap_to(sy, DEPTH_STEP, alt).max(MIN_DEPTH);
+            }
+            if drag_back {
+                let d = snap_to(orig.depth - sy, DEPTH_STEP, alt).max(MIN_DEPTH);
+                c.depth = d;
+                shift = shift + v * (orig.depth - d);
+            }
+            c.position = orig.position + shift;
+        }
+        HandleKind::Label => {
+            // The label follows the pointer: the offset is the drag.
+            c.label_offset = orig.label_offset + p.world.sub(start);
         }
         HandleKind::Rotate => {
             let center = orig.to_plan(local_center);
@@ -996,7 +1260,8 @@ impl Tool for CabinetTool {
     }
 
     fn name(&self) -> &'static str {
-        self.kind.name()
+        self.preset
+            .map_or_else(|| self.kind.name(), CabinetPreset::name)
     }
 
     fn hint(&self) -> String {
@@ -1033,6 +1298,13 @@ impl Tool for CabinetTool {
     fn set_variant(&mut self, id: ToolId) {
         if let ToolId::CabinetVariant(k) = id {
             self.set_kind(k);
+            // A library type requested with `request_preset` rides on the
+            // variant of the kind it is built from.
+            if let Some(p) = REQUESTED_PRESET.with(std::cell::Cell::take) {
+                if p.kind() == k {
+                    self.set_preset(Some(p));
+                }
+            }
         }
     }
 
@@ -1065,7 +1337,7 @@ impl Tool for CabinetTool {
                 cx.readout = Some(format!("Width: {}", cx.fmt_dim(next.width)));
                 return ToolResult::consumed();
             }
-            let kind = self.kind;
+            let (kind, preset) = (self.kind, self.preset);
             if let Some(pr) = &mut self.press {
                 let u = Point::new(pr.angle.cos(), pr.angle.sin());
                 let du = p.world.sub(pr.start).dot(u);
@@ -1076,7 +1348,7 @@ impl Tool for CabinetTool {
                     let width = (du.abs() / WIDTH_STEP).round().max(1.0) * WIDTH_STEP;
                     let sign = if du >= 0.0 { 1.0 } else { -1.0 };
                     let center = pr.start + u * (sign * width * 0.5);
-                    let mut cab = default_cabinet(cx, kind);
+                    let mut cab = self_new_cabinet(preset, cx, kind);
                     cab.width = width;
                     cab.angle = pr.angle;
                     settle(
@@ -1108,6 +1380,14 @@ impl Tool for CabinetTool {
             return self.poly_down(&p);
         }
         let tol = cx.pick_tol();
+        // A temporary dimension of the selected cabinet turns into an edit
+        // field (Enter applies it by moving or resizing the cabinet).
+        if let Some(i) = cx.temp.hit_label(p.world, cx.px_per_in) {
+            cx.temp.cancel();
+            cx.temp.begin_edit(i);
+            return ToolResult::consumed();
+        }
+        cx.temp.cancel();
         // A handle of the selected cabinet.
         if let (Some(id), Some(h)) = (
             Self::selected_cabinet(cx),
@@ -1128,7 +1408,7 @@ impl Tool for CabinetTool {
         // other click places a new cabinet, which bumps against whatever is
         // under it; a selected cabinet moves with its center handle.
         if p.modifiers.shift {
-            let probe = default_cabinet(cx, self.kind());
+            let probe = self.new_cabinet(cx);
             if let Some(id) = hit_cabinet(cx, p.world, 0.0, |c| vertical_overlap(c, &probe)) {
                 cx.selection.toggle(ObjectRef::Cabinet(id));
                 return ToolResult::consumed();
@@ -1154,6 +1434,7 @@ impl Tool for CabinetTool {
         if let Some(e) = self.edit.take() {
             return if e.begun {
                 cx.readout = None;
+                placed::rejoin_if_enabled(cx);
                 ToolResult::committed(op_label(e.op))
             } else {
                 ToolResult::consumed()
@@ -1169,6 +1450,7 @@ impl Tool for CabinetTool {
         match add_cabinet(&mut cx.project, fl, pr.cab) {
             Some(id) => {
                 cx.selection.set(ObjectRef::Cabinet(id));
+                placed::rejoin_if_enabled(cx);
                 cx.mark_dirty();
                 cx.status.clear();
                 ToolResult::committed(&label)
@@ -1195,6 +1477,9 @@ impl Tool for CabinetTool {
     }
 
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        if cx.temp.editing.is_some() {
+            return Self::key_while_editing(cx, &k);
+        }
         if k.is(Key::Escape) {
             return if self.cancel(cx) {
                 ToolResult::consumed()
@@ -1212,8 +1497,24 @@ impl Tool for CabinetTool {
             }
         }
         if k.is(Key::Tab) && self.press.is_none() && self.edit.is_none() && !self.poly.active() {
-            let i = KINDS.iter().position(|x| *x == self.kind).unwrap_or(0);
-            self.set_kind(KINDS[(i + 1) % KINDS.len()]);
+            if k.modifiers.shift {
+                // Shift+Tab walks the library types: Vanity, Pantry, Tall
+                // Oven, Refrigerator, then back to the plain kinds.
+                let next = match self.preset {
+                    None => Some(CabinetPreset::ALL[0]),
+                    Some(p) => CabinetPreset::ALL
+                        .iter()
+                        .position(|x| *x == p)
+                        .and_then(|i| CabinetPreset::ALL.get(i + 1).copied()),
+                };
+                match next {
+                    Some(p) => self.set_preset(Some(p)),
+                    None => self.set_kind(KINDS[0]),
+                }
+            } else {
+                let i = KINDS.iter().position(|x| *x == self.kind).unwrap_or(0);
+                self.set_kind(KINDS[(i + 1) % KINDS.len()]);
+            }
             cx.status = self.hint();
             return ToolResult::consumed();
         }
@@ -1241,10 +1542,28 @@ impl Tool for CabinetTool {
 
     fn draw_overlay(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         let pal = &cx.palette;
+        let show_dims = cx.view_flags.contains(&ViewFlag::TemporaryDimensions);
         if let Some(g) = &self.ghost {
             if self.edit.is_none() {
                 placed::draw_cabinet(painter, cam, g, pal.ghost_stroke, false);
+                // The ghost's distances to the walls and neighbours on
+                // either side, while it is placed or dragged out.
+                if show_dims && !is_polygon(self.kind) && !g.kind.is_custom() {
+                    let dims = TempDims {
+                        dims: tempdim::cabinet_temp_dims(
+                            cx.floor(),
+                            g,
+                            ObjectRef::Cabinet(0),
+                            &tempdim::TempLocate::of(cx),
+                        ),
+                        editing: None,
+                    };
+                    tempdim::draw(&dims, painter, cam, pal, &cx.dim_format());
+                }
             }
+        }
+        if show_dims && !is_polygon(self.kind) {
+            tempdim::draw(&cx.temp, painter, cam, pal, &cx.dim_format());
         }
         if is_polygon(self.kind) {
             self.draw_poly(cx, painter, cam);
@@ -1270,6 +1589,30 @@ impl Tool for CabinetTool {
 }
 
 impl CabinetTool {
+    /// Typing into a temporary dimension: digits and quotes edit the value,
+    /// Tab moves to the next, Enter applies, Esc leaves it.
+    fn key_while_editing(cx: &mut EditorContext, k: &KeyEvent) -> ToolResult {
+        if let Some(t) = &k.text {
+            let ok: String = t
+                .chars()
+                .filter(|c| c.is_ascii_digit() || " '\"-/.".contains(*c))
+                .collect();
+            cx.temp.type_text(&ok);
+        } else if k.is(Key::Backspace) {
+            cx.temp.backspace();
+        } else if k.is(Key::Tab) {
+            cx.temp.next_field();
+        } else if k.is(Key::Escape) {
+            cx.temp.cancel();
+        } else if k.is(Key::Enter) {
+            match tempdim::commit_edit(cx) {
+                Ok(label) => return ToolResult::committed(label),
+                Err(e) => cx.status = e,
+            }
+        }
+        ToolResult::consumed()
+    }
+
     /// How many corners of a polygon in progress are placed.
     #[cfg(test)]
     fn draw_poly_points(&self) -> usize {
@@ -1630,14 +1973,35 @@ mod tests {
     }
 
     #[test]
+    fn a_library_type_entry_asks_for_the_type_and_starts_the_tool() {
+        let mut cx = setup();
+        assert!(!run_preset_command(&mut cx, "cabinet.nope"));
+        assert!(run_preset_command(&mut cx, preset_command(CabinetPreset::Pantry)));
+        assert!(matches!(
+            cx.requests.last(),
+            Some(EditorRequest::SetTool(ToolId::CabinetVariant(k))) if *k == CabinetPreset::Pantry.kind()
+        ));
+        let mut t = CabinetTool::default();
+        t.set_variant(ToolId::CabinetVariant(CabinetPreset::Pantry.kind()));
+        assert_eq!(t.preset(), Some(CabinetPreset::Pantry));
+    }
+
+    #[test]
     fn the_cabinet_flyout_has_no_unimplemented_entries() {
         let fly = crate::toolbar::cabinet();
         let mut kinds = Vec::new();
+        let mut presets = Vec::new();
         for e in &fly.entries {
             match e.action {
                 crate::toolbar::Action::SetTool(ToolId::CabinetVariant(k)) => kinds.push(k),
+                // The library types (Vanity, Pantry, ...) start the tool through
+                // `request_preset` (integration queue, cabinets round).
+                crate::toolbar::Action::Custom(id) => presets.push(id),
                 ref other => panic!("{} is not a tool entry: {other:?}", e.name),
             }
+        }
+        for p in CabinetPreset::ALL {
+            assert!(presets.contains(&preset_command(p)), "{p:?} is missing");
         }
         for k in KINDS {
             assert!(kinds.contains(&k), "{k:?} is missing from the flyout");
@@ -2026,5 +2390,421 @@ mod tests {
             .unwrap();
         // Not slid aside: it sits where it was clicked.
         assert!((base.position.x - 48.0).abs() < 1e-9, "{:?}", base.position);
+    }
+
+    // ----- depth and corner handles, fit to gap, automatic countertop join -----
+
+    /// Drags the handle `kind` of cabinet `id` to `to` through the tool.
+    fn drag_handle_to(
+        t: &mut CabinetTool,
+        cx: &mut EditorContext,
+        id: Id,
+        kind: HandleKind,
+        to: Point,
+    ) -> ToolResult {
+        let h = placed_handles(cx.floor(), PlacedRef::Cabinet(id), cx.px_per_in)
+            .into_iter()
+            .find(|h| h.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind:?} handle"));
+        let mut down = PointerEvent::at(cx, h.pos).with_down(true);
+        down.screen = Pos2::new(0.0, 0.0);
+        t.pointer_down(cx, down);
+        let mut mv = PointerEvent::at(cx, to).with_down(true);
+        mv.screen = Pos2::new(50.0, 50.0);
+        t.pointer_move(cx, mv);
+        t.pointer_up(cx, mv)
+    }
+
+    #[test]
+    fn depth_handles_resize_from_the_front_and_the_back() {
+        let mut cx = setup();
+        let mut t = CabinetTool::default();
+        click(&mut t, &mut cx, 60.0, 10.0); // 48..72, back on the wall face y = 3
+        let id = cabs(&cx)[0].id;
+        let front = HandleKind::Reshape(placed::DEPTH_FRONT);
+        let back = HandleKind::Reshape(placed::DEPTH_BACK);
+        // Front handle 6" out: the back stays on the wall.
+        let r = drag_handle_to(&mut t, &mut cx, id, front, Point::new(60.0, 33.0));
+        assert_eq!(r.commit.as_deref(), Some("Resize Cabinet"));
+        let c = cabinet_by_id(cx.floor(), id).unwrap();
+        assert_eq!((c.depth, c.width), (30.0, 24.0));
+        assert!((c.position.y - 3.0).abs() < 1e-9);
+        // Back handle 3" in: the front edge (y = 33) stays put.
+        drag_handle_to(&mut t, &mut cx, id, back, Point::new(60.0, 6.0));
+        let c = cabinet_by_id(cx.floor(), id).unwrap();
+        assert_eq!(c.depth, 27.0);
+        assert!((c.position.y - 6.0).abs() < 1e-9 && (c.position.y + c.depth - 33.0).abs() < 1e-9);
+        // Never thinner than 3".
+        drag_handle_to(&mut t, &mut cx, id, front, Point::new(60.0, -50.0));
+        assert_eq!(cabinet_by_id(cx.floor(), id).unwrap().depth, 3.0);
+        assert_eq!(cx.undo().as_deref(), Some("Resize Cabinet"));
+    }
+
+    #[test]
+    fn corner_handles_change_width_and_depth_with_the_opposite_corner_fixed() {
+        let mut cx = setup();
+        let mut t = CabinetTool::default();
+        click(&mut t, &mut cx, 60.0, 10.0); // 48..72 x 3..27
+        let id = cabs(&cx)[0].id;
+        let corner = |n| HandleKind::Reshape(n);
+        // Front-right corner: the back-left corner (48, 3) stays.
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            id,
+            corner(placed::CORNER_FRONT_RIGHT),
+            Point::new(81.0, 33.0),
+        );
+        let c = cabinet_by_id(cx.floor(), id).unwrap();
+        assert_eq!((c.width, c.depth), (33.0, 30.0));
+        assert!(c.position.dist(Point::new(48.0, 3.0)) < 1e-9);
+        // Back-left corner: the front-right corner (81, 33) stays.
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            id,
+            corner(placed::CORNER_BACK_LEFT),
+            Point::new(39.0, 0.0),
+        );
+        let c = cabinet_by_id(cx.floor(), id).unwrap();
+        assert_eq!((c.width, c.depth), (42.0, 33.0));
+        let front_right = c.to_plan(Point::new(c.width, c.depth));
+        assert!(
+            front_right.dist(Point::new(81.0, 33.0)) < 1e-9,
+            "{front_right:?}"
+        );
+        // The other two corners work the same way.
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            id,
+            corner(placed::CORNER_BACK_RIGHT),
+            Point::new(60.0, 6.0),
+        );
+        let c = cabinet_by_id(cx.floor(), id).unwrap();
+        assert!(
+            c.to_plan(Point::new(0.0, c.depth))
+                .dist(Point::new(39.0, 33.0))
+                < 1e-9
+        );
+        assert_eq!((c.width, c.depth), (21.0, 27.0));
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            id,
+            corner(placed::CORNER_FRONT_LEFT),
+            Point::new(45.0, 30.0),
+        );
+        let c = cabinet_by_id(cx.floor(), id).unwrap();
+        assert!(
+            c.to_plan(Point::new(c.width, 0.0))
+                .dist(Point::new(60.0, 6.0))
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn dragging_a_cabinet_into_a_gap_close_to_its_width_fits_it() {
+        let mut cx = setup();
+        // A at 20..44 and C at 75..99, both on the wall face: a 31" gap.
+        put_kind(&mut cx, CabinetKind::Base, 20.0, 3.0, 0.0);
+        put_kind(&mut cx, CabinetKind::Base, 75.0, 3.0, 0.0);
+        let mut b = default_cabinet(&cx, CabinetKind::Base);
+        b.width = 30.0;
+        b.position = Point::new(120.0, 3.0);
+        let id = add_cabinet(&mut cx.project, 0, b).unwrap();
+        let orig = cabinet_by_id(cx.floor(), id).unwrap();
+        let start = orig.to_plan(Point::new(15.0, 12.0));
+        let to = |x: f64| PointerEvent::at(&cx, Point::new(x, start.y));
+        let moved = apply_edit(&cx, HandleKind::Move, &orig, start, &to(59.0));
+        assert!((moved.width - 31.0).abs() < 1e-9, "{}", moved.width);
+        assert!(
+            (moved.position.x - 44.0).abs() < 1e-9,
+            "{:?}",
+            moved.position
+        );
+        // The preference switches it off.
+        set_fit_to_gap(false);
+        let plain = apply_edit(&cx, HandleKind::Move, &orig, start, &to(59.0));
+        set_fit_to_gap(true);
+        assert_eq!(plain.width, 30.0);
+        // A 24" cabinet is 7" short of the gap: it keeps its width.
+        let mut small = orig.clone();
+        small.width = 24.0;
+        let kept = apply_edit(&cx, HandleKind::Move, &small, start, &to(59.0));
+        assert_eq!(kept.width, 24.0);
+        // Resizing by a handle is not a gap fit.
+        let wide = apply_edit(
+            &cx,
+            HandleKind::ResizeEnd,
+            &orig,
+            start,
+            &PointerEvent::at(&cx, Point::new(160.0, 10.0)),
+        );
+        assert_eq!(wide.width, 39.0);
+    }
+
+    #[test]
+    fn touching_base_cabinets_join_their_countertops_and_regenerate_on_a_move() {
+        let mut cx = setup();
+        placed::set_auto_join(true);
+        let mut t = CabinetTool::default();
+        click(&mut t, &mut cx, 60.0, 10.0); // 48..72
+        assert!(
+            cabs(&cx).iter().all(|c| c.joined.is_empty()),
+            "one cabinet joins nothing"
+        );
+        click_clear(&mut t, &mut cx, 84.0, 10.0); // butts against it: 72..96
+        let list = cabs(&cx);
+        let tops: Vec<&Cabinet> = list.iter().filter(|c| !c.joined.is_empty()).collect();
+        assert_eq!(tops.len(), 1, "{list:?}");
+        assert_eq!(tops[0].joined.len(), 2);
+        let top_id = tops[0].id;
+        let bases: Vec<&Cabinet> = list.iter().filter(|c| c.joined.is_empty()).collect();
+        assert!(bases
+            .iter()
+            .all(|c| c.countertop.is_none() && c.height < 36.0));
+        // Placing and joining were one undo step.
+        assert_eq!(cx.undo_label(), Some("Place Base Cabinet"));
+        // Move the second cabinet away with its handle: the top comes apart.
+        let second = bases[1].id;
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            second,
+            HandleKind::Move,
+            Point::new(180.0, 18.0),
+        );
+        let list = cabs(&cx);
+        assert!(
+            list.iter().all(|c| c.joined.is_empty()),
+            "no top while apart"
+        );
+        assert!(list
+            .iter()
+            .all(|c| c.countertop.is_some() && c.height == 36.0));
+        // Bring it back beside the first: a top again (the old id is gone).
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            second,
+            HandleKind::Move,
+            Point::new(84.0, 18.0),
+        );
+        let list = cabs(&cx);
+        let again: Vec<&Cabinet> = list.iter().filter(|c| !c.joined.is_empty()).collect();
+        assert_eq!(again.len(), 1);
+        assert_ne!(again[0].id, top_id);
+        // Deleting a joined cabinet gives the other its slab back.
+        cx.selection.set(ObjectRef::Cabinet(second));
+        assert_eq!(placed::delete_placed(&mut cx), 1);
+        let list = cabs(&cx);
+        assert_eq!(list.len(), 1);
+        assert!(list[0].countertop.is_some() && list[0].joined.is_empty());
+        placed::set_auto_join(false);
+    }
+
+    // ----- placement sizing, library types, defaults, labels, temp dims -----
+
+    #[test]
+    fn a_cabinet_placed_into_a_34_inch_gap_takes_the_gap() {
+        let mut cx = setup();
+        // A at 20..44 and C at 78..102 on the wall face: a 34" gap.
+        put_kind(&mut cx, CabinetKind::Base, 20.0, 3.0, 0.0);
+        put_kind(&mut cx, CabinetKind::Base, 78.0, 3.0, 0.0);
+        cx.defaults.cabinets.base.width = 36.0;
+        let mut t = CabinetTool::default();
+        click(&mut t, &mut cx, 61.0, 10.0);
+        let placed = cabs(&cx).into_iter().find(|c| c.width != 24.0).unwrap();
+        assert!((placed.width - 34.0).abs() < 1e-9, "{}", placed.width);
+        assert!(
+            (placed.position.x - 44.0).abs() < 1e-9,
+            "{:?}",
+            placed.position
+        );
+        // A gap further off than the tolerance is left alone: 30" in a 34" gap.
+        let mut cx = setup();
+        put_kind(&mut cx, CabinetKind::Base, 20.0, 3.0, 0.0);
+        put_kind(&mut cx, CabinetKind::Base, 78.0, 3.0, 0.0);
+        cx.defaults.cabinets.base.width = 30.0;
+        let t = CabinetTool::default();
+        let p = PointerEvent::at(&cx, Point::new(61.0, 10.0));
+        assert_eq!(t.placed_at(&cx, &p).width, 30.0);
+        // A wider tolerance in the preferences closes it; Alt never fits.
+        set_fit_tolerance(5.0);
+        let mut alt = p;
+        alt.modifiers.alt = true;
+        assert_eq!(t.placed_at(&cx, &alt).width, 30.0);
+        assert!((t.placed_at(&cx, &p).width - 34.0).abs() < 1e-9);
+        set_fit_tolerance(FIT_TOLERANCE);
+        // The preference off places it as it is.
+        set_fit_to_gap(false);
+        assert_eq!(t.placed_at(&cx, &p).width, 30.0);
+        set_fit_to_gap(true);
+        // Fillers, soffits and the like are not fitted this way.
+        assert!(!fills_gaps(CabinetKind::Soffit) && fills_gaps(CabinetKind::FullHeight));
+    }
+
+    #[test]
+    fn the_defaults_give_each_kind_its_chief_size() {
+        let cx = setup();
+        let b = default_cabinet(&cx, CabinetKind::Base);
+        assert_eq!((b.width, b.depth, b.height), (24.0, 24.0, 36.0));
+        let s = default_cabinet(&cx, CabinetKind::Soffit);
+        assert_eq!((s.depth, s.height, s.elevation), (12.0, 12.0, 84.0));
+        let sh = default_cabinet(&cx, CabinetKind::Shelf);
+        assert_eq!((sh.depth, sh.height, sh.elevation), (12.0, 0.75, 48.0));
+        let pt = default_cabinet(&cx, CabinetKind::Partition);
+        assert_eq!((pt.depth, pt.height), (24.0, 36.0));
+        for (p, size) in [
+            (CabinetPreset::Vanity, (30.0, 21.0, 34.5)),
+            (CabinetPreset::Pantry, (24.0, 24.0, 84.0)),
+            (CabinetPreset::TallOven, (30.0, 24.0, 84.0)),
+            (CabinetPreset::Refrigerator, (36.0, 25.0, 84.0)),
+        ] {
+            let c = default_preset_cabinet(&cx, p);
+            assert_eq!((c.width, c.depth, c.height), size, "{p:?}");
+            assert_eq!(c.preset, Some(p));
+        }
+        // The Cabinet Defaults page edits them.
+        let mut cx = setup();
+        cx.defaults.cabinets.vanity.depth = 18.0;
+        cx.defaults.cabinets.soffit.elevation = 90.0;
+        cx.defaults.cabinets.shelf.width = 36.0;
+        assert_eq!(
+            default_preset_cabinet(&cx, CabinetPreset::Vanity).depth,
+            18.0
+        );
+        assert_eq!(default_cabinet(&cx, CabinetKind::Soffit).elevation, 90.0);
+        assert_eq!(default_cabinet(&cx, CabinetKind::Shelf).width, 36.0);
+    }
+
+    #[test]
+    fn countertop_and_backsplash_defaults_dress_new_base_cabinets() {
+        let mut cx = setup();
+        assert!(default_cabinet(&cx, CabinetKind::Base).backsplash.is_none());
+        cx.defaults.cabinets.backsplash.enabled = true;
+        cx.defaults.cabinets.backsplash.full_height = true;
+        cx.defaults.cabinets.backsplash.height = 6.0;
+        cx.defaults.cabinets.countertop.edge = "Bullnose".into();
+        cx.defaults.cabinets.countertop.edge_size = 1.0;
+        cx.defaults.cabinets.countertop.corner = "Rounded".into();
+        cx.defaults.cabinets.countertop.overhang_sides = 0.5;
+        cx.defaults.cabinets.base.handle = "Cup Pull".into();
+        let c = default_cabinet(&cx, CabinetKind::Base);
+        let bs = c.backsplash.unwrap();
+        assert!(bs.full_height && bs.height == 6.0);
+        let t = c.countertop.unwrap();
+        assert_eq!(t.edge, EdgeProfile::Bullnose);
+        assert_eq!((t.edge_size, t.overhang_sides), (1.0, 0.5));
+        assert_eq!(t.corner, CornerTreatment::Rounded);
+        assert_eq!(c.door_style.handle, HandleStyle::Cup);
+        // A wall cabinet has no top to carry one.
+        assert!(default_cabinet(&cx, CabinetKind::Wall).backsplash.is_none());
+        // The vanity takes the backsplash too.
+        assert!(default_preset_cabinet(&cx, CabinetPreset::Vanity)
+            .backsplash
+            .is_some());
+    }
+
+    #[test]
+    fn the_tool_places_library_types_and_shift_tab_walks_them() {
+        let mut cx = setup();
+        let mut t = CabinetTool::default();
+        t.set_preset(Some(CabinetPreset::Vanity));
+        assert_eq!(t.name(), "Vanity Cabinet");
+        click(&mut t, &mut cx, 60.0, 10.0);
+        let v = &cabs(&cx)[0];
+        assert_eq!(v.preset, Some(CabinetPreset::Vanity));
+        assert_eq!((v.depth, v.height), (21.0, 34.5));
+        assert_eq!(v.display_label(), "VB30");
+        // Shift+Tab: Pantry, Tall Oven, Refrigerator, then the plain kinds.
+        let shift_tab = || {
+            let mut k = KeyEvent::key(Key::Tab);
+            k.modifiers.shift = true;
+            k
+        };
+        for want in [
+            CabinetPreset::Pantry,
+            CabinetPreset::TallOven,
+            CabinetPreset::Refrigerator,
+        ] {
+            assert!(t.key(&mut cx, shift_tab()).consumed);
+            assert_eq!(t.preset(), Some(want));
+        }
+        assert!(t.key(&mut cx, shift_tab()).consumed);
+        assert_eq!((t.preset(), t.kind()), (None, KINDS[0]));
+        assert!(t.key(&mut cx, shift_tab()).consumed);
+        assert_eq!(t.preset(), Some(CabinetPreset::Vanity));
+        // Tab goes back to plain kinds.
+        t.key(&mut cx, KeyEvent::key(Key::Tab));
+        assert_eq!(t.preset(), None);
+        // A toolbar entry requests the type before choosing the variant.
+        request_preset(CabinetPreset::Pantry);
+        t.set_variant(ToolId::CabinetVariant(CabinetKind::FullHeight));
+        assert_eq!(t.preset(), Some(CabinetPreset::Pantry));
+        t.set_variant(ToolId::CabinetVariant(CabinetKind::FullHeight));
+        assert_eq!(t.preset(), None, "the request is used once");
+    }
+
+    #[test]
+    fn dragging_the_label_handle_moves_the_label_on_its_layer() {
+        let mut cx = setup();
+        let mut t = CabinetTool::default();
+        click(&mut t, &mut cx, 60.0, 10.0);
+        let id = cabs(&cx)[0].id;
+        assert!(
+            cx.project.layers.get("Cabinets, Labels").is_some(),
+            "the label layer appears with the first cabinet"
+        );
+        drag_handle_to(&mut t, &mut cx, id, HandleKind::Label, Point::ZERO);
+        let c = cabinet_by_id(cx.floor(), id).unwrap();
+        // The drag started on the handle and ended at the origin: the label
+        // moved by exactly that drag.
+        let h = placed::placed_handles(cx.floor(), PlacedRef::Cabinet(id), cx.px_per_in)
+            .into_iter()
+            .find(|h| h.kind == HandleKind::Label)
+            .unwrap();
+        assert_ne!(c.label_offset, Point::ZERO);
+        assert!(h.pos.dist(Point::ZERO) < 40.0, "{:?}", h.pos);
+        assert_eq!(cx.undo_label(), Some("Move Cabinet Label"));
+    }
+
+    #[test]
+    fn clicking_a_temporary_dimension_edits_it_and_enter_moves_the_cabinet() {
+        let mut cx = setup();
+        cx.view_flags.insert(ViewFlag::TemporaryDimensions);
+        vertical_wall(&mut cx, 0.0);
+        vertical_wall(&mut cx, 54.0);
+        let mut t = CabinetTool::default();
+        click(&mut t, &mut cx, 27.0, 10.0);
+        cx.refresh();
+        let id = cabs(&cx)[0].id;
+        let i = cx
+            .temp
+            .dims
+            .iter()
+            .position(|d| d.kind == tempdim::TempDimKind::CabinetToLeft)
+            .expect("a gap to the left");
+        let gap = cx.temp.dims[i].value;
+        let at = cx.temp.dims[i].label_pos(cx.px_per_in);
+        let p = PointerEvent::at(&cx, at);
+        assert!(t.pointer_down(&mut cx, p.with_down(true)).consumed);
+        assert!(cx.temp.editing.is_some());
+        cx.temp.editing.as_mut().unwrap().text.clear();
+        assert!(t.key(&mut cx, KeyEvent::text("6")).consumed);
+        let r = t.key(&mut cx, KeyEvent::key(Key::Enter));
+        assert_eq!(r.commit.as_deref(), Some("Move Cabinet"));
+        let c = cabinet_by_id(cx.floor(), id).unwrap();
+        assert!(gap > 6.0);
+        cx.refresh();
+        let left = cx
+            .temp
+            .dims
+            .iter()
+            .find(|d| d.kind == tempdim::TempDimKind::CabinetToLeft)
+            .unwrap();
+        assert!((left.value - 6.0).abs() < 1e-9, "{}", left.value);
+        assert!(c.width == 24.0);
     }
 }

@@ -8,6 +8,7 @@ use crate::drawing::{Drawing, EdgeKind, Line2, LineWeight, RegionKind};
 use crate::projection::Projection;
 use crate::regions::Labels;
 use crate::shadow::Surface;
+use crate::styles::ObjectWeights;
 use crate::Options;
 use plan_3d::{Material, Scene};
 use plan_core::{Id, Point};
@@ -196,6 +197,9 @@ struct Candidate {
     b: V3,
     weight: LineWeight,
     kind: EdgeKind,
+    /// The wall or opening the edge belongs to (a front-facing neighbour's
+    /// source object), for the per-object pen weights.
+    object: Option<Id>,
 }
 
 /// Uniform grid over welded vertices, for T-junction queries.
@@ -319,6 +323,16 @@ fn classify(edge_tris: &[u32], tris: &[Tri], crease_cos: f64) -> Option<(EdgeKin
     seam.then_some((EdgeKind::Material, LineWeight::Light))
 }
 
+/// The source object of an edge: that of the first front-facing neighbour
+/// that has one, else of any neighbour that has one.
+fn edge_object(edge_tris: &[u32], tris: &[Tri]) -> Option<Id> {
+    let adj = || edge_tris.iter().map(|&i| &tris[i as usize]);
+    adj()
+        .filter(|t| t.front)
+        .find_map(|t| t.group.1)
+        .or_else(|| adj().find_map(|t| t.group.1))
+}
+
 /// Candidate edges of the kept triangles: silhouettes, creases and seams.
 fn candidates(
     tris: &[Tri],
@@ -379,6 +393,7 @@ fn candidates(
                 b: pb,
                 weight,
                 kind,
+                object: edge_object(&adj, tris),
             })
         })
         .collect()
@@ -566,6 +581,7 @@ pub(crate) fn render(
     proj: &Projection,
     cut_depth: Option<f64>,
     opts: &Options,
+    weights: Option<&ObjectWeights>,
 ) -> Drawing {
     let clipped = collect(scene, proj, cut_depth, opts.section_depth);
     let far = cut_depth
@@ -613,8 +629,9 @@ pub(crate) fn render(
     }
     let bias = 1.5 * buf.pixel_size() + 0.02;
 
-    // Each line carries its mean depth for the optional depth weighting.
-    let mut lines: Vec<(Line2, f64)> = clipped
+    // Each line carries its mean depth for the optional depth weighting and
+    // its source object for the per-object pen weights.
+    let mut lines: Vec<(Line2, f64, Option<Id>)> = clipped
         .cut
         .iter()
         .map(|&(a, b, _)| {
@@ -626,6 +643,7 @@ pub(crate) fn render(
                     kind: EdgeKind::Cut,
                 },
                 f64::INFINITY,
+                None,
             )
         })
         .collect();
@@ -646,6 +664,7 @@ pub(crate) fn render(
                         kind: c.kind,
                     },
                     depth,
+                    c.object,
                 ));
             } else if opts.include_hidden_dashed {
                 lines.push((
@@ -656,6 +675,7 @@ pub(crate) fn render(
                         kind: EdgeKind::Hidden,
                     },
                     depth,
+                    c.object,
                 ));
             }
         }
@@ -663,17 +683,24 @@ pub(crate) fn render(
     if opts.depth_weights {
         let nearest = lines
             .iter()
-            .filter(|(l, _)| l.kind != EdgeKind::Hidden)
-            .map(|(_, d)| *d)
+            .filter(|(l, _, _)| l.kind != EdgeKind::Hidden)
+            .map(|(_, d, _)| *d)
             .filter(|d| d.is_finite())
             .fold(f64::NEG_INFINITY, f64::max);
-        for (l, d) in &mut lines {
+        for (l, d, _) in &mut lines {
             if l.kind != EdgeKind::Hidden && *d < nearest - DEPTH_BAND {
                 l.weight = step_down(l.weight);
             }
         }
     }
-    let mut drawing = Drawing::new(lines.into_iter().map(|(l, _)| l).collect());
+    if let Some(w) = weights {
+        for (l, _, object) in &mut lines {
+            if let Some(class) = object.and_then(|id| w.class_of(id)) {
+                l.weight = w.restyle(l.kind, l.weight, class);
+            }
+        }
+    }
+    let mut drawing = Drawing::new(lines.into_iter().map(|(l, _, _)| l).collect());
     drawing.merge_collinear();
 
     if opts.regions || opts.hatch || opts.shadows.is_some() {

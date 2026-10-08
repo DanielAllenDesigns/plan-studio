@@ -154,3 +154,57 @@ pub fn flatten_spline(control: &[Point], closed: bool, samples: usize) -> Vec<Po
     }
     out
 }
+
+/// Flatten a cardinal spline through `control`: the tangent at each control
+/// point is `tension` times the chord between its neighbours, so `0.5` is the
+/// Catmull-Rom curve of [`flatten_spline`], `0` joins the points with straight
+/// segments and `1` swings wide. `samples` points are generated per span.
+pub fn flatten_spline_tension(
+    control: &[Point],
+    closed: bool,
+    samples: usize,
+    tension: f64,
+) -> Vec<Point> {
+    let n = control.len();
+    if n < 3 {
+        return control.to_vec();
+    }
+    let tension = if tension.is_finite() {
+        tension.clamp(0.0, 1.5)
+    } else {
+        0.5
+    };
+    let samples = samples.max(1);
+    let at = |i: isize| -> Point {
+        if closed {
+            control[i.rem_euclid(n as isize) as usize]
+        } else {
+            control[i.clamp(0, n as isize - 1) as usize]
+        }
+    };
+    let spans = if closed { n } else { n - 1 };
+    let mut out = Vec::with_capacity(spans * samples + 1);
+    for s in 0..spans as isize {
+        let (p0, p1, p2, p3) = (at(s - 1), at(s), at(s + 1), at(s + 2));
+        let m1 = p2.sub(p0).scale(tension);
+        let m2 = p3.sub(p1).scale(tension);
+        for k in 0..samples {
+            let t = k as f64 / samples as f64;
+            let (t2, t3) = (t * t, t * t * t);
+            let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+            let h10 = t3 - 2.0 * t2 + t;
+            let h01 = -2.0 * t3 + 3.0 * t2;
+            let h11 = t3 - t2;
+            out.push(
+                p1.scale(h00)
+                    .add(m1.scale(h10))
+                    .add(p2.scale(h01))
+                    .add(m2.scale(h11)),
+            );
+        }
+    }
+    if !closed {
+        out.push(control[n - 1]);
+    }
+    out
+}

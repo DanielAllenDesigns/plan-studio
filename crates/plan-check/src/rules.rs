@@ -271,7 +271,7 @@ pub(crate) fn door_widths(ctx: &Ctx, out: &mut Vec<Finding>) {
 }
 
 /// Plan polygon of a door's swing: the quarter disc about its hinge.
-fn swing_polygon(oi: &OpInfo) -> Option<Vec<Point>> {
+pub(crate) fn swing_polygon(oi: &OpInfo) -> Option<Vec<Point>> {
     let (w, op) = (oi.wall?, oi.op);
     let (d, n) = (w.direction(), w.normal());
     let (hinge, along) = if op.hinge_at_end {

@@ -61,6 +61,11 @@ impl V3 {
         self.x.max(self.y).max(self.z)
     }
 
+    /// Clamp every component to at least `m`.
+    pub fn max_each(self, m: f32) -> V3 {
+        V3::new(self.x.max(m), self.y.max(m), self.z.max(m))
+    }
+
     /// Clamp every component to at most `m`.
     pub fn min_each(self, m: f32) -> V3 {
         V3::new(self.x.min(m), self.y.min(m), self.z.min(m))

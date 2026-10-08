@@ -3,6 +3,7 @@
 
 use super::{LineJoin, PdfColor, PdfDoc, Scale, SheetSize};
 use crate::schedule::room_name;
+use plan_core::text_styles::TextStyles;
 use plan_core::{
     wall_outlines, CadItem, DimFormat, Dimension, DimensionKind, Floor, LayerSet, LineStyle,
     Opening, OpeningKind, Point, Project, Room, Wall,
@@ -37,6 +38,11 @@ pub struct PlanSheetOptions {
     pub layer_colors: bool,
     /// Area printed under room names.
     pub room_area: RoomAreaBasis,
+    /// The dimension set's text style (empty: "Dimension Text Style"); a
+    /// dimension's own style wins.
+    pub dim_text_style: String,
+    /// The dimension set holds its text size on paper at any scale.
+    pub dim_printed_size: bool,
 }
 
 impl Default for PlanSheetOptions {
@@ -48,6 +54,8 @@ impl Default for PlanSheetOptions {
             weight_scale: 1.0,
             layer_colors: false,
             room_area: RoomAreaBasis::Interior,
+            dim_text_style: String::new(),
+            dim_printed_size: false,
         }
     }
 }
@@ -230,8 +238,10 @@ pub fn plan_sheet_with(
 
     let ctx = Ctx {
         layers: &project.layers,
+        styles: &project.text_styles,
         opts,
         k,
+        ipf: used.inches_per_foot(),
         large: is_large(sheet),
     };
     draw_walls(&mut doc, f, &tp, &ctx);
@@ -262,13 +272,33 @@ pub fn plan_sheet_with(
 /// Per-sheet drawing context.
 struct Ctx<'a> {
     layers: &'a LayerSet,
+    styles: &'a TextStyles,
     opts: &'a PlanSheetOptions,
     /// Points of paper per inch of plan.
     k: f64,
+    /// Paper inches per foot of plan (the scale the sheet is printed at).
+    ipf: f64,
     large: bool,
 }
 
 impl Ctx<'_> {
+    /// The size in points of a dimension's number: its own text style, else
+    /// the set's, else "Dimension Text Style", at the sheet's scale (a style
+    /// or a set that holds a printed size prints that size on paper).
+    fn dim_text_pt(&self, d: &Dimension) -> f64 {
+        let name = d
+            .text_style
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .or(Some(self.opts.dim_text_style.as_str()).filter(|n| !n.is_empty()))
+            .unwrap_or("Dimension Text Style");
+        match self.styles.resolve(name) {
+            Some(st) => (st.plan_height_at(self.ipf, self.opts.dim_printed_size) * self.k).max(2.0),
+            None if self.large => 8.0,
+            None => 6.5,
+        }
+    }
+
     /// Plotted pen width of a layer in points (`line_weight` is 1/100 mm).
     fn pen(&self, layer: &str) -> f64 {
         if !self.opts.layer_weights {
@@ -367,8 +397,9 @@ fn draw_walls(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64), ct
     }
 }
 
-/// Clear the wall under an opening and draw jambs plus the door swing or
-/// window lines.
+/// Clear the wall under an opening and draw its plan symbol: jambs, the
+/// leaf and swing (or sliding panels, pocket, track, projecting unit) or the
+/// window lines, the same parts the plan view draws.
 fn draw_opening(
     doc: &mut PdfDoc,
     w: &Wall,
@@ -377,55 +408,56 @@ fn draw_opening(
     ctx: &Ctx,
     pen: f64,
 ) {
+    use plan_core::opening_symbol::{plan_symbol, PartKind};
     let k = ctx.k;
     let (n, half) = (w.normal(), w.thickness * 0.5);
     let (s, e) = (o.start_offset(), o.end_offset());
-    // The gap overshoots the faces a little so the outline strokes vanish.
+    // Without rooms the outside is the wall's left face (right for interior
+    // walls), like the plan view without detected rooms.
+    let sym = plan_symbol(w, o, plan_core::exterior_sign(w, &[]));
+    // The gap overshoots the faces a little so the outline strokes vanish; a
+    // niche only clears the band it is cut into.
     let g = half + 1.5 / k;
+    let hi = if sym.cut.1 >= half - 1e-9 {
+        g
+    } else {
+        sym.cut.1
+    };
+    let lo = if sym.cut.0 <= -half + 1e-9 {
+        -g
+    } else {
+        sym.cut.0
+    };
     let at = |off: f64, side: f64| w.point_at(off).add(n.scale(side));
     doc.polygon(
-        &pt_list(&[at(s, g), at(e, g), at(e, -g), at(s, -g)], tp),
+        &pt_list(&[at(s, hi), at(e, hi), at(e, lo), at(s, lo)], tp),
         Some(PdfColor::WHITE),
         None,
     );
     doc.set_rgb_stroke(0, 0, 0);
-    for off in [s, e] {
-        let (a, b) = (tp(at(off, half)), tp(at(off, -half)));
-        doc.line(a.0, a.1, b.0, b.1, pen);
-    }
-    match o.kind {
-        OpeningKind::Window => {
-            for (side, width) in [(half, pen), (0.0, pen * 0.5), (-half, pen)] {
-                let (a, b) = (tp(at(s, side)), tp(at(e, side)));
-                doc.line(a.0, a.1, b.0, b.1, width);
-            }
+    for part in &sym.parts {
+        let mut pts: Vec<(f64, f64)> = part.points.iter().map(|q| tp(*q)).collect();
+        if pts.len() < 2 {
+            continue;
         }
-        OpeningKind::Door => {
-            // Standard: hinge at the wall-start jamb, swing to the left.
-            let (hinge_off, other_off, sign) = if o.swing_flipped {
-                (e, s, -1.0)
-            } else {
-                (s, e, 1.0)
-            };
-            let swing = n.scale(sign);
-            let hinge = w.point_at(hinge_off).add(swing.scale(half));
-            let closed_dir = w
-                .point_at(other_off)
-                .sub(w.point_at(hinge_off))
-                .normalized();
-            let leaf_end = hinge.add(swing.scale(o.width));
-            let (a, b) = (tp(hinge), tp(leaf_end));
-            doc.line(a.0, a.1, b.0, b.1, pen * 0.8);
-            let a0 = closed_dir.angle().to_degrees();
-            let mut sweep = swing.angle().to_degrees() - a0;
-            while sweep > 180.0 {
-                sweep -= 360.0;
-            }
-            while sweep <= -180.0 {
-                sweep += 360.0;
-            }
-            doc.set_line_width(pen * 0.6);
-            doc.arc(a.0, a.1, o.width * k, a0, a0 + sweep);
+        if part.closed {
+            pts.push(pts[0]);
+        }
+        let width = match part.kind {
+            PartKind::Jamb | PartKind::Frame | PartKind::Leaf => pen,
+            PartKind::Swing => pen * 0.6,
+            PartKind::Glass | PartKind::Arrow => pen * 0.5,
+            PartKind::Hidden | PartKind::Track => pen * 0.5,
+        };
+        let dashed = matches!(part.kind, PartKind::Hidden | PartKind::Track);
+        if dashed {
+            doc.set_dash(&[4.0 * width.max(0.5), 2.0 * width.max(0.5)], 0.0);
+        }
+        for seg in pts.windows(2) {
+            doc.line(seg[0].0, seg[0].1, seg[1].0, seg[1].1, width);
+        }
+        if dashed {
+            doc.set_dash_solid();
         }
     }
 }
@@ -443,6 +475,7 @@ fn dash_for(style: LineStyle, pen: f64) -> Option<Vec<f64>> {
 
 /// CAD lines, arcs, circles, polylines and text on visible layers.
 fn draw_cad(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64), ctx: &Ctx) {
+    let attrs = f.cad_attr_map();
     for o in &f.cad {
         if !ctx.layers.is_visible(&o.layer) {
             continue;
@@ -487,7 +520,16 @@ fn draw_cad(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64), ctx:
                 height,
                 angle,
             } => {
-                let size = (height * ctx.k).max(2.0);
+                // The plan height the text is drawn at: a printed-size style
+                // holds its size on paper at the sheet's scale.
+                let drawn = ctx.styles.drawn_height(
+                    ctx.layers,
+                    &o.layer,
+                    attrs.get(&o.id).and_then(|a| a.text_style.as_deref()),
+                    *height,
+                    ctx.ipf,
+                );
+                let size = (drawn * ctx.k).max(2.0);
                 let (x, y) = tp(*pos);
                 if angle.rem_euclid(TAU).abs() < 1e-9 {
                     doc.text(x, y, size, text);
@@ -514,7 +556,8 @@ fn draw_dimension(
     text_pt: f64,
 ) {
     const TICK: f64 = 2.5;
-    for (a, b) in d.extension_lines() {
+    // Extension lines switched off per point stay off on paper.
+    for (a, b) in d.visible_extension_lines() {
         let (pa, pb) = (tp(a), tp(b));
         doc.line(pa.0, pa.1, pb.0, pb.1, pen * 0.6);
     }
@@ -540,7 +583,7 @@ fn draw_dimension(
     let (sin, cos) = ang.to_radians().sin_cos();
     let mid = ((pa.0 + pb.0) * 0.5, (pa.1 + pb.1) * 0.5);
     // Centre along the line, then lift the baseline off it.
-    let lift = 2.0;
+    let lift = text_pt * 0.3;
     let x = mid.0 - cos * w * 0.5 - sin * lift;
     let y = mid.1 - sin * w * 0.5 + cos * lift;
     if ang.abs() < 1e-6 {
@@ -551,7 +594,6 @@ fn draw_dimension(
 }
 
 fn draw_dimensions(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64), ctx: &Ctx) {
-    let text_pt = if ctx.large { 8.0 } else { 6.5 };
     for d in &f.dimensions {
         let layer = match d.kind {
             DimensionKind::Manual => "Dimensions, Manual",
@@ -562,6 +604,7 @@ fn draw_dimensions(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64
             continue;
         }
         ctx.set_colors(doc, layer);
+        let text_pt = ctx.dim_text_pt(d);
         draw_dimension(doc, d, tp, &ctx.opts.dim_format, ctx.pen(layer), text_pt);
     }
     doc.set_rgb_stroke(0, 0, 0);
@@ -901,6 +944,84 @@ mod tests {
         p.layers.set_display("CAD, Default", false);
         let r = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
         assert!(!text_of(&r.pdf).contains("NOTE ONE"));
+    }
+
+    /// The font size in points a string is drawn at (`BT /F size Tf ... (text) Tj`).
+    fn size_of(pdf: &[u8], text: &str) -> f64 {
+        let t = text_of(pdf);
+        let at = t.find(&format!("({text}) Tj")).expect("text drawn");
+        let bt = t[..at].rfind("BT /").expect("BT");
+        t[bt..at]
+            .split_whitespace()
+            .nth(2)
+            .and_then(|v| v.parse().ok())
+            .expect("size")
+    }
+
+    #[test]
+    fn printed_size_text_prints_the_same_size_at_any_sheet_scale() {
+        let mut p = house();
+        p.floors[0].cad.push(CadObject {
+            id: 700,
+            layer: "Text".into(),
+            item: CadItem::Text {
+                pos: Point::new(10.0, -100.0),
+                text: "KITCHEN".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        });
+        with_dim(&mut p, Point::new(0.0, 0.0), Point::new(480.0, 0.0), -24.0);
+        let size = |p: &plan_core::Project, scale, opts: &PlanSheetOptions| {
+            let r = plan_sheet_with(p, 0, &[], SheetSize::ArchD, scale, &tb(), opts);
+            (size_of(&r.pdf, "KITCHEN"), size_of(&r.pdf, "40'-0\""))
+        };
+        let opts = PlanSheetOptions::default();
+        // Character height: the plan height prints larger at a bigger scale.
+        let (t4, d4) = size(&p, Scale::QuarterInch, &opts);
+        let (t2, d2) = size(&p, Scale::HalfInch, &opts);
+        assert!(
+            (t4 - 9.0).abs() < 1e-6 && (t2 - 18.0).abs() < 1e-6,
+            "{t4} {t2}"
+        );
+        assert!(
+            (d4 - 6.75).abs() < 1e-6 && (d2 - 13.5).abs() < 1e-6,
+            "{d4} {d2}"
+        );
+        // Printed size 1/8" = 9 pt, and a printed-size dimension set.
+        let i = p
+            .text_styles
+            .styles
+            .iter()
+            .position(|s| s.name == "Default Text Style")
+            .unwrap();
+        p.text_styles.styles[i].use_printed_size(true);
+        let held = PlanSheetOptions {
+            dim_printed_size: true,
+            ..PlanSheetOptions::default()
+        };
+        for scale in [Scale::QuarterInch, Scale::HalfInch, Scale::EighthInch] {
+            let (t, d) = size(&p, scale, &held);
+            assert!((t - 9.0).abs() < 1e-6, "{scale:?}: text {t}");
+            // The Dimension Text Style's 4.5" at 1/4" scale is 3/32" on
+            // paper: 6.75 pt, held at every scale.
+            assert!((d - 6.75).abs() < 1e-6, "{scale:?}: dimension {d}");
+        }
+    }
+
+    #[test]
+    fn hidden_extension_lines_are_not_drawn() {
+        let mut p = house();
+        with_dim(&mut p, Point::new(0.0, 0.0), Point::new(480.0, 0.0), -24.0);
+        let lines = |p: &plan_core::Project| {
+            let r = plan_sheet(p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+            text_of(&r.pdf).matches(" l S Q").count()
+        };
+        let all = lines(&p);
+        p.floors[0].dimensions.last_mut().unwrap().hide_ext = [true, true];
+        let none = lines(&p);
+        assert!(none < all, "{none} vs {all}");
+        assert_eq!(all - none, 2);
     }
 
     #[test]

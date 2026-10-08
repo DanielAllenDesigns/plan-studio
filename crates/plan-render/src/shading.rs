@@ -15,12 +15,11 @@ const F0: f32 = 0.04;
 const GLASS_IOR: f32 = 1.5;
 /// Albedo used by the clay technique.
 const CLAY_ALBEDO: f32 = 0.72;
-/// GGX roughness per [`Material`], in `Material::ALL` order.
-const ROUGHNESS: [f32; MATERIAL_COUNT] = [
-    0.85, 0.9, 0.4, 0.95, 0.45, 0.0, 0.35, 0.75, 0.95, 0.8, 0.9, 0.85, 0.9, 0.5, 0.0, 0.35, 0.8,
-    // Grass, Mulch, Foliage, Water, Asphalt, Gravel, Selection.
-    0.95, 0.98, 0.9, 0.05, 0.92, 0.97, 1.0,
-];
+
+/// GGX roughness of a scene material (shared with the GL view's shader).
+fn roughness_of(m: Material) -> f32 {
+    plan_materials::scene_surface(m).roughness
+}
 
 /// How light interacts with a surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +38,9 @@ pub(crate) struct Surface {
     pub kind: Kind,
     pub albedo: V3,
     pub roughness: f32,
+    /// 0 for dielectrics, 1 for metals: a metal has no diffuse lobe and
+    /// reflects with its own colour.
+    pub metallic: f32,
     /// Transmission colour for [`Kind::Glass`].
     pub tint: V3,
 }
@@ -55,12 +57,14 @@ impl Surface {
                     kind: Kind::Glass,
                     albedo: V3::ZERO,
                     roughness: 0.0,
+                    metallic: 0.0,
                     tint: V3::ONE - (V3::ONE - rgb) * a,
                 },
                 Technique::PhysicallyBased => Surface {
                     kind: Kind::Opaque,
                     albedo: rgb,
-                    roughness: ROUGHNESS[m.index()],
+                    roughness: roughness_of(m),
+                    metallic: plan_materials::scene_surface(m).metallic,
                     tint: V3::ONE,
                 },
                 Technique::Clay | Technique::Ambient => Surface {
@@ -71,6 +75,7 @@ impl Surface {
                     },
                     albedo: V3::splat(CLAY_ALBEDO),
                     roughness: 1.0,
+                    metallic: 0.0,
                     tint: V3::ONE,
                 },
             }
@@ -84,7 +89,9 @@ impl Surface {
 
     /// Probability of sampling the specular lobe (glossier means more).
     fn spec_prob(&self) -> f32 {
-        0.1 + 0.4 * (1.0 - self.roughness)
+        let p = 0.1 + 0.4 * (1.0 - self.roughness);
+        // A metal has nothing but the specular lobe.
+        p + (0.95 - p).max(0.0) * self.metallic
     }
 
     /// BSDF value and the mixture sampling density for `wi` given `wo`.
@@ -102,12 +109,15 @@ impl Surface {
         let a2 = self.alpha2();
         let d = ggx_d(n_h, a2);
         let g = smith_g1(cos_i, a2) * smith_g1(cos_o, a2);
-        let f = schlick(o_h);
-        let spec = d * g * f / (4.0 * cos_i * cos_o);
-        let diffuse = self.albedo * ((1.0 - f) * FRAC_1_PI);
+        // Fresnel with F0 = 4% for dielectrics and the base colour for metals.
+        let f0 = V3::splat(F0).lerp(self.albedo, self.metallic);
+        let fw = (1.0 - o_h).clamp(0.0, 1.0).powi(5);
+        let f = f0 + (V3::ONE - f0) * fw;
+        let spec = f * (d * g / (4.0 * cos_i * cos_o));
+        let diffuse = self.albedo * ((1.0 - self.metallic) * (1.0 - schlick(o_h)) * FRAC_1_PI);
         let ps = self.spec_prob();
         let pdf = (1.0 - ps) * cos_i * FRAC_1_PI + ps * d * n_h / (4.0 * o_h);
-        (diffuse + V3::splat(spec), pdf)
+        (diffuse + spec, pdf)
     }
 
     /// Sample an incoming direction; returns it with `f * cos / pdf`.
@@ -188,7 +198,6 @@ mod tests {
         ] {
             assert_eq!(Surface::table(technique).len(), Material::ALL.len());
         }
-        assert_eq!(ROUGHNESS.len(), Material::ALL.len());
         let t = Surface::table(Technique::PhysicallyBased);
         let s = t[Material::Framing.index()];
         assert_eq!(s.kind, Kind::Opaque);
@@ -207,13 +216,13 @@ mod tests {
         ] {
             let s = t[m.index()];
             assert_eq!(s.kind, Kind::Opaque, "{m:?}");
-            assert_eq!(s.roughness, ROUGHNESS[m.index()], "{m:?}");
+            assert_eq!(s.roughness, roughness_of(m), "{m:?}");
             assert!(s.roughness > 0.85, "{m:?} is a matte surface");
         }
         // Water is a translucent sheet, glossier than the lawn around it.
         let water = t[Material::Water.index()];
         assert_eq!(water.kind, Kind::Glass);
-        assert!(ROUGHNESS[Material::Water.index()] < ROUGHNESS[Material::Grass.index()]);
+        assert!(roughness_of(Material::Water) < roughness_of(Material::Grass));
         // Clay and ambient renders ignore the colours: every opaque entry is
         // the same grey, water and the tint are clear.
         let clay = Surface::table(Technique::Clay);
@@ -248,5 +257,28 @@ mod tests {
         }
         let mean = sum / count as f32;
         assert!(mean.x > 0.1 && mean.max_comp() < 1.0, "{mean:?}");
+    }
+
+    #[test]
+    fn metal_reflects_in_its_own_colour_and_has_no_diffuse_lobe() {
+        let t = Surface::table(Technique::PhysicallyBased);
+        let metal = Surface {
+            albedo: V3::new(0.9, 0.5, 0.1),
+            ..t[Material::Metal.index()]
+        };
+        assert!(metal.metallic > 0.5);
+        let n = V3::new(0.0, 1.0, 0.0);
+        let wo = V3::new(0.4, 0.9, 0.0).normalized();
+        let mirror = V3::new(-0.4, 0.9, 0.0).normalized();
+        let (f, _) = metal.eval(n, wo, mirror);
+        assert!(f.x > f.y && f.y > f.z, "tinted highlight {f:?}");
+        // Far from the mirror direction a metal is nearly black; a plaster wall is not.
+        let off = V3::new(0.9, 0.3, 0.0).normalized();
+        let (dark, _) = metal.eval(n, wo, off);
+        let (lit, _) = t[Material::WallInterior.index()].eval(n, wo, off);
+        assert!(
+            dark.max_comp() < 0.2 * lit.max_comp(),
+            "{dark:?} vs {lit:?}"
+        );
     }
 }

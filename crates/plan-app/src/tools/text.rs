@@ -8,8 +8,9 @@
 //! * Text (TXT-1): click places the anchor (the text's bottom-left), typing
 //!   fills it, Enter commits, a click elsewhere commits and starts the next
 //!   text, Esc cancels. Clicking existing text edits it in place. The height
-//!   is `defaults.text.height` in plan inches (TXT-2: the printed-size to
-//!   plan-scale conversion is deferred, the model has no print scale).
+//!   is `defaults.text.height` in plan inches; when the Text layer's style
+//!   holds a printed size, the text is stored at the style's character height
+//!   and drawn (and picked) at the size on paper for the sheet scale (TXT-2).
 //! * Rich Text (TXT-4): Enter adds a line, Tab commits; the size scale is
 //!   stored in the text height, bold/italic/underline are kept per session
 //!   ([`TextTool::style_of`]) because the model has no style fields.
@@ -207,6 +208,17 @@ pub fn leader_items(pts: &[Point], arrow: f64) -> Vec<CadItem> {
             closed: true,
         },
     ]
+}
+
+/// `items` with every text set to the stored `height` (the shapes around it
+/// were sized for the text as drawn).
+fn keep_text_height(mut items: Vec<CadItem>, height: f64) -> Vec<CadItem> {
+    for it in &mut items {
+        if let CadItem::Text { height: h, .. } = it {
+            *h = height;
+        }
+    }
+    items
 }
 
 /// A callout around `text` centered on `center` with a leader to `target`
@@ -409,14 +421,35 @@ impl TextTool {
 
     /// Text height in plan inches: the defaults' height, scaled in Rich Text
     /// (TXT-2).
+    ///
+    /// A Text layer whose style holds a printed size places text at the
+    /// style's own character height, which draws at that size on paper at any
+    /// scale ([`Self::drawn_height`]).
     fn height(&self, cx: &EditorContext) -> f64 {
         let h = cx.defaults.text.height;
         let h = if h > 0.0 { h } else { 6.0 };
+        let h = cx
+            .project
+            .text_styles
+            .placed_height(cx.layers(), TEXT_LAYER, None, h);
         if self.mode == TextMode::RichText {
             h * self.rich.size_scale
         } else {
             h
         }
+    }
+
+    /// The plan height a text of the stored `height` is drawn at on the
+    /// sheet: the size on paper for a printed-size style (see
+    /// [`plan_core::text_styles::TextStyles::drawn_height`]).
+    fn drawn_height(cx: &EditorContext, height: f64) -> f64 {
+        cx.project.text_styles.drawn_height(
+            cx.layers(),
+            TEXT_LAYER,
+            None,
+            height,
+            cx.sheet.scale.inches_per_foot(),
+        )
     }
 
     fn arrow_size(&self, cx: &EditorContext) -> f64 {
@@ -556,15 +589,24 @@ impl TextTool {
                 }
                 items
             }
-            TextMode::Callout => match (self.pts.first(), self.anchor) {
-                (Some(t), Some(c)) => callout_items(*t, c, &self.buf, height, self.shape),
-                (Some(t), None) => extra
-                    .map(|c| callout_items(*t, c, "  ", height, self.shape))
-                    .unwrap_or_default(),
-                _ => Vec::new(),
-            },
+            TextMode::Callout => {
+                // The shape is sized for the text as drawn; the text keeps
+                // its stored (style) height.
+                let dh = Self::drawn_height(cx, height);
+                let items = match (self.pts.first(), self.anchor) {
+                    (Some(t), Some(c)) => callout_items(*t, c, &self.buf, dh, self.shape),
+                    (Some(t), None) => extra
+                        .map(|c| callout_items(*t, c, "  ", dh, self.shape))
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                keep_text_height(items, height)
+            }
             TextMode::Marker => extra
-                .map(|c| marker_items(c, Self::next_marker(cx), height))
+                .map(|c| {
+                    let dh = Self::drawn_height(cx, height);
+                    keep_text_height(marker_items(c, Self::next_marker(cx), dh), height)
+                })
                 .unwrap_or_default(),
             TextMode::NoteTypes | TextMode::Macros => Vec::new(),
         }
@@ -659,8 +701,9 @@ impl TextTool {
                 if text.trim().is_empty() {
                     return ToolResult::consumed();
                 }
+                let dh = Self::drawn_height(cx, height);
                 (
-                    callout_items(t, anchor, &text, height, self.shape),
+                    keep_text_height(callout_items(t, anchor, &text, dh, self.shape), height),
                     "Place Callout",
                 )
             }
@@ -767,13 +810,19 @@ impl TextTool {
     }
 
     /// The text object under `p`, for editing it in place.
+    ///
+    /// Text in a printed-size style is picked by the box it is drawn in at
+    /// the sheet's scale, not by its stored height.
     fn text_under(cx: &EditorContext, p: Point) -> Option<Id> {
         let tol = cx.pick_tol() * 0.5;
+        let attrs = cx.floor().cad_attr_map();
         cx.floor().cad.iter().rev().find_map(|c| {
-            (matches!(c.item, CadItem::Text { .. })
-                && cx.layers().is_visible(&c.layer)
-                && cad_distance(&c.item, p) <= tol)
-                .then_some(c.id)
+            if !matches!(c.item, CadItem::Text { .. }) || !cx.layers().is_visible(&c.layer) {
+                return None;
+            }
+            let drawn = render::printed_text_object(cx, c, attrs.get(&c.id));
+            let item = drawn.as_ref().map_or(&c.item, |o| &o.item);
+            (cad_distance(item, p) <= tol).then_some(c.id)
         })
     }
 
@@ -1028,7 +1077,9 @@ impl Tool for TextTool {
                 let height = self.height(cx);
                 let n = Self::next_marker(cx);
                 let at = p.snapped;
-                match add_cad_items(cx, TEXT_LAYER, marker_items(at, n, height), "Place Marker") {
+                let dh = Self::drawn_height(cx, height);
+                let items = keep_text_height(marker_items(at, n, dh), height);
+                match add_cad_items(cx, TEXT_LAYER, items, "Place Marker") {
                     Some(_) => ToolResult::committed("Place Marker"),
                     None => ToolResult::consumed(),
                 }
@@ -1105,6 +1156,22 @@ impl Tool for TextTool {
         let hover = self.hover;
         let items = self.pending_items(cx, hover);
         for it in &items {
+            // The ghost is drawn at the size the text will print.
+            let shown = match it {
+                CadItem::Text {
+                    pos,
+                    text,
+                    height,
+                    angle,
+                } => CadItem::Text {
+                    pos: *pos,
+                    text: text.clone(),
+                    height: Self::drawn_height(cx, *height),
+                    angle: *angle,
+                },
+                other => other.clone(),
+            };
+            let it = &shown;
             render::draw_cad(painter, cam, it, ghost, pal);
             if let CadItem::Text { text, .. } = it {
                 if self.typing() {
@@ -1230,6 +1297,62 @@ mod tests {
         // Undo removes it.
         assert_eq!(cx.undo().as_deref(), Some("Place Text"));
         assert!(cx.floor().cad.is_empty());
+    }
+
+    #[test]
+    fn printed_size_text_is_placed_at_the_style_height_and_picked_by_its_drawn_box() {
+        use plan_docs::Scale;
+        let mut cx = new_cx();
+        // The Text layer's style (the default one) holds 1/8" on paper and a
+        // 9" character height.
+        let i = cx
+            .project
+            .text_styles
+            .styles
+            .iter()
+            .position(|s| s.name == "Default Text Style")
+            .unwrap();
+        cx.project.text_styles.styles[i].height_in = 9.0;
+        cx.project.text_styles.styles[i].set_printed_in(0.125);
+        cx.project.text_styles.styles[i].use_printed_size(true);
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 10.0, 10.0);
+        type_text(&mut t, &mut cx, "KITCHEN");
+        enter(&mut t, &mut cx);
+        // Stored at the style's height, not the tool's 6".
+        let id = cx.floor().cad[0].id;
+        assert!(matches!(
+            cx.floor().cad[0].item,
+            CadItem::Text { height, .. } if (height - 9.0).abs() < 1e-9
+        ));
+        let tol = cx.pick_tol() * 0.5;
+        assert!(tol < 5.0, "{tol}");
+        // 1/4": drawn 6" high, 25.2" wide; the stored 9" box (37.8" wide)
+        // reaches farther than the drawn one.
+        cx.sheet.scale = Scale::QuarterInch;
+        assert_eq!(TextTool::text_under(&cx, Point::new(30.0, 12.0)), Some(id));
+        assert_eq!(TextTool::text_under(&cx, Point::new(46.0, 12.0)), None);
+        assert_eq!(TextTool::text_under(&cx, Point::new(30.0, 20.0)), None);
+        // 1/8": drawn 12" high, 50.4" wide: past the stored box now.
+        cx.sheet.scale = Scale::EighthInch;
+        assert_eq!(TextTool::text_under(&cx, Point::new(55.0, 15.0)), Some(id));
+        assert_eq!(TextTool::text_under(&cx, Point::new(30.0, 21.0)), Some(id));
+        assert_eq!(TextTool::text_under(&cx, Point::new(70.0, 15.0)), None);
+        // The Select tool's picking agrees at both scales.
+        let hit = |cx: &EditorContext, x: f64, y: f64| {
+            crate::editor::selection::hit_test_cx(cx, Point::new(x, y), cx.pick_tol() * 0.5)
+                .contains(&ObjectRef::Cad(id))
+        };
+        assert!(hit(&cx, 55.0, 15.0));
+        assert!(!hit(&cx, 70.0, 15.0));
+        cx.sheet.scale = Scale::QuarterInch;
+        assert!(hit(&cx, 30.0, 12.0));
+        assert!(!hit(&cx, 46.0, 12.0));
+        // A character-height style picks by the stored box at any scale.
+        cx.project.text_styles.styles[i].use_printed_size(false);
+        cx.sheet.scale = Scale::EighthInch;
+        assert_eq!(TextTool::text_under(&cx, Point::new(46.0, 12.0)), Some(id));
+        assert_eq!(TextTool::text_under(&cx, Point::new(55.0, 15.0)), None);
     }
 
     #[test]

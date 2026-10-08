@@ -1,20 +1,33 @@
 //! Electrical Service Specification (double-click a device; CB-62, CB-63).
 //!
-//! General: height above the floor, label, circuit. Options: the switches
-//! that control the device. Layer and Label hold the controls the model has
-//! no fields for yet, drawn disabled. The dialog edits a [`DeviceDraft`];
-//! [`DeviceDraft::apply`] copies it onto the device.
+//! * General: the kind (any kind of the same family, e.g. a duplex outlet
+//!   becomes a GFCI), height above the floor, label and circuit.
+//! * Switches: for a switch, the lights and outlets it controls (check one to
+//!   connect it, uncheck to remove the connection arc); for anything else,
+//!   the switches that control it.
+//! * Materials: the plate or fixture finish (drawn on the 3D plate).
+//! * Label: show the label in the plan.
+//! * Layer: the layer, drawn disabled.
+//!
+//! The dialog edits a [`DeviceDraft`]; [`DeviceDraft::apply`] copies it onto
+//! the device and [`DeviceDraft::apply_to_layer`] also adds and removes the
+//! connections of a switch.
 
 use super::{
-    dis_check, dis_combo, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab,
-    PV_INK,
+    dis_combo, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_INK,
 };
 use crate::editor::{site_view, Camera};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Ui};
-use plan_core::{Id, Point};
-use plan_electrical::{Device, DeviceKind, ElectricalLayer};
+use plan_core::{Id, Point, Wall};
+use plan_electrical::{connect_in, disconnect, Device, DeviceKind, ElectricalLayer, FINISHES};
 
-const TABS: &[Tab] = &[on("General"), on("Options"), on("Layer"), on("Label")];
+const TABS: &[Tab] = &[
+    on("General"),
+    on("Switches"),
+    on("Materials"),
+    on("Label"),
+    on("Layer"),
+];
 
 /// What the dialog edits of a device.
 #[derive(Clone, Debug, PartialEq)]
@@ -27,10 +40,24 @@ pub struct DeviceDraft {
     pub circuit: Option<u32>,
     /// Switches that control the device.
     pub switched_by: Vec<Id>,
+    /// For a switch: the lights and outlets it is connected to.
+    pub controls: Vec<Id>,
+    /// Plate or fixture finish; empty is the default white.
+    pub finish: String,
+    /// Hide the label in the plan.
+    pub hide_label: bool,
 }
 
 impl DeviceDraft {
-    pub fn from_device(d: &Device) -> Self {
+    /// The draft of `d`; its connections come from `layer`.
+    pub fn from_device(d: &Device, layer: &ElectricalLayer) -> Self {
+        let controls = layer
+            .connections
+            .iter()
+            .filter(|c| c.from == d.id)
+            .filter(|c| layer.device(c.to).is_some_and(|t| !t.kind.is_switch()))
+            .map(|c| c.to)
+            .collect();
         Self {
             id: d.id,
             kind: d.kind,
@@ -38,15 +65,48 @@ impl DeviceDraft {
             label: d.label.clone(),
             circuit: d.circuit,
             switched_by: d.switched_by.clone(),
+            controls,
+            finish: d.finish.clone(),
+            hide_label: d.hide_label,
         }
     }
 
     /// Copies the edited values onto `d`.
     pub fn apply(&self, d: &mut Device) {
+        d.kind = self.kind;
         d.height = self.height;
         d.label = self.label.clone();
         d.circuit = self.circuit;
         d.switched_by = self.switched_by.clone();
+        d.finish = self.finish.clone();
+        d.hide_label = self.hide_label;
+    }
+
+    /// [`apply`](Self::apply) onto the device in `layer`, then adds the
+    /// connection arcs the Switches tab checked and removes the ones it
+    /// unchecked (`walls` steer the new arcs away from the nearest wall).
+    pub fn apply_to_layer(&self, layer: &mut ElectricalLayer, walls: &[Wall]) {
+        let Some(d) = layer.device_mut(self.id) else {
+            return;
+        };
+        let was_switch = d.kind.is_switch();
+        self.apply(d);
+        if !was_switch || !self.kind.is_switch() {
+            return;
+        }
+        let current: Vec<Id> = layer
+            .connections
+            .iter()
+            .filter(|c| c.from == self.id)
+            .filter(|c| layer.device(c.to).is_some_and(|t| !t.kind.is_switch()))
+            .map(|c| c.to)
+            .collect();
+        for gone in current.iter().filter(|t| !self.controls.contains(t)) {
+            disconnect(layer, self.id, *gone);
+        }
+        for add in self.controls.iter().filter(|t| !current.contains(t)) {
+            connect_in(layer, self.id, *add, walls);
+        }
     }
 }
 
@@ -57,10 +117,23 @@ pub struct ElectricalDialog {
 
 struct Form {
     draft: DeviceDraft,
+    /// The kinds the device can become.
+    family: Vec<DeviceKind>,
     /// The switches of the floor that can control the device.
     switches: Vec<(Id, String)>,
+    /// The lights and outlets of the floor a switch can be connected to.
+    loads: Vec<(Id, String)>,
     fields: Fields,
     circuit_text: String,
+}
+
+fn device_name(d: &Device) -> String {
+    let name = if d.label.is_empty() {
+        d.kind.name().to_string()
+    } else {
+        format!("{} ({})", d.kind.name(), d.label)
+    };
+    format!("{name} #{}", d.id)
 }
 
 impl ElectricalDialog {
@@ -69,20 +142,27 @@ impl ElectricalDialog {
             .devices
             .iter()
             .filter(|s| s.kind.is_switch() && s.id != d.id)
-            .map(|s| {
-                let name = if s.label.is_empty() {
-                    s.kind.name().to_string()
-                } else {
-                    format!("{} ({})", s.kind.name(), s.label)
-                };
-                (s.id, format!("{name} #{}", s.id))
+            .map(|s| (s.id, device_name(s)))
+            .collect();
+        let loads = layer
+            .devices
+            .iter()
+            .filter(|l| {
+                l.id != d.id
+                    && !l.kind.is_switch()
+                    && (l.kind.is_light()
+                        || l.kind.is_outlet()
+                        || matches!(l.kind, DeviceKind::CeilingFan))
             })
+            .map(|l| (l.id, device_name(l)))
             .collect();
         Self {
             frame: SpecDialog::new("Electrical Service Specification", "electrical_service"),
             form: Form {
-                draft: DeviceDraft::from_device(d),
+                draft: DeviceDraft::from_device(d, layer),
+                family: d.kind.family(),
                 switches,
+                loads,
                 fields: Fields::default(),
                 circuit_text: d.circuit.map(|c| c.to_string()).unwrap_or_default(),
             },
@@ -112,7 +192,22 @@ impl Form {
 
     fn general(&mut self, ui: &mut Ui) {
         section(ui, "General");
-        row(ui, "Type", |ui| ui.label(self.draft.kind.name()));
+        row(ui, "Type", |ui| {
+            let before = self.draft.kind;
+            egui::ComboBox::from_id_salt("elec_kind")
+                .selected_text(self.draft.kind.name())
+                .show_ui(ui, |ui| {
+                    for k in &self.family {
+                        ui.selectable_value(&mut self.draft.kind, *k, k.name());
+                    }
+                });
+            if self.draft.kind != before
+                && (self.draft.height - before.default_height()).abs() < 1e-9
+            {
+                // A height nobody changed follows the new kind's default.
+                self.draft.height = self.draft.kind.default_height();
+            }
+        });
         self.fields
             .length_row(ui, "Height", "height", &mut self.draft.height);
         row(ui, "Label", |ui| {
@@ -126,12 +221,27 @@ impl Form {
         });
     }
 
-    fn options(&mut self, ui: &mut Ui) {
-        section(ui, "Switched By");
+    fn switches_tab(&mut self, ui: &mut Ui) {
         if self.draft.kind.is_switch() {
-            ui.weak("A switch is not switched by another switch.");
+            section(ui, "Connected Lights and Outlets");
+            if self.loads.is_empty() {
+                ui.weak("There are no lights or outlets on this floor.");
+            }
+            for (id, name) in &self.loads {
+                let mut on = self.draft.controls.contains(id);
+                if ui.checkbox(&mut on, name).changed() {
+                    if on {
+                        self.draft.controls.push(*id);
+                    } else {
+                        self.draft.controls.retain(|c| c != id);
+                    }
+                }
+            }
+            ui.add_space(4.0);
+            ui.weak("A checked light is joined to this switch by a dashed arc in the plan.");
             return;
         }
+        section(ui, "Switched By");
         if self.switches.is_empty() {
             ui.weak("There are no switches on this floor.");
         }
@@ -147,6 +257,34 @@ impl Form {
         }
     }
 
+    fn materials(&mut self, ui: &mut Ui) {
+        section(ui, "Finish");
+        row(ui, "Plate / fixture", |ui| {
+            let shown = if self.draft.finish.is_empty() {
+                FINISHES[0]
+            } else {
+                self.draft.finish.as_str()
+            };
+            egui::ComboBox::from_id_salt("elec_finish")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for f in FINISHES {
+                        let current = self.draft.finish == f
+                            || (self.draft.finish.is_empty() && f == FINISHES[0]);
+                        if ui.selectable_label(current, f).clicked() {
+                            self.draft.finish = if f == FINISHES[0] {
+                                String::new()
+                            } else {
+                                f.to_string()
+                            };
+                        }
+                    }
+                });
+        });
+        ui.add_space(4.0);
+        ui.weak("The finish colors the plate or fixture in the 3D view.");
+    }
+
     fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| dis_combo(ui, "elec_layer", "Electrical"));
@@ -154,7 +292,13 @@ impl Form {
 
     fn label(&mut self, ui: &mut Ui) {
         section(ui, "Label");
-        dis_check(ui, "Show label in plan", !self.draft.label.is_empty());
+        let mut show = !self.draft.hide_label;
+        if ui.checkbox(&mut show, "Show label in plan").changed() {
+            self.draft.hide_label = !show;
+        }
+        row(ui, "Label", |ui| {
+            ui.text_edit_singleline(&mut self.draft.label)
+        });
         row(ui, "Text height", |ui| {
             ui.add_enabled(false, egui::Label::new("3\""))
         });
@@ -182,9 +326,10 @@ impl SpecPages for Form {
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match TABS[tab].name {
             "General" => self.general(ui),
-            "Options" => self.options(ui),
-            "Layer" => self.layer(ui),
+            "Switches" => self.switches_tab(ui),
+            "Materials" => self.materials(ui),
             "Label" => self.label(ui),
+            "Layer" => self.layer(ui),
             _ => {}
         }
     }
@@ -249,6 +394,54 @@ mod tests {
         assert_eq!(edited.circuit, Some(4));
         assert_eq!(edited.switched_by, vec![sw]);
         assert_eq!(edited.position, d.position);
+    }
+
+    #[test]
+    fn the_switches_tab_connects_and_disconnects_lights() {
+        let mut layer = ElectricalLayer::default();
+        let sw = layer.add(place_free(DeviceKind::Switch, Point::ZERO));
+        let l1 = layer.add(place_free(DeviceKind::CeilingLight, Point::new(60.0, 0.0)));
+        let l2 = layer.add(place_free(DeviceKind::RecessedCan, Point::new(60.0, 60.0)));
+        let d = layer.device(sw).unwrap().clone();
+        let mut dlg = ElectricalDialog::for_device(&d, &layer);
+        assert_eq!(dlg.form.loads.len(), 2);
+        assert!(dlg.draft().controls.is_empty());
+        dlg.draft_mut().controls = vec![l1, l2];
+        dlg.draft_mut().kind = DeviceKind::SwitchDimmer;
+        dlg.draft_mut().finish = "Ivory".into();
+        let draft = dlg.draft().clone();
+        draft.apply_to_layer(&mut layer, &[]);
+        assert_eq!(layer.connections.len(), 2);
+        assert_eq!(layer.device(sw).unwrap().kind, DeviceKind::SwitchDimmer);
+        assert_eq!(layer.device(sw).unwrap().finish, "Ivory");
+        assert_eq!(layer.device(l1).unwrap().switched_by, vec![sw]);
+        // Reopen: both are checked; uncheck one.
+        let d = layer.device(sw).unwrap().clone();
+        let mut dlg = ElectricalDialog::for_device(&d, &layer);
+        assert_eq!(dlg.draft().controls.len(), 2);
+        dlg.draft_mut().controls.retain(|c| *c != l2);
+        let draft = dlg.draft().clone();
+        draft.apply_to_layer(&mut layer, &[]);
+        assert_eq!(layer.connections.len(), 1);
+        assert!(layer.device(l2).unwrap().switched_by.is_empty());
+        assert_eq!(layer.device(l1).unwrap().switched_by, vec![sw]);
+    }
+
+    #[test]
+    fn the_kind_can_change_within_its_family() {
+        let mut layer = ElectricalLayer::default();
+        let o = layer.add(place_free(DeviceKind::Outlet110, Point::ZERO));
+        let d = layer.device(o).unwrap().clone();
+        let dlg = ElectricalDialog::for_device(&d, &layer);
+        assert!(dlg.form.family.contains(&DeviceKind::Gfci));
+        assert!(!dlg.form.family.contains(&DeviceKind::Switch));
+        let mut draft = dlg.draft().clone();
+        draft.kind = DeviceKind::Gfci;
+        draft.hide_label = true;
+        draft.apply_to_layer(&mut layer, &[]);
+        let d = layer.device(o).unwrap();
+        assert_eq!(d.kind, DeviceKind::Gfci);
+        assert!(d.hide_label);
     }
 
     #[test]

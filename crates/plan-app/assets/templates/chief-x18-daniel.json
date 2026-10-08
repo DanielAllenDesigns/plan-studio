@@ -348,6 +348,67 @@
       "width": 24.0,
       "depth": 24.0,
       "height": 84.0
+    },
+    "filler_width": 3.0,
+    "corner_base_leg": 36.0,
+    "corner_wall_leg": 24.0,
+    "blind_base_width": 48.0,
+    "blind_hidden_width": 15.0,
+    "soffit": {
+      "width": 24.0,
+      "depth": 12.0,
+      "height": 12.0,
+      "elevation": 84.0
+    },
+    "shelf": {
+      "width": 24.0,
+      "depth": 12.0,
+      "height": 0.75,
+      "elevation": 48.0
+    },
+    "partition": {
+      "width": 24.0,
+      "depth": 24.0,
+      "height": 36.0,
+      "elevation": 0.0
+    },
+    "vanity": {
+      "width": 30.0,
+      "depth": 21.0,
+      "height": 34.5,
+      "elevation": 0.0
+    },
+    "pantry": {
+      "width": 24.0,
+      "depth": 24.0,
+      "height": 84.0,
+      "elevation": 0.0
+    },
+    "tall_oven": {
+      "width": 30.0,
+      "depth": 24.0,
+      "height": 84.0,
+      "elevation": 0.0
+    },
+    "refrigerator": {
+      "width": 36.0,
+      "depth": 25.0,
+      "height": 84.0,
+      "elevation": 0.0
+    },
+    "countertop": {
+      "overhang_sides": 0.0,
+      "overhang_back": 0.0,
+      "edge": "Square",
+      "edge_size": 0.75,
+      "corner": "None",
+      "corner_size": 3.0
+    },
+    "backsplash": {
+      "enabled": false,
+      "height": 4.0,
+      "thickness": 0.5,
+      "full_height": false
     }
   },
   "dimensions": {
@@ -371,7 +432,14 @@
     "baseline_separation": 0.0,
     "reach": 0.0,
     "decimals": 0,
-    "arrow_style": ""
+    "arrow_style": "",
+    "locate_walls": "MainLayer",
+    "locate_openings": null,
+    "locate_cabinets": "Sides",
+    "locate_fixtures": "Sides",
+    "interior_locates_interior_surfaces": true,
+    "auto_strings": [],
+    "printed_size": false
   },
   "dimension_sets": [
     {
@@ -408,7 +476,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -445,7 +520,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -482,7 +564,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -519,7 +608,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -556,7 +652,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -593,7 +696,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -630,7 +740,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -667,7 +784,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -704,7 +828,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -741,7 +872,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -778,7 +916,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -815,7 +960,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     },
     {
@@ -852,7 +1004,14 @@
         "baseline_separation": 0.0,
         "reach": 0.0,
         "decimals": 0,
-        "arrow_style": ""
+        "arrow_style": "",
+        "locate_walls": "MainLayer",
+        "locate_openings": null,
+        "locate_cabinets": "Sides",
+        "locate_fixtures": "Sides",
+        "interior_locates_interior_surfaces": true,
+        "auto_strings": [],
+        "printed_size": false
       }
     }
   ],
@@ -1184,7 +1343,16 @@
         "conditioned": true,
         "default_floor_finish": ""
       }
-    ]
+    ],
+    "floor": {
+      "floor_structure_thickness": 10.25,
+      "ceiling_structure_thickness": 0.0,
+      "floor_finish_thickness": 0.75,
+      "ceiling_finish_thickness": 0.625,
+      "default_room_type": "",
+      "floor_material": "",
+      "ceiling_material": ""
+    }
   },
   "layers": {
     "name": "Floor Plan",
@@ -1200,7 +1368,8 @@
         ],
         "line_weight": 50,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Walls, Invisible",
@@ -1213,7 +1382,8 @@
         ],
         "line_weight": 13,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Doors",
@@ -1226,7 +1396,22 @@
         ],
         "line_weight": 25,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
+      },
+      {
+        "name": "Doors, Labels",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          70,
+          200
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Windows",
@@ -1239,7 +1424,22 @@
         ],
         "line_weight": 25,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
+      },
+      {
+        "name": "Windows, Labels",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          130,
+          210
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Rooms",
@@ -1252,7 +1452,8 @@
         ],
         "line_weight": 13,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Room Labels",
@@ -1265,7 +1466,8 @@
         ],
         "line_weight": 18,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Dimensions, Manual",
@@ -1278,7 +1480,8 @@
         ],
         "line_weight": 18,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Dimensions, Automatic",
@@ -1291,7 +1494,8 @@
         ],
         "line_weight": 18,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Text",
@@ -1304,7 +1508,8 @@
         ],
         "line_weight": 18,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "CAD, Default",
@@ -1317,7 +1522,8 @@
         ],
         "line_weight": 25,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Cabinets, Base",
@@ -1330,7 +1536,8 @@
         ],
         "line_weight": 25,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Cabinets, Wall",
@@ -1343,7 +1550,8 @@
         ],
         "line_weight": 18,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Electrical",
@@ -1356,7 +1564,8 @@
         ],
         "line_weight": 18,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Stairs",
@@ -1369,7 +1578,8 @@
         ],
         "line_weight": 25,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Roof Planes",
@@ -1382,7 +1592,8 @@
         ],
         "line_weight": 25,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       },
       {
         "name": "Framing",
@@ -1395,9 +1606,11 @@
         ],
         "line_weight": 18,
         "text_style": "",
-        "line_style": "Solid"
+        "line_style": "Solid",
+        "reference": true
       }
-    ]
+    ],
+    "tool_layers": []
   },
   "layer_sets": {
     "sets": [
@@ -1432,7 +1645,25 @@
             "text_style": null
           },
           {
+            "layer": "Doors, Labels",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
             "layer": "Windows",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Windows, Labels",
             "display": true,
             "locked": false,
             "color": null,
@@ -1668,6 +1899,494 @@
     "angle_snap_deg": 15.0,
     "snap_distance_px": 10.0,
     "bumping": true,
-    "bumping_distance": 5.0
+    "bumping_distance": 5.0,
+    "object_snaps": true,
+    "snap_endpoint": true,
+    "snap_midpoint": true,
+    "snap_intersection": true,
+    "snap_perpendicular": true,
+    "snap_on_object": true,
+    "snap_center": true,
+    "snap_quadrant": true,
+    "snap_tangent": true,
+    "snap_extension": false,
+    "snap_markers": true,
+    "grid_snaps": true,
+    "angle_snaps": true,
+    "snap_angles": [],
+    "behavior": {
+      "mode": "Default",
+      "resize_proportional": false,
+      "concentric_distance": 0.0,
+      "concentric_copies": 1,
+      "fillet_radius": 0.0,
+      "alternate_lock_axis": true,
+      "replicate_copies": 1
+    }
+  },
+  "opening_labels": {
+    "door": {
+      "mode": "Automatic",
+      "custom_text": "",
+      "size_format": "WidthHeight",
+      "size_style": "Shorthand",
+      "include_schedule_number": true,
+      "include_type": false,
+      "placement": "Interior",
+      "display_in_plan": true
+    },
+    "window": {
+      "mode": "Automatic",
+      "custom_text": "",
+      "size_format": "WidthHeight",
+      "size_style": "Shorthand",
+      "include_schedule_number": true,
+      "include_type": false,
+      "placement": "Interior",
+      "display_in_plan": true
+    }
+  },
+  "opening_variants": {
+    "sizes": [
+      {
+        "style": "Doorway",
+        "width": 36.0,
+        "height": null,
+        "sill_height": null
+      },
+      {
+        "style": "DoubleDoor",
+        "width": 60.0,
+        "height": null,
+        "sill_height": null
+      },
+      {
+        "style": "Sliding",
+        "width": 72.0,
+        "height": null,
+        "sill_height": null
+      },
+      {
+        "style": "Pocket",
+        "width": 30.0,
+        "height": null,
+        "sill_height": null
+      },
+      {
+        "style": "Bifold",
+        "width": 48.0,
+        "height": null,
+        "sill_height": null
+      },
+      {
+        "style": "Barn",
+        "width": 36.0,
+        "height": null,
+        "sill_height": null
+      },
+      {
+        "style": "Garage",
+        "width": 108.0,
+        "height": 96.0,
+        "sill_height": null
+      },
+      {
+        "style": "Shower",
+        "width": 28.0,
+        "height": 72.0,
+        "sill_height": null
+      },
+      {
+        "style": "SlidingWindow",
+        "width": 60.0,
+        "height": 48.0,
+        "sill_height": 36.0
+      },
+      {
+        "style": "Awning",
+        "width": 36.0,
+        "height": 24.0,
+        "sill_height": 60.0
+      },
+      {
+        "style": "Hopper",
+        "width": 36.0,
+        "height": 18.0,
+        "sill_height": 72.0
+      },
+      {
+        "style": "BayWindow",
+        "width": 96.0,
+        "height": 60.0,
+        "sill_height": null
+      },
+      {
+        "style": "BowWindow",
+        "width": 96.0,
+        "height": 60.0,
+        "sill_height": null
+      },
+      {
+        "style": "BoxWindow",
+        "width": 60.0,
+        "height": 60.0,
+        "sill_height": null
+      },
+      {
+        "style": "PassThrough",
+        "width": 48.0,
+        "height": 36.0,
+        "sill_height": 42.0
+      },
+      {
+        "style": "WallNiche",
+        "width": 24.0,
+        "height": 36.0,
+        "sill_height": 36.0
+      }
+    ],
+    "widths": {
+      "snap": false,
+      "lists": [
+        {
+          "style": "Hinged",
+          "widths": [
+            18.0,
+            24.0,
+            28.0,
+            30.0,
+            32.0,
+            34.0,
+            36.0
+          ]
+        },
+        {
+          "style": "DoubleDoor",
+          "widths": [
+            48.0,
+            60.0,
+            64.0,
+            72.0
+          ]
+        },
+        {
+          "style": "Doorway",
+          "widths": [
+            24.0,
+            28.0,
+            30.0,
+            32.0,
+            36.0,
+            42.0,
+            48.0,
+            60.0,
+            72.0
+          ]
+        },
+        {
+          "style": "Sliding",
+          "widths": [
+            60.0,
+            72.0,
+            96.0
+          ]
+        },
+        {
+          "style": "Pocket",
+          "widths": [
+            24.0,
+            28.0,
+            30.0,
+            32.0,
+            36.0
+          ]
+        },
+        {
+          "style": "Bifold",
+          "widths": [
+            24.0,
+            30.0,
+            36.0,
+            48.0,
+            60.0,
+            72.0
+          ]
+        },
+        {
+          "style": "Barn",
+          "widths": [
+            30.0,
+            36.0,
+            42.0
+          ]
+        },
+        {
+          "style": "Garage",
+          "widths": [
+            96.0,
+            108.0,
+            144.0,
+            192.0,
+            216.0
+          ]
+        },
+        {
+          "style": "Shower",
+          "widths": [
+            24.0,
+            28.0,
+            30.0,
+            32.0,
+            36.0
+          ]
+        },
+        {
+          "style": "Window",
+          "widths": [
+            24.0,
+            30.0,
+            36.0,
+            48.0,
+            60.0,
+            72.0
+          ]
+        },
+        {
+          "style": "Casement",
+          "widths": [
+            18.0,
+            24.0,
+            30.0,
+            36.0,
+            48.0,
+            60.0
+          ]
+        },
+        {
+          "style": "SlidingWindow",
+          "widths": [
+            36.0,
+            48.0,
+            60.0,
+            72.0
+          ]
+        },
+        {
+          "style": "Awning",
+          "widths": [
+            24.0,
+            30.0,
+            36.0,
+            48.0
+          ]
+        },
+        {
+          "style": "Hopper",
+          "widths": [
+            24.0,
+            30.0,
+            36.0
+          ]
+        },
+        {
+          "style": "BayWindow",
+          "widths": [
+            72.0,
+            96.0,
+            120.0
+          ]
+        },
+        {
+          "style": "BowWindow",
+          "widths": [
+            96.0,
+            120.0,
+            144.0
+          ]
+        },
+        {
+          "style": "BoxWindow",
+          "widths": [
+            48.0,
+            60.0,
+            72.0
+          ]
+        },
+        {
+          "style": "PassThrough",
+          "widths": [
+            36.0,
+            48.0,
+            60.0
+          ]
+        },
+        {
+          "style": "WallNiche",
+          "widths": [
+            16.0,
+            24.0,
+            36.0
+          ]
+        }
+      ],
+      "door_fallback": [
+        24.0,
+        28.0,
+        30.0,
+        32.0,
+        36.0
+      ],
+      "window_fallback": [
+        24.0,
+        30.0,
+        36.0,
+        42.0,
+        48.0,
+        54.0,
+        60.0,
+        66.0,
+        72.0
+      ]
+    },
+    "door_spec": {
+      "has_sash": true,
+      "sash_top": 1.5,
+      "sash_bottom": 1.5,
+      "mullion_width": 1.5,
+      "lite_style": "Standard",
+      "muntin_width": 0.875,
+      "custom_across": [],
+      "custom_up": [],
+      "casing_interior": true,
+      "casing_exterior": true,
+      "casing_in_plan": false,
+      "lintel": {
+        "exterior": false,
+        "interior": false,
+        "height": 3.5,
+        "depth": 1.5,
+        "extend": 1.0,
+        "style": "Flat"
+      },
+      "sill": {
+        "enabled": false,
+        "depth": 2.0,
+        "height": 1.5,
+        "extend": 1.0
+      },
+      "arch": {
+        "kind": "None",
+        "height": 0.0
+      },
+      "hardware": {
+        "enabled": false,
+        "handle": "Lever",
+        "handle_height": 36.0,
+        "in_from_edge": 3.0,
+        "hinges": 3,
+        "hinge_inset": 7.0
+      },
+      "shutters": {
+        "style": "None",
+        "width": 0.0,
+        "sides": "Both",
+        "color": [
+          38,
+          62,
+          50
+        ],
+        "louver_size": 1.0,
+        "closed": false,
+        "outside_casing": false
+      },
+      "niche_depth": 3.5,
+      "calc_panels": false,
+      "label_offset": [
+        0.0,
+        0.0
+      ]
+    },
+    "window_spec": {
+      "has_sash": true,
+      "sash_top": 1.5,
+      "sash_bottom": 1.5,
+      "mullion_width": 1.5,
+      "lite_style": "Standard",
+      "muntin_width": 0.875,
+      "custom_across": [],
+      "custom_up": [],
+      "casing_interior": true,
+      "casing_exterior": true,
+      "casing_in_plan": false,
+      "lintel": {
+        "exterior": false,
+        "interior": false,
+        "height": 3.5,
+        "depth": 1.5,
+        "extend": 1.0,
+        "style": "Flat"
+      },
+      "sill": {
+        "enabled": false,
+        "depth": 2.0,
+        "height": 1.5,
+        "extend": 1.0
+      },
+      "arch": {
+        "kind": "None",
+        "height": 0.0
+      },
+      "hardware": {
+        "enabled": false,
+        "handle": "Lever",
+        "handle_height": 36.0,
+        "in_from_edge": 3.0,
+        "hinges": 3,
+        "hinge_inset": 7.0
+      },
+      "shutters": {
+        "style": "None",
+        "width": 0.0,
+        "sides": "Both",
+        "color": [
+          38,
+          62,
+          50
+        ],
+        "louver_size": 1.0,
+        "closed": false,
+        "outside_casing": false
+      },
+      "niche_depth": 3.5,
+      "calc_panels": false,
+      "label_offset": [
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "roof_detail": {
+    "thickness": 6.0,
+    "eave_cut": "Plumb",
+    "fascia": true,
+    "fascia_height": 6.0,
+    "fascia_thickness": 1.5,
+    "soffit": true,
+    "sloped_soffit": false,
+    "rake_fascia": true,
+    "frieze": false,
+    "ridge_caps": true,
+    "gutters": false,
+    "gutter_size": 5.0,
+    "flashing": true,
+    "rafter_tails": false,
+    "rafter_spacing": 24.0,
+    "rafter_width": 1.5,
+    "rafter_depth": 5.5,
+    "auto_attic_walls": true,
+    "attic_wall_type": "",
+    "lower_wall_type": "",
+    "roof_cuts_wall_at_bottom": true,
+    "baseline_at_plate": true
   }
 }

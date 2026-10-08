@@ -9,7 +9,7 @@ use super::super::{
     on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT, PV_INK,
 };
 use crate::editor::site_view::TerrainObject;
-use crate::tools::terrain::{apply_plant, plant_choices};
+use crate::tools::terrain::{apply_plant, plant_choices, SPLINE_SAMPLES};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::Point;
 use plan_terrain::{FillStyle, Landscape, LandscapeKind, ObjectStyle, RoadKind, WallKind};
@@ -111,8 +111,36 @@ impl Form {
                 row(ui, "Material", |ui| {
                     material_combo(ui, "tf_material", &mut f.material, &MATERIALS)
                 });
-                fields.length_row(ui, "Height above ground", "feature_h", &mut f.height);
-                ui.weak("A flat top at this height over the mean ground under the outline.");
+                ui.checkbox(&mut f.pad, "Grade the terrain (cut and fill pad)");
+                if f.pad {
+                    fields.length_row(
+                        ui,
+                        "Pad above (+) or below (-) ground",
+                        "feature_h",
+                        &mut f.height,
+                    );
+                    row(ui, "Side slope 1 rise to", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut f.slope_ratio)
+                                .range(0.25..=12.0)
+                                .speed(0.05)
+                                .suffix(" run"),
+                        )
+                    });
+                    ui.weak(
+                        "The ground under the outline is levelled to a flat pad at this height \
+                         over the mean ground; its sides slope back to the ground.",
+                    );
+                } else {
+                    fields.length_row(ui, "Height above ground", "feature_h", &mut f.height);
+                    ui.weak("A flat slab at this height over the mean ground under the outline.");
+                }
+                if !f.control.is_empty() {
+                    ui.weak(format!(
+                        "{} control points: drag them with the Select tool.",
+                        f.control.len()
+                    ));
+                }
             }
             TerrainObject::Break(b) => {
                 section(ui, "General");
@@ -131,6 +159,19 @@ impl Form {
                 fields.length_row(ui, "Top above terrain", "wall_h", &mut w.height);
                 fields.length_row(ui, "Bottom below terrain", "wall_d", &mut w.depth);
                 fields.length_row(ui, "Thickness", "wall_t", &mut w.thickness);
+                ui.checkbox(&mut w.cut, "Cut the terrain along the wall");
+                if w.cut {
+                    fields.length_row(
+                        ui,
+                        "Grade step across the wall",
+                        "wall_retain",
+                        &mut w.retain,
+                    );
+                    ui.weak(
+                        "The ground on the right of the wall (drawing direction) is this much \
+                         lower than on its left; contours stop at the wall.",
+                    );
+                }
             }
             TerrainObject::Landscape(l) => landscape_general(ui, fields, l),
             TerrainObject::Road(r) => {
@@ -141,11 +182,30 @@ impl Form {
                     ui.radio_value(&mut r.kind, RoadKind::Sidewalk, "Sidewalk");
                 });
                 fields.length_row(ui, "Width", "road_w", &mut r.width);
+                fields.length_row(ui, "Crown", "road_crown", &mut r.crown);
                 ui.checkbox(&mut r.curb, "Curbs");
+                if r.curb {
+                    fields.length_row(ui, "Curb height", "road_curb_h", &mut r.curb_height);
+                }
             }
             TerrainObject::Line(l) => {
                 section(ui, "General");
                 fields.length_row(ui, "Elevation", "line_z", &mut l.z);
+                if l.control.len() >= 3 {
+                    let before = l.tension;
+                    row(ui, "Spline tension", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut l.tension)
+                                .range(0.0..=1.0)
+                                .speed(0.01)
+                                .fixed_decimals(2),
+                        )
+                    });
+                    if (l.tension - before).abs() > f64::EPSILON {
+                        l.reflatten(SPLINE_SAMPLES);
+                    }
+                    ui.weak("0 is straight segments, 0.5 a smooth curve, 1 a loose one.");
+                }
             }
         }
     }
@@ -181,6 +241,7 @@ impl Form {
         ui.radio_value(&mut st.fill, FillStyle::None, "No Fill");
         ui.radio_value(&mut st.fill, FillStyle::Solid, "Solid");
         ui.radio_value(&mut st.fill, FillStyle::Hatch, "Hatch");
+        ui.radio_value(&mut st.fill, FillStyle::Ripple, "Ripple (water)");
         let mut own = st.fill_color.is_some();
         if ui
             .checkbox(&mut own, "Use a fill color of its own")
@@ -204,6 +265,12 @@ impl Form {
 
 fn landscape_general(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape) {
     section(ui, "General");
+    if !l.control.is_empty() {
+        ui.weak(format!(
+            "{} control points: drag them with the Select tool.",
+            l.control.len()
+        ));
+    }
     match l.kind {
         LandscapeKind::GardenBed => {
             row(ui, "Material", |ui| {
@@ -290,6 +357,9 @@ impl SpecPages for Form {
                 if w.height + w.depth <= 0.0 {
                     return Some("The wall needs a height".into());
                 }
+                if !w.retain.is_finite() {
+                    return Some("The grade step is not a length".into());
+                }
             }
             TerrainObject::Road(r) if r.width <= 0.0 => {
                 return Some("The width must be greater than zero".into());
@@ -318,8 +388,14 @@ impl SpecPages for Form {
                     return Some("Sizes cannot be negative".into());
                 }
             }
-            TerrainObject::Feature(f) if f.height < 0.0 => {
+            TerrainObject::Feature(f) if f.height < 0.0 && !f.pad => {
                 return Some("The height cannot be negative".into());
+            }
+            TerrainObject::Feature(f) if f.pad && !(0.25..=12.0).contains(&f.slope_ratio) => {
+                return Some("The side slope is between 0.25 and 12".into());
+            }
+            TerrainObject::Line(l) if !(0.0..=1.0).contains(&l.tension) => {
+                return Some("The spline tension is between 0 and 1".into());
             }
             _ => {}
         }
@@ -436,11 +512,9 @@ mod tests {
                 centerline: pts(),
                 width: 120.0,
                 curb: true,
+                ..plan_terrain::RoadStrip::default()
             }),
-            TerrainObject::Line(plan_terrain::ElevationLine {
-                points: pts(),
-                z: 12.0,
-            }),
+            TerrainObject::Line(plan_terrain::ElevationLine::spline(pts(), 12.0, 0.5, 8)),
         ];
         for kind in [
             LandscapeKind::GardenBed,

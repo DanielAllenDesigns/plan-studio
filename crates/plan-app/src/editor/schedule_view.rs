@@ -571,7 +571,7 @@ fn draw_table(
     }
 }
 
-fn draw_label(
+pub(crate) fn draw_label(
     painter: &egui::Painter,
     cam: &Camera,
     c: &Callout,
@@ -647,8 +647,13 @@ pub fn draw_schedules(cx: &EditorContext, painter: &egui::Painter, cam: &Camera)
     let style = label_style(&cx.project);
     let h = style.map_or(4.5, |s| s.height_in);
     let ink = color_of(style, pal.text);
-    for c in labels(cx) {
-        draw_label(painter, cam, &c, h, ink, pal.background);
+    // Doors and windows are labelled over the opening itself (the mark when
+    // a schedule numbers them, else the size): see `opening_view`.
+    for c in labels(cx)
+        .iter()
+        .filter(|c| !matches!(c.kind, ScheduleKind::Door | ScheduleKind::Window))
+    {
+        draw_label(painter, cam, c, h, ink, pal.background);
     }
 }
 

@@ -75,6 +75,29 @@ impl ChangeHistory {
         self.past.iter().rev().find_map(|l| l.as_deref())
     }
 
+    /// How many steps undo can go back (cancelled steps do not count).
+    pub fn depth(&self) -> usize {
+        self.past.iter().flatten().count()
+    }
+
+    /// The names of the steps undo goes through, oldest first (Action History).
+    pub fn past_labels(&self) -> Vec<String> {
+        self.past.iter().flatten().cloned().collect()
+    }
+
+    /// The names of the steps redo goes through, next first.
+    pub fn future_labels(&self) -> Vec<String> {
+        self.future.iter().rev().flatten().cloned().collect()
+    }
+
+    /// Renames the newest step (a command that ran several steps and merged
+    /// them calls this).
+    pub fn relabel_last(&mut self, label: &str) {
+        if let Some(l) = self.past.iter_mut().rev().find(|l| l.is_some()) {
+            *l = Some(label.to_string());
+        }
+    }
+
     pub fn redo_label(&self) -> Option<&str> {
         self.future.iter().rev().find_map(|l| l.as_deref())
     }

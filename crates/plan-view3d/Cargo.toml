@@ -9,4 +9,5 @@ license.workspace = true
 plan-core = { path = "../plan-core" }
 plan-3d = { path = "../plan-3d" }
 plan-render = { path = "../plan-render" }
+plan-materials = { path = "../plan-materials" }
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }

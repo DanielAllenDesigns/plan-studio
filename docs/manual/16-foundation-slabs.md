@@ -101,7 +101,7 @@ Each object has its own Specification dialog on the shared frame (tab list, pane
   (blue). The layers are added to the plan the first time a tool needs them; turning one off hides its objects (they stay in the plan).
 - **3D**: a slab is a prism of its thickness with its holes cut out, plus its footing; pads are boxes, piers 16-sided prisms with their footings, in concrete unless the
   object's material names stone or brick. A hole in the floor or ceiling platform is cut out of that platform's mesh over the rooms (so a stairwell shows through).
-- The Materials List does not count slab concrete yet; the dialogs show the cubic yards.
+- The Materials List counts slab, pad and pier concrete in cubic yards under its Foundation category (11.5), with the Master List's waste factor; the dialogs show the same cubic yards.
 
 ## 16.5 Differences from Chief
 

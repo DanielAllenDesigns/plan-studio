@@ -9,14 +9,17 @@ mod assign;
 mod library;
 mod material;
 mod noise;
+mod painter;
 mod pattern;
 mod sun;
 mod technique;
 mod texture;
+pub mod textures;
 
 pub use assign::{default_assignments_for, MaterialAssignment};
 pub use library::{core_library, MaterialLibrary};
-pub use material::{MaterialDef, ProceduralKind, Texture};
+pub use material::{scene_surface, MaterialDef, ProceduralKind, SceneSurface, Texture};
+pub use painter::{build_material, nearest_by_color, scene_material};
 pub use pattern::{clip_strokes_to_polygon, pattern_strokes, Pattern, MAX_STROKES};
 pub use sun::{default_room_light, LightKind, LightSource, SunSettings};
 pub use technique::{settings, FillMode, RenderingTechnique, ShadingModel, TechniqueSettings};

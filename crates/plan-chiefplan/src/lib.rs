@@ -8,7 +8,9 @@
 //! understood. Phase C ([`decode`]) reads the typed objects: wall type layer
 //! stacks, text styles, dimension defaults, materials and default heights,
 //! collected in [`TemplateSummary`]. [`bridge`] turns an inventory into Plan
-//! Studio defaults.
+//! Studio defaults. Phase D ([`import`]) reads a project's geometry (floors,
+//! walls, doors, windows, room names, dimensions, text) into a
+//! [`plan_core::Project`]; its format notes are in `docs/chief-plan-format.md`.
 //!
 //! Nothing here writes to a template or copies one: files are read in place.
 //! `std` + `serde` only.
@@ -22,6 +24,7 @@ pub mod bridge;
 pub mod classify;
 pub mod decode;
 pub mod error;
+pub mod import;
 pub mod redact;
 pub mod scan;
 pub mod values;
@@ -93,13 +96,24 @@ pub fn build_inventory_with_values(
 ) -> Result<(TemplateInventory, ValueReport)> {
     let path = path.as_ref();
     let bytes = std::fs::read(path)?;
-    let scan = scan_bytes(&bytes, TemplateKind::from_extension(path))?;
-    let mut inv = classify(&scan);
-    inv.file_name = path
+    let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let report = decode(&bytes, &scan);
+    build_inventory_from_bytes(&bytes, &file_name, TemplateKind::from_extension(path))
+}
+
+/// [`build_inventory_with_values`] over a file already in memory.
+/// `extension_kind` is the kind the file name implies, if any.
+pub fn build_inventory_from_bytes(
+    bytes: &[u8],
+    file_name: &str,
+    extension_kind: Option<TemplateKind>,
+) -> Result<(TemplateInventory, ValueReport)> {
+    let scan = scan_bytes(bytes, extension_kind)?;
+    let mut inv = classify(&scan);
+    inv.file_name = file_name.to_string();
+    let report = decode(bytes, &scan);
     for set in &report.layer_sets {
         for l in &set.layers {
             inv.add_if_missing(Category::Layer, &l.name, l.offset);
@@ -108,7 +122,7 @@ pub fn build_inventory_with_values(
     inv.layer_set_data = report.layer_sets.clone();
     inv.wall_stacks = report.wall_stacks.clone();
     inv.summary = decode::summarize_bytes(
-        &bytes,
+        bytes,
         &scan.strings,
         scan.kind,
         &inv.file_name,

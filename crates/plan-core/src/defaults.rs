@@ -4,7 +4,7 @@
 //! [`PlanDefaults::chief_x18_daniel`] are the ones captured from Daniel's
 //! Chief X18 template (`docs/chief-x18-dialogs.md`). Lengths are inches.
 
-use crate::dimension::DimFormat;
+use crate::dimension::{AutoString, DimFormat, ObjectLocate, OpeningLocate, WallLocate};
 use crate::layer_sets::LayerSets;
 use crate::layers::LayerSet;
 use crate::model::{Project, WallKind, DEFAULT_CEILING_HEIGHT};
@@ -98,6 +98,114 @@ pub struct WallDefaults {
     pub wall_type: String,
     pub height: f64,
     pub roof: WallRoofDefaults,
+}
+
+/// How the end of the roof structure is cut at an eave (RF-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EaveCut {
+    /// A vertical end: the fascia hangs plumb.
+    #[default]
+    Plumb,
+    /// A horizontal end: the board lies level under the eave.
+    Level,
+    /// An end square to the rafter: the fascia stands perpendicular to the
+    /// roof plane.
+    Square,
+}
+
+impl EaveCut {
+    pub const ALL: [EaveCut; 3] = [EaveCut::Plumb, EaveCut::Level, EaveCut::Square];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            EaveCut::Plumb => "Plumb",
+            EaveCut::Level => "Level",
+            EaveCut::Square => "Square",
+        }
+    }
+}
+
+/// Roof detail defaults (Default Settings > Roof Defaults, RF-14, RF-15,
+/// RF-28, RF-31): the sizes and switches behind the fascia, soffit, frieze,
+/// rafter tails and attic walls that `plan-3d` draws around a roof, plus the
+/// Build Roof baseline rule. Build Roof copies them into the roof settings
+/// of its floor; a roof plane can override the eave options.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoofDetailDefaults {
+    /// Roof structure plus surface, thick along the plane normal, inches.
+    pub thickness: f64,
+    pub eave_cut: EaveCut,
+    pub fascia: bool,
+    /// Fascia board height, inches.
+    pub fascia_height: f64,
+    /// Fascia board thickness, inches.
+    pub fascia_thickness: f64,
+    pub soffit: bool,
+    /// The eave soffit follows the roof slope instead of lying level.
+    pub sloped_soffit: bool,
+    pub rake_fascia: bool,
+    /// A frieze board on the wall under the eave.
+    pub frieze: bool,
+    pub ridge_caps: bool,
+    /// Gutters on the eaves (a plane can turn them off or on).
+    pub gutters: bool,
+    /// Gutter size, inches.
+    pub gutter_size: f64,
+    /// Flashing strip where a lower roof butts a wall.
+    pub flashing: bool,
+    /// Exposed rafter tails under the eave (no soffit there).
+    pub rafter_tails: bool,
+    /// Rafter spacing, inches on center.
+    pub rafter_spacing: f64,
+    /// Rafter width and depth, inches.
+    pub rafter_width: f64,
+    pub rafter_depth: f64,
+    /// Generate attic walls above a lower roof (Auto Attic Walls).
+    pub auto_attic_walls: bool,
+    /// Wall type of the generated attic walls and of the part of a wall
+    /// above its plate; empty keeps the wall's own type.
+    pub attic_wall_type: String,
+    /// "Lower Wall Type if Split by Butting Roof": the type of the part of
+    /// a wall that stands below the butting roof; empty keeps the wall's
+    /// own type.
+    pub lower_wall_type: String,
+    /// A roof plane under a wall cuts the wall's bottom (a second-floor wall
+    /// standing on a lower roof).
+    pub roof_cuts_wall_at_bottom: bool,
+    /// Build Roof puts the underside of the structure at the top plate at
+    /// the wall (no gap and no overlap at gable corners) instead of putting
+    /// the eave tip at plate height.
+    pub baseline_at_plate: bool,
+}
+
+impl Default for RoofDetailDefaults {
+    fn default() -> Self {
+        Self {
+            thickness: 6.0,
+            eave_cut: EaveCut::Plumb,
+            fascia: true,
+            fascia_height: 6.0,
+            fascia_thickness: 1.5,
+            soffit: true,
+            sloped_soffit: false,
+            rake_fascia: true,
+            frieze: false,
+            ridge_caps: true,
+            gutters: false,
+            gutter_size: 5.0,
+            flashing: true,
+            rafter_tails: false,
+            rafter_spacing: 24.0,
+            rafter_width: 1.5,
+            rafter_depth: 5.5,
+            auto_attic_walls: true,
+            attic_wall_type: String::new(),
+            lower_wall_type: String::new(),
+            roof_cuts_wall_at_bottom: true,
+            baseline_at_plate: true,
+        }
+    }
 }
 
 /// Defaults of the flyout wall variants (pony, half, glass, deck, fencing).
@@ -229,6 +337,132 @@ pub struct CabinetDefaults {
     /// The hidden part of a blind corner cabinet.
     #[serde(default = "default_blind_hidden")]
     pub blind_hidden_width: f64,
+    /// Soffit tool: width (along the run), depth and height, and the bottom's
+    /// height above the floor.
+    #[serde(default = "default_soffit")]
+    pub soffit: BoxDefaults,
+    /// Shelf tool; `elevation` is the shelf's height above the floor.
+    #[serde(default = "default_shelf")]
+    pub shelf: BoxDefaults,
+    /// Partition tool.
+    #[serde(default = "default_partition")]
+    pub partition: BoxDefaults,
+    /// The library types: Vanity, Pantry, Tall Oven and Refrigerator
+    /// cabinets (sizes only; their faces come with the type).
+    #[serde(default = "default_vanity")]
+    pub vanity: BoxDefaults,
+    #[serde(default = "default_pantry")]
+    pub pantry: BoxDefaults,
+    #[serde(default = "default_tall_oven")]
+    pub tall_oven: BoxDefaults,
+    #[serde(default = "default_refrigerator")]
+    pub refrigerator: BoxDefaults,
+    /// Edit > Default Settings > Cabinets > Countertop.
+    #[serde(default)]
+    pub countertop: CountertopDefaults,
+    /// Edit > Default Settings > Cabinets > Backsplash.
+    #[serde(default)]
+    pub backsplash: BacksplashDefaults,
+}
+
+/// Size of a box-like cabinet kind (soffit, shelf, partition, library types).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BoxDefaults {
+    pub width: f64,
+    pub depth: f64,
+    pub height: f64,
+    /// Bottom of the box above the floor.
+    pub elevation: f64,
+}
+
+impl BoxDefaults {
+    const fn new(width: f64, depth: f64, height: f64, elevation: f64) -> Self {
+        Self {
+            width,
+            depth,
+            height,
+            elevation,
+        }
+    }
+}
+
+fn default_soffit() -> BoxDefaults {
+    BoxDefaults::new(24.0, 12.0, 12.0, 84.0)
+}
+
+fn default_shelf() -> BoxDefaults {
+    BoxDefaults::new(24.0, 12.0, 0.75, 48.0)
+}
+
+fn default_partition() -> BoxDefaults {
+    BoxDefaults::new(24.0, 24.0, 36.0, 0.0)
+}
+
+fn default_vanity() -> BoxDefaults {
+    BoxDefaults::new(30.0, 21.0, 34.5, 0.0)
+}
+
+fn default_pantry() -> BoxDefaults {
+    BoxDefaults::new(24.0, 24.0, 84.0, 0.0)
+}
+
+fn default_tall_oven() -> BoxDefaults {
+    BoxDefaults::new(30.0, 24.0, 84.0, 0.0)
+}
+
+fn default_refrigerator() -> BoxDefaults {
+    BoxDefaults::new(36.0, 25.0, 84.0, 0.0)
+}
+
+/// Countertop settings a new base cabinet starts with (beyond the thickness
+/// and front overhang on the Base page).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CountertopDefaults {
+    pub overhang_sides: f64,
+    pub overhang_back: f64,
+    /// "Square", "Beveled", "Bullnose", "Ogee" or "Waterfall".
+    pub edge: String,
+    pub edge_size: f64,
+    /// "None", "Clipped" or "Rounded".
+    pub corner: String,
+    pub corner_size: f64,
+}
+
+impl Default for CountertopDefaults {
+    fn default() -> Self {
+        Self {
+            overhang_sides: 0.0,
+            overhang_back: 0.0,
+            edge: "Square".into(),
+            edge_size: 0.75,
+            corner: "None".into(),
+            corner_size: 3.0,
+        }
+    }
+}
+
+/// Backsplash settings (off by default, as in Chief).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BacksplashDefaults {
+    /// New base cabinets get a backsplash.
+    pub enabled: bool,
+    pub height: f64,
+    pub thickness: f64,
+    /// Rise to the wall cabinet above instead of `height`.
+    pub full_height: bool,
+}
+
+impl Default for BacksplashDefaults {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            height: 4.0,
+            thickness: 0.5,
+            full_height: false,
+        }
+    }
 }
 
 fn default_filler_width() -> f64 {
@@ -293,6 +527,102 @@ pub struct DimensionDefaults {
     /// Arrow style name (empty = the default arrow).
     #[serde(default)]
     pub arrow_style: String,
+    /// Locate Objects, walls: the surface a dimension point snaps to (DIM-4).
+    #[serde(default)]
+    pub locate_walls: WallLocate,
+    /// Locate Objects, openings: sides, centers or none. `None` follows the
+    /// older `locate_openings_centers` flag; set it with
+    /// [`DimensionDefaults::set_opening_locate`].
+    #[serde(default)]
+    pub locate_openings: Option<OpeningLocate>,
+    /// Locate Objects, cabinets.
+    #[serde(default)]
+    pub locate_cabinets: ObjectLocate,
+    /// Locate Objects, fixtures (placed symbols).
+    #[serde(default)]
+    pub locate_fixtures: ObjectLocate,
+    /// Interior dimensions locate the interior surfaces of the walls
+    /// (otherwise the located wall surface setting applies).
+    #[serde(default = "default_true")]
+    pub interior_locates_interior_surfaces: bool,
+    /// The strings of Auto Exterior Dimensions, nearest the wall first;
+    /// empty is Chief's set (openings, wall to wall, overall).
+    #[serde(default)]
+    pub auto_strings: Vec<AutoString>,
+    /// Text and extension offsets are printed sizes: they hold their size on
+    /// paper at any plan scale (DIM-7).
+    #[serde(default)]
+    pub printed_size: bool,
+    /// Locate Objects of the temporary dimensions (DIM-40); `None` is the
+    /// default group (wall surfaces, opening sides).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp_locate: Option<crate::dimension::LocateGroup>,
+    /// Locate Objects of the elevation dimensions (DIM-40); `None` is the
+    /// default group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_locate: Option<crate::dimension::LocateGroup>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl DimensionDefaults {
+    /// How openings are located: the explicit setting, else the older
+    /// centers flag.
+    pub fn opening_locate(&self) -> OpeningLocate {
+        self.locate_openings
+            .unwrap_or(if self.locate_openings_centers {
+                OpeningLocate::Centers
+            } else {
+                OpeningLocate::Sides
+            })
+    }
+
+    /// Sets how openings are located, keeping the older flag in step.
+    pub fn set_opening_locate(&mut self, mode: OpeningLocate) {
+        self.locate_openings = Some(mode);
+        self.locate_openings_centers = mode == OpeningLocate::Centers;
+    }
+
+    /// The Auto Exterior strings, nearest the wall first.
+    pub fn exterior_strings(&self) -> Vec<AutoString> {
+        if self.auto_strings.is_empty() {
+            crate::dimension::DEFAULT_AUTO_STRINGS.to_vec()
+        } else {
+            self.auto_strings.clone()
+        }
+    }
+
+    /// The Locate Objects group of the manual and automatic dimensions: the
+    /// set's own settings.
+    pub fn main_locate(&self) -> crate::dimension::LocateGroup {
+        crate::dimension::LocateGroup {
+            walls: self.locate_walls,
+            openings: self.opening_locate(),
+            cabinets: self.locate_cabinets,
+            fixtures: self.locate_fixtures,
+        }
+    }
+
+    /// The Locate Objects group of the temporary dimensions.
+    pub fn temp_group(&self) -> crate::dimension::LocateGroup {
+        self.temp_locate.unwrap_or_default()
+    }
+
+    /// The Locate Objects group of the elevation dimensions.
+    pub fn elevation_group(&self) -> crate::dimension::LocateGroup {
+        self.elevation_locate.unwrap_or_default()
+    }
+
+    /// Distance between automatic strings; 18" when unset.
+    pub fn string_spacing(&self) -> f64 {
+        if self.auto_line_separation > 0.0 {
+            self.auto_line_separation
+        } else {
+            18.0
+        }
+    }
 }
 
 /// One of Chief's saved dimension default sets ("1/4\" Scale", "NKBA", ...):
@@ -377,6 +707,9 @@ pub struct RoomDefaults {
     pub floor_finish_thickness: f64,
     pub ceiling_finish_thickness: f64,
     pub room_types: Vec<RoomTypeDef>,
+    /// Floor Defaults a new floor starts with (R-56).
+    #[serde(default)]
+    pub floor: crate::floors::FloorSettings,
 }
 
 // ----- text, grid, units -----
@@ -436,6 +769,13 @@ pub struct PlanDefaults {
     pub walls_connect: WallConnectDefaults,
     /// Editing behaviour (snapping, bumping).
     pub editing: EditingDefaults,
+    /// How door and window labels read in plan (Default Settings > Labels).
+    pub opening_labels: crate::openings::OpeningLabelDefaults,
+    /// Default sizes of the door and window variants.
+    pub opening_variants: crate::openings::OpeningVariantDefaults,
+    /// Roof detail: eave cut, fascia, soffit, rafter tails, attic walls,
+    /// and the Build Roof baseline rule (Default Settings > Roof Defaults).
+    pub roof_detail: RoofDetailDefaults,
 }
 
 /// How walls connect when drawn or edited.
@@ -457,15 +797,111 @@ impl Default for WallConnectDefaults {
     }
 }
 
-/// Editing preferences (Daniel's Chief setup: Bumping on at distance 5).
+/// What dragging an edit handle or an object's body does (Edit > Edit
+/// Behaviors, S-65).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EditBehavior {
+    /// Move and resize in place.
+    #[default]
+    Default,
+    /// A body drag scales the selection from the opposite corner.
+    Resize,
+    /// A body drag of a polyline leaves the original and adds an offset copy.
+    Concentric,
+    /// Dragging a polyline corner rounds it with a fillet.
+    Fillet,
+    /// A body drag moves along the dominant axis only.
+    Alternate,
+    /// A body drag leaves the original and places copies at the drag delta.
+    Replicate,
+}
+
+impl EditBehavior {
+    pub const ALL: [EditBehavior; 6] = [
+        EditBehavior::Default,
+        EditBehavior::Resize,
+        EditBehavior::Concentric,
+        EditBehavior::Fillet,
+        EditBehavior::Alternate,
+        EditBehavior::Replicate,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            EditBehavior::Default => "Default",
+            EditBehavior::Resize => "Resize",
+            EditBehavior::Concentric => "Concentric",
+            EditBehavior::Fillet => "Fillet",
+            EditBehavior::Alternate => "Alternate",
+            EditBehavior::Replicate => "Replicate",
+        }
+    }
+}
+
+/// The mode and the parameters of each mode (Edit > Edit Behaviors).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditBehaviorSettings {
+    pub mode: EditBehavior,
+    /// Resize: keep the proportions (one scale for both axes).
+    pub resize_proportional: bool,
+    /// Concentric: offset distance, inches; 0 follows the drag.
+    pub concentric_distance: f64,
+    /// Concentric: how many offset copies.
+    pub concentric_copies: u32,
+    /// Fillet: radius, inches; 0 follows the drag.
+    pub fillet_radius: f64,
+    /// Alternate: lock the move to the dominant axis.
+    pub alternate_lock_axis: bool,
+    /// Replicate: copies placed, each one more delta along.
+    pub replicate_copies: u32,
+}
+
+impl Default for EditBehaviorSettings {
+    fn default() -> Self {
+        Self {
+            mode: EditBehavior::Default,
+            resize_proportional: false,
+            concentric_distance: 0.0,
+            concentric_copies: 1,
+            fillet_radius: 0.0,
+            alternate_lock_axis: true,
+            replicate_copies: 1,
+        }
+    }
+}
+
+/// Editing preferences (Daniel's Chief setup: Bumping on at distance 5), the
+/// Snap Settings (S-68..S-72, CAD-40) and the Edit Behaviors (S-65).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditingDefaults {
+    /// Angle snap increment, degrees (0, 15, 30, 45 or 90 in the dialog).
     pub angle_snap_deg: f64,
     pub snap_distance_px: f64,
     pub bumping: bool,
     /// Bumping distance, inches.
     pub bumping_distance: f64,
+    /// Master switch of the object snaps.
+    pub object_snaps: bool,
+    pub snap_endpoint: bool,
+    pub snap_midpoint: bool,
+    pub snap_intersection: bool,
+    pub snap_perpendicular: bool,
+    pub snap_on_object: bool,
+    pub snap_center: bool,
+    pub snap_quadrant: bool,
+    pub snap_tangent: bool,
+    /// Snap to the extension of a wall or CAD line beyond its end.
+    pub snap_extension: bool,
+    /// Snap to CAD points and markers.
+    pub snap_markers: bool,
+    pub grid_snaps: bool,
+    pub angle_snaps: bool,
+    /// Allowed drawing angles, degrees counter-clockwise from east, each one
+    /// also allowing its opposite. Empty: every multiple of `angle_snap_deg`.
+    pub snap_angles: Vec<f64>,
+    pub behavior: EditBehaviorSettings,
 }
 
 impl Default for EditingDefaults {
@@ -475,6 +911,21 @@ impl Default for EditingDefaults {
             snap_distance_px: 10.0,
             bumping: true,
             bumping_distance: 5.0,
+            object_snaps: true,
+            snap_endpoint: true,
+            snap_midpoint: true,
+            snap_intersection: true,
+            snap_perpendicular: true,
+            snap_on_object: true,
+            snap_center: true,
+            snap_quadrant: true,
+            snap_tangent: true,
+            snap_extension: false,
+            snap_markers: true,
+            grid_snaps: true,
+            angle_snaps: true,
+            snap_angles: Vec::new(),
+            behavior: EditBehaviorSettings::default(),
         }
     }
 }
@@ -615,6 +1066,15 @@ impl PlanDefaults {
             reach: 0.0,
             decimals: 0,
             arrow_style: String::new(),
+            locate_walls: WallLocate::MainLayer,
+            locate_openings: None,
+            locate_cabinets: ObjectLocate::Sides,
+            locate_fixtures: ObjectLocate::Sides,
+            interior_locates_interior_surfaces: true,
+            auto_strings: Vec::new(),
+            printed_size: false,
+            temp_locate: None,
+            elevation_locate: None,
         };
         PlanDefaults {
             name: "Chief X18 (Daniel)".into(),
@@ -681,6 +1141,15 @@ impl PlanDefaults {
                 corner_wall_leg: default_corner_wall_leg(),
                 blind_base_width: default_blind_width(),
                 blind_hidden_width: default_blind_hidden(),
+                soffit: default_soffit(),
+                shelf: default_shelf(),
+                partition: default_partition(),
+                vanity: default_vanity(),
+                pantry: default_pantry(),
+                tall_oven: default_tall_oven(),
+                refrigerator: default_refrigerator(),
+                countertop: CountertopDefaults::default(),
+                backsplash: BacksplashDefaults::default(),
             },
             dimensions: dimensions.clone(),
             dimension_sets: chief_dimension_sets(&dimensions),
@@ -690,6 +1159,7 @@ impl PlanDefaults {
                 floor_finish_thickness: 0.75,
                 ceiling_finish_thickness: 0.625,
                 room_types: chief_room_types(),
+                floor: crate::floors::FloorSettings::default(),
             },
             layer_sets: LayerSets::from_layers(&layers),
             layers,
@@ -707,6 +1177,9 @@ impl PlanDefaults {
             units: UnitDefaults { imperial: true },
             walls_connect: WallConnectDefaults::default(),
             editing: EditingDefaults::default(),
+            opening_labels: crate::openings::OpeningLabelDefaults::default(),
+            opening_variants: crate::openings::OpeningVariantDefaults::default(),
+            roof_detail: RoofDetailDefaults::default(),
         }
     }
 }
@@ -885,6 +1358,7 @@ impl Project {
     pub fn from_defaults(name: impl Into<String>, d: &PlanDefaults) -> Project {
         let mut p = Project::new(name);
         p.floors[0].ceiling_height = d.rooms.ceiling_height;
+        p.floors[0].settings = d.rooms.floor.clone();
         p.layers = d.layers.clone();
         p.layer_sets = d.layer_sets.clone();
         p.text_styles = d.text_styles.clone();
@@ -1008,6 +1482,58 @@ mod tests {
     }
 
     #[test]
+    fn locate_objects_settings_default_and_load_from_old_files() {
+        let d = PlanDefaults::default();
+        let a = &d.dimensions;
+        assert_eq!(a.locate_walls, WallLocate::MainLayer);
+        assert_eq!(a.locate_cabinets, ObjectLocate::Sides);
+        assert_eq!(a.locate_fixtures, ObjectLocate::Sides);
+        assert!(a.interior_locates_interior_surfaces);
+        assert!(!a.printed_size);
+        // Daniel's template locates opening centers, through the older flag.
+        assert!(a.locate_openings_centers && a.locate_openings.is_none());
+        assert_eq!(a.opening_locate(), OpeningLocate::Centers);
+        let mut b = a.clone();
+        b.set_opening_locate(OpeningLocate::Sides);
+        assert_eq!(b.opening_locate(), OpeningLocate::Sides);
+        assert!(!b.locate_openings_centers);
+        b.set_opening_locate(OpeningLocate::None);
+        assert_eq!(b.opening_locate(), OpeningLocate::None);
+        assert_eq!(
+            a.exterior_strings(),
+            vec![
+                AutoString::Openings,
+                AutoString::WallToWall,
+                AutoString::Overall
+            ]
+        );
+        assert_eq!(a.string_spacing(), 18.0);
+        // A dimension set saved before these settings loads with the defaults.
+        let mut v = serde_json::to_value(a).unwrap();
+        for k in [
+            "locate_walls",
+            "locate_openings",
+            "locate_cabinets",
+            "locate_fixtures",
+            "interior_locates_interior_surfaces",
+            "auto_strings",
+            "printed_size",
+        ] {
+            v.as_object_mut().unwrap().remove(k);
+        }
+        let old: DimensionDefaults = serde_json::from_value(v).unwrap();
+        assert_eq!(&old, a);
+        // And the saved sets carry their own.
+        let mut sets = d.dimension_sets.clone();
+        sets[0].auto.locate_walls = WallLocate::Centers;
+        sets[0].auto.auto_strings = vec![AutoString::Overall];
+        let back: Vec<DimensionDefaultSet> =
+            serde_json::from_str(&serde_json::to_string(&sets).unwrap()).unwrap();
+        assert_eq!(back[0].auto.locate_walls, WallLocate::Centers);
+        assert_eq!(back[0].auto.exterior_strings(), vec![AutoString::Overall]);
+    }
+
+    #[test]
     fn dimension_sets_seeded_with_active_quarter_scale() {
         let mut d = PlanDefaults::chief_x18_daniel();
         let names: Vec<_> = d.dimension_sets.iter().map(|s| s.name.as_str()).collect();
@@ -1111,6 +1637,23 @@ mod tests {
             serde_json::from_str(r#"{"editing":{"bumping_distance":8.0}}"#).unwrap();
         assert_eq!(partial.editing.bumping_distance, 8.0);
         assert!(partial.editing.bumping);
+        // The snap and behavior settings added later default on / Default.
+        assert!(partial.editing.object_snaps && partial.editing.snap_tangent);
+        assert!(partial.editing.snap_angles.is_empty());
+        assert_eq!(partial.editing.behavior.mode, EditBehavior::Default);
+    }
+
+    #[test]
+    fn edit_behavior_settings_round_trip() {
+        let mut d = PlanDefaults::chief_x18_daniel();
+        d.editing.behavior.mode = EditBehavior::Fillet;
+        d.editing.behavior.fillet_radius = 18.0;
+        d.editing.snap_angles = vec![0.0, 45.0, 90.0];
+        d.editing.snap_center = false;
+        let back: PlanDefaults = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(back.editing, d.editing);
+        assert_eq!(EditBehavior::ALL.len(), 6);
+        assert_eq!(EditBehavior::Concentric.label(), "Concentric");
     }
 
     #[test]
@@ -1124,6 +1667,15 @@ mod tests {
             "corner_wall_leg",
             "blind_base_width",
             "blind_hidden_width",
+            "soffit",
+            "shelf",
+            "partition",
+            "vanity",
+            "pantry",
+            "tall_oven",
+            "refrigerator",
+            "countertop",
+            "backsplash",
         ] {
             o.remove(k);
         }

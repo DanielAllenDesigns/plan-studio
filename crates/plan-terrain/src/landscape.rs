@@ -34,6 +34,8 @@ pub enum FillStyle {
     None,
     Solid,
     Hatch,
+    /// A tint with rows of wavy lines, the water look.
+    Ripple,
 }
 
 /// Layer, line style and fill style shared by every terrain object.
@@ -94,6 +96,12 @@ pub enum WallKind {
 
 /// A retaining wall or curb that follows the ground: its top is `height` above
 /// the terrain along the whole path and its bottom `depth` below it.
+///
+/// A wall cuts the terrain surface: when the terrain is built the strip under
+/// the wall is a gap with vertical faces, the surface on the left of the path
+/// (the retained side) keeps its grade and the surface on the right (the cut
+/// side) is lowered by `retain` at the wall, sloping back up to the existing
+/// ground at 1:4. Contours stop at the wall.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TerrainWall {
@@ -109,7 +117,15 @@ pub struct TerrainWall {
     /// "Concrete", "Stone" or "Brick".
     pub material: String,
     pub style: ObjectStyle,
+    /// How much lower the surface on the right of the wall is than on its
+    /// left, inches (0 = the same grade both sides; negative cuts the left).
+    pub retain: f64,
+    /// Cut the surface along the wall (a gap with the wall's vertical faces).
+    pub cut: bool,
 }
+
+/// Slope ratio of the graded ground on the cut side of a wall (4 = 1:4).
+pub const WALL_SLOPE_RATIO: f64 = 4.0;
 
 impl TerrainWall {
     pub fn new(kind: WallKind, points: Vec<Point>, curved: bool) -> Self {
@@ -126,11 +142,18 @@ impl TerrainWall {
             thickness,
             material: "Concrete".into(),
             style: ObjectStyle::default(),
+            retain: 0.0,
+            cut: true,
         }
     }
 
     pub fn default_layer(&self) -> &str {
         LAYER_WALLS
+    }
+
+    /// Horizontal reach of the graded ground on the cut side, inches.
+    pub fn reach(&self) -> f64 {
+        (self.retain.abs() * WALL_SLOPE_RATIO).max(12.0)
     }
 }
 
@@ -190,6 +213,9 @@ pub struct Landscape {
     pub plant: String,
     pub arc: f64,
     pub style: ObjectStyle,
+    /// Control points of a kidney or spline outline: `points` is the spline
+    /// through them (closed for regions). Empty for a clicked polyline.
+    pub control: Vec<Point>,
 }
 
 impl Landscape {
@@ -208,6 +234,7 @@ impl Landscape {
             plant: String::new(),
             arc: 360.0,
             style: ObjectStyle::default(),
+            control: Vec::new(),
         };
         match kind {
             LandscapeKind::GardenBed => Landscape {
@@ -283,6 +310,18 @@ impl Landscape {
             LandscapeKind::SteppingStones => "Stepping Stones",
             LandscapeKind::Plants => "Plants",
             LandscapeKind::Sprinklers => "Sprinklers",
+        }
+    }
+
+    /// Rebuilds `points` from the control points (a closed spline for regions,
+    /// an open one for paths). Does nothing without control points.
+    pub fn reflatten(&mut self) {
+        if self.control.len() >= 3 {
+            self.points = if self.is_region() {
+                closed_spline(&self.control)
+            } else {
+                open_spline(&self.control)
+            };
         }
     }
 
@@ -417,6 +456,13 @@ pub fn kidney_outline(a: Point, b: Point, c: Point) -> Option<Vec<Point>> {
         })
         .collect();
     Some(pts)
+}
+
+/// Control points of a kidney: every fourth point of [`kidney_outline`]. The
+/// closed spline through them ([`closed_spline`]) is the editable outline.
+pub fn kidney_control_points(a: Point, b: Point, c: Point) -> Option<Vec<Point>> {
+    let outline = kidney_outline(a, b, c)?;
+    Some(outline.into_iter().step_by(4).collect())
 }
 
 /// The arc from `start` to `end` that bulges `bulge` inches at its middle (the

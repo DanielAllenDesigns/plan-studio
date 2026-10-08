@@ -18,151 +18,24 @@ use crate::editor::schedule_view;
 use crate::editor::{Camera, EditorContext, ObjectRef};
 use crate::toolbar::Action;
 use eframe::egui::{self, Color32, RichText};
-use plan_check::{CheckOptions, Finding, Severity, Target};
+#[cfg(test)]
+use plan_check::{Finding, Severity, Target};
 use plan_core::geometry::Point;
 use plan_docs::{
-    door_schedule, materials_list, materials_to_csv, room_schedule, wall_schedule, window_schedule,
-    MaterialLine, Schedule,
+    door_schedule, room_schedule, wall_schedule, window_schedule, MaterialLine, Schedule,
 };
-use plan_layout::{default_construction_set, render_pdf, LayoutRenderContext};
+use plan_layout::render_pdf;
 use plan_spaceplan::{
     build_house, generate_boxes, validate, BuildOptions, BuildReport, Questionnaire, RoomBox,
 };
-use plan_stairs::Stair;
 use std::cell::RefCell;
 use std::path::Path;
 
-// ----- Plan Check state machine (like Chief's one-finding-at-a-time dialog) -----
+// ----- Plan Check (the window, settings and report are in `plan_check.rs`) -----
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CheckKind {
-    Plan,
-    DoorWindow,
-}
-
-impl CheckKind {
-    pub fn title(self) -> &'static str {
-        match self {
-            CheckKind::Plan => "Plan Check",
-            CheckKind::DoorWindow => "Door/Window Check",
-        }
-    }
-}
-
-/// The findings of one check and the one being shown.
-pub struct CheckWindow {
-    pub kind: CheckKind,
-    findings: Vec<Finding>,
-    index: usize,
-}
-
-impl CheckWindow {
-    pub fn new(kind: CheckKind, findings: Vec<Finding>) -> Self {
-        Self {
-            kind,
-            findings,
-            index: 0,
-        }
-    }
-
-    pub fn count(&self) -> usize {
-        self.findings.len()
-    }
-
-    pub fn index(&self) -> usize {
-        self.index
-    }
-
-    pub fn current(&self) -> Option<&Finding> {
-        self.findings.get(self.index)
-    }
-
-    pub fn can_next(&self) -> bool {
-        self.index + 1 < self.findings.len()
-    }
-
-    pub fn can_previous(&self) -> bool {
-        self.index > 0
-    }
-
-    /// Next finding; stays on the last one.
-    pub fn next(&mut self) -> bool {
-        if self.can_next() {
-            self.index += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn previous(&mut self) -> bool {
-        if self.can_previous() {
-            self.index -= 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// "Finding 3 of 12", or "No findings".
-    pub fn position_text(&self) -> String {
-        if self.count() == 0 {
-            "No findings".into()
-        } else {
-            format!("Finding {} of {}", self.index() + 1, self.count())
-        }
-    }
-
-    /// Replaces the findings after a re-run, staying near the same place.
-    pub fn replace(&mut self, findings: Vec<Finding>) {
-        self.index = self.index.min(findings.len().saturating_sub(1));
-        self.findings = findings;
-    }
-
-    pub fn report(&self) -> String {
-        plan_check::report_markdown(&self.findings)
-    }
-}
-
-/// Runs Plan Check or Door/Window Check on the active floor.
-pub fn run_check(cx: &mut EditorContext, kind: CheckKind) -> Vec<Finding> {
-    cx.refresh();
-    match kind {
-        CheckKind::DoorWindow => plan_check::door_window_check(&cx.project, cx.floor),
-        CheckKind::Plan => {
-            let room_types: Vec<(usize, String)> = cx
-                .rooms
-                .iter()
-                .enumerate()
-                .filter_map(|(i, r)| {
-                    rooms_edit::name_entry(cx, r).map(|n| (i, n.room_type.clone()))
-                })
-                .collect();
-            let stairs: Vec<Stair> = cx.floor().stairs_as().unwrap_or_default();
-            plan_check::plan_check(
-                &cx.project,
-                cx.floor,
-                &cx.rooms,
-                &room_types,
-                &stairs,
-                &CheckOptions::default(),
-            )
-        }
-    }
-}
-
-/// "Zoom to": centers the view on the finding and selects its object.
-pub fn zoom_to_finding(cx: &mut EditorContext, cam: &mut Camera, f: &Finding) {
-    if let Some(p) = f.location {
-        cam.center = p;
-    }
-    match f.object {
-        Some(Target::Wall(id)) => cx.select_only(ObjectRef::Wall(id)),
-        Some(Target::Opening(id)) => cx.select_only(ObjectRef::Opening(id)),
-        Some(Target::Room(i)) => rooms_edit::select_room(cx, i),
-        _ => {}
-    }
-}
+pub use super::plan_check::{check_window, run_check_full, CheckKind, CheckWindow};
+#[cfg(test)]
+use super::plan_check::{run_check, zoom_to_finding};
 
 // ----- Space Planning -----
 
@@ -325,88 +198,6 @@ fn space_window(
     open
 }
 
-// ----- Plan Check window -----
-
-fn severity_color(s: Severity) -> Color32 {
-    match s {
-        Severity::Error => Color32::from_rgb(0xE0, 0x4B, 0x4B),
-        Severity::Warning => Color32::from_rgb(0xE0, 0x8A, 0x1E),
-        Severity::Info => Color32::from_rgb(0x6A, 0x9B, 0xD0),
-    }
-}
-
-fn check_window(
-    ctx: &egui::Context,
-    cx: &mut EditorContext,
-    cam: &mut Camera,
-    w: &mut CheckWindow,
-) -> bool {
-    let mut open = true;
-    let (mut prev, mut next, mut zoom, mut rerun, mut save) = (false, false, false, false, false);
-    egui::Window::new(w.kind.title())
-        .id(egui::Id::new("plan_check_window"))
-        .open(&mut open)
-        .collapsible(false)
-        .default_width(420.0)
-        .default_pos(ctx.screen_rect().right_top() + egui::vec2(-460.0, 90.0))
-        .show(ctx, |ui| {
-            ui.label(RichText::new(w.position_text()).strong());
-            ui.separator();
-            match w.current() {
-                Some(f) => {
-                    ui.colored_label(severity_color(f.severity), f.severity.label());
-                    ui.label(RichText::new(f.rule).italics());
-                    ui.add_space(4.0);
-                    ui.label(&f.message);
-                    if !f.fix.is_empty() {
-                        ui.add_space(4.0);
-                        ui.weak(format!("Fix: {}", f.fix));
-                    }
-                }
-                None => {
-                    ui.label("The plan passes these checks.");
-                }
-            }
-            ui.separator();
-            ui.horizontal(|ui| {
-                prev = ui
-                    .add_enabled(w.can_previous(), egui::Button::new("Previous"))
-                    .clicked();
-                next = ui
-                    .add_enabled(w.can_next(), egui::Button::new("Next"))
-                    .clicked();
-                zoom = ui
-                    .add_enabled(
-                        w.current().is_some_and(|f| f.location.is_some()),
-                        egui::Button::new("Zoom to"),
-                    )
-                    .clicked();
-                rerun = ui.button("Check Again").clicked();
-                save = ui.button("Save Report\u{2026}").clicked();
-            });
-        });
-    if prev {
-        w.previous();
-    }
-    if next {
-        w.next();
-    }
-    if zoom {
-        if let Some(f) = w.current().cloned() {
-            zoom_to_finding(cx, cam, &f);
-        }
-    }
-    if rerun {
-        let findings = run_check(cx, w.kind);
-        w.replace(findings);
-    }
-    if save {
-        let name = format!("{}.md", w.kind.title().replace('/', "-"));
-        cx.status = save_text(&name, "md", &w.report());
-    }
-    open
-}
-
 // ----- Schedules and Materials List -----
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -440,13 +231,16 @@ pub fn schedule_for(cx: &EditorContext, kind: SchedKind) -> Schedule {
     }
 }
 
-/// The materials list of the active floor.
+/// The materials list of the active floor, with the Master List's waste and
+/// prices (`dialogs::materials`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn materials_for(cx: &EditorContext) -> Vec<MaterialLine> {
-    materials_list(&cx.project, cx.floor, &cx.rooms)
+    super::materials::lines_for_floor(cx)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn materials_csv(cx: &EditorContext) -> String {
-    materials_to_csv(&materials_for(cx))
+    super::materials::csv_for_floor(cx)
 }
 
 /// Writes `text` where the user picks. Returns the status message.
@@ -466,10 +260,6 @@ fn write_file(path: &Path, bytes: &[u8]) -> String {
         Ok(()) => format!("Saved {}", path.display()),
         Err(e) => format!("Could not save {}: {e}", path.display()),
     }
-}
-
-fn table(ui: &mut egui::Ui, id: &str, columns: &[String], rows: &[Vec<String>]) {
-    let _ = clickable_table(ui, id, columns, rows, false);
 }
 
 /// The schedule table; when `clickable`, returns the row that was clicked.
@@ -672,46 +462,20 @@ fn placed_window(
     open
 }
 
+/// The Materials List window: categories, waste, stock lengths, prices and
+/// the Master List (see `dialogs::materials`).
 fn materials_window(ctx: &egui::Context, cx: &mut EditorContext) -> bool {
-    let lines = materials_for(cx);
-    let mut open = true;
-    let mut export = false;
-    egui::Window::new("Materials List")
-        .id(egui::Id::new("materials_list"))
-        .open(&mut open)
-        .default_pos(ctx.screen_rect().center())
-        .show(ctx, |ui| {
-            let columns = ["Category", "Item", "Quantity", "Unit"].map(String::from);
-            let rows: Vec<Vec<String>> = lines
-                .iter()
-                .map(|l| {
-                    vec![
-                        l.category.clone(),
-                        l.item.clone(),
-                        format!("{:.1}", l.quantity),
-                        l.unit.clone(),
-                    ]
-                })
-                .collect();
-            table(ui, "materials_table", &columns, &rows);
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(format!("{} lines for {}", lines.len(), cx.floor().name));
-                export = ui.button("Export CSV\u{2026}").clicked();
-            });
-        });
-    if export {
-        cx.status = save_text("materials_list.csv", "csv", &materials_csv(cx));
-    }
-    open
+    super::materials::show(ctx, cx)
 }
 
 // ----- Create Construction Set -----
 
-/// The default construction set as PDF bytes.
+/// The default construction set as PDF bytes (its Materials List page is
+/// priced from the user's Master List).
 pub fn construction_set_pdf(project: &plan_core::Project) -> Vec<u8> {
-    let layout = default_construction_set(project, project.floors.len());
-    let rcx = LayoutRenderContext::new(project);
+    let master = crate::shell::layout_window::load_master_list();
+    let layout = plan_layout::default_construction_set_with(project, project.floors.len(), &master);
+    let rcx = crate::shell::layout_window::render_context(project);
     render_pdf(&layout, &rcx)
 }
 
@@ -722,12 +486,16 @@ fn new_layout_from_template(cx: &mut EditorContext) {
 }
 
 fn create_construction_set(cx: &mut EditorContext) {
+    // The sheets go into the live layout first (Cover with the sheet index,
+    // Site, plans, elevations, sections, details, schedules); the PDF is the
+    // copy to send out.
+    let added = crate::shell::layout_window::install_construction_set(cx);
     let Some(path) = rfd::FileDialog::new()
         .set_file_name(format!("{} Construction Set.pdf", cx.project.name))
         .add_filter("pdf", &["pdf"])
         .save_file()
     else {
-        cx.status = "Create Construction Set cancelled".into();
+        cx.status = format!("{added}; no PDF saved");
         return;
     };
     let bytes = construction_set_pdf(&cx.project);
@@ -748,6 +516,10 @@ struct Windows {
     project_info: Option<ProjectInfoDialog>,
     /// Edit > Find/Replace Text.
     find_replace: Option<FindReplaceDialog>,
+    /// Edit > Snap Settings.
+    snap_settings: Option<super::snap_settings::SnapSettingsDialog>,
+    /// Edit > Edit Behaviors.
+    edit_behaviors: Option<super::edit_behaviors::EditBehaviorsDialog>,
     /// Schedule Specification of a placed schedule.
     sched_spec: Option<ScheduleSpecDialog>,
     /// A double-click asked for this schedule's specification `(floor, id)`.
@@ -770,11 +542,26 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
     cx.refresh();
     match action {
         Action::BuildNewFloor => {
-            let d = FloorDialog::new_floor(&cx.project);
+            let d = FloorDialog::new_floor(&cx.project, cx.floor, &cx.defaults);
             with_windows(|w| w.floor = Some(d));
         }
         Action::InsertFloor => {
             rooms_edit::insert_floor(cx);
+        }
+        Action::InsertFloorBelow => {
+            rooms_edit::insert_floor_below(cx);
+        }
+        Action::FloorDefaults => {
+            let d = FloorDialog::defaults_for_floor(cx);
+            with_windows(|w| w.floor = Some(d));
+        }
+        Action::PlanFloorDefaults => {
+            let d = FloorDialog::defaults_for_plan(cx);
+            with_windows(|w| w.floor = Some(d));
+        }
+        Action::ReferenceDisplayOptions => {
+            let d = FloorDialog::reference(cx);
+            with_windows(|w| w.floor = Some(d));
         }
         Action::DeleteFloor => {
             if cx.project.floors.len() < 2 {
@@ -809,9 +596,10 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
             } else {
                 CheckKind::DoorWindow
             };
-            let findings = run_check(cx, kind);
-            cx.status = format!("{}: {} findings", kind.title(), findings.len());
-            with_windows(|w| w.check = Some(CheckWindow::new(kind, findings)));
+            let run = run_check_full(cx, kind);
+            let window = CheckWindow::from_run(kind, cx.floor, run);
+            cx.status = window.summary();
+            with_windows(|w| w.check = Some(window));
         }
         Action::PlanFootprint => {
             rooms_edit::add_plan_footprint(cx);
@@ -829,6 +617,14 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
                 w.find_replace = Some(FindReplaceDialog::new());
             }
         }),
+        Action::SnapSettings => {
+            let d = super::snap_settings::SnapSettingsDialog::new(cx);
+            with_windows(|w| w.snap_settings = Some(d));
+        }
+        Action::EditBehaviors => {
+            let d = super::edit_behaviors::EditBehaviorsDialog::new(cx);
+            with_windows(|w| w.edit_behaviors = Some(d));
+        }
         _ => {}
     }
 }
@@ -963,17 +759,7 @@ impl Windows {
             match d.show(ctx) {
                 Outcome::Open => self.floor = Some(d),
                 Outcome::Cancel => {}
-                Outcome::Ok => match d {
-                    FloorDialog::NewFloor { derive, .. } => {
-                        rooms_edit::build_new_floor(cx, derive);
-                    }
-                    FloorDialog::BuildFoundation { spec, .. } => {
-                        rooms_edit::build_foundation(cx, spec);
-                    }
-                    FloorDialog::ConfirmDelete { .. } => {
-                        rooms_edit::delete_floor(cx);
-                    }
-                },
+                Outcome::Ok => d.apply(cx),
             }
         }
         if let Some(mut s) = self.space.take() {
@@ -1001,6 +787,16 @@ impl Windows {
         if let Some(mut d) = self.find_replace.take() {
             if d.show(ctx, cx) {
                 self.find_replace = Some(d);
+            }
+        }
+        if let Some(mut d) = self.snap_settings.take() {
+            if d.show(ctx, cx) {
+                self.snap_settings = Some(d);
+            }
+        }
+        if let Some(mut d) = self.edit_behaviors.take() {
+            if d.show(ctx, cx) {
+                self.edit_behaviors = Some(d);
             }
         }
     }

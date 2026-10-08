@@ -9,7 +9,10 @@
 
 mod dialogs;
 mod editor;
+mod files;
 mod icons;
+#[cfg(target_os = "macos")]
+mod mac_open;
 mod menus;
 mod paths;
 mod plan_defaults;
@@ -34,11 +37,9 @@ use theme::{AppSettings, CanvasTheme};
 use toolbar::{Action, BarState, Dock, Toolbars};
 use tools::{KeyEvent, PointerEvent, ToolId, ToolResult, ToolSet};
 
-const STATUS_GRAY: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
 const ZOOM_STEP: f64 = 1.25;
 const ZOOM_HISTORY_CAP: usize = 50;
 const VIEW_BAR_WIDTH: f32 = 36.0;
-const DOCK_WIDTH: f32 = 300.0;
 
 /// The specification dialog that is open, if any (one at a time).
 enum ActiveDialog {
@@ -59,9 +60,6 @@ struct PlanApp {
     settings: AppSettings,
     /// The settings last written to disk.
     saved_settings: AppSettings,
-    /// The brightness the egui visuals were last built for.
-    applied_brightness: f32,
-    show_about: bool,
     /// A primary press started on the canvas and has not been released.
     pressed_in_canvas: bool,
     /// The press was a double-click the tool took; skip its release.
@@ -74,6 +72,8 @@ struct PlanApp {
     /// room types, text styles).
     lists: Option<dialogs::DefaultsList>,
     view3d: shell::view3d_panel::View3dState,
+    /// Save state, autosave, recovery and the unsaved-changes prompts.
+    files: files::FileState,
 }
 
 /// The state the toolbars and menus draw themselves from.
@@ -116,8 +116,6 @@ impl PlanApp {
             docks: shell::docks::DockState::default(),
             settings,
             saved_settings: settings,
-            applied_brightness: settings.brightness,
-            show_about: false,
             pressed_in_canvas: false,
             suppress_release: false,
             dialog: None,
@@ -125,7 +123,79 @@ impl PlanApp {
             defaults_dialog: None,
             lists: None,
             view3d: Default::default(),
+            files: Default::default(),
         }
+    }
+
+    /// Picks up the first-launch template scan when its thread has finished:
+    /// the plan template seeds the defaults (a plan that is still untouched
+    /// starts over from them) unless the user saved defaults of their own.
+    fn poll_template_detection(&mut self, ctx: &egui::Context) {
+        if templates::detection_running() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        let Some(found) = templates::poll_detection() else {
+            return;
+        };
+        self.cx.status = self.apply_detection(found);
+    }
+
+    /// The window-level requests of the menu commands (`dialogs::app_info`):
+    /// open a recent file, full screen, frame the selection; and the windows
+    /// that go with them.
+    fn app_commands(&mut self, ctx: &egui::Context) {
+        dialogs::app_info::set_current_path(self.path.clone());
+        dialogs::app_info::show_windows(ctx, &self.cx);
+        if let Some(p) = dialogs::app_info::take_open_request() {
+            self.request_file_action(files::Pending::Open(Some(p)));
+        }
+        if dialogs::app_info::take_full_screen_request() {
+            let on = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!on));
+        }
+        if dialogs::app_info::take_fill_selected_request() {
+            match dialogs::app_info::selection_frame(&self.cx) {
+                Some((lo, hi)) => self.fill_rect(lo, hi),
+                None => self.cx.status = "Select something to fill the window with".into(),
+            }
+        }
+    }
+
+    /// Applies a finished scan; returns the status line.
+    fn apply_detection(&mut self, found: templates::Detection) -> String {
+        let own = plan_defaults::user_path().is_some_and(|p| p.exists());
+        self.apply_detection_with(found, own)
+    }
+
+    /// [`apply_detection`](Self::apply_detection) when the user's own saved
+    /// defaults (`own`) do or do not take priority.
+    fn apply_detection_with(&mut self, found: templates::Detection, own: bool) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        match (&found.settings.plan, &found.settings.layout) {
+            (None, None) => {
+                parts.push("No Chief templates found; using the shipped defaults".into())
+            }
+            _ => parts.extend(found.note.clone()),
+        }
+        if let Some(e) = &found.save_error {
+            parts.push(format!(
+                "Could not save the template settings ({e}); not scanning again this session"
+            ));
+        }
+        if parts.is_empty() {
+            parts.push("Chief templates found".into());
+        }
+        if !own && found.defaults != self.cx.defaults {
+            let untouched = self.path.is_none()
+                && !self.cx.can_undo()
+                && self.cx.defaults == plan_defaults::embedded()
+                && self.cx.project.floors.iter().all(|f| f.walls.is_empty());
+            self.cx.defaults = found.defaults;
+            if untouched {
+                self.new_project();
+            }
+        }
+        parts.join("; ")
     }
 
     fn set_tool(&mut self, tool: ToolId) {
@@ -172,6 +242,16 @@ impl PlanApp {
             lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
             hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
         }
+        self.fit_camera(lo, hi);
+    }
+
+    /// Frames the rectangle `lo`..`hi` (Fill Window Selected Objects).
+    fn fill_rect(&mut self, lo: Point, hi: Point) {
+        self.push_zoom_history();
+        self.fit_camera(lo, hi);
+    }
+
+    fn fit_camera(&mut self, lo: Point, hi: Point) {
         // 10% margin on every side.
         let w = ((hi.x - lo.x) * 1.2).max(1.0);
         let h = ((hi.y - lo.y) * 1.2).max(1.0);
@@ -209,14 +289,25 @@ impl PlanApp {
                 self.view3d.active = false;
                 self.set_tool(t);
             }
-            Action::Custom(id) => self.cx.run_custom(id),
+            // File > Close, Revert, Save a Copy, Backup, Clear Menu, Archives.
+            Action::Custom(id) if files::is_command(id) => self.file_command(id),
+            Action::Custom(id) => {
+                // The Edit commands work on the plan, not on the 3D or layout view.
+                if id.starts_with("edit.") && (self.view3d.active || shell::layout_window::is_active())
+                {
+                    self.cx.status = "Switch to the plan view to use this command".into();
+                } else {
+                    self.cx.run_custom(id);
+                }
+            }
             Action::PlanView(i) => self.activate_plan_view(i),
             Action::Terrain(c) => self.terrain_command(c),
             Action::File(c) => dialogs::exchange::dispatch_file(&mut self.cx, c),
             Action::Framing(c) => dialogs::exchange::dispatch_framing(&mut self.cx, c),
             Action::CurrentWall => self.apply(self.toolbars.wall_action()),
-            Action::FileNew => self.new_project(),
-            Action::FileOpen => self.open_project(),
+            Action::FileNew => self.request_file_action(files::Pending::New),
+            Action::ImportChiefPlan => self.import_chief_plan(),
+            Action::FileOpen => self.request_file_action(files::Pending::Open(None)),
             Action::FileSave => self.save_project(),
             Action::FileSaveAs => self.save_project_as(),
             Action::SaveTemplate => self.save_template(),
@@ -273,10 +364,12 @@ impl PlanApp {
             Action::ToggleDock(d) => {
                 self.dock = if self.dock == Some(d) { None } else { Some(d) };
             }
-            // The window close request needs the egui context; see `update`.
-            Action::Quit => {}
+            // The prompt, then the window close; see `files::drive_files`.
+            Action::Quit => self.request_file_action(files::Pending::Quit),
             Action::SetTheme(t) => self.settings.theme = t,
-            Action::ShowAbout => self.show_about = true,
+            Action::ShowAbout => {
+                dialogs::app_info::run_command(&mut self.cx, dialogs::app_info::ABOUT);
+            }
             Action::DefaultSettings => {
                 if self.defaults_dialog.is_none() {
                     self.defaults_dialog = Some(DefaultsDialog::new());
@@ -284,6 +377,10 @@ impl PlanApp {
             }
             Action::BuildNewFloor
             | Action::InsertFloor
+            | Action::InsertFloorBelow
+            | Action::FloorDefaults
+            | Action::PlanFloorDefaults
+            | Action::ReferenceDisplayOptions
             | Action::DeleteFloor
             | Action::DeleteFoundation
             | Action::ExchangeFloorAbove
@@ -302,6 +399,8 @@ impl PlanApp {
             | Action::CreateConstructionSet
             | Action::FileNewLayout
             | Action::FindReplaceText
+            | Action::SnapSettings
+            | Action::EditBehaviors
             | Action::ProjectInfo => dialogs::build_tools::dispatch(&mut self.cx, action),
             Action::OpenHotkeyDialog => self.docks.open_hotkey_dialog(&self.hotkeys),
             Action::OpenLayerDisplay => self.docks.open_layer_dialog(),
@@ -313,6 +412,13 @@ impl PlanApp {
                 // Send to Layout sends the open 3D view's camera, else the plan view.
                 if c == shell::layout_window::LayoutCommand::ShowPlan {
                     self.view3d.active = false;
+                }
+                // Print Image while the 3D view shows prints that view.
+                if c == shell::layout_window::LayoutCommand::PrintImage && self.view3d.active {
+                    if let Some(source) = self.view3d.snapshot_source() {
+                        shell::layout_window::print_image_3d(&mut self.cx, source);
+                        return;
+                    }
                 }
                 let camera = self
                     .view3d
@@ -406,69 +512,42 @@ impl PlanApp {
     fn new_project(&mut self) {
         let project = Project::from_defaults("Untitled", &self.cx.defaults);
         self.cx.set_project(project);
+        self.cx.seed_template_plan_views();
         self.path = None;
         self.tools.restart(&mut self.cx);
+        self.files.rebaseline(&self.cx);
         self.cx.status = "New project".into();
     }
 
-    fn open_project(&mut self) {
+    /// File > Import > Chief Plan...: walls, openings, floors, rooms,
+    /// dimensions and text from a Chief Architect `.plan` become a new,
+    /// untitled project (`plan_chiefplan::import`). Chief content is read
+    /// from Daniel's files at run time and never bundled.
+    fn import_chief_plan(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Plan Studio", &["psplan"])
+            .add_filter("Chief Architect plan", &["plan"])
             .pick_file()
         else {
             return;
         };
-        match std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|s| Project::from_json(&s).map_err(|e| e.to_string()))
-        {
-            Ok(p) if !p.floors.is_empty() => {
-                self.cx.set_project(p);
-                self.cx.status = format!("Opened {}", path.display());
-                self.path = Some(path);
+        let opts = plan_chiefplan::import::ImportOptions::default();
+        match plan_chiefplan::import::import_plan(&path, &opts) {
+            Ok(res) => {
+                let summary = res.report.summary();
+                let file = res.report.file_name.clone();
+                self.cx.set_project(res.project);
+                self.path = None;
                 self.tools.restart(&mut self.cx);
+                self.files.rebaseline(&self.cx);
+                self.cx.status = format!("Imported {file}: {summary}");
             }
-            Ok(_) => self.cx.status = "File contains no floors".into(),
-            Err(e) => self.cx.status = format!("Open failed: {e}"),
-        }
-    }
-
-    fn save_project(&mut self) {
-        match self.path.clone() {
-            Some(p) => self.write_to(p),
-            None => self.save_project_as(),
-        }
-    }
-
-    fn save_project_as(&mut self) {
-        let Some(mut path) = rfd::FileDialog::new()
-            .add_filter("Plan Studio", &["psplan"])
-            .set_file_name("plan.psplan")
-            .save_file()
-        else {
-            return;
-        };
-        if path.extension().is_none() {
-            path.set_extension("psplan");
-        }
-        self.write_to(path);
-    }
-
-    fn write_to(&mut self, path: PathBuf) {
-        let result = self
-            .cx
-            .project
-            .to_json()
-            .map_err(|e| e.to_string())
-            .and_then(|s| std::fs::write(&path, s).map_err(|e| e.to_string()));
-        match result {
-            Ok(()) => {
-                self.cx.status = format!("Saved {}", path.display());
-                self.path = Some(path);
+            Err(e) => {
+                self.cx.status = format!("Could not import {}: {e}", path.display());
             }
-            Err(e) => self.cx.status = format!("Save failed: {e}"),
         }
     }
+
+    // Open, save, save as, revert, backup and the prompts live in `files.rs`.
 
     /// File > Templates > Save Current Defaults as My Template.
     fn save_template(&mut self) {
@@ -585,7 +664,11 @@ impl PlanApp {
     /// Applies hotkeys (see `toolbar::BINDINGS`) and forwards editing keys to
     /// the active tool.
     fn handle_keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        if self.has_dialog() || self.defaults_dialog.is_some() || self.docks.modal_open() {
+        if self.has_dialog()
+            || self.defaults_dialog.is_some()
+            || self.docks.modal_open()
+            || self.files.modal_open()
+        {
             return;
         }
         let editing = self.cx.temp.editing.is_some();
@@ -596,6 +679,9 @@ impl PlanApp {
             return;
         }
         let events = ctx.input(|i| i.events.clone());
+        // A toolbar button or dock control has the focus: Tab, Enter and the
+        // arrows move and press it instead of reaching the active tool.
+        let chrome_focus = shell::docks::focus_in_chrome(ctx);
         for e in events {
             match e {
                 egui::Event::Key {
@@ -607,7 +693,9 @@ impl PlanApp {
                 } => {
                     use egui::Key::*;
                     let arrow = matches!(key, ArrowLeft | ArrowRight | ArrowUp | ArrowDown);
+                    let navigating = chrome_focus && (arrow || matches!(key, Tab | Enter));
                     let wanted = matches!(key, Escape | Delete | Backspace | Tab | Enter) || arrow;
+                    let wanted = wanted && !navigating;
                     // Cmd/Ctrl chords belong to the hotkey table.
                     if wanted && (!repeat || arrow || key == Backspace) && !modifiers.command {
                         self.send_key(
@@ -620,7 +708,7 @@ impl PlanApp {
                         );
                     }
                 }
-                egui::Event::Text(t) if editing => {
+                egui::Event::Text(t) if editing || self.cx.typed_input.is_armed() => {
                     self.send_key(ctx, KeyEvent::text(&t));
                 }
                 _ => {}
@@ -690,13 +778,80 @@ impl PlanApp {
             let res = self.tools.active_mut().pointer_move(&mut self.cx, ev);
             self.finish_tool_call(ctx, &res);
         }
-        if resp.clicked_by(egui::PointerButton::Secondary) {
+        if resp.clicked_by(egui::PointerButton::Secondary) && editor::transform::mode_active() {
+            // A hanging paste or a click-driven edit mode ends on a right click.
+            editor::transform::cancel_mode(&mut self.cx);
+        } else if self.has_canvas_menu() {
+            // The context menu (S-8, DW-109): the object under the pointer is
+            // selected first, then the menu opens on it.
+            if resp.secondary_clicked() {
+                self.select_for_context_menu(resp);
+            }
+            self.canvas_context_menu(ctx, resp);
+        } else if resp.clicked_by(egui::PointerButton::Secondary) {
             // Right-click ends a wall chain (the tool's Esc), without leaving the tool.
             let res = self
                 .tools
                 .active_mut()
                 .key(&mut self.cx, KeyEvent::escape());
             self.finish_tool_call(ctx, &res);
+        }
+    }
+
+    /// Does the active tool show the right-click menu? Select Objects does;
+    /// so do the door and window tools, whose menu starts with Select Objects
+    /// (DW-109). The drawing tools keep right click as their Esc.
+    fn has_canvas_menu(&self) -> bool {
+        matches!(
+            self.tools.active_id().base(),
+            ToolId::Select | ToolId::Door | ToolId::Window
+        )
+    }
+
+    /// Right click in Select Objects: the object under the pointer becomes
+    /// the selection (a group member selects its group); empty space clears it.
+    fn select_for_context_menu(&mut self, resp: &egui::Response) {
+        if self.tools.active_id().base() != ToolId::Select {
+            return;
+        }
+        let Some(pos) = resp.interact_pointer_pos() else {
+            return;
+        };
+        let world = self.camera.screen_to_world(pos);
+        let hits = editor::selection::hit_test_cx(&self.cx, world, self.cx.pick_tol());
+        match hits.into_iter().find(|o| !matches!(o, ObjectRef::Room(_))) {
+            Some(o) => {
+                if !self.cx.selection.contains(o) {
+                    editor::rooms_edit::clear_room_selection();
+                    self.cx.selection.items = editor::selection::expand_groups(&self.cx, &[o]);
+                }
+            }
+            None => self.cx.selection.clear(),
+        }
+    }
+
+    /// The right-click menu of the canvas: the entries come from
+    /// `EditorContext::context_entries` and run as ordinary actions.
+    fn canvas_context_menu(&mut self, ctx: &egui::Context, resp: &egui::Response) {
+        let ghost = self.tools.active_id().base() != ToolId::Select;
+        let toolbar = self.tools.active().edit_toolbar(&self.cx);
+        let entries = self.cx.context_entries(&toolbar, ghost);
+        let mut chosen: Option<Action> = None;
+        resp.context_menu(|ui| {
+            for e in &entries {
+                if e.sep_before {
+                    ui.separator();
+                }
+                if ui.add_enabled(e.enabled, egui::Button::new(e.label.as_str())).clicked() {
+                    chosen = Some(e.action);
+                    ui.close_menu();
+                }
+            }
+        });
+        if let Some(action) = chosen {
+            self.apply(action);
+            self.process_requests();
+            ctx.request_repaint();
         }
     }
 
@@ -730,6 +885,16 @@ impl PlanApp {
     }
 
     fn toolbar_rows(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        // The toolbar set follows the view: plan, 3D, vector elevation or layout.
+        toolbar::config::set_active_view(if self.view3d.active {
+            if shell::view3d_panel::is_vector_technique(self.view3d.technique) {
+                toolbar::config::ViewKind::Elevation
+            } else {
+                toolbar::config::ViewKind::View3d
+            }
+        } else {
+            toolbar::config::ViewKind::Plan
+        });
         for (id, second) in [("row1", false), ("row2", true)] {
             egui::TopBottomPanel::top(id).show(ctx, |ui| {
                 egui::ScrollArea::horizontal()
@@ -779,12 +944,7 @@ impl PlanApp {
 
     fn dock_panel(&mut self, ctx: &egui::Context) {
         let Some(dock) = self.dock else { return };
-        egui::SidePanel::right("dock")
-            .exact_width(DOCK_WIDTH)
-            .resizable(false)
-            .show(ctx, |ui| {
-                shell::docks::show(ui, dock, &mut self.cx, &mut self.docks);
-            });
+        shell::docks::panel(ctx, dock, &mut self.cx, &mut self.docks, &mut self.settings);
         for req in std::mem::take(&mut self.docks.requests) {
             match req {
                 shell::docks::DockRequest::SetTool(t) => {
@@ -804,8 +964,9 @@ impl PlanApp {
     }
 
     fn properties_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("properties")
-            .default_width(240.0)
+        let panel = egui::SidePanel::left("properties")
+            .default_width(self.settings.dock_widths.properties)
+            .width_range(theme::DOCK_WIDTH_MIN..=theme::DOCK_WIDTH_MAX)
             .show(ctx, |ui| {
                 ui.heading("Properties");
                 ui.separator();
@@ -864,6 +1025,10 @@ impl PlanApp {
                 ui.separator();
                 self.selected_wall_section(ui);
             });
+        shell::docks::remember_width(
+            &mut self.settings.dock_widths.properties,
+            panel.response.rect.width(),
+        );
     }
 
     /// The wall the selection stands for: the wall itself, or an opening's host.
@@ -974,39 +1139,34 @@ impl PlanApp {
     }
 
     fn status_bar(&mut self, ctx: &egui::Context) {
-        let frame = egui::Frame::side_top_panel(&ctx.style())
-            .fill(theme::scale(STATUS_GRAY, self.settings.brightness));
+        let frame = egui::Frame::side_top_panel(&ctx.style()).fill(theme::scale(
+            theme::current_chrome().status,
+            self.settings.brightness,
+        ));
+        let fields = shell::status::StatusFields {
+            cursor: self
+                .cx
+                .cursor_world
+                .map(|p| (self.cx.fmt_dim(p.x), self.cx.fmt_dim(p.y))),
+            pending_prefix: self.hotkeys.pending_label(),
+            readout: self.cx.readout.clone(),
+            snap: self
+                .cx
+                .last_snap
+                .filter(|s| s.kind.is_object_snap())
+                .map(|s| s.kind.label().to_string()),
+            hint: self.tools.active().hint(),
+            message: self.cx.status.clone(),
+            floor: self.cx.floor().name.clone(),
+            layer_set: self.cx.project.layer_sets.active.clone(),
+            zoom: shell::status::zoom_label(self.camera.px_per_in),
+            undo: self.cx.undo_label().map(str::to_string),
+            saved: self.saved_status(std::time::Instant::now()),
+        };
         egui::TopBottomPanel::bottom("status")
             .frame(frame)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    match self.cx.cursor_world {
-                        Some(p) => ui.monospace(format!(
-                            "X: {}  Y: {}",
-                            self.cx.fmt_dim(p.x),
-                            self.cx.fmt_dim(p.y)
-                        )),
-                        None => ui.monospace("X: --  Y: --"),
-                    };
-                    if let Some(prefix) = self.hotkeys.pending_label() {
-                        ui.separator();
-                        ui.strong(prefix);
-                    }
-                    if let Some(r) = &self.cx.readout {
-                        ui.separator();
-                        ui.label(r);
-                    }
-                    if let Some(s) = self.cx.last_snap.filter(|s| s.kind.is_object_snap()) {
-                        ui.separator();
-                        ui.label(format!("Snap: {}", s.kind.label()));
-                    }
-                    ui.separator();
-                    ui.label(self.tools.active().hint());
-                    if !self.cx.status.is_empty() {
-                        ui.separator();
-                        ui.weak(&self.cx.status);
-                    }
-                });
+                shell::status::show(ui, &fields, &mut self.settings);
             });
     }
 
@@ -1018,6 +1178,7 @@ impl PlanApp {
         self.camera.rect = resp.rect;
         self.cx.px_per_in = self.camera.px_per_in;
         self.cx.palette = self.settings.theme.palette();
+        dialogs::preferences::tint_palette(&mut self.cx.palette);
 
         self.handle_camera_input(ui, &resp);
 
@@ -1069,10 +1230,14 @@ impl PlanApp {
         let mut clicked = None;
         egui::Area::new(egui::Id::new("edit_toolbar"))
             .order(egui::Order::Foreground)
-            .fixed_pos(Pos2::new(rect.left() + 10.0, rect.bottom() - 44.0))
+            // Anchored by its bottom-left corner, so a second row grows upward.
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(Pos2::new(rect.left() + 10.0, rect.bottom() - 8.0))
             .show(ctx, |ui| {
+                ui.set_max_width((rect.width() - 24.0).max(200.0));
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    // The buttons wrap when the object has many commands.
+                    ui.horizontal_wrapped(|ui| {
                         for a in &actions {
                             let btn = match a.icon {
                                 Some(id) => egui::Button::image(
@@ -1135,9 +1300,9 @@ impl PlanApp {
             .get(&id)
             .cloned()
             .unwrap_or_default();
-        self.dialog = Some(ActiveDialog::Opening(Box::new(OpeningDialog::for_opening(
-            opening, &wall, others, extras,
-        ))));
+        let dialog = OpeningDialog::for_opening(opening, &wall, others, extras)
+            .with_label_defaults(&self.cx.defaults.opening_labels);
+        self.dialog = Some(ActiveDialog::Opening(Box::new(dialog)));
     }
 
     fn open_defaults_entry(&mut self, entry: DefaultsEntry) {
@@ -1164,11 +1329,10 @@ impl PlanApp {
             )))
         };
         let opening_dialog = |target: OpeningTarget, template: Opening, app: &Self| {
-            ActiveDialog::Opening(Box::new(OpeningDialog::for_default(
-                target,
-                template,
-                app.cx.default_opening_extras(target),
-            )))
+            ActiveDialog::Opening(Box::new(
+                OpeningDialog::for_default(target, template, app.cx.default_opening_extras(target))
+                    .with_label_defaults(&app.cx.defaults.opening_labels),
+            ))
         };
         self.dialog = match entry {
             DefaultsEntry::ExteriorWall => Some(wall_dialog(WallTarget::DefaultExterior, self)),
@@ -1195,6 +1359,10 @@ impl PlanApp {
             }
             DefaultsEntry::RoomTypes => {
                 self.lists = Some(dialogs::DefaultsList::room_types(&self.cx));
+                None
+            }
+            DefaultsEntry::FloorDefaults => {
+                dialogs::build_tools::dispatch(&mut self.cx, toolbar::Action::PlanFloorDefaults);
                 None
             }
             DefaultsEntry::TextStyles => {
@@ -1333,14 +1501,20 @@ impl PlanApp {
             OpeningTarget::DefaultDoor => {
                 let base = &self.cx.defaults.interior_door;
                 self.cx.defaults.interior_door = d.extras().to_door_defaults(&draft, base, false);
+                self.cx.defaults.opening_labels.door = d.label_settings().clone();
+                d.apply_to_variants(&mut self.cx.defaults.opening_variants);
             }
             OpeningTarget::DefaultExteriorDoor => {
                 let base = &self.cx.defaults.exterior_door;
                 self.cx.defaults.exterior_door = d.extras().to_door_defaults(&draft, base, true);
+                self.cx.defaults.opening_labels.door = d.label_settings().clone();
+                d.apply_to_variants(&mut self.cx.defaults.opening_variants);
             }
             OpeningTarget::DefaultWindow => {
                 let base = &self.cx.defaults.window;
                 self.cx.defaults.window = d.extras().to_window_defaults(&draft, base);
+                self.cx.defaults.opening_labels.window = d.label_settings().clone();
+                d.apply_to_variants(&mut self.cx.defaults.opening_variants);
             }
         }
         self.cx
@@ -1351,13 +1525,13 @@ impl PlanApp {
 }
 
 impl PlanApp {
-    /// Rebuilds the egui visuals when the brightness changed, and writes the
-    /// settings file once a change has settled (not while a slider is dragged).
+    /// Rebuilds the egui visuals when the theme, brightness, text size or
+    /// motion setting changed, keeps the UI scale and egui's zoom in step, and
+    /// writes the settings file once a change has settled (not while a slider
+    /// is dragged).
     fn sync_settings(&mut self, ctx: &egui::Context) {
-        if (self.settings.brightness - self.applied_brightness).abs() > f32::EPSILON {
-            theme::apply_chrome(ctx, self.settings.brightness);
-            self.applied_brightness = self.settings.brightness;
-        }
+        theme::sync_chrome(ctx, &self.settings);
+        theme::sync_scale(ctx, &mut self.settings);
         if self.settings != self.saved_settings && !ctx.input(|i| i.pointer.any_down()) {
             match self.settings.save() {
                 Ok(()) => {}
@@ -1366,26 +1540,11 @@ impl PlanApp {
             self.saved_settings = self.settings;
         }
     }
-
-    fn about_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_about;
-        egui::Window::new("About Plan Studio")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.heading("Plan Studio");
-                ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                ui.label("A 2D floor-plan editor built with Rust and egui.");
-                ui.separator();
-                ui.label("Released under the MIT License.");
-            });
-        self.show_about = open;
-    }
 }
 
 impl eframe::App for PlanApp {
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        self.files.on_exit(&self.cx);
         if let (Some(gl), Some(vp)) = (gl, self.view3d.viewport.as_mut()) {
             vp.destroy(gl);
         }
@@ -1401,18 +1560,31 @@ impl eframe::App for PlanApp {
         }
         let mut actions = Vec::new();
         self.handle_keys(ctx, &mut actions);
+        // Refresh Display.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
+            actions.push(Action::Custom(dialogs::app_info::REFRESH));
+        }
+        // F6: the keyboard focus into the dock, or back out to the canvas.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F6)) {
+            shell::docks::toggle_focus_region(ctx, self.dock.is_some());
+        }
+        // Preferences... (Cmd+, on macOS, Ctrl+, elsewhere).
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
+            actions.push(Action::Custom(dialogs::preferences::OPEN));
+        }
         self.menu_bar(ctx, &mut actions);
-        self.toolbar_rows(ctx, &mut actions);
-        self.status_bar(ctx);
+        if dialogs::preferences::show_toolbars() {
+            self.toolbar_rows(ctx, &mut actions);
+        }
+        if dialogs::preferences::show_status_bar() {
+            self.status_bar(ctx);
+        }
         self.properties_panel(ctx);
         self.view_bar(ctx, &mut actions);
         if !actions.is_empty() {
             ctx.request_repaint();
         }
         for action in actions {
-            if action == Action::Quit {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
             self.apply(action);
         }
         self.dock_panel(ctx);
@@ -1421,6 +1593,7 @@ impl eframe::App for PlanApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
+                shell::docks::set_central_rect(ctx, ui.max_rect());
                 if shell::layout_window::is_active() {
                     shell::layout_window::show_central(ctx, ui, &mut self.cx);
                 } else if self.view3d.frame(ctx, &mut self.cx) {
@@ -1430,12 +1603,35 @@ impl eframe::App for PlanApp {
                 }
             });
         self.edit_toolbar(ctx);
-        self.about_window(ctx);
         self.dialogs(ctx);
+        // The plan-view tabs read the camera before the dialogs run and may
+        // ask for another one (a tab switch, Reset Plan View).
+        editor::plan_tabs::report_camera(self.camera.center, self.camera.px_per_in);
         shell::docks::show_dialogs(ctx, &mut self.cx, &mut self.docks, &mut self.hotkeys);
+        if let Some((center, zoom)) = editor::plan_tabs::take_pending_camera() {
+            self.camera.center = center;
+            self.camera.px_per_in = zoom.clamp(0.05, 50.0);
+        }
         dialogs::build_tools::show_all(ctx, &mut self.cx, &mut self.camera);
         shell::layout_window::show_dialogs(ctx, &mut self.cx);
+        dialogs::transform::show_edit_windows(ctx, &mut self.cx);
+        // Copy and Cut leave a note on the system clipboard: egui only sends
+        // a Paste event for Cmd+V while that holds some text.
+        if editor::clipboard::take_system_clipboard_note() {
+            ctx.copy_text(editor::clipboard::SYSTEM_NOTE.to_string());
+        }
         dialogs::exchange::show_all(ctx, &mut self.cx);
+        dialogs::underlay::show_all(ctx, &mut self.cx);
+        tools::materials::show_windows(ctx, &mut self.cx);
+        let mut pref_actions = Vec::new();
+        dialogs::preferences::show_all(ctx, &mut self.cx, &mut self.settings, &mut pref_actions);
+        for action in pref_actions {
+            self.apply(action);
+        }
+        self.poll_template_detection(ctx);
+        self.app_commands(ctx);
+        self.drive_files(ctx);
+        shell::status::record(&self.cx.status);
         self.sync_settings(ctx);
         if self.cx.is_dirty() {
             ctx.request_repaint();
@@ -1519,10 +1715,15 @@ fn inch_drag(
 }
 
 fn main() -> eframe::Result {
+    files::install_panic_hook();
+    // Finder's "open document" event (a double-click on a .psplan).
+    #[cfg(target_os = "macos")]
+    mac_open::install();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
-            .with_title("Plan Studio"),
+            .with_title("Plan Studio")
+            .with_icon(dialogs::app_info::window_icon()),
         depth_buffer: 24,
         ..Default::default()
     };
@@ -1531,10 +1732,22 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             icons::install(&cc.egui_ctx);
-            let settings = AppSettings::load();
-            theme::apply_chrome(&cc.egui_ctx, settings.brightness);
-            let (defaults, note) = plan_defaults::load();
-            Ok(Box::new(PlanApp::new(settings, defaults, note)))
+            let mut settings = AppSettings::load();
+            theme::apply_settings(&cc.egui_ctx, &settings);
+            // Nothing here waits for the disk scan of a first launch: the
+            // templates are looked for on a thread (`PlanApp::update` picks
+            // the result up) and the window opens on the shipped defaults.
+            let (defaults, mut note) = plan_defaults::load();
+            if templates::begin_detection() && note.is_none() {
+                note = Some("Looking for your Chief templates in the background...".into());
+            }
+            dialogs::preferences::apply_startup(&cc.egui_ctx);
+            theme::sync_scale(&cc.egui_ctx, &mut settings);
+            let mut app = PlanApp::new(settings, defaults, note);
+            // A plan named on the command line (a double-click on Windows and
+            // Linux) opens at the first frame; so does the recovery offer.
+            app.files.begin_startup(std::env::args_os().skip(1));
+            Ok(Box::new(app))
         }),
     )
 }
@@ -1927,4 +2140,158 @@ mod tests {
         assert_eq!(a.camera.center, Point::new(300.0, 120.0));
         assert!(a.cx.selection.contains(ObjectRef::Camera(id)));
     }
+
+    fn detection(ceiling: f64, plan: bool) -> templates::Detection {
+        let mut defaults = plan_defaults::embedded();
+        defaults.rooms.ceiling_height = ceiling;
+        templates::Detection {
+            settings: templates::TemplateSettings {
+                plan: plan.then(|| PathBuf::from("/chief/x18.plan")),
+                layout: None,
+                seed_from_chief: true,
+            },
+            defaults,
+            note: Some("Defaults seeded from x18.plan".into()),
+            save_error: None,
+        }
+    }
+
+    #[test]
+    fn a_finished_template_scan_seeds_an_untouched_plan() {
+        let mut a = app();
+        let status = a.apply_detection_with(detection(120.0, true), false);
+        assert_eq!(status, "Defaults seeded from x18.plan");
+        assert_eq!(a.cx.defaults.rooms.ceiling_height, 120.0);
+        // The plan nobody has touched starts over from the new defaults.
+        assert_eq!(a.cx.project.floors[0].ceiling_height, 120.0);
+    }
+
+    #[test]
+    fn a_finished_template_scan_leaves_a_worked_plan_and_saved_defaults_alone() {
+        let mut a = app();
+        a.cx.begin_change("Move Wall");
+        a.cx.project.floors[0].name = "Mine".into();
+        a.apply_detection_with(detection(120.0, true), false);
+        assert_eq!(
+            a.cx.defaults.rooms.ceiling_height, 120.0,
+            "new plans use it"
+        );
+        assert_eq!(a.cx.project.floors[0].name, "Mine", "the open plan is kept");
+        // The user's own template wins over the scan.
+        let mut b = app();
+        b.apply_detection_with(detection(120.0, true), true);
+        assert_eq!(b.cx.defaults, plan_defaults::embedded());
+        // Nothing found, and a settings file that could not be written, are said.
+        let mut c = app();
+        let mut found = detection(109.125, false);
+        found.note = None;
+        found.save_error = Some("read-only".into());
+        let status = c.apply_detection_with(found, false);
+        assert!(status.contains("No Chief templates found"), "{status}");
+        assert!(
+            status.contains("not scanning again this session"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn startup_never_scans_the_home_folder_itself() {
+        // The scan runs through `templates::begin_detection` (a thread); the
+        // paths the window opens through only read saved settings.
+        for (name, src) in [
+            ("main.rs", include_str!("main.rs")),
+            ("plan_defaults.rs", include_str!("plan_defaults.rs")),
+        ] {
+            let code = src.split("#[cfg(test)]").next().unwrap();
+            assert!(!code.contains("detect_chief_templates"), "{name}");
+            assert!(!code.contains("load_or_detect"), "{name}");
+        }
+    }
+
+    /// Runs one frame of the canvas with `events`.
+    fn canvas_frame(a: &mut PlanApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                Vec2::new(1200.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| a.canvas(ctx, ui));
+        });
+    }
+
+    fn right_click(a: &mut PlanApp, ctx: &egui::Context, world: Point) {
+        let pos = a.camera.world_to_screen(world);
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        canvas_frame(a, ctx, vec![egui::Event::PointerMoved(pos)]);
+        canvas_frame(a, ctx, vec![button(true)]);
+        canvas_frame(a, ctx, vec![button(false)]);
+    }
+
+    #[test]
+    fn right_click_selects_the_object_and_the_menu_commands_run() {
+        use editor::edit_commands::ids;
+        let mut a = app();
+        let w = a.cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Interior,
+        );
+        let ctx = egui::Context::default();
+        canvas_frame(&mut a, &ctx, vec![]);
+        assert!(a.has_canvas_menu(), "Select Objects shows the menu");
+        // A right click on the wall selects it.
+        right_click(&mut a, &ctx, Point::new(120.0, 0.0));
+        assert_eq!(a.cx.selection.single(), Some(ObjectRef::Wall(w)));
+        // The menu offers the wall's commands; Copy then Paste Hold Position
+        // run through the same path the menu rows take.
+        let bar = a.tools.active().edit_toolbar(&a.cx);
+        let entries = a.cx.context_entries(&bar, false);
+        assert!(entries.iter().any(|e| e.label == "Copy"));
+        a.apply(entries.iter().find(|e| e.label == "Copy").unwrap().action);
+        a.apply(Action::Custom(ids::PASTE_HOLD));
+        assert_eq!(a.cx.floor().walls.len(), 2);
+        // A right click on empty plan clears the selection and offers the
+        // view menu.
+        right_click(&mut a, &ctx, Point::new(300.0, 100.0));
+        assert!(a.cx.selection.is_empty());
+        let bar = a.tools.active().edit_toolbar(&a.cx);
+        let names: Vec<String> = a
+            .cx
+            .context_entries(&bar, false)
+            .into_iter()
+            .map(|e| e.label)
+            .collect();
+        assert!(names.contains(&"Select All".to_string()), "{names:?}");
+        // The drawing tools keep right click as their Esc.
+        a.set_tool(ToolId::Wall {
+            kind: WallKind::Exterior,
+        });
+        assert!(!a.has_canvas_menu());
+        a.set_tool(ToolId::Door);
+        assert!(a.has_canvas_menu(), "the door tool shows the menu too");
+        // The edit commands are for the plan, not the 3D view.
+        a.set_tool(ToolId::Select);
+        a.view3d.active = true;
+        let before = a.cx.floor().walls.len();
+        a.apply(Action::Custom(ids::PASTE_HOLD));
+        assert_eq!(a.cx.floor().walls.len(), before);
+        assert!(a.cx.status.contains("plan view"));
+    }
+
+
+
 }

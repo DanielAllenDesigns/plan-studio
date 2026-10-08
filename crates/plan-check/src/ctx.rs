@@ -1,7 +1,6 @@
 //! Per-run context: rooms with their types, and openings with the rooms on
 //! either side of them.
 
-use plan_core::geometry::point_in_polygon;
 use plan_core::{Floor, Opening, OpeningKind, Point, Room, Wall, WallKind};
 use plan_stairs::Stair;
 
@@ -117,10 +116,8 @@ impl<'a> Ctx<'a> {
         if self.types[i].is_empty() {
             self.rooms[i].label.clone()
         } else {
-            self.floor
-                .room_names
-                .iter()
-                .find(|n| point_in_polygon(n.anchor, &self.rooms[i].polygon))
+            self.rooms[i]
+                .name_entry(&self.floor.room_names)
                 .map(|n| n.name.clone())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| self.types[i].clone())
@@ -144,10 +141,7 @@ fn room_type(floor: &Floor, i: usize, room: &Room, given: &[(usize, String)]) ->
         .find(|(idx, t)| *idx == i && !t.trim().is_empty())
         .map(|(_, t)| t.clone());
     let named = || {
-        floor
-            .room_names
-            .iter()
-            .find(|n| point_in_polygon(n.anchor, &room.polygon))
+        room.name_entry(&floor.room_names)
             .map(|n| {
                 if n.room_type.trim().is_empty() {
                     n.name.clone()
@@ -174,7 +168,7 @@ fn op_info<'a>(floor: &'a Floor, rooms: &[Room], op: &'a Opening) -> OpInfo<'a> 
     let (mut left, mut right) = (None, None);
     if let (Some(w), Some(c)) = (wall, center) {
         let n = w.normal().scale(SIDE_PROBE);
-        let find = |p: Point| rooms.iter().position(|r| point_in_polygon(p, &r.polygon));
+        let find = |p: Point| rooms.iter().position(|r| r.contains(p));
         left = find(c.add(n));
         right = find(c.sub(n));
     }
@@ -211,4 +205,67 @@ pub(crate) fn is_hall(t: &str) -> bool {
     ["hall", "corridor", "passage"]
         .iter()
         .any(|k| t.contains(k))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plan_core::{detect_rooms, Project, RoomName};
+
+    /// A 40' x 30' room with a closed pantry loop standing inside it.
+    fn room_with_an_island() -> Project {
+        let mut p = Project::new("island");
+        let ring = |p: &mut Project, x0: f64, y0: f64, x1: f64, y1: f64, kind| {
+            let c = [
+                Point::new(x0, y0),
+                Point::new(x1, y0),
+                Point::new(x1, y1),
+                Point::new(x0, y1),
+            ];
+            (0..4)
+                .map(|i| p.add_wall(0, c[i], c[(i + 1) % 4], 4.5, 96.0, kind))
+                .collect::<Vec<_>>()
+        };
+        ring(&mut p, 0.0, 0.0, 480.0, 360.0, WallKind::Exterior);
+        let pantry = ring(&mut p, 200.0, 150.0, 280.0, 210.0, WallKind::Interior);
+        p.add_opening(0, pantry[0], 40.0, OpeningKind::Door)
+            .unwrap();
+        // The pantry's name comes first: a lookup by "any anchor inside the
+        // big room's outline" would give the big room the pantry's name.
+        p.floors[0]
+            .room_names
+            .push(RoomName::new(Point::new(240.0, 180.0), "Pantry", "Pantry"));
+        p.floors[0].room_names.push(RoomName::new(
+            Point::new(60.0, 60.0),
+            "Great Room",
+            "Family Room",
+        ));
+        p
+    }
+
+    #[test]
+    fn names_and_sides_resolve_to_the_island_not_the_room_around_it() {
+        let p = room_with_an_island();
+        let floor = &p.floors[0];
+        let rooms = detect_rooms(&floor.walls, 0.5);
+        assert_eq!(rooms.len(), 2, "the big room and the pantry");
+        let opts = CheckOptions::default();
+        let ctx = Ctx::new(floor, &rooms, &[], &[], &opts);
+        let pantry = rooms
+            .iter()
+            .position(|r| r.polygon.len() == 4 && r.area_sq_in < 10_000.0)
+            .unwrap();
+        let big = 1 - pantry;
+        assert_eq!(ctx.types[pantry], "pantry");
+        assert_eq!(ctx.types[big], "family room");
+        assert_eq!(ctx.name(pantry), "Pantry");
+        assert_eq!(ctx.name(big), "Great Room");
+        // The door in the pantry wall joins the pantry and the room around it.
+        let door = &ctx.ops[0];
+        let sides = [door.left, door.right];
+        assert!(
+            sides.contains(&Some(pantry)) && sides.contains(&Some(big)),
+            "{sides:?}"
+        );
+    }
 }

@@ -7,8 +7,8 @@
 //! same everywhere.
 
 use crate::cad::{CadItem, CadObject};
-use crate::dimension::{DimFormat, DimensionKind};
-use crate::geometry::{point_in_polygon, Point};
+use crate::dimension::{DimFormat, Dimension, DimensionKind};
+use crate::geometry::Point;
 use crate::joins::wall_outlines;
 use crate::model::{OpeningKind, Project};
 use crate::rooms::Room;
@@ -171,7 +171,7 @@ fn readable_angle_deg(v: Point) -> f64 {
     a
 }
 
-fn write_cad(d: &mut Dxf, c: &CadObject) {
+fn write_cad(d: &mut Dxf, c: &CadObject, text_height: impl Fn(&CadObject, f64) -> f64) {
     let layer = c.layer.as_str();
     match &c.item {
         CadItem::Line { a, b } => d.line(layer, *a, *b),
@@ -194,7 +194,50 @@ fn write_cad(d: &mut Dxf, c: &CadObject) {
             text,
             height,
             angle,
-        } => d.text_left(layer, *pos, *height, angle.to_degrees(), text),
+        } => d.text_left(
+            layer,
+            *pos,
+            text_height(c, *height),
+            angle.to_degrees(),
+            text,
+        ),
+    }
+}
+
+/// How the export sizes annotation (DXF has no printed size: the text height
+/// is written in plan inches, so a style that holds its size on paper needs
+/// the sheet's scale to turn it into plan inches).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DxfAnnotation {
+    /// Paper inches per foot of plan (0.25 for 1/4" scale); `0` writes the
+    /// stored character heights.
+    pub inches_per_foot: f64,
+    /// The dimension set's text style (empty: "Dimension Text Style").
+    pub dim_text_style: String,
+    /// The dimension set holds its text size on paper at any scale.
+    pub dim_printed_size: bool,
+    /// How dimension numbers read; `None` is the default feet-inches format.
+    pub dim_format: Option<DimFormat>,
+}
+
+impl DxfAnnotation {
+    /// The plan height of the number of `dim`: its own text style, else the
+    /// set's, else "Dimension Text Style"; the stored plan height of the
+    /// style, or its size on paper at `inches_per_foot` when the style or the
+    /// set holds a printed size. `DIM_TEXT_HEIGHT` when no style is found.
+    fn dim_height(&self, project: &Project, dim: &Dimension) -> f64 {
+        let name = dim
+            .text_style
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .or(Some(self.dim_text_style.as_str()).filter(|n| !n.is_empty()))
+            .unwrap_or("Dimension Text Style");
+        project
+            .text_styles
+            .resolve(name)
+            .map_or(DIM_TEXT_HEIGHT, |st| {
+                st.plan_height_at(self.inches_per_foot, self.dim_printed_size)
+            })
     }
 }
 
@@ -229,6 +272,7 @@ pub struct DxfExport<'a> {
     floor: usize,
     rooms: &'a [Room],
     extra: Vec<ExtraPolylines>,
+    annotation: DxfAnnotation,
 }
 
 impl<'a> DxfExport<'a> {
@@ -238,7 +282,15 @@ impl<'a> DxfExport<'a> {
             floor,
             rooms,
             extra: Vec::new(),
+            annotation: DxfAnnotation::default(),
         }
+    }
+
+    /// Sizes dimension and CAD text from the text styles at the sheet's
+    /// scale (see [`DxfAnnotation`]).
+    pub fn with_annotation(mut self, annotation: DxfAnnotation) -> Self {
+        self.annotation = annotation;
+        self
     }
 
     /// Adds closed polylines on `layer` (a layer unknown to the project is
@@ -268,7 +320,13 @@ impl<'a> DxfExport<'a> {
 
     /// The R12 ASCII DXF text.
     pub fn write(&self) -> String {
-        write_dxf_with(self.project, self.floor, self.rooms, &self.extra)
+        write_dxf_with(
+            self.project,
+            self.floor,
+            self.rooms,
+            &self.extra,
+            &self.annotation,
+        )
     }
 }
 
@@ -277,8 +335,10 @@ fn write_dxf_with(
     floor: usize,
     rooms: &[Room],
     extra_polylines: &[ExtraPolylines],
+    ann: &DxfAnnotation,
 ) -> String {
     let fl = &project.floors[floor];
+    let ipf = ann.inches_per_foot;
     let mut d = Dxf::new();
 
     // HEADER
@@ -386,14 +446,16 @@ fn write_dxf_with(
     }
 
     // Dimensions
-    let fmt = DimFormat::default();
+    let fmt = ann.dim_format.unwrap_or_default();
     for dim in fl
         .dimensions
         .iter()
         .filter(|x| x.kind != DimensionKind::Temporary)
     {
         let layer = dim_layer(dim.kind);
-        for (a, b) in dim.extension_lines() {
+        // Extension lines switched off per point (Show Extension Line) stay
+        // off in the drawing.
+        for (a, b) in dim.visible_extension_lines() {
             d.line(layer, a, b);
         }
         let (a, b) = dim.line_points();
@@ -401,37 +463,56 @@ fn write_dxf_with(
         let v = b.sub(a);
         let rot = readable_angle_deg(v);
         // Lift the text just above the line (relative to the reading direction).
+        let text_h = ann.dim_height(project, dim);
         let up = Point::new(rot.to_radians().cos(), rot.to_radians().sin()).perp();
-        let at = Point::lerp(a, b, 0.5).add(up.scale(DIM_TEXT_HEIGHT * 0.8));
-        d.text_centered(layer, at, DIM_TEXT_HEIGHT, rot, &dim.label(&fmt));
+        let at = Point::lerp(a, b, 0.5).add(up.scale(text_h * 0.8));
+        d.text_centered(layer, at, text_h, rot, &dim.label(&fmt));
     }
 
     // Room labels
+    let label_h = project.text_styles.drawn_height(
+        &project.layers,
+        "Room Labels",
+        None,
+        ROOM_TEXT_HEIGHT,
+        ipf,
+    );
+    let area_h = label_h * AREA_TEXT_HEIGHT / ROOM_TEXT_HEIGHT;
     for r in rooms {
-        let name = fl
-            .room_names
-            .iter()
-            .find(|n| point_in_polygon(n.anchor, &r.polygon))
+        let name = r
+            .name_entry(&fl.room_names)
             .map_or(r.label.as_str(), |n| n.name.as_str());
         d.text_centered(
             "Room Labels",
-            r.centroid.add(Point::new(0.0, ROOM_TEXT_HEIGHT * 0.6)),
-            ROOM_TEXT_HEIGHT,
+            r.centroid.add(Point::new(0.0, label_h * 0.6)),
+            label_h,
             0.0,
             name,
         );
         d.text_centered(
             "Room Labels",
-            r.centroid.sub(Point::new(0.0, AREA_TEXT_HEIGHT * 1.0)),
-            AREA_TEXT_HEIGHT,
+            r.centroid.sub(Point::new(0.0, area_h * 1.0)),
+            area_h,
             0.0,
             &format!("{:.0} SF", r.area_sq_ft()),
         );
     }
 
     // CAD
+    // Text is written at the height it is drawn at: a printed-size style at
+    // its size on paper for the sheet's scale.
+    let attrs = fl.cad_attr_map();
+    let text_height = |c: &CadObject, h: f64| {
+        project.text_styles.drawn_height(
+            &project.layers,
+            &c.layer,
+            attrs.get(&c.id).and_then(|a| a.text_style.as_deref()),
+            h,
+            ipf,
+        )
+    };
     for c in &fl.cad {
-        write_cad(&mut d, c);
+        write_cad(&mut d, c, text_height);
     }
 
     // Extra polylines (roof planes, manual framing)
@@ -550,6 +631,97 @@ mod tests {
         assert_eq!(secs, ends);
     }
 
+    fn texts(s: &str) -> Vec<(String, f64)> {
+        // (value, height) of every TEXT entity.
+        let lines: Vec<&str> = s.lines().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 1 < lines.len() {
+            if lines[i] == "0" && lines[i + 1] == "TEXT" {
+                let (mut h, mut v) = (0.0, String::new());
+                let mut j = i + 2;
+                while j + 1 < lines.len() && lines[j] != "0" {
+                    match lines[j] {
+                        "40" => h = lines[j + 1].parse().unwrap(),
+                        "1" => v = lines[j + 1].to_string(),
+                        _ => {}
+                    }
+                    j += 2;
+                }
+                out.push((v, h));
+                i = j;
+            } else {
+                i += 2;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn hidden_extension_lines_are_not_written() {
+        let mut p = sample();
+        let line_count = |p: &Project| {
+            write_dxf(p, 0, &[])
+                .lines()
+                .filter(|l| *l == "LINE")
+                .count()
+        };
+        let all = line_count(&p);
+        p.floors[0].dimensions[0].hide_ext = [true, false];
+        assert_eq!(line_count(&p), all - 1);
+        p.floors[0].dimensions[0].hide_ext = [true, true];
+        assert_eq!(line_count(&p), all - 2);
+    }
+
+    #[test]
+    fn text_heights_come_from_the_styles_at_the_sheet_scale() {
+        let mut p = sample();
+        // Without a scale: the stored CAD height and the Dimension Text
+        // Style's 4.5" character height.
+        let t = texts(&write_dxf(&p, 0, &[]));
+        assert!(t.contains(&("Note".to_string(), 4.0)), "{t:?}");
+        assert!(t.contains(&("20'-0\"".to_string(), 4.5)), "{t:?}");
+        // A printed-size layer style (Custom Layer is not a project layer,
+        // so it uses the Default Text Style) and a printed-size dimension
+        // set, written for 1/8" scale: twice the 1/4" plan height.
+        let i = p
+            .text_styles
+            .styles
+            .iter()
+            .position(|s| s.name == "Default Text Style")
+            .unwrap();
+        p.text_styles.styles[i].use_printed_size(true);
+        let ann = DxfAnnotation {
+            inches_per_foot: 0.125,
+            dim_printed_size: true,
+            ..DxfAnnotation::default()
+        };
+        let s = DxfExport::new(&p, 0, &[])
+            .with_annotation(ann.clone())
+            .write();
+        let t = texts(&s);
+        // 4" stored against a 6" style: 4 * 12 / 6 = 8.
+        assert!(t.contains(&("Note".to_string(), 8.0)), "{t:?}");
+        // 4.5" Dimension Text Style held to its printed size (0.1875")
+        // at 1/8" scale: 18".
+        let dim_h = t.iter().find(|(v, _)| v == "20'-0\"").unwrap().1;
+        let want = p
+            .text_styles
+            .get("Dimension Text Style")
+            .unwrap()
+            .plan_height_at(0.125, true);
+        assert!((dim_h - want).abs() < 1e-3, "{dim_h} vs {want}");
+        // The same printed size at 1/4" is half the plan height.
+        let q = DxfExport::new(&p, 0, &[])
+            .with_annotation(DxfAnnotation {
+                inches_per_foot: 0.25,
+                ..ann
+            })
+            .write();
+        let note = texts(&q).iter().find(|(v, _)| v == "Note").unwrap().1;
+        assert!((note - 4.0).abs() < 1e-3, "{note}");
+    }
+
     #[test]
     fn extra_polylines_land_on_their_own_declared_layer() {
         let p = sample();
@@ -610,5 +782,38 @@ mod tests {
         assert_eq!(color[0], "62");
         assert!(color[1].starts_with('-'));
         assert!(!s.contains("Dimensions, Automatic\n10"));
+    }
+
+    #[test]
+    fn room_labels_name_an_island_and_the_room_around_it_apart() {
+        use crate::model::RoomName;
+        let mut p = Project::new("island");
+        let ring = |p: &mut Project, x0: f64, y0: f64, x1: f64, y1: f64, kind| {
+            let c = [
+                Point::new(x0, y0),
+                Point::new(x1, y0),
+                Point::new(x1, y1),
+                Point::new(x0, y1),
+            ];
+            for i in 0..4 {
+                p.add_wall(0, c[i], c[(i + 1) % 4], 4.5, 96.0, kind);
+            }
+        };
+        ring(&mut p, 0.0, 0.0, 480.0, 360.0, WallKind::Exterior);
+        ring(&mut p, 200.0, 150.0, 280.0, 210.0, WallKind::Interior);
+        // The island's name first: the room around it must not take it.
+        p.floors[0]
+            .room_names
+            .push(RoomName::new(Point::new(240.0, 180.0), "Pantry", "Pantry"));
+        p.floors[0].room_names.push(RoomName::new(
+            Point::new(60.0, 60.0),
+            "Great Room",
+            "Family",
+        ));
+        let rooms = detect_rooms(&p.floors[0].walls, 0.5);
+        assert_eq!(rooms.len(), 2);
+        let s = write_dxf(&p, 0, &rooms);
+        assert_eq!(s.matches("Pantry").count(), 1, "one label for the pantry");
+        assert_eq!(s.matches("Great Room").count(), 1);
     }
 }

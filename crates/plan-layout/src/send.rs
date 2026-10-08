@@ -122,17 +122,32 @@ fn default_label(source: &BoxSource, project: &Project) -> Option<String> {
             .to_string(),
         ),
         BoxSource::Section { .. } => Some("SECTION".to_string()),
-        BoxSource::Camera { camera_id } => Some(
-            project
-                .camera(*camera_id)
-                .map_or_else(|| "CAMERA VIEW".to_string(), |c| c.name.to_uppercase()),
-        ),
+        BoxSource::Camera { camera_id } => Some(project.camera(*camera_id).map_or_else(
+            || "CAMERA VIEW".to_string(),
+            |c| {
+                let name = c.name.to_uppercase();
+                // The caption carries the view number of the camera's plan
+                // callout ("1 - SOUTH ELEVATION"), so the sheet and the plan
+                // agree on which view is which.
+                match project.callout_number(c.id) {
+                    Some(n) => format!("{n} - {name}"),
+                    None => name,
+                }
+            },
+        )),
         BoxSource::CadDetail { name, .. } => Some(name.to_uppercase()),
         BoxSource::Schedule { .. }
         | BoxSource::PlacedSchedule { .. }
         | BoxSource::Image { .. }
         | BoxSource::ImageData { .. }
-        | BoxSource::Text { .. } => None,
+        | BoxSource::Text { .. }
+        | BoxSource::Materials { .. } => None,
+        BoxSource::SheetIndex => Some("SHEET INDEX".to_string()),
+        BoxSource::Perspective { camera_id } => Some(
+            project
+                .camera(*camera_id)
+                .map_or_else(|| "PERSPECTIVE".to_string(), |c| c.name.to_uppercase()),
+        ),
     }
 }
 
@@ -154,6 +169,8 @@ pub fn send_to_layout(
     scale: Scale,
     at: Option<Point>,
 ) -> Id {
+    // A sheet index box is measured against the pages this layout has.
+    cx.set_sheet_index(layout);
     let (w, h) = source_size_in(&source, scale, cx);
     let label = default_label(&source, cx.project);
     let id = layout.next_box_id();
@@ -236,6 +253,42 @@ pub fn send_to_layout_auto(
     send_to_layout(layout, cx, page, source, scale, at)
 }
 
+/// Adds a "Materials List" page numbered `number` with one table box per
+/// category that has rows (Foundation, Framing, Roofing, ...) priced from the
+/// context's master list, packed onto the sheet. False (and no page) when the
+/// plan has no materials.
+pub fn add_materials_page(layout: &mut Layout, cx: &LayoutRenderContext, number: u32) -> bool {
+    let lines = plan_docs::materials_report(
+        cx.project,
+        plan_docs::MaterialsScope::AllFloors,
+        None,
+        &cx.master_list,
+    );
+    let categories: Vec<&str> = plan_docs::MATERIAL_CATEGORIES
+        .iter()
+        .copied()
+        .filter(|c| lines.iter().any(|l| l.category == *c))
+        .collect();
+    if categories.is_empty() {
+        return false;
+    }
+    layout.add_page(number, "Materials List");
+    for c in categories {
+        send_to_layout(
+            layout,
+            cx,
+            number,
+            BoxSource::Materials {
+                floor: None,
+                category: Some(c.to_string()),
+            },
+            Scale::QuarterInch,
+            None,
+        );
+    }
+    true
+}
+
 /// Sends the 2D view of camera `camera_id` to page `page` as a
 /// [`BoxSource::Camera`] box (the "Send to Layout" of a 3D view). With `scale`
 /// `None` the largest scale that fits is used, as in [`send_to_layout_auto`].
@@ -281,40 +334,82 @@ fn page_text(layout: &mut Layout, page: u32, text: &str, height_in: f64, x: f64,
 /// out as `FIRST FLOOR PLAN` when the project has several) with the scale note
 /// under each box.
 ///
-/// Sheets, numbered `A-0`, `A-1`, ... in order:
-/// cover (project title and sheet index); one floor plan per floor at 1/4";
-/// elevations (Front and Back, then Left and Right, two per sheet);
-/// one longitudinal section through the middle of the building; door,
-/// window and room schedules; and a framing plan placeholder.
+/// Sheets, numbered `A-0`, `A-1`, ... in his order (see
+/// [`append_construction_set`]): Cover (project title and the sheet index
+/// table), Site, Floor Plans (one per floor), Elevations (Front and Back, then
+/// Left and Right), Sections, Details, Schedules (door, window and room, then
+/// the Materials List) and a framing plan placeholder.
 ///
 /// `floors` is how many floors get a plan sheet (clamped to the project's
 /// floor count). Views that do not fit a sheet at 1/4" step down to the next
 /// smaller scale. Rooms are detected for every floor and the 3D scene is built
 /// once.
 pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
+    default_construction_set_with(project, floors, &plan_docs::MasterList::default())
+}
+
+/// [`default_construction_set`] with the Materials List page priced and
+/// wasted from `master`.
+pub fn default_construction_set_with(
+    project: &Project,
+    floors: usize,
+    master: &plan_docs::MasterList,
+) -> Layout {
     let mut layout = Layout::new(
         format!("{} Construction Set", project.name),
         SheetSize::ArchC,
     );
     layout.title_block = TitleBlockTemplate::from_daniel_18x24();
-    layout.sheet_index = true;
     layout.page_background = true;
+    append_construction_set(&mut layout, project, floors, master);
+    layout
+}
+
+/// Adds Daniel's sheet set to `layout`, laid out for its sheet and title block:
+///
+/// 1. **Cover**: the project title, "CONSTRUCTION DOCUMENTS" and the sheet
+///    index as a table box ([`BoxSource::SheetIndex`], kept up to date);
+/// 2. **Site Plan**: the first floor's plan at the largest scale up to 1/8";
+/// 3. **Floor plans**: one per floor at 1/4";
+/// 4. **Elevations**: Front and Back, Left and Right;
+/// 5. **Building Section**: a longitudinal section;
+/// 6. **Details**: a sheet for typical details;
+/// 7. **Schedules**: door, window and room schedules, the Materials List
+///    pages, and a framing plan placeholder.
+///
+/// Pages with nothing on them are removed first (the empty first page a new
+/// layout starts with); pages that have content stay, and the set's sheets are
+/// numbered after them. The title block, background and margins are the
+/// layout's own. Returns the number of pages added.
+pub fn append_construction_set(
+    layout: &mut Layout,
+    project: &Project,
+    floors: usize,
+    master: &plan_docs::MasterList,
+) -> usize {
+    layout.pages.retain(|p| {
+        p.template_page
+            || !(p.boxes.is_empty()
+                && p.cad.is_empty()
+                && p.leaders.is_empty()
+                && p.clouds.is_empty())
+    });
+    let before = layout.pages.len();
+    let mut number = layout.pages.iter().map(|p| p.number + 1).max().unwrap_or(0);
 
     let scene = build_scene(project);
     let mut cx = LayoutRenderContext::new(project);
     cx.scene = Some(&scene);
+    cx.master_list = master.clone();
     let cx = &cx;
     let area = layout.drawing_area();
     let quarter = Scale::QuarterInch;
-    let mut number = 0_u32;
+    let cover_number = number;
 
-    // Cover.
+    // Cover (the sheet index goes on last, when every sheet exists).
     layout.add_page(number, "Cover");
-    let title = BoxSource::Text {
-        text: project.name.to_uppercase(),
-        height_pt: 36.0,
-    };
-    let cover = send_to_layout(&mut layout, cx, number, title, quarter, None);
+    let title = BoxSource::text(project.name.to_uppercase(), 36.0);
+    let cover = send_to_layout(layout, cx, number, title, quarter, None);
     if let Some(b) = layout
         .page_mut(number)
         .and_then(|p| p.boxes.iter_mut().find(|b| b.id == cover))
@@ -322,13 +417,31 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
         b.border = false;
     }
     page_text(
-        &mut layout,
+        layout,
         number,
         "CONSTRUCTION DOCUMENTS",
         0.3,
         area.0.x + 0.1,
         area.1.y - 1.4,
     );
+
+    // Site plan: the first floor's footprint at a site scale.
+    if !project.floors.is_empty() {
+        number += 1;
+        layout.add_page(number, "Site Plan");
+        let source = BoxSource::PlanView {
+            floor: 0,
+            layer_set: project.layers.name.clone(),
+        };
+        let scale = fit_largest_scale(layout, cx, &source, Scale::EighthInch);
+        let id = send_to_layout(layout, cx, number, source, scale, None);
+        if let Some(b) = layout
+            .page_mut(number)
+            .and_then(|p| p.boxes.iter_mut().find(|b| b.id == id))
+        {
+            b.label = Some("SITE PLAN".to_string());
+        }
+    }
 
     // Floor plans.
     for floor in 0..floors.min(project.floors.len()) {
@@ -338,8 +451,8 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
             floor,
             layer_set: project.layers.name.clone(),
         };
-        let scale = fit_largest_scale(&layout, cx, &source, quarter);
-        send_to_layout(&mut layout, cx, number, source, scale, None);
+        let scale = fit_largest_scale(layout, cx, &source, quarter);
+        send_to_layout(layout, cx, number, source, scale, None);
     }
 
     // Elevations, two per sheet.
@@ -357,8 +470,8 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
         layout.add_page(number, title);
         for dir in dirs {
             let source = BoxSource::Elevation { dir };
-            let scale = fit_largest_scale(&layout, cx, &source, quarter);
-            send_to_layout(&mut layout, cx, number, source, scale, None);
+            let scale = fit_largest_scale(layout, cx, &source, quarter);
+            send_to_layout(layout, cx, number, source, scale, None);
         }
     }
 
@@ -387,15 +500,21 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
         },
     );
     let source = BoxSource::Section { cut };
-    let scale = fit_largest_scale(&layout, cx, &source, quarter);
-    send_to_layout(&mut layout, cx, number, source, scale, None);
+    let scale = fit_largest_scale(layout, cx, &source, quarter);
+    send_to_layout(layout, cx, number, source, scale, None);
+
+    // Details.
+    number += 1;
+    layout.add_page(number, "Details");
+    let text = BoxSource::text("TYPICAL DETAILS\nTO BE DEVELOPED".to_string(), 18.0);
+    send_to_layout(layout, cx, number, text, quarter, None);
 
     // Schedules.
     number += 1;
     layout.add_page(number, "Schedules");
     for kind in [ScheduleKind::Door, ScheduleKind::Window, ScheduleKind::Room] {
         send_to_layout(
-            &mut layout,
+            layout,
             cx,
             number,
             BoxSource::Schedule { kind },
@@ -404,14 +523,28 @@ pub fn default_construction_set(project: &Project, floors: usize) -> Layout {
         );
     }
 
+    // Materials List: one table per category that has rows.
+    if add_materials_page(layout, cx, number + 1) {
+        number += 1;
+    }
+
     // Framing plan placeholder.
     number += 1;
     layout.add_page(number, "Framing Plan");
-    let text = BoxSource::Text {
-        text: "FRAMING PLAN\nTO BE DEVELOPED".to_string(),
-        height_pt: 18.0,
-    };
-    send_to_layout(&mut layout, cx, number, text, quarter, None);
+    let text = BoxSource::text("FRAMING PLAN\nTO BE DEVELOPED".to_string(), 18.0);
+    send_to_layout(layout, cx, number, text, quarter, None);
 
-    layout
+    // The sheet index, now that every sheet has its title.
+    layout.sheet_index = false;
+    cx.set_sheet_index(layout);
+    send_to_layout(
+        layout,
+        cx,
+        cover_number,
+        BoxSource::SheetIndex,
+        quarter,
+        None,
+    );
+
+    layout.pages.len() - before
 }

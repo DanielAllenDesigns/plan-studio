@@ -132,6 +132,21 @@ pub fn frame_wall_with_marker(
     frame_wall_grid(wall, openings, floor_elevation, d, origin)
 }
 
+/// [`frame_wall_with_marker`] that also knows how the wall meets its
+/// neighbours (see [`crate::frame_wall_joined`]), for the corner and tee studs
+/// and the wall blocking.
+pub fn frame_wall_with_marker_joined(
+    wall: &Wall,
+    openings: &[&Opening],
+    floor_elevation: f64,
+    d: &FramingDefaults,
+    marker: Option<&ReferenceMarker>,
+    joints: &crate::WallJoints,
+) -> Vec<Member> {
+    let origin = marker.map(|m| (m.point - wall.start).dot(wall.direction()));
+    crate::wall::frame_wall_joined(wall, openings, floor_elevation, d, origin, joints)
+}
+
 /// One run line in the local frame (`u` along the run, `v` across).
 struct Run {
     across: f64,

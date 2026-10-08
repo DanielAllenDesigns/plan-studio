@@ -153,6 +153,10 @@ pub struct Drawing {
     /// the left end of the text baseline, in drawing space.
     #[serde(default)]
     pub texts: Vec<(Point, String)>,
+    /// The automatic dimensions of [`crate::annotate_view`], each also drawn
+    /// as annotation lines and text.
+    #[serde(default)]
+    pub dims: Vec<crate::dims::ElevDim>,
 }
 
 impl Drawing {
@@ -163,6 +167,7 @@ impl Drawing {
             bounds: (Point::ZERO, Point::ZERO),
             regions: Vec::new(),
             texts: Vec::new(),
+            dims: Vec::new(),
         };
         d.update_bounds();
         d

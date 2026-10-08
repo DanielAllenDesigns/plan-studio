@@ -726,9 +726,8 @@ pub fn region_strokes(
 /// The polygon a wall's hatching is drawn in: the main layer's outline when
 /// the join cache has it, else the wall's drawn outline.
 pub fn hatch_polygon(cx: &EditorContext, wall: &Wall) -> Vec<Point> {
-    if wall.is_curved() {
-        return wall.plan_polygon();
-    }
+    // A curved wall's main layer outline follows the arc, like the straight
+    // one follows the wall.
     cx.layer_outlines
         .iter()
         .find(|l| l.wall_id == wall.id && l.is_main)
@@ -736,10 +735,11 @@ pub fn hatch_polygon(cx: &EditorContext, wall: &Wall) -> Vec<Point> {
         .or_else(|| {
             cx.outlines
                 .iter()
+                .filter(|_| !wall.is_curved())
                 .find(|o| o.wall_id == wall.id)
                 .map(|o| o.polygon.clone())
         })
-        .unwrap_or_else(|| wall.footprint().to_vec())
+        .unwrap_or_else(|| wall.plan_polygon())
 }
 
 /// The strokes of a wall hatch inside `polygon`.

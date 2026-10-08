@@ -12,5 +12,6 @@ plan-electrical = { path = "../plan-electrical" }
 plan-framing = { path = "../plan-framing" }
 plan-library = { path = "../plan-library" }
 plan-stairs = { path = "../plan-stairs" }
+plan-terrain = { path = "../plan-terrain" }
 serde = { workspace = true }
 serde_json = { workspace = true }

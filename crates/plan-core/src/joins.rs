@@ -14,7 +14,7 @@
 //!   meets the neighbour's boundary nearest to `r` outside its own main layer.
 
 use crate::defaults::WallTypeDef;
-use crate::geometry::{project_on_segment, BoxGrid, Point};
+use crate::geometry::{BoxGrid, Point};
 use crate::model::{Id, Wall, WallEnd};
 
 /// Maximum miter length as a multiple of the thicker wall.
@@ -25,8 +25,11 @@ const MIN_SIN: f64 = 0.02;
 #[derive(Debug, Clone)]
 pub struct WallOutline {
     pub wall_id: Id,
-    /// Four points: start-left, end-left, end-right, start-right, where left
-    /// is the side of the +normal (same order as [`Wall::footprint`]).
+    /// Four points for a straight wall: start-left, end-left, end-right,
+    /// start-right, where left is the side of the +normal (same order as
+    /// [`Wall::footprint`]). A curved wall's is the faceted band of its arc
+    /// (the left face forward, then the right face back, as
+    /// [`Wall::plan_polygon`] lays it out) with its ends mitered.
     pub polygon: Vec<Point>,
 }
 
@@ -49,8 +52,16 @@ fn end_point(w: &Wall, e: End) -> Point {
     }
 }
 
-/// Unit direction pointing from the given end back along the wall.
+/// Unit direction pointing from the given end back along the wall. For a
+/// curved wall it is the arc's tangent at that end, so joins see the
+/// direction the wall really leaves in, not the chord (W-67, W-68).
 fn away_dir(w: &Wall, e: End) -> Point {
+    if let Some(c) = w.curve.filter(|c| !c.is_straight()) {
+        return match e {
+            End::Start => c.tangent_at_start(w.start, w.end),
+            End::End => -c.tangent_at_end(w.start, w.end),
+        };
+    }
     match e {
         End::Start => w.direction(),
         End::End => -w.direction(),
@@ -132,9 +143,23 @@ impl Near {
             let boxes: Vec<(Point, Point)> = walls
                 .iter()
                 .map(|w| {
+                    let (mut lo, mut hi) = (
+                        Point::new(w.start.x.min(w.end.x), w.start.y.min(w.end.y)),
+                        Point::new(w.start.x.max(w.end.x), w.start.y.max(w.end.y)),
+                    );
+                    // An arc bulges out of its chord's box: take the box of
+                    // points along it, padded by what a facet of them cuts.
+                    if let Some((_, r)) = w.arc_center_radius() {
+                        let sweep = w.curve.map_or(0.0, |k| k.sweep(w.start, w.end).abs());
+                        let pad = r * (1.0 - (sweep / 48.0).cos());
+                        for q in w.sample_points(24) {
+                            lo = Point::new(lo.x.min(q.x - pad), lo.y.min(q.y - pad));
+                            hi = Point::new(hi.x.max(q.x + pad), hi.y.max(q.y + pad));
+                        }
+                    }
                     (
-                        Point::new(w.start.x.min(w.end.x) - tol, w.start.y.min(w.end.y) - tol),
-                        Point::new(w.start.x.max(w.end.x) + tol, w.start.y.max(w.end.y) + tol),
+                        Point::new(lo.x - tol, lo.y - tol),
+                        Point::new(hi.x + tol, hi.y + tol),
                     )
                 })
                 .collect();
@@ -177,6 +202,12 @@ fn outlines_with(walls: &[Wall], tol: f64, near: &Near) -> Vec<WallOutline> {
         .iter()
         .enumerate()
         .map(|(i, w)| {
+            if w.is_curved() {
+                return WallOutline {
+                    wall_id: w.id,
+                    polygon: curved_polygon_near(walls, near, i, tol, None),
+                };
+            }
             let (sl, el, er, sr) = wall_faces(w);
             let (sl, sr) = end_faces(walls, near, i, End::Start, tol).unwrap_or((sl, sr));
             let (el, er) = end_faces(walls, near, i, End::End, tol).unwrap_or((el, er));
@@ -186,6 +217,85 @@ fn outlines_with(walls: &[Wall], tol: f64, near: &Near) -> Vec<WallOutline> {
             }
         })
         .collect()
+}
+
+/// The plan polygon of the curved wall `id` with its ends mitered against the
+/// walls that join it (W-67): [`Wall::plan_polygon`] with the first and last
+/// left and right points moved to where the neighbour's faces cross the arc's
+/// end tangent. Limits: the miter treats the arc as its tangent line at the
+/// joined end, so a wide arc meeting a steep corner shows a small kink at the
+/// end facet; the miter length is capped at [`MITER_LIMIT`] and past it the
+/// end stays square; a curved wall that meets another wall's side (a tee)
+/// gets the tee cut. `None` when the wall is unknown or not curved.
+pub fn curved_wall_polygon(walls: &[Wall], id: Id, tol: f64) -> Option<Vec<Point>> {
+    curved_wall_polygon_n(walls, id, tol, None)
+}
+
+/// [`curved_wall_polygon`] with `facets` facets along the arc (`None`: the
+/// facet angle's count). The polygon is the left face forward, then the right
+/// face back, so it has `2 * (facets + 1)` points.
+pub fn curved_wall_polygon_n(
+    walls: &[Wall],
+    id: Id,
+    tol: f64,
+    facets: Option<usize>,
+) -> Option<Vec<Point>> {
+    let i = walls.iter().position(|w| w.id == id)?;
+    let w = &walls[i];
+    if !w.is_curved() {
+        return None;
+    }
+    Some(curved_polygon_near(
+        walls,
+        &Near::all(walls),
+        i,
+        tol,
+        facets,
+    ))
+}
+
+/// The band of curved wall `walls[i]` with its ends mitered.
+fn curved_polygon_near(
+    walls: &[Wall],
+    near: &Near,
+    i: usize,
+    tol: f64,
+    facets: Option<usize>,
+) -> Vec<Point> {
+    let w = &walls[i];
+    let mut poly = match facets {
+        Some(n) => w.plan_polygon_n(n),
+        None => w.plan_polygon(),
+    };
+    let n = poly.len();
+    let h = n / 2;
+    if let Some((l, r)) = end_faces(walls, near, i, End::Start, tol) {
+        poly[0] = l;
+        poly[n - 1] = r;
+    }
+    if let Some((l, r)) = end_faces(walls, near, i, End::End, tol) {
+        poly[h - 1] = l;
+        poly[h] = r;
+    }
+    poly
+}
+
+/// The mitered `(left, right)` face points at the start and the end of curved
+/// wall `id`, from the walls that join it (straight or curved, corners and
+/// tees), or `None` for an end that stays square. The two points of an end
+/// are the cut line of the miter; the neighbour's outline ends on the same
+/// two points. `None` when the wall is unknown or not curved.
+#[allow(clippy::type_complexity)]
+pub fn curved_end_miters(walls: &[Wall], id: Id, tol: f64) -> Option<[Option<(Point, Point)>; 2]> {
+    let i = walls.iter().position(|w| w.id == id)?;
+    if !walls[i].is_curved() {
+        return None;
+    }
+    let near = Near::all(walls);
+    Some([
+        end_faces(walls, &near, i, End::Start, tol),
+        end_faces(walls, &near, i, End::End, tol),
+    ])
 }
 
 /// Joined `(left, right)` face points at one end, or `None` for a square end.
@@ -256,10 +366,23 @@ fn miter_faces(walls: &[Wall], i: usize, e: End, j: usize, oe: End) -> Option<(P
     Some((at(ls), at(-ls)))
 }
 
+/// The point of wall `t` closest to `p` and the unit direction of the wall
+/// there: the tangent of an arc, the direction of a straight wall.
+fn host_point(t: &Wall, p: Point) -> (Point, Point) {
+    t.closest_point(p)
+}
+
 /// The nearest wall (other than `i`) whose interior, not its ends, contains
-/// `p`, with the closest point on it: the host of a T-junction at `p`.
-fn tee_host(walls: &[Wall], near: &Near, i: usize, p: Point, tol: f64) -> Option<(usize, Point)> {
-    let mut best: Option<(f64, usize, Point)> = None;
+/// `p`, with the closest point on it and its direction there: the host of a
+/// T-junction at `p`. A curved host is met along its tangent.
+fn tee_host(
+    walls: &[Wall],
+    near: &Near,
+    i: usize,
+    p: Point,
+    tol: f64,
+) -> Option<(usize, Point, Point)> {
+    let mut best: Option<(f64, usize, Point, Point)> = None;
     let mut candidates = Vec::new();
     near.around(p, &mut candidates);
     for &j in &candidates {
@@ -267,17 +390,17 @@ fn tee_host(walls: &[Wall], near: &Near, i: usize, p: Point, tol: f64) -> Option
         if j == i || t.length() <= tol {
             continue;
         }
-        let (_, q) = project_on_segment(p, t.start, t.end);
+        let (q, dir) = host_point(t, p);
         let d = q.dist(p);
         if d <= tol
             && q.dist(t.start) > tol
             && q.dist(t.end) > tol
-            && best.is_none_or(|(bd, _, _)| d < bd)
+            && best.is_none_or(|(bd, ..)| d < bd)
         {
-            best = Some((d, j, q));
+            best = Some((d, j, q, dir));
         }
     }
-    best.map(|(_, j, q)| (j, q))
+    best.map(|(_, j, q, dir)| (j, q, dir))
 }
 
 fn t_faces(
@@ -290,10 +413,9 @@ fn t_faces(
 ) -> Option<(Point, Point)> {
     let w = &walls[i];
     let dw = away_dir(w, e);
-    let (tj, q) = tee_host(walls, near, i, p, tol)?;
+    let (tj, q, dt) = tee_host(walls, near, i, p, tol)?;
     let t = &walls[tj];
 
-    let dt = t.direction();
     let cross = dw.cross(dt);
     if cross.abs() < MIN_SIN {
         return None;
@@ -372,7 +494,7 @@ pub fn wall_end_joins(
         }
     }
     if out.is_empty() {
-        if let Some((j, _)) = tee_host(walls, &Near::all(walls), i, p, tol) {
+        if let Some((j, ..)) = tee_host(walls, &Near::all(walls), i, p, tol) {
             out.push((j, ConnectionKind::Tee));
         }
     }
@@ -491,6 +613,19 @@ fn boundaries(bands: &[LayerBand], q: f64) -> (Vec<f64>, f64, f64) {
     (b, lo, hi)
 }
 
+/// Unit left normal of the wall's travel at end `e`, square to that end: the
+/// wall's normal when straight, the arc's normal at the end when curved.
+fn end_normal(w: &Wall, e: End) -> Point {
+    if w.is_curved() {
+        let travel = match e {
+            End::Start => w.end_tangent(WallEnd::Start),
+            End::End => -w.end_tangent(WallEnd::End),
+        };
+        return travel.perp();
+    }
+    w.normal()
+}
+
 fn end_sign(e: End) -> f64 {
     match e {
         End::Start => 1.0,
@@ -512,7 +647,8 @@ fn layer_end_points(
     let p = end_point(w, e);
     let qa = end_sign(e);
     let (own, _, _) = boundaries(&stacks[i], 1.0);
-    let square = || -> Vec<Point> { own.iter().map(|l| p + w.normal() * *l).collect() };
+    let normal = end_normal(w, e);
+    let square = || -> Vec<Point> { own.iter().map(|l| p + normal * *l).collect() };
     if w.length() <= tol {
         return square();
     }
@@ -588,11 +724,10 @@ fn layer_end_points(
             pts
         }
         0 => {
-            let Some((tj, q)) = tee_host(walls, near, i, p, tol) else {
+            let Some((tj, q, dt)) = tee_host(walls, near, i, p, tol) else {
                 return square();
             };
             let t = &walls[tj];
-            let dt = t.direction();
             let cross = dw.cross(dt);
             if cross.abs() < MIN_SIN {
                 return square();
@@ -635,6 +770,19 @@ fn layer_outlines_with(
     tol: f64,
     near: &Near,
 ) -> Vec<WallLayerOutline> {
+    layer_outlines_facets(walls, types, tol, near, None, None)
+}
+
+/// [`layer_outlines_with`] with `facets` along curved walls (`None`: the facet
+/// angle's count), for the wall at index `only` alone or, with `None`, all.
+fn layer_outlines_facets(
+    walls: &[Wall],
+    types: &[WallTypeDef],
+    tol: f64,
+    near: &Near,
+    facets: Option<usize>,
+    only: Option<usize>,
+) -> Vec<WallLayerOutline> {
     let stacks: Vec<Vec<LayerBand>> = walls
         .iter()
         .map(|w| {
@@ -647,25 +795,81 @@ fn layer_outlines_with(
         .collect();
     let mut out = Vec::new();
     for (i, w) in walls.iter().enumerate() {
+        if only.is_some_and(|o| o != i) {
+            continue;
+        }
         let starts = layer_end_points(walls, near, &stacks, i, End::Start, tol);
         let ends = layer_end_points(walls, near, &stacks, i, End::End, tol);
         let (b, _, _) = boundaries(&stacks[i], 1.0);
+        // A curved wall's boundaries are arcs between the joined end points.
+        let arcs: Vec<Vec<Point>> = if w.is_curved() {
+            let n = facets.map_or_else(|| default_facets(w), |n| n.max(2));
+            b.iter()
+                .enumerate()
+                .map(|(k, lateral)| {
+                    let mut pts = w.offset_curve(*lateral, n);
+                    pts[0] = starts[k];
+                    pts[n] = ends[k];
+                    pts
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         for (k, band) in stacks[i].iter().enumerate() {
             let (hi, lo) = if b[k] >= b[k + 1] {
                 (k, k + 1)
             } else {
                 (k + 1, k)
             };
+            let polygon = if w.is_curved() {
+                let back = arcs[lo].iter().rev();
+                arcs[hi].iter().copied().chain(back.copied()).collect()
+            } else {
+                vec![starts[hi], ends[hi], ends[lo], starts[lo]]
+            };
             out.push(WallLayerOutline {
                 wall_id: w.id,
                 layer_index: k,
                 name: band.name.clone(),
                 is_main: band.is_main,
-                polygon: vec![starts[hi], ends[hi], ends[lo], starts[lo]],
+                polygon,
             });
         }
     }
     out
+}
+
+/// The facet count a curved wall's polygons use unless told otherwise.
+fn default_facets(w: &Wall) -> usize {
+    w.curve.map_or(2, |c| c.facet_count(w.start, w.end)).max(2)
+}
+
+/// The layer outlines of curved wall `id` with `facets` facets along the arc
+/// (`None`: the facet angle's count). Each polygon is the layer's left
+/// boundary forward along the arc, then its right boundary back, with the
+/// ends mitered against the joined walls like the straight outlines;
+/// `2 * (facets + 1)` points. `None` when the wall is unknown or straight.
+pub fn curved_layer_outlines(
+    walls: &[Wall],
+    types: &[WallTypeDef],
+    id: Id,
+    tol: f64,
+    facets: Option<usize>,
+) -> Option<Vec<WallLayerOutline>> {
+    let i = walls.iter().position(|w| w.id == id)?;
+    if !walls[i].is_curved() {
+        return None;
+    }
+    let near = Near::all(walls);
+    Some(layer_outlines_facets(
+        walls,
+        types,
+        tol,
+        &near,
+        facets,
+        Some(i),
+    ))
 }
 
 #[cfg(test)]
@@ -1075,5 +1279,320 @@ mod tests {
         b[0].wall_type = Some("x".into());
         assert!(!walls_equal(&a, &b));
         assert!(!walls_equal(&a, &a[..1]));
+    }
+
+    #[test]
+    fn a_tangent_arc_and_its_neighbour_are_a_through_join() {
+        let mut p = crate::model::Project::new("t");
+        let a = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            6.0,
+            100.0,
+            crate::model::WallKind::Exterior,
+        );
+        let b = p.add_wall(
+            0,
+            Point::new(100.0, 0.0),
+            Point::new(200.0, 100.0),
+            6.0,
+            100.0,
+            crate::model::WallKind::Exterior,
+        );
+        // Straight neighbours at an angle: a corner.
+        let kinds = |p: &crate::model::Project, id| {
+            p.wall_connections(0, id)
+                .into_iter()
+                .map(|c| c.kind)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kinds(&p, a), vec![ConnectionKind::Corner]);
+        // Curve the second wall tangent to the first: now it continues it.
+        p.floors[0].wall_mut(b).unwrap().curve = Some(crate::walls::WallCurve { bulge: -5.0 });
+        p.make_arc_tangent(0, b).unwrap();
+        assert_eq!(kinds(&p, a), vec![ConnectionKind::Through]);
+        assert_eq!(kinds(&p, b), vec![ConnectionKind::Through]);
+    }
+
+    #[test]
+    fn a_curved_wall_polygon_is_mitered_at_a_corner() {
+        let mut walls = vec![
+            Wall::new(
+                Point::new(0.0, 0.0),
+                Point::new(100.0, 0.0),
+                10.0,
+                100.0,
+                crate::model::WallKind::Exterior,
+            ),
+            Wall::new(
+                Point::new(100.0, 0.0),
+                Point::new(100.0, 100.0),
+                10.0,
+                100.0,
+                crate::model::WallKind::Exterior,
+            ),
+        ];
+        walls[0].id = 1;
+        walls[1].id = 2;
+        // The second wall bows to the right; the first is straight.
+        walls[1].curve = Some(crate::walls::WallCurve { bulge: -10.0 });
+        let straight = walls[1].plan_polygon();
+        let poly = curved_wall_polygon(&walls, 2, 0.5).unwrap();
+        assert_eq!(poly.len(), straight.len());
+        // Away from the joined start the polygon is unchanged.
+        let n = poly.len();
+        let h = n / 2;
+        assert_eq!(poly[h - 1], straight[h - 1]);
+        assert_eq!(poly[h], straight[h]);
+        // The start corner moved: it now lies on wall 1's outer face (y = -5)
+        // or inner face (y = 5), not on the square end of the arc.
+        let on_face = |p: Point| (p.y.abs() - 5.0).abs() < 1e-6;
+        assert!(
+            on_face(poly[0]) && on_face(poly[n - 1]),
+            "{:?} {:?}",
+            poly[0],
+            poly[n - 1]
+        );
+        assert!(poly[0] != straight[0] || poly[n - 1] != straight[n - 1]);
+        // A straight wall has no curved polygon.
+        assert!(curved_wall_polygon(&walls, 1, 0.5).is_none());
+        assert!(curved_wall_polygon(&walls, 99, 0.5).is_none());
+        // A lone arc stays square.
+        let lone = vec![walls[1].clone()];
+        assert_eq!(curved_wall_polygon(&lone, 2, 0.5).unwrap(), straight);
+    }
+
+    // ----- curved walls: miters, tangent joins, layer outlines -----
+
+    fn arc(id: u64, a: (f64, f64), b: (f64, f64), t: f64, bulge: f64) -> Wall {
+        let mut w = wall(id, a.0, a.1, b.0, b.1, t);
+        w.kind = WallKind::Exterior;
+        w.curve = Some(crate::walls::WallCurve { bulge });
+        w
+    }
+
+    /// Which side of the line `a`-`b` the point lies on (signed).
+    fn side(a: Point, b: Point, p: Point) -> f64 {
+        b.sub(a).cross(p.sub(a))
+    }
+
+    #[test]
+    fn a_curved_wall_meets_a_straight_one_with_no_gap_or_overlap() {
+        // Straight A into curved B into straight C: both ends of B are joined.
+        let walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 10.0),
+            arc(2, (100.0, 0.0), (160.0, 70.0), 10.0, 14.0),
+            wall(3, 160.0, 70.0, 260.0, 70.0, 10.0),
+        ];
+        let out = wall_outlines(&walls, 0.5);
+        let b = curved_wall_polygon(&walls, 2, 0.5).unwrap();
+        let (n, h) = (b.len(), b.len() / 2);
+        // The cut line at each joint is shared: A's end corners are B's
+        // start corners, B's end corners are C's start corners.
+        let same = |p: Point, q: Point| p.dist(q) < 1e-9;
+        let (a_poly, c_poly) = (&out[0].polygon, &out[2].polygon);
+        assert!(
+            (same(a_poly[1], b[0]) && same(a_poly[2], b[n - 1]))
+                || (same(a_poly[1], b[n - 1]) && same(a_poly[2], b[0])),
+            "{a_poly:?} {:?} {:?}",
+            b[0],
+            b[n - 1]
+        );
+        assert!(
+            (same(c_poly[0], b[h - 1]) && same(c_poly[3], b[h]))
+                || (same(c_poly[0], b[h]) && same(c_poly[3], b[h - 1])),
+            "{c_poly:?} {:?} {:?}",
+            b[h - 1],
+            b[h]
+        );
+        // The neighbours lie on the far side of the cut from the arc: no overlap.
+        let (cut_a, cut_b) = (b[0], b[n - 1]);
+        let arc_side = side(cut_a, cut_b, b[1]);
+        for p in [a_poly[0], a_poly[3]] {
+            assert!(side(cut_a, cut_b, p) * arc_side < 0.0, "A overlaps B");
+        }
+        let (cut_c, cut_d) = (b[h - 1], b[h]);
+        let arc_side = side(cut_c, cut_d, b[h - 2]);
+        for p in [c_poly[1], c_poly[2]] {
+            assert!(side(cut_c, cut_d, p) * arc_side < 0.0, "C overlaps B");
+        }
+        // The mitered arc keeps its band: area is about arc length x thickness.
+        let want = walls[1].path_length() * 10.0;
+        let got = crate::geometry::polygon_area(&b).abs();
+        assert!((got - want).abs() / want < 0.12, "area {got} vs {want}");
+    }
+
+    #[test]
+    fn a_curved_wall_tee_on_a_curved_host_is_cut_to_its_face() {
+        // A straight wall ends on the middle of an arc host.
+        let host = arc(1, (0.0, 0.0), (200.0, 0.0), 10.0, 40.0);
+        let (c, r) = host.arc_center_radius().unwrap();
+        let apex = Point::new(100.0, 40.0);
+        // Come in from inside the circle, ending on the arc's centerline.
+        let from = apex.sub(c).normalized().scale(r - 80.0).add(c);
+        let walls = vec![host, wall(2, from.x, from.y, apex.x, apex.y, 6.0)];
+        let out = wall_outlines(&walls, 0.5);
+        // The tee wall's end corners sit on the host's inner face (radius r - 5).
+        let end_pts = [out[1].polygon[1], out[1].polygon[2]];
+        for p in end_pts {
+            assert!(
+                (p.dist(c) - (r - 5.0)).abs() < 0.2,
+                "tee corner {p:?} is {} from the center, wanted {}",
+                p.dist(c),
+                r - 5.0
+            );
+        }
+        assert_eq!(
+            wall_end_joins(&walls, 1, WallEnd::End, 0.5),
+            vec![(0, ConnectionKind::Tee)]
+        );
+    }
+
+    #[test]
+    fn two_tangent_arcs_join_square_and_a_corner_of_arcs_is_mitered() {
+        // B leaves A's end along A's tangent: a through join, ends coincide.
+        let a = arc(1, (0.0, 0.0), (100.0, 0.0), 8.0, 25.0);
+        let tangent = a.curve.unwrap().tangent_at_end(a.start, a.end);
+        let end = Point::new(190.0, -60.0);
+        let curve = crate::walls::WallCurve::tangent_to(a.end, end, tangent).unwrap();
+        let mut b = wall(2, 100.0, 0.0, end.x, end.y, 8.0);
+        b.kind = WallKind::Exterior;
+        b.curve = Some(curve);
+        let walls = vec![a, b];
+        assert_eq!(
+            wall_end_joins(&walls, 0, WallEnd::End, 0.5),
+            vec![(1, ConnectionKind::Through)]
+        );
+        let pa = curved_wall_polygon(&walls, 1, 0.5).unwrap();
+        let pb = curved_wall_polygon(&walls, 2, 0.5).unwrap();
+        let (ha, nb) = (pa.len() / 2, pb.len());
+        assert!(pa[ha - 1].dist(pb[0]) < 1e-6, "left corners meet");
+        assert!(pa[ha].dist(pb[nb - 1]) < 1e-6, "right corners meet");
+        // Same band thickness through the joint: no step.
+        assert!((pa[ha - 1].dist(pa[ha]) - 8.0).abs() < 1e-6);
+
+        // A kinked pair of arcs (no common tangent) is mitered instead.
+        let c = arc(3, (0.0, 0.0), (100.0, 0.0), 8.0, 25.0);
+        let d = arc(4, (100.0, 0.0), (140.0, -80.0), 8.0, -10.0);
+        let walls = vec![c, d];
+        assert_eq!(
+            wall_end_joins(&walls, 0, WallEnd::End, 0.5),
+            vec![(1, ConnectionKind::Corner)]
+        );
+        let pc = curved_wall_polygon(&walls, 3, 0.5).unwrap();
+        let pd = curved_wall_polygon(&walls, 4, 0.5).unwrap();
+        let (hc, nd) = (pc.len() / 2, pd.len());
+        let shared = |p: Point, q: Point| p.dist(q) < 1e-9;
+        assert!(
+            (shared(pc[hc - 1], pd[0]) && shared(pc[hc], pd[nd - 1]))
+                || (shared(pc[hc - 1], pd[nd - 1]) && shared(pc[hc], pd[0]))
+        );
+    }
+
+    #[test]
+    fn layer_outlines_of_a_curved_wall_follow_the_arc() {
+        let ty = stucco();
+        let chord = 240.0;
+        let curve = crate::walls::WallCurve::from_radius(chord, 120.0, true).unwrap();
+        let mut w = typed_wall(1, 0.0, 0.0, chord, 0.0, &ty);
+        w.curve = Some(curve);
+        let (center, r) = w.arc_center_radius().unwrap();
+        assert!((r - 120.0).abs() < 1e-9);
+        let walls = vec![w.clone()];
+        let outs = wall_layer_outlines(&walls, std::slice::from_ref(&ty), 0.5);
+        assert_eq!(outs.len(), 4, "one outline per layer");
+        let bands = wall_layer_bands(&w, Some(&ty));
+        // The arc turns clockwise (it bulges left), so the left side is outside.
+        let sign = curve.sweep(w.start, w.end).signum();
+        for (o, band) in outs.iter().zip(&bands) {
+            assert!(o.polygon.len() > 8, "faceted, not four corners");
+            let mut radii: Vec<f64> = o.polygon.iter().map(|p| p.dist(center)).collect();
+            radii.sort_by(f64::total_cmp);
+            let want_lo = r - sign * band.outer.max(band.inner);
+            let want_hi = r - sign * band.outer.min(band.inner);
+            let (lo, hi) = (want_lo.min(want_hi), want_lo.max(want_hi));
+            assert!((radii[0] - lo).abs() < 1e-6, "{} inner radius", o.name);
+            assert!(
+                (radii[radii.len() - 1] - hi).abs() < 1e-6,
+                "{} outer",
+                o.name
+            );
+            // Every point is on one of the two boundary radii.
+            assert!(radii
+                .iter()
+                .all(|d| (d - lo).abs() < 1e-6 || (d - hi).abs() < 1e-6));
+        }
+        // More facets on request: a finer polygon for a high zoom.
+        let fine =
+            curved_layer_outlines(&walls, std::slice::from_ref(&ty), 1, 0.5, Some(90)).unwrap();
+        assert_eq!(fine[0].polygon.len(), 2 * 91);
+        assert!(curved_layer_outlines(&walls, &[], 9, 0.5, None).is_none());
+        let line = vec![wall(5, 0.0, 0.0, 10.0, 0.0, 4.0)];
+        assert!(curved_layer_outlines(&line, &[], 5, 0.5, None).is_none());
+    }
+
+    #[test]
+    fn a_curved_layer_stack_is_mitered_to_a_straight_neighbour() {
+        let ty = stucco();
+        let mut a = typed_wall(1, 0.0, 0.0, 120.0, 0.0, &ty);
+        a.curve = None;
+        let mut b = typed_wall(2, 120.0, 0.0, 180.0, 90.0, &ty);
+        b.curve = Some(crate::walls::WallCurve { bulge: 15.0 });
+        let walls = vec![a, b];
+        let outs = wall_layer_outlines(&walls, std::slice::from_ref(&ty), 0.5);
+        // Layer k of the straight wall ends where layer k of the arc starts.
+        let straight: Vec<_> = outs.iter().filter(|o| o.wall_id == 1).collect();
+        let curved: Vec<_> = outs.iter().filter(|o| o.wall_id == 2).collect();
+        assert_eq!(straight.len(), curved.len());
+        for (s, c) in straight.iter().zip(&curved) {
+            let n = c.polygon.len();
+            let ends = [s.polygon[1], s.polygon[2]];
+            let starts = [c.polygon[0], c.polygon[n - 1]];
+            for e in ends {
+                assert!(
+                    starts.iter().any(|p| p.dist(e) < 1e-6),
+                    "layer {} of the arc does not start on the straight wall's end",
+                    c.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_outline_of_a_curved_wall_is_its_mitered_arc_band() {
+        let walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 10.0),
+            arc(2, (100.0, 0.0), (160.0, 70.0), 10.0, 14.0),
+        ];
+        let out = wall_outlines(&walls, 0.5);
+        let band = curved_wall_polygon(&walls, 2, 0.5).unwrap();
+        assert_eq!(out[1].polygon, band);
+        assert!(
+            out[1].polygon.len() > 8,
+            "the arc is faceted, not a rectangle"
+        );
+        // The straight neighbour keeps its four corners.
+        assert_eq!(out[0].polygon.len(), 4);
+        // A lone arc's outline is the unjoined band.
+        let lone = vec![walls[1].clone()];
+        assert_eq!(wall_outlines(&lone, 0.5)[0].polygon, lone[0].plan_polygon());
+    }
+
+    #[test]
+    fn curve_facets_follow_the_radius_and_zoom() {
+        let (a, b) = (Point::new(0.0, 0.0), Point::new(240.0, 0.0));
+        let c = crate::walls::WallCurve::from_radius(240.0, 120.0, true).unwrap();
+        let base = c.facet_count(a, b);
+        assert!(base >= 24);
+        // A loose tolerance keeps the facet angle's count; a tight one adds.
+        assert_eq!(c.facet_count_for_sag(a, b, 5.0), base);
+        let fine = c.facet_count_for_sag(a, b, 0.01);
+        assert!(fine > base * 2, "{fine} vs {base}");
+        // A 40 ft radius needs more facets than a 5 ft one for the same sweep.
+        let big = crate::walls::WallCurve::from_radius(960.0, 480.0, true).unwrap();
+        let small = crate::walls::WallCurve::from_radius(120.0, 60.0, true).unwrap();
+        let (e, f) = (Point::new(960.0, 0.0), Point::new(120.0, 0.0));
+        assert!(big.facet_count_for_sag(a, e, 0.05) > small.facet_count_for_sag(a, f, 0.05));
     }
 }

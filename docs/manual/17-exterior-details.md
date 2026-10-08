@@ -80,14 +80,14 @@ Each object has its own Specification dialog on the shared frame (Corner Board, 
 |---|---|
 | General | The size fields of the object (below). |
 | Materials | The **Material**, from a short built-in list (Painted White Trim, Oak Flooring, Wood, Concrete, Stone, Metal, Glass, Ceramic Tile 12x12) and the library's own materials. Wall hatching has no Materials tab. |
-| Line Style | Shown, disabled: details have no stored line style yet. |
+| Line Style | **Own color**, **Own line weight** (5 to 200 hundredths of a millimeter) and **Line style** (As the layer, Solid, Dashed, Dotted, Dash-dot): the detail's own look in the plan when it differs from its layer's. Nothing set means the layer's color, weight and dash. |
 | Layer | The layer the object is drawn on. |
 
 General, by object:
 
 - **Corner Board**: Width, Thickness, Bottom height, Height, and the lumber in cubic feet.
 - **Quoin**: Long block, Block height, Depth, Bottom height, Stack height, **Alternate long and short blocks**, and the number of courses.
-- **Molding**: **Profile** (Crown, Base, Chair, Casing; changing it resets the stock size; a Custom profile can only come from data, there is no profile editor), Height, Projection, Bottom height, and the molding's length. It projects to the left of the drawing direction.
+- **Molding**: **Profile** (Crown, Base, Chair, Casing; changing it resets the stock size), Height, Projection, Bottom height, and the molding's length. It projects to the left of the drawing direction. The **Cross section** block turns a preset into a **custom profile** (Edit as custom profile) and lists its points as Projection and Height from the bottom edge at the wall, with a + to add a point after one and a button to remove one; Reset to the box goes back.
 - **Material Region**: on a floor, **Cut finish layers** (the region sits flush with the floor instead of on it); on a wall, which face it is on (picked by the side you clicked), **From** and **To** along the wall, and **Bottom** and **Top** heights; both: **Thickness**.
 - **Wall Hatching**: **Pattern** (Lines, Cross Hatch, Brick, Block, Shingle, Lap Siding, Board and Batten, Tile, Herringbone, Insulation, Concrete, Earth, Grass), **Scale** (0.1 to 10) and **Angle**.
 - **Deck**: **Top height**, **Board thickness** and **Railing around the edge**.
@@ -99,14 +99,13 @@ OK is refused with a reason for a size of zero or less.
 
 - **Plan**: floor regions, decks and solids draw under the walls; wall hatching, wall regions, corner boards, quoins and moldings draw over them, in their layer's color. Regions and hatching hatch with the pattern (hatching is skipped when you are zoomed far out). A deck is hatched with its boards (a 5 1/2" pitch). A selected object is outlined.
 - **3D**: a corner board is three boxes (a board on each outer face and the square where they meet) standing off the siding; quoins are the same "L" stacked course by course, long and short blocks swapping faces on alternate courses; a molding is its
-  profile swept along each segment; a region is a thin plate (on the floor it lies on the finished floor, or flush with it when it cuts the finish layers; on a wall it stands off the chosen face); a deck is a slab of decking boards, and with a railing
+  profile swept along each segment, mitered at the corners of a polyline (a closed line has no end caps; corners sharper than the bisector limit are cut off at four times the section's projection); a region is a thin plate (on the floor it lies on the finished floor, or flush with it when it cuts the finish layers; on a wall it stands off the chosen face); a deck is a slab of decking boards, and with a railing
   it gets posts at most 6' apart and a 36" high top rail; solids are boxes, 24-sided cylinders and cones, a 24 x 12 sphere, prisms, pyramids and flat faces. Wall hatching is a plan drawing and has no 3D form.
 
 ## 17.6 Differences from Chief
 
 - No mini elevation window for a Wall Material Region: you drag along the wall and set the heights in the dialog.
-- Moldings do not miter at polyline corners (each segment is swept separately), and a Custom profile has no editor.
+- A preset molding profile is a plain box until you edit it as a custom profile; the profile editor edits points in numbers, not on a drawing.
 - Wall material regions are not drawn on curved walls.
 - Pyramid is an extra solid beyond Chief's list; **3D Solid Feature** (chapter 6.7) places a library item as a solid rather than drawing a primitive.
-- The Line Style page of every dialog is disabled.
 - Trim follows a wall only when Select Objects moves it (17.3).

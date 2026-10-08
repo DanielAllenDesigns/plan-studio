@@ -70,16 +70,55 @@ what the latest rounds finished and what is in flight.
 - [x] No flyout entry of the built tool groups is a stub (`ALLOWED_NOT_IMPLEMENTED` is empty); 1,852 tests
 - [x] The manual brought up to Round 7, with an exterior-details chapter (and, after the commit, to Round 8; the README, this file, the changelog and the release checklist)
 
-### Round 9 (in flight)
+### Round 9 (done, commit `0ceb404`)
 
-- [ ] 3D picking: click an object in the 3D view to select it in the plan (the plan-side lookup `object_for_mesh_id` exists; the panel hook does not)
-- [ ] Terrain selection: pick, move and delete single terrain objects with Select Objects (an `ObjectRef` for terrain objects)
-- [ ] Landscape materials: a green grass, mulch and foliage material in place of the brown stand-ins
-- [ ] Billboards that turn to face the camera (they keep their stored angle in the cached 3D scene today)
-- [ ] An integration-queue sweep: the open items of `docs/integration-queue.md` (for example the Library Browser listing your saved pictures, guard rails around a stairwell, Plan Check skipping landings)
-- [ ] A performance pass
-- [ ] A parity audit against Chief Architect X18
-- [ ] Documentation: the manual and this file brought up to the Round 9 commit
+- [x] 3D picking: click an object in the 3D view to select it in the plan; Shift-click, double-click and `Delete`
+- [x] Terrain selection: pick, move and delete single terrain objects with Select Objects
+- [x] Landscape materials (Grass, Mulch, Foliage, Water, Asphalt, Gravel) and billboards that turn to face the camera
+- [x] An integration-queue sweep: Roof Return settings, Dutch gable, upper pitch, knee walls and the Wall Roof tab; editable cabinet sides and back, countertop corners and an Ogee edge, the Soffit Polygon;
+      associative dimensions, Find/Replace Text, Edit toolbar buttons for the CAD edit tools; schedule row click, grouping and totals, Room Finish, Note and Stair schedules, schedule layout boxes; layout box rotation and portrait, the extra Project Information macros,
+      layout JSON import and export; a stairwell guard railing, dashed hidden treads, landing handles; detail line styles, molding miters, custom molding profiles
+- [x] A performance pass (linear room detection and wall joins, cached signatures, a 591-wall benchmark)
+- [x] A parity audit against Chief Architect X18 (`docs/parity-status.md`, 765 ids)
+
+### Round 10 (done in the working tree; the commit is not made yet)
+
+- [x] Edit commands: Cut, Copy, cursor-attached Paste, Paste Hold Position, Paste As Group, Copy and Paste in Place (`C, P, P`), Duplicate, Select All, Select Same Type, Group, Delete Objects, Transform/Replicate Object, Reflect About Object, Point to Point Move, Center Object,
+      Make Parallel and Perpendicular, Align/Distribute, Move to Front and Back, Lock and Unlock, Send to Layer, Action History, the right-click context menu
+- [x] Doors and windows: all ten door styles and eleven window flavors with plan symbols and 3D units, labels, jamb handles, typed widths, Mull and Unmull, Center on Wall Segment, Flip Hinge, Reverse Side (default sizes are estimates)
+- [x] Walls: typed length and angle, Shift and Alt, the angle label, Snap Settings, Edit Behaviors, Break Wall, Remove Break, Reverse Layers, Change Line/Arc with a bulge handle, Make Arc Tangent, Convert to Polyline, the Arc section
+- [x] Dimensions: Locate Objects, associative dimensions, three-string Auto Exterior (turned shells too), the openings string of Auto Interior, printed-size text, the Dimension Specification's located objects, extension toggle and Text Style tab
+- [x] Roofs cut walls in 3D (gable triangles, hip clipping, attic walls, butting roofs, soffit, fascia, rake, frieze, ridge caps, flashing)
+- [x] Rooms and floors: room function defaults, Floor Defaults, Build New Floor options and foundation, Insert New Floor Below, the Reference Display dialog, nested rooms, draggable room labels and macros, Floor and Ceiling Structure Define
+- [x] Layout and print: text, perspective, picture and Materials List boxes, layout CAD, a rotation knob, the Print dialog, Print Preview, PDF bookmarks; the Materials List with a Master List, CSV, PDF and Send to Layout; the construction set grows to eight sheets
+- [x] Underlay pictures with calibration, the material tools (Material Painter, Adjust Materials, Material Builder), Preferences, and the rest of the Chief menu bar; cabinet depth and corner handles, fit to a gap and automatic countertop joining
+- [x] The manual and this file brought up to Round 10 (and the Round 9 queue sweep)
+
+### Round 11 (partly done in the working tree; the commit is not made yet)
+
+Landed:
+
+- [x] Textures in the 3D view and the ray tracer: Chief's own texture files read from your install at run time (never copied) with generated fallbacks, planar mapping at the real tile size, a Textures switch, pictures and billboards with their own PNG or JPEG bitmaps, and a decoder for PNG and JPEG (baseline and progressive) written for the program
+- [x] Door and window follow-ups: the Sash, Lites, Lintel, Arch, Hardware and Shutters tabs built in 3D, Calculate from Width, niche depth, door-plus-sidelite mulling with one shared casing, standard widths with snap, label layers with a draggable label and Reset Label Position, the new opening selected after placement
+- [x] Roof and room follow-ups: Roof Defaults (eave cut, rafter tails, gutters, fascia and soffit, Auto Attic Walls, attic and lower wall types, Roof Cuts Wall at Bottom, baseline at the plate), per-plane eave options, half, pony, foundation and curved walls cut by the roof, Roof Over This Room and Flat Roof Over This Room, garage and room stem walls in 3D, snapping to Reference Display walls, the Ref column of Layer Display Options, `Shift+Cmd+Y`
+- [x] File management: atomic saves, `Archives/` copies (the newest 20), Save a Copy, Revert, Close Plan, Backup Entire Plan, Manage Auto Archives, autosave every 5 minutes, recovery after a crash, Open Recent with Clear Menu, drag and drop, a Finder double-click, unsaved-changes prompts, the title dot and "Saved n min ago"; the Release workflow runs the tests
+- [x] Dimension and snap follow-ups: Auto NKBA Dimensions, curved walls in Auto Exterior, printed-size text picking, DXF and PDF honoring hidden extension lines and text-style sizes, Locate Objects groups for temporary and elevation dimensions, CAD intersection, Extension and Points/Markers snaps, Reverse, Convert to Manual, Align and Distribute Dimensions
+- [x] Layout follow-ups: page circles, arcs, leaders and revision clouds with handles, the layout layer set with Layer Display Options, text wrap, shrink and as typed, every door and window symbol on pages, PNG and JPEG picture boxes, per-box DPI and samples with a threaded Update Views, Print Model, the printer list, the sheet index box, Daniel's ten-sheet construction set in the live layout, Send to Layout from a Project Browser camera
+- [x] The manual brought up to Round 11 so far (file management 12.2a, Roof Defaults 8.4a, textures 10.8a)
+
+Still in flight (four builders are working in the tree; none of this is in the manual yet):
+
+- [ ] Chief `.plan` import: read a plan's content, not only its defaults (`plan-chiefplan::import` is in the tree; no menu command calls it)
+- [ ] Electrical and framing follow-ups (`plan-electrical`, `plan-framing`)
+- [ ] The Library Browser work (a user library, OBJ and glTF model import)
+- [ ] Theme, docks and toolbar rendering
+
+Left over from the Round 11 plan:
+
+- [ ] Open doors, casing, sills and thresholds in the editor's 3D view, threshold marks in plan, a transom over a door, door sizes checked against Chief
+- [ ] Attic floors from Build Roof; bump maps; exact colors for painted materials
+- [ ] Replace Fonts; ties to stairs, roof planes and framing
+- [ ] Layout: Save As Template, opening labels on pages, CAD-detail boxes from the Send to Layout dialog, the File and Layout menu rows for Print Model, Layer Display Options and Add Sheet Index, Print Image of the 3D view
 - [ ] The live manual QA pass on macOS, Windows and Linux ([docs/release-checklist.md](docs/release-checklist.md)), then the first tagged release
 
 ## Phase 0 — Foundation (done)
@@ -117,19 +156,21 @@ what the latest rounds finished and what is in flight.
 - [x] PDF construction set to scale; View toggles (Color, Line Weights, Drawing
       Sheet, Print Preview)
 - [ ] DWG import and export
-- [ ] Associative dimensions (they do not follow a moved wall yet)
+- [x] Associative dimensions: they follow the wall, opening, cabinet or fixture they were located on (Round 9, extended in Round 10)
 - [x] Fillet, Chamfer, Offset, Trim, Extend, Break, Reverse, Make Parallel / Perpendicular, converts, Hatch (Round 7)
-- [ ] Printed-size text (text that stays 1/8" at any scale), Find/Replace Text, Replace Fonts
+- [x] Printed-size text (text that stays 1/8" at any scale; Round 10) and Find/Replace Text (Round 9); Auto NKBA Dimensions, Align and Distribute Dimensions and the Extension and Points/Markers snaps (Round 11)
+- [ ] Replace Fonts
 - [x] Curved, foundation, pony, glass, glass pony and half walls, room dividers,
       railings, deck railings and edges, and fencing as drawing tools (Round 5)
-- [ ] Mitered joins and 3D door and window cuts on curved walls; an editable arc
-- [ ] Break Wall, Reverse Layers, the Fix Wall Connections button; typed length while
-      drawing
-- [ ] Other door and window styles as tools (sliding, pocket, bifold, garage,
-      barn, bay, bow, box ...), plan labels, mulling, resize handles
+- [x] Mitered joins on curved walls and an editable arc (Change Line/Arc, a bulge handle, the Arc section; Round 10)
+- [ ] 3D door and window cuts on curved walls
+- [x] Break Wall, Remove Break, Reverse Layers, Fix Wall Connections, typed length and angle while drawing, Shift and Alt, Snap Settings and Edit Behaviors (Round 10)
+- [x] All door and window styles as tools (sliding, pocket, bifold, garage, barn, bay, bow, box ...), plan labels, mulling and resize handles (Round 10)
+- [x] Door-plus-sidelite mulling with one shared casing, and the shaping tabs (Round 11)
+- [ ] Casing and threshold marks in plan
 - [x] Floor Material Region (Round 6)
-- [ ] Floor Defaults, function-driven room behavior, nested-room holes
-- [ ] Reference Display of the floor above, and its floor choice
+- [x] Floor Defaults, function-driven room behavior and nested rooms (Round 10)
+- [x] Reference Display of the floor above or any floor, and its options dialog (Round 10), and snapping to its walls (Round 11)
 - [ ] Foundation undo leaves the active floor index clamped instead of shifted
 
 ## Phase 2 — 3D from the plan (done, with gaps below)
@@ -148,11 +189,14 @@ what the latest rounds finished and what is in flight.
 - [x] Stairs, cabinets, terrain, roads and landscape, pictures and 3D solids in the 3D view (Round 8)
 - [ ] Electrical devices in the 3D view (the builder exists in its crate); Build Framing's own members in 3D
 - [x] Walkthroughs (play and record), Add Lights and Adjust Lights, Create Auto Elevations and Wall Elevation cameras, vector elevations (Round 6)
-- [ ] Material Painter and textures in the viewport, 3D picking (Round 9)
+- [x] 3D picking (Round 9) and the Material Painter, Adjust Materials and Material Builder (Round 10)
+- [x] Textures in the viewport and the ray tracer (Round 11)
+- [ ] Exact colors for painted materials, bump maps, pictures in the ray tracer
 - [ ] Walkthrough recording at better than 8 samples per pixel (it uses the path tracer today, 640 x 480, as a PNG sequence)
 - [ ] glTF/OBJ import for symbols
 - [x] Stair railings, walls and half-walls on a stair, the stairwell cut in the floor (Round 8)
-- [ ] Stair Schedule, guard rails around the stairwell opening, a railing across a landing in the plan symbol
+- [x] Stair Schedule and a guard railing around the stairwell opening (Round 9)
+- [ ] A railing across a landing in the plan symbol
 
 ## Phase 3 — Roofs and structure (done, with gaps below)
 
@@ -167,13 +211,15 @@ what the latest rounds finished and what is in flight.
 - [x] Dormers (Auto Dormer, Explode Dormer), ceiling planes, roof returns, per-edge
       roof settings, roof holes cut in 3D (Round 5)
 - [x] Join Roof Planes, Auto Floating Dormer, ceiling planes from Build Roof (Build Ceiling Planes), Extend Slope Downward, Auto Roof Return, Explode Dormer keeps its walls
-- [ ] The Wall Roof tab, Dutch gable, knee wall and upper pitch, gutters, fascia and soffit
+- [x] The Wall Roof tab, Dutch gable, knee wall and upper pitch (Round 9); roofs cut the walls in 3D, with fascia, soffit, rake, frieze, ridge caps and flashing (Round 10)
+- [x] The eave cut, rafter tails and gutters in 3D, Roof Defaults and per-plane eave options (Round 11)
 - [x] Manual framing tools (General Framing, Post, Joist, Rafter, Roof Truss ...),
       with manual framing in the 3D view and the DXF
 - [x] Picking placed framing with Select Objects, with handles (Round 6)
 - [ ] A framing defaults dialog, corner and T backing
 - [x] Terrain in 3D, spline terrain tools, Terrain Break, terrain walls and curbs, landscaping objects (Round 8)
-- [ ] Terrain walls that cut the surface and cut-and-fill features; selecting single terrain objects with Select Objects (Round 9)
+- [x] Selecting single terrain objects with Select Objects (Round 9)
+- [ ] Terrain walls that cut the surface and cut-and-fill features
 - [ ] Circuits UI and the electrical schedule
 
 ## Phase 4 — Documentation (partly done)
@@ -185,16 +231,19 @@ what the latest rounds finished and what is in flight.
       layer colors and weights, poche and shadow fills, construction set PDF
 - [x] An interactive Layout in the editor: page tabs, box editing, Send to
       Layout, Open Layout, and the layout stored in the plan file (Round 7)
-- [ ] More than one layout per plan; box rotation; text, image, CAD-detail and schedule boxes from the editor
+- [x] Box rotation (quarter turns), portrait sheets, and text, perspective, picture and Materials List boxes with layout CAD from the editor (Rounds 9 and 10)
+- [ ] More than one layout per plan; CAD-detail boxes from the editor
 - [x] Print Layout and Export Layout PDF (a PDF of the printed pages; Round 7)
-- [ ] Print to a printer, and the row 1 Print button
+- [x] Page leaders, revision clouds, circles and arcs, the layout layer set, text fit, Print Model, a printer list and the construction set in the live layout (Round 11)
+- [x] The Print dialog: PDF, the system printer (CUPS `lp`) or the viewer, with paper, scale, tiling, color, line weights and page range; Print Preview, Print Image, PDF bookmarks, and the row 1 Print button (Round 10)
 - [x] Place a schedule on the plan (door, window, room, cabinet, electrical, framing, plant, fixture, furniture, general) with callout labels (Round 7)
 - [x] Placed schedules are normal selectable objects, and the layout and the plan share one undo stack (Round 8)
-- [ ] Room-finish and note schedules, grouping and totals, click-a-row-selects-the-object, schedules in the DXF and the construction set, a schedule layout box
+- [x] Room Finish, Note and Stair schedules, grouping and totals, click a row to select the object, a schedule layout box (Round 9); the Materials List with a Master List and a construction set sheet (Round 10)
+- [ ] Schedule tables in the DXF and in the construction set's plan sheets
 - [ ] Plan notes, callouts and markers tied to elevation and section cameras
 - [x] Line weights, colors and dashes in PDF output from the layer pens
 - [x] Project Information: client, address, job number, date, revisions and custom fields fill the title block (Round 7)
-- [ ] The extra Project Information macros (`%client.phone%`, `%company%`, `%custom.<name>%` ...) in the title block
+- [x] The extra Project Information macros (`%client.phone%`, `%company%`, `%custom.<name>%` ...) in layout text (Round 9)
 
 ## Phase 5 — Library and ecosystem (partly done)
 
@@ -202,6 +251,7 @@ what the latest rounds finished and what is in flight.
 - [x] `plan-calib` reads Chief `.calib` / `.calibz` catalogs (403 catalogs on
       Daniel's install), with decoded sizes, plan symbols and meshes
 - [x] Project templates and plan defaults; imperial and metric dimension units
+- [x] Safe saves, archives, autosave, crash recovery, unsaved-changes prompts, Save a Copy, Revert, Backup and a Finder double-click (Round 11)
 - [x] Chief hotkeys loaded and customizable
 - [x] Chief catalogs in the Library Browser (tree, search, thumbnails, place),
       with placed Chief meshes in 3D and a settings toggle (Round 5)

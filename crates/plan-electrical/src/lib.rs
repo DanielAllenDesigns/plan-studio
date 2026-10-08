@@ -19,9 +19,11 @@ mod place;
 mod symbol;
 
 pub use circuit::{assign_circuits, circuits, legend, schedule, Circuit, CircuitOptions};
-pub use device::{Device, DeviceKind, COUNTER_OUTLET_HEIGHT, OUTLET_HEIGHT, SWITCH_HEIGHT};
-pub use layer::{connect, connect_in, Connection, ElectricalLayer};
-pub use mesh3d::meshes;
+pub use device::{
+    Device, DeviceKind, COUNTER_OUTLET_HEIGHT, FINISHES, OUTLET_HEIGHT, SWITCH_HEIGHT,
+};
+pub use layer::{connect, connect_in, disconnect, Connection, ElectricalLayer};
+pub use mesh3d::{electrical_meshes, finish_material, meshes};
 pub use place::{
     auto_place_outlets, auto_place_room_light, auto_place_switch, place_free, place_on_wall,
     AutoOutletOptions, RoomFunction, WallSide,

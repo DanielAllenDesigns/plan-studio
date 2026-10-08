@@ -49,10 +49,11 @@ It handles rectangles, L, T, U, H, plus-shaped and stepped footprints, general s
 per-edge pitch and overhang, and gable or shed edges. When the exact solution fails (about 1% of
 unusual pitch mixtures) the roof degrades to one uniform pitch, and if that fails too, to a hip roof
 on the bounding rectangle. Limits: no holes in the footprint; one `build_roof` call per detached
-building; fascia is a fixed nominal 6"; Dutch gable, knee wall and upper-pitch (gambrel and
-mansard) breaks are not modeled. A rare case (two parallel same-facing planes of different pitch,
+building; fascia is 6" by default (a Roof Defaults size, 8.4a); an upper-pitch (gambrel, mansard) or Dutch gable roof has one break height for the whole roof and is built in two stages (below). A rare case (two parallel same-facing planes of different pitch,
 or a hip next to a gable, on either side of a short jog) also falls back to the approximation; the
 `plan-roof` README gives the sweep results.
+
+**Rooms steer the roof** (Room Specification, chapter 4.4). A room with **Roof Over This Room** off is left out of the footprint: its exterior walls stop shaping the roof and a partition between it and a roofed room becomes the roof's edge (when that leaves no closed outline, the whole exterior is used); a roofless room that lies inside a plane gets a hole cut instead. A room with **Flat Roof Over This Room** on gets a level plane at its ceiling (`plan_roof::flat_roof_plane`) in place of the pitched roof, and the Flat Roof room type has no ceiling and a membrane deck. Auto Rebuild Roofs reruns when these flags change.
 
 ## 8.2 Tools
 
@@ -116,9 +117,8 @@ rake.
 
 Clicking an exterior wall (away from any eave) still flips it between **Hip** and **Full Gable**. A gable wall
 rises to the ridge instead of carrying a plane, and its neighbors extend to the rake. The tool flips every wall
-along the same footprint edge. Other wall directives (Dutch Gable, High Shed/Gable, Knee Wall,
-Extend Slope Downward) exist in the model; only High Shed/Gable is honored by the builder today
-(as a shed edge). The Roof tab of the Wall Specification is (disabled).
+along the same footprint edge. The other wall directives (Dutch Gable, High Shed/Gable, Knee Wall,
+Extend Slope Downward) are set on the Roof tab of the Wall Specification (8.7); High Shed/Gable is built as a shed edge.
 
 ### Roof Hole and Skylight
 
@@ -164,11 +164,10 @@ replaces the ones it made before. Ceiling planes you drew by hand stay. Auto Reb
 Click an eave corner to add a **roof return** 24" long at that corner. A plain click makes a full return (a quad that
 continues the main plane around the corner), `Shift` a half return (its triangle) and `Alt` a boxed return (a level boxed
 return). It becomes a new roof plane ("Roof return made"; "A roof return does not fit at that corner" when it cannot).
-Chief's slope, extend, shadow-board, ridge-cap, frieze and gutter options are not modeled, and the length is fixed.
+In Roof Return mode the palette has a **Roof Return Settings...** button: the Roof Return dialog sets the **Type** (Full, Half or Boxed) and the **Length** (at least 2"; 24" until you change it) that the next clicks make; `Shift` and `Alt` still make a half or a boxed return. Chief's slope, extend, shadow-board, ridge-cap, frieze and gutter options for a return are not modeled.
 
 **Auto Roof Return.** A gable-end wall (Full Gable) whose roof directive has *auto roof return* set makes a full 24" return on the planes at both of its corners when Build Roof runs. These returns
-are automatic planes with no source edge and are replaced by every rebuild. The flag is a field of the wall's roof directive; the Roof tab of the Wall Specification that would set it is still disabled, so today
-it comes from data.
+are automatic planes with no source edge and are replaced by every rebuild. The flag and the return length are on the **Roof** tab of the Wall Specification of an exterior wall (8.7).
 
 ### Join Roof Planes
 
@@ -192,23 +191,57 @@ Use it for a dormer that sits on top of the roof surface instead of breaking thr
 - The 3D view shows each plane as a slab with its roof holes cut out, a skylight's curb, frame and glass on top, the
   ceiling planes, and the dormers (walls and roof planes; their footprint is cut from the main plane). You can check a
   roof in Perspective, Doll House and elevation views (chapter 10).
-- Ridge caps, gutters, fascia and frieze, soffits and rafter tails are (planned).
+- **Walls follow the roof in 3D.** The scene builder reads the roof and ceiling planes stored on the floors and shapes the
+  top of every ordinary wall to them, so a roof no longer floats over flat-topped walls:
+  - A wall along a **gable end** (a wall whose directive is Full Gable, Dutch Gable, High Shed/Gable or Knee Wall, or an exterior wall on an edge
+    that Gable/Roof Line made a gable) rises to the underside of the roof and ends in the gable **triangle**; the wall face has vertices along the
+    slopes. An eave wall stops at its plate.
+  - Under a **hip** or shed roof every wall is clipped to the plane above it: no wall vertex ends up above the roof's underside, and openings
+    in the wall are still cut.
+  - An **interior** wall rises to the ceiling planes over it (a vaulted ceiling), and is cut by the roof above.
+  - A wall with no plane above it keeps its flat top. A wall's own **Bottom Height** and the planes of other floors are honored: a plane that is not at least 1" above the wall's bottom does not shape it (a dormer wall stands on the roof surface).
+  - **Half, pony, foundation and curved walls** are cut by the roof like a standard wall (a curved wall by its facets) but are never raised to a gable: a half wall stays a half wall under the gable.
+  - **Roof Cuts Wall at Bottom** (Roof Defaults, 8.4a; on by default): the bottom of a wall that stands over a lower roof (a second-floor wall on a first-floor roof) is cut along the top surface of that roof instead of ending in a flat line.
+  - **Attic and lower wall types.** The part of a wall above its plate (a gable above the top plate) takes the **Attic Wall Type** of Roof Defaults, and the part below a butting roof's line takes the **Lower Wall Type**; empty keeps the wall's own type.
+  - **Butting roofs.** Where a lower roof meets a wall that rises well above it (more than 1" above the plane and running at least 6" through it), the
+    plane is **trimmed** a half inch short of the wall face instead of the wall being cut, and a **flashing** strip follows the butt line. The
+    wall of the upper floor over that lower roof gets an **attic wall** that fills the gap between the roof and the wall's bottom (Auto Attic Walls, on by default; none is made where the roof clears the wall).
+- **Eave detail**, drawn with each roof plane and picked with it: the **eave cut** (the end of the roof structure at the eave: Plumb, a vertical end with the fascia hanging plumb; Level, a horizontal end; or Square to the rafter, the fascia perpendicular to the plane), **fascia** along the eaves (6" high, 1 1/2" thick by default), an eave **soffit** under the overhang (level, or sloped with the roof), or
+  exposed **rafter tails** in its place, **rake** fascia and rake soffit on gable ends, a **frieze** board on the wall (off by default), **gutters** (off by default; 5"), and **ridge and hip caps** on planes
+  that have Include Ridge Caps ticked in the Roof Plane Specification (8.5). The roof slab is 6" thick along the plane normal by default.
+  The sizes and switches are the **Roof Defaults** (8.4a), copied into the roof when Build Roof runs; each plane can override the eave options (8.5). Roofs stored before Roof Defaults existed keep the older eave-tip baseline.
+- **Rafter tails** are boxes `Rafter Width` wide every `Spacing` inches on center (24" by default; the first flush with the end) from the eave tip back to the wall face, hanging `Rafter Depth` below the underside of the roof (1 1/2" x 5 1/2"); where tails are on, the soffit is left out under that eave.
+- **Build Roof baseline.** With **Roof baseline at top plate** on (the default), Build Roof seats the underside of the roof structure on the top plate at the wall, so gable corners meet the plate with no gap and no overlap; older plans, and the option off, put the eave tip at plate height instead, which stands gable corners about 6" above the plate.
 - Build > Framing > Build Framing frames the roof planes stored on the floor (rafters from `plan-framing`;
   chapter 11.11), and the manual roof framing tools (Rafter, Roof Beam, Roof Truss, Roof Truss Direction, Truss Base ...)
   are in the Roof Framing flyout (11.11).
 
 ## 8.4 Dialog: Build Roof
 
-Opened from the Build Roof mode. Three tabs.
+Opened from the Build Roof mode. Four tabs.
 
 | Tab | Fields |
 |---|---|
 | Roof | **Roof**: Build Roof Planes, Auto Rebuild Roofs, Ignore Top Floor (build over the floor below the top one), **Build ceiling planes for vaulted rooms** (Build Roof makes the ceiling planes of 8.2). **Defaults for walls without their own roof settings**: Pitch, Overhang, Raise Roof Off Plate. A note says which floor the roof goes over. |
 | Options | **Framing**: Build Framing (stored; the Build > Framing commands frame the stored roof planes whatever it says, 11.11), Rafters (disabled, on), Trusses (disabled, off). |
 | Materials | **Roofing**: Material (Asphalt Shingles, Concrete Tile, Standing Seam Metal, Wood Shakes, Slate). |
+| Detail | The Roof Defaults form (8.4a), for this roof: it is copied into the roof settings of the floor when Build Roof runs. |
 
 OK is refused with "Pitch must be between 0.5 and 24 in 12" for an out-of-range pitch. The
 preview draws a hip outline with the pitch label.
+
+## 8.4a Default Settings: Roof Defaults
+
+**Edit > Default Settings > Roofs > Roof Defaults** opens a page (the same form as Build Roof's Detail tab, where the two wall type fields are text boxes instead of lists). Its values are saved with your plan defaults (`PlanDefaults::roof_detail`), Build Roof copies them into the roof settings of its floor, and the 3D view draws from them. **OK** also gives the roofs already in this plan the new detail, as one undo step named "Roof Defaults", when **Also use for the roofs in this plan** is ticked (it is, by default); Cancel changes nothing. OK is blocked for a zero roof thickness, a negative fascia size, or rafter tails with a spacing under 1" or a zero width or depth.
+
+| Section | Fields (defaults) |
+|---|---|
+| Roof Structure | **Thickness** (6"), **Roof baseline at top plate** (on). |
+| Eaves | **Eave Cut** (Plumb, Level, Square; Plumb), **Fascia** (on) with **Fascia Height** (6") and **Fascia Thickness** (1 1/2"), **Rake Fascia** (on), **Soffit** (on) and **Sloped Soffit** (off; needs Soffit), **Frieze Board** (off), **Ridge and Hip Caps** (on; drawn only on planes with Include Ridge Caps), **Gutters** (off) with **Gutter Size** (5"), **Flashing at Butting Roofs** (on). |
+| Rafter Tails | **Exposed Rafter Tails** (off; they replace the soffit) with **Spacing (on center)** (24"), **Rafter Width** (1 1/2") and **Rafter Depth** (5 1/2"). |
+| Walls Under the Roof | **Auto Attic Walls** (on: an attic wall fills the gap between a lower roof and the bottom of the wall above it), **Attic Wall Type** and **Lower Wall Type if Split by Butting Roof** (each a list of the plan's wall types; empty keeps the wall's own type), **Roof Cuts Wall at Bottom** (on). |
+
+Limits: Roof Cuts Wall at Bottom follows the centerline of straight walls (a curved wall's bottom stays flat); a wall gets one material split (a butting roof wins over the plate split); an unsplit exterior wall that spans a roofless room and a roofed one keeps its roof; a changed Roof Defaults reaches the roofs of a plan only through the OK check box or the next Build Roof.
 
 ## 8.5 Dialog: Roof Plane Specification
 
@@ -219,7 +252,7 @@ Open by double-clicking a plane.
 | General | Pitch (changing it re-solves the plane from the baseline), Baseline Height, Overhang (read-only), Surface Area (true sloped area), Origin (Automatic or Manual), and a table of the plane's vertices (number, X, Y, elevation). |
 | Holes | Lists the plane's roof holes and skylights, each with its size and a **Delete** button. A skylight also has **Curb Height** (up to 48"), **Glass Thickness** (up to 6") and **Frame Width** (up to 12"). "This plane has no holes. Use the Roof Hole and Skylight tools." when empty. |
 | Build Roof Edge | For planes made by Build Roof: the settings of the wall edge the plane rises from. **Pitch** and **Overhang from wall face** are optional overrides (tick to use), and **Gable end (no plane rises from this edge)** turns the edge into a gable. OK rebuilds the automatic roof with these edge settings (the plane disappears if you made it a gable). Other planes show "Only planes made by Build Roof rise from a wall edge." |
-| Options | **Eaves and Ridge**: Include Ridge Caps, Include Gutter (both stored, not modeled yet). |
+| Options | **Eaves and Ridge**: Include Ridge Caps (draws ridge and hip caps on this plane in 3D, 8.3), and this plane's own eave choices, each "Roof Default" until you change it: **Eave Cut** (Roof Default, Plumb, Level, Square) and **Rafter Tails**, **Fascia**, **Soffit**, **Frieze** and **Gutters** (Roof Default, On or Off, as a three-way choice). Only this plane's eaves change; the rest of the roof follows Roof Defaults (8.4a). |
 | Materials | Roofing material. |
 | Layer | The layer. |
 | Label | The label text; the pitch is always appended. |
@@ -258,21 +291,36 @@ OK is refused for an out-of-range pitch or an invalid length. The preview draws 
 
 Each exterior wall carries a roof directive in the model: kind (Hip, Full Gable, Dutch Gable,
 High Shed/Gable, Knee Wall, Extend Slope Downward), pitch, overhang, an optional upper pitch with
-its start height, and flags (Include Frieze, Roof Cuts Wall at Bottom, auto roof return). Daniel's template sets
-exterior walls to Hip, 8:12, 16" overhang. Today you change a wall's directive with
-Gable/Roof Line (Hip or Full Gable) and the Build Roof defaults; the per-wall Roof tab is planned.
+its start height, and flags (Include Frieze, auto roof return; Roof Cuts Wall at Bottom is a Roof Defaults setting, 8.4a). Daniel's template sets
+exterior walls to Hip, 8:12, 16" overhang. You change a wall's directive on the **Roof** tab of the Wall Specification (exterior walls only; it is dimmed on other walls),
+with Gable/Roof Line (Hip or Full Gable), and in the Build Roof defaults. Build Roof reads them; a change to a wall directive rebuilds the automatic planes when Auto Rebuild Roofs is on.
 
-Build Roof honors two more directives from data, without a dialog to set them: **Extend Slope Downward** (the edge's plane continues a fixed 24" below its eave; Chief reaches down to the wall below)
-and the *auto roof return* flag (8.2). Dutch gable, knee wall and the upper-pitch directives are still not read by Build Roof.
+| Roof tab section | Fields |
+|---|---|
+| Roof Options | Hip Wall, Full Gable Wall, Dutch Gable Wall, High Shed/Gable Wall, Knee Wall, Extend Slope Downward (with **Drop below Eave**, 24" by default). |
+| Pitch Options | **Specify Pitch** (8:12 until you change it) for this wall's edge; **Upper Pitch** with the second pitch (12:12 by default) and **Starts at Height** above the wall's floor (the wall's height plus 48" by default) or, for a Dutch gable wall, **Starts Dutch Gable at Height**. |
+| Overhang | **Specify Overhang** and its Length (16" by default). |
+| Auto Roof Return | **Auto Roof Return** with its Length (24" by default): a full return at both corners of a gable end. |
+
+What Build Roof does with them:
+
+- **Full Gable** and **High Shed/Gable**: the edge becomes a gable (or shed) end; the wall rises to the roof in 3D (8.3).
+- **Extend Slope Downward**: the edge's plane continues the Drop below the eave instead of stopping at the wall.
+- **Knee Wall**: the wall stands under a roof plane and makes no plane of its own; Build Roof leaves it out of the footprint unless that would leave no outline.
+- **Upper Pitch** (a gambrel or mansard) and **Dutch Gable**: the roof is built in two stages. The lower roof is the plain hip roof at the lower pitches, cut by a level plane at the break (the edges' Starts-at heights give the break above the eave; the smallest wins, and
+  with none it is 60% of the roof's height). A second roof is built on the cut, with each edge at its upper pitch; a Dutch gable edge is a vertical gable end there, so the hip below it ends in a short gable. Edges that keep their pitch across the break become one plane again.
+  If the two-stage roof cannot be built (the skeleton had to approximate, or the break is at or above the peak) Build Roof makes the plain roof.
 
 ## 8.8 Differences from Chief
 
-- No Dutch gable, knee wall and upper-pitch breaks.
-- Extend Slope Downward drops a fixed 24" instead of reaching the wall below, and Auto Roof Return applies only at gable ends and makes a fixed 24" return; neither has a dialog yet (the Wall Roof tab is disabled).
+- A roof with an upper pitch or a Dutch gable has one break height for the whole roof, and the vertical face of a Dutch gable is not a plane (Full Gable ends are not infilled either).
+- Extend Slope Downward drops a length you type instead of reaching the wall below, and Auto Roof Return applies only at gable ends. Include Frieze on the Wall Roof tab is stored but not edited (the frieze is a Roof Defaults switch and a per-plane choice); Roof Cuts Wall at Bottom is a Roof Defaults switch for the whole roof, not a per-wall one.
 - Explode Dormer keeps the walls, but the gable triangle above a gable dormer's front wall is not part of it, and the plan and room detection do not read their Bottom Height. Dormers have no overhang, soffit or fascia, and a dormer cannot straddle two planes.
-- Roof Return is a fixed 24" full, half or boxed return; its options (slope, extend, shadow boards, ridge cap, frieze, gutter) are not modeled.
-- Build Ceiling Planes follows the roof planes only; walls are not cut by ceiling planes.
+- A Roof Return is a full, half or boxed return of a length you set; its other options (slope, extend, shadow boards, ridge cap, frieze, gutter) are not modeled.
+- Build Ceiling Planes follows the roof planes only. In 3D an interior wall rises to the ceiling planes over it (8.3).
 - Roof holes must sit wholly inside one plane; Chief's holes across a ridge need one hole per plane here.
 - No automatic attic floor from Build Roof.
-- Walls do not yet extend to meet the roof plane above them, so gable ends do not get their triangle in 3D.
-- Fascia, soffit, gutters and rafter tails are not modeled.
+- Half, pony, foundation and curved walls are cut by the roof but never raised to a gable; railing, glass, fencing, deck and the other special classes keep a flat top. With the baseline-at-plate rule off (and in plans built before it existed) the gable triangle's corners stand about 6" above the plate because the
+  roof slab is 6" thick (the wall rises to the roof's underside).
+- The eave cut is Plumb, Level or Square (no other angle); gutters are a plain board-shaped box hung along the eave (no profile, downspouts or slope), and rafter tails are rectangular boxes (no bird's-mouth or decorative end cut). The flat roof plane (a room's **Flat Roof Over This Room**, chapter 4.4) has no overhang.
+

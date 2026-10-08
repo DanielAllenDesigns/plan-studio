@@ -20,14 +20,18 @@ pub enum EdgeProfile {
     Bullnose,
     /// An S-curve edge: a cove under a bead.
     Ogee,
+    /// The slab runs down to the floor at both ends of the cabinet (a
+    /// cabinet's own top only; a custom top builds it square).
+    Waterfall,
 }
 
 impl EdgeProfile {
-    pub const ALL: [EdgeProfile; 4] = [
+    pub const ALL: [EdgeProfile; 5] = [
         EdgeProfile::Square,
         EdgeProfile::Beveled,
         EdgeProfile::Bullnose,
         EdgeProfile::Ogee,
+        EdgeProfile::Waterfall,
     ];
 
     pub fn name(self) -> &'static str {
@@ -36,13 +40,14 @@ impl EdgeProfile {
             EdgeProfile::Beveled => "Beveled",
             EdgeProfile::Bullnose => "Bullnose",
             EdgeProfile::Ogee => "Ogee",
+            EdgeProfile::Waterfall => "Waterfall",
         }
     }
 
     /// Number of steps the top edge is built from.
     pub fn steps(self) -> usize {
         match self {
-            EdgeProfile::Square => 0,
+            EdgeProfile::Square | EdgeProfile::Waterfall => 0,
             EdgeProfile::Beveled => 1,
             EdgeProfile::Bullnose => 3,
             EdgeProfile::Ogee => 8,
@@ -223,6 +228,17 @@ impl Cutout {
     }
 }
 
+/// What a cabinet gave up to a generated countertop: its own slab (and
+/// backsplash), kept on the custom top so the join can be undone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JoinedSource {
+    /// The cabinet that gave up its slab.
+    pub id: Id,
+    pub countertop: crate::cabinet::Countertop,
+    #[serde(default)]
+    pub backsplash: Option<crate::cabinet::Backsplash>,
+}
+
 /// A countertop made from adjacent base cabinets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneratedTop {
@@ -243,6 +259,52 @@ fn interior_point(ring: &[Point]) -> Point {
             )
         })
         .unwrap_or(Point::ZERO)
+}
+
+/// Keeps every full-height backsplash as high as it should be: from the top
+/// of its cabinet up to the underside of the nearest wall cabinet hanging
+/// over its back edge, or up to [`crate::FULL_HEIGHT_TO`] above the floor
+/// when nothing hangs there. Returns how many backsplashes changed.
+pub fn fit_full_height_backsplashes(cabs: &mut [Cabinet]) -> usize {
+    let walls: Vec<(Vec<Point>, f64)> = cabs
+        .iter()
+        .filter(|c| c.kind.is_wall_like() || c.kind == CabinetKind::Soffit)
+        .map(|c| (c.footprint(), c.elevation))
+        .collect();
+    let mut changed = 0;
+    for c in cabs.iter_mut() {
+        let Some(bs) = c.backsplash.filter(|b| b.full_height) else {
+            continue;
+        };
+        if c.countertop.is_none() && bs.lift <= 0.0 {
+            continue;
+        }
+        let top = c.elevation + c.height + bs.lift;
+        // Three probes along the back edge, just in front of the wall.
+        let probes: Vec<Point> = [0.25, 0.5, 0.75]
+            .iter()
+            .map(|k| c.to_plan(Point::new(c.width * k, 1.0)))
+            .collect();
+        let ceiling = walls
+            .iter()
+            .filter(|(_, bottom)| *bottom > top + 0.5)
+            .filter(|(ring, _)| probes.iter().any(|p| point_in_polygon(*p, ring)))
+            .map(|(_, bottom)| *bottom)
+            .fold(f64::INFINITY, f64::min);
+        let to = if ceiling.is_finite() {
+            ceiling
+        } else {
+            crate::cabinet::FULL_HEIGHT_TO
+        };
+        let height = (to - top).max(1.0);
+        if (height - bs.height).abs() > 1e-6 {
+            if let Some(b) = c.backsplash.as_mut() {
+                b.height = height;
+            }
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// Joins the countertops of touching base-like cabinets into custom
@@ -307,6 +369,18 @@ pub fn generate_countertops(cabs: &[Cabinet]) -> Vec<GeneratedTop> {
                 custom.edge = src.edge;
                 custom.edge_size = src.edge_size;
             }
+            // Remember what each source gave up, so the join can be undone
+            // and regenerated when a source moves.
+            slab.joined = sources
+                .iter()
+                .filter_map(|c| {
+                    c.countertop.map(|t| JoinedSource {
+                        id: c.id,
+                        countertop: t,
+                        backsplash: c.backsplash,
+                    })
+                })
+                .collect();
             let origin = slab.position;
             for hole in &holes {
                 if point_in_polygon(interior_point(&geom::ccw(hole)), outer) {
@@ -339,6 +413,71 @@ pub fn generate_countertops(cabs: &[Cabinet]) -> Vec<GeneratedTop> {
     out
 }
 
+/// [`generate_countertops`] for the automatic join (CB-14): only runs of two
+/// or more cabinets are joined; a lone cabinet keeps its own slab.
+pub fn join_touching_countertops(cabs: &[Cabinet]) -> Vec<GeneratedTop> {
+    generate_countertops(cabs)
+        .into_iter()
+        .filter(|g| g.sources.len() >= 2)
+        .collect()
+}
+
+/// A plan point in the local frame of `c`.
+fn local_of(c: &Cabinet, p: Point) -> Point {
+    let d = p.sub(c.position);
+    let (s, co) = c.angle.sin_cos();
+    Point::new(d.x * co + d.y * s, -d.x * s + d.y * co)
+}
+
+/// Undoes a generated countertop: every cabinet in `sources` that the top
+/// joined takes its slab (and backsplash) back, and the sink, cooktop and
+/// custom holes of the top move back to the cabinet they lie over (holes
+/// over no cabinet, such as the opening of an island, are dropped: joining
+/// again recreates them). Returns how many cabinets got their slab back.
+pub fn release_joined_top(top: &Cabinet, sources: &mut [Cabinet]) -> usize {
+    let mut n = 0;
+    for src in &top.joined {
+        let Some(c) = sources.iter_mut().find(|c| c.id == src.id) else {
+            continue;
+        };
+        if c.countertop.is_none() {
+            c.height += src.countertop.thickness;
+            c.countertop = Some(src.countertop);
+            c.backsplash = src.backsplash;
+            n += 1;
+        }
+    }
+    for cut in &top.cutouts {
+        if cut.outline.is_empty() {
+            continue;
+        }
+        let k = cut.outline.len() as f64;
+        let mid = Point::new(
+            cut.outline.iter().map(|p| p.x).sum::<f64>() / k,
+            cut.outline.iter().map(|p| p.y).sum::<f64>() / k,
+        );
+        let mid = top.to_plan(mid);
+        let owner = sources.iter_mut().find(|c| {
+            top.joined.iter().any(|j| j.id == c.id)
+                && c.top_polygon_square()
+                    .is_some_and(|poly| point_in_polygon(mid, &poly))
+        });
+        if let Some(c) = owner {
+            let outline = cut
+                .outline
+                .iter()
+                .map(|p| local_of(c, top.to_plan(*p)))
+                .collect();
+            c.cutouts.push(Cutout {
+                kind: cut.kind,
+                name: cut.name.clone(),
+                outline,
+            });
+        }
+    }
+    n
+}
+
 impl Cabinet {
     /// Gives this cabinet's countertop to a generated custom top: the cabinet
     /// loses its slab (and cutouts) and shrinks by the slab thickness so the
@@ -348,7 +487,10 @@ impl Cabinet {
             Some(t) => {
                 self.height = (self.height - t.thickness).max(1.0);
                 self.cutouts.clear();
-                self.backsplash = None;
+                // The backsplash stays, standing on the generated top.
+                if let Some(b) = self.backsplash.as_mut() {
+                    b.lift = t.thickness;
+                }
                 true
             }
             None => false,

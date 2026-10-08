@@ -79,6 +79,8 @@ const DOOR_FIELDS: &[Field] = &[
     f("type", "Type", true),
     f("wall", "Wall", true),
     f("swing", "Swing", true),
+    f("style", "Style", false),
+    f("label", "Plan Label", false),
 ];
 const WINDOW_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
@@ -89,6 +91,8 @@ const WINDOW_FIELDS: &[Field] = &[
     f("type", "Type", true),
     f("wall", "Wall", true),
     f("floor", "Floor", false),
+    f("style", "Style", false),
+    f("label", "Plan Label", false),
 ];
 const ROOM_FIELDS: &[Field] = &[
     f("mark", "Number", true),
@@ -121,10 +125,15 @@ const CABINET_FIELDS: &[Field] = &[
     f("elevation", "Elevation", false),
     f("countertop", "Countertop", false),
     f("floor", "Floor", false),
+    f("door_style", "Door Style", false),
+    f("drawer_style", "Drawer Style", false),
+    f("finish", "Finish", false),
+    f("hardware", "Hardware", false),
 ];
 const ELECTRICAL_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
     f("type", "Type", true),
+    f("count", "Count", true),
     f("label", "Label", true),
     f("height", "Mount Height", true),
     f("circuit", "Circuit", true),
@@ -137,6 +146,8 @@ const FRAMING_FIELDS: &[Field] = &[
     f("size", "Size", true),
     f("length", "Length", true),
     f("qty", "Qty", true),
+    f("linear", "Linear ft", false),
+    f("board_feet", "Board ft", false),
     f("floor", "Floor", false),
 ];
 const SYMBOL_FIELDS: &[Field] = &[

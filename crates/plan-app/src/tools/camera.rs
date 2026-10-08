@@ -41,6 +41,7 @@ use plan_core::camera::{PlanLight, WalkNode, DEFAULT_CONE_LENGTH, DEFAULT_FOV_DE
 use plan_core::extras::SectionLine;
 use plan_core::geometry::{dist_to_segment, Point};
 use plan_core::{CameraKind, CameraObject, EditingDefaults, Id, Layer, Project, Wall};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// The layer camera symbols live on (C-24).
@@ -91,6 +92,8 @@ pub enum CameraVariant {
     AutoElevation,
     /// Auto Back-Clipped Elevations: four back-clipped sections outside the building.
     AutoBackclipped,
+    /// Auto Interior Elevations: click a room, four wall elevations of it.
+    AutoInterior,
     /// Create Walkthrough Path.
     Walkthrough,
     /// Add Lights (C-64).
@@ -109,6 +112,7 @@ impl CameraVariant {
             CameraVariant::WallElevation => "Wall Elevation Camera",
             CameraVariant::AutoElevation => "Auto Elevations",
             CameraVariant::AutoBackclipped => "Auto Back-Clipped Elevations",
+            CameraVariant::AutoInterior => "Auto Interior Elevations",
             CameraVariant::Walkthrough => "Create Walkthrough Path",
             CameraVariant::AddLights => "Add Lights",
         }
@@ -380,6 +384,40 @@ pub fn add_auto_elevations(project: &mut Project, floor: usize, backclipped: boo
     };
     ensure_camera_layer(project);
     cams.into_iter()
+        .map(|cam| {
+            let existing = project
+                .cameras
+                .iter()
+                .find(|c| c.name == cam.name && is_section(c))
+                .map(|c| c.id);
+            match existing {
+                Some(id) => {
+                    project.update_camera(id, |c| {
+                        c.kind = cam.kind;
+                        c.position = cam.position;
+                        c.direction_deg = cam.direction_deg;
+                        c.section = cam.section;
+                        c.floor = cam.floor;
+                    });
+                    id
+                }
+                None => project.add_camera(cam),
+            }
+        })
+        .collect()
+}
+
+/// Adds the Auto Interior Elevations of the room of `floor` containing `at`
+/// (see `Project::auto_interior_elevations`), updating the ones a previous run
+/// made (same name) instead of duplicating them. Returns their ids in North,
+/// East, South, West order; empty when no room contains the point.
+pub fn add_interior_elevations(project: &mut Project, floor: usize, at: Point) -> Vec<Id> {
+    let Some(made) = project.auto_interior_elevations(floor, at) else {
+        return Vec::new();
+    };
+    ensure_camera_layer(project);
+    made.cameras
+        .into_iter()
         .map(|cam| {
             let existing = project
                 .cameras
@@ -790,6 +828,28 @@ impl CameraTool {
         }
     }
 
+    /// Auto Interior Elevations: click inside a room.
+    fn click_interior(&mut self, cx: &mut EditorContext, at: Point) -> ToolResult {
+        if !self.layer_ok(cx) {
+            return ToolResult::consumed();
+        }
+        if cx.project.auto_interior_elevations(cx.floor, at).is_none() {
+            cx.status = "Click inside a closed room to make its interior elevations".into();
+            return ToolResult::consumed();
+        }
+        cx.begin_change(self.variant.label());
+        let ids = add_interior_elevations(&mut cx.project, cx.floor, at);
+        if let Some(first) = ids.first() {
+            self.select(cx, *first);
+            self.outbox.post(ViewRequest::ShowCamera(*first));
+        }
+        cx.status = format!("{}: {} cameras", self.variant.label(), ids.len());
+        ToolResult {
+            switch_to: Some(ToolId::Select),
+            ..ToolResult::committed(self.variant.label())
+        }
+    }
+
     /// Adds a node to the walkthrough being drawn (a click on the last node
     /// is the second half of a double click and is ignored).
     fn walk_click(&mut self, cx: &mut EditorContext, at: Point) -> ToolResult {
@@ -910,6 +970,10 @@ impl Tool for CameraTool {
                 "Wall Elevation: click the wall face you want to see".into()
             }
             v if v.is_auto() => format!("{}: click once to make the four elevations", v.label()),
+            CameraVariant::AutoInterior => {
+                "Auto Interior Elevations: click inside a room to make its four wall elevations"
+                    .into()
+            }
             CameraVariant::Walkthrough => {
                 "Walkthrough: click each node, double-click to finish; drag at a node to aim it"
                     .into()
@@ -986,6 +1050,7 @@ impl Tool for CameraTool {
             CameraVariant::AutoElevation | CameraVariant::AutoBackclipped => {
                 return self.click_auto(cx)
             }
+            CameraVariant::AutoInterior => return self.click_interior(cx, p.world),
             CameraVariant::Walkthrough => return self.walk_click(cx, p.snapped),
             _ => {}
         }
@@ -1238,6 +1303,249 @@ impl Tool for CameraTool {
     }
 }
 
+// ----- callouts (C-17, C-20, C-21, C-24) -----
+
+/// The outline of a callout bubble.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CalloutShape {
+    #[default]
+    Circle,
+    Square,
+    Hexagon,
+}
+
+impl CalloutShape {
+    pub const ALL: [CalloutShape; 3] = [
+        CalloutShape::Circle,
+        CalloutShape::Square,
+        CalloutShape::Hexagon,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CalloutShape::Circle => "Circle",
+            CalloutShape::Square => "Square",
+            CalloutShape::Hexagon => "Hexagon",
+        }
+    }
+}
+
+/// How section and elevation callouts look in the plan (Default Settings >
+/// Camera Tools).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CalloutStyle {
+    pub shape: CalloutShape,
+    /// Radius of the bubble, plan inches.
+    pub radius: f64,
+    /// Also write the camera's name beside the bubble.
+    pub show_name: bool,
+}
+
+impl Default for CalloutStyle {
+    fn default() -> Self {
+        Self {
+            shape: CalloutShape::Circle,
+            radius: 9.0,
+            show_name: false,
+        }
+    }
+}
+
+static CALLOUT_STYLE: Mutex<CalloutStyle> = Mutex::new(CalloutStyle {
+    shape: CalloutShape::Circle,
+    radius: 9.0,
+    show_name: false,
+});
+
+/// The callout style new and existing callouts are drawn with.
+pub fn callout_style() -> CalloutStyle {
+    *CALLOUT_STYLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub fn set_callout_style(s: CalloutStyle) {
+    *CALLOUT_STYLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = s;
+}
+
+/// The plan callout of one section or elevation camera: a bubble behind the
+/// middle of its cut line (on the viewer's side) with a stem to the line,
+/// the view number and, once the camera's view is on a layout sheet, that
+/// sheet's number under a dividing line.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Callout {
+    pub camera: Id,
+    pub centre: Point,
+    pub radius: f64,
+    pub shape: CalloutShape,
+    /// The view number.
+    pub number: String,
+    /// The sheet the view is on ("A-3"), if it is on a layout.
+    pub sheet: Option<String>,
+    /// The camera's name, when the style asks for it.
+    pub name: Option<String>,
+    /// The stem from the bubble to the cut line.
+    pub stem: (Point, Point),
+}
+
+/// Gap between the cut line and the callout bubble, plan inches.
+const CALLOUT_GAP: f64 = 10.0;
+
+/// The layout sheet each camera's view is on, as `"A-3"`, read from the
+/// plan's layout JSON without loading the whole layout: the first non-template
+/// page holding a Camera box of that camera.
+pub fn camera_sheet_refs(project: &Project) -> HashMap<Id, String> {
+    let mut out = HashMap::new();
+    let Some(pages) = project
+        .layout
+        .as_ref()
+        .and_then(|l| l.get("pages"))
+        .and_then(|p| p.as_array())
+    else {
+        return out;
+    };
+    for page in pages {
+        if page.get("template_page").and_then(|t| t.as_bool()) == Some(true) {
+            continue;
+        }
+        let Some(number) = page.get("number").and_then(|n| n.as_u64()) else {
+            continue;
+        };
+        let boxes = page.get("boxes").and_then(|b| b.as_array());
+        for b in boxes.into_iter().flatten() {
+            let id = b
+                .get("source")
+                .and_then(|s| s.get("Camera"))
+                .and_then(|c| c.get("camera_id"))
+                .and_then(|i| i.as_u64());
+            if let Some(id) = id {
+                out.entry(id).or_insert_with(|| format!("A-{number}"));
+            }
+        }
+    }
+    out
+}
+
+/// The callout of camera `c`, if it is a section or elevation camera with its
+/// callout switched on.
+pub fn callout_for(
+    project: &Project,
+    c: &CameraObject,
+    sheets: &HashMap<Id, String>,
+    style: &CalloutStyle,
+) -> Option<Callout> {
+    if !c.kind.is_section_like() || !c.callout.show {
+        return None;
+    }
+    let number = project.callout_number(c.id)?;
+    let (a, b) = section_line(c);
+    let mid = Point::lerp(a, b, 0.5);
+    let dir = c.direction();
+    let r = style.radius.max(2.0);
+    let centre = mid - dir * (r + CALLOUT_GAP);
+    Some(Callout {
+        camera: c.id,
+        centre,
+        radius: r,
+        shape: style.shape,
+        number: number.to_string(),
+        sheet: sheets.get(&c.id).cloned(),
+        name: style.show_name.then(|| c.name.clone()),
+        stem: (centre + dir * r, mid),
+    })
+}
+
+/// The callouts of the cameras placed on `floor`.
+pub fn callouts_on(project: &Project, floor: usize, style: &CalloutStyle) -> Vec<Callout> {
+    let on_floor: Vec<&CameraObject> = project
+        .cameras_on(floor)
+        .filter(|c| c.kind.is_section_like() && c.callout.show)
+        .collect();
+    if on_floor.is_empty() {
+        return Vec::new();
+    }
+    let sheets = camera_sheet_refs(project);
+    on_floor
+        .into_iter()
+        .filter_map(|c| callout_for(project, c, &sheets, style))
+        .collect()
+}
+
+fn draw_callout(painter: &egui::Painter, cam: &Camera, co: &Callout, selected: bool) {
+    let ink = Stroke::new(if selected { 2.0_f32 } else { 1.2_f32 }, CAMERA_BLUE);
+    let centre = cam.world_to_screen(co.centre);
+    let r = ((co.radius * cam.px_per_in) as f32).clamp(7.0, 22.0);
+    painter.line_segment(
+        [
+            cam.world_to_screen(co.stem.0),
+            cam.world_to_screen(co.stem.1),
+        ],
+        ink,
+    );
+    let fill = Color32::from_rgba_unmultiplied(255, 255, 255, 235);
+    match co.shape {
+        CalloutShape::Circle => {
+            painter.circle(centre, r, fill, ink);
+        }
+        CalloutShape::Square => {
+            let rect = egui::Rect::from_center_size(centre, egui::Vec2::splat(2.0 * r));
+            painter.rect(rect, 0.0, fill, ink, StrokeKind::Inside);
+        }
+        CalloutShape::Hexagon => {
+            let pts: Vec<Pos2> = (0..6)
+                .map(|i| {
+                    let a = std::f32::consts::FRAC_PI_3 * i as f32;
+                    centre + egui::vec2(a.cos(), a.sin()) * r
+                })
+                .collect();
+            painter.add(Shape::convex_polygon(pts, fill, ink));
+        }
+    }
+    let font = |k: f32| egui::FontId::proportional((r * k).max(7.0));
+    match &co.sheet {
+        Some(sheet) => {
+            painter.line_segment(
+                [centre - egui::vec2(r, 0.0), centre + egui::vec2(r, 0.0)],
+                Stroke::new(1.0_f32, CAMERA_BLUE),
+            );
+            painter.text(
+                centre - egui::vec2(0.0, r * 0.45),
+                egui::Align2::CENTER_CENTER,
+                &co.number,
+                font(0.8),
+                CAMERA_BLUE,
+            );
+            painter.text(
+                centre + egui::vec2(0.0, r * 0.45),
+                egui::Align2::CENTER_CENTER,
+                sheet,
+                font(0.5),
+                CAMERA_BLUE,
+            );
+        }
+        None => {
+            painter.text(
+                centre,
+                egui::Align2::CENTER_CENTER,
+                &co.number,
+                font(1.0),
+                CAMERA_BLUE,
+            );
+        }
+    }
+    if let Some(name) = &co.name {
+        painter.text(
+            centre + egui::vec2(r + 4.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            name,
+            font(0.8),
+            CAMERA_BLUE,
+        );
+    }
+}
+
 // ----- drawing (C-24) -----
 
 fn arrow(painter: &egui::Painter, cam: &Camera, from: Point, dir: Point, stroke: Stroke) {
@@ -1350,6 +1658,9 @@ pub fn draw_camera_symbols(
     }
     for c in cx.project.cameras_on(cx.floor) {
         draw_one(painter, cam, c, selected == Some(c.id));
+    }
+    for co in callouts_on(&cx.project, cx.floor, &callout_style()) {
+        draw_callout(painter, cam, &co, selected == Some(co.camera));
     }
     draw_light_symbols(cx, painter, cam);
     let Some(c) = selected.and_then(|id| cx.project.camera(id)) else {
@@ -2038,5 +2349,167 @@ mod tests {
         assert!(cx.project.lights().is_empty());
         cx.undo();
         assert_eq!(cx.project.lights().len(), 1);
+    }
+
+    #[test]
+    fn auto_interior_elevations_make_four_cameras_and_update_them_on_a_second_run() {
+        let (mut cx, mut t, outbox) = setup();
+        cx.project = house();
+        cx.project.floors[0].room_names.push(plan_core::RoomName {
+            anchor: Point::new(100.0, 100.0),
+            name: "Den".into(),
+            ..Default::default()
+        });
+        pick(&mut t, CameraVariant::AutoInterior);
+        assert!(t.hint().contains("inside a room"));
+        // A click outside any room makes nothing.
+        let res = down(&mut cx, &mut t, Point::new(600.0, 600.0));
+        assert!(res.commit.is_none());
+        assert!(cx.project.cameras.is_empty());
+        let res = down(&mut cx, &mut t, Point::new(120.0, 96.0));
+        assert_eq!(res.commit.as_deref(), Some("Auto Interior Elevations"));
+        assert_eq!(cx.project.cameras.len(), 4);
+        let names: Vec<&str> = cx.project.cameras.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Den North Wall",
+                "Den East Wall",
+                "Den South Wall",
+                "Den West Wall"
+            ]
+        );
+        // Each looks at its wall from inside the room, back-clipped to the room.
+        for (c, deg) in cx.project.cameras.iter().zip([90.0, 0.0, 270.0, 180.0]) {
+            assert_eq!(c.kind, CameraKind::WallElevation);
+            assert!((c.direction_deg - deg).abs() < 1e-9, "{}", c.name);
+            let s = c.section.expect("a cut line");
+            let clip = s.back_clip.expect("back-clipped to the room");
+            assert!(clip < 240.0 + 20.0, "{clip}");
+            assert!(cx.project.floors[0].walls.iter().all(|w| w.thickness > 0.0));
+        }
+        assert_eq!(outbox.take().len(), 1, "the first camera opens");
+        // Running it again updates the same four.
+        pick(&mut t, CameraVariant::AutoInterior);
+        down(&mut cx, &mut t, Point::new(60.0, 60.0));
+        assert_eq!(cx.project.cameras.len(), 4);
+        // The drawing of the north wall camera sees the wall's inside face.
+        let drawing = crate::dialogs::camera::render_elevation(&cx.project, &cx.project.cameras[0]);
+        assert!(!drawing.lines.is_empty());
+    }
+
+    #[test]
+    fn every_section_camera_gets_a_numbered_callout_behind_its_line() {
+        let (mut cx, mut t, _o) = setup();
+        for (a, b) in [
+            (Point::new(0.0, 0.0), Point::new(120.0, 0.0)),
+            (Point::new(0.0, 60.0), Point::new(120.0, 60.0)),
+        ] {
+            pick(&mut t, CameraVariant::CrossSection);
+            drag(&mut cx, &mut t, a, b);
+        }
+        // A Full Camera makes no callout.
+        pick(&mut t, CameraVariant::FullCamera);
+        drag(
+            &mut cx,
+            &mut t,
+            Point::new(300.0, 300.0),
+            Point::new(300.0, 400.0),
+        );
+        let style = CalloutStyle::default();
+        let cos = callouts_on(&cx.project, 0, &style);
+        assert_eq!(cos.len(), 2);
+        assert_eq!(cos[0].number, "1");
+        assert_eq!(cos[1].number, "2");
+        assert!(cos.iter().all(|c| c.sheet.is_none() && c.name.is_none()));
+        // West to east looks north; the bubble stands south of the line.
+        let first = cx.project.cameras[0].clone();
+        let (a, b) = section_line(&first);
+        let mid = Point::lerp(a, b, 0.5);
+        assert!(cos[0].centre.y < mid.y);
+        assert!((cos[0].centre.x - mid.x).abs() < 1e-9);
+        assert!(cos[0].stem.1.dist(mid) < 1e-9);
+        assert!(cos[0].stem.0.dist(cos[0].centre) <= cos[0].radius + 1e-9);
+        // An explicit number wins; switching the callout off removes it.
+        let second = cx.project.cameras[1].id;
+        cx.project
+            .update_camera(second, |c| c.callout.number = Some(7));
+        let cos = callouts_on(&cx.project, 0, &style);
+        assert_eq!(cos[1].number, "7");
+        assert_eq!(cos[0].number, "1");
+        cx.project
+            .update_camera(first.id, |c| c.callout.show = false);
+        assert_eq!(callouts_on(&cx.project, 0, &style).len(), 1);
+        // Other floors have none.
+        assert!(callouts_on(&cx.project, 1, &style).is_empty());
+        // The name shows when the style asks for it.
+        let named = CalloutStyle {
+            show_name: true,
+            shape: CalloutShape::Hexagon,
+            ..style
+        };
+        let cos = callouts_on(&cx.project, 0, &named);
+        assert_eq!(cos[0].name.as_deref(), Some("Section 2"));
+        assert_eq!(cos[0].shape, CalloutShape::Hexagon);
+    }
+
+    #[test]
+    fn the_callout_carries_the_sheet_once_the_camera_is_on_a_layout() {
+        let mut p = house();
+        let mut cam = CameraObject::new(
+            CameraKind::Elevation,
+            Point::new(120.0, -24.0),
+            90.0,
+            "South Elevation",
+            0,
+        );
+        set_section_geometry(&mut cam, Point::new(120.0, -24.0), 90.0, 288.0, None);
+        let id = p.add_camera(cam);
+        let style = CalloutStyle::default();
+        assert!(callouts_on(&p, 0, &style)[0].sheet.is_none());
+        let mut layout = plan_layout::Layout::new("L", plan_docs::SheetSize::ArchC);
+        crate::dialogs::camera::send_camera_to_layout(&mut layout, &p, id, 3).expect("a box");
+        crate::shell::layout_window::store(&mut p, &layout);
+        let refs = camera_sheet_refs(&p);
+        assert_eq!(refs.get(&id).map(String::as_str), Some("A-3"));
+        let co = &callouts_on(&p, 0, &style)[0];
+        assert_eq!(co.sheet.as_deref(), Some("A-3"));
+        assert_eq!(co.number, "1");
+        // The layout caption agrees with the plan's view number.
+        let b = layout.page(3).unwrap().boxes.last().unwrap();
+        assert_eq!(b.label.as_deref(), Some("1 - SOUTH ELEVATION"));
+    }
+
+    #[test]
+    fn callouts_paint_the_view_number_and_the_sheet() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let mut cam = CameraObject::new(
+            CameraKind::Elevation,
+            Point::new(120.0, 100.0),
+            90.0,
+            "S",
+            0,
+        );
+        set_section_geometry(&mut cam, Point::new(120.0, 100.0), 90.0, 200.0, None);
+        let id = cx.project.add_camera(cam);
+        let mut layout = plan_layout::Layout::new("L", plan_docs::SheetSize::ArchC);
+        let p2 = cx.project.clone();
+        crate::dialogs::camera::send_camera_to_layout(&mut layout, &p2, id, 2).expect("a box");
+        crate::shell::layout_window::store(&mut cx.project, &layout);
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            draw_camera_symbols(&cx, &painter, &Camera::default_view(), None);
+        });
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"1".to_string()), "{texts:?}");
+        assert!(texts.contains(&"A-2".to_string()), "{texts:?}");
     }
 }

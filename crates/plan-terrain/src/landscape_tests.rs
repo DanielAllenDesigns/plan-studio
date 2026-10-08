@@ -510,6 +510,7 @@ fn roads_are_asphalt_and_sidewalks_concrete() {
             centerline: vec![pt(100.0, 100.0), pt(900.0, 100.0)],
             width: 96.0,
             curb: kind == RoadKind::Road,
+            ..RoadStrip::default()
         });
     }
     let meshes = road_meshes(&t, &surface);

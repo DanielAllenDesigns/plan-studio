@@ -314,6 +314,13 @@ fn text_corners(x: f64, y: f64, size: f64, angle: f64, w: f64) -> [Pt; 4] {
 /// Strokes are cut at the rectangle, fills clipped, text kept only when it
 /// fits whole and images when they overlap the rectangle.
 pub(crate) fn soft_clip(prims: Vec<Prim>) -> Vec<Prim> {
+    soft_clip_with(prims, false)
+}
+
+/// [`soft_clip`] that can keep text that only partly lies inside a clip
+/// (`partial_text`): for a screen that clips what it paints, where dropping
+/// the whole line would hide text that the page shows cut off at the frame.
+pub(crate) fn soft_clip_with(prims: Vec<Prim>, partial_text: bool) -> Vec<Prim> {
     let mut out = Vec::with_capacity(prims.len());
     let mut clip: Option<Rect> = None;
     for p in prims {
@@ -357,10 +364,23 @@ pub(crate) fn soft_clip(prims: Vec<Prim>) -> Vec<Prim> {
                 Some(r),
             ) => {
                 let w = text_w(&text, size, bold);
-                if text_corners(x, y, size, angle, w)
-                    .iter()
-                    .all(|&c| contains(r, c))
-                {
+                let corners = text_corners(x, y, size, angle, w);
+                let keep = if partial_text {
+                    let xs = corners.iter().map(|c| c.0);
+                    let ys = corners.iter().map(|c| c.1);
+                    let (x0, x1) = (
+                        xs.clone().fold(f64::INFINITY, f64::min),
+                        xs.fold(f64::NEG_INFINITY, f64::max),
+                    );
+                    let (y0, y1) = (
+                        ys.clone().fold(f64::INFINITY, f64::min),
+                        ys.fold(f64::NEG_INFINITY, f64::max),
+                    );
+                    x0 < r[2] && r[0] < x1 && y0 < r[3] && r[1] < y1
+                } else {
+                    corners.iter().all(|&c| contains(r, c))
+                };
+                if keep {
                     out.push(Prim::Text {
                         x,
                         y,

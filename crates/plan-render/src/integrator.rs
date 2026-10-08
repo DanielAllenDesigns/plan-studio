@@ -1,14 +1,16 @@
 //! The path tracer: radiance estimation for one camera ray.
 
+use crate::albedo::{self, TexBinding};
 use crate::bvh::Bvh;
 use crate::camera::{Camera, Lens};
-use crate::lighting::{Environment, LightData, PointLight, Sky, SunData};
+use crate::lighting::{AreaData, AreaLight, Environment, LightData, PointLight, Sky, SunData};
 use crate::rng::Rng;
 use crate::settings::{RenderSettings, Technique};
 use crate::shading::{
     reflect, sample_cone, sample_cosine, sheet_reflectance, Kind, Surface, MATERIAL_COUNT,
 };
 use crate::vec3::V3;
+use plan_materials::textures::TextureStore;
 
 /// Ray-origin offset along the surface normal, inches.
 const RAY_EPS: f32 = 0.02;
@@ -19,13 +21,45 @@ const FIREFLY_MAX: f32 = 10.0;
 /// Russian roulette starts after this many bounces.
 const ROULETTE_DEPTH: u32 = 2;
 
+/// First-hit guide values for one pixel.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Guide {
+    pub albedo: V3,
+    pub normal: V3,
+    pub depth: f32,
+}
+
+/// Distance along the image-centre ray to the first opaque surface.
+fn centre_distance(bvh: &Bvh, cam: &Camera, surfaces: &[Surface; MATERIAL_COUNT]) -> Option<f32> {
+    let pinhole = Camera {
+        aperture: 0.0,
+        ..*cam
+    };
+    let lens = Lens::new(&pinhole, 2, 2);
+    let (mut o, d) = lens.centre_ray(1.0, 1.0);
+    let mut travelled = 0.0;
+    for _ in 0..MAX_CROSSINGS {
+        let hit = bvh.closest(o, d, f32::INFINITY)?;
+        travelled += hit.t;
+        let tri = &bvh.tris[hit.tri];
+        if surfaces[tri.material as usize].kind == Kind::Opaque {
+            return Some(travelled);
+        }
+        o += d * (hit.t + RAY_EPS);
+    }
+    None
+}
+
 /// Everything needed to shade rays for one render.
 pub(crate) struct Frame<'a> {
     bvh: &'a Bvh,
     surfaces: [Surface; MATERIAL_COUNT],
+    textures: [Option<TexBinding>; MATERIAL_COUNT],
     sky: Sky,
     sun: Option<SunData>,
     lights: Vec<LightData>,
+    areas: Vec<AreaData>,
+    next_event: bool,
     technique: Technique,
     max_bounces: u32,
     ao_radius: f32,
@@ -40,16 +74,28 @@ impl<'a> Frame<'a> {
         scene_diagonal: f32,
         cam: &Camera,
         env: &Environment,
-        lights: &[PointLight],
+        (lights, areas): (&[PointLight], &[AreaLight]),
         settings: &RenderSettings,
+        store: &TextureStore,
     ) -> Frame<'a> {
         let (width, height) = (settings.width.max(1), settings.height.max(1));
+        let surfaces = Surface::table(settings.technique);
+        // Depth of field with no focus distance focuses on whatever is at the
+        // image centre.
+        let mut cam = *cam;
+        if cam.aperture > 0.0 && cam.focus_dist <= 0.0 {
+            cam.focus_dist = centre_distance(bvh, &cam, &surfaces).unwrap_or(0.0);
+        }
+        let cam = &cam;
         Frame {
             bvh,
-            surfaces: Surface::table(settings.technique),
+            textures: albedo::table(store, settings.textures, settings.technique, &surfaces),
+            surfaces,
             sky: Sky::new(env),
             sun: env.sun.as_ref().map(SunData::new),
             lights: lights.iter().map(LightData::new).collect(),
+            areas: areas.iter().filter_map(AreaData::new).collect(),
+            next_event: settings.next_event,
             technique: settings.technique,
             max_bounces: settings.max_bounces,
             ao_radius: (scene_diagonal * 0.1).max(12.0),
@@ -73,6 +119,44 @@ impl<'a> Frame<'a> {
             c
         } else {
             V3::ZERO
+        }
+    }
+
+    /// Albedo, shading normal and distance of the first opaque surface seen
+    /// through pixel `(x, y)`'s centre (the denoiser's guide buffers). Glass
+    /// and clear surfaces are looked through. Sky pixels have zero albedo and
+    /// normal and an infinite distance.
+    pub fn guide(&self, x: u32, y: u32) -> Guide {
+        let (mut o, d) = self.lens.centre_ray(x as f32 + 0.5, y as f32 + 0.5);
+        let mut travelled = 0.0;
+        for _ in 0..MAX_CROSSINGS {
+            let Some(hit) = self.bvh.closest(o, d, f32::INFINITY) else {
+                break;
+            };
+            let tri = &self.bvh.tris[hit.tri];
+            let surface = &self.surfaces[tri.material as usize];
+            let p = o + d * hit.t;
+            travelled += hit.t;
+            if surface.kind != Kind::Opaque {
+                o = p + d * RAY_EPS;
+                continue;
+            }
+            let ng = tri.normal();
+            let n = if ng.dot(d) > 0.0 { -ng } else { ng };
+            let albedo = match &self.textures[tri.material as usize] {
+                Some(binding) => binding.albedo(p, ng),
+                None => surface.albedo,
+            };
+            return Guide {
+                albedo,
+                normal: n,
+                depth: travelled,
+            };
+        }
+        Guide {
+            albedo: V3::ZERO,
+            normal: V3::ZERO,
+            depth: f32::INFINITY,
         }
     }
 
@@ -106,7 +190,10 @@ impl<'a> Frame<'a> {
         // events; only then is the sun disc visible (otherwise NEE covers it).
         let mut specular = true;
         loop {
-            let Some(hit) = self.bvh.closest(o, d, f32::INFINITY) else {
+            let found = self.bvh.closest(o, d, f32::INFINITY);
+            let reach = found.as_ref().map_or(f32::INFINITY, |h| h.t);
+            sum += self.emitted(o, d, reach, throughput, (bounce, specular));
+            let Some(hit) = found else {
                 sum += self.contribution(throughput * self.background(d, specular), bounce);
                 break;
             };
@@ -133,6 +220,17 @@ impl<'a> Frame<'a> {
                 }
                 Kind::Opaque => {
                     let wo = -d;
+                    let textured;
+                    let surface = match &self.textures[tri.material as usize] {
+                        Some(binding) => {
+                            textured = Surface {
+                                albedo: binding.albedo(p, ng),
+                                ..*surface
+                            };
+                            &textured
+                        }
+                        None => surface,
+                    };
                     let direct = self.direct(p, n, wo, surface, rng);
                     sum += self.contribution(throughput * direct, bounce);
                     if bounce >= self.max_bounces {
@@ -157,6 +255,31 @@ impl<'a> Frame<'a> {
             }
             if crossings > MAX_CROSSINGS {
                 break;
+            }
+        }
+        sum
+    }
+
+    /// Light from the area panels seen along the segment `o + t d`, `t < reach`.
+    ///
+    /// With next-event estimation on, panels are only counted when seen
+    /// directly (camera rays and mirror/glass chains); bounced rays leave the
+    /// panels to [`Frame::direct`] so nothing is counted twice.
+    fn emitted(
+        &self,
+        o: V3,
+        d: V3,
+        reach: f32,
+        throughput: V3,
+        (bounce, specular): (u32, bool),
+    ) -> V3 {
+        if self.areas.is_empty() || (self.next_event && !specular) {
+            return V3::ZERO;
+        }
+        let mut sum = V3::ZERO;
+        for a in &self.areas {
+            if a.hit(o, d, reach).is_some() {
+                sum += self.contribution(throughput * a.radiance, bounce);
             }
         }
         sum
@@ -197,6 +320,22 @@ impl<'a> Frame<'a> {
                 if f.max_comp() > 0.0 {
                     let t = self.transmittance(origin, wi, f32::INFINITY);
                     sum += f * t * sun.irradiance * cos_i;
+                }
+            }
+        }
+        if self.next_event {
+            for a in &self.areas {
+                let to = a.point(rng.next_f32(), rng.next_f32()) - origin;
+                let d2 = to.length_sq().max(1.0);
+                let dist = d2.sqrt();
+                let wi = to / dist;
+                let (cos_i, cos_l) = (n.dot(wi), a.emit_cos(wi));
+                if cos_i > 0.0 && cos_l > 0.0 {
+                    let (f, _) = surface.eval(n, wo, wi);
+                    if f.max_comp() > 0.0 {
+                        let t = self.transmittance(origin, wi, dist - RAY_EPS);
+                        sum += f * t * a.radiance * (cos_i * cos_l * a.area / d2);
+                    }
                 }
             }
         }
@@ -245,5 +384,42 @@ impl<'a> Frame<'a> {
             }
         }
         V3::ZERO
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bvh::Tri;
+    use plan_3d::Material;
+
+    #[test]
+    fn centre_distance_finds_the_surface_ahead_and_skips_glass() {
+        let wall = |z: f32, m: Material| {
+            let (a, b, c, d) = (
+                V3::new(-50.0, -50.0, z),
+                V3::new(50.0, -50.0, z),
+                V3::new(50.0, 50.0, z),
+                V3::new(-50.0, 50.0, z),
+            );
+            [
+                Tri::new(a, b, c, m.index() as u32).unwrap(),
+                Tri::new(a, c, d, m.index() as u32).unwrap(),
+            ]
+        };
+        let mut tris = wall(-100.0, Material::WallInterior).to_vec();
+        tris.extend(wall(-40.0, Material::WindowGlass));
+        let bvh = Bvh::build(tris);
+        let cam = Camera {
+            eye: [0.0; 3],
+            target: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            fov_deg: 50.0,
+            aperture: 1.0,
+            focus_dist: 0.0,
+        };
+        let surfaces = Surface::table(Technique::PhysicallyBased);
+        let d = centre_distance(&bvh, &cam, &surfaces).unwrap();
+        assert!((d - 100.0).abs() < 0.5, "{d}");
     }
 }

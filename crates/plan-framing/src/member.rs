@@ -35,12 +35,20 @@ pub enum MemberKind {
     KingStud,
     TrimmerStud,
     CrippleStud,
+    /// Extra stud beside the end stud where two walls meet.
+    CornerStud,
+    /// Backing stud beside a partition that butts into the wall.
+    TeeStud,
     TopPlate,
     BottomPlate,
     Header,
     Sill,
     RimJoist,
     Joist,
+    /// Doubled joist beside a hole in the floor (a stairwell).
+    TrimmerJoist,
+    /// Doubled joist across the end of a hole in the floor.
+    HeaderJoist,
     Blocking,
     Ledger,
     Rafter,
@@ -63,12 +71,16 @@ impl MemberKind {
             MemberKind::KingStud => "king stud",
             MemberKind::TrimmerStud => "trimmer",
             MemberKind::CrippleStud => "cripple",
+            MemberKind::CornerStud => "corner stud",
+            MemberKind::TeeStud => "tee backing",
             MemberKind::TopPlate => "top plate",
             MemberKind::BottomPlate => "bottom plate",
             MemberKind::Header => "header",
             MemberKind::Sill => "sill",
             MemberKind::RimJoist => "rim joist",
             MemberKind::Joist => "joist",
+            MemberKind::TrimmerJoist => "trimmer joist",
+            MemberKind::HeaderJoist => "header joist",
             MemberKind::Blocking => "blocking",
             MemberKind::Ledger => "ledger",
             MemberKind::Rafter => "rafter",
@@ -105,6 +117,45 @@ impl Transform3 {
     }
 }
 
+/// How the lower end of a rafter is cut at the eave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TailCut {
+    /// Vertical: the tail ends in a plumb cut (the fascia hangs plumb).
+    Plumb,
+    /// Horizontal: the tail ends in a level cut.
+    Level,
+    /// Square to the rafter.
+    Square,
+}
+
+/// The notch a rafter takes where it bears on the top plate (side view, all
+/// distances along the rafter's bottom edge from its lower end).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Birdsmouth {
+    /// Where the plumb heel cut meets the bottom edge: the plate's outer
+    /// face, measured along the rafter. Equals the overhang's slope length.
+    pub heel_at: f64,
+    /// Height of the plumb heel cut, inches (at most a third of the depth).
+    pub heel_height: f64,
+}
+
+/// Cuts a member carries beyond its square-ended box: a rafter's tail cut
+/// and birdsmouth. Members without cuts mesh as plain boxes.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct MemberCuts {
+    /// Pitch of the member (rise per 12): the plumb and level lines of the cuts
+    /// are drawn against it. Zero for a member without cuts.
+    pub pitch_in_12: f64,
+    pub tail: Option<TailCut>,
+    pub birdsmouth: Option<Birdsmouth>,
+}
+
+impl MemberCuts {
+    pub fn is_empty(&self) -> bool {
+        self.tail.is_none() && self.birdsmouth.is_none()
+    }
+}
+
 /// One piece of lumber: a `length × lumber.depth × lumber.thickness` box.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Member {
@@ -116,6 +167,9 @@ pub struct Member {
     pub wall_id: Option<Id>,
     /// Cut-list label, e.g. `"2x6 x 92 5/8"`.
     pub label: String,
+    /// Tail cut and birdsmouth of a rafter (none for other members).
+    #[serde(default, skip_serializing_if = "MemberCuts::is_empty")]
+    pub cuts: MemberCuts,
 }
 
 impl Member {
@@ -135,6 +189,7 @@ impl Member {
             transform,
             wall_id,
             label,
+            cuts: MemberCuts::default(),
         }
     }
 
@@ -160,9 +215,13 @@ impl Member {
 
     /// A 24-vertex, 12-triangle box mesh with outward unit normals.
     ///
-    /// Deviation: [`Material`] has no wood variant, so `WallExterior` (a tan
-    /// colour) stands in. The mesh `object_id` is the member's wall, if any.
+    /// A member with [`MemberCuts`] (a rafter with its tail cut and
+    /// birdsmouth) meshes as its side profile extruded across the thickness.
+    /// The mesh `object_id` is the member's wall, if any.
     pub fn mesh(&self) -> Mesh {
+        if !self.cuts.is_empty() {
+            return self.cut_mesh();
+        }
         let t = &self.transform;
         let axes = [t.axis_x, t.axis_y, t.axis_z()];
         let size = [self.length, self.lumber.depth, self.lumber.thickness];
@@ -194,7 +253,144 @@ impl Member {
         Mesh {
             vertices,
             indices,
-            material: Material::WallExterior,
+            material: Material::Framing,
+            object_id: self.wall_id,
+        }
+    }
+}
+
+// ----- members with cuts -----
+
+/// Triangulate a simple polygon (counter-clockwise) by ear clipping.
+fn ear_clip(poly: &[(f64, f64)]) -> Vec<[usize; 3]> {
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let inside = |p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        cross(a, b, p) >= -1e-12 && cross(b, c, p) >= -1e-12 && cross(c, a, p) >= -1e-12
+    };
+    let mut idx: Vec<usize> = (0..poly.len()).collect();
+    let mut out = Vec::new();
+    let mut guard = 0;
+    while idx.len() > 3 && guard < 1000 {
+        guard += 1;
+        let n = idx.len();
+        let mut clipped = false;
+        for i in 0..n {
+            let (a, b, c) = (idx[(i + n - 1) % n], idx[i], idx[(i + 1) % n]);
+            if cross(poly[a], poly[b], poly[c]) <= 1e-12 {
+                continue;
+            }
+            let ear = idx
+                .iter()
+                .filter(|&&k| k != a && k != b && k != c)
+                .all(|&k| !inside(poly[k], poly[a], poly[b], poly[c]));
+            if ear {
+                out.push([a, b, c]);
+                idx.remove(i);
+                clipped = true;
+                break;
+            }
+        }
+        if !clipped {
+            break;
+        }
+    }
+    if idx.len() == 3 {
+        out.push([idx[0], idx[1], idx[2]]);
+    }
+    out
+}
+
+impl Member {
+    /// The member's side profile in its own frame (`x` along the length from
+    /// the start face, `y` across the depth, both centred on the start-face
+    /// centre), counter-clockwise: the square-ended rectangle with the tail
+    /// cut at the start and the birdsmouth notch on the bottom edge.
+    pub fn profile(&self) -> Vec<(f64, f64)> {
+        let (l, hd) = (self.length, self.lumber.depth / 2.0);
+        let theta = (self.cuts.pitch_in_12 / 12.0).atan();
+        let (sn, cs) = theta.sin_cos();
+        let half = l / 2.0;
+        let (mut bl, mut tl) = (0.0, 0.0);
+        if sn > 1e-6 {
+            match self.cuts.tail {
+                // The vertical line leans toward the ridge going up.
+                Some(TailCut::Plumb) => tl = (2.0 * hd * theta.tan()).min(half),
+                // A level line: the top corner is the outermost point.
+                Some(TailCut::Level) => bl = (2.0 * hd * cs / sn).min(half),
+                Some(TailCut::Square) | None => {}
+            }
+        }
+        let mut pts = vec![(bl, -hd)];
+        if let (Some(b), true) = (self.cuts.birdsmouth, sn > 1e-6) {
+            // D on the bottom edge, C above it (the heel), E on the bottom edge
+            // again along the level seat.
+            let (dx, hv) = (b.heel_at.max(bl), b.heel_height);
+            let c = (dx + hv * sn, -hd + hv * cs);
+            let e = (dx + hv / sn, -hd);
+            if hv > 1e-6 && e.0 < l - 0.1 && c.1 < hd {
+                pts.extend([(dx, -hd), c, e]);
+            }
+        }
+        pts.extend([(l, -hd), (l, hd), (tl, hd)]);
+        // Drop repeated points (a heel cut right at the tail's corner).
+        pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9);
+        pts
+    }
+
+    fn cut_mesh(&self) -> Mesh {
+        let t = &self.transform;
+        let az = t.axis_z();
+        let ht = self.lumber.thickness / 2.0;
+        let prof = self.profile();
+        let at = |p: (f64, f64), z: f64| {
+            add(
+                add(t.origin, scale(t.axis_x, p.0)),
+                add(scale(t.axis_y, p.1), scale(az, z)),
+            )
+        };
+        let f32v = |v: Vec3| [v[0] as f32, v[1] as f32, v[2] as f32];
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut push_tri = |a: Vec3, b: Vec3, c: Vec3, n: Vec3| {
+            // Wind the triangle so its geometric normal agrees with `n`.
+            let e = cross(
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            let (b, c) = if dot(e, n) < 0.0 { (c, b) } else { (b, c) };
+            let base = vertices.len() as u32;
+            for p in [a, b, c] {
+                vertices.push(Vertex {
+                    position: f32v(p),
+                    normal: f32v(n),
+                    uv: [(p[0] / 12.0) as f32, (p[2] / 12.0) as f32],
+                });
+            }
+            indices.extend([base, base + 1, base + 2]);
+        };
+        for tri in ear_clip(&prof) {
+            let p = |k: usize| prof[tri[k]];
+            push_tri(at(p(0), ht), at(p(1), ht), at(p(2), ht), az);
+            push_tri(at(p(0), -ht), at(p(1), -ht), at(p(2), -ht), scale(az, -1.0));
+        }
+        for i in 0..prof.len() {
+            let (a, b) = (prof[i], prof[(i + 1) % prof.len()]);
+            let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+            let len = (ex * ex + ey * ey).sqrt();
+            if len < 1e-9 {
+                continue;
+            }
+            // Outward normal of a counter-clockwise edge: (ey, -ex).
+            let n = add(scale(t.axis_x, ey / len), scale(t.axis_y, -ex / len));
+            push_tri(at(a, -ht), at(b, -ht), at(b, ht), n);
+            push_tri(at(a, -ht), at(b, ht), at(a, ht), n);
+        }
+        Mesh {
+            vertices,
+            indices,
+            material: Material::Framing,
             object_id: self.wall_id,
         }
     }

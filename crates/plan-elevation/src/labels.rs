@@ -4,12 +4,15 @@
 //! sized [`TEXT_H`] drawing units with an estimated advance of
 //! [`TEXT_CHAR_W`] per character; consumers re-flow it with real font metrics.
 
+use crate::dims::{add_dimensions, DimOptions};
 use crate::drawing::{Drawing, EdgeKind, Line2, LineWeight, TEXT_CHAR_W, TEXT_H};
+use crate::mlabels::add_material_labels;
 use crate::projection::{Projection, ViewDir};
+use crate::view::{view_scene, FreeView};
 use plan_3d::{Material, Scene};
 use plan_core::units::fmt_ft_in_frac;
 use plan_core::{FloorKind, Point, Project};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The grade line runs this far past the building on each side, inches.
 const GRADE_OVERHANG: f64 = 36.0;
@@ -42,6 +45,36 @@ fn level_text(name: &str, inches: f64) -> String {
     format!("{name} {}", fmt_ft_in_frac(inches, 8))
 }
 
+/// Which annotations [`annotate_with`] and [`annotate_view`] add.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnnotateOptions {
+    /// The title below the drawing.
+    pub title: bool,
+    /// The grade line and its "GRADE" label.
+    pub grade: bool,
+    /// The "T.O. SUBFLOOR" / "T.O. PLATE" level callouts.
+    pub levels: bool,
+    /// Roof pitch symbols.
+    pub pitch: bool,
+    /// Automatic dimension strings (only [`annotate_view`]); `None` = off.
+    pub dimensions: Option<DimOptions>,
+    /// Text leaders naming the cladding and roofing materials.
+    pub materials: bool,
+}
+
+impl Default for AnnotateOptions {
+    fn default() -> Self {
+        Self {
+            title: true,
+            grade: true,
+            levels: true,
+            pitch: true,
+            dimensions: None,
+            materials: false,
+        }
+    }
+}
+
 /// Add the annotations to `drawing`, the elevation of `scene` seen from `dir`.
 ///
 /// * the title below the drawing ("FRONT ELEVATION"...);
@@ -56,13 +89,79 @@ fn level_text(name: &str, inches: f64) -> String {
 ///
 /// Lines are added as [`EdgeKind::Annotation`]. An empty drawing is left as is.
 pub fn annotate(drawing: &mut Drawing, scene: &Scene, project: &Project, dir: ViewDir) {
+    annotate_with(drawing, scene, project, dir, &AnnotateOptions::default());
+}
+
+/// [`annotate`] with each kind of annotation optional (dimensions apply only
+/// to [`annotate_view`]).
+pub fn annotate_with(
+    drawing: &mut Drawing,
+    scene: &Scene,
+    project: &Project,
+    dir: ViewDir,
+    opts: &AnnotateOptions,
+) {
+    annotate_inner(drawing, scene, project, dir, None, title(dir), opts);
+}
+
+/// Annotate a free-angle drawing made by [`crate::section_free`] or
+/// [`crate::elevation_free`] from the unrotated `scene`: the same
+/// annotations as [`annotate_with`], titled `title` (default "ELEVATION", or
+/// the compass title when the view is square to an axis), plus the automatic
+/// dimensions when `opts.dimensions` is set (they read the project's levels
+/// and the openings that show in the drawing's regions).
+pub fn annotate_view(
+    drawing: &mut Drawing,
+    scene: &Scene,
+    project: &Project,
+    view: &FreeView,
+    title_text: Option<&str>,
+    opts: &AnnotateOptions,
+) {
+    let rotated = view_scene(scene, view);
+    let default_title = view.axis().map_or("ELEVATION", title);
+    annotate_inner(
+        drawing,
+        &rotated,
+        project,
+        ViewDir::Front,
+        Some(view),
+        title_text.unwrap_or(default_title),
+        opts,
+    );
+}
+
+fn annotate_inner(
+    drawing: &mut Drawing,
+    scene: &Scene,
+    project: &Project,
+    dir: ViewDir,
+    view: Option<&FreeView>,
+    title_text: &str,
+    opts: &AnnotateOptions,
+) {
     if drawing.lines.is_empty() {
         return;
     }
     let (lo, hi) = drawing.bounds;
     let mut low = lo.y;
+    // Level callouts stay this far left of the building (dimensions push them out).
+    let mut callout_right = lo.x - CALLOUT_GAP;
 
     if dir != ViewDir::Top {
+        if let (Some(dim), Some(_)) = (&opts.dimensions, view) {
+            let seen: HashSet<_> = drawing.regions.iter().filter_map(|r| r.object_id).collect();
+            if let Some(left) = add_dimensions(
+                drawing,
+                project,
+                lo.x,
+                &seen,
+                !drawing.regions.is_empty(),
+                dim,
+            ) {
+                callout_right = callout_right.min(left - CALLOUT_GAP * 0.25);
+            }
+        }
         let grade = project
             .floors
             .iter()
@@ -70,56 +169,64 @@ pub fn annotate(drawing: &mut Drawing, scene: &Scene, project: &Project, dir: Vi
             .map(|f| f.elevation)
             .fold(f64::INFINITY, f64::min);
         let grade = if grade.is_finite() { grade } else { lo.y };
-        drawing.lines.push(Line2 {
-            a: Point::new(lo.x - GRADE_OVERHANG, grade),
-            b: Point::new(hi.x + GRADE_OVERHANG, grade),
-            weight: LineWeight::Medium,
-            kind: EdgeKind::Annotation,
-        });
-        drawing.texts.push((
-            Point::new(hi.x + GRADE_OVERHANG + 6.0, grade),
-            "GRADE".into(),
-        ));
-        low = low.min(grade);
+        if opts.grade {
+            drawing.lines.push(Line2 {
+                a: Point::new(lo.x - GRADE_OVERHANG, grade),
+                b: Point::new(hi.x + GRADE_OVERHANG, grade),
+                weight: LineWeight::Medium,
+                kind: EdgeKind::Annotation,
+            });
+            drawing.texts.push((
+                Point::new(hi.x + GRADE_OVERHANG + 6.0, grade),
+                "GRADE".into(),
+            ));
+            low = low.min(grade);
+        }
 
-        let mut seen: Vec<(String, i64)> = Vec::new();
-        for floor in &project.floors {
-            let plate = floor
-                .walls
-                .iter()
-                .filter(|w| !w.flags.invisible && !w.flags.railing)
-                .map(|w| w.height)
-                .fold(f64::NEG_INFINITY, f64::max);
-            if !plate.is_finite() {
-                continue;
-            }
-            for (name, y) in [
-                ("T.O. SUBFLOOR", floor.elevation),
-                ("T.O. PLATE", floor.elevation + plate),
-            ] {
-                let text = level_text(name, y);
-                let key = (text.clone(), (y * 8.0).round() as i64);
-                if seen.contains(&key) {
+        if opts.levels {
+            let mut seen: Vec<(String, i64)> = Vec::new();
+            for floor in &project.floors {
+                let plate = floor
+                    .walls
+                    .iter()
+                    .filter(|w| !w.flags.invisible && !w.flags.railing)
+                    .map(|w| w.height)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if !plate.is_finite() {
                     continue;
                 }
-                seen.push(key);
-                let x = lo.x - CALLOUT_GAP - text_width(&text);
-                drawing.texts.push((Point::new(x, y), text));
+                for (name, y) in [
+                    ("T.O. SUBFLOOR", floor.elevation),
+                    ("T.O. PLATE", floor.elevation + plate),
+                ] {
+                    let text = level_text(name, y);
+                    let key = (text.clone(), (y * 8.0).round() as i64);
+                    if seen.contains(&key) {
+                        continue;
+                    }
+                    seen.push(key);
+                    let x = callout_right - text_width(&text);
+                    drawing.texts.push((Point::new(x, y), text));
+                }
             }
         }
     }
 
-    let label = title(dir);
-    drawing.texts.push((
-        Point::new(
-            0.5 * (lo.x + hi.x) - 0.5 * text_width(label),
-            low - 3.0 * TEXT_H,
-        ),
-        label.into(),
-    ));
+    if opts.title {
+        drawing.texts.push((
+            Point::new(
+                0.5 * (lo.x + hi.x) - 0.5 * text_width(title_text),
+                low - 3.0 * TEXT_H,
+            ),
+            title_text.into(),
+        ));
+    }
 
-    if dir != ViewDir::Top {
+    if dir != ViewDir::Top && opts.pitch {
         roof_symbols(drawing, scene, dir);
+    }
+    if opts.materials && dir != ViewDir::Top {
+        add_material_labels(drawing);
     }
     drawing.update_bounds();
 }

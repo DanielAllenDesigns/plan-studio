@@ -1,6 +1,6 @@
 [package]
 name = "plan-chiefplan"
-description = "Plan Studio: read-only scanner for Chief Architect .plan/.layout template files (names of layer sets, wall types, text styles, dimension sets, views, sheets) used to seed Plan Studio templates from the user's own Chief templates."
+description = "Plan Studio: read-only reader for Chief Architect .plan/.layout files: template names and values (layer sets, wall types, text styles, dimension sets) to seed Plan Studio templates, and an importer that turns a project .plan (floors, walls, doors, windows, room names, dimensions, text) into a plan_core Project."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

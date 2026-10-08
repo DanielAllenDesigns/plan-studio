@@ -288,22 +288,18 @@ fn apply(cx: &mut EditorContext, a: &Active) {
         }
         Active::Device(id, d) => {
             let draft = d.draft().clone();
-            site_view::edit_electrical(cx, "Electrical Service Specification", |layer, _| {
+            site_view::edit_electrical(cx, "Electrical Service Specification", |layer, floor| {
                 if let Some(dev) = layer.device_mut(*id) {
                     draft.apply(dev);
                 }
+                // The Switches tab: connected lights and 3-way pairs.
+                draft.apply_to_layer(layer, &floor.walls);
             });
         }
         Active::Terrain(d) => {
             let draft = d.draft().clone();
             site_view::edit_terrain(cx, "Terrain Specification", |rec| {
-                rec.contour_interval = draft.contour_interval;
-                rec.layer = draft.layer.clone();
-                let t = &mut rec.terrain;
-                t.subfloor_height_above_terrain = draft.terrain.subfloor_height_above_terrain;
-                t.building_pad_elevation = draft.terrain.building_pad_elevation;
-                t.smoothing = draft.terrain.smoothing;
-                t.grid_spacing = draft.terrain.grid_spacing;
+                rec.apply_spec(&draft);
             });
         }
         Active::TerrainObject(hit, d) => {

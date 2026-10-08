@@ -43,6 +43,7 @@
 //! Roof planes come from `crate::editor::roof_view::roof_meshes`.
 
 mod pick;
+mod textures;
 
 use crate::dialogs::camera::{
     elevation_options_with_sun, is_elevation_camera, render_elevation_with, render_lights, sun_dir,
@@ -61,7 +62,7 @@ use plan_core::geometry::Point;
 use plan_core::{CameraKind, CameraObject, Id, PlacedSymbol, Project};
 use plan_elevation::{Drawing, EdgeKind, LineWeight, Options, RegionKind, SunDir};
 use plan_materials::{settings as technique_settings, FillMode, RenderingTechnique, ShadingModel};
-use plan_view3d::{standard_views, CameraMode, Lighting, Viewport3d};
+use plan_view3d::{standard_views, CameraMode, Lighting, Look, Quality, ViewSettings, Viewport3d};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
@@ -250,6 +251,9 @@ pub struct TechniqueView {
     pub background: [f32; 4],
     /// Draw every surface in this material (Clay, Line Drawing, Glass House).
     pub fill: Option<Material>,
+    /// The interactive renderer's look: sky, shadows, occlusion, post edges
+    /// and washes (`plan_view3d::Look`).
+    pub look: Look,
 }
 
 /// Maps a technique from `plan-materials` onto viewport settings. Standard
@@ -272,11 +276,22 @@ pub fn technique_view(t: RenderingTechnique) -> TechniqueView {
         RenderingTechnique::Duotone => [0.93, 0.89, 0.80, 1.0],
         RenderingTechnique::Standard | RenderingTechnique::PhysicallyBased => DEFAULT_BACKGROUND,
     };
+    let look = match t {
+        RenderingTechnique::Standard => Look::Standard,
+        RenderingTechnique::PhysicallyBased => Look::Physical,
+        RenderingTechnique::Clay => Look::Clay,
+        RenderingTechnique::GlassHouse => Look::GlassHouse,
+        RenderingTechnique::Watercolor => Look::Watercolor,
+        RenderingTechnique::TechnicalIllustration => Look::Technical,
+        RenderingTechnique::Duotone => Look::Duotone,
+        RenderingTechnique::VectorView | RenderingTechnique::LineDrawing => Look::Flat,
+    };
     TechniqueView {
         show_edges: s.edge_lines || t == RenderingTechnique::Standard,
         flat: s.shading != ShadingModel::Lit,
         background,
         fill,
+        look,
     }
 }
 
@@ -302,6 +317,16 @@ pub fn nearest_material(rgb: [u8; 3]) -> Material {
         .unwrap_or(Material::WallInterior)
 }
 
+/// Whether a technique paints textures in the interactive view: Standard and
+/// the ray-traced Physically Based preview do; the line, flat, clay and
+/// bitmap-filter techniques draw plain colours.
+pub fn technique_shows_textures(t: RenderingTechnique) -> bool {
+    matches!(
+        t,
+        RenderingTechnique::Standard | RenderingTechnique::PhysicallyBased
+    )
+}
+
 /// Puts every mesh in `material`.
 pub fn apply_fill(scene: &mut Scene, material: Material) {
     for m in &mut scene.meshes {
@@ -312,6 +337,7 @@ pub fn apply_fill(scene: &mut Scene, material: Material) {
 fn apply_to_viewport(vp: &mut Viewport3d, tv: &TechniqueView, sun: Option<[f32; 3]>) {
     vp.show_edges = tv.show_edges;
     vp.background = tv.background;
+    vp.look = tv.look;
     let base = Lighting::default();
     vp.lighting = if tv.flat {
         Lighting {
@@ -465,15 +491,23 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
         _ => project,
     };
     let mut scene = build_scene(proj);
+    // Walls already follow the roof (`build_scene` reads the roof records);
+    // the planes themselves and their eave detail come on top.
     scene
         .meshes
         .extend(crate::editor::roof_view::roof_meshes(proj));
+    scene
+        .meshes
+        .extend(crate::editor::roof_view::roof_detail_meshes(proj));
     scene
         .meshes
         .extend(plan_3d::foundation::foundation_meshes(proj));
     scene
         .meshes
         .extend(crate::editor::framing_view::manual_framing_meshes(proj));
+    scene
+        .meshes
+        .extend(plan_electrical::electrical_meshes(proj));
     scene
         .meshes
         .extend(crate::editor::details_view::detail_meshes(proj));
@@ -506,6 +540,8 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
         Some(cut) => clip_scene(&scene, cut),
         None => scene,
     };
+    // Objects painted with the Material Painter / Adjust Materials.
+    crate::tools::materials::apply_overrides(project, &mut scene);
     if let Some(m) = scope.fill {
         apply_fill(&mut scene, m);
     }
@@ -594,6 +630,11 @@ pub fn symbol_meshes(project: &Project) -> Vec<Mesh> {
         for s in &floor.symbols {
             // Pictures and solids are meshed by `editor::placed`.
             if s.image.is_some() || s.solid {
+                continue;
+            }
+            // User Catalog 3D models (OBJ / glTF imports).
+            if let Some(m) = crate::tools::library::user::placed_meshes(s, floor.elevation) {
+                out.extend(m);
                 continue;
             }
             if chief::is_chief_id(&s.catalog_id) {
@@ -731,8 +772,14 @@ pub fn project_hash(p: &Project) -> u64 {
         if let Some(v) = &f.details {
             let _ = write!(HashFmt(&mut h), "{v:?}");
         }
+        // Built and manual framing, and the electrical layer (both drawn in 3D).
+        let _ = write!(HashFmt(&mut h), "{:?}{:?}", f.framing, f.electrical);
     }
     p.wall_types.len().hash(&mut h);
+    // Painted materials recolor the meshes of their objects.
+    for o in &p.object_materials {
+        let _ = write!(HashFmt(&mut h), "{o:?}");
+    }
     // The terrain (surface, roads, landscape objects).
     if let Some(t) = &p.terrain {
         let _ = write!(HashFmt(&mut h), "{t:?}");
@@ -1005,6 +1052,9 @@ impl VectorXform {
     }
 }
 
+/// Size of the messages painted over the 3D view and the vector view
+/// (at least the 15 pt body text of the rest of the interface).
+const OVERLAY_TEXT_PX: f32 = 16.0;
 /// Height of drawing text, inches (the annotations are about this tall).
 const DRAWING_TEXT_IN: f64 = 6.0;
 
@@ -1324,6 +1374,9 @@ pub struct View3dState {
     pub viewport: Option<Viewport3d>,
     pub mode: CameraMode,
     pub technique: RenderingTechnique,
+    /// The toolbar's Textures toggle: paint materials and pictures with their
+    /// bitmaps where the technique shows them ([`technique_shows_textures`]).
+    pub textures_on: bool,
     /// Forces a rebuild even when nothing changed (Rebuild 3D).
     pub scene_dirty: bool,
     /// Signature of the model the viewport shows (see [`View3dState::signature`]).
@@ -1371,6 +1424,7 @@ impl View3dState {
             viewport: None,
             mode: CameraMode::Orbit,
             technique: RenderingTechnique::Standard,
+            textures_on: true,
             scene_dirty: true,
             last_project_hash: 0,
             scope_floor: None,
@@ -1587,6 +1641,52 @@ impl View3dState {
             .filter(|c| is_elevation_camera(c))
     }
 
+    /// The Cross Section Slider as a camera (C-23): while the slider is on in
+    /// a vector technique, the cut at its current distance is drawn as a
+    /// cross section, so the vector view follows the slider live.
+    fn slider_camera(&self) -> Option<CameraObject> {
+        if !self.active || !is_vector_technique(self.technique) || self.slider.is_none() {
+            return None;
+        }
+        let cut = self.section?;
+        let half = cut.tangent() * cut.half_width;
+        let mut cam = CameraObject::new(
+            CameraKind::CrossSection {
+                back_clip: cut.back_clip,
+            },
+            cut.origin,
+            cut.dir.angle().to_degrees(),
+            "Cross Section Slider",
+            0,
+        );
+        cam.section = Some(plan_core::extras::SectionLine {
+            a: cut.origin - half,
+            b: cut.origin + half,
+            back_clip: cut.back_clip,
+        });
+        Some(cam)
+    }
+
+    /// The camera the vector drawing is made for: the active elevation or
+    /// section camera, else the Cross Section Slider's cut.
+    pub fn vector_source(&self, project: &Project) -> Option<CameraObject> {
+        self.vector_camera(project)
+            .cloned()
+            .or_else(|| self.slider_camera())
+    }
+
+    /// Writes the vector drawing on screen as a DXF (lines by weight class).
+    fn export_vector_dxf(&self, cx: &mut EditorContext) {
+        let name = self
+            .active_camera
+            .and_then(|id| cx.project.camera(id))
+            .map_or_else(|| "Cross Section".to_string(), |c| c.name.clone());
+        cx.status = match self.vector.drawing() {
+            Some(d) => crate::dialogs::camera::save_drawing_dxf(d, &name),
+            None => "Nothing to export yet".into(),
+        };
+    }
+
     /// What the vector drawing depends on: the project hash, the camera, the
     /// technique, the sun and the raster size.
     fn vector_key(&self, project: &Project, cam: &CameraObject, sun: Option<SunDir>) -> u64 {
@@ -1606,17 +1706,23 @@ impl View3dState {
         h.finish()
     }
 
-    /// The Sun Angle's shadow direction, while that toggle is on.
-    pub fn plan_sun(&self, sun_angle_on: bool) -> Option<SunDir> {
+    /// The Sun Angle's shadow direction, while that toggle is on. The compass
+    /// azimuth is turned by the plan's North Pointer so shadows fall the way
+    /// the real sun casts them.
+    pub fn plan_sun(&self, project: &Project, sun_angle_on: bool) -> Option<SunDir> {
         sun_angle_on
             .then(|| sun_dir(&self.raytrace.sun()))
             .flatten()
+            .map(|s| SunDir {
+                azimuth_deg: crate::editor::site_view::plan_sun_azimuth(project, s.azimuth_deg),
+                ..s
+            })
     }
 
     /// Starts a new vector drawing when the project, the camera, the
     /// technique or the sun changed since the one on screen ("Refresh").
     pub fn refresh_vector(&mut self, project: &Project, sun: Option<SunDir>) {
-        let Some(cam) = self.vector_camera(project).cloned() else {
+        let Some(cam) = self.vector_source(project) else {
             return;
         };
         let key = self.vector_key(project, &cam, sun);
@@ -1633,7 +1739,7 @@ impl View3dState {
     /// on screen when it returns.
     #[cfg(test)]
     pub fn refresh_vector_now(&mut self, project: &Project, sun: Option<SunDir>) {
-        let Some(cam) = self.vector_camera(project).cloned() else {
+        let Some(cam) = self.vector_source(project) else {
             return;
         };
         let key = self.vector_key(project, &cam, sun);
@@ -1794,6 +1900,7 @@ impl View3dState {
             None => 0_u8.hash(&mut h),
         }
         self.scope().fill.hash(&mut h);
+        self.textures_on.hash(&mut h);
         h.finish()
     }
 
@@ -1850,7 +1957,10 @@ impl View3dState {
             return;
         };
         let (eye, hide) = (vp.camera.eye(), vp.camera.mode.hides_ceiling_and_roof());
-        let pictures = pick::picture_meshes(project, &self.scope(), eye);
+        let scope = self.scope();
+        let pictures = pick::picture_meshes(project, &scope, eye);
+        let picture_ids: std::collections::HashSet<Id> =
+            pictures.iter().filter_map(|m| m.object_id).collect();
         // The key covers everything the overlay is made of, so an unchanged
         // view costs a hash of the pictures, not a rebuild of the tint.
         let key = pick::overlay_key(selection, &pictures, hide);
@@ -1862,6 +1972,14 @@ impl View3dState {
         let mut scene = self.base_scene.clone();
         scene.meshes.extend(overlay);
         self.queue(&scene, true);
+        // Pictures draw their bitmaps (cached, so cheap when unchanged).
+        let floors = scope
+            .floor
+            .map_or(project.floors.len(), |f| (f + 1).min(project.floors.len()));
+        let bitmaps = textures::picture_textures(project, floors, &picture_ids);
+        if let Some(vp) = &mut self.viewport {
+            vp.set_image_textures(bitmaps);
+        }
     }
 
     /// The object under the screen point `pos` of the viewport `rect`, with its
@@ -1946,7 +2064,12 @@ impl View3dState {
     fn windows(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
         if let Some(mut d) = self.camera_dialog.take() {
             match d.show(ctx) {
-                Outcome::Open => self.camera_dialog = Some(d),
+                Outcome::Open => {
+                    if d.take_export_request() {
+                        cx.status = crate::dialogs::camera::save_camera_dxf(&cx.project, d.draft());
+                    }
+                    self.camera_dialog = Some(d);
+                }
                 Outcome::Cancel => {}
                 Outcome::Ok => self.apply_camera_dialog(cx, &d),
             }
@@ -2143,6 +2266,7 @@ impl View3dState {
             return;
         }
         let mut d = camera_defaults();
+        let mut callout = camera_tool::callout_style();
         let mut open = true;
         let mut tech = self.technique;
         egui::Window::new("3D View Defaults")
@@ -2177,9 +2301,29 @@ impl View3dState {
                                 }
                             });
                         ui.end_row();
+                        ui.label("Callout shape");
+                        egui::ComboBox::from_id_salt("v3d_default_callout")
+                            .selected_text(callout.shape.label())
+                            .show_ui(ui, |ui| {
+                                for s in camera_tool::CalloutShape::ALL {
+                                    ui.selectable_value(&mut callout.shape, s, s.label());
+                                }
+                            });
+                        ui.end_row();
+                        ui.label("Callout size");
+                        ui.add(
+                            egui::DragValue::new(&mut callout.radius)
+                                .range(4.0..=36.0)
+                                .suffix("\" radius"),
+                        );
+                        ui.end_row();
+                        ui.label("Callout shows the name");
+                        ui.checkbox(&mut callout.show_name, "");
+                        ui.end_row();
                     });
             });
         set_camera_defaults(d);
+        camera_tool::set_callout_style(callout);
         self.technique = tech;
         self.show_defaults = open;
     }
@@ -2196,6 +2340,73 @@ fn render_camera(cam: &plan_view3d::Camera) -> plan_render::Camera {
         fov_deg: cam.fov_deg,
         aperture: 0.0,
         focus_dist: 0.0,
+    }
+}
+
+// ----- Print Image of the 3D view -----
+
+/// Longest side of a 3D Print Image, pixels.
+pub const SNAPSHOT_MAX_PX: u32 = 4096;
+/// Samples per pixel of [`View3dState::snapshot_png`].
+#[allow(dead_code)]
+pub const SNAPSHOT_SAMPLES: u32 = 24;
+
+/// The 3D view as it is: the scene on screen and the camera it looks
+/// through, kept so a Print Image can render it later at any size.
+///
+/// Limits: `plan_view3d` draws through the viewport's GL callback and has no
+/// offscreen target to read back, so the picture is ray traced from the
+/// viewport's camera. It shows the model's materials with the default clear-day
+/// sun and sky, no point lights, no selection tint and no pictures; the
+/// vector and technical-illustration techniques print as the shaded view.
+#[derive(Clone)]
+pub struct Snapshot3d {
+    pub scene: Scene,
+    pub camera: plan_render::Camera,
+}
+
+impl Snapshot3d {
+    /// Ray traces the view `width` x `height` pixels (each clamped to
+    /// 16..=[`SNAPSHOT_MAX_PX`]) at `samples` per pixel and encodes it as PNG.
+    /// `None` when the scene is empty.
+    pub fn render_png(&self, width: u32, height: u32, samples: u32) -> Option<Vec<u8>> {
+        if self.scene.meshes.is_empty() {
+            return None;
+        }
+        let side = |v: u32| v.clamp(16, SNAPSHOT_MAX_PX);
+        let settings = plan_render::RenderSettings {
+            width: side(width),
+            height: side(height),
+            samples: samples.clamp(1, 512),
+            ..plan_render::RenderSettings::default()
+        };
+        let renderer = plan_render::Renderer::new(&self.scene);
+        let image = renderer.render(
+            &self.camera,
+            &plan_render::Environment::default(),
+            &[],
+            &settings,
+        );
+        Some(plan_render::encode_png(&image))
+    }
+}
+
+impl View3dState {
+    /// The view as Print Image needs it; `None` without a viewport or a model.
+    pub fn snapshot_source(&self) -> Option<Snapshot3d> {
+        let cam = &self.viewport.as_ref()?.camera;
+        (!self.base_scene.meshes.is_empty()).then(|| Snapshot3d {
+            scene: self.base_scene.clone(),
+            camera: render_camera(cam),
+        })
+    }
+
+    /// Print Image of the 3D view: the view as a PNG `width` x `height`
+    /// pixels (see [`Snapshot3d`] for what it shows and what it leaves out).
+    #[allow(dead_code)] // The headless Print Image: same render, no dialog.
+    pub fn snapshot_png(&self, width: u32, height: u32) -> Option<Vec<u8>> {
+        self.snapshot_source()?
+            .render_png(width, height, SNAPSHOT_SAMPLES)
     }
 }
 
@@ -2218,6 +2429,8 @@ struct BarOut {
     walk_scrub: Option<f64>,
     walk_speed: Option<f64>,
     record: bool,
+    /// Export the vector drawing as a DXF.
+    dxf: bool,
 }
 
 /// The technique combo box shared by both views.
@@ -2233,10 +2446,27 @@ fn technique_combo(ui: &mut egui::Ui, current: RenderingTechnique, out: &mut Bar
         });
 }
 
+/// The Shading menu: shadows, ambient occlusion, quality and exposure of the
+/// interactive view (`plan_view3d::ViewSettings`).
+fn shading_menu(ui: &mut egui::Ui, settings: Option<&mut ViewSettings>) {
+    let Some(s) = settings else { return };
+    ui.menu_button("Shading", |ui| {
+        ui.checkbox(&mut s.shadows, "Shadows");
+        ui.checkbox(&mut s.ambient_occlusion, "Ambient occlusion");
+        ui.horizontal(|ui| {
+            ui.label("Quality");
+            for q in Quality::ALL {
+                ui.selectable_value(&mut s.quality, q, q.label());
+            }
+        });
+        ui.add(egui::Slider::new(&mut s.exposure, 0.5..=2.0).text("Exposure"));
+    });
+}
+
 /// Draws the 3D view in the central area.
 pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     let ctx = ui.ctx().clone();
-    if st.vector_camera(&cx.project).is_some() {
+    if st.vector_source(&cx.project).is_some() {
         show_vector(ui, cx, st);
         return;
     }
@@ -2261,6 +2491,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     let sun = st.sun_light;
     let vp = st.viewport.get_or_insert_with(Viewport3d::new);
     apply_to_viewport(vp, &tv, sun);
+    vp.set_point_lights(&render_lights(&cx.project));
+    vp.textures_enabled = st.textures_on && technique_shows_textures(st.technique);
     if let Some((position, yaw)) = walk_pose {
         vp.camera.position = position;
         vp.camera.yaw = yaw;
@@ -2291,7 +2523,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
             rect.center(),
             egui::Align2::CENTER_CENTER,
             format!("3D view unavailable: {e}"),
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(OVERLAY_TEXT_PX),
             egui::Color32::from_rgb(0xE0, 0x4B, 0x4B),
         );
     } else if st.scene_empty {
@@ -2299,7 +2531,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Nothing to show yet. Draw some walls in the plan.",
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(OVERLAY_TEXT_PX),
             egui::Color32::from_gray(0x60),
         );
     }
@@ -2331,6 +2563,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
                             }
                         });
                     technique_combo(ui, st.technique, &mut out);
+                    ui.checkbox(&mut st.textures_on, "Textures");
+                    shading_menu(ui, st.viewport.as_mut().map(|v| &mut v.settings));
                     out.rebuild = ui.button("Rebuild 3D").clicked();
                     out.ray = ui.button("Ray Trace\u{2026}").clicked();
                     out.back = ui.button("Back to Plan").clicked();
@@ -2449,6 +2683,9 @@ fn apply_bar(
         st.vector.invalidate();
         st.rebuild();
     }
+    if out.dxf {
+        st.export_vector_dxf(cx);
+    }
     if out.ray {
         st.raytrace.open = true;
     }
@@ -2517,7 +2754,7 @@ fn apply_bar(
 /// drag, zoom with the wheel, double-click to fit.
 fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     let ctx = ui.ctx().clone();
-    let sun = st.plan_sun(cx.view_flags.contains(&ViewFlag::SunAngle));
+    let sun = st.plan_sun(&cx.project, cx.view_flags.contains(&ViewFlag::SunAngle));
     st.refresh_vector(&cx.project, sun);
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
@@ -2539,13 +2776,22 @@ fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) 
     let name = st
         .active_camera
         .and_then(|id| cx.project.camera(id))
-        .map_or(String::new(), |c| c.name.clone());
+        .map_or_else(
+            || {
+                if st.slider.is_some() {
+                    "Cross Section Slider".to_string()
+                } else {
+                    String::new()
+                }
+            },
+            |c| c.name.clone(),
+        );
     if st.vector.drawing().is_none() {
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Drawing the view\u{2026}",
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(OVERLAY_TEXT_PX),
             egui::Color32::from_gray(0x60),
         );
     } else if st.vector.drawing().is_some_and(|d| d.lines.is_empty()) {
@@ -2553,7 +2799,7 @@ fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) 
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Nothing to draw: the view is empty.",
-            egui::FontId::proportional(14.0),
+            egui::FontId::proportional(OVERLAY_TEXT_PX),
             egui::Color32::from_gray(0x60),
         );
     }
@@ -2568,6 +2814,7 @@ fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) 
                     ui.strong(&name);
                     technique_combo(ui, st.technique, &mut out);
                     out.refresh = ui.button("Refresh").clicked();
+                    out.dxf = ui.button("Export DXF\u{2026}").clicked();
                     out.to_layout = ui.button("Send to Layout").clicked();
                     out.layout_pdf = ui.button("Layout PDF\u{2026}").clicked();
                     out.ray = ui.button("Ray Trace\u{2026}").clicked();
@@ -2576,6 +2823,17 @@ fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) 
                         ui.spinner();
                     }
                 });
+                if let Some(s) = &st.slider {
+                    let mut off = s.offset;
+                    let r = ui.add(
+                        egui::Slider::new(&mut off, 0.0..=s.depth)
+                            .text("Cross section depth")
+                            .suffix("\""),
+                    );
+                    if r.changed() {
+                        out.slider = Some(off);
+                    }
+                }
             });
         });
     if busy {
@@ -2767,6 +3025,26 @@ mod tests {
             let v = technique_view(t);
             assert!(v.background.iter().all(|c| (0.0..=1.0).contains(c)));
         }
+    }
+
+    #[test]
+    fn every_technique_has_its_own_gl_look() {
+        let look = |t| technique_view(t).look;
+        assert_eq!(look(RenderingTechnique::Standard), Look::Standard);
+        assert_eq!(look(RenderingTechnique::PhysicallyBased), Look::Physical);
+        assert_eq!(look(RenderingTechnique::Clay), Look::Clay);
+        assert_eq!(look(RenderingTechnique::GlassHouse), Look::GlassHouse);
+        assert_eq!(look(RenderingTechnique::Watercolor), Look::Watercolor);
+        assert_eq!(look(RenderingTechnique::TechnicalIllustration), Look::Technical);
+        assert_eq!(look(RenderingTechnique::Duotone), Look::Duotone);
+        assert_eq!(look(RenderingTechnique::LineDrawing), Look::Flat);
+        // The looks that draw edge lines in the composite pass.
+        assert!(look(RenderingTechnique::TechnicalIllustration).params().edge_lines > 0.0);
+        assert!(look(RenderingTechnique::Standard).params().sky);
+        let mut vp = Viewport3d::new();
+        apply_to_viewport(&mut vp, &technique_view(RenderingTechnique::Watercolor), None);
+        assert_eq!(vp.look, Look::Watercolor);
+        assert!(vp.settings.shadows && vp.settings.ambient_occlusion);
     }
 
     #[test]
@@ -3491,9 +3769,10 @@ mod tests {
     #[test]
     fn the_plan_sun_is_only_used_while_sun_angle_is_on() {
         let st = View3dState::with_inbox(Outbox::default());
-        assert!(st.plan_sun(false).is_none());
+        let project = Project::from_defaults("Sun", &crate::plan_defaults::embedded());
+        assert!(st.plan_sun(&project, false).is_none());
         let s = st
-            .plan_sun(true)
+            .plan_sun(&project, true)
             .expect("mid-afternoon in June is above the horizon");
         assert!(s.altitude_deg > 10.0);
     }
@@ -3852,5 +4131,72 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn print_image_of_the_3d_view_renders_the_viewport_camera_as_a_png() {
+        let p = house();
+        let mut st = View3dState::default();
+        // No viewport yet: nothing to print.
+        assert!(st.snapshot_png(32, 24).is_none());
+        assert!(st.snapshot_source().is_none());
+        // A view with a model: the snapshot keeps scene and camera.
+        st.viewport = Some(Viewport3d::new());
+        assert!(
+            st.snapshot_png(32, 24).is_none(),
+            "an empty scene prints nothing"
+        );
+        st.base_scene = build_view_scene(&p, &ViewScope::default());
+        assert!(!st.base_scene.meshes.is_empty());
+        let snap = st.snapshot_source().expect("a view with a model");
+        let png = snap.render_png(48, 36, 1).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        // The size is what was asked (IHDR width and height), clamped to the limits.
+        assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 48);
+        assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 36);
+        let small = snap.render_png(1, 1, 1).unwrap();
+        assert_eq!(u32::from_be_bytes(small[16..20].try_into().unwrap()), 16);
+        // snapshot_png is the same render at the default quality.
+        let direct = st.snapshot_png(32, 24).unwrap();
+        assert_eq!(&direct[..4], b"\x89PNG");
+    }
+
+    #[test]
+    fn the_slider_drives_the_vector_view_live() {
+        let p = house();
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.technique = RenderingTechnique::VectorView;
+        st.vector.raster_px = 192;
+        st.ensure_scene(&p);
+        assert!(st.vector_source(&p).is_none());
+        st.toggle_slider();
+        // No camera object, but the slider is drawn as a cross section.
+        assert!(st.vector_camera(&p).is_none());
+        let cam = st.vector_source(&p).expect("the slider's cut");
+        assert!(matches!(cam.kind, CameraKind::CrossSection { .. }));
+        st.refresh_vector_now(&p, None);
+        let start = st.vector.drawing().cloned().expect("a drawing");
+        assert_eq!(
+            start.cut_regions().count(),
+            0,
+            "the cut is in front of the house"
+        );
+        // Moving the slider through the house cuts the side walls.
+        let (base, depth) = {
+            let s = st.slider.as_ref().unwrap();
+            (s.base, s.depth)
+        };
+        let off = depth * 0.5;
+        st.slider.as_mut().unwrap().offset = off;
+        let mut cut = base;
+        cut.origin = cut.origin + cut.dir * off;
+        st.section = Some(cut);
+        st.refresh_vector_now(&p, None);
+        let mid = st.vector.drawing().cloned().expect("a drawing");
+        assert!(mid.cut_regions().count() > 0, "the side walls have poche");
+        assert_ne!(mid, start);
+        // The standard technique shows the GL scene again.
+        st.technique = RenderingTechnique::Standard;
+        assert!(st.vector_source(&p).is_none());
     }
 }

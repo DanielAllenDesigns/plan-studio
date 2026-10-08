@@ -63,6 +63,8 @@ pub fn place_on_wall(kind: DeviceKind, wall: &Wall, offset_along: f64, side: Wal
         circuit: None,
         label: String::new(),
         switched_by: Vec::new(),
+        finish: String::new(),
+        hide_label: false,
     }
 }
 
@@ -78,6 +80,8 @@ pub fn place_free(kind: DeviceKind, pos: Point) -> Device {
         circuit: None,
         label: String::new(),
         switched_by: Vec::new(),
+        finish: String::new(),
+        hide_label: false,
     }
 }
 

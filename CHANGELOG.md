@@ -12,28 +12,98 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
-Round 9 is in flight. Nothing below has landed.
+Round 11 is partly done: what has landed is under "Round 11" below. The rest is still being built in the working tree and is listed here, so nothing in this section is in the program yet.
 
-### Added
+### In flight
 
-- This changelog and [docs/release-checklist.md](docs/release-checklist.md) (how to cut a release, the licensing note and the manual QA list).
-
-### Changed
-
-- The manual brought up to Round 8: a rewritten chapter 7 (stairs), the terrain and landscaping half of chapter 9, pictures, billboards and
-  distributions in chapter 6.7, and the typed CAD storage, shared undo stack, Windows and Linux `Ctrl+Z` rule, schedule selection and scenario results across
-  chapters 0 to 5, 8, 10 to 15 and 17. README and ROADMAP refreshed (1,852 tests).
+- Reading a Chief `.plan` for its content, not only its defaults (`plan-chiefplan::import` exists as a library module; no menu command calls it yet).
+- Electrical and framing follow-ups (`plan-electrical` device finishes and meshes; `plan-framing` corner and tee backing, a header table, birdsmouth and tail cuts, eave framing, floor holes).
+- The Library Browser work (a user library, model import from OBJ and glTF through `plan-import`, archive, browse, manage and preview modules in `plan-library`).
+- Theme, docks and toolbar rendering changes (new and redrawn icons, `shell/docks.rs`, `shell/status.rs`, `shell/tooltips.rs`).
 
 ### Planned
 
-- 3D picking: click an object in the 3D view to select it in the plan.
-- Selecting, moving and deleting single terrain objects (walls, beds, plant runs) with Select Objects.
-- Landscape materials: a green grass, mulch and foliage in 3D in place of the brown stand-ins.
-- Billboard pictures that turn to face the camera in the cached 3D scene.
-- A sweep of the open items in `docs/integration-queue.md` (for example listing saved pictures in the Library Browser).
-- A performance pass.
-- A parity audit against Chief Architect X18.
-- Documentation brought up to the Round 9 commit.
+- Open doors, casing, sills and thresholds in the editor's 3D view; threshold marks in plan; a transom over a door.
+- Attic floors from Build Roof.
+- Replace Fonts; ties from dimensions to stairs, roof planes and framing.
+- Layout: Save As Template, opening labels on pages, CAD-detail boxes from the Send to Layout dialog, and the File and Layout menu rows for Print Model, Layer Display Options, Add Sheet Index and Print Image of the 3D view.
+- Bump maps, and the ray tracer drawing pictures with their bitmaps.
+
+## Round 11 - 2026-10-08 (working tree; the commit is not made yet; part of the round is still in flight)
+
+About 2,750 tests (2,821 `#[test]` functions less 45 that are `#[ignore]`d, at the last count; the number is still rising as the unfinished Round 11 work lands, counted from the source, not from a `cargo test` run; Round 10 was about 2,430). Run `cargo test --workspace` for the exact number before tagging.
+
+### Added
+
+- **Textures in 3D** (`plan-library/image/`, `plan-materials/textures.rs`, `plan-view3d/{texturing, gpu}`, `plan-render/albedo.rs`, `shell/view3d_panel/textures.rs`): 16 of the 23 scene materials show a bitmap in the Standard and Physically Based techniques and in the ray tracer. Chief's own texture files are read at run time from your install (`PLAN_STUDIO_TEXTURES`, `~/Documents/Chief Architect Premier X18 Data/Textures`, `/Library/Application Support/Chief Architect Premier X18/Referenced Files`) and never copied; a generated bitmap stands in for any that is missing. Planar mapping at the file's real tile size (`Brick(36).jpg` repeats every 36"), mipmapped and anisotropic on the card, at most two uploads a frame, decoding on a background thread, a Textures switch in the 3D bar. Pictures and billboards show their own PNG or JPEG bitmap. A decoder written for the program reads PNG (every type and depth, Adam7) and JPEG (baseline and progressive, CMYK, any subsampling). Limits: no bump maps, a painted object shows the texture of the closest scene material, pictures are flat quads in the ray tracer, the mapping is planar, not triplanar.
+- **Doors and windows** (`plan-core/openings/spec.rs`, `plan-3d`, `dialogs/opening.rs`): the Sash, Lites (Standard, Diamond, Prairie, Custom Grid), Lintel with an exterior sill, Arch (Round Top, Segmental, Tudor, Gothic, Eyebrow), Hardware and Shutters tabs, built in 3D and so in the elevations; Calculate from Width for door panels; a wall niche's depth; a door mulled with sidelite windows in one frame and one casing; standard widths per style with snap-to-standard on the jamb handles; the Doors, Labels and Windows, Labels layers with a draggable label and Reset Label Position; the new opening is selected after it is placed.
+- **Roofs** (`plan-3d/{cover, eave}.rs`, `plan-roof/{edges, spec}.rs`, `dialogs/{roof, defaults}.rs`): Roof Defaults (Edit > Default Settings > Roofs, and a Detail tab in Build Roof) with the eave cut (plumb, level, square), fascia, soffit (level or sloped), frieze, ridge caps, gutters, flashing, exposed rafter tails, Auto Attic Walls, the attic and lower wall types, Roof Cuts Wall at Bottom and the baseline-at-top-plate rule; per-plane eave choices on the Roof Plane Specification's Options tab; half, pony, foundation and curved walls cut by the roof.
+- **Rooms** (`plan-core/{extras, rooms}.rs`, `plan-3d/slab.rs`, `editor/{roof_view, snap}.rs`, `shell/docks.rs`): Roof Over This Room off leaves the room out of Build Roof; Flat Roof Over This Room and the Flat Roof room type; concrete stem walls in 3D under a dropped garage floor or a room with a Stem Wall height; snapping to the ends and crossings of the Reference Display floor's walls; a Ref column in Active Layer Display Options; `Shift+Cmd+Y` bound to Floor Defaults as a base key.
+- **File management** (`plan-app/{files, mac_open}.rs`, `dialogs/unsaved.rs`, `plan-core/io.rs`): saves go to a temporary file renamed over the plan; the replaced version is copied to `Archives/<plan>/` (the newest 20); Save a Copy, Revert to Saved, Close Plan, Backup Entire Plan (a zip of the plan and its pictures), Manage Auto Archives; autosave every 5 minutes while there are unsaved changes, never over the file; recovery offered when an autosave is newer than the plan and after a crash or a skipped prompt (`~/.plan-studio/recovery/`, the newest 10, a panic hook); Open Recent with Clear Menu; drag and drop; a Finder double-click through an Apple Event handler (and the `.psplan` document type in the macOS bundle; a MIME file for Linux); unsaved-changes prompts for New, Open, Close and Quit (`Enter` Save, `Cmd+D` Don't Save, `Esc` Cancel); a dot in the window title; "Saved 2 min ago" in the status bar. Times in names and prompts are UTC.
+- **Dimensions and snaps** (`plan-core/{dimension, dim_assoc, export/dxf}.rs`, `tools/dimension.rs`, `editor/snap.rs`): Auto NKBA Dimensions; curved walls in Auto Exterior; Locate Objects groups for temporary and elevation dimensions; printed-size text picked by the box it is drawn in; DXF and PDF output that honor hidden extension lines and text-style sizes; Reverse Dimension, Convert to Manual, Align and Distribute Dimensions on the Edit toolbar; CAD intersection snaps, an Extension snap (off by default) and a Points/Markers snap.
+- **Layout** (`plan-layout/{annot, layers, textfit, print}.rs`, `shell/layout_window.rs`, `dialogs/{layout, print}.rs`): page circles, arcs, leaders and revision clouds with move, resize and nudge; the layout's five-layer set with Layout Layer Display Options; text boxes that wrap, shrink to fit or stay as typed; every door and window symbol and its casing on pages; JPEG as well as PNG picture boxes; a DPI and sample count for each perspective box and an Update Views that renders on a thread with a progress bar; Print Model; a printer list (`lpstat -p`) for the system printer; the sheet index as a table box; Daniel's sheet set (ten sheets for a one-floor plan) installed into the live layout by Create Construction Set; Send to Layout from a Project Browser camera. The engine and dialog for Print Image of the 3D view are in, but the File menu does not call them yet.
+
+### Changed
+
+- The Release workflow (`.github/workflows/release.yml`) runs `cargo test --workspace` on each runner before it builds a package.
+- Create Construction Set now adds the sheets to the plan's layout as well as offering the PDF copy.
+- The manual brought up to Round 11 so far: chapters 1 to 5, 8, 10 to 15 (file management is the new 12.2a, Roof Defaults 8.4a, textures 10.8a), and the status table of chapter 0. The parts of Round 11 that are still being built are not described.
+
+### Known issues
+
+- The standard widths and the tab values new openings start with are not yet saved with the plan defaults (`docs/integration-queue.md`).
+
+## Round 10 - 2026-10-08 (working tree; the commit is not made yet)
+
+About 2,430 tests. The figure is counted from the source (the `#[test]` functions that are not `#[ignore]`d), not from a `cargo test` run; the same count matched the reported totals within ten at Rounds 7 and 8. Run `cargo test --workspace` for the exact number before tagging.
+
+### Added
+
+- **Edit commands** (`editor/{clipboard, edit_commands, transform}.rs`, `plan-core/transform.rs`): Cut, Copy and Paste (the copy hangs on the pointer until a click), Paste Hold Position,
+  Paste Special > As Group, Copy and Paste in Place (`C, P, P`), Duplicate (`Cmd+D`, 12" right and down), Select All (`Cmd+A`), Select Same Type, Group and Ungroup (`Cmd+G`), Delete Objects (`Shift+Space`, by object type),
+  Transform/Replicate Object (move, rotate, resize and reflect with copies as arrays), Rotate and a rotate handle on multi-selections, Reflect About Object, Point to Point Move, Center Object,
+  Make Parallel and Make Perpendicular, Align and Distribute, Move to Front and Back, Lock and Unlock (by layer), Send to Layer and the Action History window. A right-click context menu opens the same commands. Every command has an id, a hotkey name and a menu row.
+- **Doors and windows** (`plan-core/{openings, opening_symbol}.rs`, `editor/{opening_view, opening_edit}.rs`, `dialogs/opening.rs`, `plan-3d`): ten door styles and eleven window flavors as tools, each with a plan symbol and a 3D unit;
+  size or `D01` / `W01` labels in plan with the Label tab; jamb resize handles, typed widths and jamb distances; Flip Hinge, Reverse Side, Center on Wall Segment, Mull and Unmull. The variant default sizes are estimates (`DECISIONS.md`).
+- **Walls** (`tools/wall.rs`, `editor/{typed_input, wall_edit, behaviors}.rs`, `dialogs/{snap_settings, edit_behaviors}.rs`): typed length and angle while drawing and while dragging a wall end, Shift (hold the angle increment) and Alt (suspend every snap), an angle label,
+  Edit > Snap Settings (object snaps one by one, grid and angle snaps, bumping, snap distance), Edit > Edit Behaviors, Break Wall, Remove Break, Reverse Layers, Change Line/Arc with a bulge handle, Make Arc Tangent, Convert to Polyline, Fix Wall Connections, and the Arc section of the Wall Specification.
+- **Dimensions** (`plan-core/{dimension, dim_assoc, text_styles}.rs`, `tools/dimension.rs`, `dialogs/{dimension, default_lists}.rs`): Locate Objects settings; dimensions tied to walls, openings, cabinets and fixtures that follow them; Auto Exterior Dimensions in up to three strings per side
+  (openings, wall to wall, overall) for any direction of wall, so a turned shell works; an openings string in Auto Interior Dimensions; printed-size text and dimensions (Text Styles Character Height or Printed Size); the Dimension Specification's located objects, per-point extension line toggle and Text Style tab.
+- **Roofs in 3D** (`plan-3d/{clip, cover, eave}.rs`, `plan-roof/edges.rs`): walls follow the roof (gable triangles, hip clipping, interior walls rising to a vaulted ceiling, attic walls, butting roofs trimmed with flashing), and the eave detail (fascia, soffit, rake boards, optional frieze, ridge and hip caps).
+  Limits: curved, pony, half and foundation walls keep flat tops; the eave cut and rafter tails are not drawn yet.
+- **Rooms and floors** (`editor/rooms_edit.rs`, `dialogs/{room, floor, floor_defaults, reference_display}.rs`): room function defaults (a garage floor 24" down on a slab, no ceiling over a deck or porch, no floor under Open Below, Attic and Courtyard rooms), Floor Defaults, Build New Floor with derive options and a foundation,
+  Insert New Floor Below, the Reference Display dialog (any floor, a layer set, a color), nested rooms, draggable room labels with a label template (`<name> <type> <area> <std_area> <cl_area> <dims> <ceiling> <floor> <perimeter>`), and Floor and Ceiling Structure Define.
+- **Layout, print and materials** (`shell/layout_window.rs`, `dialogs/{print, materials}.rs`, `plan-layout/print.rs`, `plan-docs/materials.rs`): text boxes, perspective camera boxes (ray traced, 480 x 360 by default), picture boxes (PNG), Materials List boxes, a layout CAD row (line, rectangle, polyline, text), a rotation knob;
+  the Print dialog (PDF, system printer or viewer; paper, scale, tiling, color, line weights, page range), Print Preview, Print Image and PDF bookmarks; a Materials List with eleven categories, waste factors, stock lengths and unit prices from a Master List
+  (`~/.plan-studio/master-list.json`), CSV, PDF and Send to Layout; the construction set gains a Materials List sheet (eight sheets for a one-floor plan).
+- **Underlays** (`plan-core/underlay.rs`, `tools/underlay*`, `dialogs/underlay.rs`): pictures (PNG, JPEG, scanned PDF) placed under the plan for tracing, with two-point calibration, opacity, rotation, show and lock.
+- **Materials tools** (`tools/materials.rs`, `dialogs/materials.rs`, `plan-core/object_materials.rs`, `plan-materials/painter.rs`): Materials..., Material Painter, Material Eyedropper, Adjust Materials..., Material Builder... and Delete Surface. The 3D view shows a painted object in the closest of its fixed scene materials (no textures yet).
+- **Preferences and menus** (`dialogs/{preferences, app_info}.rs`, `menus.rs`): Preferences (appearance, colors, library, folders, render, edit, snaps, architectural), Open Recent Documents, View File Information, Color Chooser, New Plan View, Refresh Display (`F5`), Fill Window Selected Objects,
+  Status Bar and Toolbars toggles, Enter Full Screen, the Help menu and System Information. Chief menu rows with no Plan Studio counterpart are removed rather than dimmed (`DECISIONS.md` item 19).
+- **Cabinets**: depth and corner resize handles, fit to a gap, and automatic joining of touching base countertops (Preferences > Architectural).
+- **Hotkeys**: `Cmd+X`, `Cmd+C`, `Cmd+V`, `Cmd+A`, `Cmd+D`, `Cmd+G`, `C, P, P` and `Shift+Space`; the door and window flyout keys, Floor Defaults (`Shift+Cmd+Y`), Preferences, Print and Revision Cloud become live. 121 of Daniel's 143 named bindings work.
+- Two scenario files (`s13_opening_variants`, `s14_wall_edit_and_snaps`).
+
+### Changed
+
+- The manual brought up to Round 10 and, where it was behind, to Round 9: the Edit menu and clipboard (ch. 2.5), every door and window style (ch. 3), rooms and floors (ch. 4), dimensions and printed size (ch. 5), the Round 9 cabinet faces and countertop edges (ch. 6), the stairwell guard (ch. 7), the wall Roof tab, Dutch gable and upper pitch (ch. 8),
+  roofs in 3D (ch. 8.3, 10), the Print dialog, boxes and Materials List (ch. 11), underlays (ch. 12), the hotkey table (ch. 13), the new modules (ch. 14) and the glossary. README and ROADMAP refreshed.
+- `DECISIONS.md` items 11 to 20 record the open questions of this round (Reverse Layers, Shift while drawing, Edit Behaviors, Lock, Duplicate, Resize, painted materials, automatic countertop join, removed menu rows, underlay formats).
+
+## Round 9 - 2026-10-08 (`0ceb404`)
+
+About 1,950 tests (counted from the source as for Round 10; the commit message gives no total).
+
+### Added
+
+- **3D picking.** Click an object in the 3D view to select it (orange highlight), Shift-click to add, double-click to open its specification, `Delete` to delete it.
+- **Terrain selection.** Select Objects picks, moves, nudges and deletes single terrain objects (features, breaks, walls, curbs, roads and landscape objects), with vertex handles on small ones.
+- **Landscape materials.** Grass, Mulch, Foliage, Water, Asphalt and Gravel in the 3D scene in place of the brown stand-ins; billboards turn to face the camera in the live view.
+- **Queue sweep.** Roofs: the Roof Return settings dialog, Dutch gable and upper pitch (gambrel and mansard) roofs, knee walls and the Roof tab of the Wall Specification. Cabinets: editable side and back faces, countertop corner treatments and an Ogee edge, the Soffit Polygon tool.
+  Dimensions and text: associative dimensions, Find/Replace Text, Edit toolbar buttons for the CAD edit tools. Schedules: click a row to select the object, grouping and totals, Stair, Room Finish and Note schedules, schedule layout boxes. Layout: box rotation and portrait sheets, the extra Project Information macros, layout JSON import and export.
+  Stairs: a guard railing around the stairwell opening, dashed treads beyond the break line, landing corner handles. Details: own line styles, molding miters, custom molding profiles. A dimension pasted from the clipboard is not tied to the walls the original was.
+- **Performance.** Linear room detection and wall joins, cached schedules, framing and layout signatures, a 591-wall sample and a benchmark, a release profile.
+- `docs/parity-status.md` (765 parity ids), the manual for Round 8, the changelog and the release checklist; the bundle version comes from `Cargo.toml`.
 
 ## Round 8 - 2026-10-08 (`6f6a7b9`)
 

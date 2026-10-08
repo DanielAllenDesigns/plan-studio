@@ -190,8 +190,28 @@ impl SymbolForm {
         };
     }
 
+    /// Add to Library: saves this symbol (as sized and flipped here) in the
+    /// User Catalog. With `convert` the placed symbol also switches to the
+    /// new user item, so it no longer depends on its source catalog.
+    fn add_to_library(&mut self, convert: bool) {
+        self.note = match crate::tools::library::user::add_symbol(&self.draft, None) {
+            Ok(item) => {
+                if convert {
+                    self.draft.catalog_id = item.id.clone();
+                    self.describe();
+                    format!("Converted to the user symbol \"{}\"", item.name)
+                } else {
+                    format!("Added to the User Catalog as \"{}\"", item.name)
+                }
+            }
+            Err(e) => e,
+        };
+    }
+
     fn general(&mut self, ui: &mut Ui) {
         let mut replace = false;
+        let mut add_lib = false;
+        let mut convert = false;
         let f = &mut self.fields;
         let d = &mut self.draft;
         section(ui, "Symbol");
@@ -207,6 +227,18 @@ impl SymbolForm {
         row(ui, "Library", |ui| {
             if ui.button("Replace From Library").clicked() {
                 replace = true;
+            }
+        });
+        row(ui, "User Catalog", |ui| {
+            if ui.button("Add to Library").clicked() {
+                add_lib = true;
+            }
+            if ui
+                .button("Convert to Symbol")
+                .on_hover_text("Save as a user symbol and use that item")
+                .clicked()
+            {
+                convert = true;
             }
         });
         if !self.note.is_empty() {
@@ -231,6 +263,9 @@ impl SymbolForm {
         ui.checkbox(&mut d.flip, "Flip");
         if replace {
             self.replace_from_library();
+        }
+        if add_lib || convert {
+            self.add_to_library(convert);
         }
     }
 

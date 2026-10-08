@@ -67,7 +67,7 @@ pub const SPLINE_SEGMENTS_PER_SPAN: usize = 8;
 pub const CLOUD_ARC: f64 = 12.0;
 const CLOUD_SAMPLES: usize = 6;
 /// Half length of a point's cross.
-const POINT_SIZE: f64 = 2.0;
+pub(crate) const POINT_SIZE: f64 = 2.0;
 
 // ----- shared helpers (also used by the dimension and text tools) -----
 
@@ -1371,13 +1371,14 @@ impl CadTool {
     }
 
     /// The layer the current mode draws on: Place Point and Input Point drop
-    /// temporary points on their own layer (Delete Temporary Points).
-    fn draw_layer(&self, cx: &mut EditorContext) -> &'static str {
+    /// temporary points on their own layer (Delete Temporary Points); every
+    /// other mode draws on the Current CAD Layer (CAD-1, LAY-6).
+    fn draw_layer(&self, cx: &mut EditorContext) -> String {
         if matches!(self.mode, CadMode::PlacePoint | CadMode::InputPoint) {
             ensure_layer(&mut cx.project, TEMP_POINT_LAYER, [200, 0, 200], 13);
-            TEMP_POINT_LAYER
+            TEMP_POINT_LAYER.to_string()
         } else {
-            CAD_LAYER
+            cx.project.layers.current_cad_layer()
         }
     }
 
@@ -1397,7 +1398,7 @@ impl CadTool {
     fn commit(&mut self, cx: &mut EditorContext, items: Vec<CadItem>) -> ToolResult {
         let label = format!("Draw {}", self.mode.short());
         let layer = self.draw_layer(cx);
-        match add_cad_items(cx, layer, items, &label) {
+        match add_cad_items(cx, &layer, items, &label) {
             Some(_) => {
                 cx.status.clear();
                 cx.readout = None;
@@ -2257,6 +2258,23 @@ mod tests {
         );
         assert!(cx.undo().is_some());
         assert!(cx.floor().cad.is_empty());
+    }
+
+    #[test]
+    fn new_cad_objects_go_on_the_current_cad_layer() {
+        let mut cx = new_cx();
+        assert!(crate::dialogs::layer_sets::set_tool_layer(
+            &mut cx, "cad", "Text"
+        ));
+        let mut t = tool(CadMode::Line);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        click(&mut t, &mut cx, 120.0, 0.0);
+        assert_eq!(cx.floor().cad[0].layer, "Text");
+        // Locking the chosen layer refuses the drawing, like any CAD layer.
+        crate::shell::docks::set_layer_locked(&mut cx, "Text", true);
+        click(&mut t, &mut cx, 0.0, 50.0);
+        click(&mut t, &mut cx, 120.0, 50.0);
+        assert_eq!(cx.floor().cad.len(), 1);
     }
 
     #[test]

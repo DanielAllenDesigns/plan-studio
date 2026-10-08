@@ -5,10 +5,18 @@
 //!
 //! The dialog edits a copy of the [`HotkeyMap`]; OK writes it back and saves
 //! `~/.plan-studio/hotkeys.json`, Cancel drops it.
+//!
+//! On top of Chief's layout it has: a search that matches command, group and
+//! key; a filter (all, assigned, unassigned, in conflict); a live conflict
+//! warning while a sequence is being recorded and a list of every clash in the
+//! map; Import of a Chief `UserHotkeys.xml` (again, over the current keys);
+//! Export of the keys as JSON or CSV; and Print List, which writes the
+//! assigned keys as a two-column PDF and opens it in the system viewer.
 
 use super::Outcome;
 use crate::shell::hotkeys::{sequence_label, Chord, Command, HotkeyMap, MAX_SEQUENCE};
 use eframe::egui::{self, Align, Align2, Color32, Event, Key, Layout, RichText, Vec2};
+use std::collections::{HashMap, HashSet};
 
 const WARN: Color32 = Color32::from_rgb(0xE0, 0xA0, 0x30);
 
@@ -22,8 +30,111 @@ pub enum AssignResult {
     Nothing,
 }
 
+/// Which commands the table lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FilterMode {
+    #[default]
+    All,
+    Assigned,
+    Unassigned,
+    Conflicts,
+}
+
+impl FilterMode {
+    pub const ALL: [FilterMode; 4] = [
+        FilterMode::All,
+        FilterMode::Assigned,
+        FilterMode::Unassigned,
+        FilterMode::Conflicts,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FilterMode::All => "All",
+            FilterMode::Assigned => "Assigned",
+            FilterMode::Unassigned => "Unassigned",
+            FilterMode::Conflicts => "In conflict",
+        }
+    }
+}
+
+/// Commands whose keys clash: the same sequence, or one that is the start of
+/// another (`D` and `D, H`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conflict {
+    /// The shorter (or shared) sequence, as shown to the user.
+    pub sequence: String,
+    /// The commands involved, by name.
+    pub commands: Vec<String>,
+}
+
+/// Every clash in `map`.
+pub fn find_conflicts(map: &HotkeyMap) -> Vec<Conflict> {
+    let mut owners: HashMap<Vec<Chord>, Vec<&str>> = HashMap::new();
+    for c in map.commands() {
+        for seq in map.sequences(&c.name) {
+            owners.entry(seq.clone()).or_default().push(&c.name);
+        }
+    }
+    let mut out: Vec<Conflict> = Vec::new();
+    let mut add = |sequence: String, mut names: Vec<String>| {
+        names.sort();
+        names.dedup();
+        if names.len() > 1
+            && !out
+                .iter()
+                .any(|c| c.sequence == sequence && c.commands == names)
+        {
+            out.push(Conflict {
+                sequence,
+                commands: names,
+            });
+        }
+    };
+    for (seq, names) in &owners {
+        // The same sequence on two commands.
+        add(
+            sequence_label(seq),
+            names.iter().map(|n| n.to_string()).collect(),
+        );
+        // This sequence starts with another command's sequence.
+        for n in 1..seq.len() {
+            if let Some(short) = owners.get(&seq[..n]) {
+                let mut all: Vec<String> = short.iter().map(|n| n.to_string()).collect();
+                all.extend(names.iter().map(|n| n.to_string()));
+                add(sequence_label(&seq[..n]), all);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.sequence.cmp(&b.sequence));
+    out
+}
+
+/// What an import of a Chief `UserHotkeys.xml` did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HotkeyImport {
+    /// Bound commands in the file that carry a name.
+    pub bindings: usize,
+    /// Plan Studio commands whose keys were set from them.
+    pub commands: usize,
+    /// Named bindings with no Plan Studio command (or no usable keys).
+    pub unmapped: usize,
+    /// Bound commands whose name could not be recovered from the file.
+    pub unnamed: usize,
+}
+
+impl HotkeyImport {
+    pub fn summary(&self) -> String {
+        format!(
+            "Imported {} bindings onto {} commands ({} have no Plan Studio command yet, {} unnamed)",
+            self.bindings, self.commands, self.unmapped, self.unnamed
+        )
+    }
+}
+
 pub struct HotkeyDialog {
     draft: HotkeyMap,
+    filter_mode: FilterMode,
     filter: String,
     selected: Option<String>,
     /// The sequence being recorded (up to [`MAX_SEQUENCE`] chords).
@@ -40,6 +151,7 @@ impl HotkeyDialog {
     pub fn new(map: &HotkeyMap) -> Self {
         HotkeyDialog {
             draft: map.clone(),
+            filter_mode: FilterMode::All,
             filter: String::new(),
             selected: None,
             seq: Vec::new(),
@@ -50,9 +162,18 @@ impl HotkeyDialog {
         }
     }
 
-    /// The commands whose name or hotkey contains the filter, by name.
+    /// The commands whose name, group or hotkey contains the filter and that
+    /// pass the filter mode, by name.
     pub fn visible_commands(&self) -> Vec<&Command> {
         let needle = self.filter.trim().to_lowercase();
+        let in_conflict: HashSet<String> = if self.filter_mode == FilterMode::Conflicts {
+            find_conflicts(&self.draft)
+                .into_iter()
+                .flat_map(|c| c.commands)
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let mut v: Vec<&Command> = self
             .draft
             .commands()
@@ -60,15 +181,203 @@ impl HotkeyDialog {
             .filter(|c| {
                 needle.is_empty()
                     || c.name.to_lowercase().contains(&needle)
+                    || c.group.to_lowercase().contains(&needle)
                     || self
                         .draft
                         .hotkey_text(&c.name)
                         .to_lowercase()
                         .contains(&needle)
             })
+            .filter(|c| match self.filter_mode {
+                FilterMode::All => true,
+                FilterMode::Assigned => !self.draft.sequences(&c.name).is_empty(),
+                FilterMode::Unassigned => self.draft.sequences(&c.name).is_empty(),
+                FilterMode::Conflicts => in_conflict.contains(&c.name),
+            })
             .collect();
         v.sort_by_key(|c| c.name.to_lowercase());
         v
+    }
+
+    #[cfg(test)]
+    pub fn set_filter(&mut self, text: &str) {
+        self.filter = text.to_string();
+    }
+
+    #[cfg(test)]
+    pub fn set_filter_mode(&mut self, mode: FilterMode) {
+        self.filter_mode = mode;
+    }
+
+    /// Every clash in the edited map.
+    #[cfg(test)]
+    pub fn conflicts(&self) -> Vec<Conflict> {
+        find_conflicts(&self.draft)
+    }
+
+    /// Commands (other than the selected one) that the sequence being
+    /// recorded would clash with, before Assign is pressed.
+    pub fn pending_conflicts(&self) -> Vec<String> {
+        match (&self.selected, self.seq.is_empty()) {
+            (Some(cmd), false) => self.draft.conflicts(cmd, &self.seq),
+            _ => Vec::new(),
+        }
+    }
+
+    // ----- import, export, print -----
+
+    /// Reads a Chief `UserHotkeys.xml` and sets the keys of every command it
+    /// binds that Plan Studio has: the command's current keys are replaced by
+    /// the file's, taking a key from any other command that holds it. Commands
+    /// the file does not bind keep what they have. (Plan Studio's own extra
+    /// keys on an imported command, such as the number keys, are replaced
+    /// too; Reset Hotkeys brings them back.)
+    pub fn import_chief_xml(&mut self, text: &str) -> Result<HotkeyImport, String> {
+        let (file, _) = plan_config::import_hotkeys_xml(text).map_err(|e| e.to_string())?;
+        let mut out = HotkeyImport {
+            unnamed: file.unnamed_count(),
+            ..HotkeyImport::default()
+        };
+        let mut by_command: Vec<(String, Vec<Vec<Chord>>)> = Vec::new();
+        for pb in plan_config::to_plan_studio_bindings(&file) {
+            out.bindings += 1;
+            let seq: Option<Vec<Chord>> = pb.keys.iter().map(Chord::from_config).collect();
+            let name = self.draft.command(&pb.command_name).map(|c| c.name.clone());
+            match (name, seq) {
+                (Some(name), Some(seq)) if !seq.is_empty() && seq.len() <= MAX_SEQUENCE => {
+                    match by_command.iter_mut().find(|(n, _)| *n == name) {
+                        Some((_, list)) => list.push(seq),
+                        None => by_command.push((name, vec![seq])),
+                    }
+                }
+                _ => out.unmapped += 1,
+            }
+        }
+        for (name, _) in &by_command {
+            for seq in self.draft.sequences(name).to_vec() {
+                self.draft.remove(name, &seq);
+            }
+        }
+        for (name, seqs) in &by_command {
+            for seq in seqs {
+                let _ = self.draft.assign(name, seq.clone(), true);
+            }
+        }
+        out.commands = by_command.len();
+        self.chosen = None;
+        self.conflict = None;
+        self.message = out.summary();
+        Ok(out)
+    }
+
+    /// The edited keys as `hotkeys.json` stores them (only the differences
+    /// from the defaults).
+    pub fn export_json(&self) -> String {
+        self.draft.overrides_json()
+    }
+
+    /// `(group, command, hotkeys)` of every command with a key, by group then
+    /// name.
+    pub fn list_rows(&self) -> Vec<(String, String, String)> {
+        let mut rows: Vec<(String, String, String)> = self
+            .draft
+            .commands()
+            .iter()
+            .filter(|c| !self.draft.sequences(&c.name).is_empty())
+            .map(|c| {
+                (
+                    c.group.clone(),
+                    c.name.clone(),
+                    self.draft.hotkey_text(&c.name),
+                )
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            (a.0.to_lowercase(), a.1.to_lowercase()).cmp(&(b.0.to_lowercase(), b.1.to_lowercase()))
+        });
+        rows
+    }
+
+    /// The list as CSV: `Group,Command,Hotkeys`.
+    pub fn export_csv(&self) -> String {
+        let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+        let mut out = String::from("Group,Command,Hotkeys\n");
+        for (g, c, k) in self.list_rows() {
+            out.push_str(&format!("{},{},{}\n", quote(&g), quote(&c), quote(&k)));
+        }
+        out
+    }
+
+    /// The list as a printable two-column PDF (US Letter).
+    pub fn list_pdf(&self) -> Vec<u8> {
+        use plan_docs::pdf::PdfDoc;
+        const W: f64 = 612.0;
+        const H: f64 = 792.0;
+        const MARGIN: f64 = 48.0;
+        const GAP: f64 = 24.0;
+        const ROW: f64 = 12.0;
+        let col_w = (W - 2.0 * MARGIN - GAP) / 2.0;
+        let rows = self.list_rows();
+        let mut doc = PdfDoc::new(W, H);
+        let top = H - MARGIN - 30.0;
+        let bottom = MARGIN + 10.0;
+        let header = |doc: &mut PdfDoc, page: usize| {
+            doc.set_font_bold(true);
+            doc.text(MARGIN, H - MARGIN - 8.0, 14.0, "Plan Studio hotkeys");
+            doc.set_font_bold(false);
+            doc.text(
+                MARGIN,
+                H - MARGIN - 22.0,
+                8.0,
+                &format!("{} commands with keys", rows.len()),
+            );
+            doc.text_right(W - MARGIN, MARGIN - 20.0, 8.0, &format!("Page {page}"));
+        };
+        let mut page = 1;
+        header(&mut doc, page);
+        let (mut col, mut y) = (0, top);
+        let mut group = String::new();
+        for (g, name, keys) in &rows {
+            let needs_heading = *g != group;
+            let need = ROW * if needs_heading { 3.0 } else { 1.0 };
+            if y - need < bottom {
+                if col == 0 {
+                    col = 1;
+                } else {
+                    col = 0;
+                    page += 1;
+                    doc.new_page();
+                    header(&mut doc, page);
+                }
+                y = top;
+                if !needs_heading {
+                    // A column that starts mid-group repeats the group name.
+                    group.clear();
+                }
+            }
+            let x = MARGIN + col as f64 * (col_w + GAP);
+            if *g != group {
+                y -= ROW * 0.6;
+                doc.set_font_bold(true);
+                doc.text(x, y - ROW, 9.5, g);
+                doc.set_font_bold(false);
+                doc.line(x, y - ROW - 2.5, x + col_w, y - ROW - 2.5, 0.4);
+                y -= ROW * 1.4;
+                group.clone_from(g);
+            }
+            y -= ROW;
+            let keys_w = PdfDoc::text_width(keys, 8.5);
+            let mut label = name.clone();
+            while PdfDoc::text_width(&label, 8.5) > col_w - keys_w - 8.0 && label.len() > 4 {
+                label.pop();
+            }
+            if label.len() < name.len() {
+                label.push_str("..");
+            }
+            doc.text(x, y, 8.5, &label);
+            doc.text_right(x + col_w, y, 8.5, keys);
+        }
+        doc.finish()
     }
 
     pub fn select(&mut self, name: &str) {
@@ -204,6 +513,22 @@ impl HotkeyDialog {
                 egui::TextEdit::singleline(&mut self.filter).desired_width(ui.available_width()),
             );
         });
+        ui.horizontal(|ui| {
+            ui.label("Show:");
+            for m in FilterMode::ALL {
+                if ui
+                    .selectable_label(self.filter_mode == m, m.label())
+                    .clicked()
+                {
+                    self.filter_mode = m;
+                }
+            }
+        });
+        let conflicts = find_conflicts(&self.draft);
+        let clashing: HashSet<&str> = conflicts
+            .iter()
+            .flat_map(|c| c.commands.iter().map(String::as_str))
+            .collect();
         let s = self.draft.daniel_stats();
         ui.weak(format!(
             "Daniel's Chief hotkeys: {} named, {} have a Plan Studio command ({} work today).",
@@ -218,12 +543,13 @@ impl HotkeyDialog {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("hotkey_grid")
-                    .num_columns(2)
+                    .num_columns(3)
                     .striped(true)
                     .spacing(Vec2::new(16.0, 3.0))
                     .show(ui, |ui| {
                         ui.strong("Command Name");
                         ui.strong("Hotkey");
+                        ui.strong("Group");
                         ui.end_row();
                         for c in self.visible_commands() {
                             let selected = self.selected.as_deref() == Some(c.name.as_str());
@@ -239,10 +565,29 @@ impl HotkeyDialog {
                             if !c.is_live() {
                                 resp.on_hover_text("Not built yet; the key is kept for later");
                             }
-                            ui.label(self.draft.hotkey_text(&c.name));
+                            let keys = self.draft.hotkey_text(&c.name);
+                            if clashing.contains(c.name.as_str()) {
+                                ui.label(RichText::new(format!("{keys}  (conflict)")).color(WARN));
+                            } else {
+                                ui.label(keys);
+                            }
+                            ui.weak(&c.group);
                             ui.end_row();
                         }
                     });
+                if !conflicts.is_empty() {
+                    ui.add_space(6.0);
+                    egui::CollapsingHeader::new(
+                        RichText::new(format!("Conflicts ({})", conflicts.len())).color(WARN),
+                    )
+                    .id_salt("hotkey_conflicts")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for c in &conflicts {
+                            ui.label(format!("{}: {}", c.sequence, c.commands.join(", ")));
+                        }
+                    });
+                }
                 let unmapped = self.draft.unmapped();
                 if !unmapped.is_empty() {
                     ui.add_space(6.0);
@@ -275,23 +620,94 @@ impl HotkeyDialog {
         self.assign_area(ui);
 
         ui.separator();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Reset Hotkeys").clicked() {
                 self.reset();
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("OK").clicked() {
-                    *outcome = Outcome::Ok;
-                }
-                if ui.button("Cancel").clicked() {
-                    *outcome = Outcome::Cancel;
-                }
-                if ui.button("Help").clicked() {
-                    self.message =
-                        "Pick a command, click the field, press up to 4 keys, then Assign.".into();
-                }
-            });
+            if ui
+                .button("Import Chief Hotkeys\u{2026}")
+                .on_hover_text("Reads a Chief UserHotkeys.xml over the keys above")
+                .clicked()
+            {
+                self.import_file_dialog();
+            }
+            if ui.button("Export\u{2026}").clicked() {
+                self.export_file_dialog();
+            }
+            if ui
+                .button("Print List")
+                .on_hover_text("Makes a PDF of the assigned keys and opens it to print")
+                .clicked()
+            {
+                self.print_list();
+            }
         });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui.button("OK").clicked() {
+                *outcome = Outcome::Ok;
+            }
+            if ui.button("Cancel").clicked() {
+                *outcome = Outcome::Cancel;
+            }
+            if ui.button("Help").clicked() {
+                super::help::open(super::help::HOTKEYS_FILE);
+                self.message =
+                    "Pick a command, click the field, press up to 4 keys, then Assign.".into();
+            }
+        });
+    }
+
+    fn import_file_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Import Chief hotkeys")
+            .add_filter("Chief hotkeys", &["xml"])
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                if let Err(e) = self.import_chief_xml(&text) {
+                    self.message = format!("{} is not a hotkey file: {e}", path.display());
+                }
+            }
+            Err(e) => self.message = format!("Could not read {}: {e}", path.display()),
+        }
+    }
+
+    fn export_file_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Export hotkeys")
+            .set_file_name("hotkeys.json")
+            .add_filter("Plan Studio hotkeys (JSON)", &["json"])
+            .add_filter("Spreadsheet (CSV)", &["csv"])
+            .save_file()
+        else {
+            return;
+        };
+        let csv = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("csv"));
+        let text = if csv {
+            self.export_csv()
+        } else {
+            self.export_json()
+        };
+        self.message = match std::fs::write(&path, text) {
+            Ok(()) => format!("Exported to {}", path.display()),
+            Err(e) => format!("Could not write {}: {e}", path.display()),
+        };
+    }
+
+    fn print_list(&mut self) {
+        let path = std::env::temp_dir().join("plan-studio-hotkeys.pdf");
+        self.message = match std::fs::write(&path, self.list_pdf()) {
+            Ok(()) => match super::app_info::open_external(&path.to_string_lossy()) {
+                Ok(()) => format!("Opened {}; print it from the viewer", path.display()),
+                Err(e) => e,
+            },
+            Err(e) => format!("Could not write {}: {e}", path.display()),
+        };
     }
 
     fn assign_area(&mut self, ui: &mut egui::Ui) {
@@ -338,7 +754,13 @@ impl HotkeyDialog {
                 do_assign = true;
             }
         });
-        if let Some(names) = &self.conflict {
+        // The clash shows as soon as the keys are recorded, before Assign.
+        let pending = self.pending_conflicts();
+        let shown = self
+            .conflict
+            .clone()
+            .or((!pending.is_empty()).then_some(pending));
+        if let Some(names) = &shown {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(format!("Already used by: {}.", names.join(", "))).color(WARN),
@@ -486,5 +908,130 @@ mod tests {
         again.load_overrides(&path);
         assert_eq!(again.lookup(&[chord(Key::Equals)]), Some(Action::ZoomOut));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    fn with_prefix_clash() -> HotkeyMap {
+        let mut map = HotkeyMap::defaults();
+        // `D` alone now starts `D, H` (Hinged Door): a prefix clash that the
+        // dialog's own Assign would have refused but a hand-edited file can make.
+        let n = map.apply_overrides_json(r#"{"overrides": {"Zoom In": ["D"]}}"#);
+        assert_eq!(n, 1);
+        map
+    }
+
+    #[test]
+    fn the_defaults_have_no_conflicts_and_a_clash_is_found_and_filtered() {
+        assert!(find_conflicts(&HotkeyMap::defaults()).is_empty());
+        let mut d = HotkeyDialog::new(&with_prefix_clash());
+        let c = d.conflicts();
+        assert!(
+            c.iter().any(|c| c.sequence == "D"
+                && c.commands.contains(&"Zoom In".to_string())
+                && c.commands.contains(&"Hinged Door".to_string())),
+            "{c:?}"
+        );
+        d.set_filter_mode(FilterMode::Conflicts);
+        let shown: Vec<&str> = d
+            .visible_commands()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(
+            shown.contains(&"Zoom In") && shown.contains(&"Hinged Door"),
+            "{shown:?}"
+        );
+        assert!(shown.len() < 20);
+        d.set_filter_mode(FilterMode::Unassigned);
+        assert!(d
+            .visible_commands()
+            .iter()
+            .all(|c| d.draft.sequences(&c.name).is_empty()));
+        d.set_filter_mode(FilterMode::Assigned);
+        assert!(d
+            .visible_commands()
+            .iter()
+            .all(|c| !d.draft.sequences(&c.name).is_empty()));
+    }
+
+    #[test]
+    fn a_recorded_sequence_shows_its_clash_before_assign() {
+        let mut d = dialog();
+        d.select("Zoom Out");
+        assert!(d.pending_conflicts().is_empty());
+        d.record(chord(Key::Minus));
+        assert_eq!(d.pending_conflicts(), vec!["Zoom In".to_string()]);
+        d.clear_sequence();
+        assert!(d.pending_conflicts().is_empty());
+    }
+
+    #[test]
+    fn search_matches_the_group_too() {
+        let mut d = dialog();
+        d.set_filter("straight wall");
+        let names: Vec<&str> = d
+            .visible_commands()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(names.len() >= 5, "{names:?}");
+        assert!(names.contains(&"Straight Interior Wall"));
+    }
+
+    #[test]
+    fn importing_chief_hotkeys_again_restores_daniels_keys_over_edits() {
+        const XML: &str = include_str!("../../../../docs/chief-config-raw/UserHotkeys.xml");
+        let mut d = dialog();
+        d.select("Hinged Door");
+        d.choose(0);
+        assert!(d.remove_chosen());
+        d.select("Zoom Out");
+        d.record(chord(Key::Equals));
+        assert_eq!(d.assign(false), AssignResult::Assigned);
+        assert_eq!(d.draft.hotkey_text("Hinged Door"), "3");
+        let r = d.import_chief_xml(XML).unwrap();
+        assert!(r.bindings >= 120, "{r:?}");
+        assert!(r.commands >= 100 && r.commands <= r.bindings, "{r:?}");
+        assert!(r.summary().starts_with("Imported"));
+        // Hinged Door is back on Daniel's D, H, and Zoom In on his `-`
+        // (Chief binds it there).
+        assert!(d.draft.hotkey_text("Hinged Door").starts_with("D, H"));
+        assert_eq!(d.draft.hotkey_text("Zoom In"), "-");
+        assert!(d.conflicts().is_empty(), "{:?}", d.conflicts());
+        assert!(d.import_chief_xml("not xml <").is_err());
+    }
+
+    #[test]
+    fn export_and_print_list_the_assigned_keys() {
+        let d = dialog();
+        let rows = d.list_rows();
+        assert!(rows.len() > 100);
+        assert!(rows
+            .iter()
+            .any(|(_, n, k)| n == "Hinged Door" && k.starts_with("D, H")));
+        let mut sorted = rows.clone();
+        sorted.sort_by(|a, b| {
+            (a.0.to_lowercase(), a.1.to_lowercase()).cmp(&(b.0.to_lowercase(), b.1.to_lowercase()))
+        });
+        assert_eq!(rows, sorted, "by group then name");
+        let csv = d.export_csv();
+        assert!(csv.starts_with("Group,Command,Hotkeys\n"));
+        assert!(csv.contains("\"Hinged Door\",\"D, H"));
+        assert_eq!(csv.lines().count(), rows.len() + 1);
+        // JSON: only the differences from the defaults.
+        assert!(d.export_json().contains("\"overrides\": {}"));
+        let pdf = d.list_pdf();
+        assert!(pdf.starts_with(b"%PDF"));
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(text.contains("Plan Studio hotkeys") && text.contains("Hinged Door"));
+        assert!(pdf.len() > 3_000);
+    }
+
+    #[test]
+    fn the_window_draws_headlessly_with_a_conflict_and_a_selection() {
+        let mut d = HotkeyDialog::new(&with_prefix_clash());
+        d.select("Zoom In");
+        let ctx = egui::Context::default();
+        let mut outcome = Outcome::Open;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| outcome = d.show(ctx));
+        assert_eq!(outcome, Outcome::Open);
     }
 }

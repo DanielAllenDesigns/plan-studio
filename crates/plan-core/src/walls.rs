@@ -303,6 +303,23 @@ impl WallCurve {
         ((deg / DEFAULT_FACET_ANGLE_DEG).ceil() as usize).max(1)
     }
 
+    /// Facets so no facet of the arc strays more than `max_sag` inches from
+    /// the true curve: at least the [`DEFAULT_FACET_ANGLE_DEG`] count, more
+    /// for a large radius drawn at a high zoom (capped at 720).
+    pub fn facet_count_for_sag(&self, start: Point, end: Point, max_sag: f64) -> usize {
+        let base = self.facet_count(start, end);
+        let Some((_, r)) = self.arc_center_radius(start, end) else {
+            return base;
+        };
+        if max_sag <= 0.0 || max_sag >= r {
+            return base;
+        }
+        // A chord spanning angle `a` has a sagitta of r (1 - cos(a / 2)).
+        let step = 2.0 * (1.0 - max_sag / r).acos();
+        let need = (self.sweep(start, end).abs() / step.max(1e-6)).ceil() as usize;
+        base.max(need).min(720)
+    }
+
     /// The curve for the sub-arc between two points of this arc, given the
     /// sub-sweep (radians, magnitude) and the radius. Keeps the bulge sign.
     fn sub_curve(&self, radius: f64, sub_sweep: f64) -> WallCurve {
@@ -310,6 +327,118 @@ impl WallCurve {
             bulge: self.bulge.signum() * radius * (1.0 - (sub_sweep.abs() * 0.5).cos()),
         }
     }
+}
+
+/// Largest half-sweep a handle drag or a tangent fit may produce, radians
+/// (a 340 degree arc); beyond it the arc is nearly a full circle.
+const MAX_HALF_SWEEP: f64 = 170.0 * PI / 180.0;
+
+impl WallCurve {
+    /// Radius over a chord of length `chord`; `None` for a straight curve.
+    pub fn radius(&self, chord: f64) -> Option<f64> {
+        if chord < 1e-9 || self.is_straight() {
+            return None;
+        }
+        let s = self.bulge.abs();
+        Some((chord * chord / 4.0 + s * s) / (2.0 * s))
+    }
+
+    /// Total swept angle, radians, unsigned (0 for a straight curve).
+    pub fn sweep_abs(&self, chord: f64) -> f64 {
+        if chord < 1e-9 || self.is_straight() {
+            return 0.0;
+        }
+        2.0 * self.half_sweep(chord)
+    }
+
+    /// The arc of `radius` over a chord (the minor arc), bulging to the left
+    /// when `left`. `None` when the radius cannot span the chord.
+    pub fn from_radius(chord: f64, radius: f64, left: bool) -> Option<WallCurve> {
+        let half = chord * 0.5;
+        if chord < 1e-9 || radius + 1e-9 < half {
+            return None;
+        }
+        let s = radius - (radius * radius - half * half).max(0.0).sqrt();
+        Some(WallCurve {
+            bulge: if left { s } else { -s },
+        })
+    }
+
+    /// The arc sweeping `sweep` radians (0 to 360 degrees exclusive) over a
+    /// chord, bulging to the left when `left`.
+    pub fn from_sweep(chord: f64, sweep: f64, left: bool) -> Option<WallCurve> {
+        let sweep = sweep.abs();
+        if chord < 1e-9 || sweep <= 1e-9 || sweep >= 2.0 * MAX_HALF_SWEEP {
+            return None;
+        }
+        let s = chord * 0.5 * (sweep * 0.25).tan();
+        Some(WallCurve {
+            bulge: if left { s } else { -s },
+        })
+    }
+
+    /// Unit tangent at the start, pointing along the direction of travel.
+    pub fn tangent_at_start(&self, start: Point, end: Point) -> Point {
+        let d = end.sub(start).normalized();
+        let chord = start.dist(end);
+        if self.is_straight() || chord < 1e-9 {
+            return d;
+        }
+        rotate(d, self.bulge.signum() * self.half_sweep(chord))
+    }
+
+    /// Unit tangent at the end, pointing along the direction of travel.
+    pub fn tangent_at_end(&self, start: Point, end: Point) -> Point {
+        let d = end.sub(start).normalized();
+        let chord = start.dist(end);
+        if self.is_straight() || chord < 1e-9 {
+            return d;
+        }
+        rotate(d, -self.bulge.signum() * self.half_sweep(chord))
+    }
+
+    /// The curve over `start`..`end` that leaves `start` along `tangent`
+    /// (Make Arc Tangent, W-68). `None` when the tangent points back past the
+    /// chord (no arc of under 340 degrees fits). A tangent along the chord
+    /// gives a straight curve.
+    pub fn tangent_to(start: Point, end: Point, tangent: Point) -> Option<WallCurve> {
+        let chord = start.dist(end);
+        let u = tangent.normalized();
+        if chord < 1e-9 || u.length() < 1e-9 {
+            return None;
+        }
+        let d = end.sub(start).normalized();
+        let cross = d.cross(u);
+        let cos = d.dot(u).clamp(-1.0, 1.0);
+        let phi = cross.abs().atan2(cos);
+        if phi < 1e-6 {
+            return Some(WallCurve { bulge: 0.0 });
+        }
+        if phi > MAX_HALF_SWEEP {
+            return None;
+        }
+        // The path leaves on the side `u` lies on; the apex is on that side.
+        let s = chord * 0.5 * (phi * 0.5).tan();
+        Some(WallCurve {
+            bulge: if cross > 0.0 { s } else { -s },
+        })
+    }
+}
+
+/// `v` turned counter-clockwise by `a` radians.
+fn rotate(v: Point, a: f64) -> Point {
+    let (s, c) = a.sin_cos();
+    Point::new(v.x * c - v.y * s, v.x * s + v.y * c)
+}
+
+/// Chord, radius, arc length and sweep of a curved wall, as the Select tool
+/// and the drawing status show them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArcReadout {
+    pub chord: f64,
+    pub radius: f64,
+    pub arc_length: f64,
+    pub sweep_deg: f64,
 }
 
 /// Roof directive of an exterior wall (RF-18..RF-25).
@@ -446,22 +575,112 @@ impl Wall {
         let Some(c) = self.curve.filter(|c| !c.is_straight()) else {
             return self.footprint().to_vec();
         };
-        let n = c.facet_count(self.start, self.end).max(2);
-        let pts = c.sample_points(self.start, self.end, n);
+        self.plan_polygon_n(c.facet_count(self.start, self.end).max(2))
+    }
+
+    /// [`Wall::plan_polygon`] with `n` facets along the arc (drawing a large
+    /// radius at a high zoom wants more than the facet angle gives). A
+    /// straight wall gives its footprint.
+    pub fn plan_polygon_n(&self, n: usize) -> Vec<Point> {
+        if !self.is_curved() {
+            return self.footprint().to_vec();
+        }
+        let n = n.max(2);
         let half = self.thickness * 0.5;
-        let normal_at = |i: usize| {
-            let a = pts[i.saturating_sub(1)];
-            let b = pts[(i + 1).min(pts.len() - 1)];
-            b.sub(a).normalized().perp()
+        let left = self.offset_curve(half, n);
+        let right = self.offset_curve(-half, n);
+        left.into_iter().chain(right.into_iter().rev()).collect()
+    }
+
+    /// `n + 1` points of the arc offset sideways by `lateral` inches (positive
+    /// toward the left of start-to-end), at evenly spaced angles from start to
+    /// end. The offsets are radial, so every point lies exactly `lateral` from
+    /// the centerline and the first and last are square to the end tangents.
+    /// A straight wall gives evenly spaced points along the offset chord.
+    pub fn offset_curve(&self, lateral: f64, n: usize) -> Vec<Point> {
+        let n = n.max(1);
+        let Some((c, r)) = self.arc_center_radius() else {
+            let off = self.normal().scale(lateral);
+            return (0..=n)
+                .map(|i| Point::lerp(self.start, self.end, i as f64 / n as f64).add(off))
+                .collect();
         };
-        let left: Vec<Point> = (0..pts.len())
-            .map(|i| pts[i].add(normal_at(i).scale(half)))
-            .collect();
-        let right: Vec<Point> = (0..pts.len())
-            .rev()
-            .map(|i| pts[i].sub(normal_at(i).scale(half)))
-            .collect();
-        left.into_iter().chain(right).collect()
+        let sweep = self.curve.map_or(0.0, |k| k.sweep(self.start, self.end));
+        let a0 = self.start.sub(c).angle();
+        // The left of travel is toward the center when turning counter-clockwise.
+        let radius = (r - sweep.signum() * lateral).max(0.0);
+        (0..=n)
+            .map(|i| {
+                let a = a0 + sweep * i as f64 / n as f64;
+                Point::new(c.x + radius * a.cos(), c.y + radius * a.sin())
+            })
+            .collect()
+    }
+
+    /// The point `s` inches along the centerline (arc length for a curved
+    /// wall) and its unit tangent in the direction of travel.
+    pub fn frame_at(&self, s: f64) -> (Point, Point) {
+        let len = self.path_length();
+        let s = s.clamp(0.0, len);
+        let Some((c, r)) = self.arc_center_radius() else {
+            return (self.point_at(s), self.direction());
+        };
+        let sweep = self.curve.map_or(0.0, |k| k.sweep(self.start, self.end));
+        let a = self.start.sub(c).angle() + sweep * s / len.max(1e-9);
+        let p = Point::new(c.x + r * a.cos(), c.y + r * a.sin());
+        let t = if sweep >= 0.0 {
+            Point::new(-a.sin(), a.cos())
+        } else {
+            Point::new(a.sin(), -a.cos())
+        };
+        (p, t)
+    }
+
+    /// The point of the centerline closest to `p` and the unit direction of
+    /// travel there: the tangent of an arc (past its ends, the nearer end),
+    /// the wall's direction when straight.
+    pub fn closest_point(&self, p: Point) -> (Point, Point) {
+        let (Some((c, r)), Some(curve)) = (self.arc_center_radius(), self.curve) else {
+            let (_, q) = crate::geometry::project_on_segment(p, self.start, self.end);
+            return (q, self.direction());
+        };
+        let sweep = curve.sweep(self.start, self.end);
+        let a0 = self.start.sub(c).angle();
+        let v = p.sub(c);
+        // How far round the arc the radial through `p` lies, in the arc's sense.
+        let round = if sweep >= 0.0 {
+            (v.angle() - a0).rem_euclid(PI * 2.0)
+        } else {
+            (a0 - v.angle()).rem_euclid(PI * 2.0)
+        };
+        if v.length() > 1e-9 && round <= sweep.abs() {
+            let radial = v.normalized();
+            let tangent = if sweep >= 0.0 {
+                radial.perp()
+            } else {
+                -radial.perp()
+            };
+            return (c.add(radial.scale(r)), tangent);
+        }
+        if p.dist(self.start) <= p.dist(self.end) {
+            (self.start, self.end_tangent(WallEnd::Start))
+        } else {
+            (self.end, -self.end_tangent(WallEnd::End))
+        }
+    }
+
+    /// The readout of a curved wall for the Select tool and the drawing
+    /// status (W-64, W-74): chord, radius, arc length and swept angle in
+    /// inches and degrees. `None` for a straight wall.
+    pub fn arc_readout(&self) -> Option<ArcReadout> {
+        let (_, radius) = self.arc_center_radius()?;
+        let curve = self.curve?;
+        Some(ArcReadout {
+            chord: self.length(),
+            radius,
+            arc_length: curve.arc_length(self.start, self.end),
+            sweep_deg: curve.sweep_abs(self.length()).to_degrees(),
+        })
     }
 
     /// Whether the wall is a real (non-straight) arc.
@@ -489,6 +708,22 @@ impl Wall {
             Some(c) => c.arc_length(self.start, self.end),
             None => self.length(),
         }
+    }
+
+    /// Unit direction at `end` pointing into the wall along its centerline
+    /// (the tangent for a curved wall).
+    pub fn end_tangent(&self, end: WallEnd) -> Point {
+        let curve = self.curve.unwrap_or(WallCurve { bulge: 0.0 });
+        match end {
+            WallEnd::Start => curve.tangent_at_start(self.start, self.end),
+            WallEnd::End => -curve.tangent_at_end(self.start, self.end),
+        }
+    }
+
+    /// Reverse Layers (W-23): the layer stack swaps faces. The centerline,
+    /// thickness and openings stay put.
+    pub fn reverse_layers(&mut self) {
+        self.exterior_side = self.exterior_side.opposite();
     }
 
     /// Unit normal pointing to the exterior side (W-21).
@@ -696,6 +931,110 @@ impl Project {
             }
         }
         Some((id, new_id))
+    }
+
+    /// Reverse Layers on one wall (W-23). False for an unknown wall.
+    pub fn reverse_wall_layers(&mut self, floor: usize, id: Id) -> bool {
+        match self.floors[floor].wall_mut(id) {
+            Some(w) => {
+                w.reverse_layers();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets (or clears) the curve of a wall, keeping its openings in
+    /// proportion along the centerline (W-67): the arc is longer than the
+    /// chord, so offsets scale with the path length and are clamped to fit.
+    pub fn set_wall_curve(&mut self, floor: usize, id: Id, curve: Option<WallCurve>) -> bool {
+        let f = &mut self.floors[floor];
+        let Some(w) = f.wall_mut(id) else {
+            return false;
+        };
+        let old_len = w.path_length();
+        w.curve = curve.filter(|c| !c.is_straight());
+        let new_len = w.path_length();
+        if old_len > 1e-9 && (new_len - old_len).abs() > 1e-9 {
+            let k = new_len / old_len;
+            for o in f.openings.iter_mut().filter(|o| o.wall_id == id) {
+                let half = o.width * 0.5;
+                let c = o.center_offset * k;
+                o.center_offset = if new_len > o.width {
+                    c.clamp(half, new_len - half)
+                } else {
+                    new_len * 0.5
+                };
+            }
+        }
+        true
+    }
+
+    /// Change Line/Arc (W-67): a straight wall becomes an arc with `bulge`
+    /// (a quarter of the chord when 0), a curved one becomes straight.
+    /// Returns whether the wall is curved afterwards, or `None` for an
+    /// unknown or zero-length wall.
+    pub fn change_line_arc(&mut self, floor: usize, id: Id, bulge: f64) -> Option<bool> {
+        let w = self.floors[floor].wall(id)?;
+        if w.length() < 1e-6 {
+            return None;
+        }
+        let curved = w.is_curved();
+        let bulge = if bulge.abs() < 1e-9 {
+            w.length() * 0.25
+        } else {
+            bulge
+        };
+        let next = (!curved).then_some(WallCurve { bulge });
+        self.set_wall_curve(floor, id, next);
+        Some(!curved)
+    }
+
+    /// Make Arc Tangent (S-55, W-68): the curved wall `id` is refit so it
+    /// leaves the end it shares with a connected wall along that wall's
+    /// direction. The start end is tried first. Returns the end that was
+    /// matched, or why nothing changed.
+    pub fn make_arc_tangent(&mut self, floor: usize, id: Id) -> Result<WallEnd, String> {
+        let me = self.floors[floor]
+            .wall(id)
+            .cloned()
+            .ok_or("The wall is gone")?;
+        if !me.is_curved() {
+            return Err("Make Arc Tangent needs a curved wall: use Change Line/Arc first".into());
+        }
+        for at in [WallEnd::Start, WallEnd::End] {
+            let here = match at {
+                WallEnd::Start => me.start,
+                WallEnd::End => me.end,
+            };
+            for c in self.wall_connections(floor, id) {
+                if c.at != at || c.kind == joins::ConnectionKind::Tee {
+                    continue;
+                }
+                let Some(other) = self.floors[floor].wall(c.other).cloned() else {
+                    continue;
+                };
+                // The neighbour's end that touches ours.
+                let oe = if other.start.dist(here) <= other.end.dist(here) {
+                    WallEnd::Start
+                } else {
+                    WallEnd::End
+                };
+                // The arc continues straight through the junction.
+                let through = -other.end_tangent(oe);
+                let bulge = match at {
+                    WallEnd::Start => WallCurve::tangent_to(me.start, me.end, through),
+                    WallEnd::End => WallCurve::tangent_to(me.end, me.start, through)
+                        .map(|c| WallCurve { bulge: -c.bulge }),
+                };
+                let Some(curve) = bulge else {
+                    return Err("No arc fits tangent to that wall".into());
+                };
+                self.set_wall_curve(floor, id, Some(curve));
+                return Ok(at);
+            }
+        }
+        Err("The curved wall is not connected to another wall".into())
     }
 
     /// Alias of [`Project::split_wall_at`] (Chief's Break Wall).
@@ -1310,5 +1649,209 @@ mod tests {
         w.set_class(WallClass::Standard);
         w.flags.invisible = true;
         assert_eq!(rooms(&p), 0);
+    }
+
+    #[test]
+    fn curve_radius_sweep_and_tangent_round_trip() {
+        let chord = 120.0;
+        let c = WallCurve { bulge: 30.0 };
+        let r = c.radius(chord).unwrap();
+        let back = WallCurve::from_radius(chord, r, true).unwrap();
+        assert!((back.bulge - 30.0).abs() < 1e-9);
+        let sweep = c.sweep_abs(chord);
+        let back = WallCurve::from_sweep(chord, sweep, false).unwrap();
+        assert!((back.bulge + 30.0).abs() < 1e-9);
+        assert!(WallCurve::from_radius(chord, 59.0, true).is_none());
+        // A semicircle: radius half the chord.
+        let semi = WallCurve::from_radius(chord, 60.0, true).unwrap();
+        assert!((semi.bulge - 60.0).abs() < 1e-9);
+        // Tangent at the start of a left-bulging arc turns left of the chord.
+        let (a, b) = (Point::new(0.0, 0.0), Point::new(chord, 0.0));
+        let t = c.tangent_at_start(a, b);
+        assert!(t.y > 0.0 && t.x > 0.0);
+        let fit = WallCurve::tangent_to(a, b, t).unwrap();
+        assert!((fit.bulge - 30.0).abs() < 1e-9, "{}", fit.bulge);
+        let end = c.tangent_at_end(a, b);
+        assert!(end.y < 0.0);
+        assert!(WallCurve::tangent_to(a, b, Point::new(-1.0, 0.0)).is_none());
+        assert!(WallCurve::tangent_to(a, b, Point::new(1.0, 0.0))
+            .unwrap()
+            .is_straight());
+    }
+
+    #[test]
+    fn reverse_layers_flips_the_exterior_side_only() {
+        let (mut p, id) = proj_with_wall(6.0, WallKind::Exterior);
+        let before = p.floors[0].wall(id).unwrap().clone();
+        assert!(p.reverse_wall_layers(0, id));
+        let w = p.floors[0].wall(id).unwrap();
+        assert_eq!(w.exterior_side, before.exterior_side.opposite());
+        assert_eq!(
+            (w.start, w.end, w.thickness),
+            (before.start, before.end, 6.0)
+        );
+        let bands = joins::wall_layer_bands(w, None);
+        let old = joins::wall_layer_bands(&before, None);
+        assert!((bands[0].outer + old[0].outer).abs() < 1e-9);
+        p.reverse_wall_layers(0, id);
+        assert_eq!(
+            p.floors[0].wall(id).unwrap().exterior_side,
+            before.exterior_side
+        );
+        assert!(!p.reverse_wall_layers(0, 9999));
+    }
+
+    #[test]
+    fn change_line_arc_keeps_openings_in_proportion() {
+        let (mut p, id) = proj_with_wall(6.0, WallKind::Exterior);
+        let o = p
+            .add_opening(0, id, 120.0, crate::model::OpeningKind::Window)
+            .unwrap();
+        assert_eq!(p.change_line_arc(0, id, 60.0), Some(true));
+        let w = p.floors[0].wall(id).unwrap();
+        assert!(w.is_curved() && (w.curve.unwrap().bulge - 60.0).abs() < 1e-9);
+        let len = w.path_length();
+        assert!(len > 240.0);
+        let oo = p.floors[0].openings.iter().find(|x| x.id == o).unwrap();
+        assert!((oo.center_offset - len * 0.5).abs() < 1e-6);
+        assert_eq!(p.change_line_arc(0, id, 0.0), Some(false));
+        let w = p.floors[0].wall(id).unwrap();
+        assert!(w.curve.is_none());
+        let oo = p.floors[0].openings.iter().find(|x| x.id == o).unwrap();
+        assert!((oo.center_offset - 120.0).abs() < 1e-6);
+        // A zero bulge request on a straight wall uses a quarter of the chord.
+        p.change_line_arc(0, id, 0.0);
+        assert_eq!(p.floors[0].wall(id).unwrap().curve.unwrap().bulge, 60.0);
+    }
+
+    #[test]
+    fn make_arc_tangent_continues_the_neighbour() {
+        let mut p = Project::new("t");
+        let a = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        let b = p.add_wall(
+            0,
+            Point::new(100.0, 0.0),
+            Point::new(200.0, 100.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        // Straight second wall: an error.
+        assert!(p.make_arc_tangent(0, b).is_err());
+        p.floors[0].wall_mut(b).unwrap().curve = Some(WallCurve { bulge: -5.0 });
+        assert_eq!(p.make_arc_tangent(0, b), Ok(WallEnd::Start));
+        let w = p.floors[0].wall(b).unwrap();
+        // It leaves (100, 0) heading east, like wall `a`.
+        let t = w.end_tangent(WallEnd::Start);
+        assert!((t.x - 1.0).abs() < 1e-9 && t.y.abs() < 1e-9, "{t:?}");
+        assert!(w.curve.unwrap().bulge < 0.0);
+        let _ = a;
+        // Tangent at the End of a wall that continues past the junction.
+        let c = p.add_wall(
+            0,
+            Point::new(200.0, 100.0),
+            Point::new(200.0, 200.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        let _ = c;
+        p.floors[0].wall_mut(b).unwrap().curve = Some(WallCurve { bulge: 20.0 });
+        // The start end is tried first and fits again.
+        assert_eq!(p.make_arc_tangent(0, b), Ok(WallEnd::Start));
+        // An unconnected curved wall reports why.
+        let lone = p.add_wall(
+            0,
+            Point::new(500.0, 0.0),
+            Point::new(600.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        p.floors[0].wall_mut(lone).unwrap().curve = Some(WallCurve { bulge: 10.0 });
+        assert!(p
+            .make_arc_tangent(0, lone)
+            .unwrap_err()
+            .contains("not connected"));
+    }
+
+    #[test]
+    fn make_arc_tangent_at_the_end_when_only_the_end_is_joined() {
+        let mut p = Project::new("t");
+        let arc = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        p.add_wall(
+            0,
+            Point::new(100.0, 0.0),
+            Point::new(100.0, 100.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        p.floors[0].wall_mut(arc).unwrap().curve = Some(WallCurve { bulge: 10.0 });
+        assert_eq!(p.make_arc_tangent(0, arc), Ok(WallEnd::End));
+        let w = p.floors[0].wall(arc).unwrap();
+        // The arc arrives heading north, into the next wall's start.
+        let t = -w.end_tangent(WallEnd::End);
+        assert!(t.x.abs() < 1e-9 && (t.y - 1.0).abs() < 1e-9, "{t:?}");
+    }
+
+    #[test]
+    fn offset_curves_are_radial_and_frame_at_walks_the_arc() {
+        let mut w = Wall::new(
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            8.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        w.curve = WallCurve::from_radius(240.0, 120.0, true);
+        let (c, r) = w.arc_center_radius().unwrap();
+        // A semicircle: the radius is half the chord, the arc length pi r.
+        assert!((r - 120.0).abs() < 1e-9);
+        let ro = w.arc_readout().unwrap();
+        assert!((ro.arc_length - std::f64::consts::PI * 120.0).abs() < 1e-6);
+        assert!((ro.chord - 240.0).abs() < 1e-9 && (ro.sweep_deg - 180.0).abs() < 1e-6);
+        // The curve bulges left, so the left side is the outside of the circle.
+        for p in w.offset_curve(4.0, 12) {
+            assert!((p.dist(c) - 124.0).abs() < 1e-9);
+        }
+        for p in w.offset_curve(-4.0, 12) {
+            assert!((p.dist(c) - 116.0).abs() < 1e-9);
+        }
+        let poly = w.plan_polygon_n(12);
+        assert_eq!(poly.len(), 26);
+        // The ends are square to the tangent: the arc leaves heading north, so
+        // start-left is 4" west of the start.
+        assert!(poly[0].dist(Point::new(-4.0, 0.0)) < 1e-9);
+        // Halfway along the arc is the apex, heading in the direction of travel.
+        let (mid, tangent) = w.frame_at(w.path_length() * 0.5);
+        assert!(mid.dist(Point::new(120.0, 120.0)) < 1e-6);
+        assert!(tangent.dist(Point::new(1.0, 0.0)) < 1e-6);
+        let (start, t0) = w.frame_at(0.0);
+        assert!(start.dist(w.start) < 1e-9 && t0.dist(Point::new(0.0, 1.0)) < 1e-9);
+        // A straight wall has no readout and a straight offset.
+        let line = Wall::new(
+            Point::ZERO,
+            Point::new(60.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Interior,
+        );
+        assert!(line.arc_readout().is_none());
+        assert_eq!(line.offset_curve(3.0, 2)[1], Point::new(30.0, 3.0));
     }
 }

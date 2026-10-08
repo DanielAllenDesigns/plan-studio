@@ -222,3 +222,10 @@ offsets are in `crates/plan-calib/README.md`; this is the summary.
 ## 8. Working files
 
 Probe scripts and extracted samples are in `/private/tmp/claude-501/-Users-danielsievers-Documents-Clauade-Code-Folder/cb8a3685-aa10-43d9-b6c5-fe60e024942e/scratchpad/calib-sniff/`. The only extracted sample left there is `symDxf_6.bin` and `symDxf_1.bin` (BonusTables geometry). Delete them when no longer needed, because they are licensed content.
+
+## 9. Plan Studio's own export (not Chief's format)
+
+Library > Export Library writes `plan-studio-library.json` (the user catalog, folders and favorites), the
+`user-models/*.psm` meshes and a README into an **uncompressed zip with the extension `.calibz`**. It is not a Chief
+`.calibz`: Chief's holds a SQLite `.calib`, this holds JSON, and Chief Architect cannot open it. Plan Studio's reader
+refuses a Chief `.calib` or a compressed zip with an explanation. See `crates/plan-library/src/archive.rs`.

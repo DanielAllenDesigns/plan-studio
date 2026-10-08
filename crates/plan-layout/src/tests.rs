@@ -10,7 +10,7 @@ use plan_docs::{Scale, SheetSize};
 use plan_elevation::ViewDir;
 
 /// A 40' x 30' house split into two rooms, with two doors and two windows.
-fn two_room_house() -> Project {
+pub(crate) fn two_room_house() -> Project {
     let mut p = Project::new("Smith Residence");
     let c = [
         Point::new(0.0, 0.0),
@@ -150,10 +150,7 @@ fn smaller_boxes_pack_left_to_right_then_down() {
         &mut l,
         &cx,
         1,
-        BoxSource::Text {
-            text: "NOTE".into(),
-            height_pt: 12.0,
-        },
+        BoxSource::text("NOTE", 12.0),
         Scale::QuarterInch,
         Some(Point::new(3.0, 4.0)),
     );
@@ -193,11 +190,12 @@ fn default_set_renders_a_valid_pdf_with_one_page_per_sheet() {
     let p = two_room_house();
     let cx = LayoutRenderContext::new(&p);
     let l = default_construction_set(&p, 1);
-    // Cover, plan, 2 elevation sheets, section, schedules, framing.
-    assert_eq!(l.pages.len(), 7);
+    // Cover, site, plan, 2 elevation sheets, section, details, schedules,
+    // materials, framing.
+    assert_eq!(l.pages.len(), 10);
     assert_eq!(l.sheet, SheetSize::ArchC);
     let numbers: Vec<u32> = l.pages.iter().map(|p| p.number).collect();
-    assert_eq!(numbers, vec![0, 1, 2, 3, 4, 5, 6]);
+    assert_eq!(numbers, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     let pdf = render_pdf(&l, &cx);
     assert!(pdf.starts_with(b"%PDF-1.4"));
     check_xref(&pdf);
@@ -208,8 +206,9 @@ fn default_set_renders_a_valid_pdf_with_one_page_per_sheet() {
         .any(|w| w == b"/MediaBox [0 0 1728 1".as_slice()));
     let t = text_of(&pdf);
     for want in [
-        "(SHEET 1 OF 7)",
-        "(SHEET 7 OF 7)",
+        "(SHEET 1 OF 10)",
+        "(SHEET 10 OF 10)",
+        "(MATERIALS LIST - FRAMING)",
         "(SHEET INDEX)",
         "(1ST FLOOR PLAN)",
         "(FRONT ELEVATION)",
@@ -416,7 +415,7 @@ fn layout_json_round_trip() {
         Scale::ThreeSixteenths,
     ));
     let l = Layout {
-        pages: vec![l.pages[1].clone(), l.pages[4].clone()],
+        pages: vec![l.pages[1].clone(), l.pages[5].clone()],
         ..l
     };
     let json = serde_json::to_string(&l).unwrap();
@@ -474,6 +473,9 @@ fn vertical_dim_house() -> Project {
             offset: 36.0,
             text_override: None,
             anchors: [None, None],
+            hide_ext: [false, false],
+            auto_group: Default::default(),
+            text_style: None,
         },
     );
     p
@@ -741,7 +743,7 @@ fn new_macros_fill_the_title_block() {
     for want in [
         "(12 Oak Lane)",
         "(No. 26-014)",
-        "(B of 7)",
+        "(B of 10)",
         "(October 7, 2026)",
     ] {
         assert!(t.contains(want), "missing {want}");
@@ -966,10 +968,7 @@ fn a_rotated_box_turns_its_content_about_its_centre() {
     let mut b = LayoutBox::new(
         1,
         (Point::new(1.0, 1.0), Point::new(5.0, 2.0)),
-        BoxSource::Text {
-            text: "ROTATE ME".into(),
-            height_pt: 10.0,
-        },
+        BoxSource::text("ROTATE ME", 10.0),
         Scale::QuarterInch,
     );
     b.border = true;
@@ -1069,4 +1068,75 @@ fn project_information_macros_reach_the_title_block() {
     );
     // The built-in macros are not duplicated into the extras.
     assert!(ctx.extra.iter().all(|(k, _)| !MacroContext::is_builtin(k)));
+}
+
+/// The font size (points) of the text op that shows `shown`, e.g. `(KITCHEN)`.
+fn font_size_of(pdf_text: &str, shown: &str) -> f64 {
+    let at = pdf_text
+        .find(shown)
+        .unwrap_or_else(|| panic!("{shown} not in the page"));
+    let tf = pdf_text[..at]
+        .rfind(" Tf")
+        .expect("a font op before the text");
+    let before = &pdf_text[..tf];
+    before
+        .rsplit(' ')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .expect("a size before Tf")
+}
+
+#[test]
+fn printed_size_text_prints_the_same_size_at_any_box_scale() {
+    let render = |p: &Project, scale: Scale| -> String {
+        let cx = LayoutRenderContext::new(p);
+        let mut l = Layout::new("t", SheetSize::ArchC);
+        send_to_layout(&mut l, &cx, 1, plan_source(), scale, None);
+        text_of(&render_pdf(&l, &cx))
+    };
+    let mut p = vertical_dim_house();
+    p.add_cad(
+        0,
+        "Text",
+        CadItem::Text {
+            pos: Point::new(100.0, 100.0),
+            text: "KITCHEN".into(),
+            height: 6.0,
+            angle: 0.0,
+        },
+    );
+    // Character height: the plan height scales with the box (6" is 9 pt at
+    // 1/4", 4.5 pt at 1/8"); the dimension number is 4.5" tall in the plan.
+    let (q, e) = (
+        render(&p, Scale::QuarterInch),
+        render(&p, Scale::EighthInch),
+    );
+    assert!((font_size_of(&q, "(KITCHEN)") - 9.0).abs() < 1e-6);
+    assert!((font_size_of(&e, "(KITCHEN)") - 4.5).abs() < 1e-6);
+    assert!((font_size_of(&q, "(30'-0\")") - 6.75).abs() < 1e-6);
+    assert!((font_size_of(&e, "(30'-0\")") - 3.375).abs() < 1e-6);
+    // Printed size: 1/8" (9 pt) text and 3/32" (6.75 pt) dimension numbers on
+    // the page whatever the scale.
+    for name in ["Default Text Style", "Dimension Text Style"] {
+        let mut st = p.text_styles.get(name).unwrap().clone();
+        st.use_printed_size(true);
+        let i = p
+            .text_styles
+            .styles
+            .iter()
+            .position(|s| s.name == name)
+            .unwrap();
+        p.text_styles.styles[i] = st;
+    }
+    for scale in [Scale::QuarterInch, Scale::EighthInch, Scale::HalfInch] {
+        let t = render(&p, scale);
+        assert!(
+            (font_size_of(&t, "(KITCHEN)") - 9.0).abs() < 1e-6,
+            "{scale:?} text"
+        );
+        assert!(
+            (font_size_of(&t, "(30'-0\")") - 6.75).abs() < 1e-6,
+            "{scale:?} dimension"
+        );
+    }
 }

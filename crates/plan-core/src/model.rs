@@ -7,7 +7,7 @@ use crate::camera::CameraObject;
 use crate::defaults::WallTypeDef;
 use crate::dimension::Dimension;
 use crate::floors::FloorKind;
-use crate::geometry::{point_in_polygon, Point};
+use crate::geometry::Point;
 use crate::groups::ObjectGroup;
 use crate::layer_sets::{LayerSets, SavedPlanView};
 use crate::layers::LayerSet;
@@ -174,6 +174,9 @@ pub struct Opening {
     pub tempered: bool,
     /// Dialog values that persist with the opening.
     pub extras: crate::extras::OpeningExtras,
+    /// Windows with the same id form one mulled unit sharing a frame
+    /// (DW-51); `None` for a window on its own.
+    pub mull_group: Option<Id>,
 }
 
 impl Opening {
@@ -345,6 +348,13 @@ pub struct Floor {
     /// objects); see [`crate::cad::CadBlockInfo`].
     #[serde(default)]
     pub cad_blocks: Vec<crate::cad::CadBlockInfo>,
+    /// Pictures placed under the plan for tracing; see [`crate::underlay`].
+    #[serde(default)]
+    pub underlays: Vec<crate::underlay::Underlay>,
+    /// Floor Defaults of this floor (R-56): platform and finish thicknesses,
+    /// the room type and materials a new room starts with.
+    #[serde(default)]
+    pub settings: crate::floors::FloorSettings,
 }
 
 impl Floor {
@@ -371,6 +381,8 @@ impl Floor {
             schedules: None,
             cad_attrs: Vec::new(),
             cad_blocks: Vec::new(),
+            underlays: Vec::new(),
+            settings: crate::floors::FloorSettings::default(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -432,6 +444,10 @@ pub struct Project {
     /// The plan's note types (Note Type Management).
     #[serde(default)]
     pub note_types: crate::text_styles::NoteTypes,
+    /// Material overrides of single objects (Material Painter, Adjust
+    /// Materials); see [`crate::object_materials`].
+    #[serde(default)]
+    pub object_materials: Vec<crate::object_materials::ObjectMaterial>,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -457,6 +473,7 @@ impl Project {
             layout: None,
             text_macros: crate::text_styles::TextMacros::default(),
             note_types: crate::text_styles::NoteTypes::default(),
+            object_materials: Vec::new(),
         }
     }
 
@@ -556,11 +573,10 @@ impl Project {
         rooms: &[Room],
     ) {
         let names = &mut self.floors[floor].room_names;
-        let in_replaced =
-            |n: &RoomName| match rooms.iter().find(|r| point_in_polygon(anchor, &r.polygon)) {
-                Some(room) => point_in_polygon(n.anchor, &room.polygon),
-                None => n.anchor.dist(anchor) <= 1.0,
-            };
+        let in_replaced = |n: &RoomName| match rooms.iter().find(|r| r.contains(anchor)) {
+            Some(room) => room.contains(n.anchor),
+            None => n.anchor.dist(anchor) <= 1.0,
+        };
         // Renaming keeps the room's other properties (R-14, R-21).
         let previous = names.iter().find(|n| in_replaced(n)).cloned();
         names.retain(|n| !in_replaced(n));

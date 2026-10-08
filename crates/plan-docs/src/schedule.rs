@@ -8,7 +8,6 @@
 //! (by x, then y, of the object's centre), so the numbers are stable for a
 //! given drawing and independent of the order objects were drawn in.
 
-use plan_core::geometry::point_in_polygon;
 use plan_core::units::fmt_ft_in;
 use plan_core::{Floor, Id, Opening, OpeningKind, Point, Project, Room, Wall, WallKind};
 
@@ -194,9 +193,7 @@ pub fn window_schedule(project: &Project, floor: usize) -> Schedule {
 
 /// The user-assigned name of `room` on `floor`, else the detected label.
 pub fn room_name(f: &Floor, room: &Room) -> String {
-    f.room_names
-        .iter()
-        .find(|n| point_in_polygon(n.anchor, &room.polygon))
+    room.name_entry(&f.room_names)
         .map(|n| n.name.clone())
         .unwrap_or_else(|| room.label.clone())
 }
@@ -222,9 +219,7 @@ pub fn room_area_sq_ft(room: &Room) -> f64 {
 /// The ceiling height of `room`: its own override (R-24) when set, else the
 /// floor's.
 pub fn room_ceiling_height(f: &Floor, room: &Room) -> f64 {
-    f.room_names
-        .iter()
-        .find(|n| point_in_polygon(n.anchor, &room.polygon))
+    room.name_entry(&f.room_names)
         .and_then(|n| n.ceiling_height)
         .unwrap_or(f.ceiling_height)
 }

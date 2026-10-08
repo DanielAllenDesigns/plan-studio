@@ -32,9 +32,15 @@ use plan_3d::Scene;
 use plan_core::camera::{PlanLight, DEFAULT_CONE_LENGTH};
 use plan_core::geometry::Point;
 use plan_core::{CameraKind, CameraObject, Id, Project};
-use plan_elevation::{Drawing, Options, SectionCut, SunDir, ViewDir};
+use plan_elevation::{
+    AnnotateOptions, DimOptions, Drawing, FreeView, ObjectWeights, Options, SunDir,
+};
+#[cfg(test)]
+use plan_elevation::{SectionCut, ViewDir};
 use plan_materials::{RenderingTechnique, SunSettings};
-use plan_render::{Environment, Image, PointLight, RenderSettings, Renderer, Sun, Technique};
+use plan_render::{
+    AreaLight, Environment, Image, PointLight, RenderSettings, Renderer, SkyModel, Sun, Technique,
+};
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -101,7 +107,10 @@ pub fn sun_dir(s: &SunSettings) -> Option<SunDir> {
 }
 
 /// The orthographic view closest to the camera's viewing direction (the
-/// camera stands on the opposite side of the model).
+/// camera stands on the opposite side of the model). The drawing itself now
+/// follows the cut line at any angle ([`free_view`]); this is the
+/// nearest-axis approximation the tests compare against.
+#[cfg(test)]
 pub fn elevation_view_dir(c: &CameraObject) -> ViewDir {
     let d = c.direction();
     if d.y.abs() >= d.x.abs() {
@@ -118,7 +127,8 @@ pub fn elevation_view_dir(c: &CameraObject) -> ViewDir {
 }
 
 /// The cutting plane of a section camera: through the centre of its cut line,
-/// square to the nearest axis (scene Z is -plan y).
+/// square to the nearest axis (scene Z is -plan y). See [`elevation_view_dir`].
+#[cfg(test)]
 pub fn section_cut(c: &CameraObject) -> SectionCut {
     let plane_normal = elevation_view_dir(c);
     let offset = match plane_normal {
@@ -149,6 +159,7 @@ pub fn elevation_options_with_sun(c: &CameraObject, sun: Option<SunDir>) -> Opti
             altitude_deg: r.sun_altitude_deg,
         })),
         depth_weights: r.depth_weights,
+        include_hidden_dashed: c.vector.hidden_dashed,
         section_depth: cuts_model(c)
             .then(|| crate::tools::camera::back_clip(c))
             .flatten(),
@@ -156,31 +167,140 @@ pub fn elevation_options_with_sun(c: &CameraObject, sun: Option<SunDir>) -> Opti
     }
 }
 
-/// The camera's 2D drawing with `opts`: a section or wall elevation is cut at
-/// its line, other elevation cameras draw the whole building from their
-/// direction. With the camera's labels option the drawing gets the title (the
-/// camera's name), level callouts, grade line and roof pitch symbols.
-pub fn render_elevation_with(project: &Project, c: &CameraObject, opts: &Options) -> Drawing {
-    let scene = plan_3d::build_scene(project);
-    let dir = elevation_view_dir(c);
-    let section = cuts_model(c);
-    let mut drawing = if section {
-        plan_elevation::section(&scene, section_cut(c), opts)
+/// The camera line of an elevation or section camera as a free-angle view
+/// (C-17, C-20): the centre and direction of its cut line at any angle, and
+/// for a camera that cuts the model the line's half length as the width of the
+/// drawing. Exterior elevations are not cut off at their ends.
+pub fn free_view(c: &CameraObject) -> FreeView {
+    let (a, b) = crate::tools::camera::section_line(c);
+    let along = b - a;
+    // The view looks to the left of A to B (the direction turned 90 degrees
+    // clockwise is the line's tangent), so the line fixes the direction.
+    let view_deg = if c.section.is_some() && along.length() > 1e-9 {
+        along.perp().angle().to_degrees()
     } else {
-        plan_elevation::elevation(&scene, dir, opts)
+        c.direction_deg
     };
-    if c.render.labels {
-        plan_elevation::annotate(&mut drawing, &scene, project, dir);
-        if !c.name.trim().is_empty() && (section || c.kind == CameraKind::Elevation) {
-            let title = c.name.to_uppercase();
-            for (_, t) in &mut drawing.texts {
-                if t.ends_with("ELEVATION") {
-                    *t = title.clone();
-                }
+    let origin = if c.section.is_some() || cuts_model(c) {
+        Point::lerp(a, b, 0.5)
+    } else {
+        c.position
+    };
+    let view = FreeView::new(origin, view_deg);
+    if cuts_model(c) {
+        view.with_half_width(crate::tools::camera::section_width(c) * 0.5)
+    } else {
+        view
+    }
+}
+
+/// Pen weight classes of the walls and openings of `project`, from the line
+/// weights of their layers (walls on their own layer, doors on "Doors", windows
+/// on "Windows"): the Vector View line styles per layer.
+pub fn layer_weights(project: &Project) -> ObjectWeights {
+    let mut w = ObjectWeights::new();
+    let pen = |name: &str| project.layers.get(name).map(|l| l.line_weight);
+    for f in &project.floors {
+        for wall in &f.walls {
+            if let Some(p) = pen(&wall.layer) {
+                w.set_pen(wall.id, p);
+            }
+        }
+        for o in &f.openings {
+            let layer = match o.kind {
+                plan_core::OpeningKind::Door => "Doors",
+                plan_core::OpeningKind::Window => "Windows",
+            };
+            if let Some(p) = pen(layer) {
+                w.set_pen(o.id, p);
             }
         }
     }
+    w
+}
+
+/// Which annotations a camera's drawing gets: its labels option gates the
+/// title, grade line and roof pitch symbols (and the level callouts when
+/// they are on too); the Vector View options add dimension strings and
+/// material labels.
+pub fn annotate_options(c: &CameraObject) -> AnnotateOptions {
+    AnnotateOptions {
+        title: c.render.labels,
+        grade: c.render.labels,
+        levels: c.render.labels && c.vector.level_labels,
+        pitch: c.render.labels,
+        dimensions: c.vector.dimensions.then(DimOptions::default),
+        materials: c.vector.material_labels,
+    }
+}
+
+/// The camera's 2D drawing with `opts`: a section or wall elevation is cut at
+/// its line (at any angle, see [`free_view`]), other elevation cameras draw the
+/// whole building from their direction. With the camera's labels option the
+/// drawing gets the title (the camera's name), level callouts, grade line and
+/// roof pitch symbols; its Vector View options add dimensions, material labels
+/// and per-layer line weights.
+pub fn render_elevation_with(project: &Project, c: &CameraObject, opts: &Options) -> Drawing {
+    let scene = crate::editor::framing_view::elevation_scene(project);
+    let view = free_view(c);
+    let cut = cuts_model(c);
+    let weights = c.vector.layer_weights.then(|| layer_weights(project));
+    let mut drawing = plan_elevation::render_free(&scene, &view, cut, opts, weights.as_ref());
+    let notes = annotate_options(c);
+    if notes.title || notes.dimensions.is_some() || notes.materials {
+        let title = (!c.name.trim().is_empty() && (cut || c.kind == CameraKind::Elevation))
+            .then(|| c.name.to_uppercase());
+        plan_elevation::annotate_view(
+            &mut drawing,
+            &scene,
+            project,
+            &view,
+            title.as_deref(),
+            &notes,
+        );
+    }
     drawing
+}
+
+/// The camera's drawing as a DXF with its lines on layers by weight (named
+/// after the camera), or `None` for an empty view.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn camera_dxf(project: &Project, c: &CameraObject) -> Option<String> {
+    let prefix = if c.name.trim().is_empty() {
+        "Elevation"
+    } else {
+        c.name.trim()
+    };
+    render_elevation(project, c).to_dxf(prefix)
+}
+
+/// Asks for a file name and writes `drawing` there as a DXF with its lines on
+/// layers by weight (named after `name`); returns the status line.
+pub fn save_drawing_dxf(drawing: &Drawing, name: &str) -> String {
+    let name = if name.trim().is_empty() {
+        "Elevation"
+    } else {
+        name.trim()
+    };
+    let Some(text) = drawing.to_dxf(name) else {
+        return "Nothing to export: the view is empty".into();
+    };
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(format!("{name}.dxf"))
+        .add_filter("dxf", &["dxf"])
+        .save_file()
+    else {
+        return "Export cancelled".into();
+    };
+    match std::fs::write(&path, text.as_bytes()) {
+        Ok(()) => format!("Saved {}", path.display()),
+        Err(e) => format!("Could not save {}: {e}", path.display()),
+    }
+}
+
+/// [`save_drawing_dxf`] of the camera's own drawing.
+pub fn save_camera_dxf(project: &Project, c: &CameraObject) -> String {
+    save_drawing_dxf(&render_elevation(project, c), &c.name)
 }
 
 /// [`render_elevation_with`] using [`elevation_options`].
@@ -231,6 +351,9 @@ pub struct CameraDialog {
     /// the centre, the view direction and this after every edit).
     section_len: f64,
     sun_input: SunInput,
+    /// "Export DXF" was clicked; the host takes it with
+    /// [`CameraDialog::take_export_request`] (the dialog has no project).
+    export_requested: bool,
 }
 
 impl CameraDialog {
@@ -243,6 +366,7 @@ impl CameraDialog {
             draft,
             section_len,
             sun_input: SunInput::default(),
+            export_requested: false,
             extras,
             floor_name: floor_name.to_string(),
             fields: Fields::default(),
@@ -259,6 +383,12 @@ impl CameraDialog {
 
     pub fn extras(&self) -> CameraExtras {
         self.extras
+    }
+
+    /// Did the user click "Export drawing as DXF" since the last call? The
+    /// host then writes [`camera_dxf`] of [`CameraDialog::draft`].
+    pub fn take_export_request(&mut self) -> bool {
+        std::mem::take(&mut self.export_requested)
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -552,6 +682,44 @@ impl CameraDialog {
             &mut self.draft.render.labels,
             "Labels (title, levels, roof pitch)",
         );
+        ui.add_enabled(
+            self.draft.render.labels,
+            egui::Checkbox::new(
+                &mut self.draft.vector.level_labels,
+                "Level callouts (T.O. subfloor, T.O. plate)",
+            ),
+        );
+        section(ui, "Vector View");
+        ui.checkbox(
+            &mut self.draft.vector.dimensions,
+            "Automatic dimensions (floor-to-floor, openings)",
+        );
+        ui.checkbox(
+            &mut self.draft.vector.material_labels,
+            "Material labels (siding, brick, roofing)",
+        );
+        ui.checkbox(
+            &mut self.draft.vector.layer_weights,
+            "Line weights from the layers",
+        );
+        ui.checkbox(&mut self.draft.vector.hidden_dashed, "Dashed hidden lines");
+        if ui.button("Export drawing as DXF\u{2026}").clicked() {
+            self.export_requested = true;
+        }
+        section(ui, "Plan callout");
+        ui.checkbox(&mut self.draft.callout.show, "Show the callout in the plan");
+        let mut numbered = self.draft.callout.number.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut numbered, "View number").changed() {
+                self.draft.callout.number = numbered.then_some(1);
+            }
+            if let Some(n) = &mut self.draft.callout.number {
+                ui.add(egui::DragValue::new(n).range(1..=99));
+            }
+        });
+        if !numbered {
+            ui.weak("Without a number the cameras are numbered in order.");
+        }
     }
 }
 
@@ -1020,6 +1188,55 @@ impl RtTechnique {
     }
 }
 
+/// How the ray tracer paints the sky.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RtSky {
+    /// Preetham analytic clear sky: bright near the sun and the horizon.
+    Analytic,
+    /// The two-colour zenith-to-horizon gradient.
+    Gradient,
+}
+
+impl RtSky {
+    pub const ALL: [RtSky; 2] = [RtSky::Analytic, RtSky::Gradient];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RtSky::Analytic => "Clear sky",
+            RtSky::Gradient => "Gradient",
+        }
+    }
+}
+
+/// Size of a saved image relative to the render size ("Save Image" at 2x or 4x
+/// renders again at that size).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SaveScale {
+    X1,
+    X2,
+    X4,
+}
+
+impl SaveScale {
+    pub const ALL: [SaveScale; 3] = [SaveScale::X1, SaveScale::X2, SaveScale::X4];
+
+    pub fn factor(self) -> u32 {
+        match self {
+            SaveScale::X1 => 1,
+            SaveScale::X2 => 2,
+            SaveScale::X4 => 4,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SaveScale::X1 => "Same size",
+            SaveScale::X2 => "2x size",
+            SaveScale::X4 => "4x size",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RtPhase {
     Idle,
@@ -1066,8 +1283,28 @@ pub struct RayTraceDialog {
     pub manual_sun: Option<(f64, f64)>,
     /// Point lights of the plan, set by the 3D panel before a render starts.
     pub lights: Vec<PointLight>,
+    /// Rectangular area lights (sampled directly, so small bright panels are
+    /// clean at low sample counts).
+    pub areas: Vec<AreaLight>,
+    /// Sky model and, for the clear sky, its haze (turbidity, 2 clear to 10 hazy).
+    pub sky: RtSky,
+    pub turbidity: f32,
+    /// Exposure compensation in stops (EV) applied before tone mapping.
+    pub exposure_ev: f32,
+    /// Smooth the noise with the albedo/normal-guided filter.
+    pub denoise: bool,
+    /// Lens diameter in inches for depth of field (0 is a pinhole) and the
+    /// focus distance in inches (0 focuses on what is at the image centre).
+    pub aperture_in: f32,
+    pub focus_in: f32,
+    /// Size of the saved image.
+    pub save_scale: SaveScale,
     pub message: String,
     phase: RtPhase,
+    /// The scene and camera of the last render, kept for a bigger Save Image.
+    job: Option<(Scene, plan_render::Camera)>,
+    /// A larger render in progress that writes its PNG here when done.
+    pending_save: Option<std::path::PathBuf>,
     shared: Option<Arc<Shared>>,
     preview: Option<Preview>,
     preview_dirty: bool,
@@ -1079,18 +1316,33 @@ impl Default for RayTraceDialog {
     fn default() -> Self {
         Self {
             open: false,
-            size: SizePreset::P1280x960,
-            samples: SamplesPreset::S64,
-            technique: RtTechnique::PhysicallyBased,
+            // Preferences > Render.
+            size: super::preferences::render_size_preset(),
+            samples: super::preferences::render_samples_preset(),
+            technique: if super::preferences::current().render_clay {
+                RtTechnique::Clay
+            } else {
+                RtTechnique::PhysicallyBased
+            },
             // Mid-afternoon at the summer solstice in Metro Atlanta.
             date: (6, 21),
             time_hours: 15.0,
-            latitude: 33.75,
+            latitude: super::preferences::current().render_latitude,
             size_override: None,
             manual_sun: None,
             lights: Vec::new(),
+            areas: Vec::new(),
+            sky: RtSky::Analytic,
+            turbidity: 2.5,
+            exposure_ev: 0.0,
+            denoise: false,
+            aperture_in: 0.0,
+            focus_in: 0.0,
+            save_scale: SaveScale::X1,
             message: String::new(),
             phase: RtPhase::Idle,
+            job: None,
+            pending_save: None,
             shared: None,
             preview: None,
             preview_dirty: false,
@@ -1145,6 +1397,9 @@ impl RayTraceDialog {
             height: height.max(1),
             samples: self.samples.count(),
             technique: self.technique.render_technique(),
+            exposure: self.exposure_ev.clamp(-6.0, 6.0).exp2(),
+            denoise: self.denoise,
+            preview_blocks: true,
             ..RenderSettings::default()
         }
     }
@@ -1160,18 +1415,40 @@ impl RayTraceDialog {
         });
         Environment {
             sun,
+            sky_model: match self.sky {
+                RtSky::Analytic => SkyModel::Preetham {
+                    turbidity: self.turbidity.clamp(2.0, 10.0),
+                },
+                RtSky::Gradient => SkyModel::Gradient,
+            },
             ..Environment::default()
         }
     }
 
     /// Starts rendering `scene` from `camera` on a background thread.
     pub fn start(&mut self, scene: Scene, camera: plan_render::Camera) {
+        self.pending_save = None;
+        self.start_scaled(scene, camera, 1);
+    }
+
+    /// Renders `scene` at `scale` times the chosen size (a larger Save Image).
+    /// The progressive preview is only shown for the normal size.
+    fn start_scaled(&mut self, scene: Scene, camera: plan_render::Camera, scale: u32) {
         if self.is_running() {
             return;
         }
-        let settings = self.settings();
+        let settings = self.settings().scaled(scale);
+        let hires = settings.width > self.settings().width;
         let env = self.environment();
         let lights = self.lights.clone();
+        let areas = self.areas.clone();
+        // Depth of field: the dialog's lens and focus override the camera's.
+        let camera = plan_render::Camera {
+            aperture: self.aperture_in.max(0.0),
+            focus_dist: self.focus_in.max(0.0),
+            ..camera
+        };
+        self.job = Some((scene.clone(), camera));
         let shared = Arc::new(Shared {
             done: AtomicU32::new(0),
             total: settings.samples,
@@ -1187,14 +1464,22 @@ impl RayTraceDialog {
                     let renderer = Renderer::new(&scene);
                     let mut progress = |img: &Image, done: u32| {
                         worker.done.store(done, Ordering::Relaxed);
-                        *lock(&worker.latest) = Some(Preview {
-                            width: img.width,
-                            height: img.height,
-                            rgba: img.rgba.clone(),
-                        });
+                        if !hires {
+                            *lock(&worker.latest) = Some(Preview {
+                                width: img.width,
+                                height: img.height,
+                                rgba: img.rgba.clone(),
+                            });
+                        }
                         !worker.cancel.load(Ordering::Relaxed)
                     };
-                    renderer.render_progressive(&camera, &env, &lights, &settings, &mut progress)
+                    renderer.render_progressive_with_areas(
+                        &camera,
+                        &env,
+                        (&lights, &areas),
+                        &settings,
+                        &mut progress,
+                    )
                 }));
                 *lock(&worker.finished) =
                     Some(result.map_err(|_| "The renderer stopped unexpectedly".to_string()));
@@ -1230,21 +1515,55 @@ impl RayTraceDialog {
         let finished = lock(&shared.finished).take();
         match finished {
             Some(Ok(image)) => {
-                self.preview = Some(Preview {
-                    width: image.width,
-                    height: image.height,
-                    rgba: image.rgba.clone(),
-                });
-                self.preview_dirty = true;
+                if self.pending_save.is_none() {
+                    self.preview = Some(Preview {
+                        width: image.width,
+                        height: image.height,
+                        rgba: image.rgba.clone(),
+                    });
+                    self.preview_dirty = true;
+                }
                 self.image = Some(image);
-                self.phase = if shared.cancel.load(Ordering::Relaxed) {
+                let cancelled = shared.cancel.load(Ordering::Relaxed);
+                self.phase = if cancelled {
                     RtPhase::Cancelled
                 } else {
                     RtPhase::Done
                 };
+                if let Some(path) = self.pending_save.take() {
+                    self.message = match self.save_png(&path) {
+                        Ok(()) => format!("Saved {}", path.display()),
+                        Err(e) => format!("Could not save: {e}"),
+                    };
+                }
             }
-            Some(Err(e)) => self.phase = RtPhase::Failed(e),
+            Some(Err(e)) => {
+                self.pending_save = None;
+                self.phase = RtPhase::Failed(e);
+            }
             None => {}
+        }
+    }
+
+    /// Saves the image to `path` at the chosen [`SaveScale`]: the finished
+    /// image as it is for the same size, otherwise the last scene is rendered
+    /// again that many times larger in the background and written when done.
+    pub fn save_image(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        let factor = self.save_scale.factor();
+        if factor <= 1 {
+            return self.save_png(path);
+        }
+        let Some((scene, camera)) = self.job.clone() else {
+            return Err(std::io::Error::other("nothing has been rendered yet"));
+        };
+        self.pending_save = Some(path.to_path_buf());
+        self.message = format!("Rendering the {factor}x image...");
+        self.start_scaled(scene, camera, factor);
+        if self.is_running() {
+            Ok(())
+        } else {
+            self.pending_save = None;
+            Err(std::io::Error::other("could not start the renderer"))
         }
     }
 
@@ -1344,6 +1663,56 @@ impl RayTraceDialog {
                         .suffix("\u{B0}"),
                 );
                 ui.end_row();
+                ui.label("Sky");
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("rt_sky")
+                        .selected_text(self.sky.label())
+                        .show_ui(ui, |ui| {
+                            for s in RtSky::ALL {
+                                ui.selectable_value(&mut self.sky, s, s.label());
+                            }
+                        });
+                    if self.sky == RtSky::Analytic {
+                        ui.add(
+                            egui::Slider::new(&mut self.turbidity, 2.0..=10.0)
+                                .text("haze")
+                                .fixed_decimals(1),
+                        );
+                    }
+                });
+                ui.end_row();
+                ui.label("Exposure");
+                ui.add(
+                    egui::Slider::new(&mut self.exposure_ev, -3.0..=3.0)
+                        .suffix(" EV")
+                        .fixed_decimals(1),
+                );
+                ui.end_row();
+                ui.label("Depth of field");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.aperture_in)
+                            .range(0.0..=24.0)
+                            .speed(0.1)
+                            .suffix("\" lens"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.focus_in)
+                            .range(0.0..=20000.0)
+                            .speed(2.0)
+                            .custom_formatter(|v, _| {
+                                if v <= 0.0 {
+                                    "auto focus".to_string()
+                                } else {
+                                    format!("focus {v:.0}\"")
+                                }
+                            }),
+                    );
+                });
+                ui.end_row();
+                ui.label("Noise");
+                ui.checkbox(&mut self.denoise, "Denoise (keeps edges and textures)");
+                ui.end_row();
             });
         });
         let sun = self.sun();
@@ -1363,9 +1732,16 @@ impl RayTraceDialog {
                     None => self.message = "There is nothing to render".into(),
                 }
             }
-            let can_save = self.image().is_some();
+            let can_save = self.image().is_some() && !self.is_running();
+            egui::ComboBox::from_id_salt("rt_save_scale")
+                .selected_text(self.save_scale.label())
+                .show_ui(ui, |ui| {
+                    for s in SaveScale::ALL {
+                        ui.selectable_value(&mut self.save_scale, s, s.label());
+                    }
+                });
             if ui
-                .add_enabled(can_save, egui::Button::new("Save PNG\u{2026}"))
+                .add_enabled(can_save, egui::Button::new("Save Image\u{2026}"))
                 .clicked()
             {
                 if let Some(path) = rfd::FileDialog::new()
@@ -1373,8 +1749,11 @@ impl RayTraceDialog {
                     .set_file_name("render.png")
                     .save_file()
                 {
-                    self.message = match self.save_png(&path) {
-                        Ok(()) => format!("Saved {}", path.display()),
+                    self.message = match self.save_image(&path) {
+                        Ok(()) if self.save_scale == SaveScale::X1 => {
+                            format!("Saved {}", path.display())
+                        }
+                        Ok(()) => self.message.clone(),
                         Err(e) => format!("Could not save: {e}"),
                     };
                 }
@@ -1742,6 +2121,96 @@ mod tests {
     }
 
     #[test]
+    fn ray_trace_options_reach_the_renderer() {
+        let mut d = RayTraceDialog {
+            exposure_ev: 1.0,
+            denoise: true,
+            turbidity: 4.0,
+            ..RayTraceDialog::default()
+        };
+        let s = d.settings();
+        assert!((s.exposure - 2.0).abs() < 1e-5, "+1 EV doubles the exposure");
+        assert!(s.denoise && s.preview_blocks);
+        assert_eq!(
+            d.environment().sky_model,
+            SkyModel::Preetham { turbidity: 4.0 }
+        );
+        d.sky = RtSky::Gradient;
+        assert_eq!(d.environment().sky_model, SkyModel::Gradient);
+        d.exposure_ev = 99.0;
+        assert!(d.settings().exposure.is_finite() && d.settings().exposure <= 64.0);
+    }
+
+    #[test]
+    fn depth_of_field_and_area_lights_are_passed_to_the_render() {
+        let mut d = RayTraceDialog {
+            size_override: Some((16, 12)),
+            samples: SamplesPreset::S64,
+            aperture_in: 4.0,
+            focus_in: 120.0,
+            ..RayTraceDialog::default()
+        };
+        d.areas = vec![AreaLight::ceiling_panel([5.0, 90.0, -5.0], 24.0, 24.0, [4.0; 3])];
+        d.start(
+            tiny_scene(),
+            plan_render::Camera::from_plan(Point::new(0.0, -300.0), 90.0, 120.0, 60.0),
+        );
+        let (_, cam) = d.job.clone().expect("the job is kept");
+        assert_eq!((cam.aperture, cam.focus_dist), (4.0, 120.0));
+        let t0 = std::time::Instant::now();
+        while d.is_running() && t0.elapsed().as_secs() < 60 {
+            d.poll();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(d.phase(), &RtPhase::Done);
+    }
+
+    #[test]
+    fn save_image_at_two_times_renders_again_and_writes_the_bigger_png() {
+        let mut d = RayTraceDialog {
+            size_override: Some((16, 12)),
+            samples: SamplesPreset::S64,
+            ..RayTraceDialog::default()
+        };
+        let dir = std::env::temp_dir().join(format!("plan_rt2x_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.png");
+        // Nothing rendered yet: a bigger save has nothing to repeat.
+        d.save_scale = SaveScale::X2;
+        assert!(d.save_image(&path).is_err());
+        d.start(
+            tiny_scene(),
+            plan_render::Camera::from_plan(Point::new(0.0, -300.0), 90.0, 120.0, 60.0),
+        );
+        let wait = |d: &mut RayTraceDialog| {
+            let t0 = std::time::Instant::now();
+            while d.is_running() && t0.elapsed().as_secs() < 60 {
+                d.poll();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        wait(&mut d);
+        assert_eq!(d.image().map(|i| (i.width, i.height)), Some((16, 12)));
+        d.save_image(&path).expect("the bigger render starts");
+        assert!(d.is_running(), "the 2x render runs in the background");
+        wait(&mut d);
+        assert_eq!(d.phase(), &RtPhase::Done);
+        assert_eq!(d.image().map(|i| (i.width, i.height)), Some((32, 24)));
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[1..4], b"PNG");
+        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        assert_eq!((width, height), (32, 24));
+        assert!(d.message.starts_with("Saved"), "{}", d.message);
+        // The same size just writes what is there.
+        d.save_scale = SaveScale::X1;
+        let same = dir.join("same.png");
+        d.save_image(&same).unwrap();
+        assert!(same.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn camera_dialog_validates_name_and_fov() {
         let cam = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "Camera 1", 0);
         let mut d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
@@ -1779,7 +2248,7 @@ mod tests {
         assert!(
             matches!(b.source, plan_layout::BoxSource::Camera { camera_id } if camera_id == id)
         );
-        assert_eq!(b.label.as_deref(), Some("SECTION 1"));
+        assert_eq!(b.label.as_deref(), Some("1 - SECTION 1"));
         let drawing = camera_drawing(&p, id).expect("a section draws");
         assert!(drawing.cut_regions().count() > 0);
         let hooked = layout_context(&p);
@@ -1996,5 +2465,218 @@ mod tests {
             (d.draft.direction_deg - (Point::new(120.0, -5.0)).angle().to_degrees()).abs() < 1e-9
         );
         assert_eq!(d.draft.path_nodes.len(), 3);
+    }
+
+    /// A wall of `len` at `deg` from the origin on a fresh plan.
+    fn skewed(deg: f64, len: f64) -> (Project, Id) {
+        let mut p = Project::new("skew");
+        let u = Point::new(deg.to_radians().cos(), deg.to_radians().sin());
+        let id = p.add_wall(
+            0,
+            Point::ZERO,
+            u * len,
+            4.5,
+            109.125,
+            plan_core::WallKind::Exterior,
+        );
+        (p, id)
+    }
+
+    fn face_bounds(d: &Drawing, id: Id) -> (Point, Point) {
+        let (mut lo, mut hi) = (Point::new(1e9, 1e9), Point::new(-1e9, -1e9));
+        for r in d
+            .regions
+            .iter()
+            .filter(|r| r.object_id == Some(id) && r.kind == plan_elevation::RegionKind::Face)
+        {
+            for q in &r.polygon {
+                lo = Point::new(lo.x.min(q.x), lo.y.min(q.y));
+                hi = Point::new(hi.x.max(q.x), hi.y.max(q.y));
+            }
+        }
+        (lo, hi)
+    }
+
+    #[test]
+    fn a_wall_elevation_at_30_degrees_cuts_exactly_along_its_line() {
+        let (p, id) = skewed(30.0, 144.0);
+        let wall = p.floors[0].walls[0].clone();
+        let toward = Point::new(-50.0, 100.0); // the left (north-west) face
+        let cam = crate::tools::camera::wall_elevation(&wall, toward, 0, "Skew Wall");
+        // The camera line is the wall's own: not snapped to an axis.
+        assert!((cam.direction_deg.rem_euclid(360.0) - 300.0).abs() < 1e-6);
+        let view = free_view(&cam);
+        assert!(view.axis().is_none());
+        assert!((view.half_width.unwrap() - 72.0).abs() < 1e-9);
+        let o = Options {
+            raster_px: 512,
+            ..elevation_options(&cam)
+        };
+        let d = render_elevation_with(&p, &cam, &o);
+        let (lo, hi) = face_bounds(&d, id);
+        assert!(lo.x.abs() > 1.0, "the face region exists: {lo:?} {hi:?}");
+        assert!(
+            (lo.x + 72.0).abs() < 1.5 && (hi.x - 72.0).abs() < 1.5,
+            "{lo:?} {hi:?}"
+        );
+        assert!(lo.y.abs() < 1.5 && (hi.y - 109.125).abs() < 1.5);
+        // Square to an axis the same wall gives the same face (the old snapping
+        // drew a 30 degree wall as a 120 x 72 shortened face).
+        let (p0, id0) = skewed(0.0, 144.0);
+        let w0 = p0.floors[0].walls[0].clone();
+        let cam0 = crate::tools::camera::wall_elevation(&w0, Point::new(70.0, 50.0), 0, "Flat");
+        let d0 = render_elevation_with(&p0, &cam0, &o);
+        let (l0, h0) = face_bounds(&d0, id0);
+        assert!(((h0.x - l0.x) - (hi.x - lo.x)).abs() < 2.0);
+    }
+
+    #[test]
+    fn a_section_dialog_direction_of_30_degrees_draws_that_section() {
+        // The dialog's View Direction field takes any angle and rebuilds the cut line square to it.
+        let (p, _) = skewed(60.0, 200.0);
+        let mut cam = section_camera();
+        cam.position = Point::new(50.0, 87.0);
+        let mut d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
+        d.draft.direction_deg = 150.0;
+        d.section_len = 160.0;
+        d.sync_section();
+        let c = d.draft().clone();
+        let (a, b) = crate::tools::camera::section_line(&c);
+        assert!((a.dist(b) - 160.0).abs() < 1e-9);
+        let along = (b - a).normalized();
+        // The view looks to the left of A to B: 90 degrees counter-clockwise from the line.
+        assert!((along.perp().angle().to_degrees() - 150.0).abs() < 1e-6);
+        let view = free_view(&c);
+        assert!((view.view_deg - 150.0).abs() < 1e-6 && view.axis().is_none());
+        let o = Options {
+            raster_px: 256,
+            ..elevation_options(&c)
+        };
+        let drawn = render_elevation_with(&p, &c, &o);
+        // The 60 degree wall crosses the line, so there is poche.
+        assert!(drawn.cut_regions().count() > 0);
+        // The drawing is cut off at the ends of the line (grade lines and notes aside).
+        assert!(drawn
+            .regions
+            .iter()
+            .flat_map(|r| r.polygon.iter())
+            .all(|q| q.x.abs() <= 80.0 + 1e-6));
+    }
+
+    fn two_storey_house() -> Project {
+        let mut p = house();
+        p.build_new_floor(true);
+        p
+    }
+
+    #[test]
+    fn vector_options_add_dimensions_material_labels_and_dashed_lines() {
+        let p = two_storey_house();
+        let cams = crate::tools::camera::auto_elevation_cameras(&p, 0, false).unwrap();
+        let mut south = cams
+            .into_iter()
+            .find(|c| c.name == "South Elevation")
+            .unwrap();
+        let plain = Options {
+            raster_px: 256,
+            ..elevation_options(&south)
+        };
+        let d = render_elevation_with(&p, &south, &plain);
+        assert!(d.dims.is_empty());
+        assert!(d.texts.iter().any(|(_, t)| t.starts_with("T.O. PLATE")));
+        south.vector.dimensions = true;
+        south.vector.level_labels = false;
+        south.vector.material_labels = true;
+        south.vector.hidden_dashed = true;
+        let o = Options {
+            raster_px: 256,
+            ..elevation_options(&south)
+        };
+        assert!(o.include_hidden_dashed);
+        let d = render_elevation_with(&p, &south, &o);
+        let f2f = d
+            .dims
+            .iter()
+            .find(|x| x.kind == plan_elevation::DimKind::FloorToFloor)
+            .expect("a floor-to-floor dimension");
+        let structure = plan_core::floors::FLOOR_PLATFORM_THICKNESS;
+        assert!((f2f.value() - (109.125 + structure)).abs() < 1e-9);
+        assert!(d
+            .dims
+            .iter()
+            .any(|x| x.kind == plan_elevation::DimKind::Opening));
+        assert!(!d.texts.iter().any(|(_, t)| t.starts_with("T.O.")));
+        assert!(d.texts.iter().any(|(_, t)| t == "SOUTH ELEVATION"));
+        assert!(d.lines.iter().any(|l| l.is_dashed()));
+        // The house is clad in the generic wall material, which gets no label;
+        // the option itself reaches the annotations.
+        assert!(annotate_options(&south).materials);
+        // The Labels option off removes the title and callouts but not the dimensions.
+        south.render.labels = false;
+        let d = render_elevation_with(&p, &south, &o);
+        assert!(!d.texts.iter().any(|(_, t)| t == "SOUTH ELEVATION"));
+        assert!(!d.dims.is_empty());
+    }
+
+    #[test]
+    fn layer_pens_become_the_line_weights_of_the_vector_view() {
+        let mut p = house();
+        let win = p.floors[0].openings[0].id;
+        let wall = p.floors[0].walls[0].id;
+        let w = layer_weights(&p);
+        assert_eq!(w.class_of(wall), Some(plan_elevation::LineWeight::Heavy));
+        assert_eq!(w.class_of(win), Some(plan_elevation::LineWeight::Medium));
+        // Thin pens draw light.
+        p.layers.layers.iter_mut().for_each(|l| {
+            if l.name == "Windows" {
+                l.line_weight = 13;
+            }
+        });
+        assert_eq!(
+            layer_weights(&p).class_of(win),
+            Some(plan_elevation::LineWeight::Light)
+        );
+        let cams = crate::tools::camera::auto_elevation_cameras(&p, 0, false).unwrap();
+        let mut south = cams
+            .into_iter()
+            .find(|c| c.name == "South Elevation")
+            .unwrap();
+        let o = Options {
+            raster_px: 256,
+            ..elevation_options(&south)
+        };
+        let heavy = |d: &Drawing| {
+            d.lines
+                .iter()
+                .filter(|l| l.weight == plan_elevation::LineWeight::Heavy)
+                .map(plan_elevation::Line2::length)
+                .sum::<f64>()
+        };
+        let plain = render_elevation_with(&p, &south, &o);
+        south.vector.layer_weights = true;
+        let styled = render_elevation_with(&p, &south, &o);
+        assert!(heavy(&styled) < heavy(&plain));
+    }
+
+    #[test]
+    fn the_camera_drawing_exports_as_a_dxf_with_layers_by_weight() {
+        let p = house();
+        let cams = crate::tools::camera::auto_elevation_cameras(&p, 0, false).unwrap();
+        let south = cams
+            .into_iter()
+            .find(|c| c.name == "South Elevation")
+            .unwrap();
+        let dxf = camera_dxf(&p, &south).expect("a drawing");
+        for layer in ["South Elevation, Heavy", "South Elevation, Annotation"] {
+            assert!(dxf.contains(layer), "{layer}");
+        }
+        assert!(dxf.contains("SOUTH ELEVATION"));
+        let empty = Project::new("empty");
+        assert!(camera_dxf(&empty, &south).is_none());
+        // The dialog only raises a request; the host has the project.
+        let mut d = CameraDialog::new(&south, "1st Floor", CameraExtras::default());
+        assert!(!d.take_export_request());
+        d.export_requested = true;
+        assert!(d.take_export_request() && !d.take_export_request());
     }
 }

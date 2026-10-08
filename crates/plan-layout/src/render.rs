@@ -6,22 +6,35 @@
 //! become a PDF clip rectangle; the same list, soft-clipped, backs
 //! [`render_box_lines`], which lets tests inspect exactly what a box draws.
 
-use crate::canvas::{emit, gray, rotate_prims, soft_clip, text_w, Canvas, Dash, Pen, Prim, BLACK};
+use crate::annot::{PageLeader, RevisionCloud};
+use crate::canvas::{
+    emit, gray, rotate_prims, soft_clip, soft_clip_with, text_w, Canvas, Dash, Pen, Prim, BLACK,
+};
 use crate::clip::{Pt, Rect};
 use crate::extent::{
     frame_for, placed_schedule_table, schedule_for, table_metrics, Frame, SceneSource,
     LINE_SPACING, ROW_H_PT, TABLE_TEXT_PT, TABLE_TITLE_H_PT,
 };
 use crate::hatch::wall_face_hatch;
-use crate::model::{BoxSource, Layout, LayoutBox, LayoutPage, BOTTOM_STRIP_IN};
+use crate::layers::{
+    LayoutLayers, LAYER_BOX_BORDERS, LAYER_REVISION_CLOUDS, LAYER_TEXT, LAYER_TITLE_BLOCK,
+    TITLE_BLOCK_BASE_PT,
+};
+use crate::model::{
+    perspective_pixels, BoxSource, Layout, LayoutBox, LayoutPage, TextAlign, BOTTOM_STRIP_IN,
+};
+use crate::textfit::{fit_text_box, visible_line_count, whole_line_count, TextFit, PAD_PT};
 use crate::titleblock::{MacroContext, TitleBlockStyle};
 use plan_3d::Scene;
-use plan_core::geometry::point_in_polygon;
+use plan_core::opening_symbol::{casing_parts, plan_symbol, PartKind};
 use plan_core::{
     detect_rooms, wall_outlines, CadItem, CadObject, DimFormat, DimensionKind, Floor, LayerSet,
     Opening, OpeningKind, Point, Project, Room, Wall,
 };
-use plan_docs::{PdfColor, PdfDoc, CHIEF_SHEET_BACKGROUND};
+use plan_docs::{
+    materials_report, materials_to_schedule, MasterList, MaterialsScope, PdfColor, PdfDoc,
+    CHIEF_SHEET_BACKGROUND,
+};
 use plan_elevation::{
     elevation, section, Drawing, EdgeKind, Line2, LineWeight, Options, RegionKind,
 };
@@ -32,6 +45,36 @@ use std::rc::Rc;
 
 /// Produces the 2D drawing of a camera object for [`BoxSource::Camera`] boxes.
 pub type CameraDrawingFn<'a> = Box<dyn Fn(plan_core::Id) -> Option<Drawing> + 'a>;
+
+/// A rendered raster for a [`BoxSource::Perspective`] box.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerspectiveImage {
+    pub width: u32,
+    pub height: u32,
+    /// `width * height * 4` bytes of RGBA, rows top to bottom.
+    pub rgba: Vec<u8>,
+}
+
+/// Renders the perspective view of a camera for [`BoxSource::Perspective`].
+pub type PerspectiveFn<'a> = Box<dyn Fn(plan_core::Id) -> Option<PerspectiveImage> + 'a>;
+
+/// What a perspective box asks the renderer for: the camera and the size and
+/// quality of the render (from the box's size and its DPI and samples).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PerspectiveRequest {
+    pub camera_id: plan_core::Id,
+    pub width: u32,
+    pub height: u32,
+    /// Ray-trace samples per pixel.
+    pub samples: u32,
+}
+
+/// Renders a perspective view at the size and quality of a request.
+pub type PerspectiveRenderFn<'a> =
+    Box<dyn Fn(&PerspectiveRequest) -> Option<PerspectiveImage> + 'a>;
+
+/// Reads the picture file named by a [`BoxSource::Image`] box.
+pub type PictureFn<'a> = Box<dyn Fn(&str) -> Option<PerspectiveImage> + 'a>;
 
 /// Everything a layout needs from the rest of the model when it is drawn.
 pub struct LayoutRenderContext<'a> {
@@ -45,7 +88,33 @@ pub struct LayoutRenderContext<'a> {
     /// The application supplies it (it knows the camera's render options), so
     /// this crate does not depend on it. Each camera is asked once per context.
     pub camera_drawing: Option<CameraDrawingFn<'a>>,
+    /// Renders a camera's perspective view for [`BoxSource::Perspective`]
+    /// boxes. The application supplies it (it owns the ray tracer and caches
+    /// each image per camera hash); each camera is asked once per context.
+    pub perspective_image: Option<PerspectiveFn<'a>>,
+    /// Like [`perspective_image`](Self::perspective_image) but told the size
+    /// and sample count to render at (a box's DPI); it wins when both are set.
+    pub perspective_render: Option<PerspectiveRenderFn<'a>>,
+    /// Reads picture files for [`BoxSource::Image`] boxes (this crate reads no
+    /// files itself); without it such a box is a framed placeholder.
+    pub picture_loader: Option<PictureFn<'a>>,
+    /// Prices, waste and stock lengths for [`BoxSource::Materials`] boxes.
+    pub master_list: MasterList,
     camera_cache: RefCell<HashMap<plan_core::Id, Option<Rc<Drawing>>>>,
+    perspective_cache: RefCell<HashMap<PerspectiveRequest, Option<Rc<PerspectiveImage>>>>,
+    /// `(sheet number, title)` of every printed page, for sheet index boxes
+    /// (set by [`set_sheet_index`](Self::set_sheet_index)).
+    sheet_rows: RefCell<Vec<(String, String)>>,
+    picture_cache: RefCell<HashMap<String, Option<Rc<PerspectiveImage>>>>,
+}
+
+/// What a perspective box asks the renderer for, or `None` for any other
+/// box: the same request printing and the screen make for it.
+pub fn perspective_request(b: &LayoutBox) -> Option<PerspectiveRequest> {
+    match b.source {
+        BoxSource::Perspective { camera_id } => Some(request_for(b, camera_id)),
+        _ => None,
+    }
 }
 
 /// The title block macros of `project`: its name plus Project Information
@@ -95,8 +164,131 @@ impl<'a> LayoutRenderContext<'a> {
             scene: None,
             macros: macros_for(project),
             camera_drawing: None,
+            perspective_image: None,
+            perspective_render: None,
+            picture_loader: None,
+            master_list: MasterList::default(),
             camera_cache: RefCell::new(HashMap::new()),
+            perspective_cache: RefCell::new(HashMap::new()),
+            sheet_rows: RefCell::new(Vec::new()),
+            picture_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Sets [`picture_loader`](Self::picture_loader).
+    pub fn with_picture_loader(
+        mut self,
+        f: impl Fn(&str) -> Option<PerspectiveImage> + 'a,
+    ) -> Self {
+        self.picture_loader = Some(Box::new(f));
+        self.picture_cache.borrow_mut().clear();
+        self
+    }
+
+    /// The pixels of picture file `path` from the loader (cached).
+    pub(crate) fn picture_for(&self, path: &str) -> Option<Rc<PerspectiveImage>> {
+        if let Some(hit) = self.picture_cache.borrow().get(path) {
+            return hit.clone();
+        }
+        let made = self
+            .picture_loader
+            .as_ref()
+            .and_then(|f| f(path))
+            .map(Rc::new);
+        self.picture_cache
+            .borrow_mut()
+            .insert(path.to_string(), made.clone());
+        made
+    }
+
+    /// Sets [`perspective_image`](Self::perspective_image).
+    pub fn with_perspective_image(
+        mut self,
+        f: impl Fn(plan_core::Id) -> Option<PerspectiveImage> + 'a,
+    ) -> Self {
+        self.perspective_image = Some(Box::new(f));
+        self.perspective_cache.borrow_mut().clear();
+        self
+    }
+
+    /// Sets [`master_list`](Self::master_list).
+    pub fn with_master_list(mut self, master: MasterList) -> Self {
+        self.master_list = master;
+        self
+    }
+
+    /// Sets [`perspective_render`](Self::perspective_render).
+    pub fn with_perspective_render(
+        mut self,
+        f: impl Fn(&PerspectiveRequest) -> Option<PerspectiveImage> + 'a,
+    ) -> Self {
+        self.perspective_render = Some(Box::new(f));
+        self.perspective_cache.borrow_mut().clear();
+        self
+    }
+
+    /// The perspective image for `req` from the hooks (cached per request):
+    /// the sized hook when set, else the camera-only one.
+    pub(crate) fn perspective_for(&self, req: PerspectiveRequest) -> Option<Rc<PerspectiveImage>> {
+        if let Some(hit) = self.perspective_cache.borrow().get(&req) {
+            return hit.clone();
+        }
+        let made = match (&self.perspective_render, &self.perspective_image) {
+            (Some(f), _) => f(&req),
+            (None, Some(f)) => f(req.camera_id),
+            (None, None) => None,
+        }
+        .map(Rc::new);
+        self.perspective_cache
+            .borrow_mut()
+            .insert(req, made.clone());
+        made
+    }
+
+    /// Takes the sheet index (sheet number and title of every printed page)
+    /// from `layout`, for [`BoxSource::SheetIndex`] boxes.
+    pub fn set_sheet_index(&self, layout: &Layout) {
+        *self.sheet_rows.borrow_mut() = layout
+            .content_pages()
+            .iter()
+            .map(|p| (p.sheet_number(), p.title.to_uppercase()))
+            .collect();
+    }
+
+    /// The sheet index as a table.
+    pub(crate) fn sheet_index_table(&self) -> plan_docs::Schedule {
+        plan_docs::Schedule {
+            title: "SHEET INDEX".to_string(),
+            columns: vec!["SHEET".to_string(), "TITLE".to_string()],
+            rows: self
+                .sheet_rows
+                .borrow()
+                .iter()
+                .map(|(n, t)| vec![n.clone(), t.clone()])
+                .collect(),
+        }
+    }
+
+    /// The Materials List table of a [`BoxSource::Materials`] box.
+    pub(crate) fn materials_table(
+        &self,
+        floor: Option<usize>,
+        category: Option<&str>,
+    ) -> plan_docs::Schedule {
+        let scope = match floor {
+            Some(f) => MaterialsScope::Floor(f),
+            None => MaterialsScope::AllFloors,
+        };
+        let lines = materials_report(self.project, scope, None, &self.master_list);
+        let lines: Vec<_> = lines
+            .into_iter()
+            .filter(|l| category.is_none_or(|c| l.category == c))
+            .collect();
+        let title = match category {
+            Some(c) => format!("MATERIALS LIST - {}", c.to_uppercase()),
+            None => "MATERIALS LIST".to_string(),
+        };
+        materials_to_schedule(&lines, &title)
     }
 
     /// Sets [`camera_drawing`](Self::camera_drawing).
@@ -196,6 +388,37 @@ fn wrap_text(s: &str, size: f64, max_w: f64) -> Vec<String> {
 /// Draw one CAD object through `tp` (source space to points). `k` converts
 /// source inches to points for text height.
 fn draw_cad_item(cv: &mut Canvas, o: &CadObject, tp: &dyn Fn(Point) -> Pt, k: f64, pen: Pen) {
+    draw_cad_item_styled(cv, o, tp, k, pen, None);
+}
+
+/// The text style of a CAD object on the page: the style its attributes
+/// name, else its layer's.
+fn text_style_of<'a>(
+    project: &'a Project,
+    o: &CadObject,
+    attrs: Option<&plan_core::cad::CadAttrs>,
+) -> Option<&'a plan_core::TextStyle> {
+    let styles = &project.text_styles;
+    match attrs
+        .and_then(|a| a.text_style.as_deref())
+        .filter(|n| !n.is_empty())
+    {
+        Some(name) => styles.resolve(name),
+        None => styles.resolve_for_layer(&project.layers, &o.layer),
+    }
+}
+
+/// [`draw_cad_item`] with the text style of the object and the box's paper
+/// scale in inches per foot: text in a printed-size style is as tall on the
+/// page as the style says whatever the scale (L-15, TXT-2).
+fn draw_cad_item_styled(
+    cv: &mut Canvas,
+    o: &CadObject,
+    tp: &dyn Fn(Point) -> Pt,
+    k: f64,
+    pen: Pen,
+    style: Option<(&plan_core::TextStyle, f64)>,
+) {
     match &o.item {
         CadItem::Line { a, b } => cv.line(tp(*a), tp(*b), pen),
         CadItem::Arc {
@@ -228,78 +451,101 @@ fn draw_cad_item(cv: &mut Canvas, o: &CadObject, tp: &dyn Fn(Point) -> Pt, k: f6
             text,
             height,
             angle,
-        } => cv.text_full(tp(*pos), height * k, pen.color, false, *angle, text),
+        } => {
+            let plan_h = match style {
+                Some((st, ipf)) => st.text_height(*height, ipf),
+                None => *height,
+            };
+            cv.text_full(tp(*pos), plan_h * k, pen.color, false, *angle, text)
+        }
     }
 }
 
 // ------------------------------------------------------------- plan view --
 
+/// An opening in its wall, drawn from `plan_core::opening_symbol::plan_symbol`
+/// (the same geometry as the plan view): the wall is cleared across the
+/// opening, then jambs, the leaf and swing arc, window lines, pocket and track
+/// lines, the projecting outline of a bay, bow or box window and so on get the
+/// pen their part kind calls for. `exterior` is the wall side of the outside
+/// (see [`plan_core::exterior_sign`]).
 fn draw_opening(
     cv: &mut Canvas,
     w: &Wall,
     o: &Opening,
+    exterior: f64,
     tp: &dyn Fn(Point) -> Pt,
     k: f64,
     pen: Pen,
 ) {
+    let sym = plan_symbol(w, o, exterior);
     let (n, half) = (w.normal(), w.thickness * 0.5);
-    let (s, e) = (o.start_offset(), o.end_offset());
     // The gap overshoots the faces a little so the outline strokes vanish.
-    let g = half + 1.5 / k;
-    let at = |off: f64, side: f64| w.point_at(off) + n * side;
+    let over = half + 1.5 / k;
+    let (pa, pb) = (w.point_at(o.start_offset()), w.point_at(o.end_offset()));
+    let lo = if sym.cut.0 <= -half + 1e-9 {
+        -over
+    } else {
+        sym.cut.0
+    };
+    let hi = if sym.cut.1 >= half - 1e-9 {
+        over
+    } else {
+        sym.cut.1
+    };
     cv.fill(
-        &[at(s, g), at(e, g), at(e, -g), at(s, -g)].map(tp),
+        &[pa + n * hi, pb + n * hi, pb + n * lo, pa + n * lo].map(tp),
         gray(1.0),
     );
-    for off in [s, e] {
-        cv.line(tp(at(off, half)), tp(at(off, -half)), pen.solid());
-    }
-    match o.kind {
-        OpeningKind::Window => {
-            for (side, p) in [(half, pen), (0.0, pen.scaled(0.5)), (-half, pen)] {
-                cv.line(tp(at(s, side)), tp(at(e, side)), p);
-            }
-        }
-        OpeningKind::Door => {
-            // Hinge at the wall-start jamb, swinging to the left.
-            let (hinge_off, other_off, sign) = if o.swing_flipped {
-                (e, s, -1.0)
-            } else {
-                (s, e, 1.0)
-            };
-            let swing = n * sign;
-            let hinge = w.point_at(hinge_off) + swing * half;
-            let closed_dir = (w.point_at(other_off) - w.point_at(hinge_off)).normalized();
-            let leaf_end = hinge + swing * o.width;
-            cv.line(tp(hinge), tp(leaf_end), pen.scaled(0.8).solid());
-            let a0 = closed_dir.angle();
-            let mut sweep = swing.angle() - a0;
-            while sweep > std::f64::consts::PI {
-                sweep -= TAU;
-            }
-            while sweep <= -std::f64::consts::PI {
-                sweep += TAU;
-            }
-            let pts: Vec<Pt> = arc_points(hinge, o.width, a0, sweep)
-                .into_iter()
-                .map(tp)
-                .collect();
-            cv.stroke(&pts, false, pen.scaled(0.6));
-        }
+    for part in &sym.parts {
+        let pts: Vec<Pt> = part.points.iter().map(|&p| tp(p)).collect();
+        let dashed = |p: Pen| Pen {
+            dash: Dash::Dashed,
+            ..p
+        };
+        let pen = match part.kind {
+            PartKind::Jamb | PartKind::Frame => pen.solid(),
+            PartKind::Leaf | PartKind::Arrow => pen.scaled(0.8).solid(),
+            PartKind::Swing => pen.scaled(0.6),
+            PartKind::Glass => pen.scaled(0.5).solid(),
+            PartKind::Hidden => dashed(pen.scaled(0.5)),
+            PartKind::Track => dashed(pen.scaled(0.6)),
+        };
+        cv.stroke(&pts, part.closed, pen);
     }
 }
 
 fn room_name(f: &Floor, room: &Room) -> String {
-    f.room_names
-        .iter()
-        .find(|n| point_in_polygon(n.anchor, &room.polygon))
+    room.name_entry(&f.room_names)
         .map_or_else(|| room.label.clone(), |n| n.name.clone())
 }
 
-fn draw_dimension(cv: &mut Canvas, d: &plan_core::Dimension, tp: &dyn Fn(Point) -> Pt, pen: Pen) {
+/// The size of a dimension's number on the page, points: its text style
+/// (the dimension's own, else "Dimension Text Style") at the box's paper
+/// scale, `k` points per source inch. A printed-size style is the same on
+/// paper at any scale; a character-height style scales with the box.
+fn dimension_text_pt(project: &Project, d: &plan_core::Dimension, k: f64) -> f64 {
+    let name = d
+        .text_style
+        .as_deref()
+        .filter(|n| !n.is_empty())
+        .unwrap_or("Dimension Text Style");
+    match project.text_styles.resolve(name) {
+        Some(st) => st.plan_height_at(k / 6.0, false) * k,
+        None => 7.0,
+    }
+}
+
+fn draw_dimension(
+    cv: &mut Canvas,
+    d: &plan_core::Dimension,
+    tp: &dyn Fn(Point) -> Pt,
+    pen: Pen,
+    text_pt: f64,
+) {
     const TICK: f64 = 3.0;
-    const TEXT_PT: f64 = 7.0;
-    for (a, b) in d.extension_lines() {
+    let text_pt = text_pt.clamp(3.0, 72.0);
+    for (a, b) in d.visible_extension_lines() {
         cv.line(tp(a), tp(b), pen.scaled(0.6).solid());
     }
     let (a, b) = d.line_points();
@@ -315,14 +561,14 @@ fn draw_dimension(cv: &mut Canvas, d: &plan_core::Dimension, tp: &dyn Fn(Point) 
     let label = d.label(&DimFormat::default());
     let mid = ((pa.0 + pb.0) * 0.5, (pa.1 + pb.1) * 0.5);
     if (pb.0 - pa.0).abs() >= (pb.1 - pa.1).abs() {
-        cv.text_centered(mid.0, mid.1 + 2.0, TEXT_PT, pen.color, false, &label);
+        cv.text_centered(mid.0, mid.1 + 2.0, text_pt, pen.color, false, &label);
     } else {
         // Vertical dimensions read bottom to top, centred beside the line
         // (the glyphs rise to the left of the baseline).
-        let w = text_w(&label, TEXT_PT, false);
+        let w = text_w(&label, text_pt, false);
         cv.text_full(
-            (mid.0 + 2.0 + TEXT_PT * 0.75, mid.1 - w * 0.5),
-            TEXT_PT,
+            (mid.0 + 2.0 + text_pt * 0.75, mid.1 - w * 0.5),
+            text_pt,
             pen.color,
             false,
             std::f64::consts::FRAC_PI_2,
@@ -365,6 +611,14 @@ fn draw_plan(
         cv.fill(&poly(o), gray(0.8));
     }
 
+    let fallback;
+    let rooms: &[Room] = match cx.rooms_by_floor.get(floor) {
+        Some(r) => r,
+        None => {
+            fallback = detect_rooms(&f.walls, 1.0);
+            &fallback
+        }
+    };
     for o in &f.openings {
         let layer = match o.kind {
             OpeningKind::Door => "Doors",
@@ -372,19 +626,20 @@ fn draw_plan(
         };
         let Some(w) = f.wall(o.wall_id) else { continue };
         if show(layer) && show(&w.layer) {
-            draw_opening(cv, w, o, tp, k, pen(layer));
+            let exterior = plan_core::exterior_sign(w, rooms);
+            draw_opening(cv, w, o, exterior, tp, k, pen(layer));
+            // Casing drawn in plan (a mulled unit shares one loop around its span).
+            let unit = o
+                .mull_group
+                .and_then(|_| cx.project.unit_span(floor, o.id));
+            for part in casing_parts(w, o, unit, exterior) {
+                let pts: Vec<Pt> = part.points.iter().map(|&p| tp(p)).collect();
+                cv.stroke(&pts, true, pen(layer).scaled(0.6).solid());
+            }
         }
     }
 
     if show("Room Labels") {
-        let fallback;
-        let rooms: &[Room] = match cx.rooms_by_floor.get(floor) {
-            Some(r) => r,
-            None => {
-                fallback = detect_rooms(&f.walls, 1.0);
-                &fallback
-            }
-        };
         let color = pen("Room Labels").color;
         for r in rooms {
             let (x, y) = tp(r.centroid);
@@ -407,13 +662,16 @@ fn draw_plan(
             DimensionKind::Temporary => continue,
         };
         if show(layer) {
-            draw_dimension(cv, d, tp, pen(layer));
+            let text_pt = dimension_text_pt(cx.project, d, k);
+            draw_dimension(cv, d, tp, pen(layer), text_pt);
         }
     }
 
+    let attrs = f.cad_attr_map();
     for o in &f.cad {
         if show(&o.layer) {
-            draw_cad_item(cv, o, tp, k, pen(&o.layer));
+            let style = text_style_of(cx.project, o, attrs.get(&o.id)).map(|st| (st, k / 6.0));
+            draw_cad_item_styled(cv, o, tp, k, pen(&o.layer), style);
         }
     }
 }
@@ -531,7 +789,12 @@ fn box_rect_pt(b: &LayoutBox) -> Rect {
 
 /// The prims for a box: its content, bracketed by clip markers when `clip` is
 /// set (the PDF clip rectangle), then its border.
-fn box_prims(b: &LayoutBox, cx: &LayoutRenderContext, scenes: &SceneSource) -> Vec<Prim> {
+pub(crate) fn box_prims(
+    b: &LayoutBox,
+    cx: &LayoutRenderContext,
+    scenes: &SceneSource,
+    layers: &LayoutLayers,
+) -> Vec<Prim> {
     let real = box_rect_pt(b);
     // A box with turned content lays it out in the box turned back: the
     // same centre, width and height swapped for a quarter turn.
@@ -587,7 +850,9 @@ fn box_prims(b: &LayoutBox, cx: &LayoutRenderContext, scenes: &SceneSource) -> V
                 BoxSource::CadDetail { items, .. } => {
                     let layers = &cx.project.layers;
                     for o in items {
-                        draw_cad_item(&mut cv, o, &tp, k, layer_pen(layers, &o.layer, lws));
+                        let style = text_style_of(cx.project, o, None).map(|st| (st, ipf));
+                        let pen = layer_pen(layers, &o.layer, lws);
+                        draw_cad_item_styled(&mut cv, o, &tp, k, pen, style);
                     }
                 }
                 _ => {}
@@ -603,15 +868,62 @@ fn box_prims(b: &LayoutBox, cx: &LayoutRenderContext, scenes: &SceneSource) -> V
                     None => placeholder(&mut cv, rect, lws, "SCHEDULE: not found"),
                 }
             }
-            BoxSource::Text { text, height_pt } => {
-                for (i, line) in text.lines().enumerate() {
-                    let y = rect[3] - height_pt * LINE_SPACING * (i as f64 + 0.8);
-                    cv.text(rect[0] + 3.0, y, *height_pt, BLACK, line);
+            BoxSource::Materials { floor, category } => {
+                let t = cx.materials_table(*floor, category.as_deref());
+                draw_table(&mut cv, &t, rect[0], rect[3]);
+            }
+            BoxSource::SheetIndex => {
+                draw_table(&mut cv, &cx.sheet_index_table(), rect[0], rect[3]);
+            }
+            BoxSource::Perspective { camera_id } => {
+                match cx.perspective_for(request_for(b, *camera_id)) {
+                    Some(img) => draw_pixels(&mut cv, rect, lws, &img, "PERSPECTIVE"),
+                    None => placeholder(
+                        &mut cv,
+                        rect,
+                        lws,
+                        &format!("PERSPECTIVE: camera {camera_id} not rendered"),
+                    ),
                 }
             }
-            BoxSource::Image { path } => {
-                placeholder(&mut cv, rect, lws, &format!("IMAGE: {path}"));
+            BoxSource::Text {
+                text,
+                height_pt,
+                align,
+                bold,
+            } if layers.is_visible(LAYER_TEXT) => {
+                let fitted = fit_text_box(text, *height_pt, *bold, b.text_fit, bw, bh);
+                let size = fitted.size_pt;
+                // A line that starts below the box is dropped; one that only
+                // runs past the bottom is cut by the box's clip. Without a
+                // clip only lines that fit whole are drawn.
+                let shown = if b.clip {
+                    visible_line_count(fitted.lines.len(), size, bh)
+                } else {
+                    whole_line_count(fitted.lines.len(), size, bh)
+                };
+                let shown = if b.text_fit == TextFit::Off {
+                    fitted.lines.len()
+                } else {
+                    shown
+                };
+                let color = pdf_color(layers.color(LAYER_TEXT));
+                for (i, line) in fitted.lines.iter().take(shown).enumerate() {
+                    let y = rect[3] - size * LINE_SPACING * (i as f64 + 0.8);
+                    let w = text_w(line, size, *bold);
+                    let x = match align {
+                        TextAlign::Left => rect[0] + PAD_PT,
+                        TextAlign::Center => (rect[0] + rect[2] - w) * 0.5,
+                        TextAlign::Right => rect[2] - PAD_PT - w,
+                    };
+                    cv.text_full((x, y), size, color, *bold, 0.0, line);
+                }
             }
+            BoxSource::Text { .. } => {}
+            BoxSource::Image { path } => match cx.picture_for(path) {
+                Some(img) => draw_pixels(&mut cv, rect, lws, &img, "IMAGE"),
+                None => placeholder(&mut cv, rect, lws, &format!("IMAGE: {path}")),
+            },
             BoxSource::ImageData {
                 width,
                 height,
@@ -646,12 +958,60 @@ fn box_prims(b: &LayoutBox, cx: &LayoutRenderContext, scenes: &SceneSource) -> V
     if b.clip {
         out.push(Prim::ClipEnd);
     }
-    if b.border {
+    if b.border && layers.is_visible(LAYER_BOX_BORDERS) {
         let mut frame = Canvas::new();
-        frame.rect(real[0], real[1], real[2], real[3], Pen::new(0.75 * lws));
+        let pen = Pen {
+            color: pdf_color(layers.color(LAYER_BOX_BORDERS)),
+            ..Pen::new(layers.weight_pt(LAYER_BOX_BORDERS) * lws)
+        };
+        frame.rect(real[0], real[1], real[2], real[3], pen);
         out.append(&mut frame.prims);
     }
     out
+}
+
+fn pdf_color(c: [u8; 3]) -> PdfColor {
+    if c == [0, 0, 0] {
+        BLACK
+    } else {
+        PdfColor::Rgb(c[0], c[1], c[2])
+    }
+}
+
+/// What a perspective box asks the renderer for: its camera at the pixel size
+/// its rectangle and DPI make (a quarter-turned box is rendered upright).
+pub(crate) fn request_for(b: &LayoutBox, camera_id: plan_core::Id) -> PerspectiveRequest {
+    let (mut w_in, mut h_in) = b.size_in();
+    if b.quarter_turns() % 2 == 1 {
+        std::mem::swap(&mut w_in, &mut h_in);
+    }
+    let (width, height) = perspective_pixels(w_in, h_in, b.dpi);
+    PerspectiveRequest {
+        camera_id,
+        width,
+        height,
+        samples: b.effective_samples(),
+    }
+}
+
+/// Pixels scaled to fit `rect` and centred, or a placeholder when the data
+/// does not match its size.
+fn draw_pixels(cv: &mut Canvas, rect: Rect, lws: f64, img: &PerspectiveImage, what: &str) {
+    let (bw, bh) = (rect[2] - rect[0], rect[3] - rect[1]);
+    let expect = u64::from(img.width) * u64::from(img.height) * 4;
+    if img.width == 0 || img.height == 0 || expect != img.rgba.len() as u64 {
+        placeholder(cv, rect, lws, &format!("{what}: invalid image"));
+        return;
+    }
+    let (iw, ih) = (f64::from(img.width), f64::from(img.height));
+    let s = (bw / iw).min(bh / ih);
+    let (dw, dh) = (iw * s, ih * s);
+    let (x, y) = (rect[0] + (bw - dw) * 0.5, rect[1] + (bh - dh) * 0.5);
+    cv.prims.push(Prim::Image {
+        rect: [x, y, x + dw, y + dh],
+        px: (img.width, img.height),
+        rgba: img.rgba.clone(),
+    });
 }
 
 /// A crossed frame with a caption, for images that cannot be drawn.
@@ -704,7 +1064,7 @@ fn label_prims(b: &LayoutBox) -> Vec<Prim> {
 pub fn render_box_lines(b: &LayoutBox, cx: &LayoutRenderContext) -> Vec<Line2> {
     let scenes = SceneSource::new(cx.scene);
     let mut out = Vec::new();
-    for p in soft_clip(box_prims(b, cx, &scenes)) {
+    for p in soft_clip(box_prims(b, cx, &scenes, &LayoutLayers::default())) {
         if let Prim::Stroke { pts, closed, pen } = p {
             let width = pen.width;
             let weight = if width >= 0.7 - 1e-9 {
@@ -729,13 +1089,122 @@ pub fn render_box_lines(b: &LayoutBox, cx: &LayoutRenderContext) -> Vec<Line2> {
     out
 }
 
+/// A line of text a box draws, in paper inches (see [`render_box_artwork`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxText {
+    /// Baseline-left corner.
+    pub x: f64,
+    pub y: f64,
+    pub size_pt: f64,
+    pub bold: bool,
+    /// Counter-clockwise radians about `(x, y)`.
+    pub angle: f64,
+    /// Gray level 0 (black) to 1.
+    pub gray: f32,
+    pub text: String,
+}
+
+/// A raster image a box draws, placed in paper inches.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxImage {
+    /// `[x_min, y_min, x_max, y_max]`.
+    pub rect_in: [f64; 4],
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// Everything a box draws, for an on-screen view: its strokes, texts (text
+/// boxes, table cells, placeholders) and images, turned and clipped exactly
+/// like the printed page. Fills are not included.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BoxArtwork {
+    pub lines: Vec<Line2>,
+    pub texts: Vec<BoxText>,
+    pub images: Vec<BoxImage>,
+}
+
+/// The strokes, texts and images of a box (see [`BoxArtwork`]).
+pub fn render_box_artwork(b: &LayoutBox, cx: &LayoutRenderContext) -> BoxArtwork {
+    render_box_artwork_in(b, cx, &LayoutLayers::default())
+}
+
+/// [`render_box_artwork`] with the layout's own layers: a hidden layer's
+/// parts (box borders, text boxes) are left out and weights follow the layers.
+pub fn render_box_artwork_in(
+    b: &LayoutBox,
+    cx: &LayoutRenderContext,
+    layers: &LayoutLayers,
+) -> BoxArtwork {
+    let scenes = SceneSource::new(cx.scene);
+    let mut out = BoxArtwork::default();
+    for p in soft_clip_with(box_prims(b, cx, &scenes, layers), true) {
+        match p {
+            Prim::Stroke { pts, closed, pen } => {
+                let width = pen.width;
+                let weight = if width >= 0.7 - 1e-9 {
+                    LineWeight::Heavy
+                } else if width >= 0.35 - 1e-9 {
+                    LineWeight::Medium
+                } else {
+                    LineWeight::Light
+                };
+                let n = if closed { pts.len() } else { pts.len() - 1 };
+                for i in 0..n {
+                    let (a, c) = (pts[i], pts[(i + 1) % pts.len()]);
+                    out.lines.push(Line2 {
+                        a: Point::new(a.0 / 72.0, a.1 / 72.0),
+                        b: Point::new(c.0 / 72.0, c.1 / 72.0),
+                        weight,
+                        kind: EdgeKind::Silhouette,
+                    });
+                }
+            }
+            Prim::Text {
+                x,
+                y,
+                size,
+                color,
+                bold,
+                angle,
+                text,
+            } => {
+                let gray = match color {
+                    PdfColor::Gray(g) => g as f32,
+                    PdfColor::Rgb(r, g, b) => {
+                        ((0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b))
+                            / 255.0) as f32
+                    }
+                };
+                out.texts.push(BoxText {
+                    x: x / 72.0,
+                    y: y / 72.0,
+                    size_pt: size,
+                    bold,
+                    angle,
+                    gray,
+                    text,
+                });
+            }
+            Prim::Image { rect, px, rgba } => out.images.push(BoxImage {
+                rect_in: rect.map(|v| v / 72.0),
+                width: px.0,
+                height: px.1,
+                rgba,
+            }),
+            Prim::Fill { .. } | Prim::ClipBegin(_) | Prim::ClipEnd => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) fn box_prims_for_test(
     b: &LayoutBox,
     cx: &LayoutRenderContext,
     scenes: &SceneSource,
 ) -> Vec<Prim> {
-    soft_clip(box_prims(b, cx, scenes))
+    soft_clip(box_prims(b, cx, scenes, &LayoutLayers::default()))
 }
 
 // ------------------------------------------------------------ title block --
@@ -931,22 +1400,89 @@ fn draw_page_content(
     ctx: &MacroContext,
     cx: &LayoutRenderContext,
     scenes: &SceneSource,
+    layers: &LayoutLayers,
 ) {
     for b in &page.boxes {
-        cv.prims.extend(box_prims(b, cx, scenes));
+        cv.prims.extend(box_prims(b, cx, scenes, layers));
         cv.prims.extend(label_prims(b));
     }
+    draw_annotations(cv, page, ctx, layers);
+}
+
+/// The pen of a layout layer on the page.
+fn layer_page_pen(layers: &LayoutLayers, name: &str) -> Pen {
+    Pen {
+        color: pdf_color(layers.color(name)),
+        ..Pen::new(layers.weight_pt(name))
+    }
+}
+
+/// A page's CAD, leaders and revision clouds, each on its layout layer
+/// (hidden layers are skipped; text may use macros).
+fn draw_annotations(cv: &mut Canvas, page: &LayoutPage, ctx: &MacroContext, layers: &LayoutLayers) {
     let tp = |p: Point| (p.x * 72.0, p.y * 72.0);
     for o in &page.cad {
+        let layer = LayoutLayers::layer_of(o);
+        if !layers.is_visible(layer) {
+            continue;
+        }
         let mut o = o.clone();
         if let CadItem::Text { text, .. } = &mut o.item {
             *text = ctx.expand(text);
         }
-        draw_cad_item(cv, &o, &tp, 72.0, Pen::new(0.5));
+        draw_cad_item(cv, &o, &tp, 72.0, layer_page_pen(layers, layer));
+    }
+    for l in &page.leaders {
+        draw_leader(cv, l, ctx, layers);
+    }
+    for c in &page.clouds {
+        draw_cloud(cv, c, layers);
     }
 }
 
-fn draw_page(
+/// A leader: the line with its landing, a filled arrowhead, and its text.
+fn draw_leader(cv: &mut Canvas, l: &PageLeader, ctx: &MacroContext, layers: &LayoutLayers) {
+    let tp = |p: Point| (p.x * 72.0, p.y * 72.0);
+    if layers.is_visible(crate::layers::LAYER_CAD) {
+        let pen = layer_page_pen(layers, crate::layers::LAYER_CAD);
+        for line in l.polylines() {
+            let pts: Vec<Pt> = line.iter().map(|&p| tp(p)).collect();
+            cv.stroke(&pts, false, pen);
+        }
+        if let Some(tri) = l.arrowhead() {
+            let pts: Vec<Pt> = tri.iter().map(|&p| tp(p)).collect();
+            cv.fill(&pts, pen.color);
+        }
+    }
+    if layers.is_visible(LAYER_TEXT) {
+        let color = pdf_color(layers.color(LAYER_TEXT));
+        let pos = l.text_pos();
+        for (i, line) in ctx.expand(&l.text).lines().enumerate() {
+            let at = Point::new(pos.x, pos.y - l.height_in * 1.2 * i as f64);
+            cv.text_full(tp(at), l.height_in * 72.0, color, false, 0.0, line);
+        }
+    }
+}
+
+/// A revision cloud: the scalloped outline and the revision tag.
+fn draw_cloud(cv: &mut Canvas, c: &RevisionCloud, layers: &LayoutLayers) {
+    if !layers.is_visible(LAYER_REVISION_CLOUDS) {
+        return;
+    }
+    let tp = |p: Point| (p.x * 72.0, p.y * 72.0);
+    let pen = layer_page_pen(layers, LAYER_REVISION_CLOUDS);
+    let pts: Vec<Pt> = c.outline().iter().map(|&p| tp(p)).collect();
+    cv.stroke(&pts, true, pen);
+    if let Some((tri, mid)) = c.tag() {
+        let pts: Vec<Pt> = tri.iter().map(|&p| tp(p)).collect();
+        cv.stroke(&pts, true, pen.scaled(0.7));
+        let size = 7.0;
+        let (mx, my) = tp(mid);
+        cv.text_centered(mx, my - size * 0.3, size, pen.color, true, &c.revision);
+    }
+}
+
+pub(crate) fn draw_page(
     cv: &mut Canvas,
     layout: &Layout,
     pages: &[&LayoutPage],
@@ -964,16 +1500,31 @@ fn draw_page(
     ctx.scale = page_scale_label(page);
     ctx.page_count = pages.len();
 
+    cx.set_sheet_index(layout);
     for t in layout.template_pages() {
-        draw_page_content(cv, t, &ctx, cx, scenes);
+        draw_page_content(cv, t, &ctx, cx, scenes, &layout.layers);
     }
-    draw_page_content(cv, page, &ctx, cx, scenes);
-    draw_title_block(cv, layout, &ctx);
+    draw_page_content(cv, page, &ctx, cx, scenes, &layout.layers);
+    if layout.layers.is_visible(LAYER_TITLE_BLOCK) {
+        let mut block = Canvas::new();
+        draw_title_block(&mut block, layout, &ctx);
+        let k = layout.layers.weight_pt(LAYER_TITLE_BLOCK) / TITLE_BLOCK_BASE_PT;
+        if (k - 1.0).abs() > 1e-9 {
+            for p in &mut block.prims {
+                if let Prim::Stroke { pen, .. } = p {
+                    pen.width *= k;
+                }
+            }
+        }
+        cv.prims.append(&mut block.prims);
+    }
 
     let (w_in, _) = layout.sheet_inches();
     let m = layout.margins_in * 72.0;
-    let text = format!("SHEET {} OF {}", index + 1, pages.len());
-    cv.text_right(w_in * 72.0 - m, m * 0.4, 8.0, BLACK, &text);
+    if layout.layers.is_visible(LAYER_TITLE_BLOCK) {
+        let text = format!("SHEET {} OF {}", index + 1, pages.len());
+        cv.text_right(w_in * 72.0 - m, m * 0.4, 8.0, BLACK, &text);
+    }
     if index == 0 && layout.sheet_index {
         draw_sheet_index(cv, layout, &ctx);
     }
@@ -1013,6 +1564,11 @@ pub fn render_pdf(layout: &Layout, cx: &LayoutRenderContext) -> Vec<u8> {
         if let Some(bg) = bg {
             doc.fill_page(bg);
         }
+        doc.add_bookmark(&format!(
+            "{} {}",
+            pages[index].sheet_number(),
+            pages[index].title
+        ));
         let mut cv = Canvas::new();
         draw_page(&mut cv, layout, &pages, index, cx, &scenes);
         emit(&mut doc, &cv.prims);
@@ -1098,5 +1654,42 @@ mod region_tests {
                 ("FRONT ELEVATION", true, (2.0, -3.0))
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod room_name_tests {
+    use super::*;
+    use plan_core::{detect_rooms, RoomName, WallKind};
+
+    #[test]
+    fn an_island_keeps_its_own_name() {
+        let mut p = Project::new("island");
+        let ring = |p: &mut Project, x0: f64, y0: f64, x1: f64, y1: f64, kind| {
+            let c = [
+                Point::new(x0, y0),
+                Point::new(x1, y0),
+                Point::new(x1, y1),
+                Point::new(x0, y1),
+            ];
+            for i in 0..4 {
+                p.add_wall(0, c[i], c[(i + 1) % 4], 4.5, 96.0, kind);
+            }
+        };
+        ring(&mut p, 0.0, 0.0, 480.0, 360.0, WallKind::Exterior);
+        ring(&mut p, 200.0, 150.0, 280.0, 210.0, WallKind::Interior);
+        p.floors[0]
+            .room_names
+            .push(RoomName::new(Point::new(240.0, 180.0), "Pantry", "Pantry"));
+        p.floors[0].room_names.push(RoomName::new(
+            Point::new(60.0, 60.0),
+            "Great Room",
+            "Family",
+        ));
+        let f = &p.floors[0];
+        let rooms = detect_rooms(&f.walls, 0.5);
+        let mut names: Vec<String> = rooms.iter().map(|r| room_name(f, r)).collect();
+        names.sort();
+        assert_eq!(names, ["Great Room", "Pantry"]);
     }
 }

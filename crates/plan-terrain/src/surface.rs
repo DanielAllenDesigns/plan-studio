@@ -7,7 +7,8 @@ use plan_core::Point;
 
 use crate::delaunay::triangulate;
 use crate::elevation::{break_step, ElevationModel, FEATHER};
-use crate::geom::{bounds, dedup_points, densify, dist_to_boundary, offset_polygon};
+use crate::geom::{bounds, dedup_points, densify, dist_to_boundary, offset_polygon, strip_edges};
+use crate::grading::ring_step;
 use crate::model::{Feature, FeatureKind, HeightGrid, ModifierKind, Terrain, TerrainSurface};
 use crate::query::elevation_at;
 
@@ -66,6 +67,33 @@ fn sanitize_spacing(requested: f64, width: f64, height: f64) -> f64 {
     s
 }
 
+/// The steps of Build Terrain, for a progress display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStage {
+    /// Sampling the elevation data, the pads and the walls.
+    Sampling,
+    /// Delaunay triangulation.
+    Triangulating,
+    /// Clipping to the perimeter, holes and walls.
+    Clipping,
+    /// Smoothing the surface.
+    Smoothing,
+    /// The surface is ready.
+    Done,
+}
+
+impl BuildStage {
+    pub fn label(self) -> &'static str {
+        match self {
+            BuildStage::Sampling => "Sampling elevation data",
+            BuildStage::Triangulating => "Triangulating",
+            BuildStage::Clipping => "Clipping to the perimeter",
+            BuildStage::Smoothing => "Smoothing",
+            BuildStage::Done => "Done",
+        }
+    }
+}
+
 /// Chief's Build Terrain: a triangulated surface clipped to the perimeter.
 ///
 /// 1. Sample a regular grid over the perimeter bounding box (coarsened to at most
@@ -82,14 +110,31 @@ fn sanitize_spacing(requested: f64, width: f64, height: f64) -> f64 {
 /// Break lines are sampled finely along their length at their own elevation, so the
 /// surface holds that elevation along the line and smoothing leaves the crease sharp.
 ///
+/// Features with `pad` set and the building pad are graded: the terrain under
+/// them is levelled and their sides slope back to the existing ground (see the
+/// `grading` module). Terrain walls and curbs cut the surface: the strip under
+/// a wall is left out, the surface either side takes its own grade and
+/// contours stop at the wall.
+///
 /// An invalid perimeter (fewer than three distinct points or zero area) gives an empty surface.
 pub fn build_terrain(t: &Terrain) -> TerrainSurface {
+    build_terrain_with_progress(t, &mut |_, _| {})
+}
+
+/// [`build_terrain`] reporting its progress: `progress(stage, fraction)` is
+/// called as each step starts (`fraction` runs from 0 to 1).
+pub fn build_terrain_with_progress(
+    t: &Terrain,
+    progress: &mut dyn FnMut(BuildStage, f32),
+) -> TerrainSurface {
+    progress(BuildStage::Sampling, 0.0);
     let perimeter = dedup_points(&t.perimeter, true);
     if perimeter.len() < 3 || polygon_area(&perimeter).abs() < 1e-6 {
         return TerrainSurface::default();
     }
     let (lo, hi) = bounds(&perimeter).expect("perimeter is non-empty");
-    let spacing = sanitize_spacing(t.grid_spacing, hi.x - lo.x, hi.y - lo.y);
+    let requested = t.grid_spacing / f64::from(t.subdivision.max(1));
+    let spacing = sanitize_spacing(requested, hi.x - lo.x, hi.y - lo.y);
     let model = ElevationModel::new(t, spacing);
 
     let nx = ((hi.x - lo.x) / spacing - 1e-9).ceil().max(0.0) as usize + 1;
@@ -107,8 +152,10 @@ pub fn build_terrain(t: &Terrain) -> TerrainSurface {
         }
     }
 
-    let samples = collect_samples(t, &perimeter, &grid);
+    let samples = collect_samples(t, &perimeter, &grid, &model);
+    progress(BuildStage::Triangulating, 0.35);
     let triangles = triangulate(&samples);
+    progress(BuildStage::Clipping, 0.7);
 
     let holes: Vec<&[Point]> = t
         .features
@@ -126,6 +173,7 @@ pub fn build_terrain(t: &Terrain) -> TerrainSurface {
             let centroid = a.add(b).add(c).scale(1.0 / 3.0);
             point_in_polygon(centroid, &perimeter)
                 && !holes.iter().any(|h| point_in_polygon(centroid, h))
+                && !model.cuts().iter().any(|w| w.contains(centroid))
         })
         .collect();
 
@@ -143,7 +191,8 @@ pub fn build_terrain(t: &Terrain) -> TerrainSurface {
         }));
     }
 
-    // Vertices on a break line stay put so the crease survives smoothing.
+    // Vertices on a break line, along a wall or under a pad stay put so the
+    // crease, the cut and the flat pad survive smoothing.
     let on_break: Vec<bool> = vertices
         .iter()
         .map(|v| {
@@ -152,9 +201,17 @@ pub fn build_terrain(t: &Terrain) -> TerrainSurface {
                 b.points
                     .windows(2)
                     .any(|w| dist_to_segment(p, w[0], w[1]) <= MERGE_TOLERANCE)
-            })
+            }) || model
+                .cuts()
+                .iter()
+                .any(|w| (w.distance(p) - w.half).abs() <= MERGE_TOLERANCE)
+                || model.pads().iter().any(|pad| {
+                    point_in_polygon(p, &pad.polygon)
+                        || dist_to_boundary(p, &pad.polygon) <= MERGE_TOLERANCE
+                })
         })
         .collect();
+    progress(BuildStage::Smoothing, 0.9);
     smooth(&mut vertices, &tris, t.smoothing, &on_break);
     let mut surface = TerrainSurface::new(vertices, tris, grid);
     if t.smoothing > 0 {
@@ -169,11 +226,17 @@ pub fn build_terrain(t: &Terrain) -> TerrainSurface {
         }
         surface.grid = grid;
     }
+    progress(BuildStage::Done, 1.0);
     surface
 }
 
 /// Every plan point the triangulation is built from, perimeter first.
-fn collect_samples(t: &Terrain, perimeter: &[Point], grid: &HeightGrid) -> Vec<Point> {
+fn collect_samples(
+    t: &Terrain,
+    perimeter: &[Point],
+    grid: &HeightGrid,
+    model: &ElevationModel,
+) -> Vec<Point> {
     let spacing = grid.spacing;
     let half = spacing / 2.0;
     let mut set = PointSet::default();
@@ -216,6 +279,34 @@ fn collect_samples(t: &Terrain, perimeter: &[Point], grid: &HeightGrid) -> Vec<P
     for brk in &t.breaks {
         add_if_on_lot(&mut set, densify(&brk.points, break_step(spacing), false));
     }
+    // Pads: the outline and rings out to where the sides meet the ground.
+    let step = ring_step(spacing);
+    for pad in model.pads() {
+        add_if_on_lot(&mut set, densify(&pad.polygon, half.min(step), true));
+        for d in pad.ring_offsets() {
+            add_if_on_lot(
+                &mut set,
+                densify(&offset_polygon(&pad.polygon, d), half.min(step), true),
+            );
+        }
+    }
+    // Walls: both edges of the strip densely enough that the strip is a
+    // conforming gap, then lines across the graded cut side.
+    for cut in model.cuts() {
+        let edges = strip_edges(&cut.points, cut.half);
+        let edge_step = (cut.half * 1.8).clamp(2.0, 24.0);
+        add_if_on_lot(&mut set, densify(&edges.left, edge_step, false));
+        add_if_on_lot(&mut set, densify(&edges.right, edge_step, false));
+        if cut.retain != 0.0 {
+            for k in 1..=4 {
+                let offset = cut.half + cut.reach * f64::from(k) / 4.0;
+                add_if_on_lot(
+                    &mut set,
+                    densify(&strip_edges(&cut.points, offset).right, half, false),
+                );
+            }
+        }
+    }
     for j in 0..grid.ny {
         for i in 0..grid.nx {
             let p = grid.node(i, j);
@@ -224,6 +315,9 @@ fn collect_samples(t: &Terrain, perimeter: &[Point], grid: &HeightGrid) -> Vec<P
             }
         }
     }
+    // Nothing is sampled under a wall.
+    set.pts
+        .retain(|&p| !model.cuts().iter().any(|w| w.contains(p)));
     set.pts
 }
 

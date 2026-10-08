@@ -240,9 +240,15 @@ pub(crate) fn frame_for(
                 None => pad(Point::ZERO, Point::new(12.0, 12.0), 0.0),
             }
         }
-        BoxSource::Image { .. } => Frame::Paper {
-            w_in: IMAGE_SIZE_IN.0,
-            h_in: IMAGE_SIZE_IN.1,
+        BoxSource::Image { path } => match cx.picture_for(path) {
+            Some(img) if img.width > 0 && img.height > 0 => Frame::Paper {
+                w_in: IMAGE_SIZE_IN.0,
+                h_in: (IMAGE_SIZE_IN.0 * f64::from(img.height) / f64::from(img.width)).min(6.0),
+            },
+            _ => Frame::Paper {
+                w_in: IMAGE_SIZE_IN.0,
+                h_in: IMAGE_SIZE_IN.1,
+            },
         },
         // 4" wide at the image's aspect ratio (at most 6" tall).
         BoxSource::ImageData { width, height, .. } => {
@@ -259,10 +265,31 @@ pub(crate) fn frame_for(
                 }
             }
         }
-        BoxSource::Text { text, height_pt } => {
+        BoxSource::Text {
+            text, height_pt, ..
+        } => {
             let (w_in, h_in) = text_size_in(text, *height_pt);
             Frame::Paper { w_in, h_in }
         }
+        BoxSource::Materials { floor, category } => {
+            let m = table_metrics(&cx.materials_table(*floor, category.as_deref()));
+            Frame::Paper {
+                w_in: m.width / 72.0,
+                h_in: m.height / 72.0,
+            }
+        }
+        BoxSource::SheetIndex => {
+            let m = table_metrics(&cx.sheet_index_table());
+            Frame::Paper {
+                w_in: (m.width / 72.0).max(3.0),
+                h_in: m.height / 72.0,
+            }
+        }
+        // A 6" x 4.5" image of the 4:3 render.
+        BoxSource::Perspective { .. } => Frame::Paper {
+            w_in: 6.0,
+            h_in: 4.5,
+        },
     }
 }
 

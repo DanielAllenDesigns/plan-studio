@@ -51,11 +51,11 @@ fn a_door_click_centers_the_opening_with_the_default_door_size() {
     let defaults = sim.app.cx.defaults.exterior_door.clone();
     assert_eq!((d.width, d.height), (defaults.width, defaults.height));
     assert_eq!((d.width, d.height, d.sill_height), (36.0, 96.0, 0.0));
-    // The new door is hosted by the wall (the wall stays selected) and keeps
-    // its dialog extras for this session.
+    // DW-77: the new door is selected (not its wall) so its Edit toolbar
+    // shows, and it keeps its dialog extras for this session.
     assert_eq!(
         sim.app.cx.selection.single(),
-        Some(ObjectRef::Wall(wall.id))
+        Some(ObjectRef::Opening(d.id))
     );
     assert!(sim.app.cx.extras.openings.contains_key(&d.id));
     // The tool stays active for more openings (DW-1).

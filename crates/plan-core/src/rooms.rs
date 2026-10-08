@@ -12,7 +12,7 @@ use crate::geometry::{
     dist_to_segment, point_in_polygon, polygon_area, polygon_centroid, project_on_segment,
     segment_intersection, BoxGrid, Point,
 };
-use crate::model::{Project, Wall, WallKind};
+use crate::model::{Project, RoomName, Wall, WallKind};
 use crate::units::sq_in_to_sq_ft;
 use std::collections::{HashMap, HashSet};
 
@@ -39,6 +39,15 @@ pub struct Room {
     pub interior_area_sq_in: f64,
     /// Standard Area, square inches (R-49).
     pub standard_area_sq_in: f64,
+    /// Nested rooms (R-11): the centerline polygons of free-standing loops
+    /// wholly inside this room (a closet pod, a chimney box). The areas above
+    /// already exclude them and the floor and ceiling platforms have a hole
+    /// under each.
+    pub holes: Vec<Vec<Point>>,
+    /// Area inside the outer surfaces of this room's walls, square inches:
+    /// what this room takes out of an enclosing room's interior area when it
+    /// is nested in one.
+    pub outer_area_sq_in: f64,
 }
 
 impl Room {
@@ -62,6 +71,103 @@ impl Room {
     pub fn standard_area_sq_ft(&self) -> f64 {
         sq_in_to_sq_ft(self.standard_area_sq_in)
     }
+    /// Is `p` in the room proper: inside its polygon and not inside one of
+    /// its nested rooms (R-11)?
+    pub fn contains(&self, p: Point) -> bool {
+        point_in_polygon(p, &self.polygon) && !self.holes.iter().any(|h| point_in_polygon(p, h))
+    }
+    /// The first name entry anchored in this room proper (an anchor inside a
+    /// nested room belongs to that room, not to this one).
+    pub fn name_entry<'a>(&self, names: &'a [RoomName]) -> Option<&'a RoomName> {
+        names.iter().find(|n| self.contains(n.anchor))
+    }
+}
+
+/// How far a Garage floor sits below the house floor by default, inches
+/// (R-40, R-26).
+pub const GARAGE_FLOOR_DROP: f64 = 24.0;
+/// Thickness of the concrete slab under a garage or porch, inches.
+pub const SLAB_FLOOR_THICKNESS: f64 = 4.0;
+
+/// What a room function (or a few named room types) sets on a room's
+/// platforms (R-40, R-41): the defaults of the Structure switches and the
+/// floor height offset, which stay editable per room.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDefaults {
+    /// A floor platform under the room (off for Open Below, Attic, Courtyard).
+    pub has_floor: bool,
+    /// A ceiling platform over the room (off for Deck and Porch).
+    pub has_ceiling: bool,
+    /// Floor height offset from the floor datum, inches (a Garage drops it).
+    pub floor_height_offset: f64,
+    /// Floor finish thickness, inches; `None` keeps the floor's default.
+    pub floor_finish_thickness: Option<f64>,
+    /// Floor Structure layers; empty keeps the floor's default platform.
+    pub floor_structure: Vec<crate::extras::StructureLayer>,
+}
+
+impl Default for FunctionDefaults {
+    fn default() -> Self {
+        Self {
+            has_floor: true,
+            has_ceiling: true,
+            floor_height_offset: 0.0,
+            floor_finish_thickness: None,
+            floor_structure: Vec::new(),
+        }
+    }
+}
+
+/// The platform defaults of a room with function `function` (a room type's
+/// function: Standard, Utility, Garage, Deck, Porch, Open Below) and room
+/// type `type_name` (an Attic or Courtyard has no floor platform whatever its
+/// function).
+pub fn function_defaults(function: &str, type_name: &str) -> FunctionDefaults {
+    use crate::extras::StructureLayer as L;
+    let mut d = FunctionDefaults::default();
+    match function {
+        "Garage" => {
+            d.floor_height_offset = -GARAGE_FLOOR_DROP;
+            d.floor_finish_thickness = Some(0.0);
+            d.floor_structure = vec![L::new("Concrete", SLAB_FLOOR_THICKNESS)];
+        }
+        "Deck" => {
+            d.has_ceiling = false;
+            d.floor_finish_thickness = Some(0.0);
+            d.floor_structure = vec![L::new("Decking", 1.5), L::new("Joist", 7.25)];
+        }
+        "Porch" => {
+            d.has_ceiling = false;
+            d.floor_finish_thickness = Some(0.0);
+            d.floor_structure = vec![L::new("Concrete", SLAB_FLOOR_THICKNESS)];
+        }
+        "Open Below" => d.has_floor = false,
+        // A roof platform: a membrane deck with no ceiling under it.
+        "Flat Roof" => {
+            d.has_ceiling = false;
+            d.floor_finish_thickness = Some(0.0);
+            d.floor_structure = vec![L::new("Membrane", 0.5), L::new("Joist", 7.25)];
+        }
+        _ => {}
+    }
+    if matches!(type_name, "Attic" | "Courtyard") {
+        d.has_floor = false;
+    }
+    d
+}
+
+/// Give `name` the platform defaults `d` (R-41): the Structure switches, the
+/// floor height offset, the Floor Structure and the floor finish
+/// (`default_finish` when the function sets none). Run when a room's type
+/// changes; every value stays editable afterwards.
+pub fn apply_function_defaults(name: &mut RoomName, d: &FunctionDefaults, default_finish: f64) {
+    name.has_floor = d.has_floor;
+    name.has_ceiling = d.has_ceiling;
+    name.floor_height_offset = d.floor_height_offset;
+    let mut misc = name.misc.take().unwrap_or_default();
+    misc.floor_structure = d.floor_structure.clone();
+    misc.floor_finish_thickness = d.floor_finish_thickness.unwrap_or(default_finish);
+    name.misc = Some(misc);
 }
 
 /// Ignore faces smaller than this (slivers from near-coincident walls). 1 sq ft.
@@ -96,7 +202,64 @@ fn detect_rooms_with(walls: &[Wall], tol: f64, indexed: bool) -> Vec<Room> {
     for r in rooms.iter_mut() {
         fill_surface_areas(r, &defining, &near, tol);
     }
+    nest_rooms(&mut rooms);
     rooms
+}
+
+/// Nested rooms (R-11): a room whose polygon lies wholly inside another
+/// room's becomes a hole of the smallest such room, and that room's areas
+/// give up what the island covers. Rooms that share wall edges (neighbours)
+/// are never nested: every vertex of an island must lie strictly inside the
+/// enclosing polygon.
+fn nest_rooms(rooms: &mut [Room]) {
+    let n = rooms.len();
+    if n < 2 {
+        return;
+    }
+    let bounds: Vec<(Point, Point)> = rooms
+        .iter()
+        .map(|r| crate::foundation::bounds(&r.polygon))
+        .collect();
+    // Index of the smallest enclosing room of each room.
+    let mut parent: Vec<Option<usize>> = vec![None; n];
+    for j in 0..n {
+        let mut best: Option<usize> = None;
+        for i in 0..n {
+            if i == j || rooms[i].area_sq_in <= rooms[j].area_sq_in {
+                continue;
+            }
+            let (ilo, ihi) = bounds[i];
+            let (jlo, jhi) = bounds[j];
+            if jlo.x < ilo.x || jlo.y < ilo.y || jhi.x > ihi.x || jhi.y > ihi.y {
+                continue;
+            }
+            let inside = rooms[j].polygon.iter().all(|&p| {
+                point_in_polygon(p, &rooms[i].polygon) && !on_boundary(p, &rooms[i].polygon)
+            });
+            if inside && best.is_none_or(|b| rooms[i].area_sq_in < rooms[b].area_sq_in) {
+                best = Some(i);
+            }
+        }
+        parent[j] = best;
+    }
+    for j in 0..n {
+        let Some(i) = parent[j] else { continue };
+        let hole = rooms[j].polygon.clone();
+        let (area, outer) = (
+            rooms[j].area_sq_in,
+            rooms[j].outer_area_sq_in.max(rooms[j].area_sq_in),
+        );
+        let r = &mut rooms[i];
+        r.holes.push(hole);
+        r.area_sq_in = (r.area_sq_in - area).max(0.0);
+        r.interior_area_sq_in = (r.interior_area_sq_in - outer).max(0.0);
+        r.standard_area_sq_in = (r.standard_area_sq_in - area).max(0.0);
+    }
+}
+
+/// Is `p` on the outline of `poly` (within a hair)?
+fn on_boundary(p: Point, poly: &[Point]) -> bool {
+    (0..poly.len()).any(|i| dist_to_segment(p, poly[i], poly[(i + 1) % poly.len()]) < 1e-6)
 }
 
 /// Replace curved walls by their faceted chords (same id and properties).
@@ -261,6 +424,10 @@ fn fill_surface_areas(room: &mut Room, walls: &[Wall], near: &WallsNear, tol: f6
     room.inner_polygon =
         offset_polygon(&room.polygon, &inner_d).unwrap_or_else(|| room.polygon.clone());
     room.interior_area_sq_in = polygon_area(&room.inner_polygon);
+    let outer_d: Vec<f64> = inner_d.iter().map(|d| -d).collect();
+    room.outer_area_sq_in = offset_polygon(&room.polygon, &outer_d)
+        .map(|p| polygon_area(&p))
+        .unwrap_or(room.area_sq_in);
     room.standard_area_sq_in = offset_polygon(&room.polygon, &std_d)
         .map(|p| polygon_area(&p))
         .unwrap_or(room.area_sq_in);
@@ -282,10 +449,7 @@ impl Project {
         let total: f64 = rooms
             .iter()
             .filter(|r| {
-                let Some(n) = names
-                    .iter()
-                    .find(|n| point_in_polygon(n.anchor, &r.polygon))
-                else {
+                let Some(n) = r.name_entry(names) else {
                     return true;
                 };
                 n.include_in_living_area.unwrap_or_else(|| {
@@ -536,6 +700,97 @@ mod tests {
             wall_t(3, 240.0, 120.0, 0.0, 120.0, t, k),
             wall_t(4, 0.0, 120.0, 0.0, 0.0, t, k),
         ]
+    }
+
+    /// A 20' x 10' room with a free-standing 4' x 3' closet loop inside it.
+    fn room_with_closet(t: f64) -> Vec<Wall> {
+        let k = WallKind::Interior;
+        let mut walls = box_walls(t);
+        walls.extend([
+            wall_t(5, 60.0, 40.0, 108.0, 40.0, t, k),
+            wall_t(6, 108.0, 40.0, 108.0, 76.0, t, k),
+            wall_t(7, 108.0, 76.0, 60.0, 76.0, t, k),
+            wall_t(8, 60.0, 76.0, 60.0, 40.0, t, k),
+        ]);
+        walls
+    }
+
+    #[test]
+    fn a_closet_loop_inside_a_room_is_nested() {
+        let rooms = detect_rooms(&room_with_closet(4.5), 0.5);
+        assert_eq!(rooms.len(), 2, "outer room and closet");
+        let (outer, closet) = if rooms[0].holes.is_empty() {
+            (&rooms[1], &rooms[0])
+        } else {
+            (&rooms[0], &rooms[1])
+        };
+        assert_eq!(outer.holes.len(), 1);
+        assert!(closet.holes.is_empty());
+        let island = 48.0 * 36.0;
+        assert!((outer.area_sq_in - (240.0 * 120.0 - island)).abs() < 1e-6);
+        assert!((closet.area_sq_in - island).abs() < 1e-6);
+        // The interior area gives up the closet's outside surfaces, not just
+        // its centerline area.
+        let outside = (48.0 + 4.5) * (36.0 + 4.5);
+        let box_inner = (240.0 - 4.5) * (120.0 - 4.5);
+        assert!((outer.interior_area_sq_in - (box_inner - outside)).abs() < 1e-6);
+        // Points in the closet are in the closet, not the room around it.
+        let inside = Point::new(80.0, 58.0);
+        assert!(closet.contains(inside) && !outer.contains(inside));
+        assert!(outer.contains(Point::new(30.0, 30.0)));
+        // A name anchored in the closet belongs to the closet.
+        let names = vec![RoomName::new(inside, "Closet", "Closet")];
+        assert!(closet.name_entry(&names).is_some());
+        assert!(outer.name_entry(&names).is_none());
+    }
+
+    #[test]
+    fn neighbouring_rooms_are_not_nested() {
+        let mut walls = box_walls(4.5);
+        walls.push(wall(5, 120.0, 0.0, 120.0, 120.0));
+        let rooms = detect_rooms(&walls, 0.5);
+        assert_eq!(rooms.len(), 2);
+        assert!(rooms.iter().all(|r| r.holes.is_empty()));
+        assert!((rooms.iter().map(|r| r.area_sq_in).sum::<f64>() - 240.0 * 120.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn function_defaults_follow_chief() {
+        let g = function_defaults("Garage", "Garage");
+        assert_eq!(g.floor_height_offset, -GARAGE_FLOOR_DROP);
+        assert_eq!(g.floor_finish_thickness, Some(0.0));
+        assert!(g.has_floor && g.has_ceiling);
+        for f in ["Deck", "Porch"] {
+            let d = function_defaults(f, f);
+            assert!(d.has_floor && !d.has_ceiling, "{f}");
+            assert!(!d.floor_structure.is_empty());
+        }
+        assert!(!function_defaults("Open Below", "Open Below").has_floor);
+        let roof = function_defaults("Flat Roof", "Flat Roof");
+        assert!(
+            roof.has_floor && !roof.has_ceiling,
+            "a roof deck has no ceiling"
+        );
+        assert!(!roof.floor_structure.is_empty());
+        assert!(!function_defaults("Utility", "Attic").has_floor);
+        assert!(!function_defaults("Standard", "Courtyard").has_floor);
+        assert_eq!(
+            function_defaults("Standard", "Bath"),
+            FunctionDefaults::default()
+        );
+        let mut name = RoomName::new(Point::ZERO, "Garage", "Garage");
+        apply_function_defaults(&mut name, &g, 0.75);
+        assert_eq!(name.floor_height_offset, -24.0);
+        let misc = name.misc.clone().unwrap();
+        assert_eq!(misc.floor_finish_thickness, 0.0);
+        assert_eq!(
+            crate::extras::structure_thickness(&misc.floor_structure),
+            4.0
+        );
+        // Back to a plain room: the floor's own finish returns.
+        apply_function_defaults(&mut name, &FunctionDefaults::default(), 0.75);
+        assert_eq!(name.floor_height_offset, 0.0);
+        assert_eq!(name.misc.unwrap().floor_finish_thickness, 0.75);
     }
 
     #[test]

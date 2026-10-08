@@ -308,12 +308,14 @@ fn roads_are_draped_half_an_inch_above_a_raised_lot() {
         centerline: vec![pt(100.0, 480.0), pt(1100.0, 480.0)],
         width: 120.0,
         curb: false,
+        ..RoadStrip::default()
     });
     t.roads.push(RoadStrip {
         kind: RoadKind::Sidewalk,
         centerline: vec![pt(100.0, 800.0), pt(600.0, 800.0), pt(600.0, 900.0)],
         width: 48.0,
         curb: true,
+        ..RoadStrip::default()
     });
     let s = build_terrain(&t);
     let meshes = road_meshes(&t, &s);
@@ -329,11 +331,15 @@ fn roads_are_draped_half_an_inch_above_a_raised_lot() {
 #[test]
 fn plan_symbols_draw_perimeter_contours_labels_and_road_edges() {
     let mut t = hill_terrain(0);
+    // One label per line at its middle (spacing 0) on every contour.
+    t.contour_label_spacing = 0.0;
+    t.contour_label_major_only = false;
     t.roads.push(RoadStrip {
         kind: RoadKind::Road,
         centerline: vec![pt(0.0, 100.0), pt(1200.0, 100.0)],
         width: 240.0,
         curb: true,
+        ..RoadStrip::default()
     });
     let cs = contours(&build_terrain(&t), 12.0);
     let strokes = plan_symbols(&t, &cs);

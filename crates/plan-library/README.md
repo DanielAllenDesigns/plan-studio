@@ -192,3 +192,11 @@ the top-level categories. Every node carries `count` (items in its subtree),
 | `src/catalog_lighting_electrical.rs` | `catalog_lighting_electrical::catalog()` |
 | `src/catalog_furniture_exterior.rs` | `catalog_furniture_exterior::catalog()` |
 | `tests/catalogs.rs` | checks for the four extended catalogs and `with_all_core()` |
+
+## User catalog support
+
+* `manage`: folders (category paths under `User`), favorites and recents (`UserMeta`), rename, duplicate, move and delete.
+* `browse`: `Filter` (query, type, catalog, style or manufacturer, size range, favorites, category) and `SortKey`.
+* `model`: `Model3d` (indexed triangles, `.psm` file format) and the `preview` software rasterizer.
+* `archive`: the user-library export (a stored zip with a `.calibz` extension). Chief cannot read it.
+* `rules`: `placement_rules` (what an item snaps to, auto-rotate) and `default_layer`.

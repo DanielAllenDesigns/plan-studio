@@ -13,7 +13,7 @@ use plan_core::cad::CadItem;
 use plan_core::details::{DetailRef, DetailsLayer};
 use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::Point;
-use plan_core::OpeningKind;
+use plan_core::{OpeningKind, OpeningStyle};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HandleKind {
@@ -30,6 +30,10 @@ pub enum HandleKind {
     /// Chief's signature wall move: perpendicular to the wall only. Also the
     /// line-offset handle of a dimension and the slide handle of an opening.
     PerpendicularMove,
+    /// The apex of a curved wall: dragging it sets the bulge (W-67).
+    Bulge,
+    /// The label of a door or window: dragging it moves the label (DW-63).
+    Label,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -61,7 +65,7 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 return Vec::new();
             };
             let resize = resize_cursor(w.end.sub(w.start));
-            vec![
+            let mut out = vec![
                 h(HandleKind::ResizeStart, w.start, resize),
                 h(HandleKind::ResizeEnd, w.end, resize),
                 h(
@@ -69,7 +73,16 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                     Point::lerp(w.start, w.end, 0.5),
                     CursorIcon::Move,
                 ),
-            ]
+            ];
+            // A curved wall has a bulge handle at the apex of its arc.
+            if let Some(c) = w.curve.filter(|c| !c.is_straight()) {
+                out.push(h(
+                    HandleKind::Bulge,
+                    Point::lerp(w.start, w.end, 0.5) + w.normal() * c.bulge,
+                    CursorIcon::Grab,
+                ));
+            }
+            out
         }
         ObjectRef::Opening(id) => {
             let Some(o) = floor.openings.iter().find(|o| o.id == id) else {
@@ -83,23 +96,58 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 w.point_at(o.center_offset),
                 resize_cursor(w.end.sub(w.start)),
             )];
-            if o.kind == OpeningKind::Door {
-                let hinge = if o.hinge_at_end {
-                    w.point_at(o.end_offset())
-                } else {
-                    w.point_at(o.start_offset())
-                };
-
+            // Resize handles at the jambs (DW-26): the opposite jamb stays.
+            // A mulled window only has them at the ends of its unit.
+            let (unit_lo, unit_hi) = cx
+                .project
+                .unit_span(cx.floor, id)
+                .unwrap_or((o.start_offset(), o.end_offset()));
+            let resize = resize_cursor(w.end.sub(w.start));
+            if o.start_offset() <= unit_lo + 1e-9 {
+                out.push(h(HandleKind::ResizeStart, w.point_at(o.start_offset()), resize));
+            }
+            if o.end_offset() >= unit_hi - 1e-9 {
+                out.push(h(HandleKind::ResizeEnd, w.point_at(o.end_offset()), resize));
+            }
+            // The swing handle sits at the free end of the leaf: click flips
+            // the side, Shift-click moves the hinge (DW-33). Flavors without a
+            // leaf end keep it beside the wall on their swing side.
+            let leaf_style = matches!(
+                o.style,
+                OpeningStyle::Hinged
+                    | OpeningStyle::Shower
+                    | OpeningStyle::DoubleDoor
+                    | OpeningStyle::Casement
+            );
+            if o.kind == OpeningKind::Door || o.style == OpeningStyle::Casement {
                 let side = if o.swing_flipped {
                     w.normal() * -1.0
                 } else {
                     w.normal()
                 };
-                out.push(h(
-                    HandleKind::Swing,
-                    hinge + side * o.width,
-                    CursorIcon::PointingHand,
-                ));
+                let pos = if leaf_style {
+                    let hinge = w.point_at(if o.hinge_at_end {
+                        o.end_offset()
+                    } else {
+                        o.start_offset()
+                    });
+                    let reach = if o.style == OpeningStyle::DoubleDoor {
+                        o.width * 0.5
+                    } else {
+                        o.width
+                    };
+                    hinge + side * reach
+                } else {
+                    w.point_at(o.center_offset) + side * (w.thickness * 0.5 + 6.0 / scale.max(1e-6))
+                };
+                out.push(h(HandleKind::Swing, pos, CursorIcon::PointingHand));
+            }
+            // The label handle sits on the label while it is shown (DW-63).
+            if let Some(l) = super::opening_view::opening_labels(cx)
+                .into_iter()
+                .find(|l| l.opening == id)
+            {
+                out.push(h(HandleKind::Label, l.at, CursorIcon::Grab));
             }
             out
         }
@@ -316,6 +364,20 @@ pub fn draw(handles: &[Handle], painter: &egui::Painter, cam: &Camera, pal: &Pal
             HandleKind::Swing => {
                 painter.circle_filled(c, 4.5, pal.selection);
             }
+            HandleKind::Bulge => {
+                painter.circle_filled(c, 5.5, pal.selection);
+                painter.circle_stroke(c, 5.5, Stroke::new(1.0_f32, pal.background));
+            }
+            HandleKind::Label => {
+                let r = Rect::from_center_size(c, Vec2::splat(8.0));
+                painter.add(Shape::rect_stroke(
+                    r,
+                    2.0,
+                    Stroke::new(1.5_f32, pal.selection),
+                    egui::StrokeKind::Inside,
+                ));
+                painter.circle_filled(c, 1.8, pal.selection);
+            }
             HandleKind::Move | HandleKind::PerpendicularMove => {
                 let r = 6.0;
                 painter.add(Shape::convex_polygon(
@@ -407,5 +469,36 @@ mod tests {
         let mid = hit_handle(&hs, Point::new(51.0, 1.0), 5.0).unwrap();
         assert_eq!(mid.kind, HandleKind::PerpendicularMove);
         assert!(hit_handle(&hs, Point::new(30.0, 30.0), 5.0).is_none());
+    }
+
+    #[test]
+    fn a_curved_wall_has_a_bulge_handle_at_its_apex() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let w = cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(100.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Interior,
+        );
+        cx.selection.set(ObjectRef::Wall(w));
+        assert!(!handles_for(&cx, 2.0)
+            .iter()
+            .any(|h| h.kind == HandleKind::Bulge));
+        cx.project
+            .set_wall_curve(0, w, Some(plan_core::WallCurve { bulge: 20.0 }));
+        let hs = handles_for(&cx, 2.0);
+        let bulge = hs.iter().find(|h| h.kind == HandleKind::Bulge).unwrap();
+        assert_eq!(bulge.pos, Point::new(50.0, 20.0));
+        // Right of the chord for a negative bulge.
+        cx.project
+            .set_wall_curve(0, w, Some(plan_core::WallCurve { bulge: -20.0 }));
+        let hs = handles_for(&cx, 2.0);
+        let bulge = hs.iter().find(|h| h.kind == HandleKind::Bulge).unwrap();
+        assert_eq!(bulge.pos, Point::new(50.0, -20.0));
+        // Near the apex the bulge handle wins over the end handles.
+        let hit = hit_handle(&hs, Point::new(51.0, -19.0), 5.0).unwrap();
+        assert_eq!(hit.kind, HandleKind::Bulge);
     }
 }

@@ -318,3 +318,117 @@ fn report_lists_counts() {
     assert!(md.contains("Fix: "));
     assert!(report_markdown(&[]).contains("No findings"));
 }
+
+// ----- electrical and framing rules -----
+
+fn dev(kind: &str, x: f64, y: f64) -> serde_json::Value {
+    serde_json::json!({ "kind": kind, "position": { "x": x, "y": y } })
+}
+
+fn wire(p: &mut Project, devices: Vec<serde_json::Value>) {
+    p.floors[0].electrical = Some(serde_json::json!({ "devices": devices, "connections": [] }));
+}
+
+#[test]
+fn a_plan_without_devices_or_framing_gets_no_electrical_or_framing_findings() {
+    let mut p = Project::new("t");
+    rect(&mut p, 0.0, 0.0, 168.0, 144.0, WallKind::Exterior);
+    let f = run(&p, &["Bedroom"]);
+    assert!(!f.iter().any(|x| x.rule.starts_with("NEC") || x.rule.contains("R314")));
+    assert!(!f.iter().any(|x| x.rule.contains("R602.7") || x.rule.contains("R502")));
+}
+
+#[test]
+fn bedrooms_need_smoke_alarms_and_wet_rooms_gfci() {
+    let mut p = Project::new("t");
+    rect(&mut p, 0.0, 0.0, 168.0, 144.0, WallKind::Exterior);
+    // A plain receptacle in a kitchen and nothing else.
+    wire(&mut p, vec![dev("Outlet110", 3.0, 70.0)]);
+    let f = run(&p, &["Kitchen"]);
+    assert!(has(&f, "NEC 210.8", Severity::Warning));
+    // A GFCI receptacle is fine.
+    wire(&mut p, vec![dev("Gfci", 3.0, 70.0)]);
+    assert!(!has(&run(&p, &["Kitchen"]), "NEC 210.8", Severity::Warning));
+    // A bedroom without a smoke detector is flagged; with one it is not.
+    wire(&mut p, vec![dev("Outlet110", 3.0, 70.0)]);
+    assert!(has(&run(&p, &["Bedroom"]), "R314.3", Severity::Warning));
+    wire(&mut p, vec![dev("Outlet110", 3.0, 70.0), dev("SmokeDetector", 80.0, 70.0)]);
+    assert!(!has(&run(&p, &["Bedroom"]), "R314.3", Severity::Warning));
+}
+
+#[test]
+fn rooms_need_a_receptacle_for_every_twelve_feet_of_wall() {
+    let mut p = Project::new("t");
+    // 14' x 12' living room: 52' of wall needs 5 receptacles (one per 12', rounded up).
+    rect(&mut p, 0.0, 0.0, 168.0, 144.0, WallKind::Exterior);
+    wire(&mut p, vec![dev("Outlet110", 3.0, 70.0), dev("Outlet110", 165.0, 70.0)]);
+    let f = run(&p, &["Living Room"]);
+    let spacing = f.iter().find(|x| x.rule.contains("210.52")).expect("spacing finding");
+    assert!(spacing.message.contains("at least 5"), "{}", spacing.message);
+    wire(
+        &mut p,
+        vec![
+            dev("Outlet110", 3.0, 70.0),
+            dev("Outlet110", 165.0, 70.0),
+            dev("Outlet110", 80.0, 3.0),
+            dev("Outlet110", 80.0, 141.0),
+            dev("Outlet110", 120.0, 141.0),
+        ],
+    );
+    assert!(!run(&p, &["Living Room"]).iter().any(|x| x.rule.contains("210.52")));
+}
+
+fn header_json(wall: u64, x0: f64, len: f64, depth: f64) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Header",
+        "lumber": { "thickness": 1.5, "depth": depth },
+        "length": len,
+        "transform": { "origin": [x0, 90.0, 0.0], "axis_x": [1.0, 0.0, 0.0], "axis_y": [0.0, 1.0, 0.0] },
+        "wall_id": wall,
+        "label": "header"
+    })
+}
+
+#[test]
+fn headers_are_checked_against_the_table() {
+    let mut p = Project::new("t");
+    let ids = rect(&mut p, 0.0, 0.0, 240.0, 144.0, WallKind::Exterior);
+    // A 6' window centered 120" along the south wall (84..156).
+    let win = add(&mut p, ids[0], 120.0, 72.0, 48.0, 36.0, OpeningKind::Window);
+    p.floors[0].framing = vec![header_json(ids[0], 82.5, 75.0, 7.25)];
+    let f = run(&p, &["Living Room"]);
+    let h = f.iter().find(|x| x.rule.contains("R602.7")).expect("header finding");
+    assert_eq!(h.severity, Severity::Warning);
+    assert_eq!(h.object, Some(Target::Opening(win)));
+    assert!(h.message.contains("2x8") && h.message.contains("2x10"), "{}", h.message);
+    // A 2x10 header satisfies the table.
+    p.floors[0].framing = vec![header_json(ids[0], 82.5, 75.0, 9.25)];
+    assert!(!run(&p, &["Living Room"]).iter().any(|x| x.rule.contains("R602.7")));
+    // A header over some other opening does not count.
+    p.floors[0].framing = vec![header_json(ids[0], 10.0, 40.0, 11.25)];
+    assert!(!run(&p, &["Living Room"]).iter().any(|x| x.rule.contains("R602.7")));
+}
+
+#[test]
+fn long_joists_are_flagged_by_size() {
+    let mut p = Project::new("t");
+    rect(&mut p, 0.0, 0.0, 240.0, 144.0, WallKind::Exterior);
+    let joist = |depth: f64, len: f64| {
+        serde_json::json!({
+            "kind": "Joist",
+            "lumber": { "thickness": 1.5, "depth": depth },
+            "length": len,
+            "transform": { "origin": [0.0, -5.0, 0.0], "axis_x": [0.0, 0.0, -1.0], "axis_y": [0.0, 1.0, 0.0] },
+            "wall_id": null,
+            "label": "joist"
+        })
+    };
+    // 2x8 joists up to 12'-10" are fine; a 14' one is not. 2x10 at 14' is fine.
+    p.floors[0].framing = vec![joist(7.25, 150.0), joist(9.25, 168.0)];
+    assert!(!run(&p, &["Living Room"]).iter().any(|x| x.rule.contains("R502.3")));
+    p.floors[0].framing = vec![joist(7.25, 168.0), joist(7.25, 160.0), joist(9.25, 168.0)];
+    let f = run(&p, &["Living Room"]);
+    let j = f.iter().find(|x| x.rule.contains("R502.3")).expect("span finding");
+    assert!(j.message.contains("2 2x8 joists"), "{}", j.message);
+    assert_eq!(f.iter().filter(|x| x.rule.contains("R502.3")).count(), 1);
+}

@@ -329,6 +329,29 @@ pub fn register_user_item(item: CatalogItem) -> Result<Arc<CatalogItem>, String>
     Ok(arc)
 }
 
+/// Replaces the whole user library with `items` and saves the file once
+/// (the User Catalog's folder operations and imports use this).
+pub fn set_user_items(items: Vec<CatalogItem>) -> Result<(), String> {
+    ensure_user_loaded();
+    USER_ITEMS.with(|u| *u.borrow_mut() = items.into_iter().map(Arc::new).collect());
+    save_user_library()
+}
+
+/// Removes the item with this id and saves; false when there was none.
+pub fn remove_user_item(id: &str) -> Result<bool, String> {
+    ensure_user_loaded();
+    let removed = USER_ITEMS.with(|u| {
+        let mut u = u.borrow_mut();
+        let n = u.len();
+        u.retain(|i| i.id != id);
+        u.len() != n
+    });
+    if removed {
+        save_user_library()?;
+    }
+    Ok(removed)
+}
+
 fn save_user_library() -> Result<(), String> {
     let Some(path) = user_library_path() else {
         return Ok(());

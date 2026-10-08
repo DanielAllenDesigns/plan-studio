@@ -1,22 +1,32 @@
 //! Commands of the contextual Edit toolbar, shared by every tool: Open
-//! Object, Delete, Copy, Paste in Place, Reverse Swing, Fix Wall Connections.
+//! Object, Delete, Cut, Copy, Paste in Place, Reverse Swing, Fix Wall
+//! Connections. The clipboard lives in `clipboard.rs`; Paste, Duplicate,
+//! Group, the context menu and the other `edit.*` commands in
+//! `edit_commands.rs`.
 
 use super::{ops, placed};
 
 use super::selection::{layer_of, ObjectRef};
 use super::{EditorContext, EditorRequest};
-use plan_core::cad::{CadAttrs, CadBlockInfo};
-use plan_core::{CadObject, Dimension, Id, Opening, OpeningKind, Wall};
-use std::collections::HashMap;
+use plan_core::geometry::Point;
+use plan_core::{Id, OpeningKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EditActionKind {
     OpenObject,
     Delete,
+    Cut,
     Copy,
     PasteInPlace,
     ReverseSwing,
     FixWallConnections,
+    /// A command that works on any selection (Group, Select Same Type,
+    /// Transform/Replicate, Layer, Lock ...): an `edit.*` id of
+    /// `edit_commands`, run by `EditorContext::run_edit_command`.
+    Command {
+        id: &'static str,
+        label: &'static str,
+    },
     /// A command of one object type (Auto Stairwell, Join Roof Planes, ...),
     /// run by `EditorContext::run_custom` with its `id`.
     Custom {
@@ -42,6 +52,8 @@ impl EditAction {
         let (label, icon) = match kind {
             EditActionKind::OpenObject => ("Open Object", Some("select")),
             EditActionKind::Delete => ("Delete Objects", Some("delete_surface")),
+            EditActionKind::Cut => ("Cut", None),
+            EditActionKind::Command { label, .. } => (label, None),
             EditActionKind::Copy => ("Copy Selected Objects", None),
             EditActionKind::PasteInPlace => ("Paste in Place", Some("paste_hold")),
             EditActionKind::ReverseSwing => ("Reverse Swing", Some("door_hinged")),
@@ -64,31 +76,7 @@ impl EditAction {
     }
 }
 
-/// Objects copied with Copy; pasted back with new ids.
-#[derive(Clone, Debug, Default)]
-pub struct Clipboard {
-    pub walls: Vec<Wall>,
-    pub openings: Vec<Opening>,
-    pub dimensions: Vec<Dimension>,
-    pub cad: Vec<CadObject>,
-    /// Style extras of the copied CAD objects (targets are the old ids).
-    pub cad_attrs: Vec<CadAttrs>,
-    /// CAD blocks whose every object was copied, with the old member ids.
-    pub cad_blocks: Vec<(CadBlockInfo, Vec<Id>)>,
-}
-
-impl Clipboard {
-    pub fn is_empty(&self) -> bool {
-        self.walls.is_empty()
-            && self.openings.is_empty()
-            && self.dimensions.is_empty()
-            && self.cad.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.walls.len() + self.openings.len() + self.dimensions.len() + self.cad.len()
-    }
-}
+pub use super::clipboard::Clipboard;
 
 impl EditorContext {
     /// The buttons every object type shares, for the current selection.
@@ -101,6 +89,7 @@ impl EditorContext {
             v.push(EditAction::new(EditActionKind::OpenObject));
         }
         v.push(EditAction::new(EditActionKind::Delete));
+        v.push(EditAction::new(EditActionKind::Cut));
         v.push(EditAction::new(EditActionKind::Copy));
         let paste = EditAction::new(EditActionKind::PasteInPlace);
         v.push(if self.has_clipboard() {
@@ -108,6 +97,7 @@ impl EditorContext {
         } else {
             paste.disabled()
         });
+        v.extend(self.selection_edit_actions());
         v
     }
 
@@ -120,12 +110,14 @@ impl EditorContext {
                 }
             }
             EditActionKind::Delete => self.delete_selection(),
+            EditActionKind::Cut => self.cut_selection(),
             EditActionKind::Copy => self.copy_selection(),
             EditActionKind::PasteInPlace => self.paste_in_place(),
             EditActionKind::ReverseSwing => self.reverse_swing(),
             EditActionKind::FixWallConnections => {
                 super::connect::fix_wall_connections_action(self);
             }
+            EditActionKind::Command { id, .. } => self.run_edit_command(id),
             EditActionKind::Custom { id, .. } => self.run_custom(id),
         }
     }
@@ -171,142 +163,37 @@ impl EditorContext {
         self.delete_extra();
         self.selection.items = locked;
         self.selection.retain_existing(&self.project, fl);
+        // A group left with fewer than two members goes (S-35).
+        self.prune_dead_groups();
         self.mark_dirty();
         self.status.clear();
     }
 
+    /// Copy: the selection goes to the clipboard (S-81).
     pub fn copy_selection(&mut self) {
-        let f = self.floor();
-        let mut clip = Clipboard::default();
-        for o in &self.selection.items {
-            match *o {
-                ObjectRef::Wall(id) => {
-                    if let Some(w) = f.wall(id) {
-                        clip.walls.push(w.clone());
-                        clip.openings.extend(f.openings_on(id).cloned());
-                    }
-                }
-                ObjectRef::Opening(id) => {
-                    if let Some(op) = f.openings.iter().find(|x| x.id == id) {
-                        if !clip.openings.iter().any(|x| x.id == id) {
-                            clip.openings.push(op.clone());
-                        }
-                    }
-                }
-                ObjectRef::Dimension(id) => {
-                    clip.dimensions
-                        .extend(f.dimensions.iter().find(|d| d.id == id).cloned());
-                }
-                ObjectRef::Cad(id) | ObjectRef::Text(id) => {
-                    clip.cad.extend(f.cad.iter().find(|c| c.id == id).cloned());
-                }
-                _ => {}
-            }
-        }
-        // CAD style extras and whole CAD blocks travel with their objects.
-        for c in &clip.cad {
-            clip.cad_attrs.extend(f.cad_attrs(c.id));
-        }
-        for b in f.cad_blocks() {
-            let members = f.group_members_cad(b.group);
-            if members.len() >= 2 && members.iter().all(|m| clip.cad.iter().any(|c| c.id == *m)) {
-                clip.cad_blocks.push((b, members));
-            }
-        }
+        let clip = Clipboard::capture(self);
         if clip.is_empty() {
-            // Cabinets and symbols have their own clipboard.
-            if self.copy_extra() == 0 {
-                self.status = "Nothing to copy".into();
+            self.status = if clip.skipped.is_empty() {
+                "Nothing to copy".into()
             } else {
-                self.clipboard = None;
-            }
+                format!("Cannot copy {}", clip.skipped.join(", "))
+            };
             return;
         }
-        placed::clear_clipboard();
-        let n = clip.len() + self.copy_extra();
-        self.clipboard = Some(clip);
-        self.status = format!("Copied {n} object{}", if n == 1 { "" } else { "s" });
+        let n = clip.len();
+        let note = if clip.skipped.is_empty() {
+            String::new()
+        } else {
+            format!(" (not copied: {})", clip.skipped.join(", "))
+        };
+        self.store_clipboard(clip);
+        self.status = format!("Copied {n} object{}{note}", if n == 1 { "" } else { "s" });
     }
 
-    /// Pastes the clipboard at its original coordinates; the copies become
-    /// the selection. Openings come along only with their host wall.
+    /// Pastes the clipboard at its original coordinates (Paste Hold
+    /// Position, `C, P, P`); the copies become the selection (S-83, S-84).
     pub fn paste_in_place(&mut self) {
-        let Some(clip) = self.clipboard.clone().filter(|c| !c.is_empty()) else {
-            if self.paste_extra() == 0 {
-                self.status = "Nothing to paste".into();
-            } else {
-                self.status = "Pasted in place".into();
-            }
-            return;
-        };
-        self.begin_change("Paste in Place");
-        let fl = self.floor;
-        let mut sel = Vec::new();
-        let mut wall_map: HashMap<Id, Id> = HashMap::new();
-        for w in &clip.walls {
-            let id = self.project.alloc_id();
-            let mut copy = w.clone();
-            copy.id = id;
-            self.project.floors[fl].walls.push(copy);
-            wall_map.insert(w.id, id);
-            sel.push(ObjectRef::Wall(id));
-        }
-        for o in &clip.openings {
-            let Some(host) = wall_map.get(&o.wall_id) else {
-                continue;
-            };
-            let id = self.project.alloc_id();
-            let mut copy = o.clone();
-            copy.id = id;
-            copy.wall_id = *host;
-            self.project.floors[fl].openings.push(copy);
-            if let Some(extras) = self.extras.openings.get(&o.id).cloned() {
-                self.extras.openings.insert(id, extras);
-            }
-        }
-        for d in &clip.dimensions {
-            // The copy is not tied to the walls the original was.
-            let mut copy = d.clone();
-            copy.anchors = [None, None];
-            let id = self.project.add_dimension(fl, copy);
-            sel.push(ObjectRef::Dimension(id));
-        }
-        let mut cad_map: HashMap<Id, Id> = HashMap::new();
-        for c in &clip.cad {
-            let id = self.project.add_cad(fl, c.layer.clone(), c.item.clone());
-            cad_map.insert(c.id, id);
-            sel.push(ObjectRef::Cad(id));
-        }
-        for a in &clip.cad_attrs {
-            if let Some(&id) = cad_map.get(&a.target) {
-                let mut copy = a.clone();
-                copy.target = id;
-                self.project.set_cad_attrs(fl, copy);
-            }
-        }
-        for (info, members) in &clip.cad_blocks {
-            let refs: Vec<plan_core::groups::ObjectRef> = members
-                .iter()
-                .filter_map(|m| cad_map.get(m))
-                .map(|id| plan_core::groups::ObjectRef::Cad(*id))
-                .collect();
-            if let Some(group) = self.project.make_group(fl, &refs) {
-                let mut copy = info.clone();
-                copy.group = group;
-                self.project.floors[fl].cad_blocks.push(copy);
-            }
-        }
-        self.selection.items = sel;
-        let core_sel = self.selection.items.clone();
-        if self.paste_extra() > 0 {
-            let mut all = core_sel;
-            all.extend(self.selection.items.iter().copied());
-            self.selection.items = all;
-            // Pasted distribution records rebuild their copies.
-            placed::sync_distributions(self);
-        }
-        self.mark_dirty();
-        self.status = "Pasted in place".into();
+        self.paste_at(Point::ZERO, "Paste in Place", false);
     }
 
     /// Flips the swing of the selected doors.

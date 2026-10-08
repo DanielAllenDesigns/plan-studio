@@ -31,8 +31,10 @@ extension lines, a dimension line with ticks, and the value above.
  ==+===                                 ===+==   walls (located to the main layer)
 ```
 
-Points locate to wall surfaces (the main layer faces), opening centers or the snap
-point. Hold `Alt` to suspend the locating. Every completed dimension is one undo
+Points **locate** to the objects under the pointer by the Locate Objects settings of the active
+Dimension Defaults (5.9): a wall's surfaces, main layer or centerline, an opening's sides or center (or the
+wall behind it), the sides of a cabinet or of a placed fixture, otherwise the snap point. Walls marked No Locate
+and hidden walls are skipped. Hold `Alt` to suspend the locating. Every completed dimension is one undo
 step. `Esc` cancels one in progress.
 
 ### Dimension Tools (row 2, Dimensions flyout; CAD > Dimensions)
@@ -53,10 +55,11 @@ step. `Esc` cancels one in progress.
 
 | Variant | Hotkey | Today |
 |---|---|---|
-| Auto Exterior Dimensions | `Shift+A` | Click once: puts an overall dimension on each axis-aligned side of the exterior walls plus a breakpoint string, set out by the Dimension Defaults offset (32"). Re-running replaces the previous exterior strings. Door and window strings are (planned). |
-| Auto Interior Dimensions | | Click once: adds one horizontal and one vertical clear dimension (interior surface to interior surface) through every room larger than 10 sq ft. Re-running replaces them. |
+| Auto Exterior Dimensions | `Shift+A` | Click once: up to **three strings** on each side of the building, nearest the wall first. Chief's order is **Openings** (door and window sides, or centers), **Wall to Wall** (the corners and the walls that meet that side) and **Overall** (corner to corner). The first string sits the Exterior Offset (32" in Daniel's set) from the wall's outer surface and the strings are a Line Separation apart; Setup Automatic in the Dimension Defaults chooses and orders the strings. The exterior walls (all walls when none is Exterior; room dividers and No Locate walls are left out) are grouped by direction, so a building or wing turned off the axes gets strings parallel to its walls. A string that would repeat another or has nothing to show (no openings on that side) is left out. **Curved walls** take part: a curved exterior wall is dimensioned by its chord and tangent points (it joins the frame its chord lies in but never starts one), and its bulge pushes the strings of that side outward so they clear the arc. Re-running replaces the previous exterior run and keeps manual dimensions. |
+| Auto Interior Dimensions | | Click once: for every room larger than 10 sq ft, one horizontal and one vertical clear dimension (interior surface to interior surface, or by the Walls setting when "Interior dimensions locate interior surfaces" is off) through the room, and an **openings string** along each wall of the room with doors or windows (the corners and the openings' sides or centers; none when Locate Openings is None). Re-running replaces the previous interior run. |
 | Auto Elevation Dimensions | `Ctrl+Alt+Cmd+H` | Click once where the string should go: a vertical string of level heights (floor platforms, ceiling heights, heights above the first floor) with each level named beside it. |
 | Auto Story Pole Dimensions | `Ctrl+Alt+Cmd+I` | Click once: a story pole, the same kind of vertical string of level heights. |
+| Auto NKBA Dimensions | (option strip only: **Auto NKBA**; no flyout entry or hotkey) | Click once: for every run of kitchen and bath cabinets (base and tall cabinets, and free-standing appliances, that touch side by side with their fronts on one line) up to three strings on the front side, nearest the cabinets first: **cabinet faces** (every cabinet, from the wall at one end to the wall at the other when a wall stands within reach of the run's end), the **centers of the sinks, cooktops and appliances** over the same extent (left out when the run has none), and the **overall** length (left out when it would repeat the faces string). Spacing and reach come from the "NKBA" dimension set when the plan has one, else the active set; its text style is used. Walls marked No Locate and room dividers are ignored. Re-running replaces the previous NKBA run, "No base cabinet runs to dimension" says there was nothing to measure, and the result is one undo step. |
 
 The plan has no elevation view, so the Y axis of an elevation or story pole string is the height: they are strings in plan coordinates, not dimensions drawn on an elevation.
 
@@ -71,16 +74,31 @@ Select a dimension by clicking its line, extension or text. Its handles:
   wall moves perpendicular, or lengthens if the dimension runs along it; openings
   slide). A locked layer refuses the change.
 - Double-click opens the Dimension Specification (5.7).
+- The **Edit toolbar** of a selected dimension offers four commands, each one undo step (a locked layer refuses them):
+  - **Reverse Dimension** swaps the two measured points (with their ties and extension-line switches), which puts the dimension line on the other side of what it measures, the same distance away.
+  - **Convert to Manual Dimension** turns an automatic dimension (any string of Auto Exterior, Interior, Elevation, Story Pole or NKBA) into an ordinary manual one that a later Auto run no longer replaces. Enabled only when a selected dimension is automatic.
+  - **Align Dimensions** (two or more selected) moves the dimension lines of the dimensions parallel to the first one selected onto its line.
+  - **Distribute Dimensions** (three or more) spaces the dimension lines of the dimensions parallel to the first one evenly between the two outermost; the two ends stay.
+  The status bar says how many changed, or "nothing to change" (for example when none of the others is parallel).
 
-The model keeps no link between a dimension and the objects it measured. If you move a
-wall afterwards the dimension line stays where it is (planned: associative
-dimensions).
+### Associative dimensions
+
+A measured point that was located on a wall (its start, end or a place along it, with the distance to the side
+and the outer-corner extension), an opening (an edge or the center), a cabinet or a placed fixture is **tied** to it.
+When the object moves, stretches or is reshaped, the point follows (the editor re-resolves every tie whenever the plan
+changes), so dimensions, including the automatic strings, stay on the walls and openings they measure. Dragging a
+point by hand, or typing a new value, drops the tie of the end you moved and turns an automatic dimension into a manual one;
+a point dragged onto another object is tied there. The Dimension Specification (5.7) names the object each end is tied to.
+
+Not built: ties to other kinds of objects (stairs, roof planes, framing).
+
+**Printed-size text and picking.** A text or dimension in a Printed Size style is drawn at its size on paper at the sheet's scale. Clicking it with Select Objects picks it by the box it is drawn in at that scale (not by its stored plan height), so a 1/8" label at 1/8" scale is as easy to hit as it looks. The DXF export (12.3) and the construction set PDF honor the same sizes and the same hidden extension lines: a dimension whose Show Extension Line switch is off at an end writes and prints no extension line there, and text takes the height of its text style (a printed-size style is converted to plan inches at the sheet's scale).
 
 ### Temporary dimensions
 
 Temporary Dimensions (view bar, on by default) show a live readout while drawing
 and dimensions to nearby objects for the selected one. They are never saved or
-printed. Clicking one turns it into an edit field (see chapter 2.5).
+printed. Clicking one turns it into an edit field (see chapter 2.5). Which part of a wall or opening they measure to is the **Temporary** group of Locate Objects in the Dimension Defaults (5.9); the **Elevation** group is stored for the level dimensions but no tool reads it yet. Both groups default to wall surfaces and opening sides.
 
 ## 5.3 Text tools
 
@@ -101,9 +119,11 @@ together.
 | Note Type Management | | Opens the dialog below. |
 | Text Macro Management | | Opens the dialog below. |
 
-Text height defaults to the template's 6" plan height. Printed-size scaling (a 1/8"
-text that stays 1/8" at any plan scale) is (planned). Find/Replace Text and
-Replace Fonts are (planned).
+Text height defaults to the template's 6" plan height. A text style can instead be a **Printed Size** style
+(Default Settings > Text Styles, 5.9): its text keeps its size on paper (a 1/8" label stays 1/8" at 1/4", 1/8" or 1/2" scale)
+because its plan height is recomputed from the sheet's scale; a new text on such a layer is placed at the style's own height, and the
+Text Specification says how big it is on paper. A **Character Height** style keeps the plan height you give it.
+Edit > Find/Replace Text finds a string in the text objects of the floor (or every floor) and replaces it, Replace All as one undo step. Replace Fonts is (planned).
 
 ### Rich text
 
@@ -214,7 +234,9 @@ The **CAD edit tools** are in the CAD menu (CAD > Edit CAD, CAD > Patterns) as t
 | Hatch (CAD > Patterns > Hatch Closed Shape) | Click inside a closed polyline or circle; pick the pattern in the option strip. The pattern is drawn as real lines grouped with the outline. The Fill Style tab of the CAD Specification does the same. |
 | CAD Detail From View (CAD menu) | Copies the view's wall outlines, CAD items and dimensions into a new floor named "CAD Detail" above the current one and makes it current. |
 
-CAD Detail From View makes a normal floor, which takes part in the 3D stack; Chief's detail windows and CAD Detail Management do not exist here. The Edit toolbar does not have buttons for these tools yet: use the CAD menu. Change Line/Arc and Make Arc Tangent are (planned).
+CAD Detail From View makes a normal floor, which takes part in the 3D stack; Chief's detail windows and CAD Detail Management do not exist here. With a drawn CAD object selected the Edit toolbar has a button for each of these tools (Fillet, Chamfer, Offset, Trim, Extend, Break, Reverse Direction, Make Parallel, Make Perpendicular and the three converts): the button switches to that CAD tool mode with the selection kept, and the converts act on the selection at once. Separately, Edit > **Make Parallel** and **Make Perpendicular** (and the Edit toolbar's buttons for a selection of walls and CAD lines) work from a selection: with the selection made, click the wall or line to match and each selected one keeps its start and length and swings its far end to be parallel or perpendicular to it (chapter 2.5).
+
+The Edit menu's selection commands (Cut, Copy, Paste, Duplicate, Select All, Select Same Type, Group, Transform/Replicate, Reflect About Object, Point to Point Move, Align/Distribute, Move to Front / Back, Lock, Send to Layer) all work on CAD objects, text and dimensions as well as on walls (chapter 2.5). **Move to Front / Back** is for CAD objects and text: CAD objects are drawn in list order, so it moves the selection to the end (top) or the start (bottom) of the list. **Edit > Edit Behaviors > Resize, Concentric, Fillet, Alternate and Replicate** change what dragging a CAD selection does (chapter 2.5).
 
 ## 5.5 Layers and layer display
 
@@ -229,23 +251,52 @@ hidden `... , Data` layers: they live in typed fields of the plan, as does frami
 that still carry those layers are converted when opened.
 
 **Active Layer Display Options** (view bar, View menu, Tools > Layer Settings > Display
-Options...) shows a table with Name, Used (object count), Disp and Lock, plus Color.
+Options...) shows the plan's layers as a table. The dock and the window are the same widget.
 
+- **Columns**: Name, Used (object count), **Disp**, **Lock**, **Ref** (does the layer show on the Reference Display floor, 4.5), Color,
+  **Weight**, **Line Style** and **Text Style**. A cell edits the layer in the layer set that is shown. A name filter narrows the rows,
+  and the table can be sorted by name, Used, Disp, Lock, Ref or weight.
 - **Disp** off hides the layer: its objects are not drawn, picked or snapped to, but they
   still exist and still form rooms.
 - **Lock** on makes objects visible and snappable but not selectable for editing; moving
   or deleting them is refused with a status message.
+- **Selecting rows.** Click a name to select one row, Cmd/Ctrl-click to toggle a row, Shift-click for a range; **Select All** and
+  **Select None** act on the rows the filter shows. When the edited row is part of a multi-selection the edit goes to every selected
+  row (turn Disp off on twelve layers with one click). Right-click a name for **Select All on Layer** (selects the layer's objects
+  in the plan) and **Reset to Defaults**.
+- **Layer set buttons** above the table: the set drop-down and **New**, **Copy Set**, **Rename**, **Delete** and **Manage...**.
+  **Modify All Layer Sets** sends every edit to all sets at once instead of only the shown one.
 - **Properties for Selected Layer**: Display, Lock, Color, Line Weight, Line Style, Text Style
-  and Fill Style.
-- The window version adds New Layer... and Copy Layer Set... (Copy Layer Set is
-  (planned)). All edits are undoable.
+  and Fill Style, and **Copy To Other Sets** (tick the sets, then copy the selected layers' look to them).
+- The window version adds **New Layer...**, **Layer Set Management...** and **Active Layers by Tool...**. All edits are undoable
+  (one step per edit; a drag shares one).
 - **Layer sets and saved plan views.** A layer set is a named table of per-layer overrides (display, lock,
   color, line weight, line style, text style) laid over the plan's base layers. A saved plan view carries a
   layer set, a floor, a reference-display setting and a zoom. The **Layer Set** drop-down in the dock
   switches the active set; the saved-view selector in row 1 activates a view (its layer set, floor and zoom;
   one undo step). A new plan starts with "Default Set" and "Floor Plan View". Daniel's 34 layer sets
   (Presentation, Working, Electrical, Foundation, Roof Plan ...) come in through File > Templates > Import
-  Chief Template.... Save Active View, Save Active View As, Edit Active View and creating views are (planned).
+  Chief Template....
+
+**Tools > Layer Settings > Layer Set Management...** lists the plan's layer sets with **Make Active**, **New...** (a set whose
+layers all take the base layers' look), **Copy...**, **Rename...** (the plan views that show the set follow) and **Delete**, and
+**Import From Plan File...**: pick another `.psplan`, tick the layer sets to bring in and they arrive with the layers they need
+(one undo step).
+
+**Tools > Layer Settings > Active Layers by Tool...** lists the layer each tool draws on, with a drop-down per tool (walls, doors,
+cabinets, dimensions and so on) and the **Current CAD Layer** new CAD objects go on; **Reset to Default Layers** puts them back.
+
+**Tools > Plan Views** manages the saved plan views:
+
+- **Plan View Specification...** edits the active view: its name, layer set, floor, Reference Display on or off and which floor is
+  the reference (relative to the floor viewed), the default dimension set and text style, and the zoom; it also makes New,
+  Duplicate and Delete.
+- **Save Plan View** stores the floor, reference display, zoom and pan the plan shows now in the active view (one undo step; the row 1
+  button Save Active View does the same). **Reset Plan View** shows the active view as it was saved.
+- **Add Template Plan Views** adds Daniel's 20 template plan views (each with its layer set) that the plan lacks, in one undo step; it
+  says so when they are already there. A new plan that holds only the starting view gets them too.
+- Views open as **tabs** above the canvas (1.3): switching tabs keeps each view's floor, reference display, zoom and pan.
+
 - Line weights are stored in hundredths of a millimeter; View > Line Weights scales the on-screen strokes by them (chapter 1.4). A CAD object can carry a weight, color and dash of its own (5.6).
 - **Typed storage** (Round 8). A CAD object's own style (color, weight, dash, fill, arrows, rich text runs), the name and insertion point of a CAD block, the plan's text macros and its note types are no longer small hidden records on a locked `CAD, Data` layer. They are typed, serde-default fields of the plan: `Floor.cad_attrs` and `Floor.cad_blocks` for each floor, `Project.text_macros` and `Project.note_types` for the project (chapter 12.2). They save, undo and copy with the plan. A file from before this change is converted when it opens (the old records move into the fields once and the `CAD, Data` layer is removed; it is not an undo step). Deleting a CAD object deletes its style, and a block goes when none of its objects is left. Copy carries the styles of the copied objects and every CAD block whose objects were all copied, and Paste in Place gives each pasted block a group, name and points of its own, so the earlier remark that a pasted block loses its name and attributes no longer applies to the clipboard. A deleted block's empty object group stays in the group list (harmless).
 
@@ -267,10 +318,10 @@ The plan draws the object's own color, weight, dash, solid fill and arrow ends. 
 
 | Tab | Fields |
 |---|---|
-| General | Measured points (Start X/Y, End X/Y), dimension Type and Value. Offset of the line. |
+| General | Type and Value; the Offset From Measured Line; the measured points (Start X/Y, End X/Y); **Located Objects**: for each end what it is tied to (a wall, an opening, a cabinet, a fixture, or "Free point") and a **Show Extension Line** check box per end that hides or shows that end's extension line (stored with the dimension). |
 | Primary Format | Units, Show Unit Indicators, Smallest Fraction, Show Denominator, Reduce Fractions. Shown from the active Dimension Defaults (disabled). |
-| Arrow | Style (Tick) and Size (disabled). |
-| Text Style | Font and Height, Position (Centered On / Above / Below Dimension Line) (disabled). |
+| Arrow | Style (Tick) and Size, and the extension line gap and length, from the Dimension Defaults (disabled). |
+| Text Style | **Style**: "From Dimension Defaults" or any text style of the plan (stored with the dimension). Below it the style's Font, whether the Size is a Character Height or a Printed Size, the size **on paper** at the sheet's scale (inches and points) and the height **in the plan**. Position (Centered On / Above / Below Dimension Line) is shown disabled. |
 | Layer | Manual or Automatic dimension layer. |
 | Label | Value Text: type a replacement for the measured value. |
 
@@ -302,16 +353,17 @@ of the template.
   set cannot be deleted ("Make another set active before deleting this one") and the last set stays.
 - OK saves the draft into the defaults ("Saved the dimension defaults"); Cancel or Escape drops it.
 
-**Dimension Defaults - <name>** is a five-tab editor with a preview that draws a sample dimension (12'-6 1/2")
+**Dimension Defaults - <name>** is a six-tab editor with a preview that draws a sample dimension (12'-6 1/2")
 in the set's format. A length field turns red when it does not parse and OK is blocked ("Fix the highlighted field").
 
 | Tab | Fields |
 |---|---|
 | Primary Format | Units (Feet and Inches, Inches, Decimal Feet, Millimeters, Centimeters, Meters), Smallest Fraction (1/2 to 1/64), Fraction Style (Diagonal, Horizontal, Stacked), Decimal Places (0 to 6), Unit Indicators, Trailing Zeroes |
-| Setup Automatic | Exterior Offset, Line Separation, Locate Openings at Centers |
+| Setup Automatic | Exterior Offset, Line Separation, and **Exterior Strings**: String 1, 2 and 3, each Openings, Wall to Wall, Overall or None, nearest the wall first (Openings, Wall to Wall, Overall by default; all None keeps Overall) |
 | Extensions | Gap from Object, Extend Past Dimension Line |
 | Arrow | Arrow Size, Leader Style (Square Corner, Round Corner, Diagonal) |
-| Text Style | Text Above Dimension Line, Fraction Text Size (25 to 100 %) |
+| Text Style | Text Style (the name of a text style; its font and size are used), **Printed Size** (the dimension text and arrows keep their size on paper at any scale), Text Above Dimension Line, Fraction Text Size (25 to 100 %) |
+| Locate Objects | Three groups, picked by the buttons at the top of the tab: **Manual and Automatic** (the set's own), **Temporary** (the temporary dimensions, which read it) and **Elevation** (stored for the level dimensions; nothing reads it yet). Each has **Walls**: Surfaces (full thickness), Main Layer (default for the first group) or Centers; **Openings**: Sides, Centers or None (the wall behind is located); **Cabinets** and **Fixtures**: Sides or None. The first group also has "Interior dimensions locate interior surfaces". A dimension set saved before these settings loads with the defaults; Daniel's template keeps locating opening centers. |
 
 ### Text Styles
 
@@ -320,8 +372,10 @@ Edit > Default Settings... > Text > **Text Styles** edits named text styles for 
 defaults** (what plans start from).
 
 - The list is on the left. The form on the right has Name, Font (Arial, Helvetica, Times New Roman, Courier
-  New, Verdana, Georgia, Calibri), Height (0.25" to 96"), Style (Bold, Italic, Underline), Color, and Size
-  ("Follows the drawing scale"). **New** adds a style, **Copy** duplicates the selected one, **Delete** removes it.
+  New, Verdana, Georgia, Calibri), Height (0.25" to 96"), **Size by** (Character Height or Printed Size), Style (Bold, Italic, Underline) and Color.
+  **Character Height** keeps the plan height; a character-height style prints at its height times the sheet scale (a 6" style is 1/8" at 1/4" scale).
+  **Printed Size** shows a size in inches on paper (0.02" to 2") that holds at any scale, so the plan height changes with the
+  sheet's scale. **New** adds a style, **Copy** duplicates the selected one, **Delete** removes it.
 - Names must be filled in and unique. "Default Text Style" can be neither renamed nor deleted.
 - Renaming a style in the plan renames it on the layers that used it. OK applies both lists ("Saved the text
   styles"); Cancel or Escape drops the changes.

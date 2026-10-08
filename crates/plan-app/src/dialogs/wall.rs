@@ -10,7 +10,7 @@ use plan_core::extras::WallExtras as StoredExtras;
 use plan_core::geometry::Point;
 use plan_core::units::fmt_ft_in;
 use plan_core::walls::{DEFAULT_HALF_WALL_HEIGHT, DEFAULT_PONY_SPLIT};
-use plan_core::{FenceStyle, Id, Opening, Wall, WallClass, WallKind, WallTypeDef};
+use plan_core::{FenceStyle, Id, Opening, Wall, WallClass, WallCurve, WallKind, WallTypeDef};
 
 /// Values a Roof tab control starts with when it is switched on.
 const ROOF_PITCH_DEFAULT: f64 = 8.0;
@@ -840,10 +840,12 @@ impl WallForm {
         });
         ui.add_enabled_ui(!is_default, |ui| {
             let mut len = self.draft.length();
-            if self
-                .fields
-                .length_row(ui, "Wall Length", "length", &mut len)
-            {
+            let len_label = if self.draft.is_curved() {
+                "Chord Length"
+            } else {
+                "Wall Length"
+            };
+            if self.fields.length_row(ui, len_label, "length", &mut len) {
                 self.set_length(len);
             }
             let mut angle = self.angle_deg();
@@ -888,8 +890,66 @@ impl WallForm {
             dis_check(ui, l, false);
         }
 
+        self.arc_section(ui, is_default);
+    }
+
+    /// The Arc section (W-64..W-67): Change Line/Arc as a check box, then the
+    /// arc by number. Radius, arc angle and rise each recompute the others
+    /// from the chord, which the start and end points fix.
+    fn arc_section(&mut self, ui: &mut Ui, is_default: bool) {
+        section(ui, "Arc");
+        ui.add_enabled_ui(!is_default, |ui| {
+            let mut curved = self.draft.is_curved();
+            if ui
+                .checkbox(&mut curved, "Curved Wall (Change Line/Arc)")
+                .changed()
+            {
+                self.set_curved(curved);
+            }
+            let Some(c) = self.draft.curve.filter(|c| !c.is_straight()) else {
+                return;
+            };
+            let chord = self.draft.length();
+            let mut radius = c.radius(chord).unwrap_or(0.0);
+            if self
+                .fields
+                .length_row(ui, "Radius", "arc_radius", &mut radius)
+            {
+                self.set_radius(radius);
+            }
+            let mut sweep = c.sweep_abs(chord).to_degrees();
+            if self
+                .fields
+                .degrees_row(ui, "Arc Angle", "deg_arc_angle", &mut sweep)
+            {
+                self.set_sweep_deg(sweep);
+            }
+            let mut rise = c.bulge.abs();
+            if self
+                .fields
+                .length_row(ui, "Arc Rise", "arc_rise", &mut rise)
+            {
+                self.set_rise(rise);
+            }
+            row(ui, "Bulges", |ui| {
+                let mut left = c.bulge > 0.0;
+                let a = ui.radio_value(&mut left, true, "Left of start to end");
+                let b = ui.radio_value(&mut left, false, "Right");
+                if a.changed() || b.changed() {
+                    self.set_side(left);
+                }
+            });
+            if let Some((center, _)) = self.draft.arc_center_radius() {
+                ui.weak(format!(
+                    "Arc length {}   Center {}, {}",
+                    fmt_ft_in(self.draft.path_length()),
+                    fmt_ft_in(center.x),
+                    fmt_ft_in(center.y)
+                ));
+            }
+            ui.weak("The ends stay put; Wall Length is the chord.");
+        });
         ui.add_enabled_ui(false, |ui| {
-            section(ui, "Curved Wall");
             row(ui, "Radius to", |ui| {
                 dis_radio(ui, "Outer Surface", false);
                 dis_radio(ui, "Main Layer Outside", true);
@@ -900,6 +960,50 @@ impl WallForm {
             });
             dis_check(ui, "Automatic Facet Angle", true);
         });
+    }
+
+    /// Straight to arc (a quarter of the chord for the rise) and back.
+    fn set_curved(&mut self, on: bool) {
+        self.draft.curve = on.then(|| WallCurve {
+            bulge: self.draft.length() * 0.25,
+        });
+    }
+
+    fn arc_left(&self) -> bool {
+        self.draft.curve.is_none_or(|c| c.bulge >= 0.0)
+    }
+
+    /// The radius over the chord; below half the chord it stays at half
+    /// (a semicircle).
+    fn set_radius(&mut self, radius: f64) {
+        let chord = self.draft.length();
+        let r = radius.max(chord * 0.5);
+        if let Some(c) = WallCurve::from_radius(chord, r, self.arc_left()) {
+            self.draft.curve = Some(c);
+        }
+    }
+
+    /// The arc angle in degrees, 1 to 340.
+    fn set_sweep_deg(&mut self, deg: f64) {
+        let chord = self.draft.length();
+        let rad = deg.clamp(1.0, 340.0).to_radians();
+        if let Some(c) = WallCurve::from_sweep(chord, rad, self.arc_left()) {
+            self.draft.curve = Some(c);
+        }
+    }
+
+    /// The rise (sagitta) over the chord: 0 makes the wall straight.
+    fn set_rise(&mut self, rise: f64) {
+        let rise = rise.max(0.0);
+        self.draft.curve = (rise > 1e-9).then(|| WallCurve {
+            bulge: if self.arc_left() { rise } else { -rise },
+        });
+    }
+
+    fn set_side(&mut self, left: bool) {
+        if let Some(c) = &mut self.draft.curve {
+            c.bulge = if left { c.bulge.abs() } else { -c.bulge.abs() };
+        }
     }
 
     fn structure(&mut self, ui: &mut Ui) {
@@ -1546,5 +1650,45 @@ mod tests {
             (back.layer.as_str(), back.foundation_height),
             ("Fencing", 30.0)
         );
+    }
+
+    #[test]
+    fn the_arc_section_round_trips_radius_angle_and_rise() {
+        let mut f = form(WallLock::Start);
+        let chord = f.draft.length();
+        assert!(!f.draft.is_curved());
+        f.set_curved(true);
+        let c = f.draft.curve.unwrap();
+        assert!((c.bulge - chord * 0.25).abs() < 1e-9);
+        // The radius reads back, and typing it again changes nothing.
+        let r = c.radius(chord).unwrap();
+        f.set_radius(r);
+        assert!((f.draft.curve.unwrap().bulge - chord * 0.25).abs() < 1e-9);
+        f.set_radius(chord);
+        let c = f.draft.curve.unwrap();
+        assert!((c.radius(chord).unwrap() - chord).abs() < 1e-9);
+        // A radius below half the chord falls back to the semicircle.
+        f.set_radius(1.0);
+        let c = f.draft.curve.unwrap();
+        assert!((c.bulge - chord * 0.5).abs() < 1e-9);
+        f.set_sweep_deg(90.0);
+        let c = f.draft.curve.unwrap();
+        assert!((c.sweep_abs(chord).to_degrees() - 90.0).abs() < 1e-9);
+        // The side flips the sign and keeps the size; the rise sets it.
+        f.set_side(false);
+        assert!(f.draft.curve.unwrap().bulge < 0.0);
+        f.set_rise(20.0);
+        assert!((f.draft.curve.unwrap().bulge + 20.0).abs() < 1e-9);
+        f.set_side(true);
+        assert!((f.draft.curve.unwrap().bulge - 20.0).abs() < 1e-9);
+        // Through the JSON the arc stays an arc.
+        let back: Wall = serde_json::from_str(&serde_json::to_string(&f.draft).unwrap()).unwrap();
+        assert_eq!(back.curve, f.draft.curve);
+        assert!(back.is_curved());
+        f.set_rise(0.0);
+        assert!(f.draft.curve.is_none());
+        f.set_curved(true);
+        f.set_curved(false);
+        assert!(f.draft.curve.is_none());
     }
 }

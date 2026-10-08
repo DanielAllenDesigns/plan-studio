@@ -25,52 +25,58 @@ placing and editing openings and the Door and Window Specification dialogs.
 - Deleting a wall deletes its openings. Moving or stretching a wall moves its
   openings with it, keeping their distance from the wall start, clamped to fit.
 - The model stores: width, height, sill height, door or window, swing side and
-  hinge side, an opening style, a label override, a schedule number, casing,
-  lites and the egress and tempered flags.
+  hinge side, an opening style, a label override and label settings, a schedule
+  number, a mull group, casing, lites and the egress and tempered flags.
 
 ## 3.2 Tools
 
 ### Door Tools (Build > Door, row 2)
 
-| Button | Hotkey | Today |
+| Button | Hotkey | Plan symbol |
 |---|---|---|
-| Hinged Door | `D, H` (alias `3`) | Works. |
-| Doorway | `D, W` | (planned) |
-| Sliding Door | `S, D` | (planned) |
-| Pocket Door | `D, P` | (planned) |
-| Bifold Door | `Ctrl+Alt+Cmd+O` | (planned) |
-| Barn Door | `Ctrl+Alt+Cmd+P` | (planned) |
-| Fixed Door | `Ctrl+Alt+Cmd+R` | (planned) |
-| Garage Door | `G, D` | (planned) |
-| Shower Door | `Ctrl+Alt+Cmd+Q` | (planned) |
+| Hinged Door | `D, H` (alias `3`) | Leaf from the hinge jamb and a swing arc to the Swing Angle. |
+| Doorway | `D, W` | Jamb lines only: a cased opening. |
+| Sliding Door | `S, D` | Two to four thin overlapping panels on two tracks (one panel per 4' of width) and an arrow. |
+| Pocket Door | `D, P` | The leaf and a dashed pocket running into the wall past one jamb. |
+| Bifold Door | `Ctrl+Alt+Cmd+O` | A V of folded leaves per pair: one pair up to 4', two pairs beyond. |
+| Barn Door | `Ctrl+Alt+Cmd+P` | A panel hung outside the wall face, a dashed track, and (open) the closed position dashed. |
+| Fixed Door | `Ctrl+Alt+Cmd+R` | A glass pane in the opening, no swing. |
+| Garage Door | `G, D` | The closed panel and dashed overhead rails running into the garage. |
+| Shower Door | `Ctrl+Alt+Cmd+Q` | A thin glass leaf with a swing arc. |
+| Double Door | (none; Plan Studio's own) | Two leaves hinged at both jambs with two arcs. |
 
 ### Window Tools (Build > Window, row 2)
 
-| Button | Hotkey | Today |
+| Button | Hotkey | Plan symbol |
 |---|---|---|
-| Window | `Shift+W` (alias `4`) | Works. |
-| Bay Window | `Ctrl+Alt+Cmd+S` | (planned) |
-| Bow Window | `Ctrl+Alt+Cmd+T` | (planned) |
-| Box Window | `Ctrl+Alt+Cmd+U` | (planned) |
-| Pass-Through | `Ctrl+Alt+Cmd+V` | (planned) |
-| Wall Niche | `Ctrl+Alt+Cmd+W` | (planned) |
+| Window | `Shift+W` (alias `4`) | The two wall faces and the glass line. |
+| Bay Window | `Ctrl+Alt+Cmd+S` | An angled unit projecting 18" past the exterior face, drawn as a double outline. |
+| Bow Window | `Ctrl+Alt+Cmd+T` | The same, on a five-segment arc. |
+| Box Window | `Ctrl+Alt+Cmd+U` | The same, square. |
+| Pass-Through | `Ctrl+Alt+Cmd+V` | Wall faces with a dashed center line and no glass. |
+| Wall Niche | `Ctrl+Alt+Cmd+W` | A recess cut 3 1/2" deep from the room side; the wall behind it stays. |
+| Casement, Fixed, Sliding, Awning, Hopper Window | (none; Plan Studio's own) | Swing arcs (one sash, two from 4' wide), a glass pane, two overlapping sashes with an arrow, dashed arms outward (awning) or inward (hopper). |
 
-The model already knows all fifteen opening styles (Hinged, Sliding, Pocket,
-Bifold, Garage, Doorway, Barn, Shower, Fixed, Window, Bay, Bow, Box, Pass-Through,
-Wall Niche) so plans stay compatible when the tools arrive. Only Hinged Door
-and Window have plan symbols today.
+The `Ctrl+Alt+Cmd` chords are shown in the menus and flyout; the two-key ones
+(`D, W`, `S, D`, `D, P`, `G, D`) are bound. Each flavor is sized by the variant
+defaults in the plan defaults (for example a Garage Door is 108" x 96", a Bay Window
+96" x 60"); the Hinged Door and Window use the Default Settings templates.
+These variant sizes are Plan Studio's own estimates, not Chief's numbers (they are the
+`opening_variants` list of the plan defaults; no dialog edits them yet, but a saved template keeps them).
+Which side a bay, bow or box window projects to is the outside of the wall (the side
+away from the room); **Reverse Side** projects it the other way.
 
 ### Placing an opening
 
-With Hinged Door or Window active:
+With any door or window tool active:
 
 | Gesture | Result |
 |---|---|
-| Move over a wall | The wall highlights and a ghost of the opening follows the pointer, already cut into the wall. **Temporary dimensions** show the distance from each jamb to both wall ends (with Temporary Dimensions on). |
-| Click | Places the opening centered on the pointer's projection onto the wall, snapped to the 1" snap unit. The tool stays active so you can place more. |
+| Move over a wall | The wall highlights and a ghost of the opening follows the pointer, already cut into the wall. **Temporary dimensions** show the width and the distance from each jamb to the wall end or the neighboring opening (with Temporary Dimensions on). |
+| Click | Places the opening centered on the pointer's projection onto the wall, snapped to the 1" snap unit. The **new opening is selected** (not its wall) and its Edit toolbar shows; the tool stays active so you can place more. |
 | Click where it does not fit | Nothing is placed. The reason appears in the status bar (wall too short, overlaps another opening). |
 | Click away from any wall | Nothing happens. |
-| `Esc`, or `Space` | Return to Select Objects. |
+| `Esc` | The first press lets go of the opening just placed and leaves the tool ready for the next one; the next `Esc` (or `Space`) returns to Select Objects. |
 
 A new opening takes its size from the Default Settings templates (chapter 1.7):
 a door on an **exterior** wall uses the Exterior Door defaults (36" x 96"), a door
@@ -82,7 +88,7 @@ the side of the wall the pointer is on (to the wall's left side, looking from st
 or on the centerline; to the right side when it is on the other), and its hinge goes on the jamb nearer the wall end
 that the click is closer to (the start jamb when the click is in the first half of the wall, the end jamb in the second).
 The ghost follows the same rule, so what you see is what is placed. A window has no swing and is unaffected. Use Reverse Swing or the
-swing handle (below) to flip the swing afterwards, and the Door Specification's Swing side and Hinge side to set both.
+swing handle (below) to flip the swing afterwards, and the Door Specification's Swing side and Hinge side to set both. Casement windows follow the pointer the same way; the other flavors take their sides from the Options tab.
 
 ### Editing with Select Objects
 
@@ -90,28 +96,49 @@ Select an opening by clicking it (the opening wins over its host wall).
 
 | Action | Effect |
 |---|---|
-| Drag the opening | Slides it along its wall. Dragging it onto another wall re-hosts it there. Snaps to 1". It stops at the clearance from the wall ends and from neighbors. |
-| Temporary dimension (jamb to wall end or neighbor) | Click the value, type a length, `Enter`: the opening moves so that dimension takes the value; the other one changes. |
-| Click the **swing handle** at the free end of the door leaf (a small pointing-hand handle) | Reverses the swing, the same as the Edit toolbar button. A click, not a drag. |
-| Edit toolbar: **Reverse Swing** | Flips the door's swing to the other side of the wall; the hinge jamb stays. One undo step. Moving the hinge to the other jamb is the **Hinge side** setting in the Door Specification (3.4). |
+| Drag the opening | Slides it along its wall. Dragging it onto another wall re-hosts it there. Snaps to 1". It stops at the clearance from the wall ends and from neighbors. A mulled window moves with its whole unit. |
+| Drag a **jamb handle** (square handles at both jambs) | Resizes the opening; the other jamb stays. Snaps to 1" (hold `Alt` to skip), stops at the minimum width of 6", the 2" wall-end clearance and the neighboring openings. One undo step. With **Snap to standard widths** on (Default Settings > Doors or Windows, General) the width lands on the nearest manufacturer width of the style (2'-0", 2'-4", 2'-6", 2'-8", 3'-0" ... for doors; 2'-0" to 6'-0" for windows); `Alt` skips that too. |
+| Drag the **label handle** (a small framed dot on the opening's label) | Moves the label off its spot; the offset is stored with the opening and follows it when the opening or wall moves. A schedule mark bubble follows the label. Edit toolbar: **Reset Label Position**. One undo step. |
+| Temporary dimension (width, or jamb to wall end or neighbor) | Click the value, type a length, `Enter`. A jamb distance moves the opening so the dimension takes the value; the width resizes it about its center, or about the jamb that has room. |
+| While dragging a jamb handle or the move handle, **type a number** | A jamb handle takes the number as the new width (`4'` or `48`); the move handle takes it as the gap from the nearer wall end or neighbor to the jamb. `Enter` finishes, `Esc` cancels. |
+| Click the **swing handle** at the free end of the door leaf (a small pointing-hand handle) | Reverses the swing, the same as the Edit toolbar button. A click, not a drag. **Shift**-click moves the hinge to the other jamb. |
+| Edit toolbar: **Reverse Swing** | Flips the door's swing to the other side of the wall; the hinge jamb stays. One undo step. **Flip Hinge** moves the hinge to the other jamb. |
+| Edit toolbar: **Center on Wall Segment** | Puts the opening midway in the free space between its neighbors and the wall ends (the whole unit for a mulled window). |
+| Edit toolbar: **Mull** | With two adjacent openings selected (or one with a neighbor within 12" and nothing in between), joins them into one unit; the gap is closed by moving the later ones against the first. Windows mull with windows, and one door (hinged, double, doorway or fixed) mulls with the windows beside it as sidelites. The unit shares one frame post (the Sash tab's Middle Width) and one casing around the whole unit, in plan and in 3D. |
+| Edit toolbar: **Unmull** | Splits the unit of the selected opening back into separate ones. |
+| Edit toolbar: **Reverse Side** | For a casement, awning, hopper or projecting window: swings, opens or projects to the other side. |
 | Edit toolbar: Open Object, Delete Objects, Copy, Paste in Place | As for any object. |
 | `Delete` | Removes the opening; the wall is untouched. |
 | Double-click, `Enter` | Opens the Door or Window Specification. |
 
-Not built yet: resize handles on the jambs, mulling adjacent windows, Center
-Object and arrow-key nudging (all planned).
+A mulled unit shows its overall width as an extra read-only dimension, and only the
+outer jambs of the unit have resize handles. A transom over a door is not built (the
+placement rules keep openings from overlapping in plan).
 
 ## 3.3 What the plan shows
 
-- The wall fill is cut across the opening and jamb lines are drawn at both ends.
-- A **door** shows its leaf as a line perpendicular to the wall and a quarter-circle
-  swing arc of radius equal to the door width. The hinge jamb and the swing side are drawn
-  from two separate settings in the model.
-- A **window** shows three parallel lines across the opening (the two wall faces
-  and the glass line).
-- The 2D label (for example `3068` for a 3'-0" x 6'-8" door) is computed
-  (`Opening::auto_label`) but not drawn on the plan yet (planned). Casing, threshold
-  and sill marks are not drawn either (planned).
+- The wall fill is cut across the opening (a niche only along its recess) and
+  jamb lines are drawn at both ends.
+- The symbol of each flavor is in 3.2. A hinged leaf is drawn at the Swing Angle
+  (Door Specification > Options) and, with **Show Open in 2D** off, closed as a
+  thin rectangle with no arc. The hinge jamb and the swing side are drawn from two
+  separate settings in the model.
+- Every door and window carries a **label** over the opening (3.4, Label): the
+  size, as `3068` for a 3'-0" x 6'-8" door or as `3'-0" x 6'-8"`, or the schedule
+  mark (`D01`, `W03`, in its circle or hexagon) once a Door or Window Schedule on
+  the floor numbers it. The text uses the plan's label text style
+  (Schedule Label, else Default Label Style) and follows the opening's layer
+  visibility. Marks run in reading order across the plan, so a new door takes the
+  next free mark and undoing its placement frees it again.
+- **Casing** is drawn as small rectangles on both wall faces beside the jambs when the
+  opening's Casing tab has **Show Casing in Plan** on (off by default); a mulled unit has
+  one pair for the whole unit, none between its members. **Shutters** are drawn as small
+  rectangles outside an exterior wall (beside the opening, or over it when shown closed).
+  A window with a Frame width shows jamb blocks of that width; an **arched** head shows two
+  dashed head lines across the opening. The threshold and sill marks are not drawn in plan.
+- Labels live on the **Doors, Labels** and **Windows, Labels** layers (they are added to a plan
+  that predates them when its first opening is placed). Hiding the layer hides the labels
+  without hiding the doors; hiding Doors hides both.
 
 ## 3.4 Dialog: Door Specification
 
@@ -124,19 +151,20 @@ preview shows an elevation sketch of the door and a plan sketch in its wall.
 |---|---|
 | General | Works |
 | Options | Works |
-| Casing | Works (session only for a placed door; saved for the defaults) |
-| Lintel, Sill/Threshold | (disabled) |
-| Lites | (disabled) for doors |
+| Casing | Works (interior width, depth and reveal and the Use switches are stored; also Show Casing in Plan) |
+| Lintel, Lites, Arch, Hardware, Shutters | Works (3.5a) |
+| Sill/Threshold | (disabled) |
 | Jamb | Works (the jamb width is stored with a placed door; the other jamb settings are session only) |
-| Arch, Hardware, Shutters, Opening Indicators, Rough Opening, Framing, Energy Values | (disabled) |
+| Opening Indicators, Rough Opening, Framing, Energy Values | (disabled) |
 | Layer, Materials | (disabled) |
-| Label | Works (session only) |
+| Label | Works (stored) |
 | Components, Object Information, Schedule | (disabled) |
 
 ### General
 
-- **General**: Door Style (Hinged, Sliding, Pocket, Bifold, Barn ... kept per session
-  and only Hinged changes the plan symbol today), Library Style (set when a library
+- **General**: Door Style (any of the flavors in 3.2; stored with the door, and it
+  changes the plan symbol, the 3D door and the elevation sketch, but not the size),
+  Library Style (set when a library
   door was chosen; stored with a placed door), Door Type (disabled, "Hinged").
 - **Size and Position**:
   - Width, Height, Thickness (stored with a placed door).
@@ -150,15 +178,20 @@ preview shows an elevation sketch of the door and a plan sketch in its wall.
 
 ### Options
 
-- **Door Swing**: two independent settings, as in Chief, so all four combinations are possible.
-  **Swing side** is Left (the wall's normal side) or Right (the other side, flipped); it is the same
-  setting as Reverse Swing. **Hinge side** is Start or End, with hover text "Hinge on the wall-start
-  jamb" and "Hinge on the wall-end jamb" (stored as `hinge_at_end`). The preview, the plan symbol and the
-  swing handle follow both. Swing Angle (stored with a placed door).
-- **Open/Close Display**: Show Open in 2D (stored); Show Open in 3D (disabled).
-- Disabled sections: Door Panels (Single / Double / Calculate from Width, All Glass),
-  Plan Display (Top Edge), Safety (Tempered Glass, Fire Door), Recessed into Wall,
-  Plinth Blocks.
+- **Swing** (Hinged, Shower; Double Door has the swing side only): two independent settings, as in
+  Chief, so all four combinations are possible. **Swing side** is Left (the wall's normal side) or Right
+  (the other side, flipped); it is the same setting as Reverse Swing. **Hinge side** is Start or End, with
+  hover text "Hinge on the wall-start jamb" and "Hinge on the wall-end jamb" (stored as `hinge_at_end`).
+  The preview, the plan symbol and the swing handle follow both. Swing Angle (stored with a placed door).
+- The other flavors show their own fields instead: Sliding (panel count from the width, Opens
+  toward), Pocket (Pocket on), Bifold (panel count, Folds toward, Hinged at), Garage (Overhead tracks
+  on), Barn (Hung on, Slides toward), Doorway (no swing).
+- **Open/Close Display**: Show Open in 2D (stored; unchecked draws the door closed); Show Open in 3D
+  (disabled).
+- **Door Panels**: Single Door Only or Double Door Only switches between a hinged and a double door;
+  **Calculate from Width** makes it single or double by the width (double from 40").
+- Disabled sections: All Glass, Plan Display (Top Edge), Safety (Tempered Glass, Fire Door), Recessed
+  into Wall, Plinth Blocks.
 
 ### Casing
 
@@ -176,8 +209,19 @@ Width, Fit Jamb to Wall, Depth (when not fit to wall), Inset. Defaults: 3/4" jam
 
 Display Options (Suppress Label in All Views, Display in Plan View), Label Content
 (Automatic Label or Specify Label), Size Format (Height/Width, Width/Height, Width
-Only), Include Schedule Number, Include Type. The Label Layer (Doors, Labels) is
-disabled. All of this is session only until the plan labels are drawn. (The `D01` / `W01` marks that a Door or Window Schedule placed in the plan draws beside each opening are a separate thing, chapter 11.2.)
+Only), Size Style (`3068` shorthand or `2'-6" x 6'-8"`), Include Schedule Number,
+Include Type and Placement (over the opening, interior side or exterior side). A
+line under the controls previews the label as it will print, with and without a
+schedule. The label draws on the system layer Doors, Labels (Windows, Labels for windows);
+drag it with its handle in Select Objects.
+
+- **Automatic Label** shows the schedule mark when a Door or Window Schedule numbers
+  the opening and Include Schedule Number is on, otherwise the size.
+- **Specify Label** replaces it with your text. Macros: `%automatic_label%` (the size),
+  `%schedule_number%` (the mark), `%width%`, `%height%` and `%type%`.
+- The settings are stored with the opening once you change them. An untouched label
+  keeps following **Edit > Default Settings > Doors / Windows > Label**, which sets the
+  format of every new label (and of every label that has no settings of its own).
 
 ## 3.5 Dialog: Window Specification
 
@@ -187,26 +231,62 @@ Open by double-clicking a window, or Edit > Default Settings > Windows > Window.
 |---|---|
 | General | Works |
 | Options | Works |
-| Casing | (disabled) |
-| Lintel, Sill/Threshold, Sash, Shape, Arch, Treatments, Shutters | (disabled) |
-| Frame | Works (the frame width is stored with a placed window; the rest is session only) |
-| Lites | Works for counts |
+| Casing | Works (3.5a) |
+| Lintel, Sash, Arch, Shutters | Works (3.5a) |
+| Sill/Threshold, Shape, Treatments | (disabled) |
+| Frame | Works (the frame width is stored and drawn in 3D and in plan; the rest is session only) |
+| Lites | Works (counts, style and muntin width stored with the window) |
 | Opening Indicators, Rough Opening, Framing, Energy Values, Layer, Materials | (disabled) |
-| Label | Works (session only) |
+| Label | Works (stored) |
 | Components, Object Information, Schedule | (disabled) |
 
-- **General**: Window Type (Single Casement ... stored with a placed window), Width, Height,
+- **General**: Window Style (any of the window flavors in 3.2, stored with the window and driving the plan symbol and the 3D unit), Window Type (Single Casement ... stored with a placed window), Width, Height,
   Floor to Top, Floor to Bottom (the sill), Distance from Wall Start.
-- **Options**: Egress and Tempered Glass (session only for a placed window; the
-  Window defaults store them), Show Open in 2D; disabled Interior and Exterior
+- **Options**: the fields of the flavor first (Casement: swing side, hinge side, swing angle;
+  Sliding: Opens toward; Awning and Hopper: Open to the other side; Bay, Bow and Box: Project to the
+  other side; Pass-Through and Wall Niche: a note), then Egress and Tempered Glass (session only for a
+  placed window; the Window defaults store them), Show Open in 2D; disabled Interior and Exterior
   Corner Block, Show Open in 3D, Recessed into Wall.
 - **Frame**: Has Frame, Positioning (Window Size Includes / Excludes Frame), Sides
   Width, Top Width, Bottom Width, Fit Frame to Wall, Depth, Inset, Corner Join (Post
   or Mitered).
-- **Lites**: Lites Across and Lites Vertical (stored with the window), Muntin Width
-  (session only). Disabled: Type, Lites in Fixed, Lites in Movable, Muntin in
-  Corner, Auto Adjust Lites for Component Size, Round Top Arch.
-- **Label**: as for doors.
+- **Lites**: Type (Standard grid, Diamond, Prairie, Custom Grid), Lites Across and Lites
+  Vertical, Muntin Width, all stored with the window and built in 3D as panes and muntins.
+  Disabled: Lites in Fixed, Lites in Movable, Muntin in Corner, Auto Adjust Lites for
+  Component Size, Round Top Arch.
+- **Label**: as for doors (the Window label defaults are separate from the Door ones).
+
+## 3.5a The shaping tabs (Sash, Lites, Lintel, Arch, Hardware, Shutters)
+
+These tabs shape the 3D unit (and the elevations, which are cut from it) and are stored with
+the opening; Default Settings dialogs give new openings their starting values.
+
+- **Sash** (windows): Has Sash, Side, Top and Bottom Width, and **Middle Width**, the post
+  between the two sashes of a wide casement and between mulled units. Frame widths are on the
+  Frame tab. A window without a sash is glass straight in the frame.
+- **Lites**: **Standard** is an even grid; **Diamond** crosses diagonal muntins over one pane
+  (the counts are the diamonds across and up); **Prairie** pulls the dividers in to a border of
+  small lites round one large pane; **Custom Grid** puts dividers where you type them, as
+  percents of the width and of the height (`33, 66`). Doors take the same styles for their glass.
+- **Lintel**: Use Exterior Lintel and Use Interior Lintel with Style (Flat, Capped, Keystone),
+  Height, Depth and Extend; windows also have an **Exterior Sill** (Projection, Thickness,
+  Extend). Both are drawn whether or not casing is shown.
+- **Arch**: Type (No Arch, Round Top, Segmental, Tudor, Gothic, Eyebrow) and Height (0 takes the
+  type's own rise). The head of a window (plain, fixed or casement) or of a hinged, double,
+  fixed or doorway door follows the curve: the frame band, the pane (one pane over the springline;
+  the lite grid fills the rectangle below it) and wall fill in the corners above the curve. A door's leaves
+  stop at the springline and the arch closes as a glazed transom. Other styles keep a square head and
+  only mark the arch in plan.
+- **Hardware** (doors): Show Hardware in 3D, Handle (None, Knob, Lever, Handle), Up from Bottom,
+  In from Door Edge, Number of Hinges and their inset, drawn as simple metal shapes on hinged,
+  double, fixed and pocket doors. Off by default, so a door is a plain slab.
+- **Shutters**: Type (None, Panel, Louver), Sides, Width (0 = half the opening), Color, Show Closed,
+  Outside Casing and Louver Size. Exterior walls only. The color is stored; the plan draws the
+  outline and 3D the trim material.
+
+Door Options > Door Panels has **Calculate from Width**: a hinged door becomes a double door from
+40" wide (a sliding door has 2 to 4 panels and a bifold pair 2 or 4 by the same rule). A wall
+niche's depth is editable on Options (3 1/2" by default, always leaving 1" of wall).
 
 ## 3.6 Egress and checks
 
@@ -223,10 +303,17 @@ active floor with its size, style and position, and export CSV (chapter 11).
 
 - Hinge side and Swing side are separate settings (four combinations, as in Chief), both in the Door
   Specification. A new door also takes both from the pointer position while placing (3.2).
-- A placed opening stores its library style or window type, a door's thickness and swing angle,
-  the jamb or frame width and Show Open in 2D (its `extras`, saved with the plan and loaded with
-  defaults from older files). The other Opening Specification choices (casing, lites' muntin width,
-  label options, door style) are session only for placed openings; only the Default Settings dialogs
-  write the template values that new openings copy.
-- Opening plan labels, casing marks, mulled windows, bay/bow/box
-  windows, garage and sliding door symbols are all (planned).
+- A placed opening stores its style, its library style or window type, a door's thickness and swing
+  angle, the jamb or frame width, Show Open in 2D, its label settings and offset, its mull group, its
+  lites, interior casing and every shaping tab of 3.5a (all saved with the plan and loaded with
+  defaults from older files). Exterior casing widths stay session only (an opening has one casing). The Default Settings dialogs write
+  the template values that new openings copy, but the **standard widths**, **Snap to standard widths** and the shaping-tab values that new doors and windows start with are held for the
+  session only: saving them with the plan defaults (`OpeningDialog::apply_to_variants`) is not wired yet (`docs/integration-queue.md`), and until it is the embedded template JSON
+  lags the defaults (a new plan gets the two label layers when its first opening is placed).
+- Double Door, Casement, Fixed, Sliding, Awning and Hopper Window are Plan Studio's own flyout entries
+  (Chief picks them in the dialog). The threshold line, a transom over a door (stacked openings that overlap in plan), per-mesh shutter
+  color, door jambs and Size Includes Frame in plan, Opening Indicators, and Custom left/right door panel counts are not built.
+- In a **layout** every door and window is drawn with the same plan symbol as the editor, with its casing, and a mulled unit with the unit's span; the layout draws no opening labels
+  (so a label's offset has nothing to honor there), and the standalone sheet writer in `plan-docs` (`plan_sheet`, which the editor does not call; chapter 11.7) still draws simple door and window symbols.
+- The editor's 3D view builds doors closed and without casing, sills and thresholds (the builder has options for open doors and casing; nothing in the View menu turns them on yet), but the
+  lintel, exterior sill, arch, hardware, shutters, sash and lites of 3.5a are always built.

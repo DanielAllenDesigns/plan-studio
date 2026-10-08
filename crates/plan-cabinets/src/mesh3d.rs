@@ -260,25 +260,7 @@ pub(crate) fn build_fronts(b: &mut Builder, ctx: &FrontCtx, x_off: f64, face_w: 
                 }
             }
             FaceItem::Opening { .. } => {}
-            FaceItem::Drawer { .. } => {
-                let style = &cab.drawer_style;
-                front_panel(
-                    b,
-                    ctx,
-                    rect,
-                    style.thickness,
-                    style.profile,
-                    false,
-                    pick(cab.materials.drawer, Material::WallInterior),
-                );
-                let (cx, cz) = ((rx0 + rx1) / 2.0, (rz0 + rz1) / 2.0);
-                let cz = if style.handle_centered {
-                    cz
-                } else {
-                    (rz1 - 1.5).max(rz0)
-                };
-                handle(b, ctx.frame, style.handle, cx, cz, true);
-            }
+            FaceItem::Drawer { .. } => drawer(b, ctx, rect),
             FaceItem::Appliance { .. } | FaceItem::Panel { .. } => {
                 let style = &cab.door_style;
                 front_panel(
@@ -448,17 +430,17 @@ impl Builder {
             );
         }
 
-        // Countertop and backsplash.
-        if let Some(t) = top {
+        // Countertop and backsplash. A cabinet that gave its slab to a
+        // generated top keeps its backsplash, standing on that top.
+        if top.is_some() {
             self.countertop(cabinet, z1, h);
-            if let Some(bs) = cabinet.backsplash.filter(|s| s.height > 0.0) {
+        }
+        if let Some(bs) = cabinet.backsplash.filter(|s| s.height > 0.0) {
+            let (side, back) = top.map_or((0.0, 0.0), |t| (t.overhang_sides, t.overhang_back));
+            if top.is_some() || bs.lift > 0.0 {
                 self.add_box(
-                    [-t.overhang_sides, -t.overhang_back, h],
-                    [
-                        w + t.overhang_sides,
-                        -t.overhang_back + bs.thickness,
-                        h + bs.height,
-                    ],
+                    [-side, -back, h + bs.lift],
+                    [w + side, -back + bs.thickness, h + bs.lift + bs.height],
                     pick(cabinet.materials.backsplash, Material::Floor),
                 );
             }
@@ -615,6 +597,26 @@ impl Builder {
             self.add_slab(&ring, &cabinet.holes_local(), (z1, h), edge, size, material);
             self.fixtures(cabinet, h);
         }
+        self.waterfall_sides(cabinet, h, material);
+    }
+
+    /// The Waterfall edge: a slab as thick as the top runs from the top
+    /// surface to the floor beside each end of the cabinet.
+    fn waterfall_sides(&mut self, cabinet: &Cabinet, h: f64, material: Material) {
+        let Some(t) = cabinet
+            .countertop
+            .filter(|t| t.edge == EdgeProfile::Waterfall)
+        else {
+            return;
+        };
+        if cabinet.kind.is_corner() || t.thickness <= 0.0 {
+            return;
+        }
+        let (y0, y1) = (-t.overhang_back, cabinet.depth + t.overhang_front);
+        let left = -t.overhang_sides;
+        let right = cabinet.width + t.overhang_sides;
+        self.add_box([left - t.thickness, y0, 0.0], [left, y1, h], material);
+        self.add_box([right, y0, 0.0], [right + t.thickness, y1, h], material);
     }
 }
 
@@ -683,33 +685,73 @@ fn front_panel(
     );
 }
 
+/// How far an open drawer stands out of the cabinet, inches (at most).
+const DRAWER_PULL_OUT: f64 = 14.0;
+/// Thickness of a drawer box's sides, back and bottom, inches.
+const DRAWER_BOX: f64 = 0.5;
+/// Tallest gap between shelves in the interior shown by an open door, in.
+const SHELF_SPACING: f64 = 13.0;
+/// Height above the cabinet bottom where a tall door's handle sits, inches.
+const TALL_HANDLE_Z: f64 = 38.0;
+
+/// The frame of a door swung 90 degrees open about the hinge at `hx` (along
+/// `f`), toward the outside of the front.
+fn open_frame(f: Frame, hx: f64, hinge: Hinge) -> Frame {
+    let pivot = f.pt(hx, 0.0);
+    // Left hinge: the leaf runs along +dir, so turn counter-clockwise to put
+    // its free edge on the outward normal; right hinge: clockwise.
+    let rot = |v: Point| match hinge {
+        Hinge::Left => Point::new(-v.y, v.x),
+        Hinge::Right => Point::new(v.y, -v.x),
+    };
+    Frame {
+        origin: pivot.add(rot(f.origin.sub(pivot))),
+        dir: rot(f.dir),
+        nrm: rot(f.nrm),
+        len: f.len,
+    }
+}
+
+/// A copy of `ctx` with another front line.
+fn with_frame<'a>(ctx: &FrontCtx<'a>, frame: Frame) -> FrontCtx<'a> {
+    FrontCtx {
+        cab: ctx.cab,
+        layout: ctx.layout,
+        frame,
+        carcass_y: ctx.carcass_y,
+        z0: ctx.z0,
+        z1: ctx.z1,
+    }
+}
+
 /// A door panel with its handle on the free edge and hinges on the other.
+/// With Opening Indicators in 3D the leaf stands open at 90 degrees and the
+/// shelves inside show.
 fn door(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), hinge: Hinge) {
     let cab = ctx.cab;
     let style = &cab.door_style;
+    let (x0, x1, z0, z1) = overlay_rect(cab, r, (ctx.z0, ctx.z1), ctx.frame.len);
+    let open = cab.indicators_3d && ctx.frame.is_front();
+    let leaf = if open {
+        let hx = match hinge {
+            Hinge::Left => x0,
+            Hinge::Right => x1,
+        };
+        shelves(b, ctx, r);
+        with_frame(ctx, open_frame(ctx.frame, hx, hinge))
+    } else {
+        with_frame(ctx, ctx.frame)
+    };
     front_panel(
         b,
-        ctx,
+        &leaf,
         r,
         style.thickness,
         style.profile,
         style.glass,
         pick(cab.materials.door, Material::WallInterior),
     );
-    let (x0, x1, z0, z1) = overlay_rect(cab, r, (ctx.z0, ctx.z1), ctx.frame.len);
-    let cx = match hinge {
-        Hinge::Left => x1 - style.handle_from_edge,
-        Hinge::Right => x0 + style.handle_from_edge,
-    };
-    // Handles sit near the top of base/tall doors and the bottom of wall doors.
-    let cz = if style.handle_centered {
-        (z0 + z1) / 2.0
-    } else if cab.kind.is_wall_like() {
-        z0 + style.handle_from_top
-    } else {
-        z1 - style.handle_from_top
-    };
-    handle(b, ctx.frame, style.handle, cx, cz, false);
+    door_hardware(b, &leaf, (x0, x1, z0, z1), hinge);
     if style.hinge == HingeStyle::Exposed {
         let hx = match hinge {
             Hinge::Left => (x0, x0 + 0.5),
@@ -718,7 +760,7 @@ fn door(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), hinge: Hinge) 
         for hz in [z0 + style.hinge_from_edge, z1 - style.hinge_from_edge] {
             frame_box(
                 b,
-                ctx.frame,
+                leaf.frame,
                 hx,
                 (hz - 1.0, hz + 1.0),
                 (0.0, 0.1),
@@ -728,22 +770,184 @@ fn door(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), hinge: Hinge) 
     }
 }
 
-/// A tiny box handle centred at `(cx, cz)` on the front plane.
-fn handle(b: &mut Builder, f: Frame, style: HandleStyle, cx: f64, cz: f64, horizontal: bool) {
-    let (hw, hh) = match (style, horizontal) {
-        (HandleStyle::None, _) => return,
-        (HandleStyle::Knob, _) => (1.0, 1.0),
-        (HandleStyle::Pull, true) => (4.0, 0.5),
-        (HandleStyle::Pull, false) => (0.5, 4.0),
+/// Where a door's handle sits (Chief's door hardware): `handle_from_edge`
+/// off the free edge; vertically `handle_from_top` off the top edge of a
+/// base door or the bottom edge of a wall door (a pull is measured to its
+/// near end, a knob to its centre); tall doors that cross 38" above the
+/// floor carry it there; `handle_centered` centres it.
+fn door_hardware(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), hinge: Hinge) {
+    let cab = ctx.cab;
+    let style = &cab.door_style;
+    if style.handle == HandleStyle::None {
+        return;
+    }
+    let (x0, x1, z0, z1) = r;
+    let len = style.handle_length.max(1.0);
+    // A pull is long, a knob a point; the offset runs to the pull's end.
+    let half = match style.handle {
+        HandleStyle::Pull | HandleStyle::Edge => len / 2.0,
+        _ => 0.0,
     };
-    frame_box(
-        b,
-        f,
-        (cx - hw / 2.0, cx + hw / 2.0),
-        (cz - hh / 2.0, cz + hh / 2.0),
-        (0.0, HANDLE_PROJECTION),
-        Material::WindowFrame,
+    let cx = match (style.handle, hinge) {
+        (HandleStyle::Edge, Hinge::Left) => x1 - 0.5,
+        (HandleStyle::Edge, Hinge::Right) => x0 + 0.5,
+        (_, Hinge::Left) => x1 - style.handle_from_edge,
+        (_, Hinge::Right) => x0 + style.handle_from_edge,
+    };
+    let tall = matches!(
+        cab.kind,
+        CabinetKind::FullHeight | CabinetKind::FullHeightFiller
     );
+    let cz = if style.handle_centered {
+        (z0 + z1) / 2.0
+    } else if tall && z0 <= TALL_HANDLE_Z - 3.0 && z1 >= TALL_HANDLE_Z + 3.0 {
+        TALL_HANDLE_Z
+    } else if cab.kind.is_wall_like() || (tall && z0 > TALL_HANDLE_Z) {
+        z0 + style.handle_from_top + half
+    } else {
+        z1 - style.handle_from_top - half
+    };
+    let cz = cz.clamp(z0.min(z1), z1.max(z0));
+    handle(b, ctx.frame, style.handle, cx, cz, false, len);
+}
+
+/// A drawer front with its handle; with Opening Indicators in 3D the drawer
+/// stands out of the cabinet with its box behind the front.
+fn drawer(b: &mut Builder, ctx: &FrontCtx, rect: (f64, f64, f64, f64)) {
+    let cab = ctx.cab;
+    let style = &cab.drawer_style;
+    let (rx0, rx1, rz0, rz1) = rect;
+    let open = cab.indicators_3d && ctx.frame.is_front();
+    let pull = if open {
+        (cab.depth * 0.5).min(DRAWER_PULL_OUT)
+    } else {
+        0.0
+    };
+    let mut f = ctx.frame;
+    f.origin = f.origin.add(f.nrm.scale(pull));
+    let out = with_frame(ctx, f);
+    front_panel(
+        b,
+        &out,
+        rect,
+        style.thickness,
+        style.profile,
+        false,
+        pick(cab.materials.drawer, Material::WallInterior),
+    );
+    if open {
+        drawer_box(b, &out, rect);
+    }
+    let (cx, cz) = ((rx0 + rx1) / 2.0, (rz0 + rz1) / 2.0);
+    let len = style.handle_length.max(1.0);
+    let cz = match style.handle {
+        HandleStyle::Cup => rz1 - 1.25,
+        HandleStyle::Edge => rz1 - 0.5,
+        _ if style.handle_centered => cz,
+        _ => (rz1 - style.handle_from_top).max(rz0),
+    };
+    handle(b, f, style.handle, cx, cz, true, len);
+}
+
+/// The box of an open drawer: bottom, two sides and a back behind the front.
+fn drawer_box(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64)) {
+    let cab = ctx.cab;
+    let (x0, x1, z0, z1) = overlay_rect(cab, r, (ctx.z0, ctx.z1), ctx.frame.len);
+    let t = cab.drawer_style.thickness;
+    let (bx0, bx1) = (x0 + 1.0, x1 - 1.0);
+    let (bz0, bz1) = (z0 + 0.75, (z1 - 0.75).max(z0 + 1.5));
+    let length = (cab.depth - t - 3.0).max(6.0);
+    let (y0, y1) = (-t - length, -t);
+    if bx1 - bx0 < 2.0 {
+        return;
+    }
+    let wood = pick(cab.materials.drawer, Material::WallInterior);
+    let f = ctx.frame;
+    frame_box(b, f, (bx0, bx1), (bz0, bz0 + DRAWER_BOX), (y0, y1), wood);
+    frame_box(b, f, (bx0, bx0 + DRAWER_BOX), (bz0, bz1), (y0, y1), wood);
+    frame_box(b, f, (bx1 - DRAWER_BOX, bx1), (bz0, bz1), (y0, y1), wood);
+    frame_box(b, f, (bx0, bx1), (bz0, bz1), (y0, y0 + DRAWER_BOX), wood);
+}
+
+/// Adjustable shelves inside the opening behind a door that stands open.
+fn shelves(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64)) {
+    let cab = ctx.cab;
+    let (x0, x1, z0, z1) = r;
+    let cf = ctx.carcass_y + cab.depth;
+    let (xa, xb) = (x0.max(PANEL), x1.min(cab.width - PANEL));
+    let n = ((z1 - z0) / SHELF_SPACING).floor() as usize;
+    if xb - xa < 3.0 || cf - PANEL < 3.0 {
+        return;
+    }
+    let wood = pick(cab.materials.carcass, Material::WallInterior);
+    for k in 1..=n.min(6) {
+        let z = z0 + (z1 - z0) * k as f64 / (n + 1) as f64;
+        b.add_box(
+            [xa, PANEL, z - PANEL / 2.0],
+            [xb, cf - 0.5, z + PANEL / 2.0],
+            wood,
+        );
+    }
+}
+
+/// A handle centred at `(cx, cz)` on the front plane. `horizontal` pulls
+/// (drawers) run along the front, the rest stand upright; `len` is a pull's
+/// length.
+fn handle(
+    b: &mut Builder,
+    f: Frame,
+    style: HandleStyle,
+    cx: f64,
+    cz: f64,
+    horizontal: bool,
+    len: f64,
+) {
+    let part = |b: &mut Builder, x: (f64, f64), z: (f64, f64), y: (f64, f64)| {
+        frame_box(b, f, x, z, y, Material::WindowFrame);
+    };
+    match style {
+        HandleStyle::None => {}
+        HandleStyle::Knob => part(
+            b,
+            (cx - 0.5, cx + 0.5),
+            (cz - 0.5, cz + 0.5),
+            (0.0, HANDLE_PROJECTION),
+        ),
+        HandleStyle::Pull => {
+            // A bar on two posts.
+            let (a, bw) = (len / 2.0, 0.25);
+            let post = 0.4;
+            let (bar_x, bar_z) = if horizontal {
+                ((cx - a, cx + a), (cz - bw, cz + bw))
+            } else {
+                ((cx - bw, cx + bw), (cz - a, cz + a))
+            };
+            part(
+                b,
+                bar_x,
+                bar_z,
+                (HANDLE_PROJECTION - 2.0 * bw, HANDLE_PROJECTION),
+            );
+            let ends = [-(a - post), a - post];
+            for e in ends {
+                let (px, pz) = if horizontal {
+                    ((cx + e - post, cx + e + post), (cz - bw, cz + bw))
+                } else {
+                    ((cx - bw, cx + bw), (cz + e - post, cz + e + post))
+                };
+                part(b, px, pz, (0.0, HANDLE_PROJECTION - 2.0 * bw));
+            }
+        }
+        HandleStyle::Cup => part(b, (cx - 1.5, cx + 1.5), (cz - 0.75, cz + 0.75), (0.0, 0.5)),
+        HandleStyle::Edge => {
+            let a = len / 2.0;
+            if horizontal {
+                part(b, (cx - a, cx + a), (cz - 0.4, cz + 0.4), (0.0, 0.6));
+            } else {
+                part(b, (cx - 0.4, cx + 0.4), (cz - a, cz + a), (0.0, 0.6));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -785,10 +989,7 @@ mod tests {
         let mut c = Cabinet::sink_base(36.0);
         c.angle = 0.7;
         c.position = Point::new(5.0, 9.0);
-        c.backsplash = Some(crate::Backsplash {
-            height: 4.0,
-            thickness: 0.5,
-        });
+        c.backsplash = Some(crate::Backsplash::new(4.0, 0.5));
         for m in meshes(&c) {
             for t in m.indices.chunks(3) {
                 let v: Vec<[f32; 3]> = t.iter().map(|&i| m.vertices[i as usize].position).collect();

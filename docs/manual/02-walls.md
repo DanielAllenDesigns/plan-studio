@@ -107,15 +107,49 @@ straight wall instead. A press-drag-release sets the chord of one wall (the chai
 with it) and the next click sets the arc. A chain of clicks continues from the arc's end. The
 end of a curved wall snaps onto the nearest end of another wall within the connect distance.
 
+While you set the arc, the status bar reads the **radius, the arc length and the chord**
+("Radius: 12'-0"   Arc: 18'-10 1/2"   Chord: 20'-0""); a bulge near zero reads "Straight".
+
+What a curved wall does (Round 12):
+
+- **Joins.** Both outlines of a curved wall, and every layer of its wall type, are exact arcs
+  (the plan band is a run of facets inscribed in the offset arcs, so each vertex is half the
+  thickness off the centerline). Where a curved wall meets another wall at an end the two are
+  **mitered**, straight or curved neighbor, and where its end meets the side of another wall
+  (or an arc meets the side of a curved wall) it gets the **tee cut**, as straight walls do
+  (`plan_core::joins::{curved_wall_polygon, curved_end_miters, curved_layer_outlines}`). The
+  miter treats the arc as its tangent line at the joined end, so a wide arc meeting a steep
+  corner shows a small kink on the end facet; past the miter limit (4 x thickness) the end
+  stays square.
+- **Doors and windows cut through it in 3D.** The jambs and the head follow the arc and the
+  door or window unit (leaf, sash, casing, mullions) stands square to the arc's tangent at the
+  opening's center, so a window in a curved wall is flat and plumb in a curve (`plan-3d`
+  `opening::tangent_wall`). The elevations show them, since they are drawn from the same scene.
+- **Every class curves.** Curved foundation, pony, half and glass walls, glass pony walls,
+  railings, deck railings and fencing are built along the arc in 3D; the roof cuts a curved
+  wall's top facet by facet, and a **curved gable end** rises to the roof like a straight one.
+  Foundation, pony, half-wall and the other special classes keep their flat or roof-cut tops
+  as in chapter 8.
+- **The arc can be edited by number.** The Arc section of the Wall Specification gives radius,
+  arc angle and rise (each recomputes the others), the arc length and the center point
+  (2.6). Change Line/Arc and its bulge handle, Make Arc Tangent and the three-click tool
+  (2.5) draw and edit the same arc.
+- **Opening offsets** are measured along the arc, and Auto Exterior Dimensions include curved
+  walls (chapter 5).
+
 Limits of curved walls today:
 
-- **No mitered joins.** A curved wall's end only moves to meet a neighbor's end; there is no
-  corner solving, the neighbors do not move, and the bulge stays.
-- **No opening cuts in 3D.** The 3D view builds a curved wall as a run of straight facets
-  (one every 7.5 degrees) and does not cut doors and windows through it.
-- The Curved Wall section of the Wall Specification stays disabled, so the arc cannot be
-  edited by number; there are no Select Objects handles for the bulge.
-- There is no Curved Glass Wall or Curved Glass Pony Wall tool.
+- A **straight wall drawn to meet an arc** ends square until the editor's connection pass is
+  extended to arcs (the plan outline and the 3D cut already miter the pair once the ends
+  touch; the hook that makes the connection when the straight wall is created is wired at
+  the gate, not by this chapter's author).
+- An opening's **plan symbol** (jambs, leaf, swing arc) is drawn on the **chord** of the curved
+  wall, not along the arc. The 3D opening follows the arc.
+- The Radius-to and Lock options of the Arc section and Automatic Facet Angle stay dimmed.
+  The facet angle is fixed at 7.5 degrees.
+- There is no Curved Glass Wall or Curved Glass Pony Wall button on the Curved Wall flyout;
+  draw a Curved Exterior Wall and set its Wall Class to Glass or Glass Pony in the Wall
+  Specification (or use Change Line/Arc on a straight glass wall).
 
 ### Railing and Deck, Fencing
 
@@ -150,16 +184,18 @@ With a wall tool active:
 | Click the start of the first wall (after at least two walls) | Closes the loop and ends the chain. |
 | `Esc` | Cancels the wall in progress, keeps the walls already placed, and leaves the chain. A second `Esc` returns to Select Objects. |
 | Right-click | Ends the chain without leaving the tool. |
-| Hold `Alt` | Suspends the angle snap only (free angle). Object and grid snaps stay on. |
-| Move the pointer | The status bar shows `Length: 12'-6"` and the snap in use (with Temporary Dimensions on). A ghost wall previews the real thickness. |
+| Hold `Alt` | Suspends every snap (object, angle and grid): the wall goes exactly where the pointer is. |
+| Hold `Shift` | Holds the Angle Snap increment (15 degrees by default, set in Edit > Snap Settings) even where angle snaps are off. |
+| Type a length, `Tab`, an angle, `Enter` | After the first click, digits fill the length (`12'6`, `12-6`, `150`), `Tab` switches to the angle (degrees counter-clockwise from east), `Enter` draws the wall at exactly that length and angle and continues the chain. With only a length typed the pointer still picks the direction. `Backspace` edits, `Esc` drops the typed text first. |
+| Move the pointer | The status bar shows `Length: 12'-6"   Angle: 90.0°` and the snap in use (with Temporary Dimensions on). A ghost wall previews the real thickness. |
 
 Walls shorter than a small threshold (1") are discarded. A wall started or ended on
 another wall splits it there (a T-junction). Every wall you draw is one undo step
 named "Draw Wall". The new wall becomes the selection.
 
-Typing a length while drawing (Chief's Tab and Enter entry) is (planned). To place
-a wall at an exact length today, draw it and then type a value into its temporary
-dimension (2.5) or open its specification (2.6).
+The same typed length and angle work when you drag a selected wall's end handle
+(`Enter` drops the end there), and a selected wall shows its angle next to its start:
+click it to turn the wall about its start point.
 
 ## 2.3 Snapping while drawing
 
@@ -175,13 +211,23 @@ In priority order, the pointer snaps to:
    to the snap unit).
 6. The **grid** snap, 1" in Daniel's template.
 
-`Alt` suspends the angle snap only; object snaps and the grid stay active.
-Snap spacing and grid spacing are set in the Properties panel (Grid spacing,
-Snap spacing). Angle snaps follow the defaults' 15 degrees.
+`Alt` suspends every snap. Edit > Snap Settings sets which snaps are on: the object
+snaps as a group and one by one (Endpoint, Midpoint, Intersection, Perpendicular,
+Tangent, Center, Quadrant, On Object, Extension, Points/Markers), grid snaps and the grid snap unit, angle snaps
+with the increment and an optional list of allowed angles, the bumping distance and
+the snap distance in pixels. Center, Quadrant and Tangent snap to CAD circles and
+arcs, and CAD lines and polylines give Endpoint, Midpoint and On Object points. The
+priority is Points/Markers, Endpoint, Intersection, Midpoint, Center, Quadrant, Perpendicular,
+Tangent, Extension, On Object, Angle, Grid.
 
-Not built: dashed alignment guides that extend from other walls' endpoints,
-Shift to constrain to 0/90 degrees, a separate on/off for each object snap
-(Edit > Snap Settings is dimmed), and Alt suspending every snap.
+The snaps work against CAD objects as well as walls (Round 11):
+
+- **Intersection** snaps where a wall and a CAD line, two CAD lines or polylines, or a line and a circle or arc cross, as well as where two walls cross.
+- **Extension** (off by default; tick it in Snap Settings) snaps to the line beyond the end of a wall or a CAD line, once the pointer is farther past the end than the snap distance (nearer than that, Endpoint and On Object win), so a new wall can start in line with an existing one.
+- **Points/Markers** (on) snaps to the center of a CAD point, a Point Marker and a numbered Marker (the circle with a number from the Text flyout).
+- **Reference Display.** While the reference floor is shown, the pointer also snaps to the ends and the crossings of its walls (chapter 4.5).
+
+Not built: dashed alignment guides that extend from other walls' endpoints.
 
 ## 2.4 Automatic wall connections
 
@@ -205,13 +251,11 @@ After a wall is created, or after one of its ends is moved or released:
   detection can use the pieces. (Chief keeps one object; Plan Studio splits by
   default and the split option is not yet a saved default.)
 - **Crossing** walls are cut at the crossing.
+- A **curved wall** takes part in all three: its ends are mitered against a straight or curved neighbor, and a wall that ends on an arc's side is cut to the arc's face there (the arc is met along its tangent at that point; Round 12, 2.2).
 - Overlapping duplicate collinear walls are merged.
 
 Every connection function is idempotent: running it twice changes nothing.
-The whole edit is one undo step. The Edit toolbar shows a **Fix Wall
-Connections** button when a wall is selected. It is (planned): the function that
-re-solves every wall of the floor exists and is tested (`editor/connect.rs`), but the
-button is not wired to it yet and reports "not implemented yet".
+The whole edit is one undo step. The Edit toolbar's **Fix Wall Connections** button runs this repair on the selected walls, or on every wall of the floor when none is selected (`fix_wall_connections_action` in `editor/connect.rs`).
 
 ## 2.5 Editing walls with Select Objects
 
@@ -260,15 +304,69 @@ length dimension follows the Lock setting of its specification (Start by default
 | `Tab` | Cycle through objects under the pointer. |
 | `Delete`, `Backspace` | Delete the selection (a deleted wall takes its openings). One undo step. |
 | Double-click, `Enter` | Open the specification dialog. |
-| Edit toolbar: Open Object, Delete Objects, Copy Selected Objects, Paste in Place | The common buttons for any selection. Paste in Place duplicates the selection in the same position (the copy is selected, with new ids). Move it afterwards; pasted walls are not auto-connected. Some object kinds add their own buttons (Reverse Swing, Auto Stairwell, Join Roof Planes, Flip Side ...). |
-| `Cmd+C`, `Cmd+X`, `Cmd+V`, `Cmd+A` | (planned) The Edit menu items are dimmed. Paste Hold Position is (planned). |
+| Edit toolbar: Open Object, Delete Objects, Cut, Copy Selected Objects, Paste in Place | The common buttons for any selection. Paste in Place puts a copy in the same position (the copy is selected, with new ids). Then come Group / Ungroup, Select Same Type, Transform/Replicate, Reflect About Object, Point to Point Move, Center Object, Make Parallel / Perpendicular (walls and CAD lines), Align/Distribute (two or more objects), Layer and Lock / Unlock. Some object kinds add their own buttons (Reverse Swing, Auto Stairwell, Join Roof Planes, Flip Side ...). The bar wraps onto a second row when it is long. |
+| `Cmd+C`, `Cmd+X` | Copy and Cut. The clipboard keeps walls with their doors and windows, dimensions, CAD and text (with styles and blocks), cameras, cabinets, symbols, stairs, devices, framing, slabs, pads, piers, platform holes, moldings, decks, floor regions, 3D solids, schedules and terrain elements. It does not take roof planes, the terrain perimeter, rooms, or the trim and hatching that belong to a wall; Copy says what it left out and Cut refuses so nothing is lost. |
+| `Cmd+V` | Paste: the copy hangs on the pointer, centered on it. Click to drop it (walls join the walls they touch); `Esc` or a right click cancels. Edit > Paste > Paste Special > As Group drops it as one group. |
+| `C, P, P`, `Alt+Cmd+V` | Copy and Paste in Place, and Paste Hold Position (paste at the original coordinates, on the current floor). |
+| `Cmd+D` | Duplicate: a copy 12" right and 12" down, selected. Leaves the clipboard alone. |
+| `Cmd+A` | Select All: every object of the floor on a displayed, unlocked layer. |
+| `Shift+Space` | Delete Objects: tick object types (walls, doors, windows, cabinets, text ...), choose this floor or all floors, Delete. One undo step. |
+| `Cmd+G` | Group. A click on a member then selects the whole group; `Tab` still picks one member. Deleting members dissolves a group left with fewer than two. |
 
 Objects on a locked layer can be selected but not moved or deleted; the status
 bar says so. Objects on a hidden layer cannot be selected.
 
-Not built: group/ungroup in the Edit toolbar (the model supports groups), Transform/
-Replicate, Reflect, Align/Distribute, Break Wall, Reverse Layers, Make Parallel/
-Perpendicular, Change Line/Arc (all planned).
+### Transform, reflect, align and the right-click menu
+
+- **Edit > Transform/Replicate Object...** moves, rotates, resizes and mirrors the
+  selection, with optional copies. Copy k is the step applied k times, so a move makes
+  a linear array and a rotation about a point a radial one. Move is X and Y or a
+  distance and an angle; Rotate turns about the center of the selection or a point you
+  type; Resize is a percentage about the center; Reflect mirrors about a vertical or
+  horizontal line (through the center by default). Apply is one undo step; the copies
+  are selected.
+- Walls take their doors and windows along. A mirror flips the doors' swing so they
+  still look mirrored and flips each wall's exterior side so the exterior stays outside.
+  Walls, openings, dimensions, CAD, text, symbols, cameras, cabinets and devices turn
+  and mirror; stairs turn and mirror; roof planes, framing, foundation objects, details,
+  schedules and terrain elements can be moved and copied but not turned (the status bar says so).
+- **Reflect About Object**: click a wall or CAD line and the selection mirrors about it
+  (Reflect Copy leaves the originals). **Point to Point Move**: click where to move
+  from, then where to move to (object snaps apply; walls move freely, joined walls
+  follow). **Center Object**: a lone door or window centers on its wall at once; for
+  other objects click a room, or click two walls to center between them.
+- **Make Parallel / Perpendicular**: click a wall or CAD line; each selected wall keeps
+  its start and length and swings its far end (joined walls follow).
+- With two or more objects selected a **Rotate handle** sits above their box; drag it
+  to turn all of them about the center of the box.
+- **Align/Distribute...** (Edit toolbar or Edit > Align): Left, Center, Right, Top,
+  Middle, Bottom, and Distribute Horizontally / Vertically with equal gaps or a typed
+  gap. **Move to Front / Back** orders CAD objects.
+- **Edit > Lock / Unlock** locks the layers the selection is on; **Send to Layer...**
+  moves walls, CAD, text and symbols to a layer you pick. **View or Edit > Action
+  History** lists the undo steps; click one to go back to it, click an undone one to
+  redo up to it.
+- **Right-click** an object (Select Objects) to select it and open its menu: Open
+  Object, the buttons of its type (Reverse Swing and Flip Hinge for doors, Reverse
+  Layers and Fix Wall Connections for walls, Rebuild Roofs for roof planes, Explode for
+  CAD blocks), Cut, Copy, Paste, Delete, Select Same Type, Group / Ungroup, Lock,
+  Send to Layer and Transform/Replicate. Right-click on empty space shows Paste, Paste
+  Hold Position, Select All, Undo, Redo and the zoom commands. With a door or window
+  tool the menu starts with Select Objects; the drawing tools keep right click as
+  their `Esc`.
+
+Wall buttons on the Edit toolbar: **Reverse Layers** (any number of walls; the layer
+stack swaps faces), **Break Wall** (then click the wall where it should break; openings
+go with the half that holds them), **Remove Break** (merges a straight continuation
+back), **Change Line/Arc** (a straight wall becomes an arc with a bulge handle at its
+apex; drag it to set the bulge, drag it flat to straighten; openings keep their
+proportion along the arc) and **Make Arc Tangent** (refits a curved wall tangent to the
+wall it is connected to). Edit > Edit Behaviors changes what dragging does: Default,
+Resize (scales a CAD selection from the opposite corner), Concentric (offset copies of a
+polyline, line, circle or arc), Fillet (drag a polyline corner), Alternate (one axis only)
+and Replicate (copies at the drag distance).
+
+**Convert to Polyline** turns the selected walls' centerlines into CAD polylines and removes the walls and their openings.
 
 ## 2.6 Dialog: Wall Specification
 
@@ -287,7 +385,7 @@ does not parse.
 |---|---|
 | General | Works |
 | Structure | Works (first part) |
-| Roof | (disabled) |
+| Roof | Works for exterior walls (roof kind, pitch, upper pitch, overhang, Auto Roof Return; chapter 8.7); dimmed for the other wall kinds |
 | Foundation | (disabled) |
 | Wall Types | Works |
 | Rail Style | Works |
@@ -323,8 +421,10 @@ does not parse.
 - **Options**: Invisible, No Room Definition, No Locate (stored on the wall, see 2.9; disabled in the Default Settings dialog);
   Lock Center, No Room Moldings Exterior, No Room Moldings Interior, Automatically
   Generated Wall, Ignored by Hide Exterior Walls (disabled).
-- **Curved Wall** (disabled): Radius to Outer Surface / Main Layer Outside; Lock
-  Arc Center / Ends; Automatic Facet Angle.
+- **Arc** (a curved wall): Radius, Arc Angle and Rise (each recomputes the others; the
+  ends stay put and Wall Length is the chord), with the arc length and the center point
+  shown below. Radius to Outer Surface / Main Layer Outside, Lock Arc Center / Ends and
+  Automatic Facet Angle are disabled.
 
 ### Structure
 
@@ -414,18 +514,19 @@ edits the same values.
   types, split height and plan display; glass pony lower type and split; half-wall height; fence
   style), the Foundation Height, and the curve of a curved wall.
 - **Session only**: Suppress Label in All Views and the other dimmed-or-kept-in-memory controls.
-- **Model ready, no UI**: the attic flag and per-wall roof directives other than Hip, Full Gable
-  and High Shed/Gable (the Gable/Roof Line tool sets the first two, chapter 8).
+- **Model ready, no UI**: the attic flag on the wall (the Attic Wall check box stays dimmed; the per-wall roof directives are on the Roof tab, chapter 8.7). The attic walls that fill the gap between a lower roof and the wall above it are made in 3D by **Auto Attic Walls** in Roof Defaults (chapter 8.4a), which also sets their wall type and the type of the part of a wall below a butting roof.
 
 ## 2.10 Known differences from Chief
 
 - Rooms are traced from centerlines, then offset to the interior faces for areas and labels (chapter 4).
 - Walls T-split at junctions; Chief keeps the through wall whole.
-- No typed length or angle readout while drawing, and connections are inferred from coordinates each time.
-- Curved walls have no mitered joins, no 3D opening cuts, no bulge handle and no editable Curved Wall
-  section; a curved wall is a run of 7.5 degree facets in 3D.
+- Connections are inferred from coordinates each time.
+- Curved walls are mitered in plan and in 3D against the walls that join them by treating the
+  arc as its tangent line at the joined end (a wide arc at a steep corner shows a small kink); a
+  curved wall is a run of 7.5 degree facets in 3D; the plan symbols of its doors and windows sit
+  on the chord; the Arc section's Radius-to and Lock options are dimmed (2.2, Curved Wall Tools).
 - Pony, glass, half-wall, railing, deck and fencing default types and heights are typical values, not
   Chief's, and are not editable from Default Settings. Terrain walls and curbs are terrain objects, not wall classes (chapter 9.6); Wall Hatching, Wall Material
   Region and the Polygon Shaped Deck are in chapter 17.
-- The Roof, Foundation, Wall Cap, Wall Covering, Newels/Balusters and Rails tabs of the Wall
-  Specification are still (disabled).
+- The Foundation, Wall Cap, Wall Covering, Newels/Balusters and Rails tabs of the Wall
+  Specification are still (disabled), and the Roof tab is dimmed on interior and other non-exterior walls.

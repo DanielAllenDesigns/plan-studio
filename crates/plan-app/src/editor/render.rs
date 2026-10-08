@@ -3,6 +3,7 @@
 //! highlights. Layer visibility comes from `project.layers`. Tools draw their
 //! own overlays on top (`Tool::draw_overlay`).
 
+use super::opening_view::{draw_opening, draw_opening_labels};
 use super::restyle;
 use super::selection::ObjectRef;
 use super::sheet;
@@ -13,7 +14,9 @@ use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
-use plan_core::{Dimension, DimensionKind, Opening, OpeningKind, Wall, WallClass, WallKind};
+use plan_core::{
+    exterior_sign, Dimension, DimensionKind, Opening, OpeningKind, Wall, WallClass, WallKind,
+};
 use std::collections::HashMap;
 
 /// Runs one stage of [`draw_plan`]. Test builds add the stage's time to
@@ -46,6 +49,10 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     // Everything from here to the highlights goes through View > Color.
     let content = restyle::mark(painter);
     section!("grid", draw_grid(cx, painter, cam));
+    section!(
+        "underlays",
+        crate::tools::underlay::draw_underlays(cx, painter, cam)
+    );
     section!("reference floor", draw_reference_floor(cx, painter, cam));
     section!(
         "site",
@@ -84,15 +91,18 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     section!(
         "openings",
         for wall in &floor.walls {
+            let mut outside = None;
             for o in floor.openings_on(wall.id) {
                 if cx.layers().is_visible(opening_layer(o)) {
+                    let ext = *outside.get_or_insert_with(|| exterior_sign(wall, &cx.rooms));
                     weighted(cx, painter, opening_layer(o), || {
-                        draw_opening(painter, cam, wall, o, pal, false)
+                        draw_opening(painter, cam, wall, o, pal, ext, false)
                     });
                 }
             }
         }
     );
+    section!("opening labels", draw_opening_labels(cx, painter, cam));
     // Devices sit on the wall faces: over the wall fill and the openings.
     section!(
         "devices",
@@ -111,14 +121,16 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 _ => "Dimensions, Manual",
             };
             if cx.layers().is_visible(layer) {
+                let look = DimLook::of(cx, d);
                 weighted(cx, painter, layer, || {
-                    draw_dimension(
+                    draw_dimension_look(
                         painter,
                         cam,
                         d,
                         &fmt,
                         Stroke::new(1.0_f32, pal.dimension_text),
                         pal,
+                        &look,
                     )
                 });
             }
@@ -129,6 +141,10 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         if !cx.layers().is_visible(&c.layer) {
             continue;
         }
+        // Text in a printed-size style is drawn at its size on paper for
+        // the sheet's scale.
+        let printed = printed_text_object(cx, c, attrs.get(&c.id));
+        let c = printed.as_ref().unwrap_or(c);
         match attrs.get(&c.id) {
             Some(a) => crate::tools::cad::draw_cad_styled(cx, painter, cam, c, Some(a)),
             None => weighted(cx, painter, &c.layer, || {
@@ -244,13 +260,26 @@ fn draw_rooms(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             weighted(cx, painter, "Rooms", || {
                 painter.add(Shape::closed_line(quad(cam, &room.polygon), outline));
             });
+            // A room with no floor under it (Open Below, R-40) is dashed.
+            if crate::editor::rooms_edit::name_entry(cx, room).is_some_and(|n| !n.has_floor) {
+                let mut pts = quad(cam, &room.polygon);
+                if let Some(first) = pts.first().copied() {
+                    pts.push(first);
+                }
+                painter.extend(Shape::dashed_line(
+                    &pts,
+                    Stroke::new(3.0_f32, pal.room_outline),
+                    9.0,
+                    6.0,
+                ));
+            }
         }
         if show_label {
             painter.text(
-                cam.world_to_screen(room.centroid),
+                cam.world_to_screen(crate::editor::rooms_edit::label_position(cx, room)),
                 Align2::CENTER_CENTER,
                 crate::editor::rooms_edit::room_label_text(cx, room),
-                FontId::proportional(13.0),
+                FontId::proportional(crate::editor::rooms_edit::LABEL_FONT_PX as f32),
                 pal.room_label,
             );
         }
@@ -259,10 +288,37 @@ fn draw_rooms(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
 }
 
 /// The wall's drawn polygon: the mitered outline when the cache has one.
+#[cfg_attr(not(test), allow(dead_code))]
 fn wall_polygon(cx: &EditorContext, wall: &Wall) -> Vec<Point> {
-    // The join cache only knows straight walls.
+    wall_polygon_at(cx, wall, 0.0)
+}
+
+/// How far an arc's facets may stray from the true curve on screen, pixels.
+const ARC_SAG_PX: f64 = 0.4;
+
+/// Facets to draw `wall`'s arc with at `px_per_in` pixels per inch: the
+/// facet angle's count (W-65), more where a large radius at a high zoom
+/// would show corners. `None` for a straight wall or an unknown zoom.
+fn arc_facets(wall: &Wall, px_per_in: f64) -> Option<usize> {
+    let curve = wall.curve.filter(|c| !c.is_straight())?;
+    if px_per_in <= 0.0 {
+        return None;
+    }
+    Some(curve.facet_count_for_sag(wall.start, wall.end, ARC_SAG_PX / px_per_in))
+}
+
+/// [`wall_polygon`] with an arc faceted for the zoom (`0.0`: the facet
+/// angle's count).
+fn wall_polygon_at(cx: &EditorContext, wall: &Wall, px_per_in: f64) -> Vec<Point> {
+    // The join cache only knows straight walls: an arc gets its own miter.
     if wall.is_curved() {
-        return wall.plan_polygon();
+        return plan_core::joins::curved_wall_polygon_n(
+            &cx.floor().walls,
+            wall.id,
+            0.5,
+            arc_facets(wall, px_per_in),
+        )
+        .unwrap_or_else(|| wall.plan_polygon());
     }
     outline_index(cx, wall.id)
         .and_then(|i| cx.outlines.get(i))
@@ -321,17 +377,31 @@ fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
 /// The wall's left and right face lines (a straight wall's footprint edges,
 /// or the two offset curves of an arc), both running start to end.
 fn face_lines(wall: &Wall) -> (Vec<Point>, Vec<Point>) {
+    face_lines_at(wall, 0.0)
+}
+
+/// [`face_lines`] with an arc faceted for the zoom (`0.0`: the facet angle's
+/// count).
+fn face_lines_at(wall: &Wall, px_per_in: f64) -> (Vec<Point>, Vec<Point>) {
     if wall.is_curved() {
-        let poly = wall.plan_polygon();
-        let h = poly.len() / 2;
-        (
-            poly[..h].to_vec(),
-            poly[h..].iter().rev().copied().collect(),
-        )
+        match arc_facets(wall, px_per_in) {
+            Some(n) => arc_faces(&wall.plan_polygon_n(n)),
+            None => arc_faces(&wall.plan_polygon()),
+        }
     } else {
         let f = wall.footprint();
         (vec![f[0], f[1]], vec![f[3], f[2]])
     }
+}
+
+/// The left and right face lines of an arc from its closed polygon (left
+/// forward, then right back), as [`Wall::plan_polygon`] lays it out.
+fn arc_faces(poly: &[Point]) -> (Vec<Point>, Vec<Point>) {
+    let h = poly.len() / 2;
+    (
+        poly[..h].to_vec(),
+        poly[h..].iter().rev().copied().collect(),
+    )
 }
 
 /// Fills the wall (an arc as a strip of convex facets) and outlines it.
@@ -344,18 +414,74 @@ fn fill_wall(
     stroke: Stroke,
 ) {
     if wall.is_curved() {
-        let (left, right) = face_lines(wall);
-        for i in 0..left.len().saturating_sub(1) {
-            let quad = [left[i], left[i + 1], right[i + 1], right[i]];
-            painter.add(Shape::convex_polygon(
-                quad.iter().map(|p| cam.world_to_screen(*p)).collect(),
-                fill,
-                Stroke::NONE,
-            ));
-        }
+        // The polygon carries the mitered ends.
+        fill_band(painter, cam, poly, fill);
         painter.add(Shape::closed_line(quad(cam, poly), stroke));
     } else {
         painter.add(Shape::convex_polygon(quad(cam, poly), fill, stroke));
+    }
+}
+
+/// Fills an arc band (left face forward, then right face back, as
+/// [`Wall::plan_polygon`] lays it out) as a strip of convex quads.
+fn fill_band(painter: &egui::Painter, cam: &Camera, poly: &[Point], fill: Color32) {
+    let (left, right) = arc_faces(poly);
+    for i in 0..left.len().saturating_sub(1) {
+        let quad = [left[i], left[i + 1], right[i + 1], right[i]];
+        painter.add(Shape::convex_polygon(
+            quad.iter().map(|p| cam.world_to_screen(*p)).collect(),
+            fill,
+            Stroke::NONE,
+        ));
+    }
+}
+
+/// The layers of a curved wall as Chief draws a wall type in plan: every
+/// layer boundary a thin line, the main layer filled darker with heavier
+/// faces, all following the arc and mitered to the walls joined to it.
+fn draw_curved_layers(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    wall: &Wall,
+    fill: Color32,
+) {
+    let pal = &cx.palette;
+    let mut layers: Vec<plan_core::joins::WallLayerOutline> = cx
+        .layer_outlines
+        .iter()
+        .filter(|l| l.wall_id == wall.id)
+        .cloned()
+        .collect();
+    // The cache is faceted by the facet angle: a finer arc for a high zoom.
+    let cached = wall
+        .curve
+        .map_or(0, |c| c.facet_count(wall.start, wall.end));
+    if let Some(n) = arc_facets(wall, cam.px_per_in).filter(|n| *n > cached.max(2)) {
+        let types = if cx.project.wall_types.is_empty() {
+            &cx.defaults.wall_types
+        } else {
+            &cx.project.wall_types
+        };
+        if let Some(fine) =
+            plan_core::joins::curved_layer_outlines(&cx.floor().walls, types, wall.id, 0.5, Some(n))
+        {
+            layers = fine;
+        }
+    }
+    let thin = Stroke::new(0.75_f32, pal.wall_stroke);
+    let heavy = Stroke::new(1.5_f32, pal.wall_stroke);
+    let main_fill = crate::theme::scale(fill, 0.78);
+    for l in &layers {
+        if l.is_main {
+            fill_band(painter, cam, &l.polygon, main_fill);
+        }
+        painter.add(Shape::closed_line(quad(cam, &l.polygon), thin));
+        if l.is_main {
+            let (left, right) = arc_faces(&l.polygon);
+            painter.add(Shape::line(quad(cam, &left), heavy));
+            painter.add(Shape::line(quad(cam, &right), heavy));
+        }
     }
 }
 
@@ -405,7 +531,7 @@ fn draw_double_line(
     color: Color32,
     posts: bool,
 ) {
-    let (left, right) = face_lines(wall);
+    let (left, right) = face_lines_at(wall, cam.px_per_in);
     let stroke = Stroke::new(0.75_f32, color);
     for line in [&left, &right] {
         painter.add(Shape::line(
@@ -458,6 +584,21 @@ fn draw_pony_lower(
     let n = lower.normal();
     let thin = Stroke::new(0.75_f32, cx.palette.wall_stroke);
     for b in plan_core::wall_layer_bands(&lower, Some(def)) {
+        let color = if b.is_main {
+            crate::theme::scale(fill, 0.78)
+        } else {
+            fill
+        };
+        if lower.is_curved() {
+            // Each layer is a band between two offset arcs.
+            let facets = arc_facets(&lower, cam.px_per_in).unwrap_or(2);
+            let outer = lower.offset_curve(b.outer, facets);
+            let inner = lower.offset_curve(b.inner, facets);
+            let band: Vec<Point> = outer.into_iter().chain(inner.into_iter().rev()).collect();
+            fill_band(painter, cam, &band, color);
+            painter.add(Shape::closed_line(quad(cam, &band), thin));
+            continue;
+        }
         let pts: Vec<Pos2> = [
             wall.start.add(n.scale(b.outer)),
             wall.end.add(n.scale(b.outer)),
@@ -467,11 +608,6 @@ fn draw_pony_lower(
         .iter()
         .map(|p| cam.world_to_screen(*p))
         .collect();
-        let color = if b.is_main {
-            crate::theme::scale(fill, 0.78)
-        } else {
-            fill
-        };
         painter.add(Shape::convex_polygon(pts, color, thin));
     }
 }
@@ -496,7 +632,7 @@ fn draw_one_wall(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall
         WallClass::DeckEdge => fill = Color32::from_rgb(196, 160, 110),
         _ => {}
     }
-    let poly = wall_polygon(cx, wall);
+    let poly = wall_polygon_at(cx, wall, cam.px_per_in);
     // The mitered outline: fill and heavy edge of the whole wall.
     fill_wall(
         painter,
@@ -531,7 +667,7 @@ fn draw_one_wall(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall
         return draw_pony_lower(cx, painter, cam, wall, lower_type, fill);
     }
     if wall.is_curved() {
-        return;
+        return draw_curved_layers(cx, painter, cam, wall, fill);
     }
     // Chief's plan view of a wall type: every layer boundary as a thin
     // line, the main layer filled darker with heavier faces.
@@ -569,27 +705,24 @@ fn weighted(cx: &EditorContext, painter: &egui::Painter, layer: &str, draw: impl
     }
 }
 
-/// The walls of the floor below as plan polygons (View > Reference Display).
-/// Nothing on the lowest floor.
+/// The walls of the reference floor as plan polygons (View > Reference
+/// Display, R-65): the floor below unless the Reference Display dialog chose
+/// the floor above or another floor. Nothing when the display is off, when
+/// there is no such floor, or for walls on layers the chosen layer set hides
+/// or whose Ref box (LAY-10) is off.
 pub fn reference_polygons(cx: &EditorContext) -> Vec<Vec<Point>> {
-    if !cx.view_flags.contains(&ViewFlag::ReferenceDisplay) || cx.floor == 0 {
-        return Vec::new();
-    }
-    cx.project.floors[cx.floor - 1]
-        .walls
+    crate::dialogs::reference_display::reference_walls(cx)
         .iter()
-        .filter(|w| !w.flags.invisible && cx.layers().is_visible(&w.layer))
         .map(|w| w.footprint().to_vec())
         .collect()
 }
 
-/// Reference Display: the floor below, walls only, in gray.
+/// Reference Display: the chosen floor, walls only, dimmed in the chosen
+/// color (gray by default).
 fn draw_reference_floor(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    let fill = Color32::from_rgba_unmultiplied(128, 128, 128, 70);
-    let edge = Stroke::new(
-        0.75_f32,
-        Color32::from_rgba_unmultiplied(128, 128, 128, 170),
-    );
+    let [r, g, b] = crate::dialogs::reference_display::settings(&cx.project).color;
+    let fill = Color32::from_rgba_unmultiplied(r, g, b, 70);
+    let edge = Stroke::new(0.75_f32, Color32::from_rgba_unmultiplied(r, g, b, 170));
     for poly in reference_polygons(cx) {
         painter.add(Shape::convex_polygon(quad(cam, &poly), fill, edge));
     }
@@ -648,80 +781,133 @@ pub fn draw_wall_outline(
     stroke: Stroke,
 ) {
     painter.add(Shape::closed_line(
-        quad(cam, &wall_polygon(cx, wall)),
+        quad(cam, &wall_polygon_at(cx, wall, cam.px_per_in)),
         stroke,
     ));
 }
 
-/// An opening in its wall: the wall is cut, jambs are drawn, then the door
-/// leaf and swing arc or the window lines. `ghost` draws a placement preview.
-pub fn draw_opening(
-    painter: &egui::Painter,
-    cam: &Camera,
-    wall: &Wall,
-    o: &Opening,
-    pal: &Palette,
-    ghost: bool,
-) {
-    let sc = |p: Point| cam.world_to_screen(p);
-    let (line_col, arc_col) = if ghost {
-        (pal.ghost_stroke, pal.ghost_stroke)
-    } else {
-        (pal.opening_line, pal.door_arc)
+/// A text object drawn at its printed size for the sheet's scale: a copy
+/// with the height the object's text style gives at `cx.sheet.scale`, or
+/// `None` when the style holds the plan height (or nothing changes).
+pub fn printed_text_object(
+    cx: &EditorContext,
+    c: &plan_core::CadObject,
+    attrs: Option<&plan_core::cad::CadAttrs>,
+) -> Option<plan_core::CadObject> {
+    let CadItem::Text { height, .. } = &c.item else {
+        return None;
     };
-    let line = Stroke::new(1.0_f32, line_col);
-    let d = wall.direction();
-    let n = wall.normal();
-    let half = wall.thickness * 0.5;
-    let over = half + 1.0 + 1.0 / cam.px_per_in;
-    let pa = wall.point_at(o.start_offset());
-    let pb = wall.point_at(o.end_offset());
+    let h = cx.project.text_styles.drawn_height(
+        cx.layers(),
+        &c.layer,
+        attrs.and_then(|a| a.text_style.as_deref()),
+        *height,
+        cx.sheet.scale.inches_per_foot(),
+    );
+    if (h - *height).abs() < 1e-9 {
+        return None;
+    }
+    let mut o = c.clone();
+    if let CadItem::Text { height, .. } = &mut o.item {
+        *height = h;
+    }
+    Some(o)
+}
 
-    // A canvas-colored quad hides the wall fill and its stroke across the opening.
-    let gap = [
-        pa.add(n.scale(over)),
-        pb.add(n.scale(over)),
-        pb.sub(n.scale(over)),
-        pa.sub(n.scale(over)),
-    ];
-    painter.add(Shape::convex_polygon(
-        quad(cam, &gap),
-        pal.background,
-        Stroke::NONE,
-    ));
-    for j in [pa, pb] {
-        painter.line_segment([sc(j.add(n.scale(half))), sc(j.sub(n.scale(half)))], line);
+/// Settles the CAD text hits of `hits` (from the stored-height picking) with
+/// the drawn size: a printed-size text found by its stored box but not by the
+/// drawn one is dropped, one found only by the drawn box is added.
+pub fn settle_text_hits(
+    cx: &EditorContext,
+    hits: Vec<ObjectRef>,
+    p: Point,
+    tol: f64,
+) -> Vec<ObjectRef> {
+    let floor = cx.floor();
+    let attrs = floor.cad_attr_map();
+    let mut drop = Vec::new();
+    let mut add = Vec::new();
+    for c in floor.cad.iter().rev() {
+        let Some(drawn) = printed_text_object(cx, c, attrs.get(&c.id)) else {
+            continue;
+        };
+        let r = ObjectRef::Cad(c.id);
+        let found = hits.contains(&r);
+        let now = cx.layers().is_visible(&c.layer)
+            && crate::editor::selection::cad_distance(&drawn.item, p) <= tol;
+        match (found, now) {
+            (true, false) => drop.push(r),
+            (false, true) => add.push(r),
+            _ => {}
+        }
+    }
+    let mut res: Vec<ObjectRef> = hits.into_iter().filter(|h| !drop.contains(h)).collect();
+    res.extend(add);
+    res
+}
+
+/// How big a dimension's text, arrows and extension lines are, in plan
+/// inches: the dimension set's text style at the sheet's scale (DIM-7) and
+/// its arrow and extension settings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DimLook {
+    /// Character height of the number.
+    pub text_h: f64,
+    /// Length of the end tick.
+    pub arrow: f64,
+    /// Gap between the measured point and its extension line.
+    pub gap: f64,
+    /// How far the extension line runs past the dimension line.
+    pub past: f64,
+    /// Number above the line (otherwise centered on it, over a break).
+    pub above: bool,
+}
+
+impl DimLook {
+    /// The look of `d` under the active dimension defaults at the sheet's
+    /// scale. A text style that holds its printed size (or a set that holds
+    /// all its sizes on paper) gives the same size on paper at any scale;
+    /// otherwise the plan sizes stay and print larger or smaller.
+    pub fn of(cx: &EditorContext, d: &Dimension) -> DimLook {
+        let set = &cx.defaults.dimensions;
+        let ipf = cx.sheet.scale.inches_per_foot();
+        let name = d
+            .text_style
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .or(Some(set.text_style.as_str()).filter(|n| !n.is_empty()))
+            .unwrap_or("Dimension Text Style");
+        let styles = &cx.project.text_styles;
+        let text_h = styles
+            .resolve(name)
+            .or_else(|| cx.defaults.text_styles.resolve(name))
+            .map_or(4.5, |st| st.plan_height_at(ipf, set.printed_size));
+        // The set's lengths are plan inches at the 1/4" scale they were
+        // captured for; a printed-size set keeps them on paper.
+        let k = if set.printed_size && ipf > 0.0 {
+            0.25 / ipf
+        } else {
+            1.0
+        };
+        let or = |v: f64, fallback: f64| if v > 0.0 { v } else { fallback };
+        DimLook {
+            text_h,
+            arrow: or(set.arrow_size, 2.25) * k,
+            gap: set.extension_gap.max(0.0) * k,
+            past: set.extension_past.max(0.0) * k,
+            above: set.text_above_line,
+        }
     }
 
-    match o.kind {
-        OpeningKind::Door => {
-            // The hinge jamb comes from `hinge_at_end`, the swing side from
-            // `swing_flipped`.
-            let (hinge, toward_other) = if o.hinge_at_end {
-                (pb, d.scale(-1.0))
-            } else {
-                (pa, d)
-            };
-            let side = if o.swing_flipped { n.scale(-1.0) } else { n };
-
-            painter.line_segment([sc(hinge), sc(hinge.add(side.scale(o.width)))], line);
-            let arc: Vec<Pos2> = (0..=16)
-                .map(|i| {
-                    let a = i as f64 / 16.0 * std::f64::consts::FRAC_PI_2;
-                    let v = toward_other.scale(a.cos()).add(side.scale(a.sin()));
-                    sc(hinge.add(v.scale(o.width)))
-                })
-                .collect();
-            painter.add(Shape::line(arc, Stroke::new(1.0_f32, arc_col)));
-        }
-        OpeningKind::Window => {
-            for off in [half, 0.0, -half] {
-                let s = n.scale(off);
-                painter.line_segment(
-                    [sc(pa.add(s)), sc(pb.add(s))],
-                    Stroke::new(0.8_f32, line_col),
-                );
-            }
+    /// The fixed 12 px text and 4 px ticks the tools' ghost previews use.
+    fn screen(cam: &Camera) -> DimLook {
+        let px = cam.px_per_in.max(1e-6);
+        DimLook {
+            text_h: 12.0 / px,
+            arrow: 8.0 / px,
+            gap: 0.0,
+            past: 0.0,
+            above: false,
         }
     }
 }
@@ -735,26 +921,124 @@ pub fn draw_dimension(
     stroke: Stroke,
     pal: &Palette,
 ) {
-    for (a, b) in d.extension_lines() {
+    let look = DimLook::screen(cam);
+    draw_dimension_look(painter, cam, d, fmt, stroke, pal, &look);
+}
+
+/// The angle (radians, screen space) text along the line `a` to `b` is
+/// drawn at, flipped so it never reads upside-down: vertical text reads
+/// from bottom to top (DIM-8).
+pub fn upright_angle(a: Pos2, b: Pos2) -> f32 {
+    let mut ang = (b.y - a.y).atan2(b.x - a.x);
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    if ang >= half_pi - 1e-4 {
+        ang -= std::f32::consts::PI;
+    } else if ang < -half_pi - 1e-4 {
+        ang += std::f32::consts::PI;
+    }
+    ang
+}
+
+/// Draws a dimension with the sizes in `look` (see [`DimLook::of`]).
+pub fn draw_dimension_look(
+    painter: &egui::Painter,
+    cam: &Camera,
+    d: &Dimension,
+    fmt: &plan_core::DimFormat,
+    stroke: Stroke,
+    pal: &Palette,
+    look: &DimLook,
+) {
+    let px = cam.px_per_in as f32;
+    let ext_stroke = Stroke::new(0.7_f32, stroke.color.gamma_multiply(0.8));
+    // Extension lines start `gap` off the measured point and run `past` the
+    // dimension line; a point's can be switched off.
+    for ((m, e), hidden) in d.extension_lines().into_iter().zip(d.hide_ext) {
+        if hidden {
+            continue;
+        }
+        let v = e.sub(m);
+        let len = v.length();
+        if len < 1e-6 {
+            continue;
+        }
+        let u = v.scale(1.0 / len);
+        let from = if len > look.gap {
+            m.add(u.scale(look.gap))
+        } else {
+            m
+        };
+        let to = e.add(u.scale(look.past));
         painter.line_segment(
-            [cam.world_to_screen(a), cam.world_to_screen(b)],
-            Stroke::new(0.7_f32, stroke.color.gamma_multiply(0.8)),
+            [cam.world_to_screen(from), cam.world_to_screen(to)],
+            ext_stroke,
         );
     }
     let (p, q) = d.line_points();
     let (sp, sq) = (cam.world_to_screen(p), cam.world_to_screen(q));
     painter.line_segment([sp, sq], stroke);
-    let dir = (sq - sp).normalized();
-    let tick = Vec2::new(-dir.y, dir.x) * 4.0;
+    let line = sq - sp;
+    let line_px = line.length();
+    let dir = if line_px > 1e-3 {
+        line / line_px
+    } else {
+        Vec2::X
+    };
+    let tick = Vec2::new(-dir.y, dir.x) * (look.arrow as f32 * px * 0.5).clamp(2.5, 14.0);
     for s in [sp, sq] {
         painter.line_segment([s - tick, s + tick], stroke);
     }
-    let galley =
-        painter.layout_no_wrap(d.label(fmt), FontId::proportional(12.0), pal.dimension_text);
+
+    let font_px = (look.text_h as f32 * px).clamp(6.0, 200.0);
+    let galley = painter.layout_no_wrap(
+        d.label(fmt),
+        FontId::proportional(font_px),
+        pal.dimension_text,
+    );
+    let size = galley.size();
+    let ang = upright_angle(sp, sq);
+    let (sin, cos) = ang.sin_cos();
+    let along = Vec2::new(cos, sin);
+    let up = Vec2::new(sin, -cos);
     let mid = Pos2::new((sp.x + sq.x) * 0.5, (sp.y + sq.y) * 0.5);
-    let r = Rect::from_center_size(mid, galley.size() + Vec2::new(6.0, 2.0));
-    painter.rect_filled(r, 2.0, pal.background.gamma_multiply(0.85));
-    painter.galley(r.center() - galley.size() * 0.5, galley, pal.dimension_text);
+    // DIM-9: a number that does not fit between the extension lines moves
+    // outside them, beside the end of the line, with a short leader.
+    let fits = size.x + 6.0 <= line_px;
+    let center = if fits {
+        if look.above {
+            mid + up * (size.y * 0.5 + 2.0)
+        } else {
+            mid
+        }
+    } else {
+        // Past the end of the line that is farther along the text direction.
+        let end = if (sq - sp).dot(along) >= 0.0 { sq } else { sp };
+        let lead = 6.0 + size.x * 0.5;
+        let c = end + along * lead;
+        painter.line_segment([end, end + along * 4.0], Stroke::new(0.7_f32, stroke.color));
+        if look.above {
+            c + up * (size.y * 0.5 + 2.0)
+        } else {
+            c
+        }
+    };
+    if fits && !look.above {
+        // Break the line behind the number.
+        let (hx, hy) = (along * (size.x * 0.5 + 3.0), up * (size.y * 0.5 + 1.0));
+        painter.add(Shape::convex_polygon(
+            vec![
+                center - hx - hy,
+                center + hx - hy,
+                center + hx + hy,
+                center - hx + hy,
+            ],
+            pal.background.gamma_multiply(0.85),
+            Stroke::NONE,
+        ));
+    }
+    let half = size * 0.5;
+    let top_left = center - Vec2::new(half.x * cos - half.y * sin, half.x * sin + half.y * cos);
+    painter.add(egui::epaint::TextShape::new(top_left, galley, pal.dimension_text).with_angle(ang));
 }
 
 /// A CAD primitive in `stroke`.
@@ -1058,6 +1342,138 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reference_display_shows_the_chosen_floor() {
+        use crate::dialogs::reference_display::{
+            reset_settings, set_settings, ReferenceFloor, ReferenceSettings,
+        };
+        reset_settings();
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project.build_new_floor(false);
+        cx.project.build_new_floor(false);
+        // One wall on the ground floor, two on the third.
+        let wall = |cx: &mut EditorContext, f: usize, x: f64| {
+            cx.project.add_wall(
+                f,
+                Point::new(x, 0.0),
+                Point::new(x + 120.0, 0.0),
+                6.0,
+                100.0,
+                WallKind::Exterior,
+            );
+        };
+        wall(&mut cx, 0, 0.0);
+        wall(&mut cx, 2, 0.0);
+        wall(&mut cx, 2, 200.0);
+        cx.view_flags.insert(ViewFlag::ReferenceDisplay);
+        cx.floor = 1;
+        assert!(
+            reference_polygons(&cx).len() == 1,
+            "the floor below by default"
+        );
+        let mut s = ReferenceSettings {
+            floor: ReferenceFloor::Above,
+            ..ReferenceSettings::default()
+        };
+        set_settings(s.clone());
+        assert_eq!(reference_polygons(&cx).len(), 2, "the floor above");
+        cx.floor = 2;
+        assert!(
+            reference_polygons(&cx).is_empty(),
+            "nothing above the top floor"
+        );
+        s.floor = ReferenceFloor::Floor(0);
+        set_settings(s.clone());
+        assert_eq!(
+            reference_polygons(&cx).len(),
+            1,
+            "any floor, here the first"
+        );
+        cx.floor = 0;
+        assert!(
+            reference_polygons(&cx).is_empty(),
+            "a floor is not its own reference"
+        );
+        // A layer set that hides the walls' layer hides them in the reference.
+        cx.floor = 2;
+        let layer = cx.project.floors[0].walls[0].layer.clone();
+        let mut hidden = plan_core::layer_sets::LayerSetDef::new("No walls");
+        hidden.ensure_state(&layer).display = false;
+        cx.project.layer_sets.add_set(hidden);
+        s.layer_set = Some("No walls".into());
+        set_settings(s);
+        assert!(reference_polygons(&cx).is_empty());
+        reset_settings();
+    }
+
+    /// A plan with a nested room, fills in every pattern, an Open Below room
+    /// and a dragged label draws, and the fill leaves the island open.
+    #[test]
+    fn nested_rooms_open_below_and_moved_labels_draw() {
+        use crate::editor::rooms_edit::{self, FillPattern, FillStyle};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let box_ = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 180.0),
+            Point::new(0.0, 180.0),
+        ];
+        let closet = [
+            Point::new(60.0, 60.0),
+            Point::new(120.0, 60.0),
+            Point::new(120.0, 96.0),
+            Point::new(60.0, 96.0),
+        ];
+        for (ring, kind) in [(box_, WallKind::Exterior), (closet, WallKind::Interior)] {
+            for i in 0..4 {
+                cx.project
+                    .add_wall(0, ring[i], ring[(i + 1) % 4], 6.0, 100.0, kind);
+            }
+        }
+        cx.refresh();
+        let outer = cx.rooms.iter().position(|r| !r.holes.is_empty()).unwrap();
+        let mut extras = rooms_edit::extras_for(&cx, &cx.rooms[outer].clone());
+        let mut draft = plan_core::RoomName::new(
+            rooms_edit::room_anchor(&cx.rooms[outer]),
+            "Great Room",
+            "Open Below",
+        );
+        draft.has_floor = false;
+        for pattern in [FillPattern::Solid, FillPattern::Hatch, FillPattern::Grid] {
+            extras.fill = FillStyle {
+                pattern,
+                ..FillStyle::default()
+            };
+            assert!(rooms_edit::apply_room_spec(&mut cx, outer, &draft, &extras));
+            assert!(rooms_edit::set_label_offset(
+                &mut cx,
+                outer,
+                Point::new(30.0, 20.0)
+            ));
+            let egui_ctx = egui::Context::default();
+            let mut shapes = 0;
+            let _ = egui_ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (_, painter) =
+                        ui.allocate_painter(Vec2::new(400.0, 300.0), egui::Sense::hover());
+                    let mut cam = Camera::default_view();
+                    cam.rect = painter.clip_rect();
+                    draw_plan(&cx, &painter, &cam);
+                    painter.for_each_shape(|_| shapes += 1);
+                });
+            });
+            assert!(shapes > 0);
+        }
+        // The hatch skips the island: no segment starts inside it.
+        let hole = &cx.rooms[outer].holes[0];
+        let inner = &cx.rooms[outer].inner_polygon;
+        let n = Point::new(1.0, 0.0);
+        for (a, b) in rooms_edit::hatch_lines(inner, &cx.rooms[outer].holes, n, 12.0) {
+            let mid = Point::lerp(a, b, 0.5);
+            assert!(!plan_core::geometry::point_in_polygon(mid, hole));
+        }
+    }
+
     /// With the flags on the plan still draws, and Color off leaves only
     /// gray strokes on the walls.
     #[test]
@@ -1214,6 +1630,177 @@ mod tests {
         assert!((l[0].dist(Point::ZERO) - 5.0).abs() < 1e-6);
         assert!((r[0].dist(Point::ZERO) - 5.0).abs() < 1e-6);
         assert!((r.last().unwrap().dist(Point::new(100.0, 0.0)) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn arcs_get_more_facets_at_a_high_zoom_and_their_layers_follow_the_arc() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(480.0, 0.0),
+            7.625,
+            109.0,
+            WallKind::Exterior,
+        );
+        {
+            let w = cx.project.floors[0].wall_mut(id).unwrap();
+            w.wall_type = Some("Stucco-6".into());
+            w.curve = plan_core::WallCurve::from_radius(480.0, 400.0, true);
+        }
+        cx.refresh();
+        let w = cx.floor().wall(id).unwrap().clone();
+        let base = w.curve.unwrap().facet_count(w.start, w.end);
+        // Zoomed out the facet angle's count is plenty; zoomed in it is not.
+        assert_eq!(arc_facets(&w, 0.2), Some(base));
+        let high = arc_facets(&w, 12.0).unwrap();
+        assert!(high > base * 2, "{high} facets vs {base}");
+        assert_eq!(wall_polygon_at(&cx, &w, 12.0).len(), 2 * (high + 1));
+        assert_eq!(wall_polygon_at(&cx, &w, 0.0).len(), 2 * (base + 1));
+        // The layers are arcs too: one polygon per layer, all on the arc.
+        let layers: Vec<_> = cx
+            .layer_outlines
+            .iter()
+            .filter(|l| l.wall_id == id)
+            .collect();
+        assert!(layers.len() > 1);
+        let (c, r) = w.arc_center_radius().unwrap();
+        for l in &layers {
+            assert_eq!(l.polygon.len(), 2 * (base + 1), "{}", l.name);
+            for p in &l.polygon {
+                let off = (p.dist(c) - r).abs();
+                assert!(off <= 3.8125 + 1e-6, "{} is {off} off the arc", l.name);
+            }
+        }
+        // Drawing the arc works at any zoom; with the layers shown (from
+        // 1 px/in) it is drawn in more pieces than the zoomed-out single fill.
+        let egui_ctx = egui::Context::default();
+        let vertices = |zoom: f64| {
+            let out = egui_ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (_, painter) =
+                        ui.allocate_painter(Vec2::new(800.0, 600.0), egui::Sense::hover());
+                    let mut cam = Camera::default_view();
+                    cam.rect = painter.clip_rect();
+                    cam.center = Point::new(240.0, 80.0);
+                    cam.px_per_in = zoom;
+                    draw_plan(&cx, &painter, &cam);
+                });
+            });
+            let meshes = egui_ctx.tessellate(out.shapes, out.pixels_per_point);
+            meshes
+                .iter()
+                .map(|m| match &m.primitive {
+                    egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.len(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+        };
+        for zoom in [0.2, 1.0, 3.0, 12.0] {
+            assert!(vertices(zoom) > 0, "nothing drawn at {zoom}");
+        }
+        assert!(vertices(1.0) > vertices(0.2));
+    }
+
+    #[test]
+    fn printed_size_text_and_dimension_numbers_follow_the_sheet_scale() {
+        use plan_docs::Scale;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project.add_cad(
+            0,
+            "Text",
+            CadItem::Text {
+                pos: Point::ZERO,
+                text: "KITCHEN".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        let obj = cx.floor().cad[0].clone();
+        let height_of = |o: &plan_core::CadObject| match &o.item {
+            CadItem::Text { height, .. } => *height,
+            _ => 0.0,
+        };
+        // A character-height style leaves the plan height alone.
+        cx.sheet.scale = Scale::EighthInch;
+        assert!(printed_text_object(&cx, &obj, None).is_none());
+        // A printed-size style: 1/8" on paper is 6" at 1/4", 12" at 1/8".
+        let i = cx
+            .project
+            .text_styles
+            .styles
+            .iter()
+            .position(|s| s.name == "Default Text Style")
+            .unwrap();
+        cx.project.text_styles.styles[i].use_printed_size(true);
+        for (scale, plan_h) in [
+            (Scale::QuarterInch, 6.0),
+            (Scale::EighthInch, 12.0),
+            (Scale::HalfInch, 3.0),
+        ] {
+            cx.sheet.scale = scale;
+            let h = printed_text_object(&cx, &obj, None).map_or(height_of(&obj), |o| height_of(&o));
+            assert!((h - plan_h).abs() < 1e-9, "{scale:?}: {h}");
+            // The same 1/8" on paper.
+            assert!((h * scale.inches_per_foot() / 12.0 - 0.125).abs() < 1e-9);
+        }
+        // Dimension numbers: the Dimension Text Style (4.5" plan) until the
+        // set or the style holds the printed size.
+        let d = Dimension::new(
+            1,
+            DimensionKind::Manual,
+            Point::ZERO,
+            Point::new(100.0, 0.0),
+            24.0,
+        );
+        cx.sheet.scale = Scale::EighthInch;
+        assert!((DimLook::of(&cx, &d).text_h - 4.5).abs() < 1e-9);
+        cx.defaults.dimensions.printed_size = true;
+        let look = DimLook::of(&cx, &d);
+        assert!((look.text_h - 9.0).abs() < 1e-9, "{look:?}");
+        assert!((look.arrow - cx.defaults.dimensions.arrow_size * 2.0).abs() < 1e-9);
+        // Draws (rotated, outside and above) without panicking.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let painter = ui.painter().clone();
+                let cam = Camera::default_view();
+                let fmt = cx.dim_format();
+                let mut short = d.clone();
+                short.end = Point::new(6.0, 0.0);
+                let mut vertical = d.clone();
+                vertical.end = Point::new(0.0, 100.0);
+                for dim in [&d, &short, &vertical] {
+                    let look = DimLook::of(&cx, dim);
+                    draw_dimension_look(
+                        &painter,
+                        &cam,
+                        dim,
+                        &fmt,
+                        Stroke::new(1.0_f32, Color32::BLACK),
+                        &cx.palette,
+                        &look,
+                    );
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn dimension_text_reads_upright() {
+        let o = Pos2::new(0.0, 0.0);
+        let ang = |x: f32, y: f32| upright_angle(o, Pos2::new(x, y)).to_degrees();
+        assert!(ang(10.0, 0.0).abs() < 1e-3);
+        // Right to left flips to read left to right.
+        assert!(ang(-10.0, 0.0).abs() < 1e-3);
+        // Vertical text reads from bottom to top, whichever way it is drawn.
+        assert!((ang(0.0, 10.0) + 90.0).abs() < 1e-3);
+        assert!((ang(0.0, -10.0) + 90.0).abs() < 1e-3);
+        // Never past 90 degrees either way.
+        for (x, y) in [(3.0, 8.0), (-3.0, 8.0), (3.0, -8.0), (-3.0, -8.0)] {
+            let a = ang(x, y);
+            assert!((-90.0..90.0).contains(&a), "{a}");
+        }
     }
 }
 

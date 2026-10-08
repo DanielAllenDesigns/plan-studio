@@ -9,7 +9,9 @@
 
 use crate::detail::Stroke;
 use crate::lumber::{Lumber, TWO_BY_EIGHT, TWO_BY_FOUR, TWO_BY_SIX, TWO_BY_TEN};
-use crate::member::{add, dot, scale, Member, MemberKind, Transform3, Vec3};
+use crate::member::{
+    add, dot, scale, Birdsmouth, Member, MemberCuts, MemberKind, TailCut, Transform3, Vec3,
+};
 use crate::takeoff::{takeoff, Takeoff};
 use plan_core::Point;
 use plan_roof::{Roof, RoofPlane};
@@ -37,20 +39,43 @@ const TRUSS_TAG: &str = " [truss ";
 pub enum OverhangCut {
     Plumb,
     Square,
+    Level,
+}
+
+impl OverhangCut {
+    /// The cut as the member geometry names it.
+    pub fn tail_cut(self) -> TailCut {
+        match self {
+            OverhangCut::Plumb => TailCut::Plumb,
+            OverhangCut::Square => TailCut::Square,
+            OverhangCut::Level => TailCut::Level,
+        }
+    }
+}
+
+/// The eave of one roof plane as the rafters need it: how far the roof
+/// overhangs the wall and how the tails are cut (the plane's Eave settings).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct EaveSpec {
+    /// Horizontal overhang beyond the outer face of the top plate, inches.
+    pub overhang: f64,
+    /// The tail cut; `None` follows [`RoofFramingDefaults::overhang_cut`].
+    pub cut: Option<TailCut>,
 }
 
 /// Roof framing defaults, the equivalent of Chief's Roof Framing defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RoofFramingDefaults {
     pub rafter: Lumber,
     /// Rafter spacing on centre, inches.
     pub spacing: f64,
     pub ridge: Lumber,
     pub hip_valley: Lumber,
-    /// Birdsmouth seat cut length, inches (cut-list data only: members are
-    /// plain boxes, so the notch is not modelled).
+    /// Birdsmouth seat length, inches: the level cut that sits on the top
+    /// plate. The notch is limited to a third of the rafter's depth.
     pub birdsmouth_seat: f64,
-    /// Tail cut (cut-list data only, see `birdsmouth_seat`).
+    /// Tail cut where a plane gives no cut of its own.
     pub overhang_cut: OverhangCut,
     pub collar_ties: bool,
     pub ceiling_joists: bool,
@@ -260,10 +285,37 @@ fn shared_edges(planes: &[&RoofPlane]) -> Vec<Shared> {
 ///   `Member.label` (see [`truss_id`]); rafters, ridge, hips, valleys,
 ///   collar ties and ceiling joists are then not generated.
 pub fn frame_roof(roof: &Roof, d: &RoofFramingDefaults) -> Vec<Member> {
-    let planes: Vec<&RoofPlane> = roof
+    frame_roof_inner(roof, d, &[], false)
+}
+
+/// [`frame_roof`] with each plane's eave: `eaves[i]` belongs to
+/// `roof.planes[i]` (planes past the end of the slice use
+/// [`EaveSpec::default`]). A rafter that starts at its plane's eave gets the
+/// tail cut of the eave (plumb, level or square, see [`MemberCuts`]) and a
+/// birdsmouth where it crosses the top plate, `overhang` in from the tail:
+/// the plumb heel cut on the plate's outer face and the level seat of
+/// `d.birdsmouth_seat` on its top. The long point of the rafter (its cut
+/// length) reaches the eave edge of the plane.
+pub fn frame_roof_eaves(roof: &Roof, d: &RoofFramingDefaults, eaves: &[EaveSpec]) -> Vec<Member> {
+    frame_roof_inner(roof, d, eaves, true)
+}
+
+fn frame_roof_inner(
+    roof: &Roof,
+    d: &RoofFramingDefaults,
+    eaves: &[EaveSpec],
+    with_cuts: bool,
+) -> Vec<Member> {
+    let kept: Vec<(usize, &RoofPlane)> = roof
         .planes
         .iter()
-        .filter(|p| p.polygon3d.len() >= 3)
+        .enumerate()
+        .filter(|(_, p)| p.polygon3d.len() >= 3)
+        .collect();
+    let planes: Vec<&RoofPlane> = kept.iter().map(|(_, p)| *p).collect();
+    let specs: Vec<EaveSpec> = kept
+        .iter()
+        .map(|(i, _)| eaves.get(*i).copied().unwrap_or_default())
         .collect();
     let Some((lo, hi)) = roof.bounds() else {
         return Vec::new();
@@ -276,8 +328,8 @@ pub fn frame_roof(roof: &Roof, d: &RoofFramingDefaults) -> Vec<Member> {
     if d.trusses || (d.use_trusses_over_span > 0.0 && span > d.use_trusses_over_span) {
         out.extend(trusses(roof, d, lo, hi));
     } else {
-        for p in &planes {
-            rafters(p, d, &mut out);
+        for (p, e) in planes.iter().zip(&specs) {
+            rafters(p, d, with_cuts.then_some(*e), &mut out);
         }
         let shared = shared_edges(&planes);
         for e in &shared {
@@ -296,7 +348,12 @@ pub fn frame_roof(roof: &Roof, d: &RoofFramingDefaults) -> Vec<Member> {
     out
 }
 
-fn rafters(plane: &RoofPlane, d: &RoofFramingDefaults, out: &mut Vec<Member>) {
+fn rafters(
+    plane: &RoofPlane,
+    d: &RoofFramingDefaults,
+    eave_spec: Option<EaveSpec>,
+    out: &mut Vec<Member>,
+) {
     let f = eave(plane);
     let rise = plane.pitch_in_12 / 12.0;
     let theta = rise.atan();
@@ -320,13 +377,44 @@ fn rafters(plane: &RoofPlane, d: &RoofFramingDefaults, out: &mut Vec<Member>) {
             }
             let p = f.a.add(f.e.scale(s)).add(f.n.scale(t0));
             let top = [p.x, f.y + t0 * rise, -p.y];
-            let origin = add(top, scale(axis_y, -d.rafter.depth / 2.0));
+            let mut origin = add(top, scale(axis_y, -d.rafter.depth / 2.0));
+            let mut length = length;
+            let mut cuts = MemberCuts::default();
+            // A rafter that starts at the eave gets the tail cut and the notch
+            // over the plate; one that starts at a hip or valley does not.
+            if let (true, Some(eave_spec)) = (t0 < 0.5 && rise > 1e-6, eave_spec) {
+                let hd = d.rafter.depth / 2.0;
+                let cut = eave_spec.cut.unwrap_or_else(|| d.overhang_cut.tail_cut());
+                // A plumb cut through the top corner leaves the bottom corner
+                // out past the eave line: the box starts there.
+                let ext = if cut == TailCut::Plumb {
+                    (2.0 * hd * rise).min(length * 0.5)
+                } else {
+                    0.0
+                };
+                origin = add(origin, scale(axis_x, -ext));
+                length += ext;
+                let heel_at = (eave_spec.overhang.max(0.0) / cs
+                    - if cut == TailCut::Plumb { 0.0 } else { 2.0 * hd * rise })
+                .max(0.0);
+                let heel_height = (d.birdsmouth_seat * rise).min(d.rafter.depth / 3.0 / cs);
+                cuts = MemberCuts {
+                    pitch_in_12: plane.pitch_in_12,
+                    tail: Some(cut),
+                    birdsmouth: (heel_height > 0.05).then_some(Birdsmouth {
+                        heel_at,
+                        heel_height,
+                    }),
+                };
+            }
             let tf = Transform3 {
                 origin,
                 axis_x,
                 axis_y,
             };
-            out.push(Member::new(MemberKind::Rafter, d.rafter, length, tf, None));
+            let mut m = Member::new(MemberKind::Rafter, d.rafter, length, tf, None);
+            m.cuts = cuts;
+            out.push(m);
         }
     }
 }
@@ -879,5 +967,137 @@ mod tests {
         assert_eq!(lines, m.len());
         let empty = build_roof(&[], &[], ELEV);
         assert!(frame_roof(&empty, &RoofFramingDefaults::default()).is_empty());
+    }
+
+    // ----- tail cuts and birdsmouths -----
+
+    /// The member frame's local point `(x, y)` in plan (3D `[x, y, z]` is plan `(x, -z)`).
+    fn local_plan(m: &Member, x: f64, y: f64) -> Point {
+        let t = &m.transform;
+        let v = add(add(t.origin, scale(t.axis_x, x)), scale(t.axis_y, y));
+        Point::new(v[0], -v[2])
+    }
+
+    fn local_height(m: &Member, x: f64, y: f64) -> f64 {
+        let t = &m.transform;
+        add(add(t.origin, scale(t.axis_x, x)), scale(t.axis_y, y))[1]
+    }
+
+    fn eaves(roof: &Roof, overhang: f64, cut: Option<TailCut>) -> Vec<EaveSpec> {
+        vec![EaveSpec { overhang, cut }; roof.planes.len()]
+    }
+
+    #[test]
+    fn rafters_without_eave_specs_stay_plain_boxes() {
+        let m = frame_roof(&hip(16.0), &RoofFramingDefaults::default());
+        assert!(m.iter().all(|m| m.cuts.is_empty()));
+    }
+
+    #[test]
+    fn rafter_tails_match_the_eave_cut_and_overhang() {
+        let roof = hip(16.0);
+        let d = RoofFramingDefaults::default();
+        let plain = frame_roof(&roof, &d);
+        let rise: f64 = 8.0 / 12.0;
+        let (sn, cs) = (rise.atan().sin(), rise.atan().cos());
+        let hd = d.rafter.depth / 2.0;
+        for cut in [TailCut::Plumb, TailCut::Level, TailCut::Square] {
+            let m = frame_roof_eaves(&roof, &d, &eaves(&roof, 16.0, Some(cut)));
+            assert_eq!(m.len(), plain.len());
+            let mut tailed = 0;
+            for (a, b) in m.iter().zip(&plain) {
+                assert_eq!(a.kind, b.kind);
+                if a.kind != MemberKind::Rafter || a.cuts.is_empty() {
+                    assert_eq!(a.length, b.length);
+                    continue;
+                }
+                tailed += 1;
+                assert_eq!(a.cuts.tail, Some(cut));
+                assert_eq!(a.cuts.pitch_in_12, 8.0);
+                // A plumb cut leaves the bottom corner out past the eave line.
+                let ext = if cut == TailCut::Plumb { 2.0 * hd * rise } else { 0.0 };
+                assert!((a.length - b.length - ext).abs() < 1e-6, "{cut:?}");
+                // The top corner stays on the plane's eave edge.
+                let top_x = if cut == TailCut::Plumb { ext } else { 0.0 };
+                let eave_top = local_plan(b, 0.0, hd);
+                let a_top = local_plan(a, top_x, hd);
+                assert!(eave_top.dist(a_top) < 1e-6, "{cut:?} top corner moved");
+                // The heel cut stands 16" (the overhang) in from the eave line.
+                let bm = a.cuts.birdsmouth.expect("birdsmouth");
+                let d_pt = local_plan(a, bm.heel_at, -hd);
+                let run = d_pt.dist(a_top);
+                assert!((run - 16.0).abs() < 1e-6, "{cut:?}: heel {run}\" in from the eave");
+                // The seat is level and as long as the plate's 3 1/2": the
+                // heel's top corner and the seat's far end are at one height.
+                let c_h = local_height(a, bm.heel_at + bm.heel_height * sn, -hd + bm.heel_height * cs);
+                let e_h = local_height(a, bm.heel_at + bm.heel_height / sn, -hd);
+                assert!((c_h - e_h).abs() < 1e-6);
+                let c_pt = local_plan(a, bm.heel_at + bm.heel_height * sn, -hd + bm.heel_height * cs);
+                assert!(c_pt.dist(d_pt) < 1e-6, "the heel cut is plumb");
+                let e_pt = local_plan(a, bm.heel_at + bm.heel_height / sn, -hd);
+                assert!((e_pt.dist(d_pt) - 3.5).abs() < 1e-6, "3 1/2\" seat");
+                // No more than a third of the depth comes out.
+                assert!(bm.heel_height * cs <= d.rafter.depth / 3.0 + 1e-9);
+            }
+            assert!(tailed >= 28, "{tailed} rafters start at an eave");
+        }
+    }
+
+    #[test]
+    fn a_cut_rafter_meshes_as_its_profile() {
+        let roof = hip(16.0);
+        let d = RoofFramingDefaults::default();
+        let m = frame_roof_eaves(&roof, &d, &eaves(&roof, 16.0, Some(TailCut::Plumb)));
+        let r = m.iter().find(|m| !m.cuts.is_empty()).unwrap();
+        // Bottom edge with the notch (seven points), more triangles than a box.
+        let prof = r.profile();
+        assert_eq!(prof.len(), 7, "{prof:?}");
+        let mesh = r.mesh();
+        assert!(mesh.triangle_count() > 12);
+        assert_eq!(mesh.material, plan_3d::Material::Framing);
+        for v in &mesh.vertices {
+            let n = v.normal;
+            assert!(((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() - 1.0).abs() < 1e-5);
+        }
+        // Every triangle winds with its normal.
+        for tri in mesh.indices.as_chunks::<3>().0 {
+            let p = |i: u32| mesh.vertices[i as usize].position.map(f64::from);
+            let (a, b, c) = (p(tri[0]), p(tri[1]), p(tri[2]));
+            let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = mesh.vertices[tri[0] as usize].normal.map(f64::from);
+            assert!(dot(crate::member::cross(e1, e2), n) > 0.0);
+        }
+        // The profile area is the box minus the notch and the tail corner.
+        let area = |p: &[(f64, f64)]| {
+            (0..p.len())
+                .map(|i| p[i].0 * p[(i + 1) % p.len()].1 - p[(i + 1) % p.len()].0 * p[i].1)
+                .sum::<f64>()
+                / 2.0
+        };
+        let box_area = r.length * r.lumber.depth;
+        assert!(area(&prof) > 0.0 && area(&prof) < box_area);
+        // The mesh volume agrees: area x thickness (divergence theorem).
+        let mut vol = 0.0;
+        for tri in mesh.indices.as_chunks::<3>().0 {
+            let p = |i: u32| mesh.vertices[i as usize].position.map(f64::from);
+            vol += dot(p(tri[0]), crate::member::cross(p(tri[1]), p(tri[2]))) / 6.0;
+        }
+        assert!((vol - area(&prof) * r.lumber.thickness).abs() < 1e-3 * vol, "{vol}");
+        // A member without cuts keeps the 12-triangle box.
+        let plain = m.iter().find(|m| m.cuts.is_empty()).unwrap();
+        assert_eq!(plain.mesh().triangle_count(), 12);
+    }
+
+    #[test]
+    fn the_roof_framing_cut_list_uses_the_long_point() {
+        let roof = hip(16.0);
+        let d = RoofFramingDefaults::default();
+        let m = frame_roof_eaves(&roof, &d, &eaves(&roof, 16.0, None));
+        // `None` follows the defaults' tail cut (plumb).
+        let r = m.iter().find(|m| !m.cuts.is_empty()).unwrap();
+        assert_eq!(r.cuts.tail, Some(TailCut::Plumb));
+        let t = roof_framing_takeoff(&m);
+        assert!(t.cuts.iter().any(|c| c.member == "rafter" && c.size == "2x8"));
     }
 }

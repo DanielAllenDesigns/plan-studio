@@ -1,14 +1,18 @@
 //! The egui widget: input handling plus the paint callback that drives [`gpu`](crate::gpu).
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use eframe::egui::{self, Key, PointerButton, Sense};
 use eframe::egui_glow;
 use eframe::glow;
 use plan_3d::{Bounds, Scene};
+use plan_materials::textures::TextureStore;
 
 use crate::camera::{Camera, CameraMode};
 use crate::gpu::{FrameParams, GpuScene};
+use crate::quality::{nearest_lights, Look, ViewLight, ViewSettings, MAX_POINT_LIGHTS};
+use crate::texturing::{self, ImageTexture};
 use crate::walkthrough::Walkthrough;
 
 /// Orbit sensitivity, radians per dragged pixel.
@@ -58,8 +62,26 @@ pub struct Viewport3d {
     pub show_edges: bool,
     /// Lighting parameters.
     pub lighting: Lighting,
+    /// Paint textured materials and pictures with their bitmaps. The Standard
+    /// technique wants this on; flat and line techniques turn it off.
+    pub textures_enabled: bool,
+    /// The look of the interactive view (set from the rendering technique).
+    pub look: Look,
+    /// Shadows, ambient occlusion, quality and exposure.
+    pub settings: ViewSettings,
+    /// Point lights of the plan; the nearest few light the view.
+    lights: Vec<ViewLight>,
     gpu: Arc<Mutex<GpuScene>>,
-    pending: Arc<Mutex<Option<Scene>>>,
+    pending: Arc<Mutex<Option<Arc<Scene>>>>,
+    /// The scene last handed over, kept to re-upload after a lost GL context.
+    last_scene: Option<Arc<Scene>>,
+    pending_pictures: Arc<Mutex<Option<Vec<ImageTexture>>>>,
+    last_pictures: Vec<ImageTexture>,
+    store: Arc<TextureStore>,
+    context_lost: Arc<AtomicBool>,
+    /// Material textures the last frame still had to upload.
+    pending_textures: Arc<AtomicUsize>,
+    prefetching: Arc<AtomicUsize>,
     bounds: Option<Bounds>,
     aspect: f32,
 }
@@ -91,13 +113,31 @@ fn intersect(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> Option<(i32, i
 impl Viewport3d {
     /// A viewport with an empty scene and a light sky-blue background.
     pub fn new() -> Self {
+        Self::with_texture_store(TextureStore::shared())
+    }
+
+    /// A viewport that looks material textures up in `store` (tests and
+    /// tools without Chief's files pass a store with no folders).
+    pub fn with_texture_store(store: Arc<TextureStore>) -> Self {
+        let gpu = GpuScene::with_store(Arc::clone(&store));
         Viewport3d {
             camera: Camera::default(),
             background: [0.85, 0.89, 0.94, 1.0],
             show_edges: true,
             lighting: Lighting::default(),
-            gpu: Arc::new(Mutex::new(GpuScene::default())),
+            textures_enabled: true,
+            look: Look::Standard,
+            settings: ViewSettings::default(),
+            lights: Vec::new(),
+            prefetching: Arc::clone(&gpu.prefetching),
+            gpu: Arc::new(Mutex::new(gpu)),
             pending: Arc::new(Mutex::new(None)),
+            last_scene: None,
+            pending_pictures: Arc::new(Mutex::new(None)),
+            last_pictures: Vec::new(),
+            store,
+            context_lost: Arc::new(AtomicBool::new(false)),
+            pending_textures: Arc::new(AtomicUsize::new(0)),
             bounds: None,
             aspect: 1.0,
         }
@@ -108,6 +148,8 @@ impl Viewport3d {
     pub fn set_scene(&mut self, gl: &glow::Context, scene: &Scene) {
         *lock(&self.pending) = None;
         lock(&self.gpu).upload(gl, scene);
+        self.last_scene = Some(Arc::new(scene.clone()));
+        self.prefetch_textures(scene);
         self.bounds = scene.bounds();
         self.fit_view();
     }
@@ -116,8 +158,69 @@ impl Viewport3d {
     /// no GL context at hand. Also frames the camera on it.
     pub fn queue_scene(&mut self, scene: &Scene) {
         self.bounds = scene.bounds();
-        *lock(&self.pending) = Some(scene.clone());
+        let scene = Arc::new(scene.clone());
+        self.prefetch_textures(&scene);
+        *lock(&self.pending) = Some(Arc::clone(&scene));
+        self.last_scene = Some(scene);
         self.fit_view();
+    }
+
+    /// Decode the textures `scene` needs on a background thread, so the first
+    /// frame that shows them only has to upload (a 2048 pixel JPEG takes
+    /// about 100 ms to decode).
+    fn prefetch_textures(&self, scene: &Scene) {
+        let missing: Vec<_> = texturing::needed_materials(scene)
+            .into_iter()
+            .filter(|m| !self.store.is_cached(&TextureStore::material_key(*m)))
+            .collect();
+        if missing.is_empty() || !self.textures_enabled {
+            return;
+        }
+        let (store, flag) = (Arc::clone(&self.store), Arc::clone(&self.prefetching));
+        flag.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("texture-prefetch".into())
+            .spawn(move || {
+                for m in missing {
+                    let _ = store.material(m);
+                }
+                flag.fetch_sub(1, Ordering::SeqCst);
+            });
+        if spawned.is_err() {
+            self.prefetching.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Set the pictures to draw on their quads (see [`ImageTexture`]); the
+    /// list replaces the previous one. Uploads happen on the next paint and
+    /// only for keys not already on the GPU, so calling this every time the
+    /// pictures may have changed is cheap.
+    pub fn set_image_textures(&mut self, images: Vec<ImageTexture>) {
+        self.last_pictures = images.clone();
+        *lock(&self.pending_pictures) = Some(images);
+    }
+
+    /// Tell the viewport the OpenGL context was replaced or lost: every GL
+    /// object is forgotten (not deleted) and the last scene, pictures and
+    /// material textures are uploaded again on the next paint. A replaced
+    /// context is also noticed on its own.
+    pub fn context_lost(&mut self) {
+        self.context_lost.store(true, Ordering::SeqCst);
+    }
+
+    /// The store material textures come from.
+    pub fn texture_store(&self) -> Arc<TextureStore> {
+        Arc::clone(&self.store)
+    }
+
+    /// Material textures resident on the GPU.
+    pub fn uploaded_material_textures(&self) -> usize {
+        lock(&self.gpu).material_texture_count()
+    }
+
+    /// Picture textures resident on the GPU.
+    pub fn uploaded_picture_textures(&self) -> usize {
+        lock(&self.gpu).picture_texture_count()
     }
 
     /// Re-frame the camera on the current scene for the current mode.
@@ -141,6 +244,32 @@ impl Viewport3d {
             let t = self.camera.target;
             self.camera.position = [t[0], floor + self.camera.eye_height, t[2]];
         }
+    }
+
+    /// Light the view with the plan's point lights (the renderer's list); the
+    /// nearest few to the eye are evaluated per pixel.
+    pub fn set_point_lights(&mut self, lights: &[plan_render::PointLight]) {
+        self.lights = lights
+            .iter()
+            .map(|l| ViewLight {
+                position: l.position,
+                // Same units as the ray tracer: albedo / pi * intensity / d^2.
+                color: l
+                    .color
+                    .map(|c| c * l.intensity.max(0.0) / std::f32::consts::PI),
+            })
+            .collect();
+    }
+
+    /// Why a shadow, occlusion or composite pass is off (shader compile
+    /// failures, targets the driver cannot make). Empty when all is well.
+    pub fn render_notes(&self) -> Vec<String> {
+        lock(&self.gpu).notes().to_vec()
+    }
+
+    /// Point lights currently set.
+    pub fn point_light_count(&self) -> usize {
+        self.lights.len()
     }
 
     /// Replace the camera wholesale (for example with a saved view or a
@@ -173,6 +302,7 @@ impl Viewport3d {
     /// `frame.gl()`, or before replacing the viewport.
     pub fn destroy(&mut self, gl: &glow::Context) {
         *lock(&self.pending) = None;
+        *lock(&self.pending_pictures) = None;
         lock(&self.gpu).destroy(gl);
     }
 
@@ -202,22 +332,48 @@ impl Viewport3d {
         painter.rect_filled(rect, 0.0, to_color32(self.background));
 
         let frame = FrameParams {
-            view_proj: self.camera.view_projection(self.aspect),
-            eye: self.camera.eye(),
-            view_dir: self.camera.forward(),
-            ortho: self.camera.mode.is_orthographic(),
             lighting: self.lighting,
             show_edges: self.show_edges,
-            hide_ceiling_roof: self.camera.mode.hides_ceiling_and_roof(),
+            textures: self.textures_enabled,
+            look: self.look,
+            settings: self.settings,
+            background: self.background,
+            lights: nearest_lights(&self.lights, self.camera.eye(), MAX_POINT_LIGHTS),
+            bounds: self.bounds,
+            pixels_per_point: ui.ctx().pixels_per_point(),
+            ..FrameParams::for_camera(&self.camera, self.aspect, (0, 0, 1, 1))
         };
+        // Textures still decoding or waiting for their upload: keep painting.
+        if self.textures_enabled
+            && (self.prefetching.load(Ordering::Relaxed) > 0
+                || self.pending_textures.load(Ordering::Relaxed) > 0)
+        {
+            ui.ctx().request_repaint();
+        }
         let gpu = Arc::clone(&self.gpu);
         let pending = Arc::clone(&self.pending);
+        let pending_pictures = Arc::clone(&self.pending_pictures);
+        let lost = Arc::clone(&self.context_lost);
+        let (last_scene, last_pictures) = (self.last_scene.clone(), self.last_pictures.clone());
+        let pending_textures = Arc::clone(&self.pending_textures);
         let callback = egui_glow::CallbackFn::new(move |info, painter| {
             let gl = painter.gl().as_ref();
             let mut gpu = lock(&gpu);
-            match lock(&pending).take() {
+            let mut scene = lock(&pending).take();
+            let mut pictures = lock(&pending_pictures).take();
+            if lost.swap(false, Ordering::SeqCst) || gpu.context_was_replaced(gl) {
+                // The context's objects are gone: start over from the last
+                // scene and pictures.
+                gpu.forget_context();
+                scene = scene.or_else(|| last_scene.clone());
+                pictures = pictures.or_else(|| Some(last_pictures.clone()));
+            }
+            match scene {
                 Some(scene) => gpu.upload(gl, &scene),
                 None => gpu.ensure_program(gl),
+            }
+            if let Some(list) = pictures {
+                gpu.set_pictures(gl, &list);
             }
             let vp = info.viewport_in_pixels();
             let clip = info.clip_rect_in_pixels();
@@ -231,7 +387,13 @@ impl Viewport3d {
                 ),
             );
             if let Some(scissor) = scissor {
+                let frame = FrameParams {
+                    viewport: (vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px),
+                    target_fbo: painter.intermediate_fbo(),
+                    ..frame.clone()
+                };
                 gpu.paint(gl, &frame, scissor);
+                pending_textures.store(gpu.pending_uploads(), Ordering::Relaxed);
             }
         });
         painter.add(egui::PaintCallback {
@@ -322,6 +484,40 @@ mod tests {
     fn default_lighting_is_upper_left_front() {
         let l = Lighting::default();
         assert!(l.key_dir[0] < 0.0 && l.key_dir[1] > 0.0 && l.key_dir[2] > 0.0);
+    }
+
+    #[test]
+    fn a_new_viewport_has_sensible_shading_defaults() {
+        let vp = Viewport3d::new();
+        assert!(vp.settings.shadows && vp.settings.ambient_occlusion);
+        assert_eq!(vp.settings.quality, crate::Quality::Medium);
+        assert_eq!(vp.look, Look::Standard);
+        assert!(vp.render_notes().is_empty());
+    }
+
+    #[test]
+    fn plan_lights_become_shader_lights_in_the_ray_tracers_units() {
+        let mut vp = Viewport3d::new();
+        vp.set_point_lights(&[
+            plan_render::PointLight {
+                position: [10.0, 80.0, -20.0],
+                intensity: 12_000.0 * std::f32::consts::PI,
+                color: [1.0, 0.5, 0.25],
+                radius: 2.0,
+            },
+            plan_render::PointLight {
+                position: [0.0; 3],
+                intensity: -5.0,
+                color: [1.0; 3],
+                radius: 0.0,
+            },
+        ]);
+        assert_eq!(vp.point_light_count(), 2);
+        let l = &vp.lights;
+        assert_eq!(l[0].position, [10.0, 80.0, -20.0]);
+        assert!((l[0].color[0] - 12_000.0).abs() < 1.0);
+        assert!((l[0].color[1] - 6_000.0).abs() < 1.0);
+        assert_eq!(l[1].color, [0.0; 3], "negative intensity gives no light");
     }
 
     #[test]

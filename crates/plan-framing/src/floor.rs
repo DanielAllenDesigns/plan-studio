@@ -46,6 +46,35 @@ pub fn frame_floor(
     d: &FramingDefaults,
     direction: JoistDirection,
 ) -> Vec<Member> {
+    frame_floor_holes(room, floor_elevation, d, direction, &[])
+}
+
+/// A hole in the platform (a stairwell) in the frame of the joists: `s` along
+/// the joists, `c` across them.
+struct HoleBox {
+    s0: f64,
+    s1: f64,
+    c0: f64,
+    c1: f64,
+}
+
+/// [`frame_floor`] with holes (stairwells, from the platform's Floor Hole
+/// outlines). Each hole's bounding box is framed the way a stairwell is:
+///
+/// * `d.hole_plies` **trimmer joists** run the full joist span on each side of
+///   the hole, replacing the common joists they stand on;
+/// * `d.hole_plies` **header joists** run across the joists at each end of the
+///   hole, between the trimmers;
+/// * common joists inside the hole's width are cut short and butt the headers.
+///
+/// Holes outside the room (or not inside a single joist span) are ignored.
+pub fn frame_floor_holes(
+    room: &Room,
+    floor_elevation: f64,
+    d: &FramingDefaults,
+    direction: JoistDirection,
+    holes: &[Vec<Point>],
+) -> Vec<Member> {
     let poly = &room.polygon;
     if poly.len() < 3 {
         return Vec::new();
@@ -97,6 +126,102 @@ pub fn frame_floor(
         })
         .collect();
 
+    // Holes: cut or replace the common joists, add trimmers and headers.
+    let rim_in = |across: f64| -> Vec<(f64, f64)> {
+        clip(poly, along_x, across)
+            .into_iter()
+            .map(|(a, b)| (a + rim, b - rim))
+            .filter(|&(a, b)| b - a > 1.0)
+            .collect()
+    };
+    let to_hole = |outline: &Vec<Point>| -> Option<HoleBox> {
+        let (lo, hi) = bounds(outline);
+        let (s0, s1, c0, c1) = if along_x {
+            (lo.x, hi.x, lo.y, hi.y)
+        } else {
+            (lo.y, hi.y, lo.x, hi.x)
+        };
+        (outline.len() >= 3 && s1 - s0 > 1.0 && c1 - c0 > 1.0).then_some(HoleBox { s0, s1, c0, c1 })
+    };
+    let plies = d.hole_plies.max(1);
+    let zone = f64::from(plies) * t;
+    let mut hole_members: Vec<Member> = Vec::new();
+    let mut lines = lines;
+    for h in holes.iter().filter_map(to_hole) {
+        // The span the hole sits in; skip a hole the joists do not cross.
+        let mid = (h.c0 + h.c1) / 2.0;
+        let Some(&(a, b)) = rim_in(mid)
+            .iter()
+            .find(|&&(a, b)| a <= h.s0 + EPS && b >= h.s1 - EPS)
+        else {
+            continue;
+        };
+        for line in &mut lines {
+            let (lo, hi) = (line.across - t / 2.0, line.across + t / 2.0);
+            if hi <= h.c0 - zone + EPS || lo >= h.c1 + zone - EPS {
+                continue;
+            }
+            let inside = lo >= h.c0 - EPS && hi <= h.c1 + EPS;
+            if inside {
+                // Cut short: the tails butt the headers.
+                let mut cut = Vec::new();
+                for &(sa, sb) in &line.spans {
+                    if sa <= h.s0 + EPS && sb >= h.s1 - EPS {
+                        cut.push((sa, h.s0 - zone));
+                        cut.push((h.s1 + zone, sb));
+                    } else {
+                        cut.push((sa, sb));
+                    }
+                }
+                cut.retain(|&(x, y)| y - x > 1.0);
+                line.spans = cut;
+            } else {
+                // A trimmer takes its place.
+                line.spans
+                    .retain(|&(sa, sb)| !(sa <= h.s0 + EPS && sb >= h.s1 - EPS));
+            }
+        }
+        for k in 0..plies {
+            let off = (f64::from(k) + 0.5) * t;
+            for across in [h.c0 - off, h.c1 + off] {
+                if let Some((sa, sb)) = rim_in(across)
+                    .into_iter()
+                    .find(|&(x, y)| x <= h.s0 + EPS && y >= h.s1 - EPS)
+                {
+                    let tf = Transform3 {
+                        origin: to3(sa, across, y_mid),
+                        axis_x: span_dir,
+                        axis_y: up,
+                    };
+                    hole_members.push(Member::new(
+                        MemberKind::TrimmerJoist,
+                        lumber,
+                        sb - sa,
+                        tf,
+                        None,
+                    ));
+                }
+            }
+            for span_at in [h.s0 - off, h.s1 + off] {
+                if span_at < a || span_at > b {
+                    continue;
+                }
+                let tf = Transform3 {
+                    origin: to3(span_at, h.c0, y_mid),
+                    axis_x: across_dir,
+                    axis_y: up,
+                };
+                hole_members.push(Member::new(
+                    MemberKind::HeaderJoist,
+                    lumber,
+                    h.c1 - h.c0,
+                    tf,
+                    None,
+                ));
+            }
+        }
+    }
+
     let mut out = Vec::new();
     for line in &lines {
         for &(a, b) in &line.spans {
@@ -108,6 +233,8 @@ pub fn frame_floor(
             out.push(Member::new(MemberKind::Joist, lumber, b - a, tf, None));
         }
     }
+
+    out.extend(hole_members);
 
     if d.rim_joist {
         let ccw = signed_area(poly) >= 0.0;
@@ -141,6 +268,9 @@ pub fn frame_floor(
             let (l0, l1) = (&pair[0], &pair[1]);
             let gap = l1.across - l0.across - t;
             if gap < 1.0 {
+                continue;
+            }
+            if l0.spans.len() != l1.spans.len() {
                 continue;
             }
             for (&(a0, b0), &(a1, b1)) in l0.spans.iter().zip(&l1.spans) {
@@ -327,5 +457,79 @@ mod tests {
         let lens: Vec<f64> = of(&m, MemberKind::Joist).iter().map(|j| j.length).collect();
         assert!(lens.contains(&120.0) && lens.contains(&60.0));
         assert!(lens.iter().all(|&l| l == 120.0 || l == 60.0));
+    }
+
+    /// Plan-space (min, max) of a member's box.
+    fn plan_box(m: &Member) -> (Point, Point) {
+        let pts: Vec<Point> = m.corners().iter().map(|c| Point::new(c[0], -c[2])).collect();
+        let lo = pts.iter().fold(Point::new(1e9, 1e9), |a, p| Point::new(a.x.min(p.x), a.y.min(p.y)));
+        let hi = pts.iter().fold(Point::new(-1e9, -1e9), |a, p| Point::new(a.x.max(p.x), a.y.max(p.y)));
+        (lo, hi)
+    }
+
+    fn square_hole(x0: f64, y0: f64, w: f64, h: f64) -> Vec<Point> {
+        vec![
+            Point::new(x0, y0),
+            Point::new(x0 + w, y0),
+            Point::new(x0 + w, y0 + h),
+            Point::new(x0, y0 + h),
+        ]
+    }
+
+    #[test]
+    fn stair_hole_gets_trimmers_headers_and_cut_joists() {
+        let d = FramingDefaults::default();
+        let hole = square_hole(100.0, 30.0, 36.0, 48.0);
+        let plain = frame_floor(&rect(), 0.0, &d, JoistDirection::Auto);
+        let m = frame_floor_holes(&rect(), 0.0, &d, JoistDirection::Auto, std::slice::from_ref(&hole));
+        // Two plies each side, two plies each end.
+        let trimmers = of(&m, MemberKind::TrimmerJoist);
+        let headers = of(&m, MemberKind::HeaderJoist);
+        assert_eq!(trimmers.len(), 4);
+        assert_eq!(headers.len(), 4);
+        // Trimmers run the whole joist span (117"), headers span the hole's width.
+        assert!(trimmers.iter().all(|t| (t.length - 117.0).abs() < 1e-9));
+        assert!(headers.iter().all(|h| (h.length - 36.0).abs() < 1e-9));
+        // Trimmers stand just outside the hole's sides, headers outside its ends.
+        let mut xs: Vec<f64> = trimmers.iter().map(|t| plan_box(t).0.x + 0.75).collect();
+        xs.sort_by(f64::total_cmp);
+        assert_eq!(xs, [97.75, 99.25, 136.75, 138.25]);
+        let mut ys: Vec<f64> = headers.iter().map(|h| plan_box(h).0.y + 0.75).collect();
+        ys.sort_by(f64::total_cmp);
+        assert_eq!(ys, [27.75, 29.25, 78.75, 80.25]);
+        // The joists inside the hole's width are cut to tails that butt the headers.
+        let (hlo, hhi) = (Point::new(100.0, 30.0), Point::new(136.0, 78.0));
+        for j in of(&m, MemberKind::Joist) {
+            let (lo, hi) = plan_box(j);
+            let clear = hi.x <= hlo.x + 1e-9 || lo.x >= hhi.x - 1e-9 || hi.y <= hlo.y + 1e-9 || lo.y >= hhi.y - 1e-9;
+            assert!(clear, "a joist crosses the hole: {lo:?} {hi:?}");
+        }
+        let tails: Vec<f64> = of(&m, MemberKind::Joist)
+            .iter()
+            .filter(|j| j.length < 117.0)
+            .map(|j| j.length)
+            .collect();
+        assert_eq!(tails.len(), 4);
+        assert!(tails.iter().any(|l| (l - 25.5).abs() < 1e-9));
+        assert!(tails.iter().any(|l| (l - 37.5).abs() < 1e-9));
+        // 16 plain joists: one swallowed by a trimmer, two cut in two.
+        assert_eq!(of(&plain, MemberKind::Joist).len(), 16);
+        assert_eq!(of(&m, MemberKind::Joist).len(), 16 - 1 - 2 + 4);
+        // Rim joists are untouched; a hole outside the room changes nothing.
+        assert_eq!(of(&m, MemberKind::RimJoist).len(), 2);
+        let far = square_hole(500.0, 500.0, 36.0, 36.0);
+        let same = frame_floor_holes(&rect(), 0.0, &d, JoistDirection::Auto, &[far]);
+        assert_eq!(same.len(), plain.len());
+    }
+
+    #[test]
+    fn rim_joists_run_along_the_edges_the_joists_butt() {
+        let m = frame_floor(&rect(), 0.0, &FramingDefaults::default(), JoistDirection::AlongX);
+        // Joists run along X, so the rims are the two 120" ends.
+        let rims = of(&m, MemberKind::RimJoist);
+        assert_eq!(rims.len(), 2);
+        assert!(rims.iter().all(|r| (r.length - 120.0).abs() < 1e-9));
+        // Each joist is shortened by both rims.
+        assert!(of(&m, MemberKind::Joist).iter().all(|j| (j.length - 237.0).abs() < 1e-9));
     }
 }

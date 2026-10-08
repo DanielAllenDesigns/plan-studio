@@ -11,6 +11,9 @@
 mod scale;
 mod sheet;
 
+#[cfg(test)]
+mod mode_tests;
+
 pub use scale::{Scale, SheetSize};
 pub use sheet::{
     plan_sheet, plan_sheet_with, PlanSheetOptions, PlanSheetResult, RoomAreaBasis, TitleBlock,
@@ -57,6 +60,22 @@ fn num(v: f64) -> String {
         if s.ends_with('.') {
             s.pop();
         }
+    }
+    if s == "-0" {
+        s = "0".into();
+    }
+    s
+}
+
+/// Like [`num`] with up to 6 decimals, for matrix entries (a scale of 0.4375
+/// must not become 0.438).
+fn num6(v: f64) -> String {
+    let mut s = format!("{v:.6}");
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
     }
     if s == "-0" {
         s = "0".into();
@@ -147,6 +166,49 @@ impl PdfColor {
     }
 }
 
+/// How colours reach the page when printing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PdfColorMode {
+    /// Colours as drawn.
+    #[default]
+    Color,
+    /// Every colour (and image pixel) becomes its luminance gray.
+    Grayscale,
+    /// Ink is black, area fills are black or white, nothing is gray.
+    BlackWhite,
+}
+
+impl PdfColorMode {
+    /// Luminance of an 8-bit colour, 0..=1.
+    fn luma(c: PdfColor) -> f64 {
+        match c {
+            PdfColor::Gray(g) => g.clamp(0.0, 1.0),
+            PdfColor::Rgb(r, g, b) => {
+                (0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b)) / 255.0
+            }
+        }
+    }
+
+    /// The colour of strokes, text and tracked fills in this mode.
+    fn ink(self, c: PdfColor) -> PdfColor {
+        match self {
+            PdfColorMode::Color => c,
+            PdfColorMode::Grayscale => PdfColor::Gray(Self::luma(c)),
+            PdfColorMode::BlackWhite => {
+                PdfColor::Gray(if Self::luma(c) > 0.92 { 1.0 } else { 0.0 })
+            }
+        }
+    }
+
+    /// The colour of a filled area: black B&W prints keep only dark fills.
+    fn area(self, c: PdfColor) -> PdfColor {
+        match self {
+            PdfColorMode::BlackWhite => PdfColor::Gray(if Self::luma(c) < 0.5 { 0.0 } else { 1.0 }),
+            other => other.ink(c),
+        }
+    }
+}
+
 /// Line cap style (`J` operator).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineCap {
@@ -220,6 +282,11 @@ pub struct PdfDoc {
     /// States saved by [`PdfDoc::save_state`] on the current page.
     stack: Vec<GState>,
     bold: bool,
+    color_mode: PdfColorMode,
+    /// Every stroke is drawn this wide (print with line weights off).
+    uniform_line: Option<f64>,
+    /// `(page index, title)` bookmarks, written as the PDF outline.
+    bookmarks: Vec<(usize, String)>,
 }
 
 impl PdfDoc {
@@ -236,6 +303,9 @@ impl PdfDoc {
             gs: GState::initial(),
             stack: Vec::new(),
             bold: false,
+            color_mode: PdfColorMode::Color,
+            uniform_line: None,
+            bookmarks: Vec::new(),
         };
         doc.emit_state();
         doc
@@ -249,6 +319,60 @@ impl PdfDoc {
     /// Size in points of the current page.
     pub fn page_size(&self) -> (f64, f64) {
         (self.width, self.height)
+    }
+
+    /// Print in colour, grayscale or black and white from here on. Set it
+    /// before drawing: colours already written stay as they were.
+    pub fn set_color_mode(&mut self, mode: PdfColorMode) {
+        self.color_mode = mode;
+        let (s, f) = (self.gs.stroke, self.gs.fill);
+        self.set_stroke_color(s);
+        self.set_fill_color(f);
+    }
+
+    /// The colour mode.
+    pub fn color_mode(&self) -> PdfColorMode {
+        self.color_mode
+    }
+
+    /// Draw every stroke `width_pt` wide (`None` restores each stroke's own
+    /// width): "Print line weights" off. Fill outlines and hatches follow.
+    pub fn set_uniform_line_width(&mut self, width_pt: Option<f64>) {
+        self.uniform_line = width_pt.map(|w| w.max(0.0));
+        let w = self.gs.line_width;
+        self.set_line_width(w);
+    }
+
+    /// A stroke width after the uniform-width override.
+    fn lw(&self, width_pt: f64) -> f64 {
+        self.uniform_line.unwrap_or(width_pt)
+    }
+
+    /// Concatenate a matrix `[a b c d e f]` to the current transformation
+    /// (`cm`). Call between [`PdfDoc::save_state`] and [`PdfDoc::restore_state`]
+    /// to bound it; later drawing is scaled, rotated or moved by it.
+    pub fn transform(&mut self, m: [f64; 6]) {
+        let s = format!(
+            "{} {} {} {} {} {} cm\n",
+            num6(m[0]),
+            num6(m[1]),
+            num6(m[2]),
+            num6(m[3]),
+            num6(m[4]),
+            num6(m[5])
+        );
+        self.emit(&s);
+    }
+
+    /// Add a bookmark (PDF outline entry) to the current page.
+    pub fn add_bookmark(&mut self, title: &str) {
+        let page = self.pages.len() - 1;
+        self.bookmarks.push((page, title.to_string()));
+    }
+
+    /// The bookmarks added so far, `(page index, title)`.
+    pub fn bookmarks(&self) -> &[(usize, String)] {
+        &self.bookmarks
     }
 
     fn emit(&mut self, s: &str) {
@@ -310,7 +434,7 @@ impl PdfDoc {
 
     /// Set the fill and stroke colour (0 = black, 1 = white).
     pub fn set_gray(&mut self, g: f64) {
-        let c = PdfColor::Gray(g.clamp(0.0, 1.0));
+        let c = self.color_mode.ink(PdfColor::Gray(g.clamp(0.0, 1.0)));
         self.gs.fill = c;
         self.gs.stroke = c;
         let s = format!("{} {}\n", c.fill_op(), c.stroke_op());
@@ -319,7 +443,7 @@ impl PdfDoc {
 
     /// Set the stroke colour to 8-bit RGB.
     pub fn set_rgb_stroke(&mut self, r: u8, g: u8, b: u8) {
-        let c = PdfColor::Rgb(r, g, b);
+        let c = self.color_mode.ink(PdfColor::Rgb(r, g, b));
         self.gs.stroke = c;
         let s = format!("{}\n", c.stroke_op());
         self.emit(&s);
@@ -327,7 +451,7 @@ impl PdfDoc {
 
     /// Set the fill colour (also used by text) to 8-bit RGB.
     pub fn set_rgb_fill(&mut self, r: u8, g: u8, b: u8) {
-        let c = PdfColor::Rgb(r, g, b);
+        let c = self.color_mode.ink(PdfColor::Rgb(r, g, b));
         self.gs.fill = c;
         let s = format!("{}\n", c.fill_op());
         self.emit(&s);
@@ -335,6 +459,7 @@ impl PdfDoc {
 
     /// Set the stroke colour from a [`PdfColor`].
     pub fn set_stroke_color(&mut self, c: PdfColor) {
+        let c = self.color_mode.ink(c);
         self.gs.stroke = c;
         let s = format!("{}\n", c.stroke_op());
         self.emit(&s);
@@ -342,6 +467,7 @@ impl PdfDoc {
 
     /// Set the fill colour from a [`PdfColor`].
     pub fn set_fill_color(&mut self, c: PdfColor) {
+        let c = self.color_mode.ink(c);
         self.gs.fill = c;
         let s = format!("{}\n", c.fill_op());
         self.emit(&s);
@@ -349,7 +475,7 @@ impl PdfDoc {
 
     /// Set the line width used by [`PdfDoc::arc`] (other strokes pass their own).
     pub fn set_line_width(&mut self, width_pt: f64) {
-        self.gs.line_width = width_pt.max(0.0);
+        self.gs.line_width = self.lw(width_pt.max(0.0));
         let s = format!("{} w\n", num(self.gs.line_width));
         self.emit(&s);
     }
@@ -436,7 +562,7 @@ impl PdfDoc {
     pub fn line(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, width_pt: f64) {
         let s = format!(
             "q {} w {} {} m {} {} l S Q\n",
-            num(width_pt),
+            num(self.lw(width_pt)),
             num(x1),
             num(y1),
             num(x2),
@@ -461,7 +587,7 @@ impl PdfDoc {
         }
         let s = format!(
             "q {} w {}{} Q\n",
-            num(width_pt),
+            num(self.lw(width_pt)),
             Self::path(points),
             if closed { "s" } else { "S" }
         );
@@ -474,11 +600,8 @@ impl PdfDoc {
         if points.len() < 3 {
             return;
         }
-        let s = format!(
-            "q {} g {}f Q\n",
-            num(gray.clamp(0.0, 1.0)),
-            Self::path(points)
-        );
+        let g = self.color_mode.area(PdfColor::Gray(gray.clamp(0.0, 1.0)));
+        let s = format!("q {} {}f Q\n", g.fill_op(), Self::path(points));
         self.emit(&s);
     }
 
@@ -496,10 +619,10 @@ impl PdfDoc {
         }
         let mut s = String::from("q ");
         if let Some(c) = fill {
-            let _ = write!(s, "{} ", c.fill_op());
+            let _ = write!(s, "{} ", self.color_mode.area(c).fill_op());
         }
         if let Some(w) = stroke_width_pt {
-            let _ = write!(s, "{} w ", num(w.max(0.0)));
+            let _ = write!(s, "{} w ", num(self.lw(w.max(0.0))));
         }
         s.push_str(&Self::path(points));
         s.push_str(match (fill.is_some(), stroke_width_pt.is_some()) {
@@ -515,7 +638,7 @@ impl PdfDoc {
     pub fn rect(&mut self, x: f64, y: f64, w: f64, h: f64, width_pt: f64) {
         let s = format!(
             "q {} w {} {} {} {} re S Q\n",
-            num(width_pt),
+            num(self.lw(width_pt)),
             num(x),
             num(y),
             num(w),
@@ -528,7 +651,7 @@ impl PdfDoc {
     pub fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64, color: PdfColor) {
         let s = format!(
             "q {} {} {} {} {} re f Q\n",
-            color.fill_op(),
+            self.color_mode.area(color).fill_op(),
             num(x),
             num(y),
             num(w),
@@ -556,7 +679,7 @@ impl PdfDoc {
     ) {
         let s = format!(
             "q {} w {} {} m {} {} {} {} {} {} c S Q\n",
-            num(width_pt),
+            num(self.lw(width_pt)),
             num(p0.0),
             num(p0.1),
             num(c1.0),
@@ -659,7 +782,7 @@ impl PdfDoc {
                 None
             }
         };
-        let mut s = format!("q {} w ", num(width_pt));
+        let mut s = format!("q {} w ", num(self.lw(width_pt)));
         let mut any = false;
         let mut k = k0;
         while k <= k1 {
@@ -793,10 +916,31 @@ impl PdfDoc {
             return false;
         }
         let idx = self.images.len();
+        let rgb: Vec<u8> = match self.color_mode {
+            PdfColorMode::Color => rgb.to_vec(),
+            mode => rgb
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .flat_map(|p| {
+                    let l = PdfColorMode::luma(PdfColor::Rgb(p[0], p[1], p[2]));
+                    let v = if mode == PdfColorMode::BlackWhite {
+                        if l < 0.5 {
+                            0
+                        } else {
+                            255
+                        }
+                    } else {
+                        (l * 255.0).round() as u8
+                    };
+                    [v, v, v]
+                })
+                .collect(),
+        };
         self.images.push(Image {
             width_px,
             height_px,
-            rgb: rgb.to_vec(),
+            rgb,
         });
         if let Some(used) = self.page_images.last_mut() {
             used.push(idx);
@@ -865,7 +1009,8 @@ impl PdfDoc {
     ///
     /// Object layout: 1 catalog, 2 page tree, 3 Helvetica, 4 Helvetica-Bold,
     /// one image XObject per embedded image, then a page object and a content
-    /// stream per page. Non-page dictionaries write `/Type/X` without a space
+    /// stream per page, the two font descriptors and, when bookmarks were
+    /// added, the outline (root, then one item per bookmark). Non-page dictionaries write `/Type/X` without a space
     /// so a search for `/Type /Page` matches only pages.
     pub fn finish(mut self) -> Vec<u8> {
         self.close_states();
@@ -884,10 +1029,23 @@ impl PdfDoc {
             )
             .into_bytes(),
         );
-        for base in ["Helvetica", "Helvetica-Bold"] {
+        // The two standard fonts carry their metrics (FirstChar, LastChar,
+        // Widths) and a font descriptor, so a viewer lays the text out the
+        // same way without a substitute font; the descriptors are the last
+        // objects of the file (see `descriptor_obj` below).
+        let n_dynamic = n_img + 2 * n_pages;
+        let descriptor_obj = |bold: bool| OBJ_FIRST_DYNAMIC + n_dynamic + usize::from(bold);
+        for (bold, base, widths) in [
+            (false, "Helvetica", &HELVETICA_WIDTHS),
+            (true, "Helvetica-Bold", &HELVETICA_BOLD_WIDTHS),
+        ] {
+            let w: Vec<String> = widths.iter().map(|v| v.to_string()).collect();
             objs.push(
                 format!(
-                    "<< /Type/Font /Subtype/Type1 /BaseFont/{base} /Encoding/WinAnsiEncoding >>"
+                    "<< /Type/Font /Subtype/Type1 /BaseFont/{base} /Encoding/WinAnsiEncoding \
+                     /FirstChar 32 /LastChar 126 /Widths [{}] /FontDescriptor {} 0 R >>",
+                    w.join(" "),
+                    descriptor_obj(bold)
                 )
                 .into_bytes(),
             );
@@ -933,6 +1091,50 @@ impl PdfDoc {
             stream.extend_from_slice(content.as_bytes());
             stream.extend_from_slice(b"endstream");
             objs.push(stream);
+        }
+        for (bold, base) in [(false, "Helvetica"), (true, "Helvetica-Bold")] {
+            objs.push(
+                format!(
+                    "<< /Type /FontDescriptor /FontName/{base} /Flags 32 \
+                     /FontBBox [-166 -225 1000 931] /ItalicAngle 0 /Ascent 718 /Descent -207 \
+                     /CapHeight 718 /StemV {} >>",
+                    if bold { 140 } else { 88 }
+                )
+                .into_bytes(),
+            );
+        }
+        if !self.bookmarks.is_empty() {
+            // Outline: the root, then one item per bookmark, all after the
+            // pages so the fixed object numbers above do not move.
+            let root = objs.len() + 1;
+            let n = self.bookmarks.len();
+            objs.push(
+                format!(
+                    "<< /Type/Outlines /First {} 0 R /Last {} 0 R /Count {n} >>",
+                    root + 1,
+                    root + n
+                )
+                .into_bytes(),
+            );
+            for (i, (page, title)) in self.bookmarks.iter().enumerate() {
+                let mut d = format!(
+                    "<< /Title ({}) /Parent {root} 0 R /Dest [{} 0 R /Fit]",
+                    escape_text(title),
+                    first_page_obj + 2 * page
+                );
+                if i > 0 {
+                    let _ = write!(d, " /Prev {} 0 R", root + i);
+                }
+                if i + 1 < n {
+                    let _ = write!(d, " /Next {} 0 R", root + i + 2);
+                }
+                d.push_str(" >>");
+                objs.push(d.into_bytes());
+            }
+            objs[0] = format!(
+                "<< /Type/Catalog /Pages 2 0 R /Outlines {root} 0 R /PageMode/UseOutlines >>"
+            )
+            .into_bytes();
         }
 
         let mut out: Vec<u8> = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();

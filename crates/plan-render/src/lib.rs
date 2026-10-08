@@ -10,6 +10,7 @@
 //!
 //! Scene frame: X right, Y up (inches), Z toward the viewer (plan `y` is `-Z`).
 
+mod albedo;
 mod bvh;
 mod camera;
 mod denoise;
@@ -21,13 +22,15 @@ mod renderer;
 mod rng;
 mod settings;
 mod shading;
+mod sky;
 mod tonemap;
 mod vec3;
 
 pub use camera::Camera;
 pub use image::Image;
-pub use lighting::{Environment, PointLight, Sun};
+pub use lighting::{AreaLight, Environment, PointLight, Sun};
 pub use png::{encode_png, write_png};
 pub use renderer::{render_to_file, ProgressFn, Renderer};
-pub use settings::{RenderSettings, Technique};
+pub use settings::{RenderSettings, Technique, MAX_PIXELS, MAX_SIDE};
+pub use sky::SkyModel;
 pub use tonemap::ToneMap;

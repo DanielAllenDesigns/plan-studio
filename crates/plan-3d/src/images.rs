@@ -19,7 +19,9 @@ use plan_core::{PlacedSymbol, Project};
 /// z-fighting with a floor drawn at the same height).
 pub const FLAT_LIFT: f64 = 0.1;
 
-/// The material whose colour is closest to `rgb`.
+/// The material whose colour is closest to `rgb`. Never a Floor, Ceiling or
+/// Roof: the Doll House and overview views hide those, and a picture must
+/// stay visible and pickable in every view (QA-11).
 pub fn nearest_material(rgb: [u8; 3]) -> Material {
     let c = [
         f32::from(rgb[0]) / 255.0,
@@ -30,6 +32,7 @@ pub fn nearest_material(rgb: [u8; 3]) -> Material {
         .iter()
         .copied()
         .filter(|m| m.color()[3] >= 1.0)
+        .filter(|m| !matches!(m, Material::Floor | Material::Ceiling | Material::Roof))
         .min_by(|a, b| {
             let d = |m: &Material| {
                 let k = m.color();
@@ -197,7 +200,12 @@ mod tests {
     #[test]
     fn colours_map_to_the_nearest_opaque_material() {
         assert_eq!(nearest_material([158, 77, 56]), Material::Brick);
-        assert_eq!(nearest_material([250, 250, 248]), Material::Ceiling);
+        // QA-11: near-white used to map to Ceiling and green to Roof, which the
+        // Doll House hides; pictures take the nearest non-structural material.
+        for rgb in [[250, 250, 248], [100, 120, 90], [150, 150, 150]] {
+            let m = nearest_material(rgb);
+            assert!(!matches!(m, Material::Floor | Material::Ceiling | Material::Roof));
+        }
         assert!(nearest_material([0, 0, 255]).color()[3] >= 1.0);
     }
 

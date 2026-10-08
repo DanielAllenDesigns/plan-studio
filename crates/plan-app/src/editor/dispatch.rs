@@ -208,34 +208,9 @@ impl EditorContext {
         n
     }
 
-    /// Copies the selected cabinets and symbols. Returns how many.
-    pub(super) fn copy_extra(&mut self) -> usize {
-        if self
-            .selection
-            .items
-            .iter()
-            .any(|o| matches!(o, ObjectRef::Cabinet(_) | ObjectRef::Symbol(_)))
-        {
-            placed::copy_placed(self)
-        } else {
-            0
-        }
-    }
-
-    /// Pastes the placed-object clipboard. Returns how many.
-    pub(super) fn paste_extra(&mut self) -> usize {
-        let n = placed::paste_placed(self);
-        // A pasted distribution record brings its copies (they are rebuilt
-        // from the record at its new place).
-        if n > 0 {
-            placed::sync_distributions(self);
-        }
-        n
-    }
-
     /// Does the Paste in Place button have anything to paste?
     pub(super) fn has_clipboard(&self) -> bool {
-        self.clipboard.as_ref().is_some_and(|c| !c.is_empty()) || placed::clipboard_len() > 0
+        self.clipboard.as_ref().is_some_and(|c| !c.is_empty())
     }
 
     /// The module-specific Edit toolbar buttons of the selection.
@@ -251,6 +226,10 @@ impl EditorContext {
             a.label = "Reverse Door Swing";
             v.push(a);
         }
+        // Reverse Layers, Break Wall, Change Line/Arc, Make Arc Tangent.
+        v.extend(super::wall_edit::edit_actions(self));
+        // Center on Wall Segment, Mull, Unmull.
+        v.extend(super::opening_edit::edit_actions(self));
         let Some(one) = self.selection.single() else {
             return v;
         };
@@ -263,6 +242,7 @@ impl EditorContext {
         match one {
             // The CAD edit tools (fillet, chamfer, offset, ...) under Select.
             ObjectRef::Cad(_) => v.extend(crate::tools::cad::edit_actions(self)),
+            ObjectRef::Dimension(_) => v.extend(crate::tools::dimension::edit_actions(self)),
             ObjectRef::Stair(_) => {
                 for (c, on) in stairs_view::edit_commands(self) {
                     v.push(custom(stair_id(c), c.label(), c.icon().unwrap_or(""), on));
@@ -291,7 +271,7 @@ impl EditorContext {
                     ));
                 }
             }
-            ObjectRef::Symbol(_) => {
+            ObjectRef::Symbol(_) | ObjectRef::Cabinet(_) => {
                 v.push(custom(
                     cmd::SYMBOL_REPLACE,
                     "Replace From Library",
@@ -303,6 +283,7 @@ impl EditorContext {
                 let free = site_view::electrical_layer(self.floor, self.floor())
                     .device(id)
                     .is_some_and(|d| d.wall_id.is_none());
+                v.push(custom(cmd::SYMBOL_REPLACE, "Replace From Library", "", true));
                 v.push(custom(cmd::DEVICE_FLIP, "Flip Side", "", true));
                 v.push(custom(cmd::DEVICE_ROTATE, "Rotate", "", free));
             }
@@ -313,8 +294,19 @@ impl EditorContext {
 
     /// Runs a [`EditActionKind::Custom`] command on the selection.
     pub fn run_custom(&mut self, id: &str) {
+        // Clipboard, selection, transform and the other `edit.*` commands.
+        if id.starts_with("edit.") {
+            self.run_edit_command(id);
+            return;
+        }
         if let Some(c) = stair_command(id) {
             stairs_view::run_command(self, c);
+            return;
+        }
+        if super::wall_edit::run_command(self, id) {
+            return;
+        }
+        if super::opening_edit::run_command(self, id) {
             return;
         }
         match id {
@@ -327,6 +319,7 @@ impl EditorContext {
             cmd::ROOF_EXPLODE_DORMER => self.explode_selected_dormer(),
             cmd::SYMBOL_REPLACE => self.replace_symbol_from_library(),
             _ if crate::editor::placed::run_command(self, id) => {}
+            _ if crate::tools::cabinet::run_preset_command(self, id) => {}
             cmd::DEVICE_FLIP => self.edit_selected_device("Flip Side", |d, wall| {
                 site_view::flip_side(d, wall);
             }),
@@ -422,6 +415,12 @@ impl EditorContext {
     /// Replace From Library (CB-57): the symbol takes the catalog item
     /// picked in the Library Browser.
     fn replace_symbol_from_library(&mut self) {
+        // Cabinets and electrical devices swap from the User Catalog too.
+        if let Some(sel @ (ObjectRef::Cabinet(_) | ObjectRef::Device(_))) = self.selection.single()
+        {
+            crate::tools::library::user::replace_other(self, sel);
+            return;
+        }
         let Some(ObjectRef::Symbol(id)) = self.selection.single() else {
             return;
         };

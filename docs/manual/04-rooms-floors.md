@@ -54,6 +54,17 @@ Each room draws a label at its centroid on the Room Labels layer: the room name,
 room is labelled "Room 1", "Room 2" and so on, top-left first. The room outline
 is on the Rooms layer. Turn either layer off in the Active Layer Display Options.
 
+**Drag a label** to move it: press on the label with Select Objects (this also selects
+its room) and drag. The offset from the room's label point is stored on the room, so the
+label keeps its place relative to the room when the plan moves; Undo puts it back, and
+Reset Position on the Label tab sends it home.
+
+**Nested rooms (R-11).** A closed loop of walls wholly inside another room (a closet
+pod, a free-standing chimney box) is its own room, and the room around it gives up the
+island: its areas (centerline, interior, standard) exclude it, the floor and ceiling
+platforms in 3D have a hole under it, and a name anchored inside the island belongs to
+the island. Clicking inside the island picks the island.
+
 A room is remembered by a point inside it, not by an index. Renaming survives
 edits as long as the point stays inside the room; split a room with a new wall
 and the name stays with the piece that holds the point.
@@ -84,8 +95,9 @@ Each of these is one undo step, and none of them needs a canvas click.
 | Down One Floor | `Ctrl+Z` | Moves the view to the floor below. |
 | Floor number | | Shows the current floor. |
 | Up One Floor | `Ctrl+A` | Moves the view to the floor above. |
-| Floor Defaults | `Shift+Cmd+Y` | (planned) |
-| Reference Display | `F9` (view bar) | Draws the walls of the floor below in gray, walls only and honoring their layers' display (nothing on the lowest floor). A saved plan view that has it set turns it on. |
+| Floor Defaults | `Shift+Cmd+Y` (Chief's own key and Daniel's) | Opens Floor Defaults for the active floor (4.5); also Build > Floor > Floor Defaults. The chord is bound even without Daniel's hotkey file. |
+| Reference Display | `F9` (view bar) | Draws the walls of the reference floor in gray, walls only and honoring the display of their layers: the floor below unless the Reference Display dialog chose another (4.5). Nothing when there is no such floor. A saved plan view that has it set turns it on. |
+| Reference Display Options | (view bar) | Opens the Reference Display dialog; also Tools > Floor/Reference Display. |
 
 Those two floor hotkeys are Daniel's Chief bindings (factory Chief uses `Shift+M`
 and `Shift+N`). Switching floors keeps the zoom, pan and active tool, and clears
@@ -131,8 +143,17 @@ below, and old files load with the defaults for every field they lack. The rest 
   Balcony, Bath, Bedroom, Closet, Dining, Entry, Garage, Kitchen, Living, Master
   Bath, Porch, Utility and so on; edit the list in 4.10). Stored.
 - **Function** (Standard, Living, Utility, Deck, Garage, Porch, Open Below ...) is
-  shown read-only; it comes from the room type. Function-specific behavior such as a
-  dropped garage floor or Open Below cut-outs is (planned).
+  shown read-only; it comes from the room type. Choosing a room type sets the defaults
+  of the Structure tab from its function (R-40, R-41); every value stays editable
+  afterwards:
+  - **Garage**: the floor drops 24" (Floor Height offset -24"), on a 4" concrete slab with
+    no floor finish.
+  - **Deck**: no ceiling over the room; the floor is a deck platform (1 1/2" decking on 7 1/4"
+    joists) with no finish. **Porch**: no ceiling, a 4" concrete slab, no finish.
+  - **Open Below**: no floor under the room, and the ceiling of the room under it opens
+    to it. The Attic and Courtyard room types have no floor platform either.
+  - **Flat Roof**: no ceiling, and a membrane deck (1/2" membrane on 7 1/4" joists) as its floor structure.
+  - Any other type goes back to the floor's own finish and platform.
 - **Living Area**: Include in Total Living Area Calculation, Exclude, or Use Default
   (follows the room type). Stored. Garage, Deck, Porch and similar types are
   excluded by default.
@@ -145,9 +166,13 @@ below, and old files load with the defaults for every field they lack. The rest 
 - **Floor Height** and **Ceiling Height**, each Absolute or Relative (the absolute/
   relative toggle is session only; the offset values are stored). Both reach the 3D view (QA-02, fixed in Round 8; R-23, R-24, R-33): the 3D floor platform of a room is raised by its Floor Height offset, and its ceiling platform sits at its own Ceiling Height measured from that raised floor. A room with no named entry, or with no override, keeps the floor's ceiling height. Rooms that share the same levels share one platform; the 3D view rebuilds when you change them.
 - **Rough Ceiling Height** for dropped ceilings (stored).
-- **Finish** thicknesses for floor and ceiling (stored finish names; thickness session only).
-- **Platforms**: Floor Under This Room, Ceiling Over This Room (stored; turning it off makes Build Roof add a vaulted ceiling plane over the room, chapter 8.2), Roof Over This Room (session only).
-- **Stem Wall** with its height. Stored (a room with a stem wall keeps its height; turning it off clears it).
+- **Finish** thicknesses for floor and ceiling (stored finish names; the floor finish thickness reaches the 3D floor).
+- **Platforms**: Floor Under This Room, Ceiling Over This Room (stored and honored by the 3D platforms: off removes that platform; turning the ceiling off also makes Build Roof add a vaulted ceiling plane over the room, chapter 8.2), **Roof Over This Room** (on by default; stored with the room) and **Flat Roof Over This Room** (stored; available only while Roof Over This Room is on). With Roof Over This Room off, **Build Roof leaves the room out**: its exterior walls stop shaping the roof, a partition between it and a roofed room becomes the roof's edge, and a roofless room inside one plane gets a hole in that plane (a courtyard, an open deck; chapter 8.1). With Flat Roof Over This Room on, Build Roof puts a level roof plane at the room's ceiling instead of the pitched roof (chapter 8.1). Auto Rebuild Roofs reruns when either changes.
+- **Floor Structure Define...** and **Ceiling Structure Define...** (R-28, R-29) edit the room's
+  layer stack (material and thickness per layer, top first; Add Layer, Remove, move up/down, Use
+  Default). The layers are stored with the room and their total is the thickness of the 3D platform;
+  an empty stack keeps the floor's default 1" platform.
+- **Stem Wall** with its height. Stored (a room with a stem wall keeps its height; turning it off clears it). In 3D a room with a stem wall height, and a **Garage** whose floor is dropped below the house floor, get concrete **stem walls** under their exterior walls: from the underside of the floor platform up to the floor level (a dropped floor with a stem wall height uses the deeper of the two), stopping at garage doors, in the foundation wall type's thickness (chapter 10.1).
 - The preview draws the room cross-section with the CEILING and FLOOR dimensions.
 
 ### Moldings, Wall Covering, Fill Style, Materials
@@ -163,6 +188,11 @@ Display in All Views: Interior Dimensions, Interior Area, Standard Area, Display
 Plan View. Appearance: Text Style (disabled). The defaults show dimensions and
 interior area. The label options are stored on the room.
 
+**Label Text** (R-47) is an optional template that replaces those lines: `<name>`,
+`<type>`, `<area>`, `<std_area>`, `<cl_area>`, `<dims>`, `<ceiling>`, `<floor>` and
+`<perimeter>` are replaced by the room's values, `\n` starts a new line, and other text
+stays as typed. Empty keeps the checkboxes' lines.
+
 ### Components, Object Information, Schedule
 
 Components lists the floor and ceiling finish layers. Object Information and
@@ -173,9 +203,43 @@ and custom fields is (planned).
 
 ### Build New Floor
 
-Two options: **Derive new 2nd Floor plan from the 1st Floor plan** (copies the exterior
-walls with their doors and windows) or **Make new blank plan**. OK creates the
-floor above the current one and switches to it.
+Builds from the current floor (the top floor when the current one is the foundation):
+
+- **Plan**: derive from the exterior walls (with their doors and windows), derive from all the
+  walls (partitions too), or make a blank plan. Derived floors can also copy the room names and
+  types, and the slab, pad and pier data.
+- **Place**: above or below the current floor (nothing goes above the attic or below the
+  foundation).
+- **Heights**: from the Floor Defaults (ceiling height and floor settings of the plan defaults,
+  see below) or the same as the current floor.
+- **Also build a foundation**: shown when the plan has none; takes the Build Foundation choices
+  (stem wall with its height, monolithic slab, piers).
+
+OK creates the floor and switches to it, as one undo step. **Insert New Floor** (above) and
+**Insert New Floor Below** add an empty floor next to the current one.
+
+### Floor Defaults
+
+Toolbar button, Build > Floor > Floor Defaults, and Edit > Default Settings > Floors and Rooms >
+Floor Defaults (for floors built from now on). Fields: Ceiling Height, Floor Structure and Ceiling
+Structure thickness (the floor-to-floor rise is the ceiling height plus the lower floor's ceiling
+structure plus this floor's floor structure; the dialog shows the Floor Height), floor and ceiling
+finish thickness, the Default Room Type and the floor and ceiling materials a new room starts
+with. New rooms in the Room Specification start from them (a named default type also brings its
+function defaults). OK moves the floors above by the change, and walls that stood at the old
+ceiling height follow the new one. On a floor, the check box "Use these for floors built from now
+on" also sets the plan defaults.
+
+### Reference Display
+
+Tools > Floor/Reference Display, or the options button next to the Reference Display toggle: show
+the reference floor, which floor it is (below, above or any other floor), which layer set decides
+what of it is drawn, and its color. The choices are kept for the session; the floor is also written
+to the active saved plan view.
+
+What of the reference floor shows is decided layer by layer: the **Ref** column of Active Layer Display Options (chapter 5.5) has a box for each layer, on by default; a layer with its Ref box off does not draw on a reference floor and does not snap.
+
+**Snapping to the reference floor.** While Reference Display is on, the pointer snaps to the ends and the crossings of the reference floor's wall centerlines (as Endpoint and Intersection snaps, subject to Edit > Snap Settings and Alt), so a second-floor wall lands exactly over the one below. The active floor's own endpoints and intersections come first; a reference end or crossing within the snap distance then beats the weaker snaps (midpoint, on object, angle, grid). Only walls are snapped to; the other reference objects are not.
 
 ### Build Foundation
 
@@ -236,12 +300,13 @@ there is no settings dialog for them yet.
 ## 4.9 Known differences from Chief
 
 - Rooms are traced from centerlines and offset inward for the interior polygon.
-- Nested rooms do not yet cut a hole in the enclosing room's area.
 - Room Specification values beyond the name, type, living-area flag, heights, finishes, conditioned
-  setting, stem wall, base and crown moldings, fill and label options (all stored with the plan) are kept
-  for the session only: Wall Covering, Roof Over This Room, the Absolute/Relative toggles and the finish
+  setting, stem wall, base and crown moldings, fill and label options, Roof Over This Room and Flat Roof Over This Room (all stored with the plan) are kept
+  for the session only: Wall Covering, the Absolute/Relative toggles and the finish
   thicknesses.
-- Floor Defaults and Attic floors from Build Roof are (planned). Floor Material Region is in chapter 17.
+- Attic floors from Build Roof are (planned). Floor Material Region is in chapter 17.
+- Only the walls of a Reference Display floor are snappable (ends and crossings), and Open Below cuts only the ceiling of a room
+  whose outline lies wholly inside (or exactly covers) a room below. The stem wall of a garage or of a room with a Stem Wall height is a plain concrete wall in 3D only (it is not a wall of the plan, and it does not appear in the plan view).
 - Slabs, slab holes, pads, piers and the holes in the floor and ceiling platforms are objects of their
   own, not part of Build Foundation; see chapter 16.
 

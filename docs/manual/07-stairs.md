@@ -112,7 +112,7 @@ A selected stair shows handles, which work with the Stairs tool and with Select 
 | Run (top end) | Change the length of the first flight. The tread depth follows because the number of treads is fixed by the rise; a landing grows; a ramp changes slope; on a curved stair the handle sets how far round the stair goes. The Lock Tread setting in the dialog keeps the tread depth. |
 | Width (left and right, mid-flight) | Change the width (12" minimum in the handle; the code check wants 36"). |
 
-A polygon landing has only the Move handle, because its outline is its corners.
+A polygon landing has a Move handle on its body and one handle on each corner of its outline: dragging a corner reshapes the landing (its width, depth and origin follow the outline's extents).
 
 Double-click or `Enter` opens the Staircase Specification (or the Landing Specification).
 The Edit toolbar adds four stair commands:
@@ -153,6 +153,8 @@ on the Edit toolbar. The program does two things on the floor above:
 The hole and the walls are remembered with the stair: deleting the stair removes both, moving or
 reshaping the stair moves them with it, and Auto Stairwell is one undo step. A stair that already has a stairwell says so and does nothing.
 A landing has no stairwell; a stair on the top floor says "There is no floor above: build one first".
+
+**Guard railing.** With a stairwell made, the Staircase Specification's Line Style tab has a check box **Guard railing around the stairwell opening** (dimmed until there is a stairwell). On, the floor above gets a railing wall along every side of the opening except the side the stair arrives at (a straight stair's two long sides and its foot); the railings are remembered with the stair, follow it when it moves, and go when the box is cleared or the stair is deleted.
 
 Guard railings around the opening on the upper floor are (planned).
 
@@ -237,10 +239,9 @@ should skip landings; `docs/integration-queue.md`).
 ## 7.7 Differences from Chief
 
 - No **Stair Schedule** and no Components or Schedule tab in the Staircase Specification (planned).
-- Guard railings around the stairwell opening of the floor above are not generated, and a
-  railing is not drawn across a landing in the plan symbol (planned).
+- A railing is not drawn across a landing in the plan symbol (planned). The stairwell guard is a set of ordinary railing walls on the floor above, not Chief's railing around a hole.
 - The stair side railings run the full flight in 3D; the floor above does not trim them.
-- Hidden treads of a stair are not drawn dashed on the other floors.
+- The treads of a stair beyond its break line (which its own floor leaves out of the symbol) are drawn dashed, so the whole run is readable; landings, ramps and stairs without a break line have none.
 - Auto Stairwell uses invisible room dividers, so the stairwell shows as a room. Chief
   names it by Function.
 - Flare/Curve Stairs cycles shapes. Curved Stairs are a true fan around a centre with an

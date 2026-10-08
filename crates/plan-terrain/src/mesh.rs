@@ -11,8 +11,7 @@ use crate::query::elevation_at;
 
 /// Height roads sit above the terrain to avoid z-fighting, inches.
 const ROAD_LIFT: f64 = 0.5;
-/// Curb height and width, inches.
-const CURB_HEIGHT: f64 = 6.0;
+/// Curb width, inches.
 const CURB_WIDTH: f64 = 6.0;
 
 /// Plan point and elevation to a plan-3d position.
@@ -158,7 +157,9 @@ pub fn terrain_mesh(surface: &TerrainSurface) -> Mesh {
 /// the nearest elevation along the strip.
 ///
 /// Roads and driveways are [`Material::Asphalt`]; sidewalks and curbs are
-/// [`Material::Concrete`]. Each carries its road's [`terrain_object_id`].
+/// [`Material::Concrete`]. Each carries its road's [`terrain_object_id`]. A
+/// strip with a `crown` is `crown` inches higher along its centerline than
+/// along its edges; a curb is `curb_height` tall.
 pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
     let step = (t.grid_spacing / 2.0).max(6.0);
     let default_z = if surface.vertices.is_empty() {
@@ -176,11 +177,11 @@ pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
             RoadKind::Sidewalk => Material::Concrete,
         };
         let id = Some(terrain_object_id(TerrainPart::Road, index));
-        let mut strip = strip_mesh(&rows, material);
+        let mut strip = strip_mesh(&rows, material, road.crown.max(0.0));
         strip.object_id = id;
         meshes.push(strip);
         if road.curb {
-            let mut curb = curb_mesh(&rows);
+            let mut curb = curb_mesh(&rows, road.curb_height.max(0.0));
             curb.object_id = id;
             meshes.push(curb);
         }
@@ -262,31 +263,41 @@ fn draped_rows(
 
 pub(crate) const UP: [f64; 3] = [0.0, 1.0, 0.0];
 
-fn strip_mesh(rows: &[Row], material: Material) -> Mesh {
+fn strip_mesh(rows: &[Row], material: Material, crown: f64) -> Mesh {
     let mut b = MeshBuilder::default();
     let width_ft = {
         let (l, r) = (rows[0].left, rows[0].right);
         ((l[0] - r[0]).powi(2) + (l[2] - r[2]).powi(2)).sqrt() / 12.0
     };
-    let ids: Vec<(u32, u32)> = rows
+    // Per row: left edge, centerline (raised by the crown), right edge.
+    let ids: Vec<[u32; 3]> = rows
         .iter()
         .map(|r| {
-            (
+            let center = [
+                (r.left[0] + r.right[0]) / 2.0,
+                (r.left[1] + r.right[1]) / 2.0 + crown,
+                (r.left[2] + r.right[2]) / 2.0,
+            ];
+            [
                 b.push(r.left, [0.0, r.along / 12.0]),
+                b.push(center, [width_ft / 2.0, r.along / 12.0]),
                 b.push(r.right, [width_ft, r.along / 12.0]),
-            )
+            ]
         })
         .collect();
     for w in ids.windows(2) {
-        let ((l0, r0), (l1, r1)) = (w[0], w[1]);
-        b.push_facing([r0, r1, l1], UP);
-        b.push_facing([r0, l1, l0], UP);
+        // The two halves of the strip, each as two triangles.
+        for (a, c) in [(0, 1), (1, 2)] {
+            let (l0, r0, l1, r1) = (w[0][a], w[0][c], w[1][a], w[1][c]);
+            b.push_facing([r0, r1, l1], UP);
+            b.push_facing([r0, l1, l0], UP);
+        }
     }
     b.finish(material)
 }
 
 /// Raised curb blocks along both edges of the strip, inside the strip width.
-fn curb_mesh(rows: &[Row]) -> Mesh {
+fn curb_mesh(rows: &[Row], curb_height: f64) -> Mesh {
     let mut b = MeshBuilder::default();
     for side in [1.0, -1.0] {
         // Per row: outer bottom, outer top, inner top, inner bottom.
@@ -305,7 +316,7 @@ fn curb_mesh(rows: &[Row]) -> Mesh {
                     edge[1],
                     edge[2] + dz / len * CURB_WIDTH,
                 ];
-                let up = |p: [f64; 3]| [p[0], p[1] + CURB_HEIGHT, p[2]];
+                let up = |p: [f64; 3]| [p[0], p[1] + curb_height, p[2]];
                 let uv = [0.0, r.along / 12.0];
                 [
                     b.push(edge, uv),

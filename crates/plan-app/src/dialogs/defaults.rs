@@ -20,35 +20,71 @@ pub enum DefaultsEntry {
     Window,
     Dimensions,
     RoomTypes,
+    /// Floors and Rooms > Floor Defaults (R-56).
+    FloorDefaults,
     TextStyles,
     /// Preferences > Templates (the Templates page window).
     Templates,
 }
 
-const TREE: &[(&str, &[(&str, DefaultsEntry)])] = &[
+/// A leaf of the tree: a dialog `main` opens for the entry, or a page this
+/// module draws itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Leaf {
+    Entry(DefaultsEntry),
+    /// Roofs > Roof Defaults (RF-14, RF-15, RF-28, RF-31).
+    RoofDefaults,
+    /// Cabinets > Cabinet Defaults.
+    CabinetDefaults,
+    /// Framing > Framing Defaults.
+    FramingDefaults,
+}
+
+const TREE: &[(&str, &[(&str, Leaf)])] = &[
     (
         "Walls",
         &[
-            ("Exterior Wall", DefaultsEntry::ExteriorWall),
-            ("Interior Wall", DefaultsEntry::InteriorWall),
-            ("Foundation Wall", DefaultsEntry::FoundationWall),
+            ("Exterior Wall", Leaf::Entry(DefaultsEntry::ExteriorWall)),
+            ("Interior Wall", Leaf::Entry(DefaultsEntry::InteriorWall)),
+            (
+                "Foundation Wall",
+                Leaf::Entry(DefaultsEntry::FoundationWall),
+            ),
         ],
     ),
     (
         "Doors",
         &[
-            ("Interior Door", DefaultsEntry::InteriorDoor),
-            ("Exterior Door", DefaultsEntry::ExteriorDoor),
+            ("Interior Door", Leaf::Entry(DefaultsEntry::InteriorDoor)),
+            ("Exterior Door", Leaf::Entry(DefaultsEntry::ExteriorDoor)),
         ],
     ),
-    ("Windows", &[("Window", DefaultsEntry::Window)]),
-    ("Dimension", &[("Dimensions", DefaultsEntry::Dimensions)]),
-    ("Text", &[("Text Styles", DefaultsEntry::TextStyles)]),
+    ("Windows", &[("Window", Leaf::Entry(DefaultsEntry::Window))]),
+    (
+        "Dimension",
+        &[("Dimensions", Leaf::Entry(DefaultsEntry::Dimensions))],
+    ),
+    (
+        "Text",
+        &[("Text Styles", Leaf::Entry(DefaultsEntry::TextStyles))],
+    ),
     (
         "Floors and Rooms",
-        &[("Room Types", DefaultsEntry::RoomTypes)],
+        &[
+            ("Floor Defaults", Leaf::Entry(DefaultsEntry::FloorDefaults)),
+            ("Room Types", Leaf::Entry(DefaultsEntry::RoomTypes)),
+        ],
     ),
-    ("Preferences", &[("Templates", DefaultsEntry::Templates)]),
+    ("Roofs", &[("Roof Defaults", Leaf::RoofDefaults)]),
+    (
+        "Cabinets",
+        &[("Cabinet Defaults", Leaf::CabinetDefaults)],
+    ),
+    ("Framing", &[("Framing Defaults", Leaf::FramingDefaults)]),
+    (
+        "Preferences",
+        &[("Templates", Leaf::Entry(DefaultsEntry::Templates))],
+    ),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -62,7 +98,27 @@ pub enum DefaultsOutcome {
 #[derive(Default)]
 pub struct DefaultsDialog {
     search: String,
-    selected: Option<DefaultsEntry>,
+    selected: Option<Leaf>,
+}
+
+/// What editing a leaf does: the entries go to `main`, the Roof Defaults
+/// page opens here.
+fn edit_outcome(leaf: Leaf) -> DefaultsOutcome {
+    match leaf {
+        Leaf::Entry(e) => DefaultsOutcome::Edit(e),
+        Leaf::RoofDefaults => {
+            open_roof_defaults();
+            DefaultsOutcome::Open
+        }
+        Leaf::CabinetDefaults => {
+            OPEN_CABINETS.with(|c| c.set(true));
+            DefaultsOutcome::Open
+        }
+        Leaf::FramingDefaults => {
+            OPEN_FRAMING.with(|c| c.set(true));
+            DefaultsOutcome::Open
+        }
+    }
 }
 
 impl DefaultsDialog {
@@ -130,7 +186,7 @@ impl DefaultsDialog {
                                         }
                                         if resp.double_clicked() {
                                             self.selected = Some(*entry);
-                                            outcome = DefaultsOutcome::Edit(*entry);
+                                            outcome = edit_outcome(*entry);
                                         }
                                     }
                                 });
@@ -150,7 +206,7 @@ impl DefaultsDialog {
                         );
                         if edit.clicked() {
                             if let Some(e) = self.selected {
-                                outcome = DefaultsOutcome::Edit(e);
+                                outcome = edit_outcome(e);
                             }
                         }
                     });
@@ -215,8 +271,12 @@ pub fn reload_templates_page() {
     }
 }
 
-/// Draws the Templates page if it is open; call once a frame.
+/// Draws the Templates page and the Roof Defaults page if they are open;
+/// call once a frame.
 pub fn show_templates_page(ctx: &egui::Context, cx: &mut EditorContext) {
+    show_roof_defaults(ctx, cx);
+    show_cabinet_defaults(ctx, cx);
+    show_framing_defaults(ctx, cx);
     let Some(mut page) = PAGE.with(|p| p.borrow_mut().take()) else {
         return;
     };
@@ -402,5 +462,263 @@ impl TemplatesPage {
             self.apply(cx, force);
         }
         open && !close
+    }
+}
+
+// ===================================================================
+// Roofs > Roof Defaults
+// ===================================================================
+
+/// The Roof Defaults page: a draft of [`plan_core::defaults::RoofDetailDefaults`]
+/// (eave cut, fascia, soffit, rafter tails, attic walls, baseline rule) that
+/// Build Roof copies into the roof settings of its floor, and the 3D view
+/// draws from.
+pub struct RoofDefaultsPage {
+    pub draft: plan_core::defaults::RoofDetailDefaults,
+    /// Also give the roofs of this plan the new detail.
+    pub apply_to_plan: bool,
+    fields: super::Fields,
+    types: Vec<String>,
+}
+
+impl RoofDefaultsPage {
+    pub fn new(cx: &EditorContext) -> Self {
+        Self {
+            draft: cx.defaults.roof_detail.clone(),
+            apply_to_plan: true,
+            fields: super::Fields::default(),
+            types: cx
+                .defaults
+                .wall_types
+                .iter()
+                .map(|t| t.name.clone())
+                .collect(),
+        }
+    }
+
+    /// Why OK is off, if it is.
+    pub fn error(&self) -> Option<String> {
+        if self.fields.any_invalid() {
+            Some("Enter a valid length".into())
+        } else {
+            super::roof::detail_error(&self.draft)
+        }
+    }
+
+    /// Makes the draft the defaults and, when asked, the detail of the
+    /// plan's roofs (one undo step). Returns the floors changed.
+    pub fn apply(&self, cx: &mut EditorContext) -> usize {
+        cx.defaults.roof_detail = self.draft.clone();
+        let mut changed = 0;
+        if self.apply_to_plan {
+            cx.begin_change("Roof Defaults");
+            changed = crate::editor::roof_view::apply_detail(&mut cx.project, &self.draft);
+        }
+        cx.mark_dirty();
+        changed
+    }
+}
+
+thread_local! {
+    static ROOF_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ROOF_PAGE: RefCell<Option<RoofDefaultsPage>> = const { RefCell::new(None) };
+}
+
+/// Opens the Roof Defaults page (drawn by [`show_templates_page`]'s caller
+/// once a frame).
+pub fn open_roof_defaults() {
+    ROOF_OPEN.with(|c| c.set(true));
+}
+
+/// Is the Roof Defaults page open?
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn roof_defaults_open() -> bool {
+    ROOF_OPEN.with(|c| c.get()) || ROOF_PAGE.with(|p| p.borrow().is_some())
+}
+
+fn show_roof_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
+    if ROOF_OPEN.with(|c| c.replace(false)) {
+        ROOF_PAGE.with(|p| *p.borrow_mut() = Some(RoofDefaultsPage::new(cx)));
+    }
+    let Some(mut page) = ROOF_PAGE.with(|p| p.borrow_mut().take()) else {
+        return;
+    };
+    let mut open = true;
+    let mut outcome = super::Outcome::Open;
+    egui::Window::new("Roof Defaults")
+        .id(egui::Id::new("roof_defaults_page"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([460.0, 560.0])
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(ctx.screen_rect().center())
+        .show(ctx, |ui| {
+            let height = (ui.available_height() - 80.0).max(120.0);
+            egui::ScrollArea::vertical()
+                .id_salt("roof_defaults_scroll")
+                .max_height(height)
+                .show(ui, |ui| {
+                    super::roof::detail_form(ui, &mut page.fields, &mut page.draft, &page.types);
+                });
+            ui.separator();
+            ui.checkbox(
+                &mut page.apply_to_plan,
+                "Also use for the roofs in this plan",
+            );
+            let error = page.error();
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add_enabled(error.is_none(), egui::Button::new("   OK   "))
+                    .clicked()
+                {
+                    outcome = super::Outcome::Ok;
+                }
+                if ui.button("Cancel").clicked() {
+                    outcome = super::Outcome::Cancel;
+                }
+                if let Some(e) = &error {
+                    ui.colored_label(egui::Color32::from_rgb(0xE0, 0x4B, 0x4B), e);
+                }
+            });
+        });
+    if !open || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        outcome = super::Outcome::Cancel;
+    }
+    match outcome {
+        super::Outcome::Open => ROOF_PAGE.with(|p| *p.borrow_mut() = Some(page)),
+        super::Outcome::Cancel => {}
+        super::Outcome::Ok => {
+            let n = page.apply(cx);
+            cx.status = if n > 0 {
+                format!("Saved the roof defaults; {n} roof(s) in this plan use them")
+            } else {
+                "Saved the roof defaults".into()
+            };
+        }
+    }
+}
+
+// ===================================================================
+// Cabinets > Cabinet Defaults, Framing > Framing Defaults
+// ===================================================================
+
+/// Command id: opens the Cabinet Defaults window (Edit menu).
+pub const CABINETS: &str = "defaults.cabinets";
+/// Command id: opens the Framing Defaults window (Build > Framing).
+pub const FRAMING: &str = "defaults.framing";
+/// Command id: switches to the Framing Overview, or back (Build > Framing).
+pub const FRAMING_OVERVIEW: &str = "defaults.framing_overview";
+
+thread_local! {
+    static OPEN_CABINETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static OPEN_FRAMING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CABINET_PAGE: RefCell<Option<super::cabinet::CabinetDefaultsDialog>> =
+        const { RefCell::new(None) };
+    static FRAMING_PAGE: RefCell<Option<super::framing::FramingDefaultsDialog>> =
+        const { RefCell::new(None) };
+}
+
+/// Runs the menu commands of this module; false for any other id.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    match id {
+        CABINETS => OPEN_CABINETS.with(|c| c.set(true)),
+        FRAMING => OPEN_FRAMING.with(|c| c.set(true)),
+        FRAMING_OVERVIEW => {
+            if crate::editor::framing_view::in_overview(&cx.project) {
+                crate::editor::framing_view::leave_overview(cx);
+            } else {
+                crate::editor::framing_view::activate_overview(cx);
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn show_cabinet_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
+    if OPEN_CABINETS.with(|c| c.replace(false)) {
+        let dlg = super::cabinet::CabinetDefaultsDialog::new(&cx.defaults.cabinets);
+        CABINET_PAGE.with(|p| *p.borrow_mut() = Some(dlg));
+    }
+    let Some(mut dlg) = CABINET_PAGE.with(|p| p.borrow_mut().take()) else {
+        return;
+    };
+    match dlg.show(ctx) {
+        super::Outcome::Open => CABINET_PAGE.with(|p| *p.borrow_mut() = Some(dlg)),
+        super::Outcome::Cancel => {}
+        super::Outcome::Ok => {
+            cx.defaults.cabinets = dlg.draft().clone();
+            cx.mark_dirty();
+            cx.status = "Saved the cabinet defaults".into();
+        }
+    }
+}
+
+fn show_framing_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
+    if OPEN_FRAMING.with(|c| c.replace(false)) {
+        let settings = crate::editor::framing_view::settings(&cx.project);
+        let dlg = super::framing::FramingDefaultsDialog::new(&settings);
+        FRAMING_PAGE.with(|p| *p.borrow_mut() = Some(dlg));
+    }
+    let Some(mut dlg) = FRAMING_PAGE.with(|p| p.borrow_mut().take()) else {
+        return;
+    };
+    match dlg.show(ctx) {
+        super::Outcome::Open => FRAMING_PAGE.with(|p| *p.borrow_mut() = Some(dlg)),
+        super::Outcome::Cancel => {}
+        super::Outcome::Ok => {
+            crate::editor::framing_view::set_settings(cx, dlg.draft().clone());
+            cx.status = "Saved the framing defaults".into();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plan_core::defaults::EaveCut;
+
+    #[test]
+    fn the_tree_lists_roof_defaults_and_it_opens_its_own_page() {
+        let leaves: Vec<_> = TREE
+            .iter()
+            .flat_map(|(_, l)| l.iter())
+            .map(|(n, l)| (*n, *l))
+            .collect();
+        assert!(leaves.contains(&("Roof Defaults", Leaf::RoofDefaults)));
+        // Every other leaf still goes to the entry's dialog.
+        assert_eq!(
+            edit_outcome(Leaf::Entry(DefaultsEntry::Templates)),
+            DefaultsOutcome::Edit(DefaultsEntry::Templates)
+        );
+        ROOF_OPEN.with(|c| c.set(false));
+        assert_eq!(edit_outcome(Leaf::RoofDefaults), DefaultsOutcome::Open);
+        assert!(roof_defaults_open());
+        ROOF_OPEN.with(|c| c.set(false));
+    }
+
+    #[test]
+    fn ok_on_the_roof_defaults_page_feeds_the_defaults_and_the_plan() {
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        let mut page = RoofDefaultsPage::new(&cx);
+        assert!(
+            page.draft.baseline_at_plate,
+            "Daniel's template seats the roof on the plate"
+        );
+        page.draft.eave_cut = EaveCut::Square;
+        page.draft.rafter_tails = true;
+        assert!(page.error().is_none());
+        // A plan with a stored roof settings entry takes the detail too.
+        cx.project.floors[0].roofs = vec![serde_json::json!({"kind": "settings"})];
+        assert_eq!(page.apply(&mut cx), 1);
+        assert_eq!(cx.defaults.roof_detail.eave_cut, EaveCut::Square);
+        let stored = crate::editor::roof_view::load(&cx.project.floors[0])
+            .settings
+            .unwrap();
+        assert!(stored.detail.rafter_tails);
+        // A bad size blocks OK.
+        page.draft.thickness = 0.0;
+        assert!(page.error().is_some());
     }
 }

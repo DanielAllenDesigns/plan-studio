@@ -9,6 +9,11 @@
 //! * [`plan_overhead`]: the Top view, where ceilings and roofs occlude.
 //! * [`elevation_with_labels`] / [`annotate`]: title, grade line, level
 //!   callouts and roof pitch symbols.
+//! * [`section_free`] / [`elevation_free`]: the same for a camera line at any
+//!   angle ([`FreeView`]), with [`annotate_view`] adding automatic elevation
+//!   dimensions ([`ElevDim`]) and material labels; [`ObjectWeights`] restyles
+//!   lines by the pen weight of each object's layer; [`Drawing::to_dxf`]
+//!   writes the lines on layers by weight.
 //!
 //! Besides lines a [`Drawing`] carries filled [`Region`]s (visible faces per
 //! material, section poche, cast shadows) and, with [`Options::hatch`], the
@@ -19,18 +24,27 @@
 //! dependency-free software depth-buffer test, described in [`Options`] and
 //! the crate README.
 
+mod dims;
 mod drawing;
+mod dxf;
 mod hatch;
 mod hlr;
 mod labels;
+mod mlabels;
 mod projection;
 mod regions;
 mod shadow;
+mod styles;
+mod view;
 
+pub use dims::{DimKind, DimOptions, ElevDim};
 pub use drawing::{Drawing, EdgeKind, Line2, LineWeight, Region, RegionKind};
-pub use labels::annotate;
+pub use labels::{annotate, annotate_view, annotate_with, AnnotateOptions};
+pub use mlabels::{interior_point, material_label};
 pub use projection::{Projection, ViewDir};
 pub use shadow::SunDir;
+pub use styles::{pen_class, ObjectWeights, HEAVY_PEN, MEDIUM_PEN};
+pub use view::{clip_x, elevation_free, render_free, section_free, view_scene, FreeView};
 
 use plan_3d::{build_scene, Scene};
 use plan_core::Project;
@@ -97,7 +111,7 @@ impl Default for Options {
 /// Hidden-line elevation of `scene` seen from `dir` (`Top` gives the plan view).
 pub fn elevation(scene: &Scene, dir: ViewDir, opts: &Options) -> Drawing {
     match scene.bounds() {
-        Some(bounds) => hlr::render(scene, &Projection::for_view(dir, bounds), None, opts),
+        Some(bounds) => hlr::render(scene, &Projection::for_view(dir, bounds), None, opts, None),
         None => Drawing::default(),
     }
 }
@@ -113,7 +127,7 @@ pub fn section(scene: &Scene, cut: SectionCut, opts: &Options) -> Drawing {
     };
     let proj = Projection::for_view(cut.plane_normal, bounds);
     let depth = proj.depth_of_offset(cut.offset);
-    hlr::render(scene, &proj, Some(depth), opts)
+    hlr::render(scene, &proj, Some(depth), opts, None)
 }
 
 /// The plan "overhead" line drawing: the Top view, with roofs and ceilings occluding.

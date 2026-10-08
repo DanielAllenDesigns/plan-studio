@@ -6,6 +6,7 @@ use plan_core::geometry::{point_in_polygon, polygon_centroid};
 use plan_core::Point;
 
 use crate::geom::{bounds, densify, dist_to_boundary};
+use crate::grading::{build_pads, wall_cuts, Pad, WallCut};
 use crate::model::{ElevationRegion, Modifier, ModifierKind, Terrain};
 
 /// Width of the soft edge on raised, lowered and flat regions, inches.
@@ -25,6 +26,10 @@ pub(crate) struct ElevationModel<'a> {
     /// Mean elevation inside each flat region (unused for other kinds).
     flat_means: Vec<f64>,
     spacing: f64,
+    /// Graded pads (cut/fill features and the building pad).
+    pads: Vec<Pad>,
+    /// Wall cuts: the surface either side of a terrain wall or curb.
+    cuts: Vec<WallCut>,
 }
 
 impl<'a> ElevationModel<'a> {
@@ -65,6 +70,8 @@ impl<'a> ElevationModel<'a> {
                 .collect(),
             flat_means: vec![0.0; t.modifiers.len()],
             spacing,
+            pads: Vec::new(),
+            cuts: Vec::new(),
         };
         // Flat regions level to the mean of the surface as modified by earlier modifiers.
         for i in 0..model.modifiers.len() {
@@ -72,7 +79,23 @@ impl<'a> ElevationModel<'a> {
                 model.flat_means[i] = model.region_mean(i);
             }
         }
+        model.pads = build_pads(t, &model);
+        model.cuts = wall_cuts(t);
         model
+    }
+
+    /// The graded pads, in the order they are applied.
+    pub(crate) fn pads(&self) -> &[Pad] {
+        &self.pads
+    }
+
+    /// The wall cuts.
+    pub(crate) fn cuts(&self) -> &[WallCut] {
+        &self.cuts
+    }
+
+    pub(crate) fn spacing(&self) -> f64 {
+        self.spacing
     }
 
     /// Inverse-distance-weighted (power 2) elevation of the data, then region overrides.
@@ -106,9 +129,23 @@ impl<'a> ElevationModel<'a> {
         }
     }
 
-    /// Final elevation: base data with every modifier applied in order.
-    pub(crate) fn height(&self, p: Point) -> f64 {
+    /// Elevation of the existing ground: base data with every modifier applied
+    /// in order, before any pad or wall grades it.
+    pub(crate) fn height_ungraded(&self, p: Point) -> f64 {
         self.height_upto(p, self.modifiers.len())
+    }
+
+    /// Final elevation: the existing ground graded by the pads (in order) and
+    /// shifted across the walls.
+    pub(crate) fn height(&self, p: Point) -> f64 {
+        let mut z = self.height_ungraded(p);
+        for pad in &self.pads {
+            z = pad.apply(z, p);
+        }
+        for cut in &self.cuts {
+            z += cut.shift(p);
+        }
+        z
     }
 
     fn height_upto(&self, p: Point, count: usize) -> f64 {
@@ -136,12 +173,21 @@ impl<'a> ElevationModel<'a> {
     /// Mean elevation of modifier `i`'s polygon (vertices plus a lattice of interior points)
     /// before that modifier is applied.
     fn region_mean(&self, i: usize) -> f64 {
-        let poly = &self.modifiers[i].polygon;
+        self.mean_over(&self.modifiers[i].polygon, |p| self.height_upto(p, i))
+    }
+
+    /// Mean of the existing ground under `poly`.
+    pub(crate) fn mean_ground(&self, poly: &[Point]) -> f64 {
+        self.mean_over(poly, |p| self.height_ungraded(p))
+    }
+
+    /// Mean of `f` over the polygon's vertices and a lattice of interior points.
+    fn mean_over(&self, poly: &[Point], f: impl Fn(Point) -> f64) -> f64 {
         let Some((lo, hi)) = bounds(poly) else {
             return 0.0;
         };
         let step = (self.spacing / 2.0).max((hi.x - lo.x).max(hi.y - lo.y) / 64.0);
-        let mut samples: Vec<Point> = poly.clone();
+        let mut samples: Vec<Point> = poly.to_vec();
         let mut y = lo.y + step / 2.0;
         while y < hi.y {
             let mut x = lo.x + step / 2.0;
@@ -157,7 +203,7 @@ impl<'a> ElevationModel<'a> {
         if samples.is_empty() {
             return 0.0;
         }
-        let total: f64 = samples.iter().map(|&p| self.height_upto(p, i)).sum();
+        let total: f64 = samples.iter().map(|&p| f(p)).sum();
         total / samples.len() as f64
     }
 }

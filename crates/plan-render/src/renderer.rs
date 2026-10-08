@@ -2,18 +2,20 @@
 
 use crate::bvh::{Bvh, Tri};
 use crate::camera::Camera;
-use crate::denoise::bilateral;
+use crate::denoise::{bilateral, guided, Guides};
 use crate::image::Image;
 use crate::integrator::Frame;
-use crate::lighting::{Environment, PointLight};
+use crate::lighting::{AreaLight, Environment, PointLight};
 use crate::png::write_png;
 use crate::settings::RenderSettings;
+use crate::settings::Technique;
 use crate::vec3::V3;
 use plan_3d::{build_scene, Scene};
 use plan_core::Project;
+use plan_materials::textures::TextureStore;
 use std::io;
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// Progress callback: running image and samples done; return `false` to stop.
 pub type ProgressFn<'a> = dyn FnMut(&Image, u32) -> bool + 'a;
@@ -26,6 +28,7 @@ const BAND_ROWS: usize = 4;
 pub struct Renderer {
     bvh: Bvh,
     diagonal: f32,
+    textures: Arc<TextureStore>,
 }
 
 impl Renderer {
@@ -45,7 +48,15 @@ impl Renderer {
         Renderer {
             bvh: Bvh::build(tris),
             diagonal,
+            textures: TextureStore::shared(),
         }
+    }
+
+    /// Use `store` for texture lookups instead of the process-wide one
+    /// (tests use a store without Chief's files).
+    pub fn with_texture_store(mut self, store: Arc<TextureStore>) -> Renderer {
+        self.textures = store;
+        self
     }
 
     /// Number of triangles in the acceleration structure.
@@ -59,6 +70,17 @@ impl Renderer {
         cam: &Camera,
         env: &Environment,
         lights: &[PointLight],
+        settings: &RenderSettings,
+    ) -> Image {
+        self.run(cam, env, (lights, &[]), settings, None)
+    }
+
+    /// [`Renderer::render`] with rectangular area lights as well.
+    pub fn render_with_areas(
+        &self,
+        cam: &Camera,
+        env: &Environment,
+        lights: (&[PointLight], &[AreaLight]),
         settings: &RenderSettings,
     ) -> Image {
         self.run(cam, env, lights, settings, None)
@@ -77,6 +99,18 @@ impl Renderer {
         settings: &RenderSettings,
         callback: &mut ProgressFn<'_>,
     ) -> Image {
+        self.run(cam, env, (lights, &[]), settings, Some(callback))
+    }
+
+    /// [`Renderer::render_progressive`] with rectangular area lights as well.
+    pub fn render_progressive_with_areas(
+        &self,
+        cam: &Camera,
+        env: &Environment,
+        lights: (&[PointLight], &[AreaLight]),
+        settings: &RenderSettings,
+        callback: &mut ProgressFn<'_>,
+    ) -> Image {
         self.run(cam, env, lights, settings, Some(callback))
     }
 
@@ -84,11 +118,19 @@ impl Renderer {
         &self,
         cam: &Camera,
         env: &Environment,
-        lights: &[PointLight],
+        lights: (&[PointLight], &[AreaLight]),
         settings: &RenderSettings,
         mut callback: Option<&mut ProgressFn<'_>>,
     ) -> Image {
-        let frame = Frame::new(&self.bvh, self.diagonal, cam, env, lights, settings);
+        let frame = Frame::new(
+            &self.bvh,
+            self.diagonal,
+            cam,
+            env,
+            lights,
+            settings,
+            &self.textures,
+        );
         let (w, h) = (
             settings.width.max(1) as usize,
             settings.height.max(1) as usize,
@@ -101,6 +143,17 @@ impl Renderer {
         let total = settings.samples.max(1);
         let mut acc = vec![[0.0_f64; 3]; w * h];
         let mut done = 0;
+        if settings.preview_blocks {
+            if let Some(cb) = callback.as_deref_mut() {
+                let preview = block_preview(&frame, (w, h), threads, settings);
+                if !cb(&preview, 0) {
+                    return preview;
+                }
+            }
+        }
+        // Guide buffers for the denoiser: one centre ray per pixel, once.
+        let guides = (settings.denoise && settings.technique != Technique::Ambient)
+            .then(|| guide_buffers(&frame, (w, h), threads));
         while done < total {
             let pass = match callback {
                 Some(_) => done.clamp(1, total - done),
@@ -108,7 +161,16 @@ impl Renderer {
             };
             accumulate(&frame, &mut acc, w, (done, pass), threads);
             done += pass;
-            let image = finish(&acc, (w, h), done, settings);
+            // The guided filter is slow on big images: intermediate previews of
+            // those stay raw and only the finished image is denoised.
+            let denoise = done == total || w * h <= 400_000;
+            let image = finish(
+                &acc,
+                (w, h),
+                done,
+                settings,
+                guides.as_ref().filter(|_| denoise),
+            );
             if let Some(cb) = callback.as_deref_mut() {
                 if !cb(&image, done) || done == total {
                     return image;
@@ -117,8 +179,83 @@ impl Renderer {
                 return image;
             }
         }
-        finish(&acc, (w, h), total, settings)
+        finish(&acc, (w, h), total, settings, guides.as_ref())
     }
+}
+
+/// Albedo, normal and depth of the first hit per pixel.
+struct GuideBuffers {
+    albedo: Vec<[f32; 3]>,
+    normal: Vec<[f32; 3]>,
+    depth: Vec<f32>,
+}
+
+/// Run `f(x, y)` for every cell of a `width`-wide grid, rows spread over threads.
+fn par_grid<T: Send + Clone>(
+    cells: &mut [T],
+    width: usize,
+    threads: usize,
+    f: &(dyn Fn(usize, usize) -> T + Sync),
+) {
+    let rows = Mutex::new(cells.chunks_mut(width.max(1)).enumerate());
+    std::thread::scope(|scope| {
+        for _ in 0..threads.max(1) {
+            scope.spawn(|| loop {
+                let next = rows.lock().unwrap_or_else(PoisonError::into_inner).next();
+                let Some((y, row)) = next else { break };
+                for (x, cell) in row.iter_mut().enumerate() {
+                    *cell = f(x, y);
+                }
+            });
+        }
+    });
+}
+
+fn guide_buffers(frame: &Frame<'_>, (w, h): (usize, usize), threads: usize) -> GuideBuffers {
+    let mut cells = vec![(V3::ZERO, V3::ZERO, 0.0_f32); w * h];
+    par_grid(&mut cells, w, threads, &|x, y| {
+        let g = frame.guide(x as u32, y as u32);
+        (g.albedo, g.normal, g.depth)
+    });
+    GuideBuffers {
+        albedo: cells.iter().map(|c| [c.0.x, c.0.y, c.0.z]).collect(),
+        normal: cells.iter().map(|c| [c.1.x, c.1.y, c.1.z]).collect(),
+        depth: cells.iter().map(|c| c.2).collect(),
+    }
+}
+
+/// Size in pixels of the blocks of the quick first preview.
+const PREVIEW_BLOCK: usize = 4;
+
+/// One sample per `PREVIEW_BLOCK` x `PREVIEW_BLOCK` block, replicated: a
+/// coarse picture available long before the first full pass.
+fn block_preview(
+    frame: &Frame<'_>,
+    (w, h): (usize, usize),
+    threads: usize,
+    settings: &RenderSettings,
+) -> Image {
+    let (bw, bh) = (w.div_ceil(PREVIEW_BLOCK), h.div_ceil(PREVIEW_BLOCK));
+    let mut cells = vec![V3::ZERO; bw * bh];
+    par_grid(&mut cells, bw, threads, &|bx, by| {
+        let x = (bx * PREVIEW_BLOCK + PREVIEW_BLOCK / 2).min(w - 1);
+        let y = (by * PREVIEW_BLOCK + PREVIEW_BLOCK / 2).min(h - 1);
+        frame.sample(x as u32, y as u32, u32::MAX)
+    });
+    let mut hdr = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let c = cells[(y / PREVIEW_BLOCK) * bw + x / PREVIEW_BLOCK];
+            hdr.push([c.x, c.y, c.z]);
+        }
+    }
+    Image::from_hdr(
+        w as u32,
+        h as u32,
+        hdr,
+        settings.tone_map,
+        settings.exposure,
+    )
 }
 
 /// Add samples `first .. first + count` for every pixel, bands spread over threads.
@@ -157,10 +294,25 @@ fn finish(
     (w, h): (usize, usize),
     samples: u32,
     settings: &RenderSettings,
+    guides: Option<&GuideBuffers>,
 ) -> Image {
     let inv = 1.0 / f64::from(samples.max(1));
     let mut hdr: Vec<[f32; 3]> = acc.iter().map(|a| a.map(|v| (v * inv) as f32)).collect();
-    if settings.denoise {
+    if settings.denoise && guides.is_some() {
+        hdr = match guides {
+            Some(g) => guided(
+                &hdr,
+                &Guides {
+                    albedo: &g.albedo,
+                    normal: &g.normal,
+                    depth: &g.depth,
+                },
+                w,
+                h,
+            ),
+            None => bilateral(&hdr, w, h),
+        };
+    } else if settings.denoise && settings.technique == Technique::Ambient {
         hdr = bilateral(&hdr, w, h);
     }
     Image::from_hdr(

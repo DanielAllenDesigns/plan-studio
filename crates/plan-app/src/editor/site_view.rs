@@ -25,12 +25,13 @@ use plan_core::units::fmt_ft_in_frac;
 use plan_core::{Floor, Id, Project, Wall};
 use plan_electrical::{place_on_wall, Device, ElectricalLayer, Stroke as ElStroke, WallSide};
 use plan_terrain::{
-    auto_hole_for_building, build_terrain, contours, landscape_plan, plan_symbols, Contour,
-    FeatureKind, ModifierKind, PlanItem, Stroke as TerrainStroke, StrokeKind, Terrain,
-    TerrainSurface,
+    auto_hole_for_building, build_terrain_with_progress, contours_with, landscape_plan,
+    plan_symbols, BuildStage, Contour, FeatureKind, ModifierKind, PlanItem,
+    Stroke as TerrainStroke, StrokeKind, Terrain, TerrainSurface,
 };
 
 mod landscape;
+mod site_plan;
 #[allow(unused_imports)] // `terrain_feature_meshes` is for the 3D scene
 pub use landscape::{
     all_hits, draw_landscape, ensure_landscape_layers, hit_exists, hit_for_mesh_id, hit_is_closed,
@@ -39,7 +40,13 @@ pub use landscape::{
     terrain_feature_meshes, TerrainObject,
 };
 use serde_json::{json, Value};
+#[allow(unused_imports)] // the sun angle reads `plan_sun_azimuth`
+pub use site_plan::{
+    ensure_site_plan_layer, north_angle, place_north_pointer, place_scale_bar, plan_sun_azimuth,
+};
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 /// Legacy hidden layer of the electrical record (older files only).
@@ -87,6 +94,13 @@ pub struct TerrainRecord {
     pub built: bool,
     /// The visible layer the terrain is drawn on.
     pub layer: String,
+    /// Rebuild the surface after every edit of the terrain. When off, the
+    /// surface stays as built until Build Terrain runs again (the view is
+    /// marked stale).
+    pub auto_rebuild: bool,
+    /// [`terrain_key`] of the data the last Build Terrain used (0 = unknown);
+    /// only read while `auto_rebuild` is off.
+    pub built_key: u64,
 }
 
 impl TerrainRecord {
@@ -100,11 +114,42 @@ impl TerrainRecord {
             contour_interval: DEFAULT_CONTOUR_INTERVAL,
             built: false,
             layer: TERRAIN_LAYER.to_string(),
+            auto_rebuild: true,
+            built_key: 0,
         }
     }
 
     pub fn has_perimeter(&self) -> bool {
         self.terrain.perimeter.len() >= 3
+    }
+
+    /// Takes the settings of a Terrain Specification `draft` (OK in the
+    /// dialog): everything the dialog edits, nothing it only displays.
+    pub fn apply_spec(&mut self, draft: &TerrainRecord) {
+        self.contour_interval = draft.contour_interval;
+        self.layer = draft.layer.clone();
+        let was_auto = self.auto_rebuild;
+        self.auto_rebuild = draft.auto_rebuild;
+        let (t, d) = (&mut self.terrain, &draft.terrain);
+        t.subfloor_height_above_terrain = d.subfloor_height_above_terrain;
+        t.building_pad_elevation = d.building_pad_elevation;
+        t.smoothing = d.smoothing;
+        t.grid_spacing = d.grid_spacing;
+        t.subdivision = d.subdivision;
+        t.contour_major_every = d.contour_major_every;
+        t.contour_label_spacing = d.contour_label_spacing;
+        t.contour_label_major_only = d.contour_label_major_only;
+        t.flatten_pad = d.flatten_pad;
+        t.north_angle = d.north_angle;
+        if let (Some(pad), Some(dp)) = (t.building_pad.as_mut(), d.building_pad.as_ref()) {
+            pad.margin = dp.margin;
+            pad.slope_ratio = dp.slope_ratio;
+            pad.first_floor = dp.first_floor;
+        }
+        if was_auto && !self.auto_rebuild {
+            // Turning auto rebuild off: the surface as it is now is the baseline.
+            self.built_key = terrain_key(self);
+        }
     }
 
     fn to_value(&self) -> Option<Value> {
@@ -114,6 +159,8 @@ impl TerrainRecord {
             "contour_interval": self.contour_interval,
             "built": self.built,
             "layer": self.layer,
+            "auto_rebuild": self.auto_rebuild,
+            "built_key": self.built_key,
         }))
     }
 
@@ -132,6 +179,11 @@ impl TerrainRecord {
                 .get("layer")
                 .and_then(Value::as_str)
                 .map_or(base.layer, str::to_string),
+            auto_rebuild: v
+                .get("auto_rebuild")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            built_key: v.get("built_key").and_then(Value::as_u64).unwrap_or(0),
         })
     }
 }
@@ -228,9 +280,13 @@ pub fn migrate_legacy_storage(project: &mut Project) -> bool {
 type ElecCache = Option<(usize, Value, Rc<ElectricalLayer>)>;
 type TerrainCache = Option<(Value, Rc<TerrainView>)>;
 
+/// The last surface and contours built, with the [`terrain_key`] of their data.
+type SurfaceCache = Option<(u64, TerrainSurface, Vec<Contour>)>;
+
 thread_local! {
     static ELEC_CACHE: RefCell<ElecCache> = const { RefCell::new(None) };
     static TERRAIN_CACHE: RefCell<TerrainCache> = const { RefCell::new(None) };
+    static SURFACE_CACHE: RefCell<SurfaceCache> = const { RefCell::new(None) };
 }
 
 /// The floor's electrical layer, parsed once per change of the stored value.
@@ -260,14 +316,70 @@ pub struct TerrainView {
     pub symbols: Vec<TerrainStroke>,
     /// Landscape objects (features, walls, beds, plants, ...) as plan items.
     pub landscape: Vec<PlanItem>,
+    /// The surface is older than the terrain data: auto rebuild is off and the
+    /// terrain was edited since Build Terrain.
+    pub stale: bool,
+}
+
+/// Identifies the terrain data (and contour interval) a surface is built from.
+pub fn terrain_key(rec: &TerrainRecord) -> u64 {
+    let mut h = DefaultHasher::new();
+    if let Ok(text) = serde_json::to_string(&rec.terrain) {
+        text.hash(&mut h);
+    }
+    rec.contour_interval.to_bits().hash(&mut h);
+    h.finish() | 1
+}
+
+/// Builds the surface and contours of `rec` (Build Terrain), calling
+/// `progress(stage, fraction)` as each step starts, and remembers them as the
+/// surface of that data.
+pub fn build_surface_with_progress(
+    rec: &TerrainRecord,
+    progress: &mut dyn FnMut(BuildStage, f32),
+) -> (TerrainSurface, Vec<Contour>) {
+    let s = build_terrain_with_progress(&rec.terrain, progress);
+    let c = contours_with(&s, rec.contour_interval, rec.terrain.contour_major_every);
+    let key = terrain_key(rec);
+    SURFACE_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some((key, s.clone(), c.clone()));
+    });
+    (s, c)
 }
 
 impl TerrainView {
     fn new(record: TerrainRecord) -> Self {
+        let mut stale = false;
         let (surface, cont) = if record.built && record.has_perimeter() {
-            let s = build_terrain(&record.terrain);
-            let c = contours(&s, record.contour_interval);
-            (Some(s), c)
+            let key = terrain_key(&record);
+            // With auto rebuild off, keep showing the surface Build Terrain made.
+            let held = (!record.auto_rebuild && record.built_key != 0 && record.built_key != key)
+                .then(|| {
+                    SURFACE_CACHE.with(|c| {
+                        c.borrow()
+                            .as_ref()
+                            .filter(|(k, _, _)| *k == record.built_key)
+                            .map(|(_, s, c)| (s.clone(), c.clone()))
+                    })
+                })
+                .flatten();
+            let current = || {
+                SURFACE_CACHE.with(|c| {
+                    c.borrow()
+                        .as_ref()
+                        .filter(|(k, _, _)| *k == key)
+                        .map(|(_, s, c)| (s.clone(), c.clone()))
+                })
+            };
+            if let Some((s, c)) = held {
+                stale = true;
+                (Some(s), c)
+            } else if let Some((s, c)) = current() {
+                (Some(s), c)
+            } else {
+                let (s, c) = build_surface_with_progress(&record, &mut |_, _| {});
+                (Some(s), c)
+            }
         } else {
             (None, Vec::new())
         };
@@ -279,6 +391,7 @@ impl TerrainView {
             contours: cont,
             symbols,
             landscape,
+            stale,
         }
     }
 }
@@ -403,6 +516,39 @@ pub fn auto_building_hole(cx: &mut EditorContext) -> bool {
         return false;
     }
     cx.begin_change("Terrain Hole Around Building");
+    save_terrain(&mut cx.project, &rec);
+    cx.mark_dirty();
+    true
+}
+
+/// Terrain > Building Pad: levels the terrain under the building. The pad is
+/// the footprint of the exterior walls plus a margin, its top the first
+/// floor's elevation less the terrain-to-first-floor distance, its sides
+/// sloped back to the ground. Returns false (changing nothing) when there is
+/// no building or the pad is already as it would be made.
+pub fn auto_building_pad(cx: &mut EditorContext) -> bool {
+    let footprint = building_footprint(cx.floor());
+    if footprint.len() < 3 {
+        cx.status = "Draw the building walls first".into();
+        return false;
+    }
+    let first_floor = cx.project.floors.first().map_or(0.0, |f| f.elevation);
+    let mut rec = load_terrain(&cx.project).unwrap_or_default();
+    let mut pad = rec.terrain.building_pad.take().unwrap_or_default();
+    let unchanged = same_polygon(&pad.footprint, &footprint)
+        && pad.first_floor == Some(first_floor)
+        && rec.terrain.flatten_pad;
+    if unchanged {
+        rec.terrain.building_pad = Some(pad);
+        cx.status = "The terrain already has a building pad".into();
+        return false;
+    }
+    pad.footprint = footprint;
+    pad.first_floor = Some(first_floor);
+    rec.terrain.building_pad_elevation = first_floor - rec.terrain.subfloor_height_above_terrain;
+    rec.terrain.building_pad = Some(pad);
+    rec.terrain.flatten_pad = true;
+    cx.begin_change("Building Pad");
     save_terrain(&mut cx.project, &rec);
     cx.mark_dirty();
     true
@@ -584,6 +730,8 @@ pub fn device_on_wall(d: &Device, wall: &Wall, offset: f64, side: WallSide) -> D
         circuit: d.circuit,
         label: d.label.clone(),
         switched_by: d.switched_by.clone(),
+        finish: d.finish.clone(),
+        hide_label: d.hide_label,
         ..placed
     }
 }
@@ -675,6 +823,33 @@ fn draw_label(
     );
 }
 
+/// A label centered on `at`, turned `angle` radians counter-clockwise (plan y up).
+fn draw_label_rotated(
+    painter: &egui::Painter,
+    cam: &Camera,
+    at: Point,
+    text: &str,
+    height: f64,
+    angle: f64,
+    c: Color32,
+) {
+    if angle.abs() < 1e-6 {
+        draw_label(painter, cam, at, text, height, c);
+        return;
+    }
+    let px = (height * cam.px_per_in) as f32;
+    if px < MIN_TEXT_PX {
+        return;
+    }
+    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(px.min(40.0)), c);
+    // egui turns text clockwise about its top-left corner; the plan turns counter-clockwise.
+    let a = -(angle as f32);
+    let half = galley.size() / 2.0;
+    let rot = egui::emath::Rot2::from_angle(a);
+    let top_left = sc(cam, at) - rot * half;
+    painter.add(egui::epaint::TextShape::new(top_left, galley, c).with_angle(a));
+}
+
 fn centroid(pts: &[Point]) -> Point {
     let n = pts.len().max(1) as f64;
     let sum = pts.iter().fold(Point::ZERO, |a, p| a + *p);
@@ -702,6 +877,19 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         return;
     }
     let px = |w: f64, min: f32| ((w as f32) * 1.6).max(min);
+    if view.stale {
+        // Auto rebuild is off and the terrain was edited since Build Terrain.
+        if let Some(p) = view.record.terrain.perimeter.first() {
+            draw_label(
+                painter,
+                cam,
+                p.add(Point::new(0.0, 24.0)),
+                "Terrain out of date: run Build Terrain",
+                10.0,
+                DATA_COLOR,
+            );
+        }
+    }
     for s in &view.symbols {
         match s {
             TerrainStroke::Polyline {
@@ -726,8 +914,21 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                     false,
                 );
             }
-            TerrainStroke::Text { at, text, height } => {
-                draw_label(painter, cam, *at, text, *height, MAJOR_CONTOUR_COLOR);
+            TerrainStroke::Text {
+                at,
+                text,
+                height,
+                angle,
+            } => {
+                draw_label_rotated(
+                    painter,
+                    cam,
+                    *at,
+                    text,
+                    *height,
+                    *angle,
+                    MAJOR_CONTOUR_COLOR,
+                );
             }
         }
     }
@@ -884,7 +1085,7 @@ pub fn draw_devices(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     let color = device_color(cx);
     for d in &layer.devices {
         draw_symbol(painter, cam, &d.symbol_world(), color, 1.2);
-        if !d.label.is_empty() {
+        if !d.label.is_empty() && !d.hide_label {
             draw_label(
                 painter,
                 cam,

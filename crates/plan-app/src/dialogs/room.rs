@@ -14,8 +14,9 @@ use super::{
 use crate::editor::rooms_edit::{FillPattern, RoomExtras};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Ui};
 use plan_core::defaults::RoomTypeDef;
-use plan_core::extras::AreaKind;
+use plan_core::extras::{structure_thickness, AreaKind, StructureLayer};
 use plan_core::geometry::Point;
+use plan_core::rooms::function_defaults;
 use plan_core::units::fmt_ft_in;
 use plan_core::RoomName;
 
@@ -48,6 +49,8 @@ pub struct RoomInit {
     pub perimeter_in: f64,
     pub floor_elevation: f64,
     pub floor_ceiling_height: f64,
+    /// The floor's default floor finish thickness, inches (Floor Defaults).
+    pub default_floor_finish: f64,
     /// The generated name ("Room 1") a room has before it is named.
     pub default_name: String,
     pub total_living_sq_ft: f64,
@@ -64,6 +67,15 @@ struct RoomForm {
     name: RoomName,
     extras: RoomExtras,
     fields: Fields,
+    /// The Floor or Ceiling Structure being defined (R-28, R-29).
+    define: Option<Define>,
+}
+
+/// Which structure the Define editor shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Define {
+    Floor,
+    Ceiling,
 }
 
 // The setters below are the dialog's model API (the tests drive it); the UI
@@ -75,6 +87,7 @@ impl RoomDialog {
             name: init.name.clone(),
             extras: init.extras.clone(),
             fields: Fields::default(),
+            define: None,
             init,
         };
         Self {
@@ -113,6 +126,15 @@ impl RoomDialog {
         self.form.set_room_type(room_type);
     }
 
+    /// The Floor or Ceiling Structure layers being edited by Define (R-28,
+    /// R-29); an empty stack follows the floor's default platform.
+    pub fn structure_mut(&mut self, which: Define) -> &mut Vec<StructureLayer> {
+        match which {
+            Define::Floor => &mut self.form.extras.floor_structure,
+            Define::Ceiling => &mut self.form.extras.ceiling_structure,
+        }
+    }
+
     pub fn set_living(&mut self, include: Option<bool>) {
         self.form.name.include_in_living_area = include;
     }
@@ -140,6 +162,25 @@ impl RoomForm {
         if follows {
             self.name.name = room_type.to_string();
         }
+        self.apply_function_defaults();
+    }
+
+    /// The room type's function sets the defaults of the Structure switches,
+    /// the floor height, the floor finish and the Floor Structure (R-40,
+    /// R-41); each stays editable afterwards.
+    fn apply_function_defaults(&mut self) {
+        let function = self
+            .type_def()
+            .map_or("Standard", |t| t.function.as_str())
+            .to_string();
+        let d = function_defaults(&function, &self.name.room_type);
+        self.name.has_floor = d.has_floor;
+        self.name.has_ceiling = d.has_ceiling;
+        self.name.floor_height_offset = d.floor_height_offset;
+        self.extras.floor_finish_thickness = d
+            .floor_finish_thickness
+            .unwrap_or(self.init.default_floor_finish);
+        self.extras.floor_structure = d.floor_structure;
     }
 
     /// "Use Default (Included)" text for the living-area radio.
@@ -274,10 +315,16 @@ impl RoomForm {
         );
 
         section(ui, "Platforms");
-        ui.checkbox(&mut self.name.has_floor, "Floor Under This Room");
-        ui.checkbox(&mut self.name.has_ceiling, "Ceiling Over This Room");
+        ui.checkbox(&mut self.name.has_floor, "Floor Under This Room")
+            .on_hover_text("Off for an Open Below room: no floor, and the ceiling below opens");
+        ui.checkbox(&mut self.name.has_ceiling, "Ceiling Over This Room")
+            .on_hover_text("Off for a deck or porch");
         ui.checkbox(&mut self.extras.roof_over, "Roof Over This Room")
-            .on_hover_text(super::SESSION_NOTE);
+            .on_hover_text("Off for a courtyard or open deck: Build Roof leaves a hole over it");
+        ui.add_enabled_ui(self.extras.roof_over, |ui| {
+            ui.checkbox(&mut self.extras.flat_roof, "Flat Roof Over This Room")
+                .on_hover_text("Build Roof puts a level roof plane at this room's ceiling");
+        });
 
         section(ui, "Stem Wall");
         ui.checkbox(&mut self.extras.stem_wall, "Stem Wall");
@@ -291,9 +338,97 @@ impl RoomForm {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new("Floor Structure Define\u{2026}"));
-            ui.add_enabled(false, egui::Button::new("Ceiling Structure Define\u{2026}"));
+            for (which, label) in [
+                (Define::Floor, "Floor Structure Define\u{2026}"),
+                (Define::Ceiling, "Ceiling Structure Define\u{2026}"),
+            ] {
+                let open = self.define == Some(which);
+                if ui.selectable_label(open, label).clicked() {
+                    self.define = if open { None } else { Some(which) };
+                }
+            }
         });
+        if let Some(which) = self.define {
+            self.define_editor(ui, which);
+        }
+    }
+
+    /// The Floor/Ceiling Structure dialog (R-28, R-29): the layer stack of
+    /// this room's platform, top layer first. An empty stack follows the
+    /// floor's default platform.
+    fn define_editor(&mut self, ui: &mut Ui, which: Define) {
+        let title = match which {
+            Define::Floor => "Floor Structure",
+            Define::Ceiling => "Ceiling Structure",
+        };
+        section(ui, title);
+        let layers = match which {
+            Define::Floor => &mut self.extras.floor_structure,
+            Define::Ceiling => &mut self.extras.ceiling_structure,
+        };
+        let mut remove: Option<usize> = None;
+        let mut swap: Option<(usize, usize)> = None;
+        let count = layers.len();
+        egui::Grid::new(("room_structure", title))
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong("Layer");
+                ui.strong("Material");
+                ui.strong("Thickness");
+                ui.end_row();
+                for (i, l) in layers.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(i > 0, egui::Button::new("\u{25B2}"))
+                            .clicked()
+                        {
+                            swap = Some((i, i - 1));
+                        }
+                        if ui
+                            .add_enabled(i + 1 < count, egui::Button::new("\u{25BC}"))
+                            .clicked()
+                        {
+                            swap = Some((i, i + 1));
+                        }
+                    });
+                    ui.add(egui::TextEdit::singleline(&mut l.material).desired_width(120.0));
+                    ui.add(
+                        egui::DragValue::new(&mut l.thickness)
+                            .speed(0.125)
+                            .range(0.0..=240.0)
+                            .suffix("\""),
+                    );
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                    ui.end_row();
+                }
+            });
+        if let Some((a, b)) = swap {
+            layers.swap(a, b);
+        }
+        if let Some(i) = remove {
+            layers.remove(i);
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Add Layer").clicked() {
+                layers.push(StructureLayer::new("Framing", 1.0));
+            }
+            if ui
+                .add_enabled(!layers.is_empty(), egui::Button::new("Use Default"))
+                .clicked()
+            {
+                layers.clear();
+            }
+        });
+        if layers.is_empty() {
+            ui.weak("Follows the floor's default platform.");
+        } else {
+            ui.label(format!(
+                "Total thickness {}",
+                fmt_ft_in(structure_thickness(layers))
+            ));
+        }
     }
 
     fn moldings(&mut self, ui: &mut Ui) {
@@ -368,6 +503,31 @@ impl RoomForm {
             ui.radio_value(&mut l.area_kind, AreaKind::Centerline, "Centerline Area");
         });
         ui.weak("With everything unchecked the room shows no label.");
+        section(ui, "Label Text");
+        ui.add(
+            egui::TextEdit::multiline(&mut self.extras.label.template)
+                .desired_rows(2)
+                .desired_width(260.0)
+                .hint_text("<name>\\n<dims>  <area>"),
+        );
+        let macros: Vec<String> = crate::editor::rooms_edit::LABEL_MACROS
+            .iter()
+            .map(|(m, what)| format!("{m} {what}"))
+            .collect();
+        ui.weak(format!(
+            "Macros: {}. Empty uses the choices above.",
+            macros.join(", ")
+        ));
+        let moved = self.extras.label.offset != Point::ZERO;
+        ui.horizontal(|ui| {
+            ui.weak("Drag the label in the plan to move it.");
+            if ui
+                .add_enabled(moved, egui::Button::new("Reset Position"))
+                .clicked()
+            {
+                self.extras.label.offset = Point::ZERO;
+            }
+        });
         section(ui, "Appearance");
         row(ui, "Text Style", |ui| {
             ui.add_enabled(false, egui::Button::new("Use Layer Text Style"));
@@ -604,6 +764,7 @@ mod tests {
             perimeter_in: 400.0,
             floor_elevation: 0.0,
             floor_ceiling_height: 109.125,
+            default_floor_finish: 0.75,
             default_name: "Room 1".into(),
             total_living_sq_ft: 0.0,
             floor_name: "1st Floor".into(),
@@ -629,6 +790,61 @@ mod tests {
         assert!(!d.has_error());
         d.set_name("  ");
         assert!(d.has_error());
+    }
+
+    #[test]
+    fn room_function_sets_the_platform_defaults() {
+        let mut d = dialog();
+        d.set_room_type("Garage");
+        let n = d.room_name();
+        assert_eq!(n.floor_height_offset, -24.0);
+        assert!(n.has_floor && n.has_ceiling);
+        assert_eq!(d.extras().floor_finish_thickness, 0.0);
+        assert_eq!(structure_thickness(&d.extras().floor_structure), 4.0);
+        d.set_room_type("Deck");
+        assert!(!d.room_name().has_ceiling && d.room_name().has_floor);
+        assert_eq!(d.room_name().floor_height_offset, 0.0);
+        d.set_room_type("Open Below");
+        assert!(!d.room_name().has_floor && d.room_name().has_ceiling);
+        for t in ["Attic", "Courtyard"] {
+            d.set_room_type(t);
+            assert!(!d.room_name().has_floor, "{t}");
+        }
+        // A plain room goes back to the floor's defaults, switches stay editable.
+        d.set_room_type("Bedroom");
+        assert!(d.room_name().has_floor && d.room_name().has_ceiling);
+        assert_eq!(d.extras().floor_finish_thickness, 0.75);
+        assert!(d.extras().floor_structure.is_empty());
+    }
+
+    /// The Structure and Label tabs, with the Define editor open, draw.
+    #[test]
+    fn the_structure_and_label_tabs_draw_with_the_define_editor_open() {
+        let ctx = egui::Context::default();
+        for define in [Define::Floor, Define::Ceiling] {
+            let mut d = dialog();
+            d.set_room_type("Garage");
+            d.form.define = Some(define);
+            for tab in [1, 7] {
+                let form = &mut d.form;
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        SpecPages::page(form, ui, tab);
+                    });
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn structure_layers_are_edited_through_the_dialog_model() {
+        let mut d = dialog();
+        d.structure_mut(Define::Floor)
+            .push(StructureLayer::new("Subfloor", 0.75));
+        d.structure_mut(Define::Floor)
+            .push(StructureLayer::new("Joist", 9.25));
+        assert_eq!(structure_thickness(&d.extras().floor_structure), 10.0);
+        assert!(d.extras().ceiling_structure.is_empty());
     }
 
     #[test]

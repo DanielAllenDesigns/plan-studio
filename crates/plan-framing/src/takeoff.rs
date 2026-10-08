@@ -3,6 +3,76 @@
 use crate::member::{Member, MemberKind};
 use serde::{Deserialize, Serialize};
 
+/// One line of the framing schedule: pieces of one member type, size and cut
+/// length.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CutLine {
+    /// Member type, e.g. `"stud"`, `"header"`, `"rafter"`.
+    pub member: String,
+    /// Nominal size, e.g. `"2x6"`.
+    pub size: String,
+    /// Cut length, inches (the long point for a mitered or cut piece).
+    pub cut: f64,
+    pub count: u32,
+}
+
+impl CutLine {
+    /// Linear feet of all the pieces.
+    pub fn linear_feet(&self) -> f64 {
+        self.cut * f64::from(self.count) / 12.0
+    }
+
+    /// Board feet of all the pieces, from the nominal size (`0` when the size
+    /// is not a `TxW` dimension).
+    pub fn board_feet(&self) -> f64 {
+        let (t, w) = self.size.split_once('x').unwrap_or(("", ""));
+        match (t.parse::<f64>(), w.parse::<f64>()) {
+            (Ok(t), Ok(w)) => t * w * self.cut * f64::from(self.count) / 144.0,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Adds `count` pieces to `cuts`, merging lines of the same member, size and
+/// cut length (to 1/16").
+pub(crate) fn add_cut(cuts: &mut Vec<CutLine>, member: &str, size: &str, cut: f64, count: u32) {
+    let key = |c: f64| (c * 16.0).round() as i64;
+    match cuts
+        .iter_mut()
+        .find(|l| l.member == member && l.size == size && key(l.cut) == key(cut))
+    {
+        Some(l) => l.count += count,
+        None => cuts.push(CutLine {
+            member: member.to_string(),
+            size: size.to_string(),
+            cut,
+            count,
+        }),
+    }
+}
+
+/// Order the schedule by member type (first appearance), then size and the
+/// longest cut first.
+pub(crate) fn sort_cuts(cuts: &mut [CutLine]) {
+    let mut first: Vec<String> = Vec::new();
+    for l in cuts.iter() {
+        if !first.contains(&l.member) {
+            first.push(l.member.clone());
+        }
+    }
+    let size = |s: &str| {
+        let mut it = s.split('x').map(|n| n.parse::<u32>().unwrap_or(u32::MAX));
+        (it.next().unwrap_or(u32::MAX), it.next().unwrap_or(0))
+    };
+    cuts.sort_by(|a, b| {
+        let ra = first.iter().position(|m| *m == a.member);
+        let rb = first.iter().position(|m| *m == b.member);
+        ra.cmp(&rb)
+            .then(size(&a.size).cmp(&size(&b.size)))
+            .then(b.cut.total_cmp(&a.cut))
+    });
+}
+
 /// A lumber list: counts per cut, board feet and linear feet per size.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Takeoff {
@@ -12,6 +82,9 @@ pub struct Takeoff {
     pub board_feet: f64,
     /// Total linear feet per nominal size (e.g. `"2x6"`), thinnest/narrowest first.
     pub linear_feet_by_size: Vec<(String, f64)>,
+    /// The framing schedule: pieces by member type, size and cut length.
+    #[serde(default)]
+    pub cuts: Vec<CutLine>,
 }
 
 /// Count `members` by cut, and total their board feet and linear feet.
@@ -19,7 +92,9 @@ pub fn takeoff(members: &[Member]) -> Takeoff {
     let mut lines: Vec<((MemberKind, &str), u32)> = Vec::new();
     let mut sizes: Vec<((u32, u32), f64)> = Vec::new();
     let mut board_feet = 0.0;
+    let mut cuts: Vec<CutLine> = Vec::new();
     for m in members {
+        add_cut(&mut cuts, m.kind.name(), &m.lumber.nominal_name(), m.length, 1);
         let key = (m.kind, m.label.as_str());
         match lines.iter_mut().find(|(k, _)| *k == key) {
             Some((_, n)) => *n += 1,
@@ -33,7 +108,9 @@ pub fn takeoff(members: &[Member]) -> Takeoff {
         board_feet += f64::from(size.0 * size.1) * m.length / 144.0;
     }
     sizes.sort_by_key(|&(size, _)| size);
+    sort_cuts(&mut cuts);
     Takeoff {
+        cuts,
         lines: lines
             .into_iter()
             .map(|((kind, label), n)| (format!("{label}\" {}", kind.name()), n))

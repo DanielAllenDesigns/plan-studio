@@ -145,14 +145,14 @@ fn auto_outlets_respect_spacing_and_doors() {
 }
 
 #[test]
-fn kitchen_gets_gfci_counter_outlets_at_44() {
+fn kitchen_gets_gfci_counter_outlets_at_42() {
     let (floor, rooms) = room_20x12();
     let types = vec![(rooms[0].label.clone(), RoomFunction::Kitchen)];
     let devices = auto_place_outlets(&floor, &rooms, &types, &AutoOutletOptions::default());
     assert!(!devices.is_empty());
     assert!(devices
         .iter()
-        .all(|d| d.kind == DeviceKind::Gfci && d.height == 44.0 && d.wall_id.is_some()));
+        .all(|d| d.kind == DeviceKind::Gfci && d.height == 42.0 && d.wall_id.is_some()));
     for w in &floor.walls {
         let mut here: Vec<f64> = devices
             .iter()
@@ -421,7 +421,7 @@ fn add_keeps_ids_unique_and_remove_cleans_connections() {
 }
 
 #[test]
-fn meshes_are_white_boxes_and_discs() {
+fn meshes_are_plates_with_details_and_discs() {
     let w = wall(1, (0.0, 0.0), (240.0, 0.0));
     let mut layer = ElectricalLayer::default();
     layer.add(place_on_wall(
@@ -440,16 +440,19 @@ fn meshes_are_white_boxes_and_discs() {
     ));
     layer.add(place_on_wall(DeviceKind::Panel, &w, 20.0, WallSide::Left));
     let ms = meshes(&layer, &[w], 0.0);
-    assert_eq!(ms.len(), 4);
-    assert!(ms
-        .iter()
-        .all(|m| m.material == plan_3d::Material::WindowFrame));
+    let of = |id: u64, m: plan_3d::Material| {
+        ms.iter()
+            .find(|x| x.object_id == Some(id) && x.material == m)
+    };
+    // Four devices; the outlet adds a dark slot mesh to its white plate.
+    assert_eq!(ms.len(), 5);
     assert!(ms
         .iter()
         .all(|m| m.triangle_count() > 0 && m.object_id.is_some()));
+    assert!(of(1, plan_3d::Material::Asphalt).is_some());
 
     // Plate: 2.75" wide, 4.5" tall, 0.25" proud of the left face (y = 2.25).
-    let (lo, hi) = ms[0].bounds().unwrap();
+    let (lo, hi) = of(1, plan_3d::Material::WindowFrame).unwrap().bounds().unwrap();
     assert!((hi[0] - lo[0] - 2.75).abs() < 1e-4);
     assert!((hi[1] - lo[1] - 4.5).abs() < 1e-4);
     assert!((hi[2] - lo[2] - 0.25).abs() < 1e-4);
@@ -457,10 +460,70 @@ fn meshes_are_white_boxes_and_discs() {
     // Scene Z is -plan y: the plate spans plan y 2.25..2.5.
     assert!((lo[2] + 2.5).abs() < 1e-4 && (hi[2] + 2.25).abs() < 1e-4);
 
-    // Ceiling disc: 6" across, hanging from the ceiling.
-    let (lo, hi) = ms[1].bounds().unwrap();
-    assert!((hi[0] - lo[0] - 6.0).abs() < 1e-4);
+    // Ceiling disc: 12" across, hanging from the ceiling.
+    let (lo, hi) = of(2, plan_3d::Material::WindowFrame).unwrap().bounds().unwrap();
+    assert!((hi[0] - lo[0] - 12.0).abs() < 1e-4);
     assert!((hi[1] - 109.125).abs() < 1e-4);
+}
+
+#[test]
+fn fixture_meshes_exist_for_cans_pendants_fans_and_jacks() {
+    let w = wall(1, (0.0, 0.0), (240.0, 0.0));
+    let mut layer = ElectricalLayer::default();
+    let can = layer.add(place_free(DeviceKind::RecessedCan, Point::new(40.0, 40.0)));
+    let pendant = layer.add(place_free(DeviceKind::PendantLight, Point::new(80.0, 40.0)));
+    let fan = layer.add(place_free(DeviceKind::CeilingFan, Point::new(120.0, 40.0)));
+    let jack = layer.add(place_on_wall(DeviceKind::TvJack, &w, 50.0, WallSide::Left));
+    let sconce = layer.add(place_on_wall(DeviceKind::WallSconce, &w, 150.0, WallSide::Left));
+    layer.device_mut(jack).unwrap().finish = "Black".into();
+    let ms = meshes(&layer, &[w], 0.0);
+    let parts = |id: u64| -> Vec<plan_3d::Material> {
+        ms.iter()
+            .filter(|m| m.object_id == Some(id))
+            .map(|m| m.material)
+            .collect()
+    };
+    use plan_3d::Material as M;
+    // Can: white trim ring + dark aperture, flush with the ceiling.
+    assert_eq!(parts(can), [M::WindowFrame, M::Asphalt]);
+    // Pendant: shade + cord that reaches the ceiling.
+    assert!(parts(pendant).contains(&M::WindowFrame) && parts(pendant).contains(&M::Metal));
+    let cord = ms
+        .iter()
+        .find(|m| m.object_id == Some(pendant) && m.material == M::Metal)
+        .unwrap();
+    assert!((cord.bounds().unwrap().1[1] - 109.125).abs() < 1e-3);
+    // Fan: hub + rod in metal, four blades in the body finish.
+    assert!(parts(fan).contains(&M::Metal) && parts(fan).contains(&M::WindowFrame));
+    // A finish changes the plate material.
+    assert!(parts(jack).contains(&M::Asphalt));
+    assert!(!parts(jack).contains(&M::WindowFrame));
+    assert!(parts(sconce).contains(&M::WindowFrame));
+    assert_eq!(finish_material("Stainless Steel"), M::Metal);
+    assert_eq!(finish_material(""), M::WindowFrame);
+}
+
+#[test]
+fn electrical_meshes_walks_every_floor_and_respects_the_layer() {
+    let mut project = plan_core::Project::new("t");
+    let mut upper = Floor::new("2nd Floor", 109.125);
+    upper.walls = vec![wall(1, (0.0, 0.0), (240.0, 0.0))];
+    project.floors.push(upper);
+    for (i, y) in [(0, 0.0), (1, 60.0)] {
+        let mut layer = ElectricalLayer::default();
+        layer.add(place_free(DeviceKind::SmokeDetector, Point::new(y, 20.0)));
+        project.floors[i].set_electrical(&layer).unwrap();
+    }
+    let ms = electrical_meshes(&project);
+    assert_eq!(ms.len(), 2);
+    // The second floor's detector hangs from 109 1/8" + its own ceiling.
+    let top = ms
+        .iter()
+        .map(|m| m.bounds().unwrap().1[1])
+        .fold(f32::MIN, f32::max);
+    assert!((top - (109.125 + 109.125)).abs() < 1e-3, "{top}");
+    project.layers.get_mut("Electrical").unwrap().display = false;
+    assert!(electrical_meshes(&project).is_empty());
 }
 
 #[test]
@@ -478,4 +541,262 @@ fn serde_round_trip() {
     let back: AutoOutletOptions =
         serde_json::from_str(&serde_json::to_string(&opts).unwrap()).unwrap();
     assert_eq!(opts, back);
+}
+
+// ----- the Chief symbol set, heights and families -----
+
+fn count_kind(strokes: &[Stroke], f: impl Fn(&Stroke) -> bool) -> usize {
+    strokes.iter().filter(|s| f(s)).count()
+}
+
+#[test]
+fn symbol_parts_per_kind() {
+    let is_line = |s: &Stroke| matches!(s, Stroke::Line { .. });
+    let is_circle = |s: &Stroke| matches!(s, Stroke::Circle { .. });
+    let is_text = |s: &Stroke| matches!(s, Stroke::Text { .. });
+    let is_poly = |s: &Stroke| matches!(s, Stroke::Polyline { .. });
+    let texts = |k: DeviceKind| -> Vec<String> {
+        k.symbol()
+            .into_iter()
+            .filter_map(|s| match s {
+                Stroke::Text { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    };
+    // Duplex: a circle and two slots; quad: the same circle with four.
+    let duplex = DeviceKind::Outlet110.symbol();
+    assert_eq!((count_kind(&duplex, is_circle), count_kind(&duplex, is_line)), (1, 2));
+    let quad = DeviceKind::Outlet110Quad.symbol();
+    assert_eq!((count_kind(&quad, is_circle), count_kind(&quad, is_line)), (1, 4));
+    // 220: three slots; GFCI: duplex plus tick marks and its label.
+    assert_eq!(count_kind(&DeviceKind::Outlet220.symbol(), is_line), 3);
+    assert_eq!(texts(DeviceKind::Gfci), ["GFCI"]);
+    // Floor outlet: duplex inside a square.
+    let floor = DeviceKind::OutletFloor.symbol();
+    assert_eq!((count_kind(&floor, is_circle), count_kind(&floor, is_poly)), (1, 1));
+    // Switches: S, S3, S4, SD share the stem and S glyph.
+    assert!(texts(DeviceKind::Switch).is_empty());
+    assert_eq!(texts(DeviceKind::Switch3Way), ["3"]);
+    assert_eq!(texts(DeviceKind::Switch4Way), ["4"]);
+    assert_eq!(texts(DeviceKind::SwitchDimmer), ["D"]);
+    for k in [DeviceKind::Switch, DeviceKind::Switch3Way, DeviceKind::Switch4Way, DeviceKind::SwitchDimmer] {
+        let s = k.symbol();
+        assert_eq!((count_kind(&s, is_line), count_kind(&s, is_poly)), (1, 1), "{k:?}");
+    }
+    // Lights: ceiling = circle and cross, can = ring and dot, pendant likewise.
+    let ceiling = DeviceKind::CeilingLight.symbol();
+    assert_eq!((count_kind(&ceiling, is_circle), count_kind(&ceiling, is_line)), (1, 2));
+    assert_eq!(count_kind(&DeviceKind::RecessedCan.symbol(), is_circle), 2);
+    assert_eq!(count_kind(&DeviceKind::PendantLight.symbol(), is_circle), 2);
+    assert!(matches!(DeviceKind::WallSconce.symbol()[0], Stroke::Arc { .. }));
+    // Fan: hub and four blades.
+    let fan = DeviceKind::CeilingFan.symbol();
+    assert_eq!((count_kind(&fan, is_circle), count_kind(&fan, is_poly)), (1, 4));
+    // Detectors, thermostat, doorbell and the low-voltage jacks carry letters.
+    assert_eq!(texts(DeviceKind::SmokeDetector), ["SD"]);
+    assert_eq!(texts(DeviceKind::CoDetector), ["CO"]);
+    assert_eq!(texts(DeviceKind::Thermostat), ["T"]);
+    assert_eq!(texts(DeviceKind::Doorbell), ["DB"]);
+    assert_eq!(texts(DeviceKind::DataJack), ["D"]);
+    assert_eq!(texts(DeviceKind::PhoneJack), ["T"]);
+    assert_eq!(texts(DeviceKind::TvJack), ["TV"]);
+    for k in [DeviceKind::DataJack, DeviceKind::PhoneJack, DeviceKind::TvJack] {
+        let s = k.symbol();
+        assert_eq!((count_kind(&s, is_poly), count_kind(&s, is_text)), (1, 1), "{k:?}");
+    }
+    assert_eq!(count_kind(&DeviceKind::Panel.symbol(), is_text), 1);
+}
+
+#[test]
+fn default_heights_per_kind() {
+    use DeviceKind as K;
+    for k in [K::Outlet110, K::Outlet110Quad, K::Outlet220, K::Gfci, K::DataJack, K::PhoneJack] {
+        assert_eq!(k.default_height(), 12.0, "{k:?}");
+    }
+    for k in [K::Switch, K::Switch3Way, K::Switch4Way, K::SwitchDimmer, K::Doorbell] {
+        assert_eq!(k.default_height(), 48.0, "{k:?}");
+    }
+    assert_eq!(K::OutletFloor.default_height(), 0.0);
+    assert_eq!(COUNTER_OUTLET_HEIGHT, 42.0);
+    // Every kind except the rope light is in `all` once and wall/ceiling are exclusive.
+    for k in DeviceKind::all() {
+        assert!(!(k.is_wall_mounted() && k.is_ceiling()), "{k:?}");
+    }
+    assert_eq!(DeviceKind::all().len(), 23);
+}
+
+#[test]
+fn a_kind_can_change_within_its_family() {
+    use DeviceKind as K;
+    let outlets = K::Outlet110.family();
+    assert!(outlets.contains(&K::Outlet110Quad) && outlets.contains(&K::Gfci));
+    assert!(!outlets.contains(&K::Switch));
+    let switches = K::Switch.family();
+    assert_eq!(switches, [K::Switch, K::Switch3Way, K::Switch4Way, K::SwitchDimmer]);
+    // A rope light keeps its own length.
+    assert_eq!(
+        K::RopeLight { length: 30.0 }.family(),
+        [K::RopeLight { length: 30.0 }]
+    );
+    assert!(K::PendantLight.family().contains(&K::RecessedCan));
+    assert!(!K::PendantLight.family().contains(&K::OutletFloor));
+}
+
+// ----- connections: 3-way pairs and the bend handle -----
+
+#[test]
+fn a_three_way_pair_controls_the_light_from_both_ends() {
+    let mut layer = ElectricalLayer::default();
+    let a = layer.add(place_free(DeviceKind::Switch3Way, Point::new(0.0, 0.0)));
+    let b = layer.add(place_free(DeviceKind::Switch3Way, Point::new(200.0, 0.0)));
+    let light = layer.add(place_free(DeviceKind::CeilingLight, Point::new(100.0, 80.0)));
+    assert!(connect(&mut layer, a, light));
+    assert!(connect(&mut layer, a, b), "the traveler between the pair");
+    assert!(!connect(&mut layer, b, a), "already wired");
+    // Both switches control the light; there are only two arcs.
+    let mut by = layer.device(light).unwrap().switched_by.clone();
+    by.sort();
+    assert_eq!(by, [a, b]);
+    assert_eq!(layer.connections.len(), 2);
+    assert_eq!(layer.switch_group(b), [b, a]);
+    assert_eq!(layer.loads_of(b), [light]);
+    // A plain switch cannot be wired to another switch.
+    let s1 = layer.add(place_free(DeviceKind::Switch, Point::new(0.0, 50.0)));
+    let s2 = layer.add(place_free(DeviceKind::Switch, Point::new(10.0, 50.0)));
+    assert!(!connect(&mut layer, s1, s2));
+    assert!(!connect(&mut layer, s1, a));
+
+    // Wiring the pair after the light also works, and disconnect undoes it.
+    let mut other = ElectricalLayer::default();
+    let a = other.add(place_free(DeviceKind::Switch3Way, Point::ZERO));
+    let b = other.add(place_free(DeviceKind::Switch4Way, Point::new(100.0, 0.0)));
+    let c = other.add(place_free(DeviceKind::Switch3Way, Point::new(200.0, 0.0)));
+    let l = other.add(place_free(DeviceKind::RecessedCan, Point::new(100.0, 60.0)));
+    assert!(connect(&mut other, a, b) && connect(&mut other, b, c));
+    assert!(connect(&mut other, c, l));
+    let mut by = other.device(l).unwrap().switched_by.clone();
+    by.sort();
+    assert_eq!(by, [a, b, c], "a 3-4-3 run: every switch controls the can");
+    assert!(disconnect(&mut other, c, l));
+    assert!(other.device(l).unwrap().switched_by.is_empty());
+    assert!(!disconnect(&mut other, c, l));
+}
+
+#[test]
+fn bending_a_connection_moves_the_arc_midpoint() {
+    let (mut layer, sw, light) = layer_with_switch_and_light();
+    assert!(connect(&mut layer, sw, light));
+    let before = layer.arc_midpoint(&layer.connections[0]).unwrap();
+    let a = layer.device(sw).unwrap().position;
+    let b = layer.device(light).unwrap().position;
+    let mid = Point::lerp(a, b, 0.5);
+    let n = b.sub(a).perp().normalized();
+    let target = mid + n * 30.0;
+    assert!(layer.bend_connection(0, target));
+    let after = layer.arc_midpoint(&layer.connections[0]).unwrap();
+    assert!(after.dist(target) < 1e-9);
+    assert_ne!(before, after);
+    assert_eq!(layer.connection_handle_at(after + Point::new(1.0, 1.0), 3.0), Some(0));
+    assert_eq!(layer.connection_handle_at(Point::new(-500.0, 500.0), 3.0), None);
+    // The stored arc really passes through the handle.
+    let Some(Stroke::Arc { center, radius, .. }) = layer.connection_arc(&layer.connections[0]) else {
+        panic!("a bent connection is an arc");
+    };
+    assert!((center.dist(after) - radius).abs() < 1e-6);
+    // Bending to the chord straightens it; a bad index is refused.
+    assert!(layer.bend_connection(0, mid));
+    assert!(matches!(layer.connection_arc(&layer.connections[0]), Some(Stroke::Line { .. })));
+    assert!(!layer.bend_connection(5, mid));
+}
+
+// ----- Auto Place Outlets on a 40' x 30' shell (NEC spacing) -----
+
+/// Walls of a 40' x 30' shell (S, E, N, W), a 36" door near the south-west
+/// corner and a 72" window on the east wall.
+fn shell_40x30() -> (Floor, Vec<Room>) {
+    let mut floor = Floor::new("1st Floor", 0.0);
+    floor.walls = vec![
+        wall(1, (0.0, 0.0), (480.0, 0.0)),
+        wall(2, (480.0, 0.0), (480.0, 360.0)),
+        wall(3, (480.0, 360.0), (0.0, 360.0)),
+        wall(4, (0.0, 360.0), (0.0, 0.0)),
+    ];
+    for w in &mut floor.walls {
+        w.thickness = 6.5;
+    }
+    floor.openings = vec![
+        Opening::default_door(10, 1, 100.0),
+        Opening::default_window(11, 2, 180.0),
+    ];
+    let rooms = detect_rooms(&floor.walls, 0.5);
+    assert_eq!(rooms.len(), 1);
+    (floor, rooms)
+}
+
+#[test]
+fn outlets_on_the_40x30_shell_follow_the_nec_rules() {
+    let (floor, rooms) = shell_40x30();
+    let label = rooms[0].label.clone();
+    let opts = AutoOutletOptions::default();
+    let devices = auto_place_outlets(&floor, &rooms, &[], &opts);
+    // 12' rule: along every wall space, no gap over 12' between outlets and
+    // no point over 6' from one at the space ends.
+    for w in &floor.walls {
+        let door = floor.openings_on(w.id).find(|o| o.kind == plan_core::OpeningKind::Door);
+        let half = 3.25;
+        let spaces = match door {
+            Some(o) => vec![(half, o.start_offset()), (o.end_offset(), w.length() - half)],
+            None => vec![(half, w.length() - half)],
+        };
+        let here: Vec<f64> = devices
+            .iter()
+            .filter(|d| d.wall_id == Some(w.id))
+            .map(|d| offset_on(&floor, d))
+            .collect();
+        for (a, b) in spaces {
+            if b - a < opts.min_wall_segment {
+                continue;
+            }
+            let mut stops = vec![a];
+            let mut inside: Vec<f64> = here.iter().copied().filter(|t| *t >= a && *t <= b).collect();
+            inside.sort_by(f64::total_cmp);
+            stops.extend(inside);
+            stops.push(b);
+            assert!(stops.len() > 2, "wall {} space {a}..{b}", w.id);
+            for (i, pair) in stops.windows(2).enumerate() {
+                let limit = if i == 0 || i == stops.len() - 2 { 72.0 } else { 144.0 };
+                assert!(pair[1] - pair[0] <= limit + 1e-6, "wall {} gap {pair:?}", w.id);
+            }
+        }
+    }
+    // Outlets stay a hand clear of the door jambs.
+    for d in devices.iter().filter(|d| d.wall_id == Some(1)) {
+        let t = offset_on(&floor, d);
+        assert!((t - 82.0).abs() >= 6.0 && (t - 118.0).abs() >= 6.0, "at {t}");
+    }
+
+    // Kitchen: 42" GFCI counter outlets at most 4' apart on every wall.
+    let kitchen = auto_place_outlets(&floor, &rooms, &[(label.clone(), RoomFunction::Kitchen)], &opts);
+    assert!(kitchen.iter().all(|d| d.kind == DeviceKind::Gfci && d.height == 42.0));
+    for w in &floor.walls {
+        let mut here: Vec<f64> = kitchen
+            .iter()
+            .filter(|d| d.wall_id == Some(w.id))
+            .map(|d| offset_on(&floor, d))
+            .collect();
+        here.sort_by(f64::total_cmp);
+        assert!(here.len() >= 3, "wall {} has {here:?}", w.id);
+        for pair in here.windows(2) {
+            let across_door = w.id == 1 && pair[0] < 82.0 && pair[1] > 118.0;
+            assert!(across_door || pair[1] - pair[0] <= 48.0 + 1e-6, "{pair:?}");
+        }
+    }
+    // More outlets than the 12' rule gives.
+    assert!(kitchen.len() > devices.len());
+
+    // Bath: GFCI at the usual 12".
+    let bath = auto_place_outlets(&floor, &rooms, &[(label, RoomFunction::Bath)], &opts);
+    assert!(bath.iter().all(|d| d.kind == DeviceKind::Gfci && d.height == 12.0));
+    assert_eq!(bath.len(), devices.len());
 }

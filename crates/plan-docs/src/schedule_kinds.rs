@@ -31,7 +31,6 @@ use crate::schedule::{
 };
 use crate::Schedule as Table;
 use plan_cabinets::{auto_label, Cabinet, CabinetKind};
-use plan_core::geometry::point_in_polygon;
 use plan_core::schedules::{
     FloorScope, Numbering, Schedule, ScheduleKind, ScheduleLayer, SortSpec,
 };
@@ -128,6 +127,13 @@ fn by_position(v: &mut [Entry]) {
     v.sort_by_key(|e| (e.floor, reading_key(e.position), e.id));
 }
 
+/// The label the plan shows for an opening that no schedule numbers: its
+/// size (`3068`) or its own text.
+fn opening_label(o: &plan_core::Opening) -> String {
+    o.plan_label(&plan_core::OpeningLabelDefaults::default(), None)
+        .unwrap_or_else(|| o.label())
+}
+
 fn door_window(project: &Project, kind: ScheduleKind) -> Vec<Entry> {
     let ok = if kind == ScheduleKind::Door {
         OpeningKind::Door
@@ -162,6 +168,8 @@ fn door_window(project: &Project, kind: ScheduleKind) -> Vec<Entry> {
                         }
                         .to_string(),
                     ),
+                    ("style", o.type_name().to_string()),
+                    ("label", opening_label(o)),
                 ]
             } else {
                 vec![
@@ -173,6 +181,8 @@ fn door_window(project: &Project, kind: ScheduleKind) -> Vec<Entry> {
                     ("type", kind_label(w.kind).to_string()),
                     ("wall", wall),
                     ("floor", f.name.clone()),
+                    ("style", o.type_name().to_string()),
+                    ("label", opening_label(o)),
                 ]
             };
             out.push(e);
@@ -217,10 +227,7 @@ fn rooms(project: &Project, active: ActiveRooms) -> Vec<Entry> {
             }
         };
         for r in list {
-            let spec = f
-                .room_names
-                .iter()
-                .find(|n| point_in_polygon(n.anchor, &r.polygon));
+            let spec = r.name_entry(&f.room_names);
             let name = spec.map_or_else(|| r.label.clone(), |n| n.name.clone());
             let ceiling = spec
                 .and_then(|n| n.ceiling_height)
@@ -436,7 +443,11 @@ fn cabinets(project: &Project) -> Vec<Entry> {
             e.cells = vec![
                 ("mark", String::new()),
                 ("label", label),
-                ("type", cabinet_kind_name(c.kind)),
+                (
+                    "type",
+                    c.preset
+                        .map_or_else(|| cabinet_kind_name(c.kind), |p| p.name().to_string()),
+                ),
                 ("width", fmt_ft_in(c.width)),
                 ("depth", fmt_ft_in(c.depth)),
                 ("height", fmt_ft_in(c.height)),
@@ -446,6 +457,10 @@ fn cabinets(project: &Project) -> Vec<Entry> {
                     if c.countertop.is_some() { "Yes" } else { "No" }.to_string(),
                 ),
                 ("floor", f.name.clone()),
+                ("door_style", c.door_style.name.clone()),
+                ("drawer_style", c.drawer_style.name.clone()),
+                ("finish", c.finish_name()),
+                ("hardware", c.hardware_name()),
             ];
             out.push(e);
         }
@@ -471,6 +486,7 @@ fn electrical(project: &Project) -> Vec<Entry> {
             e.cells = vec![
                 ("mark", String::new()),
                 ("type", d.kind.name().to_string()),
+                ("count", "1".to_string()),
                 ("label", d.label.clone()),
                 ("height", fmt_ft_in(d.height)),
                 (
@@ -526,12 +542,22 @@ fn framing(project: &Project) -> Vec<Entry> {
             let mut e = new_entry(fi, 0, Point::ZERO, ScheduleKind::Framing);
             e.name = format!("{kind} {size}");
             e.size = format!("{size} x {}", fmt_ft_in(length));
+            // Nominal "2x6" gives the board feet: T x W x length / 144 per piece.
+            let board = size
+                .split_once('x')
+                .and_then(|(t, w)| Some(t.parse::<f64>().ok()? * w.parse::<f64>().ok()?))
+                .map_or(0.0, |tw| tw * length / 144.0 * f64::from(qty));
             e.cells = vec![
                 ("mark", String::new()),
                 ("type", kind),
                 ("size", size),
                 ("length", fmt_ft_in(length)),
                 ("qty", qty.to_string()),
+                (
+                    "linear",
+                    format!("{:.1}", length * f64::from(qty) / 12.0),
+                ),
+                ("board_feet", format!("{board:.1}")),
                 ("floor", f.name.clone()),
             ];
             out.push(e);
@@ -913,7 +939,15 @@ pub struct RowTarget {
 }
 
 /// Fields whose cells are numbers a Totals line adds up.
-const SUMMED: [&str; 4] = ["area", "standard_area", "perimeter", "qty"];
+const SUMMED: [&str; 7] = [
+    "area",
+    "standard_area",
+    "perimeter",
+    "qty",
+    "count",
+    "linear",
+    "board_feet",
+];
 
 fn visible_columns(def: &Schedule) -> Vec<&plan_core::schedules::ColumnSpec> {
     def.visible_columns()
@@ -963,6 +997,13 @@ fn display_rows(
                     if c.field == "mark" && members.len() > 1 {
                         let last = members[members.len() - 1].cell("mark");
                         format!("{first}-{last} ({})", members.len())
+                    } else if c.field == "count" {
+                        // A grouped row counts every device behind it.
+                        members
+                            .iter()
+                            .filter_map(|m| m.cell("count").trim().parse::<u32>().ok())
+                            .sum::<u32>()
+                            .to_string()
                     } else if same || c.field == def.group_by {
                         first.to_string()
                     } else {
@@ -1075,6 +1116,8 @@ mod tests {
             circuit: Some(3),
             label: "A".into(),
             switched_by: Vec::new(),
+            finish: String::new(),
+            hide_label: false,
         };
         d.id = 1;
         layer.add(d);
@@ -1258,6 +1301,44 @@ mod tests {
     }
 
     #[test]
+    fn style_and_plan_label_columns_name_the_flavor_and_the_size() {
+        let mut p = house();
+        let id = p.floors[0]
+            .openings
+            .iter()
+            .find(|o| o.kind == OpeningKind::Door)
+            .unwrap()
+            .id;
+        let o = p.floors[0].openings.iter_mut().find(|o| o.id == id).unwrap();
+        o.style = plan_core::OpeningStyle::Sliding;
+        o.width = 72.0;
+        o.height = 80.0;
+        let mut d = def(ScheduleKind::Door);
+        for field in ["style", "label"] {
+            let i = d.columns.iter().position(|c| c.field == field).unwrap();
+            d.set_column_visible(i, true);
+        }
+        let t = table(&p, &d, 0, None);
+        let (si, li) = (
+            t.columns.iter().position(|c| c == "Style").unwrap(),
+            t.columns.iter().position(|c| c == "Plan Label").unwrap(),
+        );
+        let row = t
+            .rows
+            .iter()
+            .find(|r| r[si] == "Sliding Door")
+            .expect("the sliding door is listed");
+        assert_eq!(row[li], "6068");
+        // Hidden by default, so existing schedules keep their columns.
+        assert_eq!(table(&p, &def(ScheduleKind::Door), 0, None).columns.len(), 7);
+        // The window schedule has them too.
+        assert!(def(ScheduleKind::Window)
+            .columns
+            .iter()
+            .any(|c| c.field == "style" && !c.visible));
+    }
+
+    #[test]
     fn hidden_columns_are_left_out_and_order_follows_the_list() {
         let p = house();
         let mut d = def(ScheduleKind::Window);
@@ -1292,6 +1373,53 @@ mod tests {
         assert!(csv.contains("C-01,B24,Base,"));
         let csv = table(&p, &def(ScheduleKind::Door), 0, None).to_csv();
         assert!(csv.starts_with("Mark,Floor,Width,Height,Type,Wall,Swing\n"));
+    }
+
+    #[test]
+    fn cabinet_schedule_columns_for_size_door_style_finish_and_hardware() {
+        let mut p = rich();
+        let mut cabs = p.floors[0].cabinets_as::<Cabinet>().unwrap();
+        cabs[0].door_style.name = "Shaker Door".into();
+        cabs[0].door_style.handle = plan_cabinets::HandleStyle::Pull;
+        cabs[0].drawer_style.handle = plan_cabinets::HandleStyle::Cup;
+        cabs[0].materials.door = plan_cabinets::MaterialChoice::Painted;
+        let mut vanity = Cabinet::vanity(30.0);
+        vanity.id = p.alloc_id();
+        vanity.position = Point::new(80.0, 20.0);
+        cabs.push(vanity);
+        p.floors[0].set_cabinets(&cabs).unwrap();
+        let mut d = def(ScheduleKind::Cabinet);
+        let ids = [
+            "width",
+            "height",
+            "depth",
+            "door_style",
+            "drawer_style",
+            "finish",
+            "hardware",
+        ];
+        for c in d.columns.iter_mut() {
+            c.visible = ids.contains(&c.field.as_str()) || c.field == "type";
+        }
+        let t = table(&p, &d, 0, None);
+        let csv = t.to_csv();
+        let header = csv.lines().next().unwrap();
+        for h in [
+            "Width",
+            "Depth",
+            "Height",
+            "Door Style",
+            "Drawer Style",
+            "Finish",
+            "Hardware",
+        ] {
+            assert!(header.contains(h), "{header}");
+        }
+        assert!(csv.contains("Shaker Door"), "{csv}");
+        assert!(csv.contains("Painted"), "{csv}");
+        assert!(csv.contains("Pull / Cup Pull"), "{csv}");
+        assert!(csv.contains("Vanity Cabinet"), "{csv}");
+        assert!(csv.contains("Knob"), "{csv}");
     }
 
     #[test]

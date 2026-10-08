@@ -8,6 +8,17 @@ Dependency-free CPU path tracer for Chief's "Physically Based" / Ray Trace still
 - Shading: Lambert + GGX coat per material, thin-sheet glass (IOR 1.5 Fresnel, tint from colour alpha),
   next-event estimation for the sun disc (soft shadows) and point lights, sky by cosine sampling,
   Russian roulette after 2 bounces, firefly clamp.
+- Lights: sun disc, spherical point lights and rectangular `AreaLight` panels, all sampled directly (next-event
+  estimation; `RenderSettings::next_event = false` leaves area lights to chance for comparison). Metals have no
+  diffuse lobe and reflect in their own colour (`plan_materials::scene_surface`).
+- Sky: the two-colour gradient or `SkyModel::Preetham { turbidity }`, an analytic clear sky that brightens toward
+  the sun and horizon and changes colour with sun height.
+- Camera: thin lens with `aperture` and `focus_dist` (0 focuses on the image-centre surface).
+- Denoise (`RenderSettings::denoise`): a joint bilateral filter guided by the first hit's albedo, normal and depth,
+  applied to radiance divided by albedo so texture detail and geometry edges survive.
+- Progress: `render_progressive` can start with a blocky one-sample-per-4x4 preview (`preview_blocks`);
+  `RenderSettings::scaled(2)` / `scaled(4)` give the larger size for Save Image (capped at 8192 px a side, 24 MP).
+  `RenderSettings` and `SkyModel` serialize with serde.
 - Techniques: `PhysicallyBased`, `Clay` (grey diffuse, clear glass), `Ambient` (occlusion only).
 - Output: `Image { rgba, hdr }`, ACES / Reinhard / Linear tone map, optional bilateral denoise,
   `encode_png` / `write_png` (own PNG writer: stored zlib blocks, Adler-32, CRC-32) and `render_to_file(project, cam, settings, path)`.

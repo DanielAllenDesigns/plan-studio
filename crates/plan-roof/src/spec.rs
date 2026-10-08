@@ -4,6 +4,7 @@
 
 use crate::geom::{self, V3};
 use crate::{build_roof, EdgeKind, EdgeRoof, Roof, RoofPlane};
+use plan_core::geometry::polygon_area;
 use plan_core::Point;
 use serde::{Deserialize, Serialize};
 
@@ -150,6 +151,57 @@ pub fn build_roof_with_specs(
     roof
 }
 
+/// The eave-tip elevation that seats a roof of `thickness` on the top plate
+/// (Roof Defaults: baseline at top plate): the underside of the structure
+/// meets `plate` on the footprint line, so a gable wall rises exactly to the
+/// plate at its corners (no gap, no overlap) instead of standing 6" proud.
+///
+/// The reference edge is the first plain hip edge (the rake of a gable end
+/// and a high shed side do not set it); a roof with none keeps `plate`.
+/// `overhang` is measured from the footprint line like
+/// [`EdgeRoofSpec::overhang`].
+pub fn plate_baseline(specs: &[EdgeRoofSpec], plate: f64, thickness: f64) -> f64 {
+    let Some(edge) = specs
+        .iter()
+        .find(|e| !(e.gable || e.full_gable_wall || e.high_shed_gable))
+    else {
+        return plate;
+    };
+    let k = edge.pitch.max(0.0) / 12.0;
+    plate + thickness.max(0.0) * (1.0 + k * k).sqrt() - edge.overhang * k
+}
+
+/// [`build_roof_with_specs`] with the eave line chosen so the structure sits
+/// on the top plate at the wall ([`plate_baseline`]).
+pub fn build_roof_at_plate(
+    footprint: &[Point],
+    specs: &[EdgeRoofSpec],
+    plate: f64,
+    thickness: f64,
+) -> Roof {
+    build_roof_with_specs(footprint, specs, plate_baseline(specs, plate, thickness))
+}
+
+/// A level roof plane over `outline` (a flat roof, the Flat Roof room
+/// directive): the vertices at `height`, counter-clockwise seen from above,
+/// the first edge the baseline. `None` for fewer than three points or no
+/// area.
+pub fn flat_roof_plane(outline: &[Point], height: f64) -> Option<RoofPlane> {
+    if outline.len() < 3 || polygon_area(outline).abs() < 1e-6 {
+        return None;
+    }
+    let mut ring = outline.to_vec();
+    if polygon_area(&ring) < 0.0 {
+        ring.reverse();
+    }
+    Some(RoofPlane {
+        polygon3d: ring.iter().map(|p| [p.x, height, -p.y]).collect(),
+        pitch_in_12: 0.0,
+        baseline: (ring[0], ring[1]),
+        source_edge: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +325,48 @@ mod tests {
         // The other side is untouched.
         let north = roof.planes.iter().find(|p| p.source_edge == 2).unwrap();
         assert!((north.polygon3d[0][1] - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn baseline_at_plate_seats_the_underside_on_the_plate_at_the_wall() {
+        // 16" overhang from the footprint, 8:12, a 6" structure.
+        let specs = vec![EdgeRoofSpec::default(); 4];
+        let plate = 96.0;
+        let roof = build_roof_at_plate(&rect(), &specs, plate, 6.0);
+        let south = roof.planes.iter().find(|p| p.source_edge == 0).unwrap();
+        // The wall line (footprint edge, plan y = 0) is 16" from the eave tip.
+        let surface = south.height_at(Point::new(240.0, 0.0)).unwrap();
+        let underside = south.underside_at(Point::new(240.0, 0.0), 6.0).unwrap();
+        assert!((underside - plate).abs() < 1e-6, "underside {underside}");
+        assert!(surface > plate);
+        // Without the rule the tip sits at the plate and the wall line is
+        // well above it.
+        let tip = build_roof_with_specs(&rect(), &specs, plate);
+        let s0 = tip.planes.iter().find(|p| p.source_edge == 0).unwrap();
+        assert!(s0.underside_at(Point::new(240.0, 0.0), 6.0).unwrap() > plate + 1.0);
+        // A gable end or high shed does not set the reference.
+        let mut gable = specs.clone();
+        gable[0].gable = true;
+        assert_eq!(
+            plate_baseline(&gable, plate, 6.0),
+            plate_baseline(&specs[1..], plate, 6.0)
+        );
+        assert_eq!(plate_baseline(&[], plate, 6.0), plate);
+    }
+
+    #[test]
+    fn a_flat_roof_plane_is_level_and_faces_up() {
+        let cw = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 100.0),
+            Point::new(200.0, 100.0),
+            Point::new(200.0, 0.0),
+        ];
+        let plane = flat_roof_plane(&cw, 110.0).unwrap();
+        assert!(plane.polygon3d.iter().all(|p| (p[1] - 110.0).abs() < 1e-9));
+        assert!(plane.normal()[1] > 0.99, "counter-clockwise, facing up");
+        assert!((plane.projected_area() - 20_000.0).abs() < 1e-6);
+        assert!((plane.height_at(Point::new(50.0, 50.0)).unwrap() - 110.0).abs() < 1e-9);
+        assert!(flat_roof_plane(&cw[..2], 0.0).is_none());
     }
 }

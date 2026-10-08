@@ -1,5 +1,7 @@
 [Desktop Entry]
-# Install: copy plan-studio to ~/.local/bin and this file to ~/.local/share/applications
+# Install: copy plan-studio to ~/.local/bin and this file to ~/.local/share/applications.
+# To open .psplan files by double-click also copy plan-studio-psplan.xml to
+# ~/.local/share/mime/packages and run: update-mime-database ~/.local/share/mime
 Type=Application
 Version=1.0
 Name=Plan Studio
@@ -10,3 +12,4 @@ Terminal=false
 Categories=Graphics;2DGraphics;Engineering;
 Keywords=floor plan;architecture;home design;CAD;
 StartupWMClass=plan-studio
+MimeType=application/x-plan-studio-plan;

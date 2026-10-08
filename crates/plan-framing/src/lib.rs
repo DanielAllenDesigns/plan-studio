@@ -31,11 +31,11 @@ mod takeoff;
 pub mod truss;
 mod wall;
 
-pub use defaults::FramingDefaults;
+pub use defaults::{default_header_table, FramingDefaults, HeaderRow};
 pub use detail::{wall_detail, Stroke};
-pub use floor::{frame_floor, JoistDirection};
+pub use floor::{frame_floor, frame_floor_holes, JoistDirection};
 pub use layout::{
-    frame_floor_directed, frame_wall_with_marker, layout_trusses, BearingLine,
+    frame_floor_directed, frame_wall_with_marker, frame_wall_with_marker_joined, layout_trusses, BearingLine,
     JoistDirection as JoistDirectionLine, ReferenceMarker, RoofTrussDirection, TrussBase,
 };
 pub use lumber::{
@@ -46,13 +46,16 @@ pub use manual::{
     FramingMaterial, FramingMember, LumberSize, MaterialList, MaterialRow,
     MemberKind as ManualMemberKind, OrientedBox,
 };
-pub use member::{Member, MemberKind, Transform3, Vec3};
-pub use roof::{
-    frame_roof, roof_framing_takeoff, roof_plan_symbols, truss_id, OverhangCut, RoofFramingDefaults,
+pub use member::{
+    Birdsmouth, Member, MemberCuts, MemberKind, TailCut, Transform3, Vec3,
 };
-pub use takeoff::{takeoff, Takeoff};
+pub use roof::{
+    frame_roof, frame_roof_eaves, roof_framing_takeoff, roof_plan_symbols, truss_id, EaveSpec,
+    OverhangCut, RoofFramingDefaults,
+};
+pub use takeoff::{takeoff, CutLine, Takeoff};
 pub use truss::{Truss, TrussEnvelope, TrussMember2, TrussRole, TrussSpec, TrussType};
-pub use wall::frame_wall;
+pub use wall::{frame_wall, frame_wall_joined, Tee, WallJoints};
 
 #[cfg(test)]
 mod tests {

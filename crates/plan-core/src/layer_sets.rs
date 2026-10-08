@@ -10,6 +10,7 @@ use crate::geometry::Point;
 use crate::layers::{LayerSet, LineStyle};
 use crate::model::Project;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Name of the layer set a new project starts with.
 pub const DEFAULT_LAYER_SET_NAME: &str = "Default Set";
@@ -55,12 +56,31 @@ impl LayerState {
     }
 }
 
+/// One change to a layer's look inside a layer set: a cell of the Layer
+/// Display Options table.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayerEdit {
+    Display(bool),
+    Locked(bool),
+    /// The Ref box: the layer's objects show on a reference floor.
+    Reference(bool),
+    Color([u8; 3]),
+    /// Hundredths of a millimetre.
+    LineWeight(u32),
+    LineStyle(LineStyle),
+    /// Text style name; empty = the default style.
+    TextStyle(String),
+}
+
 /// A named layer set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayerSetDef {
     pub name: String,
     #[serde(default)]
     pub states: Vec<LayerState>,
+    /// Layers whose Ref box this set sets (the rest inherit the layer).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reference: BTreeMap<String, bool>,
 }
 
 impl LayerSetDef {
@@ -68,7 +88,37 @@ impl LayerSetDef {
         Self {
             name: name.into(),
             states: Vec::new(),
+            reference: BTreeMap::new(),
         }
+    }
+
+    /// Applies one table edit to `layer` in this set.
+    pub fn apply(&mut self, layer: &str, edit: &LayerEdit) {
+        if let LayerEdit::Reference(on) = edit {
+            self.reference.insert(layer.to_string(), *on);
+            return;
+        }
+        let st = self.ensure_state(layer);
+        match edit {
+            LayerEdit::Display(on) => st.display = *on,
+            LayerEdit::Locked(on) => st.locked = *on,
+            LayerEdit::Color(c) => st.color = Some(*c),
+            LayerEdit::LineWeight(w) => st.line_weight = Some(*w),
+            LayerEdit::LineStyle(ls) => st.line_style = Some(*ls),
+            LayerEdit::TextStyle(t) => st.text_style = Some(t.clone()),
+            LayerEdit::Reference(_) => {}
+        }
+    }
+
+    /// Puts `layer` back to the base layer's look: shown and locked as the
+    /// base says, no colour, weight, style or reference override.
+    pub fn reset_layer(&mut self, layer: &str, base: &LayerSet) {
+        self.reference.remove(layer);
+        let (display, locked) = base
+            .get(layer)
+            .map_or((true, false), |l| (l.display, l.locked));
+        let st = self.ensure_state(layer);
+        *st = LayerState::new(layer, display, locked);
     }
 
     pub fn state(&self, layer: &str) -> Option<&LayerState> {
@@ -117,6 +167,7 @@ impl LayerSets {
                     .iter()
                     .map(|l| LayerState::new(l.name.clone(), l.display, l.locked))
                     .collect(),
+                reference: BTreeMap::new(),
             }],
             active: DEFAULT_LAYER_SET_NAME.into(),
         }
@@ -206,7 +257,160 @@ impl LayerSets {
                 l.text_style = t.clone();
             }
         }
+        for (name, on) in &set.reference {
+            if let Some(l) = out.get_mut(name) {
+                l.reference = *on;
+            }
+        }
         out
+    }
+
+    /// Does set `name` change how any layer looks from the base layers? With
+    /// `flags` off, display and lock do not count (the plan reads them from
+    /// the base layers while the plain "Default Set" is shown).
+    pub fn set_differs_from(&self, name: &str, base: &LayerSet, flags: bool) -> bool {
+        let Some(set) = self.get(name) else {
+            return false;
+        };
+        let reference = set
+            .reference
+            .iter()
+            .any(|(n, on)| base.get(n).is_some_and(|l| l.reference != *on));
+        reference
+            || set.states.iter().any(|st| {
+                let Some(l) = base.get(&st.layer) else {
+                    return false;
+                };
+                (flags && (l.display != st.display || l.locked != st.locked))
+                    || st.color.is_some_and(|c| c != l.color)
+                    || st.line_weight.is_some_and(|w| w != l.line_weight)
+                    || st.line_style.is_some_and(|s| s != l.line_style)
+                    || st.text_style.as_ref().is_some_and(|t| *t != l.text_style)
+            })
+    }
+
+    /// Applies `edit` to each of `layers`: in the set named `set_name`, or in
+    /// every set when `all_sets` is on ("Modify All Layer Sets"). Returns how
+    /// many (set, layer) cells were written.
+    pub fn edit_layers(
+        &mut self,
+        set_name: &str,
+        layers: &[String],
+        edit: &LayerEdit,
+        all_sets: bool,
+    ) -> usize {
+        let mut n = 0;
+        for set in &mut self.sets {
+            if !all_sets && set.name != set_name {
+                continue;
+            }
+            for l in layers {
+                set.apply(l, edit);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Resets `layers` of the set named `set` (every set when `all_sets`) to
+    /// the base layers' look. Returns how many cells were reset.
+    pub fn reset_layers(
+        &mut self,
+        layers: &[String],
+        base: &LayerSet,
+        set: &str,
+        all_sets: bool,
+    ) -> usize {
+        let mut n = 0;
+        for def in &mut self.sets {
+            if !all_sets && def.name != set {
+                continue;
+            }
+            for l in layers {
+                def.reset_layer(l, base);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Copies how `layers` look in set `from` into each set of `to` ("Copy
+    /// to other sets"). Returns how many cells were written; a missing `from`
+    /// writes none.
+    pub fn copy_layers_to(&mut self, from: &str, layers: &[String], to: &[String]) -> usize {
+        let Some(src) = self.get(from).cloned() else {
+            return 0;
+        };
+        let mut n = 0;
+        for dst in &mut self.sets {
+            if dst.name == from || !to.contains(&dst.name) {
+                continue;
+            }
+            for l in layers {
+                let st = src
+                    .state(l)
+                    .cloned()
+                    .unwrap_or_else(|| LayerState::new(l.clone(), true, false));
+                match dst.state_mut(l) {
+                    Some(d) => *d = st,
+                    None => dst.states.push(st),
+                }
+                match src.reference.get(l) {
+                    Some(r) => {
+                        dst.reference.insert(l.clone(), *r);
+                    }
+                    None => {
+                        dst.reference.remove(l);
+                    }
+                }
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// A name for a copy of a set: `name` itself when free, else
+    /// "name (2)", "name (3)", ...
+    pub fn free_name(&self, name: &str) -> String {
+        let base = if name.is_empty() { "Layer Set" } else { name };
+        if self.get(base).is_none() {
+            return base.to_string();
+        }
+        (2..)
+            .map(|n| format!("{base} ({n})"))
+            .find(|c| self.get(c).is_none())
+            .expect("an unused name exists")
+    }
+
+    /// Brings the sets named `names` of another plan into this one (Layer Set
+    /// Management > Import). Layers the other plan has and this one lacks are
+    /// added to `base` first. A set whose name is taken arrives as "name (2)".
+    /// Returns the names the sets were given here.
+    pub fn import_sets(
+        &mut self,
+        other: &LayerSets,
+        other_base: &LayerSet,
+        names: &[String],
+        base: &mut LayerSet,
+    ) -> Vec<String> {
+        let mut added = Vec::new();
+        for name in names {
+            let Some(src) = other.get(name) else {
+                continue;
+            };
+            for st in &src.states {
+                if base.get(&st.layer).is_none() {
+                    if let Some(l) = other_base.get(&st.layer) {
+                        base.add(l.clone());
+                    }
+                }
+            }
+            let mut def = src.clone();
+            def.name = self.free_name(name);
+            added.push(def.name.clone());
+            self.sets.push(def);
+        }
+        added
     }
 
     /// [`effective_for`](Self::effective_for) the active set.
@@ -280,6 +484,13 @@ pub struct SavedPlanView {
     /// Saved view centre and zoom.
     #[serde(default)]
     pub camera: Option<(Point, f64)>,
+    /// Name of the dimension default set the view uses (Plan View
+    /// Specification); empty = leave the active one.
+    #[serde(default)]
+    pub dimension_defaults: String,
+    /// Name of the text style new text takes in this view; empty = leave it.
+    #[serde(default)]
+    pub text_style: String,
 }
 
 impl SavedPlanView {
@@ -291,6 +502,18 @@ impl SavedPlanView {
             reference_display: false,
             reference_floor: None,
             camera: None,
+            dimension_defaults: String::new(),
+            text_style: String::new(),
+        }
+    }
+
+    /// Stores what the view looks at right now: the floor, whether the
+    /// reference floor shows, and the camera centre and zoom (Save Plan View).
+    pub fn capture(&mut self, floor: usize, reference_display: bool, camera: Option<(Point, f64)>) {
+        self.floor = Some(floor);
+        self.reference_display = reference_display;
+        if camera.is_some() {
+            self.camera = camera;
         }
     }
 
@@ -302,6 +525,37 @@ impl SavedPlanView {
         )]
     }
 }
+
+/// The saved plan views of Daniel's working template and the layer set each
+/// one shows (`docs/daniel-template-inventory.md`).
+pub const TEMPLATE_PLAN_VIEWS: &[(&str, &str)] = &[
+    ("Presentation Plan View", "Presentation Layer Set"),
+    ("Working Plan View", "Working Layer Set"),
+    ("Electrical Plan View", "Electrical Layer Set"),
+    (
+        "Floor Plan View Dimensioned",
+        "Floor Plan Dimensioned Layer Set",
+    ),
+    ("Floor Plan View Shell", "Floor Plan Shell Layer Set"),
+    ("Foundation Plan View", "Foundation Layer Set"),
+    (
+        "Foundation Plan View Dimensioned",
+        "Foundation Plan Dimensioned Layer Set",
+    ),
+    ("Framing, Ceiling Plan View", "Framing, Ceiling Layer Set"),
+    ("Framing, Floor Plan View", "Framing, Floor Layer Set"),
+    ("Framing, Porch Plan View", "Framing Porch Layer Set"),
+    ("Framing, Porch Roof Plan View", "Framing Porch Layer Set"),
+    ("Framing, Roof Plan View", "Framing, Roof Layer Set"),
+    ("HVAC Plan View", "HVAC Layer Set"),
+    ("Kitchen and Bath Plan View", "Kitchen and Bath Layer Set"),
+    ("Plot Plan View", "Plot Plan Layer Set"),
+    ("Roof Plan View", "Roof Plan Layer Set"),
+    ("Square Footage View", "Square Footage Layer Set"),
+    ("Structural Steel Plan View", "Steel Framing Layer Set"),
+    ("WINDWOS/ DOORS PLAN VIEW", "Window Schedule Layer Set"),
+    ("DWG Export Plan View", "DWG Export Layer Set"),
+];
 
 pub(crate) fn default_active_plan_view() -> String {
     DEFAULT_PLAN_VIEW_NAME.into()
@@ -338,6 +592,176 @@ impl Project {
             }
             _ => self.layer_sets.effective(&self.layers),
         }
+    }
+
+    /// The layer set the plan shows and the Layer Display table edits: the
+    /// active plan view's set while it exists, else the active set.
+    pub fn shown_layer_set(&self) -> &str {
+        match self.current_plan_view() {
+            Some(v) if self.layer_sets.get(&v.layer_set).is_some() => &v.layer_set,
+            _ => &self.layer_sets.active,
+        }
+    }
+
+    /// Shows layer set `name`: makes it the active set and the set of the
+    /// active plan view. `false` if there is no such set.
+    pub fn show_layer_set(&mut self, name: &str) -> bool {
+        if !self.layer_sets.set_active(name) {
+            return false;
+        }
+        let active = self.active_plan_view.clone();
+        if let Some(v) = self.plan_views.iter_mut().find(|v| v.name == active) {
+            v.layer_set = name.to_string();
+        }
+        true
+    }
+
+    /// Edits `layers` in the shown layer set (every set when `all_sets`,
+    /// "Modify All Layer Sets"). While the plain "Default Set" is among the
+    /// edited sets, display and lock also follow into the base layers, which
+    /// the plan reads for them (and the camera layer reads always). Returns
+    /// how many cells were written.
+    pub fn edit_layers(&mut self, layers: &[String], edit: &LayerEdit, all_sets: bool) -> usize {
+        let shown = self.shown_layer_set().to_string();
+        let n = self.layer_sets.edit_layers(&shown, layers, edit, all_sets);
+        let base_follows = (all_sets || shown == DEFAULT_LAYER_SET_NAME)
+            && self.layer_sets.get(DEFAULT_LAYER_SET_NAME).is_some();
+        if base_follows {
+            for name in layers {
+                if let Some(l) = self.layers.get_mut(name) {
+                    match edit {
+                        LayerEdit::Display(on) => l.display = *on,
+                        LayerEdit::Locked(on) => l.locked = *on,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        n
+    }
+
+    /// Resets `layers` to the base layers' look in the shown set (every set
+    /// when `all_sets`).
+    pub fn reset_layers(&mut self, layers: &[String], all_sets: bool) -> usize {
+        let shown = self.shown_layer_set().to_string();
+        self.layer_sets
+            .reset_layers(layers, &self.layers, &shown, all_sets)
+    }
+
+    /// Does the shown layer set or plan view change how the layers look from
+    /// the base layers (so the plan reads [`view_layers`](Self::view_layers))?
+    /// The plain "Default Set" in the starting view reads the base layers for
+    /// display and lock and only needs the overlay when it sets a colour,
+    /// weight, style or Ref box.
+    pub fn layer_view_differs(&self) -> bool {
+        let shown = self.shown_layer_set();
+        if self.active_plan_view != DEFAULT_PLAN_VIEW_NAME
+            || self.layer_sets.active != DEFAULT_LAYER_SET_NAME
+            || shown != DEFAULT_LAYER_SET_NAME
+        {
+            return true;
+        }
+        self.layer_sets.set_differs_from(shown, &self.layers, false)
+    }
+
+    /// Adds a plan view if its name is new and non-empty. `false` otherwise.
+    pub fn add_plan_view(&mut self, view: SavedPlanView) -> bool {
+        if view.name.is_empty() || self.plan_view(&view.name).is_some() {
+            return false;
+        }
+        self.plan_views.push(view);
+        true
+    }
+
+    /// Renames a plan view (and the active pointer). `false` if `old` is
+    /// missing or `new_name` is empty or taken.
+    pub fn rename_plan_view(&mut self, old: &str, new_name: &str) -> bool {
+        if new_name.is_empty() || self.plan_view(new_name).is_some() {
+            return false;
+        }
+        let Some(v) = self.plan_views.iter_mut().find(|v| v.name == old) else {
+            return false;
+        };
+        v.name = new_name.to_string();
+        if self.active_plan_view == old {
+            self.active_plan_view = new_name.to_string();
+        }
+        true
+    }
+
+    /// Deletes a plan view. The last one stays; deleting the active one
+    /// activates the first remaining view. `false` if nothing was deleted.
+    pub fn delete_plan_view(&mut self, name: &str) -> bool {
+        if self.plan_views.len() <= 1 {
+            return false;
+        }
+        let Some(i) = self.plan_views.iter().position(|v| v.name == name) else {
+            return false;
+        };
+        self.plan_views.remove(i);
+        if self.active_plan_view == name {
+            let first = self.plan_views[0].name.clone();
+            self.activate_plan_view(&first);
+        }
+        true
+    }
+
+    /// Copies a plan view under a free name ("name (2)", ...). Returns the new
+    /// name.
+    pub fn duplicate_plan_view(&mut self, name: &str) -> Option<String> {
+        let src = self.plan_view(name)?.clone();
+        let mut n = 2;
+        let new_name = loop {
+            let candidate = format!("{name} ({n})");
+            if self.plan_view(&candidate).is_none() {
+                break candidate;
+            }
+            n += 1;
+        };
+        let mut copy = src;
+        copy.name = new_name.clone();
+        self.plan_views.push(copy);
+        Some(new_name)
+    }
+
+    /// Moves the plan view at index `from` so it sits at index `to` (drag to
+    /// reorder). `false` if either index is out of range or they are equal.
+    pub fn move_plan_view(&mut self, from: usize, to: usize) -> bool {
+        let n = self.plan_views.len();
+        if from >= n || to >= n || from == to {
+            return false;
+        }
+        let v = self.plan_views.remove(from);
+        self.plan_views.insert(to, v);
+        true
+    }
+
+    /// Adds Daniel's template plan views ([`TEMPLATE_PLAN_VIEWS`]) that the
+    /// plan lacks, each on its own layer set: the template's when the plan has
+    /// it, else a copy of the active set under that name. Returns how many
+    /// views were added.
+    pub fn seed_template_plan_views(&mut self) -> usize {
+        let mut added = 0;
+        for (view, set) in TEMPLATE_PLAN_VIEWS {
+            if self.plan_view(view).is_some() {
+                continue;
+            }
+            if self.layer_sets.get(set).is_none() {
+                let active = self.layer_sets.active.clone();
+                if !self.layer_sets.copy_set(&active, set) {
+                    continue;
+                }
+            }
+            self.plan_views.push(SavedPlanView::new(*view, *set));
+            added += 1;
+        }
+        added
+    }
+
+    /// Does the plan hold only the starting plan view (so the template views
+    /// are "absent")?
+    pub fn has_only_starting_plan_view(&self) -> bool {
+        self.plan_views.len() == 1 && self.plan_views[0].name == DEFAULT_PLAN_VIEW_NAME
     }
 
     /// Renames a layer set and repoints the plan views that used it.
@@ -547,5 +971,256 @@ mod tests {
         assert!(!d.state("Doors").unwrap().display);
         assert!(d.state("Text").unwrap().locked);
         assert!(d.state("Extra").is_some());
+    }
+
+    fn names(l: &[&str]) -> Vec<String> {
+        l.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn table_edits_stay_in_their_own_set() {
+        let mut p = Project::new("P");
+        assert!(p.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "Second"));
+        let walls = names(&["Walls, Normal"]);
+        // Edit the active (Default) set.
+        assert_eq!(
+            p.edit_layers(&walls, &LayerEdit::Color([9, 8, 7]), false),
+            1
+        );
+        p.edit_layers(&walls, &LayerEdit::LineWeight(70), false);
+        p.edit_layers(&walls, &LayerEdit::LineStyle(LineStyle::Dotted), false);
+        p.edit_layers(
+            &walls,
+            &LayerEdit::TextStyle("Room Label Style".into()),
+            false,
+        );
+        p.edit_layers(&walls, &LayerEdit::Reference(false), false);
+        let a = p
+            .layer_sets
+            .effective_for(DEFAULT_LAYER_SET_NAME, &p.layers);
+        let w = a.get("Walls, Normal").unwrap();
+        assert_eq!(w.color, [9, 8, 7]);
+        assert_eq!(w.line_weight, 70);
+        assert_eq!(w.line_style, LineStyle::Dotted);
+        assert_eq!(w.text_style, "Room Label Style");
+        assert!(!w.reference);
+        // The other set and the base layers are untouched.
+        let b = p.layer_sets.effective_for("Second", &p.layers);
+        assert_eq!(b.get("Walls, Normal"), p.layers.get("Walls, Normal"));
+        assert_eq!(p.layers.get("Walls, Normal").unwrap().color, [0, 0, 0]);
+        // Edit the other set once it is active: the first set keeps its look.
+        assert!(p.show_layer_set("Second"));
+        assert_eq!(p.current_plan_view().unwrap().layer_set, "Second");
+        p.edit_layers(&walls, &LayerEdit::Color([1, 1, 1]), false);
+        let a = p
+            .layer_sets
+            .effective_for(DEFAULT_LAYER_SET_NAME, &p.layers);
+        assert_eq!(a.get("Walls, Normal").unwrap().color, [9, 8, 7]);
+        let b = p.layer_sets.effective_for("Second", &p.layers);
+        assert_eq!(b.get("Walls, Normal").unwrap().color, [1, 1, 1]);
+        assert!(p
+            .layer_sets
+            .set_differs_from(p.shown_layer_set(), &p.layers, true));
+    }
+
+    #[test]
+    fn display_and_lock_edits_reach_the_base_layers_too() {
+        let mut p = Project::new("P");
+        p.edit_layers(&names(&["Doors"]), &LayerEdit::Display(false), false);
+        p.edit_layers(&names(&["Text"]), &LayerEdit::Locked(true), false);
+        assert!(!p.layers.is_visible("Doors") && p.layers.is_locked("Text"));
+        let eff = p.layer_sets.effective(&p.layers);
+        assert!(!eff.is_visible("Doors") && eff.is_locked("Text"));
+    }
+
+    #[test]
+    fn modify_all_layer_sets_changes_every_set() {
+        let mut p = Project::new("P");
+        p.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "B");
+        p.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "C");
+        let two = names(&["Doors", "Windows"]);
+        assert_eq!(p.edit_layers(&two, &LayerEdit::Display(false), true), 6);
+        for set in ["Default Set", "B", "C"] {
+            let eff = p.layer_sets.effective_for(set, &p.layers);
+            assert!(
+                !eff.is_visible("Doors") && !eff.is_visible("Windows"),
+                "{set}"
+            );
+            assert!(eff.is_visible("Rooms"), "{set}");
+        }
+        // Without the toggle only the active set changes.
+        assert_eq!(
+            p.edit_layers(&names(&["Rooms"]), &LayerEdit::Locked(true), false),
+            1
+        );
+        assert!(p
+            .layer_sets
+            .effective_for("Default Set", &p.layers)
+            .is_locked("Rooms"));
+        assert!(!p
+            .layer_sets
+            .effective_for("B", &p.layers)
+            .is_locked("Rooms"));
+    }
+
+    #[test]
+    fn reset_and_copy_to_other_sets() {
+        let mut p = Project::new("P");
+        p.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "B");
+        p.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "C");
+        let l = names(&["Rooms"]);
+        p.edit_layers(&l, &LayerEdit::Color([5, 5, 5]), false);
+        p.edit_layers(&l, &LayerEdit::Reference(false), false);
+        // Copy the look to B only.
+        assert_eq!(
+            p.layer_sets
+                .copy_layers_to("Default Set", &l, &names(&["B", "Default Set"])),
+            1
+        );
+        let b = p.layer_sets.effective_for("B", &p.layers);
+        assert_eq!(b.get("Rooms").unwrap().color, [5, 5, 5]);
+        assert!(!b.get("Rooms").unwrap().reference);
+        let c = p.layer_sets.effective_for("C", &p.layers);
+        assert_eq!(c.get("Rooms"), p.layers.get("Rooms"));
+        // Reset in the active set only.
+        assert_eq!(p.reset_layers(&l, false), 1);
+        let a = p.layer_sets.effective_for("Default Set", &p.layers);
+        assert_eq!(a.get("Rooms"), p.layers.get("Rooms"));
+        assert_eq!(
+            p.layer_sets
+                .effective_for("B", &p.layers)
+                .get("Rooms")
+                .unwrap()
+                .color,
+            [5, 5, 5]
+        );
+        // Reset everywhere.
+        p.reset_layers(&l, true);
+        assert_eq!(
+            p.layer_sets.effective_for("B", &p.layers).get("Rooms"),
+            p.layers.get("Rooms")
+        );
+        assert!(!p
+            .layer_sets
+            .set_differs_from(p.shown_layer_set(), &p.layers, true));
+        assert_eq!(p.layer_sets.copy_layers_to("nope", &l, &names(&["B"])), 0);
+    }
+
+    #[test]
+    fn import_sets_adds_their_layers_and_renames_clashes() {
+        let mut other = Project::new("O");
+        other
+            .layers
+            .add(Layer::new("Imported Layer", [4, 4, 4], 20));
+        other.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "Theirs");
+        other
+            .layer_sets
+            .get_mut("Theirs")
+            .unwrap()
+            .ensure_state("Imported Layer")
+            .display = false;
+        let mut p = Project::new("P");
+        p.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "Theirs");
+        let added = p.layer_sets.import_sets(
+            &other.layer_sets,
+            &other.layers,
+            &names(&["Theirs", "Nope"]),
+            &mut p.layers,
+        );
+        assert_eq!(added, vec!["Theirs (2)"]);
+        assert!(p.layers.get("Imported Layer").is_some());
+        let eff = p.layer_sets.effective_for("Theirs (2)", &p.layers);
+        assert!(!eff.is_visible("Imported Layer"));
+        assert_eq!(p.layer_sets.free_name("Fresh"), "Fresh");
+        assert_eq!(p.layer_sets.free_name(""), "Layer Set");
+    }
+
+    #[test]
+    fn plan_view_list_edits() {
+        let mut p = Project::new("P");
+        assert!(p.add_plan_view(SavedPlanView::new("A", DEFAULT_LAYER_SET_NAME)));
+        assert!(p.add_plan_view(SavedPlanView::new("B", DEFAULT_LAYER_SET_NAME)));
+        assert!(!p.add_plan_view(SavedPlanView::new("A", DEFAULT_LAYER_SET_NAME)));
+        assert!(!p.add_plan_view(SavedPlanView::new("", DEFAULT_LAYER_SET_NAME)));
+        let order = |p: &Project| {
+            p.plan_views
+                .iter()
+                .map(|v| v.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&p), vec!["Floor Plan View", "A", "B"]);
+        assert!(p.move_plan_view(2, 0));
+        assert_eq!(order(&p), vec!["B", "Floor Plan View", "A"]);
+        assert!(!p.move_plan_view(1, 1) && !p.move_plan_view(0, 9));
+        assert!(p.rename_plan_view("A", "A2"));
+        assert!(!p.rename_plan_view("A2", "B") && !p.rename_plan_view("zzz", "Q"));
+        p.activate_plan_view("A2");
+        assert!(p.rename_plan_view("A2", "A3"));
+        assert_eq!(p.active_plan_view, "A3");
+        assert_eq!(p.duplicate_plan_view("A3").as_deref(), Some("A3 (2)"));
+        assert_eq!(p.duplicate_plan_view("A3").as_deref(), Some("A3 (3)"));
+        assert!(p.duplicate_plan_view("zzz").is_none());
+        // Deleting the active view activates the first remaining one.
+        assert!(p.delete_plan_view("A3"));
+        assert_eq!(p.active_plan_view, "B");
+        assert!(!p.delete_plan_view("zzz"));
+        let mut one = Project::new("O");
+        assert!(
+            !one.delete_plan_view(DEFAULT_PLAN_VIEW_NAME),
+            "the last view stays"
+        );
+    }
+
+    #[test]
+    fn template_plan_views_are_seeded_once_with_their_own_layer_sets() {
+        let mut p = Project::new("P");
+        assert!(p.has_only_starting_plan_view());
+        assert_eq!(p.seed_template_plan_views(), 20);
+        assert_eq!(p.plan_views.len(), 21);
+        assert!(!p.has_only_starting_plan_view());
+        let v = p.plan_view("Electrical Plan View").unwrap();
+        assert_eq!(v.layer_set, "Electrical Layer Set");
+        assert!(p.layer_sets.get("Electrical Layer Set").is_some());
+        // Two views may share a set; nothing is added twice.
+        assert_eq!(
+            p.plan_view("Framing, Porch Roof Plan View")
+                .unwrap()
+                .layer_set,
+            "Framing Porch Layer Set"
+        );
+        assert_eq!(p.seed_template_plan_views(), 0);
+        // An existing template set is used, not copied over.
+        let mut q = Project::new("Q");
+        q.layer_sets
+            .copy_set(DEFAULT_LAYER_SET_NAME, "Plot Plan Layer Set");
+        q.layer_sets
+            .set_display("Plot Plan Layer Set", "Doors", false);
+        q.seed_template_plan_views();
+        q.activate_plan_view("Plot Plan View");
+        assert!(!q.view_layers().is_visible("Doors"));
+    }
+
+    #[test]
+    fn plan_view_spec_fields_round_trip() {
+        let mut v = SavedPlanView::new("Spec", DEFAULT_LAYER_SET_NAME);
+        v.dimension_defaults = "1/4\" Scale Dimension Defaults".into();
+        v.text_style = "1/4\" Text Style".into();
+        v.capture(1, true, Some((Point { x: 5.0, y: 6.0 }, 2.5)));
+        let json = serde_json::to_string(&v).unwrap();
+        let back: SavedPlanView = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, v);
+        assert_eq!(back.floor, Some(1));
+        assert!(back.reference_display);
+        // A capture without a camera keeps the stored one.
+        let mut w = back.clone();
+        w.capture(0, false, None);
+        assert_eq!(w.camera, Some((Point { x: 5.0, y: 6.0 }, 2.5)));
+        // An old view without the new fields loads.
+        let old: SavedPlanView = serde_json::from_str(r#"{"name":"O","layer_set":"S"}"#).unwrap();
+        assert!(old.dimension_defaults.is_empty() && old.text_style.is_empty());
+        // Layer set JSON without the reference map loads; empty map is not written.
+        let def: LayerSetDef = serde_json::from_str(r#"{"name":"S"}"#).unwrap();
+        assert!(def.reference.is_empty());
+        assert!(!serde_json::to_string(&def).unwrap().contains("reference"));
     }
 }

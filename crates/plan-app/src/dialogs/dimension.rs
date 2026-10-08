@@ -4,9 +4,11 @@
 //!
 //! The model keeps a dimension as two measured points, a line offset, a kind
 //! and an optional text override, so those are the editable controls: the
-//! points and offset on General, the layer (Manual or Automatic) on Layer and
-//! the value text on Label. The format, arrow and text style of a dimension
-//! come from the Dimension Defaults in force and are shown disabled.
+//! points and offset on General (with the objects each point is located on
+//! and whether its extension line shows), the layer (Manual or Automatic) on
+//! Layer, the value text on Label and the text style on Text Style (a
+//! character-height or printed-size style, DIM-7). The format and arrow of a
+//! dimension come from the Dimension Defaults in force and are shown disabled.
 //!
 //! Use [`open_for`] to build the dialog for an `ObjectRef::Dimension` (the
 //! shell's `EditorRequest::OpenSpec` handler), call [`DimensionDialog::show`]
@@ -20,7 +22,7 @@ use super::{
 };
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
-use plan_core::{DimFormat, Dimension, DimensionKind, Id, PlanDefaults};
+use plan_core::{AutoGroup, DimFormat, Dimension, DimensionKind, Id, PlanDefaults};
 
 const DIM_TABS: &[Tab] = &[
     on("General"),
@@ -49,6 +51,14 @@ struct DimForm {
     text_height: f64,
     text_above: bool,
     font: String,
+    /// The dimension set's text style name, and every style that can be
+    /// chosen for this dimension.
+    set_style: String,
+    style_names: Vec<String>,
+    /// The sheet's paper scale (inches per foot) the sizes are shown at.
+    ipf: f64,
+    printed_set: bool,
+    styles: plan_core::TextStyles,
     use_override: bool,
     override_text: String,
     fields: Fields,
@@ -72,11 +82,30 @@ impl DimensionDialog {
                 text_height: defaults.text.height,
                 text_above: defaults.dimensions.text_above_line,
                 font: defaults.text.font.clone(),
+                set_style: defaults.dimensions.text_style.clone(),
+                style_names: defaults
+                    .text_styles
+                    .names()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                ipf: 0.25,
+                printed_set: defaults.dimensions.printed_size,
+                styles: defaults.text_styles.clone(),
                 use_override,
                 override_text,
                 fields: Fields::default(),
             },
         }
+    }
+
+    /// The text styles of the plan and the sheet scale (inches per foot)
+    /// the sizes are read at.
+    pub fn with_styles(mut self, styles: &plan_core::TextStyles, ipf: f64) -> Self {
+        self.form.style_names = styles.names().into_iter().map(str::to_string).collect();
+        self.form.styles = styles.clone();
+        self.form.ipf = ipf;
+        self
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -135,7 +164,10 @@ pub fn open_for(cx: &EditorContext, o: ObjectRef) -> Option<DimensionDialog> {
         return None;
     };
     let d = cx.floor().dimensions.iter().find(|d| d.id == id)?.clone();
-    Some(DimensionDialog::new(d, &cx.defaults))
+    Some(
+        DimensionDialog::new(d, &cx.defaults)
+            .with_styles(&cx.project.text_styles, cx.sheet.scale.inches_per_foot()),
+    )
 }
 
 impl DimForm {
@@ -150,6 +182,10 @@ impl DimForm {
         if moved && d.kind == DimensionKind::AutoExterior && self.orig.kind == d.kind {
             d.kind = DimensionKind::Manual;
         }
+        // A manual dimension belongs to no automatic run.
+        if d.kind == DimensionKind::Manual {
+            d.auto_group = AutoGroup::None;
+        }
         d
     }
 
@@ -160,6 +196,33 @@ impl DimForm {
         f.length_row(ui, "Start Y", "start_y", &mut self.draft.start.y);
         f.length_row(ui, "End X", "end_x", &mut self.draft.end.x);
         f.length_row(ui, "End Y", "end_y", &mut self.draft.end.y);
+    }
+
+    /// The objects each measured point is tied to (DIM-3) and whether its
+    /// extension line is drawn.
+    fn located_rows(&mut self, ui: &mut Ui) {
+        section(ui, "Located Objects");
+        for (k, name) in ["Start", "End"].into_iter().enumerate() {
+            let what = match self.draft.anchors[k] {
+                Some(a) => a.describe(),
+                None => "Free point".to_string(),
+            };
+            row(ui, name, |ui| {
+                ui.label(what);
+            });
+            let mut show = !self.draft.hide_ext[k];
+            if ui
+                .checkbox(&mut show, format!("Show Extension Line at {name}"))
+                .changed()
+            {
+                self.draft.hide_ext[k] = !show;
+            }
+        }
+        match self.draft.auto_group {
+            AutoGroup::Exterior => ui.weak("Automatic exterior dimension"),
+            AutoGroup::Interior => ui.weak("Automatic interior dimension"),
+            _ => ui.weak("Located points follow their objects when they move"),
+        };
     }
 
     fn general(&mut self, ui: &mut Ui) {
@@ -181,6 +244,7 @@ impl DimForm {
             &mut self.draft.offset,
         );
         self.point_rows(ui);
+        self.located_rows(ui);
         if self.draft.length() < 0.5 {
             ui.colored_label(super::ERROR_RED, "The measured points are too close");
         }
@@ -215,12 +279,64 @@ impl DimForm {
         });
     }
 
+    /// The style this dimension's number is set in: its own, else the
+    /// dimension set's, else "Dimension Text Style".
+    fn style_name(&self) -> String {
+        self.draft
+            .text_style
+            .clone()
+            .filter(|n| !n.is_empty())
+            .or(Some(self.set_style.clone()).filter(|n| !n.is_empty()))
+            .unwrap_or_else(|| "Dimension Text Style".to_string())
+    }
+
     fn text_style(&mut self, ui: &mut Ui) {
         section(ui, "Text Style");
-        row(ui, "Font", |ui| dis_combo(ui, "dim_font", &self.font));
-        row(ui, "Height", |ui| {
-            ui.label(fmt_short(self.text_height));
+        let current = self
+            .draft
+            .text_style
+            .clone()
+            .unwrap_or_else(|| "From Dimension Defaults".to_string());
+        row(ui, "Style", |ui| {
+            egui::ComboBox::from_id_salt("dim_text_style")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.draft.text_style,
+                        None,
+                        "From Dimension Defaults",
+                    );
+                    for n in &self.style_names {
+                        ui.selectable_value(&mut self.draft.text_style, Some(n.clone()), n);
+                    }
+                });
         });
+        let name = self.style_name();
+        if let Some(st) = self.styles.resolve(&name) {
+            row(ui, "Font", |ui| dis_combo(ui, "dim_font", &st.font));
+            let printed = st.is_printed_size() || self.printed_set;
+            row(ui, "Size", |ui| {
+                ui.label(if printed {
+                    "Printed Size"
+                } else {
+                    "Character Height"
+                });
+            });
+            let plan_h = st.plan_height_at(self.ipf, self.printed_set);
+            row(ui, "Printed", |ui| {
+                // Inches on paper at the sheet's scale.
+                let on_paper = plan_h * self.ipf / 12.0;
+                ui.label(format!("{on_paper:.3}\" ({:.1} pt)", on_paper * 72.0));
+            });
+            row(ui, "In the Plan", |ui| {
+                ui.label(fmt_short(plan_h));
+            });
+        } else {
+            row(ui, "Font", |ui| dis_combo(ui, "dim_font", &self.font));
+            row(ui, "Height", |ui| {
+                ui.label(fmt_short(self.text_height));
+            });
+        }
         section(ui, "Position");
         dis_radio(ui, "Centered On Dimension Line", !self.text_above);
         dis_radio(ui, "Above Dimension Line", self.text_above);
@@ -409,5 +525,88 @@ mod tests {
         assert!(d.form.error().is_none());
         d.form.draft.end = d.form.draft.start;
         assert!(d.form.error().is_some());
+    }
+
+    #[test]
+    fn shows_the_located_objects_and_toggles_extension_lines_per_point() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let south = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            plan_core::WallKind::Exterior,
+        );
+        let id = cx.project.add_dimension(
+            0,
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::new(0.0, -3.0),
+                Point::new(500.0, -3.0),
+                24.0,
+            ),
+        );
+        assert_eq!(cx.project.floors[0].attach_dimension(id), 1);
+        let mut d = open_for(&cx, ObjectRef::Dimension(id)).unwrap();
+        let a = d.draft().anchors;
+        assert_eq!(a[0].map(|x| x.wall), Some(south));
+        assert!(a[0].unwrap().describe().starts_with("Wall"));
+        assert!(a[1].is_none());
+        // The extension line at the start is switched off: a change that is
+        // not a geometry edit, so the kind stays.
+        d.form.draft.hide_ext = [true, false];
+        assert!(d.apply(&mut cx));
+        let got = &cx.floor().dimensions[0];
+        assert_eq!(got.hide_ext, [true, false]);
+        assert_eq!(got.visible_extension_lines().len(), 1);
+        assert_eq!(got.kind, DimensionKind::Manual);
+        assert_eq!(cx.undo().as_deref(), Some("Change Dimension"));
+        assert_eq!(cx.floor().dimensions[0].hide_ext, [false, false]);
+    }
+
+    #[test]
+    fn the_text_style_tab_names_the_size_on_paper() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = cx.project.add_dimension(
+            0,
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::ZERO,
+                Point::new(120.0, 0.0),
+                24.0,
+            ),
+        );
+        cx.sheet.scale = plan_docs::Scale::EighthInch;
+        let mut d = open_for(&cx, ObjectRef::Dimension(id)).unwrap();
+        // Dimension Text Style is 4.5" tall in the plan: 3/64" on paper at 1/8".
+        assert_eq!(d.form.style_name(), "Dimension Text Style");
+        let st = d.form.styles.resolve("Dimension Text Style").unwrap();
+        assert!(!st.is_printed_size());
+        assert!((st.plan_height_at(d.form.ipf, false) * d.form.ipf / 12.0 - 0.046875).abs() < 1e-9);
+        // Choosing another style is stored on the dimension.
+        d.form.draft.text_style = Some("Schedule Style".into());
+        assert_eq!(d.form.style_name(), "Schedule Style");
+        assert!(d.apply(&mut cx));
+        assert_eq!(
+            cx.floor().dimensions[0].text_style.as_deref(),
+            Some("Schedule Style")
+        );
+        // The tab draws for a printed-size style too.
+        let i = cx
+            .project
+            .text_styles
+            .styles
+            .iter()
+            .position(|s| s.name == "Schedule Style")
+            .unwrap();
+        cx.project.text_styles.styles[i].use_printed_size(true);
+        let mut d = open_for(&cx, ObjectRef::Dimension(id)).unwrap();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, 3));
+        });
     }
 }

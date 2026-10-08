@@ -1,0 +1,311 @@
+//! Synthetic end-to-end tests of the importer: every file is built in the
+//! test (no Chief file is read or copied).
+
+use super::dims::tests::dim_obj;
+use super::floors::tests::floor_obj;
+use super::openings::tests::{opening_obj, opening_obj_flags};
+use super::rooms::tests::room_obj;
+use super::texts::tests::text_obj;
+use super::tree::testutil::*;
+use super::walls::tests::{line_obj, point_obj, wall_obj, wall_type_obj};
+use super::*;
+use crate::scan::testutil::build_template;
+use plan_core::model::{OpeningKind, WallKind};
+
+fn types_body() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend(with_id(
+        581,
+        wall_type_obj(
+            "Brick-6",
+            &[
+                (4.0, 1, false),
+                (1.0, 2, false),
+                (5.5, 3, true),
+                (0.5, 4, false),
+            ],
+        ),
+    ));
+    b.extend(with_id(
+        351,
+        wall_type_obj(
+            "Interior-6",
+            &[(0.5, 4, false), (5.5, 3, true), (0.5, 4, false)],
+        ),
+    ));
+    b.extend(with_id(
+        218,
+        wall_type_obj("10\" Concrete Stem Wall", &[(10.0, 5, true)]),
+    ));
+    b
+}
+
+/// Foundation, first floor, an empty second floor.
+fn house() -> Vec<u8> {
+    let mut body = types_body();
+    // Foundation: one stem wall.
+    let stem = wall_obj(line_obj(0.0, 0.0, 1.0, 0.0, 400.0), Some(218), None, &[]);
+    body.extend(floor_obj(-132.25, 115.5, &[stem]));
+    // First floor: a rectangle of exterior walls (counter-clockwise), one
+    // interior wall with a window and a door, a room, a dimension, a cabinet.
+    let ext = |x: f64, y: f64, dx: f64, dy: f64, len: f64| {
+        wall_obj(line_obj(x, y, dx, dy, len), Some(581), Some(121.125), &[])
+    };
+    let win = opening_obj(10, 0x312, [62.0, 32.0, 0.625, 54.0, 84.0], b"");
+    let door = opening_obj_flags(9, 0x312, [150.0, 32.0, 0.625, 96.0, 96.0], b"", (1, 1));
+    let partition = wall_obj(
+        line_obj(200.0, 0.0, 0.0, 1.0, 300.0),
+        Some(351),
+        Some(121.125),
+        &[win, door, point_obj(200.0, 0.0)],
+    );
+    let kids = vec![
+        ext(0.0, 0.0, 1.0, 0.0, 400.0),
+        ext(400.0, 0.0, 0.0, 1.0, 300.0),
+        ext(400.0, 300.0, -1.0, 0.0, 400.0),
+        ext(0.0, 300.0, 0.0, -1.0, 300.0),
+        partition,
+        room_obj("Default", Some("Kitchen"), (190.0, 290.0), (100.0, 150.0)),
+        room_obj("Default", None, (190.0, 290.0), (300.0, 150.0)),
+        dim_obj(&[(10.0, 10.0), (210.0, 10.0), (410.0, 10.0)]),
+        sized(15, 0, 0x300, |_| {}),
+        text_obj("10' CEILING HT", false, 100.0, 120.0, -55),
+        text_obj("Wall Layer 2 - Viewed From Outside", false, 10.0, 10.0, -23),
+    ];
+    body.extend(floor_obj(0.0, 121.125, &kids));
+    body.extend(floor_obj(137.875, 109.125, &[]));
+    body
+}
+
+#[test]
+fn empty_plan_reports_zeroes() {
+    let bytes = build_template(&[], &[]);
+    let r = import_bytes(&bytes, "Empty.plan", &ImportOptions::default()).unwrap();
+    assert_eq!(r.project.floors.len(), 1);
+    assert_eq!(r.report.counts["walls"], 0);
+    assert_eq!(r.report.counts["floors"], 1);
+    assert!(r
+        .report
+        .warnings
+        .iter()
+        .any(|w| w.contains("no floor objects")));
+    assert_eq!(r.report.file_name, "Empty.plan");
+    assert_eq!(r.project.name, "Empty");
+    assert!(r.report.summary().contains("0 walls"));
+}
+
+#[test]
+fn small_house_round_trip() {
+    let bytes = build_template(&house(), &[]);
+    let r = import_bytes(&bytes, "House.plan", &ImportOptions::default()).unwrap();
+    let p = &r.project;
+    let rep = &r.report;
+    // The empty trailing floor is dropped.
+    assert_eq!(p.floors.len(), 2, "{:?}", rep.floors);
+    assert_eq!(p.floors[0].name, "Foundation");
+    assert_eq!(p.floors[0].kind, FloorKind::Foundation);
+    assert_eq!(p.floors[0].elevation, -132.25);
+    assert_eq!(p.floors[1].name, "1st Floor");
+    assert_eq!(p.floors[1].ceiling_height, 121.125);
+    assert_eq!(rep.counts["walls"], 6);
+    assert_eq!(p.floors[0].walls.len(), 1);
+    assert_eq!(p.floors[1].walls.len(), 5);
+    assert_eq!(rep.counts["doors"], 1);
+    assert_eq!(rep.counts["windows"], 1);
+    assert_eq!(rep.counts["rooms"], 2);
+    assert_eq!(rep.counts["rooms_named"], 1);
+    assert_eq!(rep.counts["dimensions"], 2);
+    assert_eq!(rep.counts["wall_types"], 3);
+    assert_eq!(rep.counts["texts"], 1);
+
+    // Walls: stem wall, exterior brick (shifted, exterior on the right),
+    // interior partition.
+    let stem = &p.floors[0].walls[0];
+    assert_eq!(stem.wall_type.as_deref(), Some("10\" Concrete Stem Wall"));
+    assert!(stem.is_foundation());
+    assert_eq!(stem.layer.replace("  ", " "), "Walls, Foundation");
+    assert!((stem.thickness - 10.0).abs() < 1e-9);
+    assert_eq!(stem.height, 115.5);
+    let south = &p.floors[1].walls[0];
+    assert_eq!(south.wall_type.as_deref(), Some("Brick-6"));
+    assert_eq!(south.kind, WallKind::Exterior);
+    assert!((south.thickness - 11.0).abs() < 1e-9);
+    assert!((south.height - 121.125).abs() < 1e-9);
+    assert!(south.start.y < 0.0, "shifted to the right of a +x wall");
+    let part = &p.floors[1].walls[4];
+    assert_eq!(part.wall_type.as_deref(), Some("Interior-6"));
+    assert_eq!(part.kind, WallKind::Interior);
+    assert!((part.thickness - 6.5).abs() < 1e-9);
+    // The partition ends were healed to the exterior walls' centrelines
+    // (4.75" beyond the reference lines at each end).
+    assert!((part.length() - 309.5).abs() < 1e-6, "{}", part.length());
+    assert!(rep.counts["wall_ends_joined"] >= 2);
+
+    // The file's own definitions are registered under the used names.
+    let brick = p.wall_types.iter().find(|t| t.name == "Brick-6").unwrap();
+    assert!((brick.thickness() - 11.0).abs() < 1e-9);
+
+    // Openings sit on the partition, inside its length.
+    let ops = &p.floors[1].openings;
+    assert_eq!(ops.len(), 2);
+    for o in ops {
+        assert_eq!(o.wall_id, part.id);
+        assert!(o.start_offset() >= 0.0 && o.end_offset() <= part.length());
+    }
+    let w = ops.iter().find(|o| o.kind == OpeningKind::Window).unwrap();
+    // The window stays 62" from the original start: 4.75" more from the
+    // healed one.
+    assert!(
+        (w.center_offset - 66.75).abs() < 1e-6,
+        "{}",
+        w.center_offset
+    );
+    assert_eq!((w.width, w.height, w.sill_height), (32.0, 54.0, 30.0));
+    let d = ops.iter().find(|o| o.kind == OpeningKind::Door).unwrap();
+    assert!(
+        (d.center_offset - 154.75).abs() < 1e-6,
+        "{}",
+        d.center_offset
+    );
+    assert_eq!((d.width, d.height, d.sill_height), (32.0, 96.0, 0.0));
+
+    // Room names with anchors inside the walls' box.
+    let names = &p.floors[1].room_names;
+    assert_eq!(names.len(), 1);
+    assert_eq!(names[0].name, "Kitchen");
+    assert!(names[0].anchor.x > 0.0 && names[0].anchor.x < 400.0);
+
+    // Dimensions: two segments, 200" each.
+    let dims = &p.floors[1].dimensions;
+    assert_eq!(dims.len(), 2);
+    assert!((dims[0].length() - 200.0).abs() < 1e-9);
+
+    // The note became CAD text: top-centre anchor -> bottom-left corner.
+    let note = &p.floors[1].cad;
+    assert_eq!(note.len(), 1);
+    match &note[0].item {
+        plan_core::CadItem::Text {
+            pos, text, height, ..
+        } => {
+            assert_eq!(text, "10' CEILING HT");
+            assert_eq!(*height, 4.5);
+            assert!(pos.y < 120.0 && pos.x < 100.0);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(note[0].layer, "Text");
+    // The cabinet decoy is reported as skipped, with its label.
+    let cab = rep.skipped_classes.iter().find(|s| s.class == 15).unwrap();
+    assert_eq!(cab.count, 1);
+    assert!(cab.label.contains("cabinet"));
+    // Ids are unique across walls and openings.
+    let mut ids: Vec<Id> = p
+        .floors
+        .iter()
+        .flat_map(|f| {
+            f.walls
+                .iter()
+                .map(|w| w.id)
+                .chain(f.openings.iter().map(|o| o.id))
+        })
+        .collect();
+    let n = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), n);
+    // The whole project survives JSON.
+    let json = p.to_json().unwrap();
+    assert!(Project::from_json(&json).is_ok());
+    assert!(rep.floors.iter().map(|f| f.walls).sum::<usize>() == 6);
+    assert!(rep.warnings.iter().any(|w| w.contains("door style")));
+    // The door's flag bytes (side 1, hinge 1): hinge at the end, swing right.
+    assert!(d.hinge_at_end && d.swing_flipped);
+    assert!(!w.hinge_at_end && !w.swing_flipped);
+}
+
+#[test]
+fn options_switch_dimensions_and_seeding_off() {
+    let bytes = build_template(&house(), &[]);
+    let opts = ImportOptions {
+        project_name: Some("Renamed".into()),
+        seed_from_file: false,
+        dimensions: false,
+        text: false,
+    };
+    let r = import_bytes(&bytes, "House.plan", &opts).unwrap();
+    assert_eq!(r.project.name, "Renamed");
+    assert_eq!(r.report.counts["dimensions"], 0);
+    assert!(r.project.floors[1].dimensions.is_empty());
+    assert!(r.project.floors[1].cad.is_empty());
+    assert_eq!(r.report.counts["walls"], 6);
+}
+
+#[test]
+fn unresolved_wall_types_are_reported() {
+    let mut body = types_body();
+    let w = wall_obj(
+        line_obj(0.0, 0.0, 1.0, 0.0, 100.0),
+        Some(9999),
+        Some(121.125),
+        &[],
+    );
+    body.extend(floor_obj(0.0, 121.125, &[w]));
+    let bytes = build_template(&body, &[]);
+    let r = import_bytes(&bytes, "X.plan", &ImportOptions::default()).unwrap();
+    assert_eq!(r.report.counts["walls"], 1);
+    assert!(r.report.warnings.iter().any(|w| w.contains("wall type")));
+    assert_eq!(r.project.floors[0].walls[0].thickness, 5.5);
+}
+
+#[test]
+fn layout_files_and_missing_files_are_errors() {
+    let dir = std::env::temp_dir().join(format!("plan-chiefplan-import-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let layout = dir.join("Sheets.layout");
+    std::fs::write(&layout, build_template(&[], &[])).unwrap();
+    assert!(import_plan(&layout, &ImportOptions::default()).is_err());
+    assert!(import_plan(dir.join("missing.plan"), &ImportOptions::default()).is_err());
+    let plan = dir.join("A.plan");
+    std::fs::write(&plan, build_template(&house(), &[])).unwrap();
+    let r = import_plan(&plan, &ImportOptions::default()).unwrap();
+    assert_eq!(r.project.name, "A");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn garbage_bodies_do_not_panic() {
+    let mut body = vec![0u8; 2000];
+    body.extend_from_slice(&[0x01, 0xCD, 0xAB, 6, 0, 0xFF, 0xFF, 0xFF, 0x7F]);
+    body.extend_from_slice(&[0x01, 0xCD, 0xAB, 30, 0, 0x08, 0, 0, 0, 1, 2, 3, 4]);
+    body.extend_from_slice(&[0xCD, 0xAB, 23, 0, 4, 0, 0, 0]);
+    let bytes = build_template(&body, &[]);
+    let r = import_bytes(&bytes, "Junk.plan", &ImportOptions::default()).unwrap();
+    assert_eq!(r.report.counts["walls"], 0);
+}
+
+#[test]
+fn corrupted_houses_never_panic() {
+    // Deterministic byte flips and truncations of a valid file: every decoder
+    // is bounds-checked, so none of these may panic.
+    let original = build_template(&house(), &[]);
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for round in 0..120 {
+        let mut bytes = original.clone();
+        for _ in 0..(1 + round % 12) {
+            let at = (next() as usize) % bytes.len();
+            bytes[at] = (next() & 0xFF) as u8;
+        }
+        if round % 7 == 0 {
+            let cut = 64 + (next() as usize) % (bytes.len() - 64);
+            bytes.truncate(cut);
+        }
+        // Errors are fine (a damaged header); panics are not.
+        let _ = import_bytes(&bytes, "Fuzz.plan", &ImportOptions::default());
+    }
+}

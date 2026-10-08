@@ -7,12 +7,15 @@
 //! for every solid part.
 
 use crate::builder::MeshSet;
-use crate::frame::Frame;
+use crate::clip::TopProfile;
+use crate::cover::FloorCover;
 use crate::mesh::{Material, Mesh};
 use crate::railing;
-use crate::wall::{hole_for, solid_rects, Hole, InteriorSign, WallLook};
+use crate::wall::{hole_for, solid_rects, Hole, InteriorSign, WallFrame, WallLook};
 use crate::SceneOptions;
 use plan_core::{Floor, Opening, Wall, WallClass};
+
+pub use crate::wall::EndCuts;
 
 /// Wall type facts the builder needs, resolved by the scene builder.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,20 +45,50 @@ pub fn handles(wall: &Wall) -> bool {
 
 type Lookup<'a> = &'a dyn Fn(&str) -> Option<TypeInfo>;
 
-/// Builds the wall and the openings it hosts into `out`.
+/// The height the roof can cut a wall of this class down to, if it can: a
+/// half wall's own height, a foundation wall's reach below the floor, the
+/// whole height of the solid classes. Railings, fences and deck edges are
+/// not cut.
+fn cuttable_height(wall: &Wall) -> Option<f64> {
+    match &wall.class {
+        WallClass::Standard
+        | WallClass::Pony { .. }
+        | WallClass::GlassPony { .. }
+        | WallClass::Glass => Some(wall.height),
+        WallClass::HalfWall { height } => Some(height.min(wall.height).max(0.0)),
+        WallClass::Foundation => Some(wall.foundation_height),
+        _ => None,
+    }
+}
+
+/// The top the roof gives a wall of this class standing on `elevation`
+/// (RF-16): cut by the roof planes above it like a standard wall, never
+/// raised to them. `None` for a level top.
+fn class_top(cover: Option<&FloorCover>, wall: &Wall, elevation: f64) -> Option<TopProfile> {
+    let nominal = cuttable_height(wall)?;
+    let base = match wall.class {
+        WallClass::Foundation => elevation - wall.foundation_height,
+        _ => elevation,
+    } + wall.bottom_offset;
+    cover?.wall_top_clipped(wall, base, nominal)
+}
+
+/// Builds the wall and the openings it hosts into `out`. `cover` is the roof
+/// above the floor, which cuts the wall tops.
 pub fn add_wall(
     floor: &Floor,
     wall: &Wall,
     interior: InteriorSign,
     opts: &SceneOptions,
     lookup: Lookup,
+    cover: Option<&FloorCover>,
     out: &mut Vec<Mesh>,
 ) {
     if wall.class == WallClass::RoomDivider || wall.length() <= 1e-6 {
         return;
     }
     if wall.is_curved() {
-        out.extend(build_curved(wall, floor.elevation, interior, lookup));
+        add_curved(floor, wall, interior, opts, lookup, cover, out);
         return;
     }
     // The wall as its openings see it: a half-wall is lower, a foundation
@@ -66,7 +99,15 @@ pub fn add_wall(
         .filter_map(|o| hole_for(&basis, o).map(|h| (o, h)))
         .collect();
     let holes: Vec<Hole> = hosted.iter().map(|(_, h)| *h).collect();
-    out.extend(build_class(wall, floor.elevation, &holes, interior, lookup));
+    let top = class_top(cover, wall, floor.elevation);
+    out.extend(build_class_with_top(
+        wall,
+        floor.elevation,
+        &holes,
+        interior,
+        lookup,
+        top.as_ref(),
+    ));
     let base = match wall.class {
         WallClass::Foundation => floor.elevation - wall.foundation_height,
         _ => floor.elevation,
@@ -96,17 +137,56 @@ pub fn build_class(
     interior: InteriorSign,
     lookup: Lookup,
 ) -> Vec<Mesh> {
+    build_class_with_top(wall, elevation, holes, interior, lookup, None)
+}
+
+/// [`build_class`] whose top follows `top` (heights above the wall's bottom).
+pub fn build_class_with_top(
+    wall: &Wall,
+    elevation: f64,
+    holes: &[Hole],
+    interior: InteriorSign,
+    lookup: Lookup,
+    top: Option<&TopProfile>,
+) -> Vec<Mesh> {
+    build_class_cut(
+        wall,
+        elevation,
+        holes,
+        interior,
+        lookup,
+        top,
+        &EndCuts::NONE,
+    )
+}
+
+/// [`build_class_with_top`] for a wall that may be curved. The solid classes
+/// (standard, half, foundation and the pony wall's boxes) follow the arc, with
+/// `s` in `holes` and `top` the arc length and the ends mitred by `cuts`; the
+/// glass, railing, deck edge and fencing classes are built as one straight
+/// piece per facet of the arc.
+pub fn build_class_cut(
+    wall: &Wall,
+    elevation: f64,
+    holes: &[Hole],
+    interior: InteriorSign,
+    lookup: Lookup,
+    top: Option<&TopProfile>,
+    cuts: &EndCuts,
+) -> Vec<Mesh> {
     // A wall that starts above the floor is built as an ordinary wall of its
     // class standing on a higher base, with its holes re-measured from it.
     if wall.bottom_offset != 0.0 {
         let mut grounded = wall.clone();
         grounded.bottom_offset = 0.0;
-        return build_class(
+        return build_class_cut(
             &grounded,
             elevation + wall.bottom_offset,
             &shift_holes(holes, wall.bottom_offset),
             interior,
             lookup,
+            top,
+            cuts,
         );
     }
     let look_of = |name: Option<&str>| WallLook {
@@ -118,30 +198,34 @@ pub fn build_class(
     let thickness_of = |name: &str| lookup(name).map_or(wall.thickness, |t| t.thickness);
     match &wall.class {
         WallClass::RoomDivider => Vec::new(),
-        WallClass::Standard => crate::wall::build_wall(
+        WallClass::Standard => crate::wall::build_wall_with_top_cut(
             wall,
             elevation,
             holes,
             interior,
             look_of(wall.wall_type.as_deref()),
+            top,
+            cuts,
         ),
         WallClass::HalfWall { height } => {
             let mut w = wall.clone();
             w.height = height.min(wall.height).max(0.0);
             let holes = clip_holes(holes, 0.0, w.height);
-            crate::wall::build_wall(
+            crate::wall::build_wall_with_top_cut(
                 &w,
                 elevation,
                 &holes,
                 interior,
                 look_of(wall.wall_type.as_deref()),
+                top,
+                cuts,
             )
         }
         WallClass::Foundation => {
             let mut w = wall.clone();
             w.height = wall.foundation_height;
             let holes = clip_holes(holes, 0.0, w.height);
-            let mut meshes = crate::wall::build_wall(
+            let mut meshes = crate::wall::build_wall_with_top_cut(
                 &w,
                 elevation - wall.foundation_height,
                 &holes,
@@ -149,6 +233,8 @@ pub fn build_class(
                 WallLook {
                     exterior: Material::Concrete,
                 },
+                top,
+                cuts,
             );
             for m in &mut meshes {
                 if matches!(m.material, Material::WallExterior | Material::WallInterior) {
@@ -172,17 +258,22 @@ pub fn build_class(
                 split,
                 thickness_of(lower_type),
                 look_of(Some(lower_type)),
+                top,
+                cuts,
             );
             let mut upper = wall.clone();
             upper.thickness = thickness_of(upper_type);
             upper.height = wall.height - split;
             let upper_holes = clip_holes(holes, split, wall.height);
-            meshes.extend(crate::wall::build_wall(
+            let upper_top = top.map(|t| t.lowered(split));
+            meshes.extend(crate::wall::build_wall_with_top_cut(
                 &upper,
                 elevation + split,
                 &shift_holes(&upper_holes, split),
                 interior,
                 look_of(Some(upper_type)),
+                upper_top.as_ref(),
+                cuts,
             ));
             meshes
         }
@@ -199,6 +290,8 @@ pub fn build_class(
                 split,
                 thickness_of(lower_type),
                 look_of(Some(lower_type)),
+                top,
+                cuts,
             );
             let upper_holes = shift_holes(&clip_holes(holes, split, wall.height), split);
             meshes.extend(glass_panel(
@@ -207,17 +300,23 @@ pub fn build_class(
                 wall.height - split,
                 &upper_holes,
                 false,
+                cuts,
             ));
             meshes
         }
-        WallClass::Glass => glass_panel(wall, elevation, wall.height, holes, true),
-        WallClass::Railing | WallClass::DeckRailing => railing::build_railing(wall, elevation),
+        WallClass::Glass => glass_panel(wall, elevation, wall.height, holes, true, cuts),
+        // A railing is built a straight piece at a time along an arc.
+        WallClass::Railing | WallClass::DeckRailing => {
+            on_facets(wall, &[], |w, _| railing::build_railing(w, elevation))
+        }
         WallClass::DeckEdge => rim_board(wall, elevation),
         WallClass::Fencing { style } => fence(wall, elevation, *style),
     }
 }
 
-/// The solid lower box of a pony wall.
+/// The solid lower box of a pony wall (cut to `top` when the roof comes
+/// down below the split).
+#[allow(clippy::too_many_arguments)]
 fn pony_lower(
     wall: &Wall,
     elevation: f64,
@@ -226,16 +325,21 @@ fn pony_lower(
     split: f64,
     thickness: f64,
     look: WallLook,
+    top: Option<&TopProfile>,
+    cuts: &EndCuts,
 ) -> Vec<Mesh> {
     let mut lower = wall.clone();
     lower.thickness = thickness;
     lower.height = split;
-    crate::wall::build_wall(
+    let top = top.map(|t| t.clamped(split));
+    crate::wall::build_wall_with_top_cut(
         &lower,
         elevation,
         &clip_holes(holes, 0.0, split),
         interior,
         look,
+        top.as_ref(),
+        cuts,
     )
 }
 
@@ -269,12 +373,13 @@ fn glass_panel(
     height: f64,
     holes: &[Hole],
     bottom_rail: bool,
+    cuts: &EndCuts,
 ) -> Vec<Mesh> {
-    let length = wall.length();
+    let frame = WallFrame::new(wall, elevation, cuts);
+    let length = frame.length();
     if height <= 1e-6 || length <= 1e-6 {
         return Vec::new();
     }
-    let frame = Frame::new(wall, elevation);
     let mut set = MeshSet::default();
     let g = GLASS_THICKNESS.min(wall.thickness).max(0.1) * 0.5;
     for (s0, s1, h0, h1) in solid_rects(length, height, holes) {
@@ -296,13 +401,13 @@ fn glass_panel(
 
 /// A deck edge: a rim board hanging below the deck surface, no railing.
 fn rim_board(wall: &Wall, elevation: f64) -> Vec<Mesh> {
-    let frame = Frame::new(wall, elevation);
+    let frame = WallFrame::new(wall, elevation, &EndCuts::NONE);
     let mut set = MeshSet::default();
     let half = RIM_THICKNESS * 0.5;
     let drop = wall.height.max(1.0);
     frame.cuboid(
         set.material(Material::Trim),
-        (0.0, wall.length()),
+        (0.0, frame.length()),
         (-half, half),
         (-drop, 0.0),
     );
@@ -312,9 +417,9 @@ fn rim_board(wall: &Wall, elevation: f64) -> Vec<Mesh> {
 /// Fencing: posts at most 96" apart with pickets, boards or rails between.
 fn fence(wall: &Wall, elevation: f64, style: plan_core::FenceStyle) -> Vec<Mesh> {
     use plan_core::FenceStyle;
-    let length = wall.length();
+    let frame = WallFrame::new(wall, elevation, &EndCuts::NONE);
+    let length = frame.length();
     let height = wall.height.max(12.0);
-    let frame = Frame::new(wall, elevation);
     let mut set = MeshSet::default();
     let post = FENCE_POST * 0.5;
     let bays = (length / FENCE_POST_SPACING).ceil().max(1.0) as usize;
@@ -361,26 +466,154 @@ fn fence(wall: &Wall, elevation: f64, style: plan_core::FenceStyle) -> Vec<Mesh>
     set.finish(Some(wall.id))
 }
 
-/// A curved wall as a run of straight facets of the same class (openings on
-/// curved walls are not cut).
-fn build_curved(wall: &Wall, elevation: f64, interior: InteriorSign, lookup: Lookup) -> Vec<Mesh> {
-    let Some(curve) = wall.curve else {
+/// One straight facet of a curved wall: a straight clone of the wall along a
+/// chord of its arc, and the span `s0..s1` of arc length it covers.
+struct Facet {
+    wall: Wall,
+    s0: f64,
+    s1: f64,
+}
+
+/// The facets of curved `wall` (none for a straight wall).
+fn facets(wall: &Wall) -> Vec<Facet> {
+    let Some(curve) = wall.curve.filter(|c| !c.is_straight()) else {
         return Vec::new();
     };
     let n = curve.facet_count(wall.start, wall.end).max(2);
     let pts = curve.sample_points(wall.start, wall.end, n);
-    let mut out = Vec::new();
-    for pair in pts.windows(2) {
-        let mut facet = wall.clone();
-        facet.curve = None;
-        facet.start = pair[0];
-        facet.end = pair[1];
-        if facet.length() <= 1e-6 {
-            continue;
-        }
-        out.extend(build_class(&facet, elevation, &[], interior, lookup));
+    let total = wall.path_length();
+    pts.windows(2)
+        .enumerate()
+        .filter_map(|(k, pair)| {
+            let mut w = wall.clone();
+            w.curve = None;
+            w.start = pair[0];
+            w.end = pair[1];
+            (w.length() > 1e-6).then(|| Facet {
+                wall: w,
+                s0: total * k as f64 / n as f64,
+                s1: total * (k + 1) as f64 / n as f64,
+            })
+        })
+        .collect()
+}
+
+/// `holes` (in arc length) as one facet sees them (in its chord length).
+fn facet_holes(holes: &[Hole], f: &Facet) -> Vec<Hole> {
+    let scale = f.wall.length() / (f.s1 - f.s0).max(1e-9);
+    holes
+        .iter()
+        .filter_map(|h| {
+            let (a, b) = (h.s0.max(f.s0), h.s1.min(f.s1));
+            (b - a > 1e-6).then_some(Hole {
+                s0: (a - f.s0) * scale,
+                s1: (b - f.s0) * scale,
+                ..*h
+            })
+        })
+        .collect()
+}
+
+/// Builds with `build` on the wall itself, or on every facet of a curved wall
+/// with the holes that fall on it.
+fn on_facets(
+    wall: &Wall,
+    holes: &[Hole],
+    build: impl Fn(&Wall, &[Hole]) -> Vec<Mesh>,
+) -> Vec<Mesh> {
+    if !wall.is_curved() {
+        return build(wall, holes);
     }
-    out
+    facets(wall)
+        .iter()
+        .flat_map(|f| build(&f.wall, &facet_holes(holes, f)))
+        .collect()
+}
+
+/// The top the roof gives a curved wall, facet by facet: each facet is cut by
+/// the roof planes over it (a standard wall also follows its roof directive,
+/// so a gable end rises to the roof) and the pieces are laid along the arc.
+/// `None` when no facet is shaped.
+fn curved_top(cover: Option<&FloorCover>, wall: &Wall, elevation: f64) -> Option<TopProfile> {
+    let nominal = cuttable_height(wall)?;
+    let cover = cover?;
+    let base = match wall.class {
+        WallClass::Foundation => elevation - wall.foundation_height,
+        _ => elevation,
+    } + wall.bottom_offset;
+    let mut pieces = Vec::new();
+    let mut shaped = false;
+    for f in facets(wall) {
+        let profile = if wall.class == WallClass::Standard {
+            cover.wall_top(&f.wall, base, nominal)
+        } else {
+            cover.wall_top_clipped(&f.wall, base, nominal)
+        };
+        let scale = (f.s1 - f.s0) / f.wall.length();
+        match profile {
+            Some(p) => {
+                shaped = true;
+                pieces.extend(p.pieces.iter().map(|q| crate::clip::Piece {
+                    s0: f.s0 + q.s0 * scale,
+                    s1: f.s0 + q.s1 * scale,
+                    ..*q
+                }));
+            }
+            None => pieces.push(crate::clip::Piece {
+                s0: f.s0,
+                s1: f.s1,
+                h0: nominal,
+                h1: nominal,
+            }),
+        }
+    }
+    shaped.then_some(TopProfile { pieces })
+}
+
+/// A curved wall of its class: the solid classes follow the arc with ends
+/// mitred against the walls joined to it, the roof cuts its top facet by
+/// facet, and its openings are cut through it (jambs and head follow the arc;
+/// the door or window unit stands square to the arc's tangent at its center).
+fn add_curved(
+    floor: &Floor,
+    wall: &Wall,
+    interior: InteriorSign,
+    opts: &SceneOptions,
+    lookup: Lookup,
+    cover: Option<&FloorCover>,
+    out: &mut Vec<Mesh>,
+) {
+    let top = curved_top(cover, wall, floor.elevation);
+    let mut basis = opening_basis(wall);
+    if let (Some(t), WallClass::Standard) = (&top, &wall.class) {
+        // A gable rises above the plate; openings in it need the taller wall.
+        basis.height = basis.height.max(t.max_height());
+    }
+    let hosted: Vec<(&Opening, Hole)> = floor
+        .openings_on(wall.id)
+        .filter_map(|o| hole_for(&basis, o).map(|h| (o, h)))
+        .collect();
+    let holes: Vec<Hole> = hosted.iter().map(|(_, h)| *h).collect();
+    let cuts = EndCuts::of(&floor.walls, wall);
+    out.extend(build_class_cut(
+        wall,
+        floor.elevation,
+        &holes,
+        interior,
+        lookup,
+        top.as_ref(),
+        &cuts,
+    ));
+    let base = match wall.class {
+        WallClass::Foundation => floor.elevation - wall.foundation_height,
+        _ => floor.elevation,
+    };
+    for (opening, hole) in &hosted {
+        let local = crate::opening::tangent_wall(&basis, hole);
+        out.extend(crate::opening::build_opening_in_wall(
+            &local, opening, hole, base, interior, opts, &hosted,
+        ));
+    }
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ use crate::editor::roof_view::{
     pitch_label, CeilingRecord, RoofPlaneRecord, RoofSettings, ROOF_MATERIALS,
 };
 use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Stroke, Ui};
+use plan_core::defaults::{EaveCut, RoofDetailDefaults};
 use plan_core::LineStyle;
 use plan_roof::{DormerKind, DormerSpec, ReturnKind, ReturnSpec};
 
@@ -42,11 +43,151 @@ fn material_combo(ui: &mut Ui, salt: &str, value: &mut String) {
         });
 }
 
+/// A default / on / off choice for an option a plane can set for itself.
+fn tri_state(ui: &mut Ui, salt: &str, label: &str, value: &mut Option<bool>) {
+    row(ui, label, |ui| {
+        let shown = match value {
+            None => "Roof Default",
+            Some(true) => "On",
+            Some(false) => "Off",
+        };
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(value, None, "Roof Default");
+                ui.selectable_value(value, Some(true), "On");
+                ui.selectable_value(value, Some(false), "Off");
+            });
+    });
+}
+
+/// A wall type for the roof detail: a combo over `types`, or a text field
+/// when the caller has no list. Empty keeps the wall's own type.
+fn wall_type_row(ui: &mut Ui, salt: &str, label: &str, value: &mut String, types: &[String]) {
+    row(ui, label, |ui| {
+        if types.is_empty() {
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .hint_text("the wall's own type")
+                    .desired_width(160.0),
+            );
+        } else {
+            let shown = if value.is_empty() {
+                "(the wall's own type)".to_string()
+            } else {
+                value.clone()
+            };
+            egui::ComboBox::from_id_salt(salt)
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(value, String::new(), "(the wall's own type)");
+                    for t in types {
+                        ui.selectable_value(value, t.clone(), t);
+                    }
+                });
+        }
+    });
+}
+
+/// The roof detail form shared by Default Settings > Roof Defaults and the
+/// Build Roof dialog (RF-14, RF-15, RF-28, RF-31): structure, eave cut,
+/// fascia, soffit, frieze, ridge caps, gutters, rafter tails, attic walls
+/// and the Build Roof baseline rule. `types` are the wall types to choose
+/// from (empty: type the name).
+pub fn detail_form(ui: &mut Ui, fields: &mut Fields, d: &mut RoofDetailDefaults, types: &[String]) {
+    section(ui, "Roof Structure");
+    fields.length_row(ui, "Thickness", "rd_thickness", &mut d.thickness);
+    ui.checkbox(&mut d.baseline_at_plate, "Roof baseline at top plate")
+        .on_hover_text(
+            "Build Roof seats the underside of the structure on the top plate at the wall, so gable corners meet the plate with no gap",
+        );
+    section(ui, "Eaves");
+    row(ui, "Eave Cut", |ui| {
+        egui::ComboBox::from_id_salt("rd_eave_cut")
+            .selected_text(d.eave_cut.label())
+            .show_ui(ui, |ui| {
+                for c in EaveCut::ALL {
+                    ui.selectable_value(&mut d.eave_cut, c, c.label());
+                }
+            });
+    });
+    ui.checkbox(&mut d.fascia, "Fascia");
+    if d.fascia {
+        fields.length_row(ui, "Fascia Height", "rd_fascia_h", &mut d.fascia_height);
+        fields.length_row(
+            ui,
+            "Fascia Thickness",
+            "rd_fascia_t",
+            &mut d.fascia_thickness,
+        );
+    }
+    ui.checkbox(&mut d.rake_fascia, "Rake Fascia");
+    ui.checkbox(&mut d.soffit, "Soffit");
+    ui.add_enabled(
+        d.soffit,
+        egui::Checkbox::new(&mut d.sloped_soffit, "Sloped Soffit"),
+    );
+    ui.checkbox(&mut d.frieze, "Frieze Board");
+    ui.checkbox(&mut d.ridge_caps, "Ridge and Hip Caps")
+        .on_hover_text("Drawn on planes with Include Ridge Caps on");
+    ui.checkbox(&mut d.gutters, "Gutters");
+    if d.gutters {
+        fields.length_row(ui, "Gutter Size", "rd_gutter", &mut d.gutter_size);
+    }
+    ui.checkbox(&mut d.flashing, "Flashing at Butting Roofs");
+    section(ui, "Rafter Tails");
+    ui.checkbox(&mut d.rafter_tails, "Exposed Rafter Tails")
+        .on_hover_text("Tails replace the soffit under the eaves");
+    if d.rafter_tails {
+        fields.length_row(
+            ui,
+            "Spacing (on center)",
+            "rd_rafter_sp",
+            &mut d.rafter_spacing,
+        );
+        fields.length_row(ui, "Rafter Width", "rd_rafter_w", &mut d.rafter_width);
+        fields.length_row(ui, "Rafter Depth", "rd_rafter_d", &mut d.rafter_depth);
+    }
+    section(ui, "Walls Under the Roof");
+    ui.checkbox(&mut d.auto_attic_walls, "Auto Attic Walls");
+    wall_type_row(
+        ui,
+        "rd_attic_type",
+        "Attic Wall Type",
+        &mut d.attic_wall_type,
+        types,
+    );
+    wall_type_row(
+        ui,
+        "rd_lower_type",
+        "Lower Wall Type if Split by Butting Roof",
+        &mut d.lower_wall_type,
+        types,
+    );
+    ui.checkbox(&mut d.roof_cuts_wall_at_bottom, "Roof Cuts Wall at Bottom")
+        .on_hover_text("A wall standing over a lower roof is cut along it");
+}
+
+/// Why `d` cannot be used, if it cannot.
+pub fn detail_error(d: &RoofDetailDefaults) -> Option<String> {
+    if d.thickness <= 0.0 {
+        Some("The roof thickness must be more than zero".into())
+    } else if d.fascia && (d.fascia_height < 0.0 || d.fascia_thickness < 0.0) {
+        Some("The fascia size cannot be negative".into())
+    } else if d.rafter_tails
+        && (d.rafter_spacing < 1.0 || d.rafter_width <= 0.0 || d.rafter_depth <= 0.0)
+    {
+        Some("Rafter spacing must be at least 1 inch, with a positive width and depth".into())
+    } else {
+        None
+    }
+}
+
 // ===================================================================
 // Build Roof
 // ===================================================================
 
-const BUILD_TABS: &[Tab] = &[on("Roof"), on("Options"), on("Materials")];
+const BUILD_TABS: &[Tab] = &[on("Roof"), on("Options"), on("Materials"), on("Detail")];
 
 struct BuildPages {
     s: RoofSettings,
@@ -66,7 +207,7 @@ impl SpecPages for BuildPages {
         } else if self.s.pitch < MIN_PITCH || self.s.pitch > MAX_PITCH {
             Some("Pitch must be between 0.5 and 24 in 12".into())
         } else {
-            None
+            detail_error(&self.s.detail)
         }
     }
 
@@ -113,12 +254,13 @@ impl SpecPages for BuildPages {
                 dis_check(ui, "Trusses", false);
                 ui.weak("Roof framing is a placeholder until plan-framing exists.");
             }
-            _ => {
+            2 => {
                 section(ui, "Roofing");
                 row(ui, "Material", |ui| {
                     material_combo(ui, "build_roof_material", &mut self.s.material);
                 });
             }
+            _ => detail_form(ui, &mut self.fields, &mut self.s.detail, &[]),
         }
     }
 
@@ -341,9 +483,43 @@ impl SpecPages for PlanePages {
             3 => {
                 section(ui, "Eaves and Ridge");
                 ui.checkbox(&mut self.draft.ridge_caps, "Include Ridge Caps")
-                    .on_hover_text("Stored; ridge caps are not modeled yet");
-                ui.checkbox(&mut self.draft.gutters, "Include Gutter")
-                    .on_hover_text("Stored; gutters are not modeled yet");
+                    .on_hover_text(
+                        "Ridge and hip caps along this plane (Roof Defaults must allow them)",
+                    );
+                row(ui, "Eave Cut", |ui| {
+                    let shown = self
+                        .draft
+                        .eave
+                        .eave_cut
+                        .map_or("Roof Default", EaveCut::label);
+                    egui::ComboBox::from_id_salt("plane_eave_cut")
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.draft.eave.eave_cut,
+                                None,
+                                "Roof Default",
+                            );
+                            for c in EaveCut::ALL {
+                                ui.selectable_value(
+                                    &mut self.draft.eave.eave_cut,
+                                    Some(c),
+                                    c.label(),
+                                );
+                            }
+                        });
+                });
+                tri_state(
+                    ui,
+                    "plane_tails",
+                    "Rafter Tails",
+                    &mut self.draft.eave.rafter_tails,
+                );
+                tri_state(ui, "plane_fascia", "Fascia", &mut self.draft.eave.fascia);
+                tri_state(ui, "plane_soffit", "Soffit", &mut self.draft.eave.soffit);
+                tri_state(ui, "plane_frieze", "Frieze", &mut self.draft.eave.frieze);
+                tri_state(ui, "plane_gutters", "Gutters", &mut self.draft.eave.gutters);
+                self.draft.gutters = self.draft.eave.gutters == Some(true);
             }
             4 => {
                 section(ui, "Roofing");
@@ -875,7 +1051,7 @@ mod tests {
         let d = BuildRoofDialog::new(s.clone(), "Over 1st Floor");
         assert_eq!(d.settings(), &s);
         assert!(d.pages.error().is_none());
-        assert_eq!(BUILD_TABS.len(), 3);
+        assert_eq!(BUILD_TABS.len(), 4);
     }
 
     #[test]

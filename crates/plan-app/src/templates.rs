@@ -28,6 +28,9 @@ use plan_docs::SheetSize;
 use plan_layout::{Layout, TitleBlockTemplate};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Mutex;
 
 /// The key in `settings.json`.
 pub const SETTINGS_KEY: &str = "templates";
@@ -103,28 +106,201 @@ pub fn write_settings_at(path: &Path, s: &TemplateSettings) -> Result<(), String
 
 /// The saved settings; on the first run (no `templates` key) Chief's default
 /// templates are detected under `home` and saved. The flag is `true` when
-/// this call did the detecting.
+/// this call did the detecting. (The app scans through [`begin_detection`];
+/// this is the synchronous form.)
+#[cfg(test)]
 pub fn load_or_detect_at(path: &Path, home: Option<&Path>) -> (TemplateSettings, bool) {
+    let (settings, detected, _) = load_or_detect_reporting(path, home);
+    (settings, detected)
+}
+
+/// [`load_or_detect_at`] that also says why the write failed. A read-only
+/// home still gets the detected paths for this run.
+fn load_or_detect_reporting(
+    path: &Path,
+    home: Option<&Path>,
+) -> (TemplateSettings, bool, Option<String>) {
     if let Some(s) = read_settings_at(path) {
-        return (s, false);
+        return (s, false, None);
     }
+    let settings = detect_settings(home);
+    let err = write_settings_at(path, &settings).err();
+    (settings, true, err)
+}
+
+/// The template settings in force. This never scans the home folder (the scan
+/// of a first launch takes seconds and runs on a thread, see
+/// [`begin_detection`]): the saved `templates` key, else what this session's
+/// detection found (even when it could not be saved), else no templates.
+pub fn load_settings() -> TemplateSettings {
+    settings_path()
+        .and_then(|p| read_settings_at(&p))
+        .or_else(session_detected)
+        .unwrap_or_default()
+}
+
+// ===================================================================
+// First-launch detection, off the main thread
+// ===================================================================
+
+/// What the first-launch scan found.
+#[derive(Debug, Clone)]
+pub struct Detection {
+    /// The templates found (and the settings of this session).
+    pub settings: TemplateSettings,
+    /// The defaults they seed, decoded on the scan's thread.
+    pub defaults: PlanDefaults,
+    /// A status-bar note about the seeding.
+    pub note: Option<String>,
+    /// Why the settings file could not be written; the session still uses
+    /// `settings`, and no later call scans again.
+    pub save_error: Option<String>,
+}
+
+/// The state of this session's first-launch scan: whether it started, the
+/// scan in flight, and its result, which is kept even when the settings file
+/// could not be written, so a read-only home is scanned once per session, not
+/// on every call that wants the settings.
+pub struct Startup {
+    begun: AtomicBool,
+    pending: Mutex<Option<Receiver<Detection>>>,
+    session: Mutex<Option<TemplateSettings>>,
+}
+
+/// The one of this process.
+static STARTUP: Startup = Startup::new();
+
+impl Startup {
+    pub const fn new() -> Self {
+        Self {
+            begun: AtomicBool::new(false),
+            pending: Mutex::new(None),
+            session: Mutex::new(None),
+        }
+    }
+
+    /// What the scan found, once it has finished.
+    pub fn session(&self) -> Option<TemplateSettings> {
+        self.session.lock().ok()?.clone()
+    }
+
+    /// Runs `detect` on a thread unless the machine already has saved
+    /// settings (`saved`), the scan began, or its result is in. True when a
+    /// scan started.
+    pub fn begin(&self, saved: bool, detect: impl FnOnce() -> Detection + Send + 'static) -> bool {
+        if saved || self.session().is_some() || self.begun.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        let rx = spawn_detection(detect);
+        if let Ok(mut p) = self.pending.lock() {
+            *p = Some(rx);
+        }
+        true
+    }
+
+    /// Is a scan running?
+    pub fn running(&self) -> bool {
+        self.pending.lock().is_ok_and(|p| p.is_some())
+    }
+
+    /// The finished scan, once. Remembers its settings for the session.
+    pub fn poll(&self) -> Option<Detection> {
+        let mut guard = self.pending.lock().ok()?;
+        let rx = guard.as_ref()?;
+        match rx.try_recv() {
+            Ok(d) => {
+                *guard = None;
+                drop(guard);
+                if let Ok(mut s) = self.session.lock() {
+                    *s = Some(d.settings.clone());
+                }
+                Some(d)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                *guard = None;
+                None
+            }
+        }
+    }
+}
+
+impl Default for Startup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn session_detected() -> Option<TemplateSettings> {
+    STARTUP.session()
+}
+
+/// Runs `detect` on its own thread; the result arrives on the channel.
+pub fn spawn_detection(detect: impl FnOnce() -> Detection + Send + 'static) -> Receiver<Detection> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(detect());
+    });
+    rx
+}
+
+/// The scan itself: Chief's default templates under `home`, saved to the
+/// settings file at `path` (best effort), and the defaults they seed.
+pub fn detect_and_seed(path: Option<&Path>, home: Option<&Path>, base: PlanDefaults) -> Detection {
+    let (settings, save_error) = match path {
+        Some(p) => {
+            let (s, _, err) = load_or_detect_reporting(p, home);
+            (s, err)
+        }
+        None => (
+            detect_settings(home),
+            Some(crate::paths::NO_HOME.to_string()),
+        ),
+    };
+    let (defaults, note) = seeded_defaults(&settings, base);
+    Detection {
+        settings,
+        defaults,
+        note,
+        save_error,
+    }
+}
+
+fn detect_settings(home: Option<&Path>) -> TemplateSettings {
     let found = home.map(plan_config::detect_chief_templates);
-    let settings = TemplateSettings {
+    TemplateSettings {
         plan: found.as_ref().and_then(|f| f.plan.clone()),
         layout: found.as_ref().and_then(|f| f.layout.clone()),
         seed_from_chief: true,
-    };
-    // Best effort: a read-only home still gets the detected paths this run.
-    let _ = write_settings_at(path, &settings);
-    (settings, true)
+    }
 }
 
-/// [`load_or_detect_at`] for the real `~/.plan-studio/settings.json`.
-pub fn load_settings() -> TemplateSettings {
-    match settings_path() {
-        Some(p) => load_or_detect_at(&p, crate::paths::home_dir().as_deref()).0,
-        None => TemplateSettings::default(),
-    }
+/// Starts the first-launch scan on a thread when this machine has no saved
+/// `templates` key and the session has not scanned yet. Returns whether a scan
+/// started. The window must not wait for it: [`poll_detection`] hands the
+/// result over once per frame.
+pub fn begin_detection() -> bool {
+    let path = settings_path();
+    let saved = path.as_deref().and_then(read_settings_at).is_some();
+    let home = crate::paths::home_dir();
+    STARTUP.begin(saved, move || {
+        detect_and_seed(
+            path.as_deref(),
+            home.as_deref(),
+            crate::plan_defaults::embedded(),
+        )
+    })
+}
+
+/// Is the first-launch scan still running? (The window asks to be redrawn
+/// while it is, so the result is picked up even when nothing else happens.)
+pub fn detection_running() -> bool {
+    STARTUP.running()
+}
+
+/// The finished scan, once (call every frame; cheap).
+pub fn poll_detection() -> Option<Detection> {
+    STARTUP.poll()
 }
 
 /// Saves `s` to the real settings file.
@@ -1117,5 +1293,105 @@ mod tests {
         let (_, layout) = real_templates().expect("Chief templates are installed");
         let info = decode_layout_file(&layout).unwrap();
         assert_eq!(layout_sheet(Some(&info)), SheetSize::ArchC);
+    }
+
+    fn empty_detection(plan: Option<&str>) -> Detection {
+        Detection {
+            settings: TemplateSettings {
+                plan: plan.map(PathBuf::from),
+                layout: None,
+                seed_from_chief: true,
+            },
+            defaults: PlanDefaults::chief_x18_daniel(),
+            note: None,
+            save_error: None,
+        }
+    }
+
+    fn wait(start: &Startup) -> Detection {
+        for _ in 0..500 {
+            if let Some(d) = start.poll() {
+                return d;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the scan did not finish");
+    }
+
+    #[test]
+    fn the_first_launch_scan_runs_on_its_own_thread_and_only_once() {
+        let start = Startup::new();
+        let main_thread = std::thread::current().id();
+        let seen = std::sync::Arc::new(Mutex::new(None));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (seen2, calls2) = (seen.clone(), calls.clone());
+        // The window does not wait: `begin` returns before the scan is done.
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let gate2 = gate.clone();
+        assert!(start.begin(false, move || {
+            gate2.wait();
+            calls2.fetch_add(1, Ordering::SeqCst);
+            *seen2.lock().unwrap() = Some(std::thread::current().id());
+            empty_detection(Some("/found/plan.plan"))
+        }));
+        assert!(start.running());
+        assert!(start.poll().is_none(), "nothing yet while the scan waits");
+        gate.wait();
+        let d = wait(&start);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_ne!(seen.lock().unwrap().unwrap(), main_thread);
+        assert_eq!(
+            d.settings.plan.as_deref(),
+            Some(Path::new("/found/plan.plan"))
+        );
+        assert!(!start.running());
+        // The result is the session's settings, and a second start is refused.
+        assert_eq!(start.session(), Some(d.settings));
+        assert!(!start.begin(false, || panic!("must not scan again")));
+    }
+
+    #[test]
+    fn saved_settings_skip_the_scan() {
+        let start = Startup::new();
+        assert!(!start.begin(true, || panic!("saved settings need no scan")));
+        assert!(!start.running());
+        assert!(start.session().is_none());
+    }
+
+    #[test]
+    fn a_failed_settings_write_does_not_scan_again_this_session() {
+        let home = temp_dir("readonly-home");
+        // The settings path is "inside" a file, so it can never be written.
+        let blocker = home.join("blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let path = blocker.join("settings.json");
+        let start = Startup::new();
+        let p2 = path.clone();
+        let h2 = home.clone();
+        assert!(start.begin(false, move || {
+            detect_and_seed(Some(&p2), Some(&h2), PlanDefaults::chief_x18_daniel())
+        }));
+        let d = wait(&start);
+        assert!(d.save_error.is_some(), "the write must have failed");
+        // The session keeps the result; nothing scans again.
+        assert!(start.session().is_some());
+        assert!(!start.begin(false, || panic!("rescanned after a failed write")));
+        assert!(read_settings_at(&path).is_none());
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn the_detection_function_reads_templates_without_touching_the_main_thread() {
+        // Chief's templates under a scratch home: detect_and_seed finds the
+        // layout and plan files by name and saves the settings.
+        let home = temp_dir("detect-home");
+        let file = home.join(".plan-studio").join("settings.json");
+        let d = detect_and_seed(Some(&file), Some(&home), PlanDefaults::chief_x18_daniel());
+        assert!(d.save_error.is_none());
+        assert_eq!(read_settings_at(&file), Some(d.settings.clone()));
+        // With no Chief install nothing is found and the defaults are the base.
+        assert!(d.settings.plan.is_none());
+        assert_eq!(d.defaults, PlanDefaults::chief_x18_daniel());
+        std::fs::remove_dir_all(&home).ok();
     }
 }

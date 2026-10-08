@@ -100,6 +100,16 @@ impl Lens {
         }
     }
 
+    /// The pinhole ray through `(px, py)`, ignoring the lens aperture.
+    pub fn centre_ray(&self, px: f32, py: f32) -> (V3, V3) {
+        let x = (2.0 * px / self.width - 1.0) * self.aspect * self.half_h;
+        let y = (1.0 - 2.0 * py / self.height) * self.half_h;
+        (
+            self.origin,
+            (self.forward + self.right * x + self.up * y).normalized(),
+        )
+    }
+
     /// Ray through image position `(px, py)` (pixels, origin top-left).
     pub fn ray(&self, px: f32, py: f32, rng: &mut Rng) -> (V3, V3) {
         let x = (2.0 * px / self.width - 1.0) * self.aspect * self.half_h;

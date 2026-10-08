@@ -37,6 +37,8 @@ use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 pub mod chief;
+pub mod make;
+pub mod user;
 
 /// Pixels the pointer must travel before a press becomes a drag.
 const DRAG_THRESHOLD_PX: f32 = 3.0;
@@ -95,6 +97,7 @@ pub fn set_active_item(cx: &mut EditorContext, catalog_id: &str) -> bool {
     match find_item(catalog_id) {
         Some(item) => {
             ACTIVE.with(|a| *a.borrow_mut() = Some(item.id.clone()));
+            user::touch_recent(&item.id);
             cx.status = format!("Library Symbol: click to place {}", item.name);
             true
         }
@@ -166,6 +169,7 @@ pub fn placement_for(cx: &EditorContext, item: &CatalogItem, p: &PointerEvent) -
         item.height,
     );
     s.elevation = item.elevation;
+    s.layer = user::layer_of(item);
     // A saved picture places the picture.
     s.image = super::images::spec_from_item(item);
     // Free placement: the symbol's center sits on the snapped point, so the
@@ -173,14 +177,24 @@ pub fn placement_for(cx: &EditorContext, item: &CatalogItem, p: &PointerEvent) -
     let free = |s: &mut PlacedSymbol, center: Point| {
         s.position = Point::new(center.x, center.y - item.depth * 0.5);
     };
+    // What the item snaps to (its placement, or its own auto-rotate choice).
+    let rules = plan_library::rules::placement_rules(item);
     match item.placement {
         Placement::WallMounted => {
-            if !s.auto_rotate_to_wall(&cx.floor().walls) {
+            if !(rules.auto_rotate && s.auto_rotate_to_wall(&cx.floor().walls)) {
                 s.position = p.snapped;
                 s.angle = 0.0;
             }
         }
-        Placement::FreeStanding => free(&mut s, p.snapped),
+        Placement::FreeStanding => {
+            // A free-standing item that turns to the wall (a bookcase):
+            // try the wall with the cursor as the back-center first.
+            s.position = p.snapped;
+            if !(rules.auto_rotate && s.auto_rotate_to_wall(&cx.floor().walls)) {
+                s.angle = 0.0;
+                free(&mut s, p.snapped);
+            }
+        }
         Placement::Ceiling => {
             free(&mut s, p.snapped);
             s.elevation = (cx.floor().ceiling_height - item.height).max(0.0);
@@ -447,11 +461,21 @@ impl Tool for LibraryTool {
             cx.status = self.hint();
             return ToolResult::consumed();
         };
-        let sym = placement_for(cx, &item, &p);
+        let mut sym = placement_for(cx, &item, &p);
+        // An appliance dropped near its bay turns and sits in the cabinet's bay.
+        placed::snap_symbol_to_bay(cx.floor(), &mut sym, placed::BAY_SNAP_REACH);
         cx.begin_change("Place Symbol");
         let fl = cx.floor;
-        let id = cx.project.add_symbol(fl, sym);
-        cx.selection.set(ObjectRef::Symbol(id));
+        // Cabinets, CAD blocks and text come back as real plan objects.
+        let obj = match user::place_payload(cx, &item, &sym) {
+            Some(o) => o,
+            None => {
+                user::ensure_layer(cx, &sym.layer);
+                ObjectRef::Symbol(cx.project.add_symbol(fl, sym))
+            }
+        };
+        cx.selection.set(obj);
+        user::touch_recent(&item.id);
         cx.mark_dirty();
         cx.status = format!("Placed {}", item.name);
         ToolResult::committed("Place Symbol")
@@ -601,6 +625,35 @@ mod tests {
         let s3 = &cx.floor().symbols[2];
         assert_eq!(s3.angle, 0.0);
         assert_eq!(s3.position, Point::new(100.0, 100.0));
+    }
+
+    #[test]
+    fn the_auto_rotate_option_decides_whether_an_item_snaps_to_the_wall() {
+        let cx = setup();
+        // 4" above the wall's upper face (face at y = 3).
+        let p = PointerEvent::at(&cx, Point::new(100.0, 7.0));
+        // A free-standing item that turns to the wall snaps flush.
+        let mut shelf = first_of(Placement::FreeStanding).clone();
+        shelf.auto_rotate = Some(true);
+        let s = placement_for(&cx, &shelf, &p);
+        assert!((s.position.y - 3.0).abs() < 1e-9 && s.angle.abs() < 1e-9, "{:?}", s.position);
+        // Without the option it just centers on the click.
+        shelf.auto_rotate = None;
+        let s = placement_for(&cx, &shelf, &p);
+        assert!((symbol_center(&s).y - p.snapped.y).abs() < 1e-9);
+        // A wall-mounted item told never to turn stays where it was clicked.
+        let mut vanity = first_of(Placement::WallMounted).clone();
+        vanity.auto_rotate = Some(false);
+        let s = placement_for(&cx, &vanity, &p);
+        assert_eq!((s.position, s.angle), (p.snapped, 0.0));
+        // Far from walls a snapping free item is placed freely.
+        shelf.auto_rotate = Some(true);
+        let far = PointerEvent::at(&cx, Point::new(100.0, 100.0));
+        let s = placement_for(&cx, &shelf, &far);
+        assert!((symbol_center(&s).y - far.snapped.y).abs() < 1e-9);
+        // The item's default layer follows its category or its own choice.
+        shelf.layer = Some("Furniture".into());
+        assert_eq!(placement_for(&cx, &shelf, &far).layer, "Furniture");
     }
 
     #[test]

@@ -11,6 +11,8 @@
 //!   Hole: click a polygon, Enter closes it, then the elevation or height is
 //!   typed (Flat Region and Terrain Hole need no value);
 //! * Build Terrain: one click builds the surface and shows the contours (CB-53);
+//!   Building Pad: one click levels the terrain under the building to the
+//!   first floor less the terrain-to-first-floor distance;
 //! * Elevation Spline, Spline Road/Driveway/Sidewalk: like their polyline
 //!   versions, with the clicks as control points of a Catmull-Rom curve;
 //! * Terrain Break: a polyline, then the elevation it is held at;
@@ -23,7 +25,16 @@
 //! * Garden Bed, Grass Region, Water Feature: polygons; Stepping Stone, Plant
 //!   and Sprinkler: polylines or splines the objects are laid along. They take
 //!   their sizes from defaults; the Specification (double-click the object)
-//!   edits them (`dialogs::terrain::ObjectDialog`, one undo step).
+//!   edits them (`dialogs::terrain::ObjectDialog`, one undo step);
+//! * North Pointer: click the center, then toward true north (the distance
+//!   sizes the pointer); Scale Bar: click both ends. Both are CAD objects on
+//!   the "Site Plan" layer ([`crate::editor::site_view::place_north_pointer`]);
+//! * the Elevation Point, Line and Spline tools move what they are pressed on:
+//!   drag an existing point or line (a click without a drag still starts a new
+//!   one there);
+//! * kidney and spline outlines keep their control points, so the Select
+//!   tool's handles edit the smooth curve; features are graded pads (cut and
+//!   fill, see `plan_terrain::grading`), walls and curbs cut the surface.
 //!
 //! The typed value goes through `cx.temp.editing` (the shell forwards typed
 //! text while it is set); Enter accepts, an empty field takes the default
@@ -38,9 +49,10 @@ use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::terrain::{ObjectDialog, TerrainDialog};
 use crate::dialogs::Outcome;
 use crate::editor::site_view::{
-    draw_polyline, edit_terrain, ensure_landscape_layers, hit_terrain, load_terrain,
-    move_terrain_element, object_at, remove_terrain_element, replace_object, terrain_view,
-    TerrainHit, TerrainObject, TerrainRecord,
+    auto_building_pad, build_surface_with_progress, draw_polyline, edit_terrain, ensure_landscape_layers, hit_points,
+    hit_terrain, load_terrain, move_terrain_element, object_at, place_north_pointer,
+    place_scale_bar, remove_terrain_element, replace_object, terrain_key, TerrainHit,
+    TerrainObject, TerrainRecord,
 };
 use crate::editor::tempdim::EditField;
 use crate::editor::{Camera, EditorContext};
@@ -49,9 +61,10 @@ use plan_core::geometry::Point;
 use plan_core::units::{fmt_ft_in, parse_ft_in};
 use plan_core::WallCurve;
 use plan_terrain::{
-    arc_polyline, flatten_spline, kidney_outline, rectangle_outline, ElevationLine, ElevationPoint,
-    ElevationRegion, Feature, FeatureKind, Landscape, LandscapeKind, Modifier, ModifierKind,
-    RoadKind, RoadStrip, ShapeKind, TerrainBreak, TerrainWall, WallKind,
+    arc_polyline, closed_spline, flatten_spline, kidney_control_points, rectangle_outline,
+    ElevationLine, ElevationPoint, ElevationRegion, Feature, FeatureKind, Landscape, LandscapeKind,
+    Modifier, ModifierKind, RoadKind, RoadStrip, ShapeKind, TerrainBreak, TerrainWall, WallKind,
+    DEFAULT_TENSION,
 };
 use std::cell::RefCell;
 
@@ -65,10 +78,14 @@ const DEFAULT_REGION_SHIFT: f64 = 24.0;
 const DEFAULT_ROAD_WIDTH: f64 = 240.0;
 const DEFAULT_DRIVEWAY_WIDTH: f64 = 144.0;
 const DEFAULT_SIDEWALK_WIDTH: f64 = 48.0;
+/// Default crown of a new road, inches.
+const DEFAULT_ROAD_CROWN: f64 = 3.0;
+/// Default grade step a new terrain wall holds back, inches.
+const DEFAULT_WALL_RETAIN: f64 = 24.0;
 /// Default height of a new terrain feature slab, inches.
 const DEFAULT_FEATURE_HEIGHT: f64 = 4.0;
 /// Points per span of a flattened spline.
-const SPLINE_SAMPLES: usize = 8;
+pub const SPLINE_SAMPLES: usize = 8;
 /// The `EditField` index that marks "the terrain tool's inline value".
 const ENTRY_INDEX: usize = usize::MAX;
 
@@ -115,6 +132,9 @@ pub enum TerrainVariant {
     PlantSpline,
     SprinklerPolyline,
     SprinklerSpline,
+    NorthPointer,
+    ScaleBar,
+    BuildingPad,
 }
 
 /// What the clicks of a flavor draw.
@@ -130,11 +150,14 @@ enum Draw {
     Kidney,
     /// Three clicks: start, end, then the bulge of the arc.
     Arc,
+    /// Two clicks (or a drag): a symbol placed from a center or start to a
+    /// second point (North Pointer, Scale Bar).
+    Pair,
 }
 
 impl TerrainVariant {
     /// Every flavor, in menu order.
-    pub const ALL: [TerrainVariant; 40] = [
+    pub const ALL: [TerrainVariant; 43] = [
         TerrainVariant::Perimeter,
         TerrainVariant::ElevationPoint,
         TerrainVariant::ElevationLine,
@@ -175,6 +198,9 @@ impl TerrainVariant {
         TerrainVariant::PlantSpline,
         TerrainVariant::SprinklerPolyline,
         TerrainVariant::SprinklerSpline,
+        TerrainVariant::NorthPointer,
+        TerrainVariant::ScaleBar,
+        TerrainVariant::BuildingPad,
     ];
 
     pub fn name(self) -> &'static str {
@@ -219,6 +245,9 @@ impl TerrainVariant {
             TerrainVariant::PlantSpline => "Spline Plant",
             TerrainVariant::SprinklerPolyline => "Polyline Sprinkler",
             TerrainVariant::SprinklerSpline => "Spline Sprinkler",
+            TerrainVariant::NorthPointer => "North Pointer",
+            TerrainVariant::ScaleBar => "Scale Bar",
+            TerrainVariant::BuildingPad => "Building Pad",
         }
     }
 
@@ -243,9 +272,10 @@ impl TerrainVariant {
             | V::PlantSpline
             | V::SprinklerPolyline
             | V::SprinklerSpline => Draw::Polyline,
-            V::Build => Draw::Command,
+            V::Build | V::BuildingPad => Draw::Command,
             V::CurvedWall | V::CurvedCurb => Draw::Arc,
             V::RectFeature => Draw::Rect,
+            V::NorthPointer | V::ScaleBar => Draw::Pair,
             V::KidneyFeature | V::BedKidney | V::GrassKidney => Draw::Kidney,
             _ => Draw::Polygon,
         }
@@ -335,7 +365,7 @@ impl TerrainVariant {
     fn min_points(self) -> usize {
         match self.draw() {
             Draw::Polygon | Draw::Kidney | Draw::Arc => 3,
-            Draw::Polyline | Draw::Rect => 2,
+            Draw::Polyline | Draw::Rect | Draw::Pair => 2,
             _ => 1,
         }
     }
@@ -344,7 +374,8 @@ impl TerrainVariant {
 /// The shape waiting for its typed value.
 enum Pending {
     Point(Point),
-    Line(Vec<Point>),
+    /// An elevation line: the points and, for a spline, its control points.
+    Line(Vec<Point>, Vec<Point>),
     Region(Vec<Point>),
     Modifier(ModifierKind, Vec<Point>),
     Road(RoadKind, Vec<Point>),
@@ -372,6 +403,21 @@ pub struct TerrainTool {
     applied_object: RefCell<Option<(TerrainHit, TerrainObject)>>,
     /// The first corner of a rectangle was pressed: releasing elsewhere ends it.
     pressed: bool,
+    /// An existing elevation point or line pressed on, to be dragged.
+    drag: Option<Drag>,
+    /// The press that armed `drag` is being replayed as a plain click.
+    replay: bool,
+}
+
+/// A press on an existing elevation point or line: a drag moves it, a click
+/// without a drag goes on as an ordinary click.
+struct Drag {
+    hit: TerrainHit,
+    /// Where the press was (snapped).
+    from: Point,
+    now: Point,
+    moved: bool,
+    event: PointerEvent,
 }
 
 impl Default for TerrainTool {
@@ -387,6 +433,8 @@ impl Default for TerrainTool {
             object_dialog: RefCell::new(None),
             applied_object: RefCell::new(None),
             pressed: false,
+            drag: None,
+            replay: false,
         }
     }
 }
@@ -413,15 +461,46 @@ pub fn parse_value(text: &str) -> Option<f64> {
     }
 }
 
-/// Build Terrain: marks the terrain built so the surface and contours show.
-/// Returns the number of contour levels.
-pub fn build_terrain_now(cx: &mut EditorContext) -> Result<usize, &'static str> {
+/// What a Build Terrain made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildSummary {
+    pub levels: usize,
+    pub triangles: usize,
+    pub millis: u128,
+}
+
+/// Build Terrain: marks the terrain built (the baseline an auto-rebuild-off
+/// view goes stale against) and builds the surface and contours, reporting the
+/// build stage by stage in the readout.
+pub fn build_terrain_summary(cx: &mut EditorContext) -> Result<BuildSummary, &'static str> {
     let rec = load_terrain(&cx.project).unwrap_or_default();
     if !rec.has_perimeter() {
         return Err("Draw a Terrain Perimeter first");
     }
-    edit_terrain(cx, "Build Terrain", |r| r.built = true);
-    Ok(terrain_view(&cx.project).map_or(0, |v| v.contours.len()))
+    edit_terrain(cx, "Build Terrain", |r| {
+        r.built = true;
+        r.built_key = terrain_key(r);
+    });
+    let rec = load_terrain(&cx.project).unwrap_or_default();
+    let started = std::time::Instant::now();
+    let (surface, contours) = build_surface_with_progress(&rec, &mut |stage, fraction| {
+        cx.readout = Some(format!(
+            "Build Terrain: {} ({:.0}%)",
+            stage.label(),
+            fraction * 100.0
+        ));
+    });
+    cx.readout = None;
+    Ok(BuildSummary {
+        levels: contours.len(),
+        triangles: surface.triangles.len(),
+        millis: started.elapsed().as_millis(),
+    })
+}
+
+/// Build Terrain: returns the number of contour levels.
+pub fn build_terrain_now(cx: &mut EditorContext) -> Result<usize, &'static str> {
+    build_terrain_summary(cx).map(|s| s.levels)
 }
 
 impl TerrainTool {
@@ -440,6 +519,7 @@ impl TerrainTool {
 
     fn reset(&mut self, cx: &mut EditorContext) {
         self.points.clear();
+        self.drag = None;
         self.entry = None;
         cx.temp.editing = None;
         cx.readout = None;
@@ -458,21 +538,13 @@ impl TerrainTool {
             return Some(ToolResult::committed(&label));
         }
         let draft = self.applied.borrow_mut().take()?;
-        edit_terrain(cx, "Terrain Specification", |rec| {
-            rec.contour_interval = draft.contour_interval;
-            rec.layer = draft.layer.clone();
-            let t = &mut rec.terrain;
-            t.subfloor_height_above_terrain = draft.terrain.subfloor_height_above_terrain;
-            t.building_pad_elevation = draft.terrain.building_pad_elevation;
-            t.smoothing = draft.terrain.smoothing;
-            t.grid_spacing = draft.terrain.grid_spacing;
-        });
+        edit_terrain(cx, "Terrain Specification", |rec| rec.apply_spec(&draft));
         Some(ToolResult::committed("Terrain Specification"))
     }
 
     fn begin_entry(&mut self, cx: &mut EditorContext, what: Pending, at: Point) {
         let (prompt, default) = match &what {
-            Pending::Point(_) | Pending::Line(_) | Pending::Region(_) => {
+            Pending::Point(_) | Pending::Line(..) | Pending::Region(_) => {
                 ("Elevation", self.last_elevation)
             }
             Pending::Modifier(ModifierKind::Hill, _) => ("Hill height", DEFAULT_HILL),
@@ -515,7 +587,8 @@ impl TerrainTool {
                 Some(rectangle_outline(a, b))
             }
             Draw::Kidney => {
-                let blob = kidney_outline(ctrl[0], ctrl[1], ctrl[2]);
+                let blob = kidney_control_points(ctrl[0], ctrl[1], ctrl[2])
+                    .map(|control| closed_spline(&control));
                 if blob.is_none() {
                     cx.status =
                         "Click the two ends, then a point off the axis for the width".into();
@@ -529,6 +602,38 @@ impl TerrainTool {
         }
     }
 
+    /// The control points an outline keeps so it can be edited as a curve: the
+    /// ones a kidney is drawn through, or the clicks of a spline (nothing for
+    /// a clicked polyline).
+    fn outline_controls(&self, ctrl: &[Point]) -> Vec<Point> {
+        let v = self.variant;
+        match v.draw() {
+            Draw::Kidney if ctrl.len() >= 3 => {
+                kidney_control_points(ctrl[0], ctrl[1], ctrl[2]).unwrap_or_default()
+            }
+            _ if v.spline() => ctrl.to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// North Pointer and Scale Bar: two clicks make a CAD symbol on the Site
+    /// Plan layer.
+    fn finish_pair(&mut self, cx: &mut EditorContext, ctrl: &[Point]) -> ToolResult {
+        let v = self.variant;
+        let placed = if v == TerrainVariant::NorthPointer {
+            place_north_pointer(cx, ctrl[0], ctrl[1])
+        } else {
+            place_scale_bar(cx, ctrl[0], ctrl[1])
+        };
+        if placed {
+            self.after_commit(cx);
+            ToolResult::committed(v.name())
+        } else {
+            self.reset(cx);
+            ToolResult::consumed()
+        }
+    }
+
     /// Ends the shape: closes a perimeter, adds a hole, flat region, wall,
     /// break or landscape object, or asks for the value the shape needs.
     fn finish(&mut self, cx: &mut EditorContext) -> ToolResult {
@@ -539,6 +644,9 @@ impl TerrainTool {
         }
         let ctrl = std::mem::take(&mut self.points);
         self.pressed = false;
+        if v.draw() == Draw::Pair {
+            return self.finish_pair(cx, &ctrl);
+        }
         let Some(pts) = self.shape_from(cx, &ctrl) else {
             // Keep the clicks of a polygon so the user can add more; the
             // fixed-count shapes start over.
@@ -550,6 +658,7 @@ impl TerrainTool {
         let at = pts[pts.len() - 1];
         if let Some((kind, shape)) = v.scape() {
             let mut obj = Landscape::new(kind, shape, pts);
+            obj.control = self.outline_controls(&ctrl);
             if kind == LandscapeKind::Plants {
                 scape::apply_plant(&mut obj, &default_plant());
             }
@@ -559,12 +668,15 @@ impl TerrainTool {
             return ToolResult::committed(v.name());
         }
         if let Some(kind) = v.feature() {
+            let control = self.outline_controls(&ctrl);
             edit_terrain(cx, v.name(), |r| {
                 r.terrain.features.push(Feature {
                     kind,
                     polygon: pts,
                     material: "Concrete".into(),
                     height: DEFAULT_FEATURE_HEIGHT,
+                    pad: true,
+                    control,
                     ..Feature::default()
                 });
             });
@@ -575,7 +687,11 @@ impl TerrainTool {
         if let Some(kind) = v.wall() {
             let curved = v.draw() == Draw::Arc;
             edit_terrain(cx, v.name(), |r| {
-                r.terrain.walls.push(TerrainWall::new(kind, pts, curved));
+                let mut wall = TerrainWall::new(kind, pts, curved);
+                if kind == WallKind::Wall {
+                    wall.retain = DEFAULT_WALL_RETAIN;
+                }
+                r.terrain.walls.push(wall);
             });
             ensure_landscape_layers(&mut cx.project);
             self.after_commit(cx);
@@ -610,7 +726,8 @@ impl TerrainTool {
                 ToolResult::committed("Flat Region")
             }
             TerrainVariant::ElevationLine | TerrainVariant::ElevationSpline => {
-                self.begin_entry(cx, Pending::Line(pts), at);
+                let control = if v.spline() { ctrl } else { Vec::new() };
+                self.begin_entry(cx, Pending::Line(pts, control), at);
                 ToolResult::consumed()
             }
             TerrainVariant::Break => {
@@ -673,12 +790,15 @@ impl TerrainTool {
                 });
                 "Elevation Point"
             }
-            Pending::Line(points) => {
+            Pending::Line(points, control) => {
                 self.last_elevation = value;
                 edit_terrain(cx, "Elevation Line", |r| {
-                    r.terrain
-                        .elevation_lines
-                        .push(ElevationLine { points, z: value });
+                    r.terrain.elevation_lines.push(ElevationLine {
+                        points,
+                        z: value,
+                        control,
+                        tension: DEFAULT_TENSION,
+                    });
                 });
                 "Elevation Line"
             }
@@ -728,6 +848,12 @@ impl TerrainTool {
                         centerline,
                         width: value,
                         curb: kind == RoadKind::Road,
+                        crown: if kind == RoadKind::Road {
+                            DEFAULT_ROAD_CROWN
+                        } else {
+                            0.0
+                        },
+                        ..RoadStrip::default()
                     });
                 });
                 "Terrain Road"
@@ -760,8 +886,8 @@ impl TerrainTool {
         let enough = ctrl.len() >= v.min_points();
         match v.draw() {
             Draw::Rect if ctrl.len() >= 2 => (rectangle_outline(ctrl[0], ctrl[1]), true),
-            Draw::Kidney if enough => match kidney_outline(ctrl[0], ctrl[1], ctrl[2]) {
-                Some(blob) => (blob, true),
+            Draw::Kidney if enough => match kidney_control_points(ctrl[0], ctrl[1], ctrl[2]) {
+                Some(control) => (closed_spline(&control), true),
                 None => (ctrl, false),
             },
             Draw::Arc if enough => (
@@ -813,6 +939,51 @@ impl TerrainTool {
             .point
     }
 
+    /// Presses on an existing elevation point or line with an elevation tool
+    /// arm a drag; true when this press did.
+    fn try_arm_drag(&mut self, cx: &mut EditorContext, p: PointerEvent) -> bool {
+        use TerrainVariant as V;
+        if !matches!(
+            self.variant,
+            V::ElevationPoint | V::ElevationLine | V::ElevationSpline
+        ) || !self.points.is_empty()
+            || self.dialog_open()
+            || self.entry.is_some()
+        {
+            return false;
+        }
+        let Some(rec) = load_terrain(&cx.project) else {
+            return false;
+        };
+        match hit_terrain(&rec.terrain, p.world, cx.pick_tol()) {
+            Some(hit @ (TerrainHit::Point(_) | TerrainHit::Line(_))) => {
+                self.drag = Some(Drag {
+                    hit,
+                    from: p.snapped,
+                    now: p.snapped,
+                    moved: false,
+                    event: p,
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The pointer moved with a drag armed.
+    fn drag_to(&mut self, cx: &mut EditorContext, p: &PointerEvent) {
+        let tol = cx.pick_tol();
+        if let Some(d) = &mut self.drag {
+            d.now = p.snapped;
+            d.moved |= d.from.dist(p.snapped) > tol;
+            cx.readout = Some(format!(
+                "Move: {} x {}",
+                cx.fmt_dim(d.now.x - d.from.x),
+                cx.fmt_dim(d.now.y - d.from.y)
+            ));
+        }
+    }
+
     fn update_readout(&self, cx: &mut EditorContext) {
         if self.entry.is_some() {
             return;
@@ -838,7 +1009,14 @@ impl Tool for TerrainTool {
             (_, true) => "Type the value and press Enter (Esc cancels)".into(),
             (TerrainVariant::Build, _) => "Build Terrain: click to build the terrain".into(),
             (TerrainVariant::ElevationPoint, _) => {
-                "Elevation Point: click, then type the elevation".into()
+                "Elevation Point: click, then type the elevation (drag a point to move it)".into()
+            }
+            (TerrainVariant::NorthPointer, _) => {
+                "North Pointer: click the center, then click toward true north".into()
+            }
+            (TerrainVariant::ScaleBar, _) => "Scale Bar: click the start, then the end".into(),
+            (TerrainVariant::BuildingPad, _) => {
+                "Building Pad: click to level the terrain under the building".into()
             }
             (v, _) => match v.draw() {
                 Draw::Polygon if v.spline() => format!(
@@ -900,6 +1078,14 @@ impl Tool for TerrainTool {
         if let Some(r) = self.flush(cx) {
             return r;
         }
+        if self.drag.is_some() && p.down {
+            self.drag_to(cx, &p);
+            self.hover = Some(p.snapped);
+            return ToolResult {
+                repaint: true,
+                ..ToolResult::consumed()
+            };
+        }
         self.hover = Some(self.point_for(cx, &p));
         self.update_readout(cx);
         ToolResult {
@@ -915,14 +1101,32 @@ impl Tool for TerrainTool {
         if self.dialog_open() || self.entry.is_some() {
             return ToolResult::consumed();
         }
+        if !std::mem::take(&mut self.replay) && self.try_arm_drag(cx, p) {
+            return ToolResult::consumed();
+        }
         let v = self.variant;
         match v.draw() {
-            Draw::Command => match build_terrain_now(cx) {
-                Ok(n) => {
-                    cx.status = if n == 0 {
+            Draw::Command if v == TerrainVariant::BuildingPad => {
+                if auto_building_pad(cx) {
+                    cx.status =
+                        "Building pad made: the terrain under the building is levelled".into();
+                    ToolResult {
+                        switch_to: Some(ToolId::Select),
+                        ..ToolResult::committed("Building Pad")
+                    }
+                } else {
+                    ToolResult::consumed()
+                }
+            }
+            Draw::Command => match build_terrain_summary(cx) {
+                Ok(done) => {
+                    cx.status = if done.levels == 0 {
                         "Terrain built: no contours yet (add elevation data)".into()
                     } else {
-                        format!("Terrain built: {n} contour levels")
+                        format!(
+                            "Terrain built: {} triangles, {} contour levels ({} ms)",
+                            done.triangles, done.levels, done.millis
+                        )
                     };
                     ToolResult {
                         switch_to: Some(ToolId::Select),
@@ -939,7 +1143,7 @@ impl Tool for TerrainTool {
                 self.begin_entry(cx, Pending::Point(at), at);
                 ToolResult::consumed()
             }
-            Draw::Polyline | Draw::Polygon | Draw::Rect | Draw::Kidney | Draw::Arc => {
+            Draw::Polyline | Draw::Polygon | Draw::Rect | Draw::Kidney | Draw::Arc | Draw::Pair => {
                 if self.points.is_empty()
                     && v == TerrainVariant::Perimeter
                     && load_terrain(&cx.project).is_some_and(|r| r.has_perimeter())
@@ -960,8 +1164,8 @@ impl Tool for TerrainTool {
                 }
                 self.update_readout(cx);
                 match v.draw() {
-                    Draw::Rect if self.points.len() == 1 => self.pressed = true,
-                    Draw::Rect | Draw::Kidney | Draw::Arc
+                    Draw::Rect | Draw::Pair if self.points.len() == 1 => self.pressed = true,
+                    Draw::Rect | Draw::Pair | Draw::Kidney | Draw::Arc
                         if self.points.len() >= v.min_points() =>
                     {
                         return self.finish(cx);
@@ -975,9 +1179,26 @@ impl Tool for TerrainTool {
 
     /// Releasing a pressed rectangle corner somewhere else ends the drag.
     fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if let Some(d) = self.drag.take() {
+            if !d.moved {
+                // No drag after all: the press was an ordinary click.
+                self.replay = true;
+                return self.pointer_down(cx, d.event);
+            }
+            let delta = p.snapped - d.from;
+            let label = match d.hit {
+                TerrainHit::Point(_) => "Move Elevation Point",
+                _ => "Move Elevation Line",
+            };
+            edit_terrain(cx, label, |r| {
+                move_terrain_element(&mut r.terrain, d.hit, delta);
+            });
+            cx.readout = None;
+            return ToolResult::committed(label);
+        }
         let pressed = std::mem::take(&mut self.pressed);
         if pressed
-            && self.variant.draw() == Draw::Rect
+            && matches!(self.variant.draw(), Draw::Rect | Draw::Pair)
             && self.points.len() == 1
             && !self.dialog_open()
             && p.snapped.dist(self.points[0]) > cx.pick_tol() * 1.5
@@ -1110,6 +1331,42 @@ impl Tool for TerrainTool {
         for p in &self.points {
             painter.circle_filled(cam.world_to_screen(*p), 3.0, color);
         }
+        if let (TerrainVariant::NorthPointer, Some(first), Some(h), None) =
+            (self.variant, self.points.first(), self.hover, &self.entry)
+        {
+            let r = first.dist(h) * cam.px_per_in;
+            painter.circle_stroke(
+                cam.world_to_screen(*first),
+                r as f32,
+                egui::Stroke::new(1.0_f32, color.gamma_multiply(0.6)),
+            );
+        }
+        // An elevation point or line on its way to a new place.
+        if let Some(d) = self.drag.as_ref().filter(|d| d.moved) {
+            if let Some(rec) = load_terrain(&cx.project) {
+                let delta = d.now - d.from;
+                let moved: Vec<Point> = hit_points(&rec.terrain, d.hit)
+                    .into_iter()
+                    .map(|q| q + delta)
+                    .collect();
+                if moved.len() == 1 {
+                    painter.circle_stroke(
+                        cam.world_to_screen(moved[0]),
+                        6.0,
+                        egui::Stroke::new(1.5_f32, pal.selection),
+                    );
+                } else {
+                    draw_polyline(
+                        painter,
+                        cam,
+                        &moved,
+                        false,
+                        egui::Stroke::new(1.5_f32, pal.selection),
+                        true,
+                    );
+                }
+            }
+        }
         if let (None, Some(h), Draw::Spot) = (&self.entry, self.hover, self.variant.draw()) {
             let c = cam.world_to_screen(h);
             let s = egui::Stroke::new(1.2_f32, ink);
@@ -1177,6 +1434,7 @@ impl Tool for TerrainTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::site_view::terrain_view;
     use crate::plan_defaults;
     use plan_core::Project;
     use plan_terrain::elevation_at;
@@ -2065,5 +2323,226 @@ mod tests {
             t.pointer_move(&mut cx, ev);
             assert!(!t.hint().is_empty(), "{}", v.name());
         }
+    }
+
+    #[test]
+    fn the_north_pointer_and_scale_bar_are_cad_on_the_site_plan_layer() {
+        use plan_core::cad::CadItem;
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::NorthPointer);
+        assert!(t.hint().contains("click the center"));
+        click(&mut t, &mut cx, 300.0, 300.0);
+        assert_eq!(t.points().len(), 1);
+        // North is to the right of the page.
+        let r = click(&mut t, &mut cx, 360.0, 300.0);
+        assert_eq!(r.commit.as_deref(), Some("North Pointer"));
+        let angle = crate::editor::site_view::north_angle(&cx.project);
+        assert!((angle - 90.0).abs() < 1.0, "{angle}");
+        let on_layer = |cx: &EditorContext| {
+            cx.project.floors[0]
+                .cad
+                .iter()
+                .filter(|c| c.layer == "Site Plan")
+                .count()
+        };
+        assert_eq!(on_layer(&cx), 4);
+        assert!(t.points().is_empty());
+        // Sun due south shines toward the left of the page.
+        let plan = crate::editor::site_view::plan_sun_azimuth(&cx.project, 180.0);
+        assert!((plan - 270.0).abs() < 1.0, "{plan}");
+
+        let mut bar = tool(TerrainVariant::ScaleBar);
+        click(&mut bar, &mut cx, 0.0, 100.0);
+        let r = click(&mut bar, &mut cx, 480.0, 100.0);
+        assert_eq!(r.commit.as_deref(), Some("Scale Bar"));
+        assert!(on_layer(&cx) > 4);
+        assert!(cx.project.floors[0].cad.iter().any(|c| matches!(
+            &c.item,
+            CadItem::Text { text, .. } if text == "40'-0\""
+        )));
+        // Both are on the Terrain menu list of variants.
+        assert!(TerrainVariant::ALL.contains(&TerrainVariant::NorthPointer));
+        assert!(TerrainVariant::ALL.contains(&TerrainVariant::ScaleBar));
+    }
+
+    #[test]
+    fn an_elevation_point_is_dragged_to_a_new_place_in_one_undo_step() {
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::ElevationPoint);
+        click(&mut t, &mut cx, 300.0, 200.0);
+        type_value(&mut t, &mut cx, "5'");
+        assert_eq!(record(&cx).terrain.elevation_points.len(), 1);
+
+        // Press on it, drag, release.
+        let at = PointerEvent::at(&cx, Point::new(300.0, 200.0));
+        t.pointer_move(&mut cx, at);
+        let r = t.pointer_down(&mut cx, at.with_down(true));
+        assert!(
+            !t.is_typing() && r.commit.is_none(),
+            "a drag is armed, not a new point"
+        );
+        for (x, y) in [(360.0, 260.0), (480.0, 380.0)] {
+            let ev = PointerEvent::at(&cx, Point::new(x, y)).with_down(true);
+            t.pointer_move(&mut cx, ev);
+        }
+        assert!(cx.readout.as_deref().unwrap().starts_with("Move:"));
+        let end = PointerEvent::at(&cx, Point::new(480.0, 380.0));
+        let r = t.pointer_up(&mut cx, end);
+        assert_eq!(r.commit.as_deref(), Some("Move Elevation Point"));
+        let rec = record(&cx);
+        assert_eq!(rec.terrain.elevation_points.len(), 1, "moved, not added");
+        let p = &rec.terrain.elevation_points[0];
+        assert!(
+            p.pos.dist(end.snapped) < 1e-6,
+            "{:?} vs {:?}",
+            p.pos,
+            end.snapped
+        );
+        assert_eq!(p.z, 60.0, "the elevation stays");
+        assert_eq!(cx.undo().as_deref(), Some("Move Elevation Point"));
+        assert_eq!(
+            record(&cx).terrain.elevation_points[0].pos,
+            Point::new(300.0, 200.0)
+        );
+
+        // A click on the point without a drag still starts a new elevation.
+        let at = PointerEvent::at(&cx, Point::new(300.0, 200.0));
+        t.pointer_move(&mut cx, at);
+        t.pointer_down(&mut cx, at.with_down(true));
+        let r = t.pointer_up(&mut cx, at);
+        assert!(r.commit.is_none());
+        assert!(t.is_typing(), "the click went on to ask for an elevation");
+    }
+
+    #[test]
+    fn an_elevation_line_is_dragged_whole_and_keeps_its_spline() {
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::ElevationSpline);
+        for (x, y) in [(100.0, 100.0), (300.0, 200.0), (500.0, 100.0)] {
+            click(&mut t, &mut cx, x, y);
+        }
+        t.key(&mut cx, KeyEvent::key(Key::Enter));
+        type_value(&mut t, &mut cx, "2'");
+        let line = record(&cx).terrain.elevation_lines[0].clone();
+        assert_eq!(line.control.len(), 3);
+        assert_eq!(line.tension, 0.5);
+        assert_eq!(line.points.len(), 2 * SPLINE_SAMPLES + 1);
+
+        let on = line.points[4];
+        let at = PointerEvent::at(&cx, on);
+        t.pointer_move(&mut cx, at);
+        t.pointer_down(&mut cx, at.with_down(true));
+        let to = PointerEvent::at(&cx, Point::new(on.x + 120.0, on.y + 60.0));
+        t.pointer_move(&mut cx, to.with_down(true));
+        let r = t.pointer_up(&mut cx, to);
+        assert_eq!(r.commit.as_deref(), Some("Move Elevation Line"));
+        let moved = record(&cx).terrain.elevation_lines[0].clone();
+        let d = to.snapped - at.snapped;
+        assert!(moved.control[0].dist(line.control[0] + d) < 1e-6);
+        assert!(moved.points[4].dist(line.points[4] + d) < 1e-6);
+    }
+
+    #[test]
+    fn kidneys_and_splines_keep_control_points_and_features_are_graded_pads() {
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::KidneyFeature);
+        click(&mut t, &mut cx, 100.0, 100.0);
+        click(&mut t, &mut cx, 400.0, 100.0);
+        click(&mut t, &mut cx, 250.0, 200.0);
+        let f = record(&cx).terrain.features[0].clone();
+        assert!(f.pad, "a feature grades the terrain");
+        assert_eq!((f.material.as_str(), f.height), ("Concrete", 4.0));
+        assert!(f.control.len() >= 8);
+        assert_eq!(f.polygon.len(), f.control.len() * SPLINE_SAMPLES);
+        assert!(f.polygon.iter().all(|p| p.x >= 99.0 && p.x <= 401.0));
+
+        // A rectangle has no control points.
+        let mut r = tool(TerrainVariant::RectFeature);
+        click(&mut r, &mut cx, 600.0, 100.0);
+        click(&mut r, &mut cx, 800.0, 300.0);
+        let rect = record(&cx).terrain.features[1].clone();
+        assert!(rect.pad && rect.control.is_empty());
+
+        // A spline bed keeps the clicks.
+        let mut b = tool(TerrainVariant::BedSpline);
+        for (x, y) in [(0.0, 500.0), (200.0, 600.0), (400.0, 500.0), (200.0, 400.0)] {
+            click(&mut b, &mut cx, x, y);
+        }
+        b.key(&mut cx, KeyEvent::key(Key::Enter));
+        let bed = record(&cx).terrain.landscape[0].clone();
+        assert_eq!(bed.control.len(), 4);
+        assert_eq!(bed.points, plan_terrain::closed_spline(&bed.control));
+    }
+
+    #[test]
+    fn new_walls_and_roads_get_their_grade_step_and_crown() {
+        let mut cx = cx();
+        let mut w = tool(TerrainVariant::StraightWall);
+        click(&mut w, &mut cx, 100.0, 100.0);
+        click(&mut w, &mut cx, 500.0, 100.0);
+        w.key(&mut cx, KeyEvent::key(Key::Enter));
+        let mut c = tool(TerrainVariant::StraightCurb);
+        click(&mut c, &mut cx, 100.0, 300.0);
+        click(&mut c, &mut cx, 500.0, 300.0);
+        c.key(&mut cx, KeyEvent::key(Key::Enter));
+        let walls = record(&cx).terrain.walls;
+        assert_eq!((walls[0].retain, walls[0].cut), (24.0, true));
+        assert_eq!((walls[1].retain, walls[1].cut), (0.0, true));
+
+        let mut r = tool(TerrainVariant::Road);
+        click(&mut r, &mut cx, 0.0, 600.0);
+        click(&mut r, &mut cx, 600.0, 600.0);
+        r.key(&mut cx, KeyEvent::key(Key::Enter));
+        type_value(&mut r, &mut cx, "");
+        let road = &record(&cx).terrain.roads[0];
+        assert_eq!((road.crown, road.curb_height), (3.0, 6.0));
+    }
+
+    #[test]
+    fn build_terrain_reports_triangles_and_time_and_marks_the_baseline() {
+        let mut cx = cx();
+        sloped_terrain(&mut cx);
+        let done = build_terrain_summary(&mut cx).unwrap();
+        assert!(done.triangles > 50 && done.levels >= 5);
+        let rec = record(&cx);
+        assert!(rec.built && rec.built_key == terrain_key(&rec));
+        assert!(rec.auto_rebuild);
+        assert!(cx.readout.is_none(), "the build readout is cleared");
+        click(&mut tool(TerrainVariant::Build), &mut cx, 0.0, 0.0);
+        assert!(cx.status.contains("triangles") && cx.status.contains("contour levels"));
+    }
+
+    #[test]
+    fn the_building_pad_command_levels_the_terrain_under_the_walls() {
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::BuildingPad);
+        let r = click(&mut t, &mut cx, 0.0, 0.0);
+        assert!(r.commit.is_none() && cx.status.contains("walls"));
+        for (a, b) in [
+            (Point::new(500.0, 400.0), Point::new(700.0, 400.0)),
+            (Point::new(700.0, 400.0), Point::new(700.0, 560.0)),
+            (Point::new(700.0, 560.0), Point::new(500.0, 560.0)),
+            (Point::new(500.0, 560.0), Point::new(500.0, 400.0)),
+        ] {
+            cx.project
+                .add_wall(0, a, b, 6.0, 109.0, plan_core::WallKind::Exterior);
+        }
+        let r = click(&mut t, &mut cx, 0.0, 0.0);
+        assert_eq!(r.commit.as_deref(), Some("Building Pad"));
+        assert_eq!(r.switch_to, Some(ToolId::Select));
+        let rec = record(&cx);
+        assert!(rec.terrain.building_pad.is_some() && rec.terrain.flatten_pad);
+        // With a perimeter the built surface is level under the house.
+        edit_terrain(&mut cx, "Perimeter", |r| {
+            r.terrain.perimeter = plan_terrain::Terrain::default().perimeter;
+            r.terrain.elevation_points.push(ElevationPoint {
+                pos: Point::new(600.0, 480.0),
+                z: 60.0,
+            });
+        });
+        build_terrain_now(&mut cx).unwrap();
+        let z = crate::editor::site_view::terrain_elevation_at(&cx.project, Point::new(600.0, 480.0))
+            .unwrap();
+        assert!((z + 6.0).abs() < 0.5, "pad at the first floor (0) less 6\": {z}");
     }
 }

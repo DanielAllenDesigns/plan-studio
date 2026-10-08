@@ -23,11 +23,12 @@ use crate::toolbar::{FileCommand, FramingCommand};
 use eframe::egui::{self, Align2};
 use plan_core::cad::{CadItem, CadObject};
 use plan_core::geometry::Point;
+use plan_core::units::parse_ft_in;
 use plan_core::{Layer, WallKind};
 use plan_elevation::{elevation_from_project, Options, ViewDir};
 use plan_import::{
-    cad_to_walls, parse_dxf, to_cad_objects, to_inches_factor, CadToWallsOptions, CadToWallsResult,
-    DxfDrawing, DxfUnits,
+    cad_to_walls, parse_dxf, to_cad_objects_with, to_inches_factor, CadToWallsOptions,
+    CadToWallsResult, DxfDrawing, DxfEntity, DxfUnits, ImportOptions, LayerMapping, LayerTarget,
 };
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -40,7 +41,14 @@ use std::path::{Path, PathBuf};
 /// "Roof Planes" and the manual framing on layer "Framing".
 pub fn floor_dxf(cx: &mut EditorContext) -> String {
     cx.refresh();
-    framing_view::floor_dxf(&cx.project, cx.floor, &cx.rooms)
+    let set = &cx.defaults.dimensions;
+    let annotation = plan_core::DxfAnnotation {
+        inches_per_foot: cx.sheet.scale.inches_per_foot(),
+        dim_text_style: set.text_style.clone(),
+        dim_printed_size: set.printed_size,
+        dim_format: Some(cx.dim_format()),
+    };
+    framing_view::floor_dxf_with(&cx.project, cx.floor, &cx.rooms, annotation)
 }
 
 /// The four exterior elevations (Front, Back, Left, Right) as one DXF, side
@@ -189,40 +197,129 @@ impl UnitsChoice {
     }
 }
 
+/// What an import did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    /// CAD objects added.
+    pub objects: usize,
+    /// Plan layers created for them.
+    pub new_layers: usize,
+    /// Walls made by "Convert to walls".
+    pub walls: usize,
+}
+
 /// Adds the drawing to the active floor as one undo step; layers the plan
 /// does not have yet are created (hidden when the DXF layer is off). Returns
-/// `(objects, new layers)`.
+/// `(objects, new layers)`. (The window uses [`import_drawing_with`].)
+#[cfg(test)]
 pub fn import_drawing(
     cx: &mut EditorContext,
     drawing: &DxfDrawing,
     units: UnitsChoice,
     layer_prefix: &str,
 ) -> (usize, usize) {
-    let objects = to_cad_objects(drawing, units.factor(drawing), layer_prefix);
+    let opts = ImportOptions::new(units.factor(drawing), layer_prefix);
+    let r = import_drawing_with(cx, drawing, &opts, None);
+    (r.objects, r.new_layers)
+}
+
+/// [`import_drawing`] with the full options (layer mapping, scale, rotation,
+/// insertion point) and, when `walls_from` names a plan layer, "Convert to
+/// walls": the lines imported onto that layer go through the CAD to Walls
+/// matcher with its default options and the walls join the same undo step.
+pub fn import_drawing_with(
+    cx: &mut EditorContext,
+    drawing: &DxfDrawing,
+    opts: &ImportOptions,
+    walls_from: Option<&str>,
+) -> ImportReport {
+    let objects = to_cad_objects_with(drawing, opts);
     if objects.is_empty() {
-        return (0, 0);
+        return ImportReport::default();
     }
     cx.begin_change("Import Drawing");
     let mut new_layers = 0;
-    for o in &objects {
-        if cx.project.layers.get(&o.layer).is_some() {
-            continue;
+    // A layer the drawing switched off comes in hidden.
+    let mut add_layer = |cx: &mut EditorContext, name: &str, visible: bool| {
+        if cx.project.layers.get(name).is_some() {
+            return;
         }
-        let dxf_name = o.layer.strip_prefix(layer_prefix).unwrap_or(&o.layer);
-        let visible = drawing
-            .layers
-            .iter()
-            .find(|l| l.name == dxf_name)
-            .is_none_or(|l| l.visible);
-        let mut layer = Layer::new(o.layer.clone(), [60, 60, 60], 18);
+        let mut layer = Layer::new(name.to_string(), [60, 60, 60], 18);
         layer.display = visible;
         if cx.project.layers.add(layer) {
             new_layers += 1;
         }
+    };
+    for l in &drawing.layers {
+        if let Some(target) = opts.target_layer(&l.name) {
+            if objects.iter().any(|o| o.layer == target) {
+                add_layer(cx, &target, l.visible);
+            }
+        }
     }
-    let n = plan_import::apply_cad(&mut cx.project, cx.floor, &objects).len();
+    for o in &objects {
+        add_layer(cx, &o.layer, true);
+    }
+    let ids = plan_import::apply_cad(&mut cx.project, cx.floor, &objects);
+    let mut walls = 0;
+    if let Some(layer) = walls_from {
+        let lines: Vec<(Point, Point)> = cx
+            .floor()
+            .cad
+            .iter()
+            .filter(|c| ids.contains(&c.id) && c.layer == layer)
+            .flat_map(|c| segments_of(&c.item))
+            .collect();
+        let result = cad_to_walls(&lines, &CadToWallsOptions::default());
+        walls = add_wall_proposals(cx, &result);
+    }
     cx.mark_dirty();
-    (n, new_layers)
+    ImportReport {
+        objects: ids.len(),
+        new_layers,
+        walls,
+    }
+}
+
+/// Where the imported drawing's base point sits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BasePoint {
+    /// The drawing's own origin.
+    Origin,
+    /// The lower-left corner of the drawing's extents.
+    LowerLeft,
+}
+
+/// What an import does with one DXF layer, as the window shows it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum LayerChoice {
+    /// Under the prefix, with its DXF name.
+    Keep,
+    /// Not imported.
+    Skip,
+    /// An existing plan layer.
+    Plan(String),
+    /// A layer of this name (typed).
+    Named(String),
+}
+
+impl LayerChoice {
+    fn target(&self) -> LayerTarget {
+        match self {
+            LayerChoice::Keep => LayerTarget::Keep,
+            LayerChoice::Skip => LayerTarget::Skip,
+            LayerChoice::Plan(n) | LayerChoice::Named(n) => LayerTarget::Rename(n.clone()),
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            LayerChoice::Keep => "Keep (under the prefix)".into(),
+            LayerChoice::Skip => "Do not import".into(),
+            LayerChoice::Plan(n) => n.clone(),
+            LayerChoice::Named(_) => "New layer named...".into(),
+        }
+    }
 }
 
 struct ImportWindow {
@@ -230,13 +327,103 @@ struct ImportWindow {
     drawing: DxfDrawing,
     units: UnitsChoice,
     prefix: String,
+    /// Extra scale on top of the units.
+    scale: f64,
+    rotation_deg: f64,
+    base: BasePoint,
+    /// Where the base point goes, typed as feet-inches.
+    insert_x: String,
+    insert_y: String,
+    /// Each DXF layer with its entity count and what happens to it.
+    layers: Vec<(String, usize, LayerChoice)>,
+    convert_walls: bool,
+    /// The (mapped) layer "Convert to walls" reads.
+    walls_layer: String,
 }
 
 impl ImportWindow {
+    fn new(file: String, drawing: DxfDrawing, plan_layers: &[String]) -> Self {
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for e in drawing.explode_inserts() {
+            let name = match &e {
+                DxfEntity::Line { layer, .. }
+                | DxfEntity::Polyline { layer, .. }
+                | DxfEntity::Circle { layer, .. }
+                | DxfEntity::Arc { layer, .. }
+                | DxfEntity::Text { layer, .. }
+                | DxfEntity::Insert { layer, .. } => layer.clone(),
+            };
+            match counts.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, k)) => *k += 1,
+                None => counts.push((name, 1)),
+            }
+        }
+        counts.sort_by(|a, b| a.0.cmp(&b.0));
+        // A DXF layer named like a plan layer lands on it; the rest are kept.
+        let layers: Vec<(String, usize, LayerChoice)> = counts
+            .into_iter()
+            .map(|(n, k)| {
+                let choice = plan_layers
+                    .iter()
+                    .find(|p| p.eq_ignore_ascii_case(&n))
+                    .map_or(LayerChoice::Keep, |p| LayerChoice::Plan(p.clone()));
+                (n, k, choice)
+            })
+            .collect();
+        let walls_layer = layers
+            .iter()
+            .find(|(n, ..)| n.to_ascii_uppercase().contains("WALL"))
+            .or_else(|| layers.iter().max_by_key(|(_, k, _)| *k))
+            .map_or_else(String::new, |(n, ..)| n.clone());
+        Self {
+            file,
+            drawing,
+            units: UnitsChoice::FromFile,
+            prefix: String::new(),
+            scale: 1.0,
+            rotation_deg: 0.0,
+            base: BasePoint::Origin,
+            insert_x: "0".into(),
+            insert_y: "0".into(),
+            layers,
+            convert_walls: false,
+            walls_layer,
+        }
+    }
+
+    /// The import options the window describes.
+    fn options(&self) -> ImportOptions {
+        let mut o = ImportOptions::new(self.units.factor(&self.drawing), &self.prefix);
+        o.scale = self.scale.max(1e-9);
+        o.rotation_deg = self.rotation_deg;
+        o.base = match (self.base, self.drawing.extents) {
+            (BasePoint::LowerLeft, Some((lo, hi))) => Point::new(lo.x.min(hi.x), lo.y.min(hi.y)),
+            _ => Point::ZERO,
+        };
+        o.insertion = Point::new(
+            parse_ft_in(&self.insert_x).unwrap_or(0.0),
+            parse_ft_in(&self.insert_y).unwrap_or(0.0),
+        );
+        o.layers = self
+            .layers
+            .iter()
+            .map(|(n, _, c)| LayerMapping {
+                source: n.clone(),
+                target: c.target(),
+            })
+            .collect();
+        o
+    }
+
+    /// The plan layer "Convert to walls" reads, after the mapping.
+    fn walls_target(&self) -> Option<String> {
+        self.options().target_layer(&self.walls_layer)
+    }
+
     /// Plan size of the drawing's declared extents, for the summary line.
     fn extent_text(&self, cx: &EditorContext) -> Option<String> {
         let (lo, hi) = self.drawing.extents?;
-        let k = self.units.factor(&self.drawing);
+        let k = self.units.factor(&self.drawing) * self.scale;
         Some(format!(
             "{} x {}",
             cx.fmt_dim((hi.x - lo.x).abs() * k),
@@ -260,14 +447,14 @@ fn start_import(cx: &mut EditorContext) {
             let file = path
                 .file_name()
                 .map_or_else(|| "drawing".into(), |n| n.to_string_lossy().into_owned());
-            with_windows(|w| {
-                w.import = Some(ImportWindow {
-                    file,
-                    drawing,
-                    units: UnitsChoice::FromFile,
-                    prefix: String::new(),
-                })
-            });
+            let plan_layers: Vec<String> = cx
+                .project
+                .layers
+                .layers
+                .iter()
+                .map(|l| l.name.clone())
+                .collect();
+            with_windows(|w| w.import = Some(ImportWindow::new(file, drawing, &plan_layers)));
         }
         Err(e) => cx.status = format!("Import failed: {e}"),
     }
@@ -348,6 +535,11 @@ pub fn apply_proposals(cx: &mut EditorContext, result: &CadToWallsResult) -> usi
         return 0;
     }
     cx.begin_change("CAD to Walls");
+    add_wall_proposals(cx, result)
+}
+
+/// Adds the proposed walls inside the undo step the caller has begun.
+fn add_wall_proposals(cx: &mut EditorContext, result: &CadToWallsResult) -> usize {
     let floor = cx.floor;
     for w in &result.walls {
         let height = cx.wall_height(w.kind);
@@ -652,6 +844,13 @@ fn chief_template_window(
 fn import_window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut ImportWindow) -> bool {
     let mut open = true;
     let mut import = false;
+    let plan_layers: Vec<String> = cx
+        .project
+        .layers
+        .layers
+        .iter()
+        .map(|l| l.name.clone())
+        .collect();
     egui::Window::new("Import Drawing (DXF)")
         .id(egui::Id::new("import_dxf"))
         .open(&mut open)
@@ -660,7 +859,7 @@ fn import_window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut ImportWind
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.screen_rect().center())
         .show(ctx, |ui| {
-            ui.set_min_width(380.0);
+            ui.set_min_width(460.0);
             ui.strong(&w.file);
             let d = &w.drawing;
             ui.label(format!(
@@ -675,37 +874,163 @@ fn import_window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut ImportWind
                 ui.weak(format!("Not imported: {}", skipped.join(", ")));
             }
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Units");
-                egui::ComboBox::from_id_salt("import_units")
-                    .selected_text(w.units.label())
-                    .show_ui(ui, |ui| {
-                        for u in UnitsChoice::ALL {
-                            ui.selectable_value(&mut w.units, u, u.label());
-                        }
+            egui::Grid::new("import_options")
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("Units");
+                    egui::ComboBox::from_id_salt("import_units")
+                        .selected_text(w.units.label())
+                        .show_ui(ui, |ui| {
+                            for u in UnitsChoice::ALL {
+                                ui.selectable_value(&mut w.units, u, u.label());
+                            }
+                        });
+                    ui.end_row();
+                    ui.label("Scale");
+                    ui.add(
+                        egui::DragValue::new(&mut w.scale)
+                            .speed(0.01)
+                            .range(0.001..=1000.0)
+                            .max_decimals(6),
+                    );
+                    ui.end_row();
+                    ui.label("Rotation");
+                    ui.add(
+                        egui::DragValue::new(&mut w.rotation_deg)
+                            .speed(0.5)
+                            .range(-360.0..=360.0)
+                            .suffix("\u{b0}"),
+                    );
+                    ui.end_row();
+                    ui.label("Base point");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut w.base, BasePoint::Origin, "Drawing origin");
+                        ui.add_enabled_ui(w.drawing.extents.is_some(), |ui| {
+                            ui.radio_value(&mut w.base, BasePoint::LowerLeft, "Lower-left corner");
+                        });
                     });
-            });
-            ui.horizontal(|ui| {
-                ui.label("Layer name prefix");
-                ui.add(egui::TextEdit::singleline(&mut w.prefix).desired_width(120.0));
-            });
+                    ui.end_row();
+                    ui.label("Insert it at");
+                    ui.horizontal(|ui| {
+                        ui.label("x");
+                        ui.add(egui::TextEdit::singleline(&mut w.insert_x).desired_width(70.0));
+                        ui.label("y");
+                        ui.add(egui::TextEdit::singleline(&mut w.insert_y).desired_width(70.0));
+                    });
+                    ui.end_row();
+                    ui.label("Layer name prefix");
+                    ui.add(egui::TextEdit::singleline(&mut w.prefix).desired_width(120.0));
+                    ui.end_row();
+                });
+            ui.separator();
+            ui.strong("Layer mapping");
+            egui::ScrollArea::vertical()
+                .max_height(180.0)
+                .id_salt("import_layer_map")
+                .show(ui, |ui| {
+                    egui::Grid::new("import_layers")
+                        .num_columns(3)
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.weak("DXF layer");
+                            ui.weak("Objects");
+                            ui.weak("Goes to");
+                            ui.end_row();
+                            for (i, (name, count, choice)) in w.layers.iter_mut().enumerate() {
+                                ui.label(name.as_str());
+                                ui.label(count.to_string());
+                                ui.horizontal(|ui| {
+                                    egui::ComboBox::from_id_salt(("import_layer_to", i))
+                                        .selected_text(choice.label())
+                                        .width(190.0)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                choice,
+                                                LayerChoice::Keep,
+                                                LayerChoice::Keep.label(),
+                                            );
+                                            ui.selectable_value(
+                                                choice,
+                                                LayerChoice::Skip,
+                                                LayerChoice::Skip.label(),
+                                            );
+                                            for p in &plan_layers {
+                                                ui.selectable_value(
+                                                    choice,
+                                                    LayerChoice::Plan(p.clone()),
+                                                    p.as_str(),
+                                                );
+                                            }
+                                            if ui
+                                                .selectable_label(
+                                                    matches!(choice, LayerChoice::Named(_)),
+                                                    "New layer named...",
+                                                )
+                                                .clicked()
+                                                && !matches!(choice, LayerChoice::Named(_))
+                                            {
+                                                *choice = LayerChoice::Named(name.clone());
+                                            }
+                                        });
+                                    if let LayerChoice::Named(n) = choice {
+                                        ui.add(egui::TextEdit::singleline(n).desired_width(110.0));
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                        });
+                });
             if let Some(t) = w.extent_text(cx) {
                 ui.label(format!("Size in the plan: {t}"));
             }
-            ui.weak(format!("Goes onto {} as CAD objects.", cx.floor().name));
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.button("Import").clicked() {
-                    import = true;
-                }
+                ui.checkbox(&mut w.convert_walls, "Convert to walls");
+                ui.add_enabled_ui(w.convert_walls, |ui| {
+                    egui::ComboBox::from_id_salt("import_walls_layer")
+                        .selected_text(w.walls_layer.clone())
+                        .show_ui(ui, |ui| {
+                            for (n, k, _) in &w.layers {
+                                ui.selectable_value(
+                                    &mut w.walls_layer,
+                                    n.clone(),
+                                    format!("{n} ({k})"),
+                                );
+                            }
+                        });
+                });
             });
+            ui.weak(format!(
+                "Goes onto {} as CAD objects{}.",
+                cx.floor().name,
+                if w.convert_walls {
+                    "; parallel line pairs on that layer also become walls"
+                } else {
+                    ""
+                }
+            ));
+            ui.separator();
+            if ui.button("Import").clicked() {
+                import = true;
+            }
         });
     if import {
-        let (n, layers) = import_drawing(cx, &w.drawing, w.units, &w.prefix);
-        cx.status = if n == 0 {
+        let opts = w.options();
+        let walls_from = w.convert_walls.then(|| w.walls_target()).flatten();
+        let r = import_drawing_with(cx, &w.drawing, &opts, walls_from.as_deref());
+        cx.status = if r.objects == 0 {
             "The drawing had nothing to import".into()
+        } else if r.walls > 0 {
+            format!(
+                "Imported {} objects ({} new layers) and made {} walls",
+                r.objects, r.new_layers, r.walls
+            )
         } else {
-            format!("Imported {n} objects ({layers} new layers)")
+            format!(
+                "Imported {} objects ({} new layers)",
+                r.objects, r.new_layers
+            )
         };
         return false;
     }
@@ -831,6 +1156,9 @@ fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) ->
     let mut export = false;
     let mut export_list = false;
     let data = framing_view::takeoff_data(&cx.project, cx.floor, all);
+    // By member type with cut lengths (the framing schedule), or the lumber list.
+    let by_member_id = egui::Id::new("framing_takeoff_by_member");
+    let mut by_member = ctx.data(|d| d.get_temp::<bool>(by_member_id)).unwrap_or(true);
     egui::Window::new("Framing Takeoff")
         .id(egui::Id::new("framing_takeoff"))
         .open(&mut open)
@@ -840,11 +1168,19 @@ fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) ->
                 ui.radio_value(&mut all, false, format!("{} only", cx.floor().name));
                 ui.radio_value(&mut all, true, "All floors");
             });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut by_member, true, "By member type, with cut lengths");
+                ui.radio_value(&mut by_member, false, "Lumber list");
+            });
             ui.separator();
             if data.members == 0 {
                 ui.weak("No framing yet. Use Build > Framing > Build Framing.");
             } else {
-                let (cols, rows) = (&data.columns, &data.rows);
+                let (cols, rows) = if by_member {
+                    (&data.cut_columns, &data.cut_rows)
+                } else {
+                    (&data.columns, &data.rows)
+                };
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
@@ -878,8 +1214,10 @@ fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) ->
                     .clicked();
             });
         });
+    ctx.data_mut(|d| d.insert_temp(by_member_id, by_member));
     if export {
-        cx.status = save_text("framing_takeoff.csv", "csv", &data.csv);
+        let csv = if by_member { &data.cut_csv } else { &data.csv };
+        cx.status = save_text("framing_takeoff.csv", "csv", csv);
     }
     if export_list {
         cx.status = save_text("framing_material_list.csv", "csv", &data.material_csv);
@@ -974,6 +1312,68 @@ mod tests {
         };
         assert!((b.x - 1000.0 / 25.4).abs() < 1e-6, "{}", b.x);
         assert_eq!(UnitsChoice::FromFile.factor(&d), 1.0);
+    }
+
+    #[test]
+    fn import_applies_the_layer_mapping_placement_and_converts_walls() {
+        let dxf = "0\nSECTION\n2\nENTITIES\n\
+0\nLINE\n8\nA-WALL\n10\n0\n20\n0\n11\n120\n21\n0\n\
+0\nLINE\n8\nA-WALL\n10\n0\n20\n6\n11\n120\n21\n6\n\
+0\nLINE\n8\nNOTES\n10\n0\n20\n0\n11\n5\n21\n0\n\
+0\nENDSEC\n0\nEOF\n";
+        let d = parse_dxf(dxf).unwrap();
+        let mut cx = cx();
+        let mut opts = ImportOptions::new(1.0, "DXF: ");
+        opts.layers = vec![
+            LayerMapping {
+                source: "A-WALL".into(),
+                target: LayerTarget::Rename("Walls, Normal".into()),
+            },
+            LayerMapping {
+                source: "NOTES".into(),
+                target: LayerTarget::Skip,
+            },
+        ];
+        opts.insertion = Point::new(100.0, 100.0);
+        let r = import_drawing_with(&mut cx, &d, &opts, Some("Walls, Normal"));
+        assert_eq!((r.objects, r.walls), (2, 1));
+        // Skipped layers import nothing; the mapped ones land on the plan
+        // layer, which existed already, so no layer is created.
+        assert_eq!(r.new_layers, 0);
+        assert!(cx.floor().cad.iter().all(|c| c.layer == "Walls, Normal"));
+        let CadItem::Line { a, .. } = &cx.floor().cad[0].item else {
+            panic!("expected a line");
+        };
+        assert!(a.dist(Point::new(100.0, 100.0)) < 1e-9);
+        assert_eq!(cx.floor().walls.len(), 1);
+        // One undo step takes the objects and the walls away together.
+        assert_eq!(cx.undo_label(), Some("Import Drawing"));
+        cx.undo();
+        assert!(cx.floor().cad.is_empty() && cx.floor().walls.is_empty());
+    }
+
+    #[test]
+    fn the_import_window_maps_same_named_layers_and_builds_options() {
+        let dxf = "0\nSECTION\n2\nENTITIES\n\
+0\nLINE\n8\ndoors\n10\n0\n20\n0\n11\n5\n21\n0\n\
+0\nLINE\n8\nA-WALL\n10\n0\n20\n0\n11\n5\n21\n0\n\
+0\nENDSEC\n0\nEOF\n";
+        let d = parse_dxf(dxf).unwrap();
+        let plan = vec!["Doors".to_string(), "Walls, Normal".to_string()];
+        let mut w = ImportWindow::new("x.dxf".into(), d, &plan);
+        assert_eq!(w.layers[0].2, LayerChoice::Keep); // A-WALL
+        assert_eq!(w.layers[1].2, LayerChoice::Plan("Doors".into()));
+        assert_eq!(w.walls_layer, "A-WALL");
+        w.layers[0].2 = LayerChoice::Skip;
+        w.scale = 2.0;
+        w.rotation_deg = 90.0;
+        w.insert_x = "10'".into();
+        let o = w.options();
+        assert_eq!(o.scale, 2.0);
+        assert_eq!(o.insertion, Point::new(120.0, 0.0));
+        assert_eq!(o.target_layer("A-WALL"), None);
+        assert_eq!(o.target_layer("doors").as_deref(), Some("Doors"));
+        assert_eq!(w.walls_target(), None);
     }
 
     #[test]

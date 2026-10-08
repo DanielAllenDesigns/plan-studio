@@ -101,10 +101,11 @@ fn the_ridge_of_an_8_12_hip_roof_is_two_thirds_of_half_the_span_above_the_eave()
     let span = north.baseline.0.y - south.baseline.0.y;
     assert!(span > H, "the eaves overhang the walls: span {span}");
     let eave = south.baseline_height();
-    // The eave sits at the top of the walls.
+    // The eave sits at the top of the walls (with the baseline at the top
+    // plate the tip hangs a few inches below it).
     let wall_h = sim.app.cx.floor().walls[0].height;
     assert!(
-        eave >= wall_h - 1.0 && eave <= wall_h + 24.0,
+        eave >= wall_h - 12.0 && eave <= wall_h + 24.0,
         "eave {eave} vs wall {wall_h}"
     );
     let ridge = p

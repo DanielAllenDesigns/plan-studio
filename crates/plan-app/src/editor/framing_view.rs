@@ -42,13 +42,16 @@ use super::{Camera, EditorContext, ObjectRef};
 use crate::editor::roof_view;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Shape, Stroke};
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
-use plan_core::{detect_rooms, DxfExport, Floor, FloorKind, Id, Layer, Opening, Project, Room};
+use plan_core::foundation::{FoundationLayer, PlatformKind};
+use plan_core::{
+    detect_rooms, DxfExport, Floor, FloorKind, Id, Layer, Opening, Project, Room, Wall,
+};
 use plan_framing::{
-    frame_floor, frame_floor_directed, frame_roof, frame_wall_with_marker, layout_trusses,
-    manual_takeoff, roof_framing_takeoff, BearingLine, FramingDefaults, FramingMember,
-    JoistDirection, JoistDirectionLine, ManualMemberKind, MaterialList, Member, MemberKind,
-    ReferenceMarker, RoofFramingDefaults, RoofTrussDirection, Takeoff, TrussBase, TrussSpec,
-    TrussType,
+    frame_floor_directed, frame_floor_holes, frame_roof_eaves, frame_wall_with_marker_joined,
+    layout_trusses, manual_takeoff, roof_framing_takeoff, BearingLine, EaveSpec, FramingDefaults,
+    FramingMember, JoistDirection, JoistDirectionLine, ManualMemberKind, MaterialList, Member,
+    MemberKind, ReferenceMarker, RoofFramingDefaults, RoofTrussDirection, TailCut, Takeoff,
+    TrussBase, TrussSpec, TrussType, WallJoints,
 };
 use plan_roof::{Roof, RoofPlane, DEFAULT_FASCIA_HEIGHT};
 use serde::{Deserialize, Serialize};
@@ -115,6 +118,108 @@ pub fn roof_of(floor: &Floor) -> Option<Roof> {
         baseline_elevation: baseline,
         approximate: false,
     })
+}
+
+// ----- Framing Defaults -----
+
+/// Key of the single-key object that stores the framing defaults in the
+/// first floor's `framing` slot. It is not a [`Record`] and not a member, so
+/// every reader that does not know it skips it.
+const SETTINGS_KEY: &str = "FramingSettings";
+
+/// The framing defaults of the plan (Default Settings > Framing): the wall
+/// and floor assembly and the roof framing, one size and spacing per member
+/// kind. A plan that never opened the page uses [`FramingSettings::default`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FramingSettings {
+    /// Walls and floors ([`FramingDefaults::house`]: corner and tee studs and
+    /// 48" wall blocking on).
+    pub walls: FramingDefaults,
+    pub roof: RoofFramingDefaults,
+}
+
+impl Default for FramingSettings {
+    fn default() -> Self {
+        Self {
+            walls: FramingDefaults::house(),
+            roof: RoofFramingDefaults::default(),
+        }
+    }
+}
+
+/// The framing defaults stored in `project` (the defaults when none).
+pub fn settings(project: &Project) -> FramingSettings {
+    project
+        .floors
+        .first()
+        .and_then(|f| {
+            f.framing
+                .iter()
+                .find_map(|v| v.as_object()?.get(SETTINGS_KEY).cloned())
+        })
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+/// Is `v` the stored settings object?
+fn is_settings(v: &Value) -> bool {
+    v.as_object()
+        .is_some_and(|o| o.len() == 1 && o.contains_key(SETTINGS_KEY))
+}
+
+/// Stores the framing defaults as one undo step. Existing framing stays as
+/// built until the next Build Framing.
+pub fn set_settings(cx: &mut EditorContext, new: FramingSettings) {
+    if settings(&cx.project) == new {
+        return;
+    }
+    cx.begin_change("Framing Defaults");
+    let floor = &mut cx.project.floors[0];
+    floor.framing.retain(|v| !is_settings(v));
+    if let Ok(v) = serde_json::to_value(&new) {
+        let mut o = serde_json::Map::new();
+        o.insert(SETTINGS_KEY.to_string(), v);
+        floor.framing.push(Value::Object(o));
+    }
+    cx.mark_dirty();
+    cx.status = "Framing defaults saved; Build Framing applies them".into();
+}
+
+/// The Floor Hole outlines of `floor`'s platform (stairwells and hand-made
+/// holes in the floor framing).
+pub fn floor_holes(floor: &Floor) -> Vec<Vec<Point>> {
+    floor
+        .foundation_as::<FoundationLayer>()
+        .ok()
+        .flatten()
+        .map(|l| l.platform_hole_outlines(PlatformKind::Floor))
+        .unwrap_or_default()
+}
+
+/// The eave of every roof plane stored on `floor`, in plane order: its
+/// horizontal overhang and the tail cut of its Eave settings (the plane's own
+/// choice, else the roof detail's, else plumb).
+pub fn eave_specs(floor: &Floor) -> Vec<EaveSpec> {
+    let set = roof_view::load(floor);
+    let roof_cut = set
+        .settings
+        .as_ref()
+        .map_or(plan_core::defaults::EaveCut::Plumb, |s| s.detail.eave_cut);
+    set.planes
+        .iter()
+        .map(|p| {
+            let cut = p.eave.eave_cut.unwrap_or(roof_cut);
+            EaveSpec {
+                overhang: p.overhang,
+                cut: Some(match cut {
+                    plan_core::defaults::EaveCut::Plumb => TailCut::Plumb,
+                    plan_core::defaults::EaveCut::Level => TailCut::Level,
+                    plan_core::defaults::EaveCut::Square => TailCut::Square,
+                }),
+            }
+        })
+        .collect()
 }
 
 /// What Build Framing makes for one floor.
@@ -202,18 +307,28 @@ impl Layout {
 /// Base lines.
 pub fn frame_floor_all(project: &Project, fi: usize, with_roof: bool) -> FloorBuild {
     let floor = &project.floors[fi];
-    let d = FramingDefaults::default();
+    let FramingSettings { walls: d, roof: roof_d } = settings(project);
     let layout = Layout::from_records(&load_records(floor));
     let mut out = FloorBuild::default();
 
-    for wall in floor
+    let framed: Vec<Wall> = floor
         .walls
         .iter()
         .filter(|w| !w.flags.invisible && !w.flags.room_divider && !w.flags.railing)
-    {
+        .cloned()
+        .collect();
+    for wall in &framed {
         let openings: Vec<&Opening> = floor.openings_on(wall.id).collect();
         let marker = layout.marker_near_segment(wall.start, wall.end);
-        let m = frame_wall_with_marker(wall, &openings, floor.elevation, &d, marker.as_ref());
+        let joints = WallJoints::of(wall, &framed);
+        let m = frame_wall_with_marker_joined(
+            wall,
+            &openings,
+            floor.elevation,
+            &d,
+            marker.as_ref(),
+            &joints,
+        );
         out.summary.walls += m.len();
         out.members.extend(m);
     }
@@ -226,7 +341,12 @@ pub fn frame_floor_all(project: &Project, fi: usize, with_roof: bool) -> FloorBu
             let bearing = layout.bearing_in(&room.polygon);
             let marker = layout.marker_in(&room.polygon);
             if dir.is_none() && bearing.is_empty() && marker.is_none() {
-                let m = frame_floor(&room, floor.elevation, &d, JoistDirection::Auto);
+                // Stairwells in this floor's platform get headers and trimmers.
+                let holes: Vec<Vec<Point>> = floor_holes(floor)
+                    .into_iter()
+                    .filter(|h| h.iter().all(|p| point_in_polygon(*p, &room.polygon)))
+                    .collect();
+                let m = frame_floor_holes(&room, floor.elevation, &d, JoistDirection::Auto, &holes);
                 out.summary.floor += m.len();
                 out.members.extend(m);
             } else {
@@ -246,7 +366,7 @@ pub fn frame_floor_all(project: &Project, fi: usize, with_roof: bool) -> FloorBu
     }
     if with_roof {
         if let Some(roof) = roof_of(floor) {
-            let m = frame_roof(&roof, &RoofFramingDefaults::default());
+            let m = frame_roof_eaves(&roof, &roof_d, &eave_specs(floor));
             out.summary.roof += m.len();
             out.members.extend(m);
         }
@@ -413,6 +533,41 @@ pub fn table_of(t: &Takeoff) -> (Vec<String>, Vec<Vec<String>>) {
     rows.push(vec![
         "Total board feet".to_string(),
         format!("{:.1}", t.board_feet),
+    ]);
+    (columns, rows)
+}
+
+/// The framing schedule of a [`Takeoff`]: one row per member type, size and
+/// cut length with its count, linear feet and board feet, then a total.
+pub fn cut_table(t: &Takeoff) -> (Vec<String>, Vec<Vec<String>>) {
+    let columns: Vec<String> = ["Member", "Size", "Cut Length", "Qty", "Linear ft", "Board ft"]
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    let mut rows: Vec<Vec<String>> = t
+        .cuts
+        .iter()
+        .map(|c| {
+            vec![
+                c.member.clone(),
+                c.size.clone(),
+                format!("{}\"", plan_framing::format_inches(c.cut)),
+                c.count.to_string(),
+                format!("{:.1}", c.linear_feet()),
+                format!("{:.1}", c.board_feet()),
+            ]
+        })
+        .collect();
+    let (qty, lf, bf) = t.cuts.iter().fold((0, 0.0, 0.0), |(q, l, b), c| {
+        (q + c.count, l + c.linear_feet(), b + c.board_feet())
+    });
+    rows.push(vec![
+        "Total".into(),
+        String::new(),
+        String::new(),
+        qty.to_string(),
+        format!("{lf:.1}"),
+        format!("{bf:.1}"),
     ]);
     (columns, rows)
 }
@@ -877,6 +1032,8 @@ fn store_auto(floor: &mut Floor, members: &[Member], built: Vec<FramingMember>) 
         .filter_map(|m| serde_json::to_value(m).ok())
         .collect();
     values.extend(records.iter().filter_map(|r| serde_json::to_value(r).ok()));
+    // The stored framing defaults are neither members nor records.
+    values.extend(floor.framing.iter().filter(|v| is_settings(v)).cloned());
     floor.framing = values;
 }
 
@@ -1229,6 +1386,12 @@ pub struct TakeoffData {
     pub csv: String,
     /// Piece counts by size and length ([`MaterialList::to_csv`]).
     pub material_csv: String,
+    /// The framing schedule: pieces by member type, size and cut length
+    /// (columns Member, Size, Cut Length, Qty, Linear ft, Board ft).
+    pub cut_columns: Vec<String>,
+    pub cut_rows: Vec<Vec<String>>,
+    /// The schedule as CSV.
+    pub cut_csv: String,
 }
 
 fn merge_takeoff(mut a: Takeoff, b: Takeoff) -> Takeoff {
@@ -1239,6 +1402,17 @@ fn merge_takeoff(mut a: Takeoff, b: Takeoff) -> Takeoff {
         }
     }
     a.board_feet += b.board_feet;
+    for c in b.cuts {
+        let key = |x: f64| (x * 16.0).round() as i64;
+        match a
+            .cuts
+            .iter_mut()
+            .find(|l| l.member == c.member && l.size == c.size && key(l.cut) == key(c.cut))
+        {
+            Some(l) => l.count += c.count,
+            None => a.cuts.push(c),
+        }
+    }
     for (size, lf) in b.linear_feet_by_size {
         match a.linear_feet_by_size.iter_mut().find(|(s, _)| *s == size) {
             Some((_, f)) => *f += lf,
@@ -1262,22 +1436,33 @@ pub fn takeoff_data(project: &Project, floor: usize, all_floors: bool) -> Takeof
     let manual = manual_for(project, floor, all_floors);
     let t = merge_takeoff(takeoff_of(&auto), manual_takeoff(&manual));
     let (columns, rows) = table_of(&t);
+    let (cut_columns, cut_rows) = cut_table(&t);
     TakeoffData {
         members: auto.len() + manual.len(),
         csv: csv_of((columns.clone(), rows.clone())),
         columns,
         rows,
         material_csv: MaterialList::from_members(&auto, &manual).to_csv(),
+        cut_csv: csv_of((cut_columns.clone(), cut_rows.clone())),
+        cut_columns,
+        cut_rows,
     }
 }
 
 // ----- 3D and DXF -----
 
-/// Meshes of every manual and built member on every floor, for the 3D view
+/// Meshes of every framing member on every floor, for the 3D view: the
+/// automatic wall, floor and roof members (one box per piece of lumber; a
+/// rafter with its tail cut and birdsmouth), then the manual and built members
 /// (boxes per lumber member, chords and webs per truss, footings under posts).
 /// Members on a hidden layer are left out.
 pub fn manual_framing_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
     let mut meshes = Vec::new();
+    if project.layers.is_visible(LAYER) {
+        for floor in &project.floors {
+            meshes.extend(load(floor).iter().map(Member::mesh));
+        }
+    }
     for floor in &project.floors {
         for m in manual_members(floor) {
             if !project.layers.is_visible(&m.layer_name) {
@@ -1287,6 +1472,145 @@ pub fn manual_framing_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
         }
     }
     meshes
+}
+
+/// Wall surface materials: a wall mesh of one of these hides the studs in an
+/// elevation.
+const WALL_SURFACES: [plan_3d::Material; 7] = [
+    plan_3d::Material::WallExterior,
+    plan_3d::Material::WallInterior,
+    plan_3d::Material::Stucco,
+    plan_3d::Material::Siding,
+    plan_3d::Material::Brick,
+    plan_3d::Material::Stone,
+    plan_3d::Material::Concrete,
+];
+
+/// The scene an elevation or section is drawn from. Outside the Framing
+/// Overview it is `plan_3d::build_scene`. In the overview the wall surfaces
+/// are left out and every wall's framing (plates, studs, kings, trimmers,
+/// headers, sills, cripples, blocking) is added, so the elevation shows the
+/// framing of the wall instead of its skin.
+pub fn elevation_scene(project: &Project) -> plan_3d::Scene {
+    let mut scene = plan_3d::build_scene(project);
+    if !in_overview(project) {
+        return scene;
+    }
+    let walls: std::collections::HashSet<Id> = project
+        .floors
+        .iter()
+        .flat_map(|f| f.walls.iter().map(|w| w.id))
+        .collect();
+    scene.meshes.retain(|m| {
+        !(m.object_id.is_some_and(|id| walls.contains(&id)) && WALL_SURFACES.contains(&m.material))
+    });
+    scene.meshes.extend(wall_framing_meshes(project));
+    scene
+}
+
+/// The meshes of the automatic wall members of every floor (the members that
+/// belong to a wall), when the view shows the Framing layer.
+pub fn wall_framing_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
+    if !project.view_layers().is_visible(LAYER) {
+        return Vec::new();
+    }
+    project
+        .floors
+        .iter()
+        .flat_map(load)
+        .filter(|m| m.wall_id.is_some())
+        .map(|m| m.mesh())
+        .collect()
+}
+
+// ----- Framing Overview -----
+
+/// Name of the saved plan view, and of its layer set, that shows the framing
+/// alone.
+pub const OVERVIEW: &str = "Framing Overview";
+
+/// Is `name` one of the framing layers (`"Framing"`, `"Framing, Floor
+/// Joists"`, ...)?
+pub fn is_framing_layer(name: &str) -> bool {
+    name == LAYER || name.starts_with("Framing, ")
+}
+
+/// The Framing Overview layer set: the framing layers shown, every other layer
+/// hidden.
+pub fn overview_layer_set(layers: &plan_core::LayerSet) -> plan_core::layer_sets::LayerSetDef {
+    let mut set = plan_core::layer_sets::LayerSetDef::new(OVERVIEW);
+    for l in &layers.layers {
+        set.states.push(plan_core::layer_sets::LayerState::new(
+            l.name.clone(),
+            is_framing_layer(&l.name),
+            false,
+        ));
+    }
+    set
+}
+
+/// Adds the Framing Overview layer set and saved plan view when the plan has
+/// none, and makes sure the framing layers exist. Returns whether anything
+/// was added. The set is rebuilt when layers were added since, so a layer
+/// made later never leaks into the overview.
+pub fn install_overview(project: &mut Project) -> bool {
+    ensure_layer(project);
+    ensure_manual_layers(project);
+    let set = overview_layer_set(&project.layers);
+    let mut added = false;
+    match project.layer_sets.get_mut(OVERVIEW) {
+        Some(existing) => *existing = set,
+        None => {
+            project.layer_sets.add_set(set);
+            added = true;
+        }
+    }
+    if project.plan_view(OVERVIEW).is_none() {
+        project
+            .plan_views
+            .push(plan_core::SavedPlanView::new(OVERVIEW, OVERVIEW));
+        added = true;
+    }
+    added
+}
+
+/// Is the Framing Overview the active plan view?
+pub fn in_overview(project: &Project) -> bool {
+    project.active_plan_view == OVERVIEW
+}
+
+/// Switches the plan to the Framing Overview of the active floor: the plan
+/// shows the framing of that floor and nothing else. Builds the framing first
+/// when the floor has none. One undo step.
+pub fn activate_overview(cx: &mut EditorContext) {
+    cx.begin_change("Framing Overview");
+    if install_overview(&mut cx.project) {
+        cx.status = "Framing Overview added to the plan views".into();
+    }
+    if load(cx.floor()).is_empty() && manual_members(cx.floor()).is_empty() {
+        let fi = cx.floor;
+        let mut fb = frame_floor_all(&cx.project, fi, true);
+        for m in &mut fb.built {
+            m.id = cx.project.alloc_id();
+            m.layer_name = layer_for(m.kind).to_string();
+        }
+        store_auto(&mut cx.project.floors[fi], &fb.members, fb.built);
+    }
+    cx.project.activate_plan_view(OVERVIEW);
+    cx.mark_dirty();
+    cx.refresh();
+}
+
+/// Back from the Framing Overview to the ordinary floor plan view.
+pub fn leave_overview(cx: &mut EditorContext) {
+    if !in_overview(&cx.project) {
+        return;
+    }
+    cx.begin_change("Floor Plan View");
+    cx.project
+        .activate_plan_view(plan_core::layer_sets::DEFAULT_PLAN_VIEW_NAME);
+    cx.mark_dirty();
+    cx.refresh();
 }
 
 /// The plan outlines of the roof planes stored on `floor`.
@@ -1302,6 +1626,17 @@ pub fn roof_plane_outlines(floor: &Floor) -> Vec<Vec<Point>> {
 /// layer "Roof Planes" and the manual framing (member outlines, direction and
 /// bearing lines, truss bases) on layer "Framing".
 pub fn floor_dxf(project: &Project, floor: usize, rooms: &[Room]) -> String {
+    floor_dxf_with(project, floor, rooms, plan_core::DxfAnnotation::default())
+}
+
+/// [`floor_dxf`] with the annotation sizing of the dimension set and the
+/// sheet scale (text heights from the styles, printed sizes at the scale).
+pub fn floor_dxf_with(
+    project: &Project,
+    floor: usize,
+    rooms: &[Room],
+    annotation: plan_core::DxfAnnotation,
+) -> String {
     let fl = &project.floors[floor];
     let mut closed: Vec<Vec<Point>> = Vec::new();
     let mut open: Vec<Vec<Point>> = Vec::new();
@@ -1319,6 +1654,7 @@ pub fn floor_dxf(project: &Project, floor: usize, rooms: &[Room]) -> String {
         }
     }
     DxfExport::new(project, floor, rooms)
+        .with_annotation(annotation)
         .with_extra_polylines("Roof Planes", roof_plane_outlines(fl))
         .with_extra_polylines("Framing", closed)
         .with_extra_open_polylines("Framing", open)
@@ -2043,5 +2379,281 @@ mod tests {
         assert_eq!(back.lumber, plan_framing::LumberSize::TWO_BY_TWELVE);
         assert_eq!(cx.undo_label(), Some("Framing Member Specification"));
         assert!(!apply_edit(&mut cx, FramingMember { id: 99_999, ..m }));
+    }
+
+    // ----- Framing Defaults, wall details, stairwells, eaves, takeoff, overview -----
+
+    #[test]
+    fn build_backs_the_corners_and_blocks_the_walls_by_default() {
+        let mut cx = house();
+        build(&mut cx, false);
+        // Each of the four walls ends at a corner on both ends.
+        assert_eq!(count_kind(&cx.framing, MemberKind::CornerStud), 8);
+        assert!(count_kind(&cx.framing, MemberKind::Blocking) > 20);
+        // No partitions in this plan, so no tee backing.
+        assert_eq!(count_kind(&cx.framing, MemberKind::TeeStud), 0);
+        // A partition butting into the south wall backs it on both sides.
+        let mut cx = house();
+        cx.project
+            .add_wall(
+                0,
+                Point::new(160.0, 0.0),
+                Point::new(160.0, 192.0),
+                4.5,
+                109.125,
+                WallKind::Interior,
+            );
+        cx.refresh();
+        build(&mut cx, false);
+        // The partition's two ends meet the south and north walls.
+        assert_eq!(count_kind(&cx.framing, MemberKind::TeeStud), 4);
+    }
+
+    #[test]
+    fn framing_defaults_are_stored_undone_saved_and_used() {
+        let mut cx = house();
+        assert_eq!(settings(&cx.project), FramingSettings::default());
+        assert_eq!(settings(&cx.project).walls, FramingDefaults::house());
+        let mut s = settings(&cx.project);
+        s.walls.stud_spacing = 24.0;
+        s.walls.corner_studs = 0;
+        s.walls.wall_blocking = false;
+        s.walls.header_table[2].lumber = plan_framing::TWO_BY_TWELVE;
+        set_settings(&mut cx, s.clone());
+        assert_eq!(cx.undo_label(), Some("Framing Defaults"));
+        assert_eq!(settings(&cx.project), s);
+        // Saved with the plan.
+        let back = Project::from_json(&cx.project.to_json().unwrap()).unwrap();
+        assert_eq!(settings(&back), s);
+        // Setting the same value again is not an undo step.
+        let before = cx.can_undo();
+        set_settings(&mut cx, s.clone());
+        assert_eq!(cx.can_undo(), before);
+
+        let plain = {
+            let mut c2 = house();
+            build(&mut c2, false);
+            c2.framing.len()
+        };
+        build(&mut cx, false);
+        assert_eq!(count_kind(&cx.framing, MemberKind::CornerStud), 0);
+        assert_eq!(count_kind(&cx.framing, MemberKind::Blocking), 0);
+        assert!(cx.framing.len() < plain, "24\" studs and no blocking: fewer pieces");
+        // Delete Framing keeps the defaults, and so does a rebuild.
+        clear(&mut cx);
+        assert_eq!(settings(&cx.project), s);
+        build(&mut cx, false);
+        assert_eq!(settings(&cx.project), s);
+        // The stored object is not a member or a record.
+        assert_eq!(load(cx.floor()).len(), cx.framing.len());
+        assert!(load_records(cx.floor()).is_empty());
+        // Undo to the first step takes the defaults back.
+        while cx.can_undo() {
+            cx.undo();
+        }
+        assert_eq!(settings(&cx.project), FramingSettings::default());
+    }
+
+    #[test]
+    fn a_stairwell_in_the_floor_platform_is_framed_with_headers_and_trimmers() {
+        let mut cx = house();
+        let mut layer = FoundationLayer::default();
+        layer.platform_holes.push(plan_core::foundation::PlatformHole::new(
+            5,
+            vec![
+                Point::new(100.0, 60.0),
+                Point::new(136.0, 60.0),
+                Point::new(136.0, 120.0),
+                Point::new(100.0, 120.0),
+            ],
+            PlatformKind::Floor,
+        ));
+        cx.project.floors[0].set_foundation(&layer).unwrap();
+        assert_eq!(floor_holes(cx.floor()).len(), 1);
+        build(&mut cx, false);
+        assert_eq!(count_kind(&cx.framing, MemberKind::TrimmerJoist), 4);
+        assert_eq!(count_kind(&cx.framing, MemberKind::HeaderJoist), 4);
+        // Without the hole there are none.
+        let mut cx = house();
+        build(&mut cx, false);
+        assert_eq!(count_kind(&cx.framing, MemberKind::TrimmerJoist), 0);
+    }
+
+    #[test]
+    fn rim_joists_are_built_with_the_floor() {
+        let mut cx = house();
+        build(&mut cx, false);
+        assert!(count_kind(&cx.framing, MemberKind::RimJoist) >= 2);
+        let mut s = settings(&cx.project);
+        s.walls.rim_joist = false;
+        set_settings(&mut cx, s);
+        build(&mut cx, false);
+        assert_eq!(count_kind(&cx.framing, MemberKind::RimJoist), 0);
+    }
+
+    #[test]
+    fn roof_rafters_take_the_planes_overhang_and_eave_cut() {
+        use plan_core::defaults::EaveCut;
+        let mut cx = house();
+        let settings_ = roof_view::RoofSettings::from_defaults(&cx.defaults);
+        roof_view::rebuild(&mut cx.project, 0, settings_, false).unwrap();
+        let specs = eave_specs(cx.floor());
+        assert!(!specs.is_empty());
+        let overhang = roof_view::load(cx.floor()).planes[0].overhang;
+        assert_eq!(specs[0].overhang, overhang);
+        assert_eq!(specs[0].cut, Some(TailCut::Plumb), "the roof detail's cut");
+        build(&mut cx, false);
+        let rafters: Vec<&Member> = cx
+            .framing
+            .iter()
+            .filter(|m| m.kind == MemberKind::Rafter && !m.cuts.is_empty())
+            .collect();
+        assert!(rafters.len() > 10);
+        assert!(rafters.iter().all(|r| r.cuts.tail == Some(TailCut::Plumb)));
+        assert!(rafters.iter().all(|r| r.cuts.birdsmouth.is_some()));
+        // A plane's own eave choice wins.
+        let mut set = roof_view::load(cx.floor());
+        for p in &mut set.planes {
+            p.eave.eave_cut = Some(EaveCut::Level);
+        }
+        roof_view::store(&mut cx.project, 0, &mut set);
+        assert!(eave_specs(cx.floor()).iter().all(|e| e.cut == Some(TailCut::Level)));
+        build(&mut cx, false);
+        assert!(cx
+            .framing
+            .iter()
+            .filter(|m| m.kind == MemberKind::Rafter && !m.cuts.is_empty())
+            .all(|r| r.cuts.tail == Some(TailCut::Level)));
+    }
+
+    #[test]
+    fn the_cut_table_lists_each_member_type_size_and_cut_length() {
+        let mut cx = house();
+        build(&mut cx, false);
+        let data = takeoff_data(&cx.project, 0, false);
+        assert_eq!(
+            data.cut_columns,
+            ["Member", "Size", "Cut Length", "Qty", "Linear ft", "Board ft"]
+        );
+        let studs: Vec<_> = data.cut_rows.iter().filter(|r| r[0] == "stud").collect();
+        assert!(!studs.is_empty());
+        // Studs are 2x6 cut to 104 5/8".
+        assert!(studs.iter().any(|r| r[1] == "2x6" && r[2] == "104 5/8\""));
+        let kinds: Vec<&str> = data.cut_rows.iter().map(|r| r[0].as_str()).collect();
+        for want in ["top plate", "bottom plate", "header", "joist", "rim joist", "corner stud", "blocking"] {
+            assert!(kinds.contains(&want), "{want} missing: {kinds:?}");
+        }
+        // Members of one type sit together and the table ends with a total.
+        let first_stud = kinds.iter().position(|k| *k == "stud").unwrap();
+        let last_stud = kinds.iter().rposition(|k| *k == "stud").unwrap();
+        assert!(kinds[first_stud..=last_stud].iter().all(|k| *k == "stud"));
+        let total = data.cut_rows.last().unwrap();
+        assert_eq!(total[0], "Total");
+        let qty: u32 = data.cut_rows[..data.cut_rows.len() - 1]
+            .iter()
+            .map(|r| r[3].parse::<u32>().unwrap())
+            .sum();
+        assert_eq!(total[3], qty.to_string());
+        assert_eq!(qty as usize, data.members);
+        // Linear feet = qty x cut length; the CSV has the same rows.
+        let r = studs.iter().find(|r| r[1] == "2x6").unwrap();
+        let (n, lf): (f64, f64) = (r[3].parse().unwrap(), r[4].parse().unwrap());
+        assert!((lf - n * 104.625 / 12.0).abs() < 0.06, "{lf}");
+        assert_eq!(data.cut_csv.lines().count(), data.cut_rows.len() + 1);
+        assert!(data.cut_csv.starts_with("Member,Size,Cut Length,Qty,Linear ft,Board ft\n"));
+        // Manual members join the table.
+        place(
+            &mut cx,
+            ManualMemberKind::Joist,
+            Point::new(10.0, 10.0),
+            Point::new(130.0, 10.0),
+        );
+        let more = takeoff_data(&cx.project, 0, false);
+        assert_eq!(more.members, data.members + 1);
+        assert!(more.cut_rows.iter().any(|r| r[0] == "joist" && r[2] == "120\""));
+    }
+
+    #[test]
+    fn the_framing_overview_shows_only_the_framing_layers() {
+        let mut cx = house();
+        build(&mut cx, false);
+        assert!(cx.layers().is_visible("Walls, Normal") || cx.layers().is_visible("Walls"));
+        assert!(!in_overview(&cx.project));
+        activate_overview(&mut cx);
+        assert!(in_overview(&cx.project));
+        assert_eq!(cx.undo_label(), Some("Framing Overview"));
+        // Framing layers show; the walls, rooms, doors and the rest are hidden.
+        let layers = cx.layers().clone();
+        let shown: Vec<&str> = layers
+            .layers
+            .iter()
+            .filter(|l| l.display)
+            .map(|l| l.name.as_str())
+            .collect();
+        assert!(!shown.is_empty());
+        assert!(shown.iter().all(|n| is_framing_layer(n)), "{shown:?}");
+        assert!(shown.contains(&"Framing"));
+        for hidden in ["Doors", "Rooms", "Dimensions, Manual"] {
+            if layers.get(hidden).is_some() {
+                assert!(!layers.is_visible(hidden), "{hidden}");
+            }
+        }
+        // The base layers are untouched, so leaving brings the plan back.
+        assert!(cx.project.layers.is_visible("Doors"));
+        leave_overview(&mut cx);
+        assert!(!in_overview(&cx.project));
+        assert!(cx.layers().is_visible("Doors"));
+        // Activating again reuses the set; a layer made since stays out of it.
+        cx.project.layers.add(Layer::new("Extra", [0, 0, 0], 18));
+        activate_overview(&mut cx);
+        assert!(!cx.layers().is_visible("Extra"));
+        assert_eq!(
+            cx.project.layer_sets.names().iter().filter(|n| **n == OVERVIEW).count(),
+            1
+        );
+        // An unframed floor is framed on the way in.
+        let mut cx = house();
+        activate_overview(&mut cx);
+        assert!(!cx.framing.is_empty());
+        // The manual framing layers are in the overview too.
+        ensure_manual_layers(&mut cx.project);
+        install_overview(&mut cx.project);
+        cx.refresh();
+        assert!(cx.layers().is_visible(LAYER_JOISTS));
+    }
+
+    #[test]
+    fn the_elevation_scene_swaps_wall_skins_for_wall_framing_in_the_overview() {
+        let mut cx = house();
+        build(&mut cx, false);
+        let plain = elevation_scene(&cx.project);
+        let base = plan_3d::build_scene(&cx.project);
+        assert_eq!(plain.meshes.len(), base.meshes.len(), "no change outside the overview");
+        let wall_ids: Vec<Id> = cx.floor().walls.iter().map(|w| w.id).collect();
+        let skin = |m: &plan_3d::Mesh| {
+            WALL_SURFACES.contains(&m.material)
+                && m.object_id.is_some_and(|id| wall_ids.contains(&id))
+        };
+        assert!(base.meshes.iter().any(skin));
+        activate_overview(&mut cx);
+        let scene = elevation_scene(&cx.project);
+        assert!(!scene.meshes.iter().any(skin), "the wall skins are gone");
+        let studs = scene
+            .meshes
+            .iter()
+            .filter(|m| m.material == plan_3d::Material::Framing)
+            .count();
+        let walls = load(cx.floor()).iter().filter(|m| m.wall_id.is_some()).count();
+        assert_eq!(studs, walls);
+        assert!(studs > 40);
+        // The meshes are the members' own boxes: the first stud's bounds match.
+        let m = load(cx.floor()).into_iter().find(|m| m.kind == MemberKind::Stud).unwrap();
+        let (lo, hi) = m.mesh().bounds().unwrap();
+        assert!(hi[1] > lo[1]);
+        // The 3D view gets the automatic members too.
+        let all = manual_framing_meshes(&cx.project);
+        assert!(all.len() >= load(cx.floor()).len());
+        cx.project.layers.get_mut(LAYER).unwrap().display = false;
+        assert!(manual_framing_meshes(&cx.project).len() < all.len());
     }
 }

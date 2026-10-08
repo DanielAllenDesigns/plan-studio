@@ -80,6 +80,57 @@ fn lerp_deg(a: f64, b: f64, t: f64) -> f64 {
     a + d * t
 }
 
+/// Vector View options of an elevation or section camera: which extra
+/// annotations the 2D drawing gets and how its lines are weighted.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VectorOptions {
+    /// Automatic dimension strings left of the building: floor-to-floor and
+    /// the sills and heads of the openings in view.
+    pub dimensions: bool,
+    /// The "T.O. SUBFLOOR" / "T.O. PLATE" level callouts (with the camera's
+    /// labels option on).
+    pub level_labels: bool,
+    /// Text leaders naming the siding, brick, roofing... of each region.
+    pub material_labels: bool,
+    /// Draw each wall's and opening's lines at the pen weight of its layer.
+    pub layer_weights: bool,
+    /// Draw hidden edges dashed.
+    pub hidden_dashed: bool,
+}
+
+impl Default for VectorOptions {
+    fn default() -> Self {
+        Self {
+            dimensions: false,
+            level_labels: true,
+            material_labels: false,
+            layer_weights: false,
+            hidden_dashed: false,
+        }
+    }
+}
+
+/// The plan callout of a section or elevation camera: the bubble with its
+/// view number (and, once the view is on a layout sheet, the sheet reference).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CalloutOptions {
+    /// Draw the callout in the plan.
+    pub show: bool,
+    /// The view number; `None` numbers the cameras automatically.
+    pub number: Option<u32>,
+}
+
+impl Default for CalloutOptions {
+    fn default() -> Self {
+        Self {
+            show: true,
+            number: None,
+        }
+    }
+}
+
 /// A camera shown in the plan on one floor (C-24).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraObject {
@@ -115,6 +166,12 @@ pub struct CameraObject {
     /// Walking speed along `path`, inches per second.
     #[serde(default = "default_walk_speed")]
     pub walk_speed: f64,
+    /// Vector View annotations and line weights of an elevation or section.
+    #[serde(default)]
+    pub vector: VectorOptions,
+    /// The plan callout of a section or elevation.
+    #[serde(default)]
+    pub callout: CalloutOptions,
 }
 
 impl CameraObject {
@@ -142,6 +199,8 @@ impl CameraObject {
             path: Vec::new(),
             path_nodes: Vec::new(),
             walk_speed: DEFAULT_WALK_SPEED,
+            vector: VectorOptions::default(),
+            callout: CalloutOptions::default(),
         }
     }
 
@@ -342,6 +401,140 @@ impl Project {
     /// Cameras placed on `floor`.
     pub fn cameras_on(&self, floor: usize) -> impl Iterator<Item = &CameraObject> {
         self.cameras.iter().filter(move |c| c.floor == floor)
+    }
+}
+
+// ----- callouts and interior elevations (C-17, C-20, C-21) -----
+
+impl CameraKind {
+    /// Is this a camera placed by a cut line (section, wall or exterior
+    /// elevation), the cameras that get a plan callout?
+    pub fn is_section_like(self) -> bool {
+        matches!(
+            self,
+            CameraKind::CrossSection { .. } | CameraKind::WallElevation | CameraKind::Elevation
+        )
+    }
+}
+
+/// How far in front of the wall an interior elevation's cut line stands, inches.
+pub const INTERIOR_CUT_INSET: f64 = 1.0;
+/// How far an interior elevation reaches past the room's far surface, inches
+/// (through the wall it looks at).
+pub const INTERIOR_BACK_EXTRA: f64 = 8.0;
+/// Shortest room side that gets an interior elevation, inches.
+const MIN_INTERIOR_SIDE: f64 = 12.0;
+
+/// The cameras of Auto Interior Elevations for one room.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteriorElevations {
+    /// The room's name ("Room" without one).
+    pub room: String,
+    /// North, East, South, West wall elevations, in that order.
+    pub cameras: Vec<CameraObject>,
+}
+
+impl Project {
+    /// The cameras that get a plan callout, in project order.
+    pub fn callout_cameras(&self) -> Vec<&CameraObject> {
+        self.cameras
+            .iter()
+            .filter(|c| c.kind.is_section_like() && c.callout.show)
+            .collect()
+    }
+
+    /// The view number of a camera's callout: its own number, or the lowest
+    /// number no other callout claims, handed out in project order.
+    pub fn callout_number(&self, id: Id) -> Option<u32> {
+        let cams = self.callout_cameras();
+        cams.iter().find(|c| c.id == id)?;
+        let taken: Vec<u32> = cams.iter().filter_map(|c| c.callout.number).collect();
+        let mut next = 0;
+        for c in cams {
+            let n = match c.callout.number {
+                Some(n) => n,
+                None => loop {
+                    next += 1;
+                    if !taken.contains(&next) {
+                        break next;
+                    }
+                },
+            };
+            if c.id == id {
+                return Some(n);
+            }
+        }
+        None
+    }
+
+    /// Auto Interior Elevations for the room of `floor` that contains `at`
+    /// (the smallest one when rooms nest): a Wall Elevation camera for each of
+    /// its four sides, standing just inside the opposite side, looking at the
+    /// wall and reaching only to the wall's far face. They are named
+    /// "{room} North Wall" and so on, after the wall they look at (north is
+    /// plan +Y); the cameras are returned, not added. `None` when no room
+    /// contains the point or it is too small.
+    pub fn auto_interior_elevations(&self, floor: usize, at: Point) -> Option<InteriorElevations> {
+        let f = self.floors.get(floor)?;
+        let rooms = crate::rooms::detect_rooms(&f.walls, 1.0);
+        let room = rooms
+            .iter()
+            .filter(|r| r.contains(at))
+            .min_by(|a, b| a.area_sq_in.total_cmp(&b.area_sq_in))?;
+        let ring = if room.inner_polygon.len() >= 3 {
+            &room.inner_polygon
+        } else {
+            &room.polygon
+        };
+        let first = *ring.first()?;
+        let (lo, hi) = ring.iter().fold((first, first), |(lo, hi), p| {
+            (
+                Point::new(lo.x.min(p.x), lo.y.min(p.y)),
+                Point::new(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        });
+        let (w, h) = (hi.x - lo.x, hi.y - lo.y);
+        if w < MIN_INTERIOR_SIDE || h < MIN_INTERIOR_SIDE {
+            return None;
+        }
+        let name = room
+            .name_entry(&f.room_names)
+            .map(|n| n.name.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Room".to_string());
+        let (cx, cy) = ((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+        let inset = INTERIOR_CUT_INSET;
+        // (wall, view direction, line centre, line length, room depth along the view)
+        let sides = [
+            ("North", 90.0, Point::new(cx, lo.y + inset), w, h),
+            ("East", 0.0, Point::new(lo.x + inset, cy), h, w),
+            ("South", 270.0, Point::new(cx, hi.y - inset), w, h),
+            ("West", 180.0, Point::new(hi.x - inset, cy), h, w),
+        ];
+        let cameras = sides
+            .into_iter()
+            .map(|(side, view_deg, centre, width, depth)| {
+                let back = depth - 2.0 * inset + INTERIOR_BACK_EXTRA;
+                let mut cam = CameraObject::new(
+                    CameraKind::WallElevation,
+                    centre,
+                    view_deg,
+                    format!("{name} {side} Wall"),
+                    floor,
+                );
+                let t = Point::new(cam.direction().y, -cam.direction().x) * (width * 0.5);
+                cam.section = Some(crate::extras::SectionLine {
+                    a: centre - t,
+                    b: centre + t,
+                    back_clip: Some(back),
+                });
+                cam
+            })
+            .collect();
+        Some(InteriorElevations {
+            room: name,
+            cameras,
+        })
     }
 }
 
@@ -707,5 +900,121 @@ mod tests {
         .unwrap();
         assert!(c.path.is_empty() && c.path_nodes.is_empty());
         assert_eq!(c.walk_speed, DEFAULT_WALK_SPEED);
+    }
+
+    #[test]
+    fn new_camera_options_default_and_round_trip() {
+        let c: CameraObject = serde_json::from_str(
+            r#"{"id":1,"kind":"Elevation","position":{"x":0.0,"y":0.0},"direction_deg":90.0,
+                "eye_height":66.0,"fov_deg":60.0,"clip_distance":null,"name":"c","floor":0}"#,
+        )
+        .unwrap();
+        assert_eq!(c.vector, VectorOptions::default());
+        assert!(c.callout.show && c.callout.number.is_none());
+        assert!(c.vector.level_labels && !c.vector.dimensions);
+        let mut d = c.clone();
+        d.vector.dimensions = true;
+        d.vector.material_labels = true;
+        d.callout.number = Some(4);
+        let back: CameraObject = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(back, d);
+    }
+
+    #[test]
+    fn callouts_number_themselves_around_explicit_numbers() {
+        let mut p = Project::new("n");
+        let mk = |p: &mut Project, kind, number: Option<u32>, show: bool| {
+            let mut c = CameraObject::new(kind, Point::ZERO, 90.0, "c", 0);
+            c.callout.number = number;
+            c.callout.show = show;
+            p.add_camera(c)
+        };
+        let full = mk(&mut p, CameraKind::FullCamera, None, true);
+        let a = mk(&mut p, CameraKind::Elevation, None, true);
+        let b = mk(&mut p, CameraKind::WallElevation, Some(1), true);
+        let hidden = mk(&mut p, CameraKind::Elevation, None, false);
+        let c = mk(
+            &mut p,
+            CameraKind::CrossSection { back_clip: None },
+            None,
+            true,
+        );
+        // Only section-like cameras with a callout are numbered; 1 is taken.
+        assert_eq!(p.callout_number(full), None);
+        assert_eq!(p.callout_number(hidden), None);
+        assert_eq!(p.callout_number(b), Some(1));
+        assert_eq!(p.callout_number(a), Some(2));
+        assert_eq!(p.callout_number(c), Some(3));
+        assert_eq!(p.callout_cameras().len(), 3);
+    }
+
+    fn room_project(w: f64, h: f64) -> Project {
+        use crate::model::{WallKind, DEFAULT_CEILING_HEIGHT};
+        let mut p = Project::new("room");
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(w, 0.0),
+            Point::new(w, h),
+            Point::new(0.0, h),
+        ];
+        for i in 0..4 {
+            p.add_wall(
+                0,
+                c[i],
+                c[(i + 1) % 4],
+                6.0,
+                DEFAULT_CEILING_HEIGHT,
+                WallKind::Exterior,
+            );
+        }
+        p
+    }
+
+    #[test]
+    fn interior_elevations_make_four_wall_cameras_named_by_direction() {
+        let mut p = room_project(240.0, 144.0);
+        p.floors[0].room_names.push(crate::model::RoomName {
+            anchor: Point::new(120.0, 72.0),
+            name: "Kitchen".into(),
+            ..Default::default()
+        });
+        let r = p
+            .auto_interior_elevations(0, Point::new(100.0, 60.0))
+            .unwrap();
+        assert_eq!(r.room, "Kitchen");
+        let names: Vec<&str> = r.cameras.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Kitchen North Wall",
+                "Kitchen East Wall",
+                "Kitchen South Wall",
+                "Kitchen West Wall"
+            ]
+        );
+        assert!(r
+            .cameras
+            .iter()
+            .all(|c| c.kind == CameraKind::WallElevation));
+        // The north-wall camera stands at the room's south side looking at +Y, as wide as the
+        // room (240 - 2 x 3 inside), reaching the room's depth plus the wall.
+        let n = &r.cameras[0];
+        let s = n.section.unwrap();
+        assert!((n.direction_deg - 90.0).abs() < 1e-9);
+        assert!((s.a.dist(s.b) - 234.0).abs() < 1e-6);
+        assert!((n.position.y - (3.0 + INTERIOR_CUT_INSET)).abs() < 1e-6);
+        let depth = 144.0 - 6.0 - 2.0 * INTERIOR_CUT_INSET + INTERIOR_BACK_EXTRA;
+        assert!((s.back_clip.unwrap() - depth).abs() < 1e-6);
+        // Looking east: the line is the room's height long, at the west side.
+        let e = r.cameras[1].section.unwrap();
+        assert!((e.a.dist(e.b) - 138.0).abs() < 1e-6);
+        assert!((r.cameras[1].position.x - (3.0 + INTERIOR_CUT_INSET)).abs() < 1e-6);
+        // A click outside any room, or on a floor without walls, finds nothing.
+        assert!(p
+            .auto_interior_elevations(0, Point::new(500.0, 500.0))
+            .is_none());
+        assert!(Project::new("e")
+            .auto_interior_elevations(0, Point::ZERO)
+            .is_none());
     }
 }

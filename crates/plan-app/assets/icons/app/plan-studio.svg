@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Plan Studio</title>
+  <defs><linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4C4C4C"/><stop offset="1" stop-color="#2B2B2B"/></linearGradient></defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="230" fill="url(#tile)"/>
+  <rect x="200" y="226" width="624" height="450" fill="#C8362B"/>
+  <rect x="252" y="278" width="520" height="346" fill="#F1EDE4"/>
+  <rect x="252" y="448" width="308" height="28" fill="#C8362B"/>
+  <rect x="532" y="278" width="28" height="198" fill="#C8362B"/>
+  <rect x="320" y="624" width="130" height="52" fill="#F1EDE4"/>
+  <line x1="320" y1="624" x2="320" y2="504" stroke="#2F6CB3" stroke-width="14"/>
+  <path d="M440 624 A120 120 0 0 0 320 504" fill="none" stroke="#2F6CB3" stroke-width="10"/>
+  <rect x="600" y="226" width="144" height="52" fill="#8DB8E8"/>
+  <line x1="600" y1="226" x2="744" y2="226" stroke="#2F6CB3" stroke-width="8"/>
+  <line x1="600" y1="252" x2="744" y2="252" stroke="#2F6CB3" stroke-width="8"/>
+  <line x1="600" y1="278" x2="744" y2="278" stroke="#2F6CB3" stroke-width="8"/>
+  <line x1="200" y1="766" x2="824" y2="766" stroke="#E8B82A" stroke-width="18"/>
+  <line x1="200" y1="732" x2="200" y2="800" stroke="#E8B82A" stroke-width="18"/>
+  <line x1="824" y1="732" x2="824" y2="800" stroke="#E8B82A" stroke-width="18"/>
+  <rect x="416" y="732" width="192" height="68" rx="18" fill="#353535"/>
+  <rect x="446" y="760" width="132" height="12" fill="#E8B82A"/>
+</svg>

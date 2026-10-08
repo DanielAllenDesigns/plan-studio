@@ -8,5 +8,6 @@ license.workspace = true
 [dependencies]
 plan-core = { path = "../plan-core" }
 plan-3d = { path = "../plan-3d" }
+plan-library = { path = "../plan-library" }
 serde = { workspace = true }
 serde_json = { workspace = true }

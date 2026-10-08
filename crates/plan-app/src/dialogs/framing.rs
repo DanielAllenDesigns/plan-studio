@@ -18,6 +18,7 @@ use super::{
     PV_FAINT, PV_INK, PV_WALL,
 };
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
+use crate::editor::framing_view::FramingSettings;
 use plan_core::geometry::Point;
 use plan_framing::{
     FramingMaterial, FramingMember, LumberSize, ManualMemberKind, Truss, TrussSpec, TrussType,
@@ -566,6 +567,307 @@ impl SpecPages for Form {
     }
 }
 
+// ===================================================================
+// Framing Defaults
+// ===================================================================
+
+const DEFAULTS_TABS: &[Tab] = &[on("Walls"), on("Headers"), on("Floor"), on("Roof")];
+
+/// The lumber sizes the Framing Defaults page offers for a member kind.
+const SIZES: [plan_framing::Lumber; 5] = [
+    plan_framing::TWO_BY_FOUR,
+    plan_framing::TWO_BY_SIX,
+    plan_framing::TWO_BY_EIGHT,
+    plan_framing::TWO_BY_TEN,
+    plan_framing::TWO_BY_TWELVE,
+];
+
+/// Chief's Framing Defaults page (Default Settings > Framing): the size and
+/// spacing of each kind of member Build Framing makes, the header table, the
+/// corner / tee backing, wall blocking, floor and roof framing. It edits a
+/// [`FramingSettings`]; the caller stores it with
+/// `framing_view::set_settings` on OK.
+pub struct FramingDefaultsDialog {
+    frame: SpecDialog,
+    form: DefaultsForm,
+}
+
+struct DefaultsForm {
+    draft: FramingSettings,
+    fields: Fields,
+}
+
+impl FramingDefaultsDialog {
+    pub fn new(settings: &FramingSettings) -> Self {
+        Self {
+            frame: SpecDialog::new("Framing Defaults", "framing_defaults"),
+            form: DefaultsForm {
+                draft: settings.clone(),
+                fields: Fields::default(),
+            },
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        self.frame.show(ctx, &mut self.form)
+    }
+
+    pub fn draft(&self) -> &FramingSettings {
+        &self.form.draft
+    }
+
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut FramingSettings {
+        &mut self.form.draft
+    }
+}
+
+/// A combo box over [`SIZES`] (a size that is not among them stays listed).
+fn size_combo(ui: &mut Ui, salt: &str, value: &mut plan_framing::Lumber) {
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(value.nominal_name())
+        .show_ui(ui, |ui| {
+            for l in SIZES {
+                if ui.selectable_label(*value == l, l.nominal_name()).clicked() {
+                    *value = l;
+                }
+            }
+        });
+}
+
+fn count_row(ui: &mut Ui, label: &str, value: &mut u32, max: u32) {
+    row(ui, label, |ui| {
+        ui.add(egui::DragValue::new(value).range(0..=max));
+    });
+}
+
+impl DefaultsForm {
+    fn walls(&mut self, ui: &mut Ui) {
+        let d = &mut self.draft.walls;
+        section(ui, "Studs and plates");
+        row(ui, "Stud size", |ui| size_combo(ui, "fd_stud", &mut d.stud_size));
+        self.fields
+            .length_row(ui, "Stud spacing", "fd_stud_spacing", &mut d.stud_spacing);
+        ui.weak("A 2x4 stud becomes 2x6 in walls 6\" and thicker.");
+        count_row(ui, "Top plates", &mut d.top_plates, 3);
+        count_row(ui, "Bottom plates", &mut d.bottom_plates, 2);
+        section(ui, "Openings");
+        count_row(ui, "King studs per side", &mut d.king_studs, 3);
+        count_row(ui, "Trimmers per side", &mut d.trimmers, 3);
+        self.fields.length_row(
+            ui,
+            "Cripple spacing",
+            "fd_cripple_spacing",
+            &mut d.cripple_spacing,
+        );
+        section(ui, "Corners, tees and blocking");
+        count_row(ui, "Corner studs", &mut d.corner_studs, 3);
+        count_row(ui, "Tee backing studs per side", &mut d.tee_studs, 3);
+        ui.checkbox(&mut d.wall_blocking, "Blocking between studs");
+        ui.add_enabled_ui(d.wall_blocking, |ui| {
+            self.fields.length_row(
+                ui,
+                "Blocking spacing",
+                "fd_block_spacing",
+                &mut d.wall_blocking_spacing,
+            );
+        });
+    }
+
+    fn headers(&mut self, ui: &mut Ui) {
+        let d = &mut self.draft.walls;
+        section(ui, "Header size by opening width");
+        count_row(ui, "Plies", &mut d.header_plies, 4);
+        let mut remove: Option<usize> = None;
+        let rows = d.header_table.len();
+        for (i, r) in d.header_table.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                if i + 1 == rows {
+                    ui.label("Wider than the rows above");
+                } else {
+                    ui.label("Openings up to");
+                    ui.add(
+                        egui::DragValue::new(&mut r.up_to)
+                            .speed(1.0)
+                            .range(1.0..=480.0)
+                            .suffix("\""),
+                    );
+                }
+                size_combo(ui, &format!("fd_header_{i}"), &mut r.lumber);
+                if rows > 1 && ui.small_button("Remove").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            d.header_table.remove(i);
+            // The last row always covers everything wider.
+            if let Some(last) = d.header_table.last_mut() {
+                last.up_to = 1.0e9;
+            }
+        }
+        if ui.button("Add a row").clicked() {
+            let before = d.header_table.len().saturating_sub(1);
+            let up_to = d
+                .header_table
+                .get(before.saturating_sub(1))
+                .map_or(36.0, |r| r.up_to + 12.0);
+            let lumber = d
+                .header_table
+                .last()
+                .map_or(plan_framing::TWO_BY_SIX, |r| r.lumber);
+            d.header_table.insert(
+                before,
+                plan_framing::HeaderRow {
+                    up_to,
+                    lumber,
+                },
+            );
+        }
+        // Rows stay in order of width.
+        let last = d.header_table.len().saturating_sub(1);
+        d.header_table[..last].sort_by(|a, b| a.up_to.total_cmp(&b.up_to));
+        section(ui, "Or a fixed header");
+        self.fields.length_row(
+            ui,
+            "Header depth (0 = table)",
+            "fd_header_depth",
+            &mut d.header_depth,
+        );
+    }
+
+    fn floor(&mut self, ui: &mut Ui) {
+        let d = &mut self.draft.walls;
+        section(ui, "Floor joists");
+        row(ui, "Joist size", |ui| size_combo(ui, "fd_joist", &mut d.joist_size));
+        self.fields
+            .length_row(ui, "Joist spacing", "fd_joist_spacing", &mut d.joist_spacing);
+        ui.checkbox(&mut d.rim_joist, "Rim joists");
+        ui.checkbox(&mut d.blocking, "Mid-span blocking");
+        section(ui, "Holes (stairwells)");
+        count_row(ui, "Header and trimmer plies", &mut d.hole_plies, 4);
+        ui.weak("Trimmers run beside the hole, headers across its ends.");
+    }
+
+    fn roof(&mut self, ui: &mut Ui) {
+        use plan_framing::OverhangCut;
+        let r = &mut self.draft.roof;
+        section(ui, "Rafters");
+        row(ui, "Rafter size", |ui| size_combo(ui, "fd_rafter", &mut r.rafter));
+        self.fields
+            .length_row(ui, "Rafter spacing", "fd_rafter_spacing", &mut r.spacing);
+        row(ui, "Ridge", |ui| size_combo(ui, "fd_ridge", &mut r.ridge));
+        row(ui, "Hip and valley", |ui| {
+            size_combo(ui, "fd_hip", &mut r.hip_valley);
+        });
+        row(ui, "Fascia", |ui| size_combo(ui, "fd_fascia", &mut r.fascia));
+        section(ui, "Cuts");
+        row(ui, "Tail cut", |ui| {
+            egui::ComboBox::from_id_salt("fd_tail")
+                .selected_text(match r.overhang_cut {
+                    OverhangCut::Plumb => "Plumb",
+                    OverhangCut::Level => "Level",
+                    OverhangCut::Square => "Square",
+                })
+                .show_ui(ui, |ui| {
+                    for (c, name) in [
+                        (OverhangCut::Plumb, "Plumb"),
+                        (OverhangCut::Level, "Level"),
+                        (OverhangCut::Square, "Square"),
+                    ] {
+                        ui.selectable_value(&mut r.overhang_cut, c, name);
+                    }
+                });
+        });
+        ui.weak("A plane's own Eave cut wins over this one.");
+        self.fields.length_row(
+            ui,
+            "Birdsmouth seat",
+            "fd_seat",
+            &mut r.birdsmouth_seat,
+        );
+        section(ui, "Other roof framing");
+        ui.checkbox(&mut r.collar_ties, "Collar ties");
+        ui.checkbox(&mut r.ceiling_joists, "Ceiling joists");
+        ui.checkbox(&mut r.trusses, "Trusses instead of rafters");
+        self.fields
+            .length_row(ui, "Truss spacing", "fd_truss_spacing", &mut r.truss_spacing);
+        self.fields.length_row(
+            ui,
+            "Trusses over a span of (0 = never)",
+            "fd_truss_span",
+            &mut r.use_trusses_over_span,
+        );
+    }
+}
+
+impl SpecPages for DefaultsForm {
+    fn tabs(&self) -> &'static [Tab] {
+        DEFAULTS_TABS
+    }
+
+    fn error(&self) -> Option<String> {
+        if self.fields.any_invalid() {
+            return Some("Fix the highlighted field".into());
+        }
+        let w = &self.draft.walls;
+        if w.stud_spacing < 4.0 || w.joist_spacing < 4.0 || self.draft.roof.spacing < 4.0 {
+            return Some("Spacings must be at least 4\"".into());
+        }
+        if w.header_table.is_empty() {
+            return Some("The header table needs a row".into());
+        }
+        if w.wall_blocking && w.wall_blocking_spacing < 12.0 {
+            return Some("Blocking rows must be at least 12\" apart".into());
+        }
+        None
+    }
+
+    fn page(&mut self, ui: &mut Ui, tab: usize) {
+        match DEFAULTS_TABS[tab].name {
+            "Walls" => self.walls(ui),
+            "Headers" => self.headers(ui),
+            "Floor" => self.floor(ui),
+            "Roof" => self.roof(ui),
+            _ => {}
+        }
+    }
+
+    fn preview(&self, painter: &Painter, rect: Rect) {
+        let w = &self.draft.walls;
+        let lines = [
+            format!(
+                "Studs {} @ {}\" o.c.",
+                w.stud_size.nominal_name(),
+                fmt_short(w.stud_spacing)
+            ),
+            format!(
+                "Header over 3': {}",
+                w.header_lumber_for(36.0).nominal_name()
+            ),
+            format!(
+                "Header over 6': {}",
+                w.header_lumber_for(72.0).nominal_name()
+            ),
+            format!("Joists {}", w.joist_size.nominal_name()),
+            format!(
+                "Rafters {} @ {}\"",
+                self.draft.roof.rafter.nominal_name(),
+                fmt_short(self.draft.roof.spacing)
+            ),
+        ];
+        for (i, text) in lines.iter().enumerate() {
+            pv_text(
+                painter,
+                Pos2::new(rect.center().x, rect.min.y + 14.0 + 16.0 * i as f32),
+                Align2::CENTER_CENTER,
+                text,
+                11.0,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,5 +960,44 @@ mod tests {
             }
             assert!(d.form.error().is_none());
         }
+    }
+
+    #[test]
+    fn the_framing_defaults_dialog_edits_a_copy_and_draws_every_page() {
+        let stored = FramingSettings::default();
+        let mut d = FramingDefaultsDialog::new(&stored);
+        assert_eq!(d.draft(), &stored);
+        d.draft_mut().walls.stud_spacing = 24.0;
+        d.draft_mut().walls.header_table[2].lumber = plan_framing::TWO_BY_TWELVE;
+        d.draft_mut().roof.overhang_cut = plan_framing::OverhangCut::Level;
+        assert_eq!(stored.walls.stud_spacing, 16.0, "the stored settings are untouched");
+        assert_eq!(d.draft().walls.header_lumber_for(72.0).nominal_name(), "2x12");
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                assert_eq!(d.show(ctx), Outcome::Open);
+            });
+        }
+        // Each page draws without panicking.
+        for tab in 0..DEFAULTS_TABS.len() {
+            let mut form = DefaultsForm {
+                draft: d.draft().clone(),
+                fields: Fields::default(),
+            };
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| form.page(ui, tab));
+            });
+            assert!(form.error().is_none());
+        }
+        // Bad values are refused.
+        let mut bad = DefaultsForm {
+            draft: d.draft().clone(),
+            fields: Fields::default(),
+        };
+        bad.draft.walls.stud_spacing = 1.0;
+        assert!(bad.error().is_some());
+        bad.draft.walls.stud_spacing = 16.0;
+        bad.draft.walls.header_table.clear();
+        assert!(bad.error().is_some());
     }
 }

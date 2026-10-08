@@ -104,30 +104,154 @@ pub fn slab_from_polygon(polygon3d: &[[f64; 3]], thickness: f64, material: Mater
     mesh.finish(None)
 }
 
-/// Per-room vertical settings that reach the 3D platforms (R-23, R-24, R-33):
+/// Per-room vertical settings that reach the 3D platforms (R-23..R-30, R-33):
 /// the room name entry whose anchor lies in the room supplies a floor height
-/// offset and a ceiling height override; rooms without a named entry (or
-/// without an override) keep the floor's defaults.
+/// offset, a ceiling height override, the Floor and Ceiling Structure, the
+/// finish thickness and the Floor/Ceiling Under/Over This Room switches;
+/// rooms without a named entry keep the floor's defaults.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct RoomLevels {
     /// Raise of the room's floor above the floor datum, inches.
     pub floor_offset: f64,
     /// Ceiling height measured from the room's own floor, inches.
     pub ceiling_height: f64,
+    /// Floor finish above the platform, inches.
+    pub floor_finish: f64,
+    /// Thickness of the floor platform, inches.
+    pub floor_thickness: f64,
+    /// Thickness of the ceiling platform, inches.
+    pub ceiling_thickness: f64,
+    /// Build the floor platform under the room (R-30, Open Below).
+    pub has_floor: bool,
+    /// Build the ceiling platform over the room (R-30, Deck and Porch).
+    pub has_ceiling: bool,
 }
 
 /// The levels of `room` on `floor`.
 pub(crate) fn room_levels(floor: &plan_core::Floor, room: &plan_core::Room) -> RoomLevels {
-    let named = floor
-        .room_names
-        .iter()
-        .find(|n| plan_core::geometry::point_in_polygon(n.anchor, &room.polygon));
+    let named = room.name_entry(&floor.room_names);
+    let misc = named.and_then(|n| n.misc.as_ref());
+    let layered = |layers: Option<&Vec<plan_core::extras::StructureLayer>>| {
+        layers
+            .filter(|l| !l.is_empty())
+            .map(|l| plan_core::extras::structure_thickness(l))
+    };
     RoomLevels {
         floor_offset: named.map_or(0.0, |n| n.floor_height_offset),
         ceiling_height: named
             .and_then(|n| n.ceiling_height)
             .unwrap_or(floor.ceiling_height),
+        floor_finish: misc.map_or(floor.settings.floor_finish_thickness, |m| {
+            m.floor_finish_thickness
+        }),
+        floor_thickness: layered(misc.map(|m| &m.floor_structure)).unwrap_or(SLAB_THICKNESS),
+        ceiling_thickness: layered(misc.map(|m| &m.ceiling_structure)).unwrap_or(SLAB_THICKNESS),
+        has_floor: named.is_none_or(|n| n.has_floor),
+        has_ceiling: named.is_none_or(|n| n.has_ceiling),
     }
+}
+
+/// Top of the ceiling platform of `room` on `floor`, scene elevation: where
+/// a flat roof over the room sits (the Flat Roof directive).
+pub fn room_ceiling_top(floor: &plan_core::Floor, room: &plan_core::Room) -> f64 {
+    let l = room_levels(floor, room);
+    floor.elevation + l.floor_offset + l.ceiling_height + l.ceiling_thickness
+}
+
+/// Stem walls under a room (R-26, R-40): concrete walls along the room's
+/// exterior walls from the underside of the room's floor platform up to the
+/// floor datum, where the walls above begin. A garage floor dropped below
+/// the house floor gets them from its drop; a room with a Stem Wall height
+/// gets them that deep below the datum. They stop at garage doors.
+/// `thickness` is the foundation wall type's (the wall's own when unknown).
+/// One mesh per run, tagged with its wall.
+pub(crate) fn stem_walls(
+    floor: &plan_core::Floor,
+    room: &plan_core::Room,
+    levels: &RoomLevels,
+    thickness: Option<f64>,
+) -> Vec<Mesh> {
+    use crate::builder::MeshSet;
+    use crate::frame::Frame;
+    use plan_core::geometry::dist_to_segment;
+    use plan_core::{OpeningStyle, WallKind};
+    let explicit = room
+        .name_entry(&floor.room_names)
+        .and_then(|n| n.stem_wall_height)
+        .filter(|h| *h > 0.5);
+    let dropped = levels.floor_offset < -0.5;
+    let datum = floor.elevation;
+    let platform = datum + levels.floor_offset - levels.floor_thickness;
+    let y0 = match (dropped, explicit) {
+        (true, Some(h)) => platform.min(datum - h),
+        (true, None) => platform,
+        (false, Some(h)) => datum - h,
+        (false, None) => return Vec::new(),
+    };
+    if datum - y0 < 0.5 || room.polygon.len() < 3 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let n = room.polygon.len();
+    for i in 0..n {
+        let (p, q) = (room.polygon[i], room.polygon[(i + 1) % n]);
+        let len = p.dist(q);
+        if len < 1.0 {
+            continue;
+        }
+        let dir = q.sub(p).normalized();
+        let mid = Point::lerp(p, q, 0.5);
+        let Some(wall) = floor.walls.iter().find(|w| {
+            w.kind == WallKind::Exterior
+                && !w.flags.invisible
+                && w.length() > 1e-6
+                && dist_to_segment(mid, w.start, w.end) <= w.thickness * 0.5 + 1.0
+                && w.direction().cross(dir).abs() < 0.02
+        }) else {
+            continue;
+        };
+        // Garage doors in the run leave the stem open; the rest is split.
+        let along = |pt: Point| pt.sub(p).dot(dir);
+        let mut gaps: Vec<(f64, f64)> = floor
+            .openings_on(wall.id)
+            .filter(|o| o.style == OpeningStyle::Garage)
+            .map(|o| {
+                let c = along(wall.point_at(o.center_offset));
+                (c - o.width * 0.5, c + o.width * 0.5)
+            })
+            .collect();
+        gaps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut runs = Vec::new();
+        let mut cursor = 0.0;
+        for (g0, g1) in gaps {
+            if g0 > cursor {
+                runs.push((cursor, g0.min(len)));
+            }
+            cursor = cursor.max(g1);
+        }
+        if cursor < len {
+            runs.push((cursor, len));
+        }
+        let t = thickness.unwrap_or(wall.thickness).max(1.0);
+        let mut synthetic = wall.clone();
+        synthetic.start = p;
+        synthetic.end = q;
+        synthetic.thickness = t;
+        synthetic.curve = None;
+        synthetic.bottom_offset = 0.0;
+        let frame = Frame::new(&synthetic, y0);
+        for (s0, s1) in runs.into_iter().filter(|r| r.1 - r.0 > 1.0) {
+            let mut set = MeshSet::default();
+            frame.cuboid(
+                set.material(Material::Concrete),
+                (s0, s1),
+                (-t * 0.5, t * 0.5),
+                (0.0, datum - y0),
+            );
+            out.extend(set.finish(Some(wall.id)));
+        }
+    }
+    out
 }
 
 #[cfg(test)]

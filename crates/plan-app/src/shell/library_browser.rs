@@ -14,6 +14,7 @@
 
 mod chief_ui;
 pub mod png;
+mod user_ui;
 
 use crate::editor::EditorContext;
 use crate::tools::library::chief::{self, ChiefSettings};
@@ -22,6 +23,7 @@ use chief_ui::{ChiefAction, ChiefBrowser};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use plan_library::{CatalogItem, CategoryNode, Library, Stroke as SymStroke, Symbol2d};
 use std::sync::Arc;
+use user_ui::{DragItem, UserAction, UserUi, View};
 
 /// Edge of the square each result's preview is drawn in.
 pub const PREVIEW_PX: f32 = 48.0;
@@ -55,6 +57,10 @@ pub struct LibraryBrowserState {
     pub active_item: Option<String>,
     /// The Chief Architect catalogs section.
     pub chief: ChiefBrowser,
+    /// The User Catalog: filters, favorites, preview pane and dialogs.
+    pub user: UserUi,
+    /// The folder list `tree` was built with.
+    user_folders: Vec<Vec<String>>,
 }
 
 impl Default for LibraryBrowserState {
@@ -79,6 +85,8 @@ impl LibraryBrowserState {
             active_item: None,
             // Off until the saved preference is loaded (see `Default`).
             chief: ChiefBrowser::new(ChiefSettings::off()),
+            user: UserUi::default(),
+            user_folders: Vec::new(),
         };
         st.sync_user_items();
         st
@@ -88,11 +96,14 @@ impl LibraryBrowserState {
     /// User > Images) next to the built-in items; rebuilt when it changes.
     pub fn sync_user_items(&mut self) {
         let items = crate::tools::images::user_items();
+        let folders = crate::tools::library::user::meta().folders;
         let same = items.len() == self.user_items.len()
             && items
                 .iter()
                 .zip(&self.user_items)
-                .all(|(a, b)| Arc::ptr_eq(a, b));
+                .all(|(a, b)| Arc::ptr_eq(a, b))
+            && folders == self.user_folders
+            && self.tree.child(plan_library::manage::USER_ROOT).is_some();
         if same {
             return;
         }
@@ -101,9 +112,17 @@ impl LibraryBrowserState {
             let owned: Vec<CatalogItem> = items.iter().map(|i| (**i).clone()).collect();
             library.add(plan_library::user::user_catalog(&owned));
         }
-        self.tree = library.tree();
+        let mut tree = library.tree();
+        // The User node is always there (to make the first folder in), and
+        // so are the folders that hold nothing yet.
+        ensure_folder(&mut tree, &[plan_library::manage::USER_ROOT.to_string()]);
+        for f in &folders {
+            ensure_folder(&mut tree, f);
+        }
+        self.tree = tree;
         self.library = library;
         self.user_items = items;
+        self.user_folders = folders;
     }
 
     /// Items matching the search field inside the selected category: ranked
@@ -111,7 +130,7 @@ impl LibraryBrowserState {
     /// Empty when there is neither a query nor a category.
     #[cfg(test)]
     pub fn results(&self) -> Vec<&CatalogItem> {
-        results_of(&self.library, &self.query, &self.category)
+        results_for(&self.library, &self.user, &self.query, &self.category)
     }
 
     /// The display name of the active item (a built-in or a bridged Chief
@@ -136,17 +155,50 @@ impl LibraryBrowserState {
     }
 }
 
-fn results_of<'a>(library: &'a Library, query: &str, category: &[String]) -> Vec<&'a CatalogItem> {
-    let query = query.trim();
-    if query.is_empty() && category.is_empty() {
+/// The items to list: the search hits inside the category that pass the type,
+/// catalog, style, size and favorites filters, in the chosen order. Empty
+/// when nothing narrows the library (no query, category, filter or quick
+/// list).
+fn results_for<'a>(
+    library: &'a Library,
+    user: &UserUi,
+    query: &str,
+    category: &[String],
+) -> Vec<&'a CatalogItem> {
+    let filter = user.full_filter(query, category);
+    if filter.is_empty() && user.view != View::Recent {
         return Vec::new();
     }
-    let mut items = library.search(query);
-    items.retain(|i| i.category.starts_with(category));
-    if query.is_empty() {
-        items.sort_by_key(|i| (i.name.to_lowercase(), i.id.clone()));
+    let mut items = plan_library::browse::apply(library, &filter, &user.meta);
+    if user.view == View::Recent {
+        items.retain(|i| user.meta.recent.contains(&i.id));
     }
     items
+}
+
+/// Adds the folder `path` (and its parents) to `tree` when it is missing.
+fn ensure_folder(tree: &mut CategoryNode, path: &[String]) {
+    let mut node = tree;
+    for name in path {
+        let idx = match node.children.iter().position(|c| &c.name == name) {
+            Some(i) => i,
+            None => {
+                node.children.push(CategoryNode {
+                    name: name.clone(),
+                    count: 0,
+                    children: Vec::new(),
+                    item_ids: Vec::new(),
+                });
+                node.children
+                    .sort_by_key(|c| (c.name.to_lowercase(), c.name.clone()));
+                node.children
+                    .iter()
+                    .position(|c| &c.name == name)
+                    .unwrap_or(0)
+            }
+        };
+        node = &mut node.children[idx];
+    }
 }
 
 /// Applies what the panel reported: activating an item makes it the Library
@@ -237,7 +289,9 @@ pub fn preview_shapes(symbol: &Symbol2d, rect: Rect, stroke: Stroke) -> Vec<Shap
 /// Draws the whole panel body (below the dock heading).
 pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEvent> {
     st.sync_user_items();
+    st.user.refresh();
     let mut event = None;
+    let mut actions: Vec<UserAction> = Vec::new();
     let chief_action = |a: ChiefAction, event: &mut Option<LibraryEvent>| {
         *event = Some(match a {
             ChiefAction::Activate(id) => LibraryEvent::Activate(id),
@@ -258,6 +312,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
             st.query.clear();
         }
     });
+    let catalogs: Vec<String> = st
+        .library
+        .catalogs()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    st.user.filter_bar(ui, &catalogs);
     if st.chief.enabled() {
         ui.checkbox(&mut st.chief.search_chief, "Search Chief catalogs");
     }
@@ -268,6 +329,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
     if let Some(a) = chief_ui::windows(ui.ctx(), &mut st.chief) {
         chief_action(a, &mut event);
     }
+    if let Some(e) = st.user.windows(ui.ctx()) {
+        event = Some(e);
+    }
     ui.separator();
 
     let tree_height = (ui.available_height() * 0.4).max(80.0);
@@ -277,11 +341,25 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
         .auto_shrink([false, true])
         .show(ui, |ui| {
             let mut picked = None;
+            if st.user.quick_lists(ui) && st.user.view != View::Category {
+                st.category.clear();
+                st.chief.selected = None;
+            }
             let root = st.tree.clone();
-            category_node(ui, &root, &mut Vec::new(), &st.category, &mut picked, true);
+            category_node(
+                ui,
+                &root,
+                &mut Vec::new(),
+                &st.category,
+                &mut picked,
+                true,
+                &st.user,
+                &mut actions,
+            );
             if let Some(path) = picked {
                 st.category = path;
                 st.chief.selected = None;
+                st.user.view = View::Category;
             }
             let before = st.chief.selected.clone();
             if let Some(a) = chief_ui::tree(ui, &mut st.chief) {
@@ -289,6 +367,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
             }
             if st.chief.selected != before && st.chief.selected.is_some() {
                 st.category.clear();
+                st.user.view = View::Category;
             }
         });
     ui.separator();
@@ -302,13 +381,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
         if let Some(a) = a {
             chief_action(a, &mut event);
         }
-        return event;
+        return finish(st, event, actions);
     }
 
-    let path = if st.category.is_empty() {
-        "All categories".to_string()
-    } else {
-        st.category.join(" \u{25B8} ")
+    let path = match st.user.view {
+        View::Favorites => "Favorites".to_string(),
+        View::Recent => "Recently Used".to_string(),
+        View::Category if st.category.is_empty() => "All categories".to_string(),
+        View::Category => st.category.join(" \u{25B8} "),
     };
     ui.horizontal(|ui| {
         ui.strong(path);
@@ -317,16 +397,28 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
         }
     });
 
-    let results = results_of(&st.library, &st.query, &st.category);
+    let results = results_for(&st.library, &st.user, &st.query, &st.category);
     let chief_search = st.chief.enabled() && st.chief.search_chief && !st.query.trim().is_empty();
     let total = results.len();
+    // The preview pane of the selected item (built-in or user).
+    let selected = st
+        .user
+        .selected
+        .as_deref()
+        .and_then(|id| st.library.get(id))
+        .cloned();
     if total == 0 && !chief_search {
-        if st.query.trim().is_empty() && st.category.is_empty() {
+        if st.query.trim().is_empty() && st.category.is_empty() && !st.user.narrows() {
             ui.weak("Search above or pick a category.");
         } else {
             ui.weak("No library items match.");
         }
-        return event;
+        if let Some(item) = &selected {
+            if let Some(a) = st.user.preview_pane(ui, item) {
+                actions.push(a);
+            }
+        }
+        return finish(st, event, actions);
     }
     if total > 0 {
         ui.weak(format!("{total} item{}", if total == 1 { "" } else { "s" }));
@@ -336,10 +428,40 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
         .id_salt("library_results")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for item in results.iter().take(RESULT_CAP) {
+            if let Some(item) = &selected {
+                egui::CollapsingHeader::new("Preview and Object Information")
+                    .id_salt("library_preview_pane")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if let Some(a) = st.user.preview_pane(ui, item) {
+                            actions.push(a);
+                        }
+                    });
+                ui.separator();
+            }
+            let mut each = |ui: &mut egui::Ui, item: &CatalogItem| {
                 let is_active = active.as_deref() == Some(item.id.as_str());
-                if let Some(e) = result_row(ui, item, is_active) {
+                let out = if st.user.grid {
+                    result_cell(ui, item, is_active, &st.user)
+                } else {
+                    result_row(ui, item, is_active, &st.user)
+                };
+                if let Some(e) = out.0 {
                     event = Some(e);
+                }
+                if let Some(a) = out.1 {
+                    actions.push(a);
+                }
+            };
+            if st.user.grid {
+                ui.horizontal_wrapped(|ui| {
+                    for item in results.iter().take(RESULT_CAP) {
+                        each(ui, item);
+                    }
+                });
+            } else {
+                for item in results.iter().take(RESULT_CAP) {
+                    each(ui, item);
                 }
             }
             if total > RESULT_CAP {
@@ -353,11 +475,28 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
                 chief_action(a, &mut event);
             }
         });
+    finish(st, event, actions)
+}
+
+/// Carries out the User Catalog actions of this frame; the last status
+/// message wins over the frame's event.
+fn finish(
+    st: &mut LibraryBrowserState,
+    event: Option<LibraryEvent>,
+    actions: Vec<UserAction>,
+) -> Option<LibraryEvent> {
+    let mut event = event;
+    for a in actions {
+        if let Some(m) = st.user.perform(a) {
+            event = Some(LibraryEvent::Message(m));
+        }
+    }
     event
 }
 
 /// One tree node: a header (or a plain label for a leaf) that selects the
 /// category when its label is clicked.
+#[allow(clippy::too_many_arguments)]
 fn category_node(
     ui: &mut egui::Ui,
     node: &CategoryNode,
@@ -365,13 +504,17 @@ fn category_node(
     selected: &[String],
     picked: &mut Option<Vec<String>>,
     is_root: bool,
+    user: &UserUi,
+    actions: &mut Vec<UserAction>,
 ) {
     let here_selected = selected == path.as_slice();
     let label = format!("{} ({})", node.name, node.count);
     if node.children.is_empty() {
-        if ui.selectable_label(here_selected, label).clicked() {
+        let r = ui.selectable_label(here_selected, label);
+        if r.clicked() {
             *picked = Some(path.clone());
         }
+        actions.extend(user.folder_hooks(&r, path));
         return;
     }
     let id = ui.make_persistent_id(("library_category", path.clone()));
@@ -379,24 +522,33 @@ fn category_node(
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, is_root);
     state
         .show_header(ui, |ui| {
-            if ui.selectable_label(here_selected, label).clicked() {
+            let r = ui.selectable_label(here_selected, label);
+            if r.clicked() {
                 *picked = Some(path.clone());
             }
+            actions.extend(user.folder_hooks(&r, path));
         })
         .body(|ui| {
             for child in &node.children {
                 path.push(child.name.clone());
-                category_node(ui, child, path, selected, picked, false);
+                category_node(ui, child, path, selected, picked, false, user, actions);
                 path.pop();
             }
         });
 }
 
-/// One result: preview, name and size. A click activates it; the context menu
-/// holds Chief's Open Object and Add to User Library (placeholders).
-fn result_row(ui: &mut egui::Ui, item: &CatalogItem, is_active: bool) -> Option<LibraryEvent> {
+/// One result: preview, name and size. A click activates it and selects it
+/// for the preview pane; user items can be dragged onto a folder; the
+/// context menu holds the favorite, Open Object and (for user items) the
+/// management entries.
+fn result_row(
+    ui: &mut egui::Ui,
+    item: &CatalogItem,
+    is_active: bool,
+    user: &UserUi,
+) -> (Option<LibraryEvent>, Option<UserAction>) {
     let size = Vec2::new(ui.available_width(), PREVIEW_PX + 6.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let visuals = ui.visuals();
     if is_active {
         ui.painter()
@@ -426,34 +578,93 @@ fn result_row(ui: &mut egui::Ui, item: &CatalogItem, is_active: bool) -> Option<
         Pos2::new(text_x, rect.top() + 28.0),
         egui::Align2::LEFT_CENTER,
         format!(
-            "{} \u{00D7} {} in",
+            "{} \u{00D7} {} in  \u{00B7}  {}",
             trim_num(item.width),
-            trim_num(item.depth)
+            trim_num(item.depth),
+            item.kind.label()
         ),
         egui::FontId::proportional(11.0),
         weak,
     );
+    if user.meta.is_favorite(&item.id) {
+        ui.painter().text(
+            Pos2::new(rect.right() - 10.0, rect.top() + 10.0),
+            egui::Align2::CENTER_CENTER,
+            "\u{2605}",
+            egui::FontId::proportional(13.0),
+            Color32::from_rgb(0xD0, 0x9A, 0x10),
+        );
+    }
+    if item.id.starts_with("user.") && resp.drag_started() {
+        resp.dnd_set_drag_payload(DragItem(item.id.clone()));
+    }
     let mut event = None;
+    let mut action = None;
     if resp.clicked() {
         event = Some(LibraryEvent::Activate(item.id.clone()));
+        action = Some(UserAction::Select(item.id.clone()));
     }
     resp.context_menu(|ui| {
-        if ui.button("Open Object").clicked() {
-            event = Some(LibraryEvent::Message(format!(
-                "Open Object: {} (coming)",
-                item.name
-            )));
-            ui.close_menu();
-        }
-        if ui.button("Add to User Library").clicked() {
-            event = Some(LibraryEvent::Message(format!(
-                "Add to User Library: {} (coming)",
-                item.name
-            )));
-            ui.close_menu();
+        if let Some(a) = user.row_menu(ui, item) {
+            action = Some(a);
         }
     });
-    event
+    (event, action)
+}
+
+/// One result in the thumbnail grid: just the drawing, with the name and
+/// size in the tooltip. Same click, drag and menu as a row.
+fn result_cell(
+    ui: &mut egui::Ui,
+    item: &CatalogItem,
+    is_active: bool,
+    user: &UserUi,
+) -> (Option<LibraryEvent>, Option<UserAction>) {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(PREVIEW_PX + 8.0), Sense::click_and_drag());
+    let visuals = ui.visuals();
+    if is_active {
+        ui.painter().rect_filled(rect, 3.0, visuals.selection.bg_fill);
+    } else if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
+    }
+    let preview = rect.shrink(4.0);
+    ui.painter()
+        .rect_filled(preview, 2.0, Color32::from_gray(0xEC));
+    let ink = Stroke::new(1.0_f32, Color32::from_gray(0x2B));
+    for shape in preview_shapes(&item.symbol, preview, ink) {
+        ui.painter().add(shape);
+    }
+    if user.meta.is_favorite(&item.id) {
+        ui.painter().text(
+            rect.right_top() + Vec2::new(-8.0, 8.0),
+            egui::Align2::CENTER_CENTER,
+            "\u{2605}",
+            egui::FontId::proportional(12.0),
+            Color32::from_rgb(0xD0, 0x9A, 0x10),
+        );
+    }
+    if item.id.starts_with("user.") && resp.drag_started() {
+        resp.dnd_set_drag_payload(DragItem(item.id.clone()));
+    }
+    let mut event = None;
+    let mut action = None;
+    if resp.clicked() {
+        event = Some(LibraryEvent::Activate(item.id.clone()));
+        action = Some(UserAction::Select(item.id.clone()));
+    }
+    let resp = resp.on_hover_text(format!(
+        "{}\n{} \u{00D7} {} in",
+        item.name,
+        trim_num(item.width),
+        trim_num(item.depth)
+    ));
+    resp.context_menu(|ui| {
+        if let Some(a) = user.row_menu(ui, item) {
+            action = Some(a);
+        }
+    });
+    (event, action)
 }
 
 fn trim_num(v: f64) -> String {
@@ -529,6 +740,121 @@ mod tests {
         assert!(st.activate("user.image.t1"));
         assert_eq!(st.active_name().as_deref(), Some("Front Rug"));
         images::set_user_library_path(None);
+    }
+
+    #[test]
+    fn the_user_node_folders_favorites_recents_and_filters_drive_the_list() {
+        use crate::tools::library::user as store;
+        use crate::tools::library::user::tests_support::fresh;
+        use plan_library::{ItemKind, Model3d};
+        fresh(false);
+        let mut st = LibraryBrowserState::new(Library::with_core());
+        // The User node is there before anything is saved.
+        let user = st.tree.child("User").expect("User node");
+        assert_eq!(user.count, 0);
+        store::create_folder(&["User".into(), "Mine".into()]).unwrap();
+        st.sync_user_items();
+        assert!(st.tree.child("User").unwrap().child("Mine").is_some(), "empty folders show");
+
+        let m = Model3d::box_model(30.0, 20.0, 40.0, None);
+        let id = store::new_id(ItemKind::Model);
+        let item = crate::tools::library::make::item_from_model(
+            &m,
+            &id,
+            "Pouf",
+            &["User".to_string(), "Mine".to_string()],
+            None,
+        )
+        .unwrap();
+        store::add(item, Some(&m)).unwrap();
+        st.sync_user_items();
+        st.user.refresh();
+        assert_eq!(st.tree.child("User").unwrap().child("Mine").unwrap().count, 1);
+
+        // The folder lists its items; nothing else does.
+        st.category = vec!["User".into(), "Mine".into()];
+        assert_eq!(st.results().len(), 1);
+        st.category.clear();
+        assert!(st.results().is_empty(), "nothing chosen, nothing listed");
+
+        // A type filter alone lists across the whole library.
+        st.user.filter.kinds = vec![ItemKind::Model];
+        assert_eq!(st.results().len(), 1);
+        st.user.filter.kinds = vec![ItemKind::Cabinet];
+        assert!(st.results().is_empty());
+        st.user.filter.kinds.clear();
+
+        // Favorites and recents are views of their own.
+        assert!(st.user.perform(UserAction::ToggleFavorite(id.clone())).is_some());
+        st.user.view = View::Favorites;
+        let ids: Vec<&str> = st.results().iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, [id.as_str()]);
+        st.user.view = View::Recent;
+        assert!(st.results().is_empty());
+        assert!(st.activate(&id));
+        crate::tools::library::set_active_item(&mut EditorContext::new(crate::plan_defaults::embedded()), &id);
+        st.user.refresh();
+        assert_eq!(st.results().len(), 1, "an activated item is recent");
+        st.user.view = View::Category;
+
+        // Size and sort.
+        st.query = "pouf".into();
+        st.user.filter.catalog = Some("User Library".into());
+        assert_eq!(st.results().len(), 1);
+        st.user.filter.catalog = Some("Nope".into());
+        assert!(st.results().is_empty());
+        st.user.filter.catalog = None;
+
+        // Deleting through an action takes it out of the tree counts.
+        assert!(store::delete(&id).unwrap());
+        st.sync_user_items();
+        assert_eq!(st.tree.child("User").unwrap().child("Mine").unwrap().count, 0);
+        crate::tools::images::set_user_library_path(None);
+    }
+
+    #[test]
+    fn the_panel_draws_the_user_catalog_in_list_and_grid_with_a_selection() {
+        use crate::tools::library::user as store;
+        use crate::tools::library::user::tests_support::fresh;
+        use plan_library::{ItemKind, Model3d};
+        fresh(false);
+        let m = Model3d::box_model(30.0, 20.0, 40.0, None);
+        let id = store::new_id(ItemKind::Model);
+        let item = crate::tools::library::make::item_from_model(
+            &m,
+            &id,
+            "Pouf",
+            &["User".to_string(), "Mine".to_string()],
+            None,
+        )
+        .unwrap();
+        store::add(item, Some(&m)).unwrap();
+        let ctx = egui::Context::default();
+        let mut st = state();
+        st.chief = ChiefBrowser::new(ChiefSettings::off());
+        st.sync_user_items();
+        st.category = vec!["User".into()];
+        st.user.selected = Some(id.clone());
+        st.user.show_filters = true;
+        for grid in [false, true] {
+            st.user.grid = grid;
+            for _ in 0..2 {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let _ = show(ui, &mut st);
+                    });
+                });
+            }
+        }
+        // Favorites view with an empty list also draws.
+        st.user.view = View::Favorites;
+        st.category.clear();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = show(ui, &mut st);
+            });
+        });
+        crate::tools::images::set_user_library_path(None);
     }
 
     #[test]

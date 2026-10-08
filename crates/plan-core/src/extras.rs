@@ -40,6 +40,13 @@ pub struct RoomLabelOptions {
     pub show_area: bool,
     pub show_dimensions: bool,
     pub area_kind: AreaKind,
+    /// Where the label has been dragged to, as a plan offset from the room's
+    /// label point (R-44); zero keeps it where the room puts it.
+    pub offset: Point,
+    /// Label text with macros (R-47): `<name>`, `<type>`, `<area>`,
+    /// `<dims>`, `<ceiling>`, `<floor>`, `<perimeter>`. Empty uses the
+    /// name, dimensions and area lines the checkboxes choose.
+    pub template: String,
 }
 
 impl Default for RoomLabelOptions {
@@ -49,8 +56,34 @@ impl Default for RoomLabelOptions {
             show_area: true,
             show_dimensions: false,
             area_kind: AreaKind::Interior,
+            offset: Point::ZERO,
+            template: String::new(),
         }
     }
+}
+
+/// One layer of a floor or ceiling structure (R-28, R-29): a material and
+/// its thickness, listed from the top of the floor platform down (the ceiling
+/// platform from its underside up).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructureLayer {
+    pub material: String,
+    /// Thickness, inches.
+    pub thickness: f64,
+}
+
+impl StructureLayer {
+    pub fn new(material: impl Into<String>, thickness: f64) -> Self {
+        Self {
+            material: material.into(),
+            thickness,
+        }
+    }
+}
+
+/// Total thickness of a layer stack, inches.
+pub fn structure_thickness(layers: &[StructureLayer]) -> f64 {
+    layers.iter().map(|l| l.thickness.max(0.0)).sum()
 }
 
 /// Room Specification values that used to live only for the session.
@@ -59,6 +92,9 @@ impl Default for RoomLabelOptions {
 pub struct RoomMisc {
     /// A roof is built over the room.
     pub roof_over: bool,
+    /// Flat Roof over This Room: Build Roof puts a level roof plane at the
+    /// room's ceiling instead of the pitched roof.
+    pub flat_roof: bool,
     /// The floor height offset is measured from the datum, not the floor.
     pub floor_height_absolute: bool,
     /// The ceiling height is measured from the datum, not the floor.
@@ -67,17 +103,26 @@ pub struct RoomMisc {
     pub ceiling_finish_thickness: f64,
     /// Wall covering name ("" = none).
     pub wall_covering: String,
+    /// Floor Structure layers (R-28); empty follows the floor's default
+    /// platform.
+    pub floor_structure: Vec<StructureLayer>,
+    /// Ceiling Structure layers (R-29); empty follows the floor's default
+    /// platform.
+    pub ceiling_structure: Vec<StructureLayer>,
 }
 
 impl Default for RoomMisc {
     fn default() -> Self {
         Self {
             roof_over: true,
+            flat_roof: false,
             floor_height_absolute: false,
             ceiling_height_absolute: false,
             floor_finish_thickness: 0.0,
             ceiling_finish_thickness: 0.0,
             wall_covering: String::new(),
+            floor_structure: Vec::new(),
+            ceiling_structure: Vec::new(),
         }
     }
 }
@@ -109,6 +154,12 @@ pub struct OpeningExtras {
     pub frame_width: Option<f64>,
     pub sash_width: Option<f64>,
     pub show_open_in_plan: bool,
+    /// This opening's own label settings (Label tab); `None` follows the
+    /// Default Settings of its kind (DW-59..DW-63).
+    pub label: Option<crate::openings::LabelSettings>,
+    /// Sash, lites, lintel, arch, hardware, shutters, niche depth and the
+    /// label offset (the Specification tabs of `docs/parity/doors-windows.md`).
+    pub spec: crate::openings::OpeningSpec,
 }
 
 impl Default for OpeningExtras {
@@ -121,6 +172,8 @@ impl Default for OpeningExtras {
             frame_width: None,
             sash_width: None,
             show_open_in_plan: true,
+            label: None,
+            spec: crate::openings::OpeningSpec::default(),
         }
     }
 }

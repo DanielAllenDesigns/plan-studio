@@ -179,15 +179,26 @@ embedded defaults 0.08 ms, `seeded_defaults` over a cached Chief template
 0.7 ms, `PlanApp::new` 4.6 ms, the first headless UI frame 7.7 ms (fonts,
 layout), opening the 1.4 MB sample 2.4 ms.
 
-The one slow path is the first launch on a machine that has no `templates`
-key in `~/.plan-studio/settings.json`: `templates::load_or_detect_at` calls
-`plan_config::detect_chief_templates`, which falls back to `scan_for` walking
-the home folder for the Chief plan and layout templates. It ran for about 6.5
-seconds in this environment, on the main thread inside `main()`, before the
-window opens, and it repeats on every launch for as long as the settings file
-cannot be written. Moving that detection to a thread (the plan template then
-seeds the defaults when it arrives) is the fix; `templates.rs` and `main.rs`
-were outside this change.
+The one slow path was the first launch on a machine that has no `templates`
+key in `~/.plan-studio/settings.json`: the scan in
+`plan_config::detect_chief_templates` (`scan_for` walking the home folder for the
+Chief plan and layout templates) ran for about 6.5 seconds in this environment, on
+the main thread inside `main()`, before the window opened, and again for every
+caller of `templates::load_settings` for as long as the settings file could not be
+written.
+
+That is fixed. `templates::load_settings` and so `plan_defaults::load` only read
+the saved key (or this session's result); they never scan. `main()` starts the scan
+with `templates::begin_detection`, which runs `detect_and_seed` on a thread (the
+scan, the settings write and the decode of the template that seeds the defaults),
+and `PlanApp::update` polls `templates::poll_detection` once a frame. The window opens
+at once on the shipped defaults with the status line "Looking for your Chief templates in
+the background..."; when the scan ends the defaults are seeded (a plan nobody has touched
+starts over from them, a worked plan is kept) unless the user saved defaults of their own,
+and the status line says what was found. The result is kept for the session even when the
+settings file cannot be written, so a read-only home is scanned once per session and
+not once per call (`templates::Startup`; tests drive it with an injected scan: the
+scan runs on another thread, runs once, and a failed write does not repeat it).
 
 ## What is still slow, and why
 

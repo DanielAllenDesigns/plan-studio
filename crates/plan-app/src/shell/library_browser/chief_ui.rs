@@ -902,6 +902,10 @@ fn object_row(
             st.open_info(idx, obj);
             ui.close_menu();
         }
+        // Chief content is licensed: it is read in place and never copied
+        // into the User Catalog or an export.
+        ui.add_enabled(false, egui::Button::new("Add to User Library"))
+            .on_disabled_hover_text(LICENSE_NOTE);
     });
     action
 }

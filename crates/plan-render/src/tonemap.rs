@@ -1,7 +1,9 @@
 //! HDR to display conversion.
 
+use serde::{Deserialize, Serialize};
+
 /// Tone-mapping operator.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToneMap {
     /// Narkowicz ACES filmic fit.
     #[default]

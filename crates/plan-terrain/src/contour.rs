@@ -28,6 +28,17 @@ pub struct Contour {
 /// A vertex exactly on a level counts as above it, so a perfectly flat surface at a
 /// level yields no contour.
 pub fn contours(surface: &TerrainSurface, interval: f64) -> Vec<Contour> {
+    contours_with(surface, interval, MAJOR_EVERY as u32)
+}
+
+/// [`contours`] with every `major_every`'th level a major contour (`0` falls
+/// back to every fifth).
+pub fn contours_with(surface: &TerrainSurface, interval: f64, major_every: u32) -> Vec<Contour> {
+    let major_every = if major_every == 0 {
+        MAJOR_EVERY
+    } else {
+        i64::from(major_every)
+    };
     let interval = if interval.is_finite() && interval > 0.0 {
         interval
     } else {
@@ -62,7 +73,7 @@ pub fn contours(surface: &TerrainSurface, interval: f64) -> Vec<Contour> {
             (!polylines.is_empty()).then(|| Contour {
                 z: k as f64 * interval,
                 polylines,
-                major: k.rem_euclid(MAJOR_EVERY) == 0,
+                major: k.rem_euclid(major_every) == 0,
             })
         })
         .collect()

@@ -3,7 +3,7 @@
 This chapter takes you from a source checkout to a first drawn wall, and tours
 the window: the menus, the three toolbars, the docks, the status bar, the
 templates (including how Plan Studio reads your own Chief templates), a first look
-at the layout view, and the themes.
+at the layout view, the themes, how to customize the toolbars, and the in-app Help.
 
 ## 1.1 Installing from source
 
@@ -129,10 +129,15 @@ make_samples`, so treat them as examples to open and take apart, not files to ed
   hotkey prefix (`D, ...`), the live readout while drawing, the name of the
   object snap in use, a one-line hint for the active tool, then the last
   message ("Not implemented yet", "Saved", an error).
+- **Plan view tabs** (top left of the canvas, drawn when two or more saved plan views are open): each tab is a saved
+  plan view with its own floor, layer set, reference display, zoom and pan. Click a tab to switch (the view you leave keeps
+  where it was), drag a tab to reorder, middle-click to close it; a small menu at the end opens a saved view that is not a tab
+  yet. The Project Browser's Plan Views node and Tools > Plan Views open views as tabs too (1.6, chapter 5.5).
 - **Edit toolbar** (floating, bottom left of the canvas): appears when
-  something is selected. Open Object, Delete Objects, Copy Selected Objects,
-  Paste in Place, and Reverse Swing for doors. Fix Wall Connections is listed
-  in the code but reports "not implemented yet" from this button.
+  something is selected. Open Object, Delete Objects, Cut, Copy Selected Objects,
+  Paste in Place, Group, Select Same Type, Transform/Replicate, Layer and Lock,
+  and the buttons of the object's type (Reverse Swing for doors, Fix Wall
+  Connections for walls). Right-click opens the same commands as a menu.
 
 ## 1.4 The three toolbars
 
@@ -145,17 +150,19 @@ dark gray `#3A3A3A`, 28 px buttons, flyout buttons with a small arrow.
 - Dimmed buttons are not implemented yet (planned). Clicking one puts
   "Not implemented yet" in the status bar and changes nothing.
 - Exactly one tool is active at a time. `Space` returns to Select Objects.
+- The buttons shown depend on the view: the floor plan, a 3D view, a vector elevation or section, and the layout each have
+  their own set (1.4a). Which buttons a set shows is yours to change in Tools > Toolbars and Hotkeys > Customize Toolbars.
 
 ### Row 1
 
-New Plan, Open Plan, Save | Print (planned; File > Print > Print Layout works, 1.6), Send to Layout (11.3) | Undo,
-Redo | Preferences (planned), Launch Help (planned) | Edit Active View,
-Save Active View, Save Active View As (planned); the saved-view selector lists the plan's saved plan views and switches to one |
+New Plan, Open Plan, Save | Print (opens the Print dialog, 11.3), Send to Layout (11.3) | Undo,
+Redo | Preferences (1.9a), Launch Help (opens the Help viewer, 1.6a) | Edit Active View (the Plan View Specification, 5.5),
+Save Active View (Save Plan View), Save Active View As (New Plan View); the saved-view selector lists the plan's saved plan views and switches to one |
 Display Options (planned), Default Settings, Plan Database (planned), Floor
-Defaults (planned) | Down One Floor, floor number, Up One Floor | 3D View
+Defaults (4.5) | Down One Floor, floor number, Up One Floor | 3D View
 flyout, Full Camera flyout, Mouse-Orbit Camera, Cross Section Slider, Create
 Walkthrough Path, Rendering Techniques flyout, Add Lights flyout (Add Lights and Adjust Lights) |
-Sun Angle | Material Painter and the five material tools (planned) | Default
+Sun Angle | Material Painter, Material Eyedropper, Delete Surface, Adjust Material Definition (the Material Builder) and Interactive Material Editor (the Materials list) (10.8); Object Eyedropper (planned) | Default
 Configuration, Space Planning Configuration, Extended Tool Configuration
 (planned toggles). The camera and rendering buttons are covered in chapter 10.
 
@@ -163,9 +170,7 @@ Configuration, Space Planning Configuration, Extended Tool Configuration
 
 Select Objects | Wall flyouts (chapter 2) | Door and Window flyouts (3) |
 Cabinet and Electrical flyouts (6, 9) | Stairs and Floor flyouts (7, 4) |
-Roof, Trim, the three Framing flyouts, Slab and 3D Solid flyouts (8, 11.11, 16, 17) | Paste Hold Position
-(planned) | Dimension flyouts (5) | Text flyout (5), Revision Cloud (the toolbar toggle is dimmed; the CAD menu and the
-CAD option strip have it, 5) | Schedule flyout (11.2) | Points, Lines, Arcs, Circles, Boxes, CAD Blocks, Spline (5) |
+Roof, Trim, the three Framing flyouts, Slab and 3D Solid flyouts (8, 11.11, 16, 17) | Paste Hold Position | Dimension flyouts (5) | Text flyout (5), Revision Cloud (5) | Schedule flyout (11.2) | Points, Lines, Arcs, Circles, Boxes, CAD Blocks, Spline (5) |
 Auto Detail, Current CAD Layer (planned).
 
 ### View bar
@@ -173,7 +178,7 @@ Auto Detail, Current CAD Layer (planned).
 | Button | Hotkey | Works today |
 |---|---|---|
 | Library Browser | `Cmd+L` | Opens the Library Browser dock (chapter 6). |
-| Project Browser | | Opens the dock: Plan > Floors, Cameras, Saved Views, and Layout (see 1.5). |
+| Project Browser | | Opens the dock: Floors, Plan Views, Cameras, Schedules, CAD Details and Layout (see 1.5). |
 | Active Layer Display Options | | Opens the layer table dock (chapter 5). |
 | Zoom | `Shift+Z` | (planned) |
 | Zoom In / Zoom Out / Undo Zoom | `-` (Zoom In) | Yes. Zoom Out has no key in Daniel's setup (see 13.5). |
@@ -192,16 +197,52 @@ Auto Detail, Current CAD Layer (planned).
 Navigation without the bar: scroll wheel or pinch zooms at the cursor; middle
 or right drag pans.
 
+### 1.4a Toolbar sets and Customize Toolbars
+
+The two toolbar rows and the view bar are drawn from a **toolbar set**, one per kind of view: **Floor Plan**, **3D View**,
+**Vector Elevation** (a section or elevation shown as a 2D drawing, chapter 10.7) and **Layout**. The program picks the set of
+the view on screen, so opening a 3D view swaps the plan's Build buttons for the camera buttons you chose for 3D. Each set holds
+the three standard bars (row 1, row 2 and the view bar) and any rows you add, each an ordered list of buttons with separators.
+The floor-plan set starts out exactly as the bars of 1.4 are described; the other three start from Daniel's per-view Chief
+toolbar sets, reduced to the buttons that view can use.
+
+**Tools > Toolbars and Hotkeys > Customize Toolbars...** opens the editor:
+
+- Pick the view type at the top (the line beside it says which one is showing now), then the row to edit.
+- **Available buttons** lists every button of the program by group, the way Chief files them; a search box narrows it. Tick a
+  button to put it on the chosen row, clear the tick to take it off. Buttons that no default bar carries (the terrain and
+  landscape tools, fencing, the image tools and the layout page tools) are in the list too.
+- **Rows** shows the three standard rows, each with a Show tick, and the rows you added. **Add Row** makes a row with a name
+  you type; **Delete Row** removes a row you added (the standard rows cannot be deleted, hide them instead).
+- **Buttons on the row**: select a button and use Move Up, Move Down or Remove; **Add Separator** puts a divider line after
+  the selected button.
+- **Lock Toolbars** makes the dialog refuse changes until it is cleared. (The bars themselves are not draggable in Plan
+  Studio, so the lock only protects the dialog.)
+- **Reset This View to Daniel's Chief Set** and **Reset All Views** put the shipped sets back.
+- **Import Chief Toolbar File...** reads a Chief `.toolbar` file into the chosen view type, with Chief's own labels; the
+  dialog reports how many of the file's buttons have a Plan Studio counterpart and lists the ones that do not (they are skipped). **Import Daniel's Chief Toolbars** re-reads the sets that
+  ship with the program.
+- **Export...** writes the whole configuration as JSON and **Load Exported File...** reads one back.
+- **OK** and **Apply** make the draft live and save it; **Cancel** drops it.
+
+The configuration is saved as `~/.plan-studio/toolbars.json`. A row you add draws under the Build bar (row 2); a row on the
+right edge or at the top of the window is not available yet.
+
 ## 1.5 The docks
 
 Click a view-bar toggle again to close its dock.
 
-- **Active Layer Display Options**: a table of the plan's layers (Name, Used,
-  Disp, Lock, Color) with a name filter and "Properties for Selected Layer".
-  Turning off Disp hides a layer's objects at once. A **Layer Set** drop-down at the top switches the
-  active layer set (a named table of per-layer display, lock, color and line weight overrides). Edits are
+- **Active Layer Display Options**: a table of the plan's layers with the columns Name, Used, Disp, Lock, Ref, Color, Weight,
+  Line Style and Text Style, a name filter, and "Properties for Selected Layer" below it (chapter 5.5 describes every control).
+  Turning off Disp hides a layer's objects at once. The **Layer Set** drop-down at the top switches the active layer set (a named
+  table of per-layer overrides) and has New, Copy Set, Rename, Delete and Manage... beside it; **Modify All Layer Sets** sends an
+  edit to every set, and a multi-selection of rows (Cmd/Ctrl-click, Shift-click for a range) is edited in one go. Edits are
   undoable. Tools > Layer Settings > Display Options opens the same table as a window.
-- **Project Browser**: Plan > Floors (click one to switch floors), **Cameras** (the plan's camera objects; click one to select it, switch to its floor and pan the plan to it; an unnamed camera shows as "Camera n"), **Saved Views** (the plan's saved plan views; click one to activate it, hover for its layer set and floor; the active view is highlighted) and **Layout**. The Layout section has the active layout sheet (size and scale, which View > Drawing Sheet and Print Preview draw), then the plan's layout: a **New Layout** button when there is none, otherwise one row per page (`A-1  Page 1`; the Page Template row is in italics; click a row to open that page in the layout view) and the buttons **Open Layout**, **Add Page**, **Page Setup...** and **Print...**, then **Create Construction Set...** (chapter 11).
+- **Project Browser**: six nodes. **Floors** (click one to switch floors), **Plan Views** (the plan's saved plan views; click one
+  to open it as a tab and activate it, hover for its layer set and floor; the active view is highlighted), **Cameras** (the plan's
+  camera objects; click one to select it, switch to its floor and pan the plan to it; an unnamed camera shows as "Camera n";
+  right-click for Rename, Delete and Send to Layout), **Schedules** (the schedules placed in the plan, every floor's), **CAD Details** (the named CAD
+  blocks of every floor) and **Layout**. The Layout section has the active layout sheet (size and scale, which View > Drawing Sheet and Print Preview draw), then the plan's layout: a **New Layout** button when there is none, otherwise one row per page (`A-1  Page 1`; the Page Template row is in italics; click a row to open that page in the layout view) and the buttons **Open Layout**, **Add Page**, **Page Setup...** and **Print...**, then **Create Construction Set...** (chapter 11).
 - **Library Browser**: a search field, a category tree and result rows with
   previews, plus the Chief Architect catalogs of your own Chief install (chapter 6).
 
@@ -212,32 +253,76 @@ Window, Help. Build, Terrain and CAD are generated from the same flyout tables a
 entry shows its icon, name and hotkey and unbuilt ones are dimmed. Working today:
 
 - **File**: New Plan, New Layout, Templates (Save Current Defaults as My Template..., Import Chief Template...,
-  Reset to Chief X18 Template), Open Plan..., Open Layout..., Save, Save As..., Export (DXF..., Elevation DXF...,
-  Construction Set PDF..., glTF...), Import (Import Drawing (DXF)...), Print (Print Layout..., Export Layout PDF...),
-  Send to Layout... (`S, L`), Quit (chapters 11 and 12).
-- **Edit**: Undo and Redo (with the step name), Select Objects, Default Settings...
+  Reset to Chief X18 Template), Open Plan..., Open Layout..., **Open Recent Documents** (the last ten plans opened or saved; a plan
+  that has moved is left out; Clear Menu empties it), Close View (back to the plan from the layout), **Close Plan**, Save, Save As..., **Save a Copy..., Revert to Saved, Backup Entire Plan... and Manage Auto Archives...**, Show in Project Browser, **View File Information...**
+  (the plan's name and file, size and save time, and counts of floors, walls, doors and windows, cabinets, placed symbols, CAD objects,
+  underlays, layers and painted objects), Export (DXF..., Elevation DXF..., Construction Set PDF..., glTF..., Layout (JSON)...), Import
+  (Import Drawing (DXF)..., **Chief Plan...** (reads a Chief Architect project `.plan` into a new plan, chapter 12.8a), Layout (JSON)..., **Underlay Picture (PNG, JPEG, PDF)...**, chapter 12.4a), Print (Print..., Print Preview, Drawing Sheet Setup..., Print Image... (prints the 3D view when one is open), **Print Model...**,
+  Print Layout..., Export Layout PDF...), Send to Layout... (`S, L`), Quit (chapters 11 and 12).
+  The file-management rows (Round 11) are described in chapter 12.2a: saves are written to a temporary file and renamed over the plan, the old version is kept under `Archives/`, an autosave and a crash copy
+  are offered back after a stop, and New, Open, Close and Quit ask first about unsaved changes. A `.psplan` can also be opened by dropping it on the window or double-clicking it.
+- **Edit**: Undo and Redo (named after the step), then the editing commands of chapter 2.5: **Cut, Copy, Copy and Paste in Place, Paste** (Paste, Paste
+  Hold Position, Paste Special > As Group), **Duplicate, Delete, Delete Objects...**, Select Objects, **Select All, Select Same Type, Group, Ungroup,
+  Transform/Replicate Object..., Rotate..., Reflect About Object** (Move, Copy), **Point to Point Move, Center Object, Align** (Left, Center, Right, Top, Middle,
+  Bottom, Align/Distribute...), **Distribute** (Horizontally, Vertically), **Make Parallel, Make Perpendicular, Move to Front, Move to Back, Lock, Unlock,
+  Send to Layer..., Action History**; then **Snap Settings...** and **Edit Behaviors...** (chapter 2.3, 2.5), Find/Replace Text..., Default Settings... and
+  **Preferences...** (`Cmd+,`, 1.9a). The rows with a key show the live hotkey of that command. Arc Creation Modes, Edit Area, Stretch CAD, Replace Fonts, Reset to Defaults,
+  AutoFill, Start Dictation and Emoji & Symbols are listed dimmed.
 - **Build**, **CAD**: all the live tools of chapters 2 to 9 and 16, Build > Framing (Build Framing, Build All
   Framing, Delete Framing and the manual framing tools: chapter 11.11) and CAD > CAD to Walls... (12.4); **Terrain**: Create Terrain Perimeter, Terrain
   Specification..., Build Terrain, Clear Terrain, Make Terrain Hole Around Building and the submenus.
+- **Library**: Catalog Settings... (opens the Library page of Preferences), Library Browser, **Add Selection to Library** and **Add Active Material to Library**, **Import 3D Model (OBJ, glTF)...** (opens the Library Browser's import window), and **Export Library (Plan Studio only)...** / **Import Library...**, which write and read Plan Studio's own library zip (chapter 6.4a, 12.7a). Chief's catalogs are read in place and are not imported.
 - **3D**: Create Orthographic View, Create Perspective View (with Ray Trace...), Create Auto Elevations (Auto
   Elevations, Auto Back-Clipped Elevations, Wall Elevation Camera), Walkthroughs (Create Walkthrough Path, Play
-  Walkthrough, Record Walkthrough...), Rendering Techniques, Rebuild 3D, Export > glTF..., 3D View Defaults... (chapter 10).
-- **Tools**: Layer Settings > Display Options, Checks, Toolbars and Hotkeys > Customize Hotkeys..., Space
-  Planning, Schedules (door, window, room and wall schedule windows, Place on Plan, Create Construction Set,
-  Framing Takeoff), Materials List, Project Information... (11.4).
+  Walkthrough, Record Walkthrough...), the material tools (Materials..., Material Painter, Adjust Materials..., Material Builder...; chapter 10.8), Lighting (Add Lights,
+  Adjust Lights), Rendering Techniques, Delete Surface, Rebuild 3D, Export > glTF..., 3D View Defaults... (chapter 10).
+- **Tools**: **Layer Settings** (Display Options..., **Layer Set Management...**, **Active Layers by Tool...**; chapter 5.5), **Floor/Reference Display...** (4.5), **Underlays...** (12.4a), Active View (the saved plan views), **Plan Views** (Plan View Specification..., Save Plan View, Reset Plan View, Add Template Plan Views; chapter 5.5), Active Defaults..., Checks (Plan
+  Check (chapter 18), Door/Window Check, Plan Footprint), **Toolbars and Hotkeys** (**Customize Toolbars...**, 1.4a, and Customize Hotkeys..., chapter 13.7), Space Planning, Schedules (door, window, room and
+  wall schedule windows, Place on Plan, Create Construction Set, Framing Takeoff), Materials List..., Project Information... (11.4), **Color
+  Chooser...** (a color picker window that shows the hex and RGB values, with a Copy hex button) and **New Plan View** (a saved plan view named "Plan View N" that starts as a copy of
+  the active one and becomes active; one undo step).
 - **Layout**: the layout view's commands: Send to Layout, Send All Floors to Layout, Layout Box Specification,
   Delete Layout Box, Update Layout Views, the page commands, Layout Page Table, Page Setup, Project Information,
-  Fit Page in Window, Print Layout and Export Layout PDF (11.3).
-- **View**: Library Browser, Project Browser, Active Layer Display Options, Color, Crosshairs, Reference Grid,
-  Temporary Dimensions, Arc Centers and Ends, Line Weights, Drawing Sheet, Canvas Theme, UI Brightness.
-- **Window**: Zoom Out, Zoom In, Undo Zoom, Fill Window, Pan Window, then **Floor Plan View** and **Layout** (they
+  Fit Page in Window, **Layer Display Options...**, **Add Sheet Index**, **Print Model...**, Print Layout and Export Layout PDF (11.3).
+- **View**: **Refresh Display** (`F5`), Library Browser, Project Browser, Active Layer Display Options, Walkthrough Preview, Action History, **Status Bar** and
+  **Toolbars** (show or hide those bars; remembered), Color, Crosshairs, Reference Grid, Temporary Dimensions, Arc Centers and Ends, Line Weights, Drawing Sheet,
+  **Enter Full Screen**, Canvas Theme, UI Brightness.
+- **Window**: Zoom Out, Zoom In, Undo Zoom, **Fill Window Selected Objects** (frames the selected objects), Fill Window, Pan Window, then **Floor Plan View** and **Layout** (they
   switch the main area between the plan and the layout view; the one showing is checked); the shortcut shown beside each comes
   from the live hotkey map, so Daniel's keys (his `-` is Zoom In) and your own Customize Hotkeys edits
-  appear there, and so does the key shown beside 3D > 3D View Defaults... (`Cmd+1`). **Help**: About Plan Studio.
+  appear there, and so does the key shown beside 3D > 3D View Defaults... (`Cmd+1`).
+- **Help**: **Launch Help...**, **View Tutorial Guide...** (chapter 1 of this manual) and **View Reference Manual...** open the in-app Help viewer (1.6a);
+  **Keyboard Shortcuts...** opens it on chapter 13; Plan Studio on GitHub... (the project page), System Information... (version, operating system, processors, settings folder and the manual's location) and **About Plan Studio** (1.6a).
+- **Edit > Default Settings** (the Active Defaults tree) also opens **Cabinets > Cabinet Defaults** (chapter 6.3a) and **Framing > Framing Defaults** (chapter 11.11); **Build > Framing** has **Framing Defaults...** and **Framing Overview** at the foot of its list.
 
-Everything else in Chief's menus is listed, dimmed, with Chief's name: Cut/Copy/Paste, Select All, Snap
-Settings, Edit Behaviors, Close View, the Library menu and the camera-movement, isometric, materials and lighting
-items of the 3D menu.
+Menu rows that Chief has but Plan Studio does not are not listed at all (for example Library > Get Additional Content and Install Core Content, File > Dashboard,
+the camera-movement submenus of the 3D menu and Tools > Ruby Console); the list is in `DECISIONS.md` (item 19). The only dimmed rows left are the Edit rows named above.
+
+**Right-click** an object with Select Objects for a context menu of the same commands (chapter 2.5); right-click on empty space for Paste, Select All, Undo, Redo and the zoom commands.
+
+## 1.6a The Help viewer and About
+
+The manual you are reading is built into the program (`crates/plan-app/build.rs` lists `docs/manual/*.md` and `include_str!` embeds
+them), so Help works from a bare binary with no files beside it. **Help > Launch Help...** opens the **Plan Studio Help** window,
+which can stay open beside your plan:
+
+- A **chapter tree** on the left lists every chapter as "7. Stairs"; the open chapter expands to its `##` sections, and a click
+  jumps to one.
+- The page on the right shows headings, paragraphs, nested lists, tables, code blocks, quotes and inline code, bold, italic and
+  links. A link to another chapter (`02-walls.md#...`) or to a section opens that place; a web link opens in your browser.
+- **Back** and **Forward** walk your path through the pages, **Contents** goes to the index (chapter 0).
+- **Search** looks in every chapter for pages that contain all the words you type (case does not matter), headings first, with a
+  snippet around the first word; click a result to open it. **Clear** returns to the page.
+- **View Tutorial Guide...** opens this chapter, **Keyboard Shortcuts...** and the Customize Hotkeys dialog's Help button open chapter 13.
+
+A chapter added to `docs/manual` shows up in the tree after the next build with no code change. The viewer is the manual as of the
+build, not a live copy of the files on disk.
+
+**Help > About Plan Studio** shows the app icon, the version (with the operating system and processor), the MIT license, the
+copyright (Daniel Sievers / Daniel Allen Designs), the project link and the notice that Plan Studio is independent of Chief
+Architect: no Chief code, assets or catalog content ships with it, and its catalogs and templates are read in place from your own
+Chief install. The window title bar and the Mac app carry the same icon (`scripts/macos-bundle.sh` builds `AppIcon.icns`; the
+icon is also the icon of `.psplan` documents).
 
 ## 1.7 Templates and Daniel's Chief defaults
 
@@ -289,11 +374,11 @@ How defaults reach a plan:
   and layers were added; the few wall types with no definition in the template have a thickness guessed from the name and are approximate.
 - Edit > Default Settings... opens a searchable tree: Walls (Exterior, Interior,
   Foundation), Doors (Interior, Exterior), Windows, Dimension (Dimensions), Text
-  (Text Styles), Floors and Rooms (Room Types), and Preferences (Templates, 1.7.1). Double-click a leaf (or press
+  (Text Styles), Floors and Rooms (Floor Defaults, Room Types), Roofs, Cabinets, Framing, and Preferences (Templates, 1.7.1). Double-click a leaf (or press
   Edit) to open its dialog. The wall, door and window leaves edit the values new
   objects are placed from. **Dimensions** opens the Saved Dimension Defaults list
   (5.9), **Text Styles** the text style editor (5.9) and **Room Types** the room
-  type list (4.10). The other Chief groups (Cabinets, Roofs, Stairs and so on) are
+  type list (4.10). **Roofs > Roof Defaults** (8.4a), **Cabinets > Cabinet Defaults** (6.3a) and **Framing > Framing Defaults** (11.11) are in the tree too. The other Chief groups (Stairs and so on) are
   not in the tree yet (planned).
 
 Not stored in the defaults yet: muntin width, label options, the second casing
@@ -396,21 +481,44 @@ settings are saved to `~/.plan-studio/settings.json` and restored at launch.
 The dialogs draw their previews like a drawing sheet (off-white), so they stay
 readable at any brightness.
 
+## 1.9a Preferences
+
+Edit > Preferences... (`Cmd+,`; `Ctrl+,` off the Mac; also the Preferences button of row 1) opens one window with a page list. Every
+change applies at once and is saved to `~/.plan-studio/settings.json` when the mouse is released.
+
+| Page | What it holds |
+|---|---|
+| Appearance | The canvas theme, UI brightness, **Text size** (80-150%, the whole interface) and **Icon halo** (a plate behind the toolbar icons). |
+| Colors | A selection highlight color of your own. |
+| Library | The Chief catalogs switch and the catalog folder (the same `chief_catalogs` settings as the Library Browser; it rescans when next opened). |
+| Folders | Where the default plan and layout templates are, the settings folder and the material library file; buttons to the Templates page and Default Settings. |
+| Render | Starting image size, samples per pixel, technique and sun latitude of the Ray Trace dialog. |
+| Edit | Buttons to Default Settings and Customize Hotkeys (chapter 13.7). |
+| Snaps | Object snaps (each type), grid snaps, angle snaps and increment, snap distance and bumping: the plan's editing defaults. |
+| Architectural | Automatic countertop join and cabinet fit to gap (chapter 6). |
+
+View > Status Bar and View > Toolbars hide or show those bars and are remembered. File > Open Recent Documents lists the last ten plans
+opened or saved (`recent_files` in the same settings file).
+
 ## 1.10 Files and settings
 
 | What | Where |
 |---|---|
 | Your plans | Wherever you save them, as `.psplan` JSON (File > Save As...) |
-| Theme and brightness, and the Chief catalog choice (`chief_catalogs`: on/off and an install-folder override) | `~/.plan-studio/settings.json` |
+| Older copies and the autosave of a plan | `Archives/<plan name>/` beside the plan: `<plan name>-<time>.psplan` (the newest 20) and `autosave.psplan` (chapter 12.2a) |
+| Crash copies and the autosave of an unsaved new plan | `~/.plan-studio/recovery/` (`recovery-<time>.psplan`, the newest 10, and `untitled-autosave.psplan`) |
+| Theme and brightness, the Preferences dialog (`preferences` key), recent plans (`recent_files`), the autosave and archive settings (`files` key: `autosave`, `autosave_minutes`, `archive_keep`) and the Chief catalog choice (`chief_catalogs`: on/off and an install-folder override) | `~/.plan-studio/settings.json` |
+| Your own materials (Material Builder) | `~/.plan-studio/materials.json` |
+| Pictures taken out of PDFs for underlays | `~/.plan-studio/underlays/` |
 | Saved template defaults | `~/.plan-studio/defaults.json` |
 | Template paths and the seeding switch (`templates` key: `plan`, `layout`, `seed_from_chief`) | `~/.plan-studio/settings.json` |
 | Decode cache of your Chief plan and layout templates | `~/.plan-studio/template-seed.json` |
 | Hotkey edits | `~/.plan-studio/hotkeys.json` |
+| Toolbar sets per view type (Customize Toolbars, 1.4a) | `~/.plan-studio/toolbars.json` |
 | Chief catalog index (file paths, sizes, modification times and catalog UUIDs the Library Browser's Chief nodes use to find your catalogs quickly) | `~/.plan-studio/chief-catalog-index.json` |
 
 The settings folder is found from `HOME`, else `USERPROFILE`, else `HOMEDRIVE` plus
-`HOMEPATH`, so it works on Windows as well. Undo keeps 100 steps.
-Autosave and backups are planned.
+`HOMEPATH`, so it works on Windows as well. Undo keeps 100 steps. Saving, autosave, backups and recovery are in chapter 12.2a.
 
 ## 1.11 The layout view in one minute
 

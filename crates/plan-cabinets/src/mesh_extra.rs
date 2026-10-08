@@ -111,7 +111,10 @@ impl Builder {
         material: Material,
     ) {
         let s = size.min((z1 - z0) * 0.9).min(3.0);
-        if edge == EdgeProfile::Square || s <= 1e-6 || outer.len() < 3 {
+        if matches!(edge, EdgeProfile::Square | EdgeProfile::Waterfall)
+            || s <= 1e-6
+            || outer.len() < 3
+        {
             self.add_prism(outer, holes, z0, z1, material);
             return;
         }

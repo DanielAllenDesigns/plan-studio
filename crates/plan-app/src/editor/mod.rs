@@ -6,16 +6,24 @@
 #![allow(dead_code)]
 
 pub mod actions;
+pub mod behaviors;
 pub mod camera;
+pub mod clipboard;
 pub mod connect;
 pub mod details_view;
 pub mod dispatch;
+pub mod edit_commands;
+#[cfg(test)]
+mod edit_tests;
 pub mod foundation_view;
 pub mod framing_view;
 pub mod handles;
 pub mod history;
+pub mod opening_edit;
+pub mod opening_view;
 pub mod ops;
 pub mod placed;
+pub mod plan_tabs;
 pub mod render;
 pub mod restyle;
 pub mod roof_view;
@@ -27,6 +35,9 @@ pub mod site_view;
 pub mod snap;
 pub mod stairs_view;
 pub mod tempdim;
+pub mod transform;
+pub mod typed_input;
+pub mod wall_edit;
 
 pub use actions::{Clipboard, EditAction, EditActionKind};
 pub use camera::Camera;
@@ -40,7 +51,7 @@ use crate::theme::{AppSettings, Palette};
 use crate::toolbar::ViewFlag;
 use eframe::egui::Vec2;
 use history::ChangeHistory;
-use plan_core::geometry::{point_in_polygon, Point};
+use plan_core::geometry::Point;
 use plan_core::{
     detect_rooms, wall_layer_outlines, wall_outlines, Floor, Id, LayerSet, PlanDefaults, Project,
     Room, WallKind, WallLayerOutline, WallOutline, WallTypeDef,
@@ -87,7 +98,6 @@ pub struct EditorContext {
     pub project: Project,
     pub floor: usize,
     pub selection: Selection,
-    pub snap: SnapSettings,
     /// Wall types, wall/door/window defaults, grid, dimension format, ...
     pub defaults: PlanDefaults,
     pub view_flags: HashSet<ViewFlag>,
@@ -100,6 +110,8 @@ pub struct EditorContext {
     pub extras: SessionExtras,
     pub clipboard: Option<Clipboard>,
     pub temp: TempDims,
+    /// Length and angle typed while a tool draws or drags (W-15, W-16).
+    pub typed_input: typed_input::TypedInput,
     /// The object under the pointer (Select Objects).
     pub hover: Option<ObjectRef>,
     pub cursor_world: Option<Point>,
@@ -134,7 +146,10 @@ pub struct EditorContext {
 impl EditorContext {
     pub fn new(defaults: PlanDefaults) -> Self {
         let project = Project::from_defaults("Untitled", &defaults);
-        Self::with_project(project, defaults)
+        let mut cx = Self::with_project(project, defaults);
+        // The starting plan carries Daniel's template plan views.
+        cx.seed_template_plan_views();
+        cx
     }
 
     pub fn with_project(project: Project, defaults: PlanDefaults) -> Self {
@@ -142,7 +157,6 @@ impl EditorContext {
             project,
             floor: 0,
             selection: Selection::default(),
-            snap: SnapSettings::default(),
             defaults,
             // Color is on until the F8 toggle turns it off.
             view_flags: HashSet::from([
@@ -156,6 +170,7 @@ impl EditorContext {
             extras: SessionExtras::default(),
             clipboard: None,
             temp: TempDims::default(),
+            typed_input: typed_input::TypedInput::default(),
             hover: None,
             cursor_world: None,
             last_snap: None,
@@ -324,6 +339,17 @@ impl EditorContext {
         (self.uid, self.rev)
     }
 
+    /// Recomputes the layers the plan reads (`layers()`) from the shown layer
+    /// set and plan view. A set or view that changes how layers look (display,
+    /// lock, colour, weight, styles, Ref) is read through `view_layers`; the
+    /// plain starting view reads the base layers. `refresh` does this each
+    /// frame; a layer edit calls it to take effect at once. It leaves the
+    /// dirty flag alone.
+    pub fn refresh_layer_view(&mut self) {
+        let custom_view = self.project.layer_view_differs();
+        self.view_layers = custom_view.then(|| self.project.view_layers());
+    }
+
     /// Rooms and outlines are recomputed lazily after `mark_dirty`.
     pub fn mark_dirty(&mut self) {
         self.touch();
@@ -337,10 +363,7 @@ impl EditorContext {
     /// tests call it before reading `rooms`.
     pub fn refresh(&mut self) {
         self.floor = self.floor.min(self.project.floors.len() - 1);
-        use plan_core::layer_sets::{DEFAULT_LAYER_SET_NAME, DEFAULT_PLAN_VIEW_NAME};
-        let custom_view = self.project.active_plan_view != DEFAULT_PLAN_VIEW_NAME
-            || self.project.layer_sets.active != DEFAULT_LAYER_SET_NAME;
-        self.view_layers = custom_view.then(|| self.project.view_layers());
+        self.refresh_layer_view();
 
         if self.dirty {
             self.rev = self.rev.wrapping_add(1);
@@ -396,7 +419,8 @@ impl EditorContext {
         let f = &self.project.floors[self.floor];
 
         if self.view_flags.contains(&ViewFlag::TemporaryDimensions) {
-            self.temp.compute(f, &self.selection);
+            let loc = tempdim::TempLocate::of(self);
+            self.temp.compute(f, &self.selection, &loc);
         } else {
             self.temp.clear();
         }
@@ -419,10 +443,7 @@ impl EditorContext {
 
     /// The room's name from the model, else its generated label.
     pub fn room_name(&self, room: &Room) -> String {
-        self.floor()
-            .room_names
-            .iter()
-            .find(|n| point_in_polygon(n.anchor, &room.polygon))
+        room.name_entry(&self.floor().room_names)
             .map_or_else(|| room.label.clone(), |n| n.name.clone())
     }
 
@@ -434,11 +455,11 @@ impl EditorContext {
     }
 
     pub fn snap_tol(&self) -> f64 {
-        self.snap.tolerance_px / self.px_per_in.max(1e-6)
+        SnapSettings::from_editing(&self.defaults.editing).tolerance_px / self.px_per_in.max(1e-6)
     }
 
     /// Runs the snap engine. `origin` is the pending start point (angle and
-    /// perpendicular snaps); `alt` suspends the angle snap; walls in
+    /// perpendicular snaps); `alt` suspends every snap (S-74); walls in
     /// `exclude` are ignored.
     pub fn snap_at(
         &self,
@@ -453,11 +474,20 @@ impl EditorContext {
             tol: self.snap_tol(),
             grid_step: self.defaults.grid.snap,
             angle_deg: self.defaults.grid.angle_snap_deg,
+            angles: &self.defaults.editing.snap_angles,
             origin,
             suspend_angle: alt,
+            suspend_all: alt,
             exclude,
         };
-        snap::snap(raw, &q, &self.snap)
+        // The reference floor's wall ends and crossings snap too (R-65).
+        let reference = snap::reference_segments(self);
+        snap::snap_with_reference(
+            raw,
+            &q,
+            &SnapSettings::from_editing(&self.defaults.editing),
+            &reference,
+        )
     }
 
     /// Dimension text in the active dimension defaults' format.

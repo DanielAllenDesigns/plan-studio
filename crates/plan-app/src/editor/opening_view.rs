@@ -1,0 +1,610 @@
+//! Doors and windows in the plan: the symbol of each flavor (DW-38..DW-49)
+//! drawn from [`plan_core::opening_symbol`], and the labels over the openings
+//! (DW-59..DW-63): the size (`3068` or `2'-6" x 6'-8"`) or, when a schedule
+//! numbers the opening, its mark (`D01`), in the label text style.
+
+use super::schedule_view;
+use super::{Camera, EditorContext};
+use crate::theme::Palette;
+use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
+use plan_core::geometry::Point;
+use plan_core::opening_symbol::{plan_symbol, PartKind, SymbolPart};
+use plan_core::{exterior_sign, Id, LabelPlacement, Opening, OpeningKind, Wall};
+use plan_docs::schedule_kinds::Callout;
+use std::collections::HashMap;
+
+/// Smallest label text drawn, in screen pixels.
+const MIN_LABEL_PX: f32 = 3.0;
+/// Dash and gap of hidden lines, in screen pixels.
+const DASH_PX: (f32, f32) = (5.0, 3.0);
+/// Average character width as a fraction of the text height.
+const CHAR_W: f64 = 0.56;
+
+fn screen(cam: &Camera, pts: &[Point]) -> Vec<Pos2> {
+    pts.iter().map(|p| cam.world_to_screen(*p)).collect()
+}
+
+/// One part of a symbol with the pen its kind calls for.
+fn draw_part(
+    painter: &egui::Painter,
+    cam: &Camera,
+    part: &SymbolPart,
+    line_col: Color32,
+    arc_col: Color32,
+) {
+    let mut pts = screen(cam, &part.points);
+    if pts.len() < 2 {
+        return;
+    }
+    let thin = Stroke::new(0.8_f32, line_col);
+    let stroke = match part.kind {
+        PartKind::Jamb | PartKind::Leaf | PartKind::Arrow => Stroke::new(1.0_f32, line_col),
+        PartKind::Swing => Stroke::new(1.0_f32, arc_col),
+        PartKind::Frame | PartKind::Glass | PartKind::Hidden | PartKind::Track => thin,
+    };
+    match part.kind {
+        PartKind::Hidden | PartKind::Track => {
+            if part.closed {
+                pts.push(pts[0]);
+            }
+            painter.extend(Shape::dashed_line(&pts, stroke, DASH_PX.0, DASH_PX.1));
+        }
+        _ if part.closed => {
+            painter.add(Shape::closed_line(pts, stroke));
+        }
+        _ => {
+            painter.add(Shape::line(pts, stroke));
+        }
+    }
+}
+
+/// An opening in its wall: the wall is cut, then the symbol of its flavor is
+/// drawn (jambs, leaf and swing arc, window lines, pocket, track, projecting
+/// unit). `exterior` is the wall side of the outside (see
+/// [`plan_core::exterior_sign`]). `ghost` draws a placement preview.
+pub fn draw_opening(
+    painter: &egui::Painter,
+    cam: &Camera,
+    wall: &Wall,
+    o: &Opening,
+    pal: &Palette,
+    exterior: f64,
+    ghost: bool,
+) {
+    let (line_col, arc_col) = if ghost {
+        (pal.ghost_stroke, pal.ghost_stroke)
+    } else {
+        (pal.opening_line, pal.door_arc)
+    };
+    let sym = plan_symbol(wall, o, exterior);
+    let n = wall.normal();
+    let half = wall.thickness * 0.5;
+    let over = half + 1.0 + 1.0 / cam.px_per_in;
+    let (pa, pb) = (
+        wall.point_at(o.start_offset()),
+        wall.point_at(o.end_offset()),
+    );
+    // A canvas-colored quad hides the wall fill and its stroke across the
+    // opening; a niche only clears the band it is cut into.
+    let lo = if sym.cut.0 <= -half + 1e-9 {
+        -over
+    } else {
+        sym.cut.0
+    };
+    let hi = if sym.cut.1 >= half - 1e-9 {
+        over
+    } else {
+        sym.cut.1
+    };
+    let gap = [
+        pa.add(n.scale(hi)),
+        pb.add(n.scale(hi)),
+        pb.add(n.scale(lo)),
+        pa.add(n.scale(lo)),
+    ];
+    painter.add(Shape::convex_polygon(
+        screen(cam, &gap),
+        pal.background,
+        Stroke::NONE,
+    ));
+    for part in &sym.parts {
+        draw_part(painter, cam, part, line_col, arc_col);
+    }
+}
+
+/// A label to put over an opening.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpeningLabel {
+    pub opening: Id,
+    pub kind: OpeningKind,
+    pub text: String,
+    /// The text is the schedule mark (drawn in its bubble).
+    pub is_mark: bool,
+    /// Where the center of the text goes, plan inches.
+    pub at: Point,
+}
+
+/// The marks of the doors and windows a schedule numbers (`D01`, `W03`).
+fn marks(cx: &EditorContext) -> HashMap<Id, String> {
+    schedule_view::labels(cx)
+        .into_iter()
+        .filter(|c| {
+            matches!(
+                c.kind,
+                plan_core::schedules::ScheduleKind::Door
+                    | plan_core::schedules::ScheduleKind::Window
+            )
+        })
+        .map(|c| (c.object, c.text))
+        .collect()
+}
+
+/// Where the center of a label of `text_w` x `text_h` inches goes: on the
+/// wall for `Center`, else beside it on the room side (`Interior`) or the
+/// outside (`Exterior`), clear of the wall face.
+pub fn label_anchor(
+    wall: &Wall,
+    o: &Opening,
+    placement: LabelPlacement,
+    exterior: f64,
+    text_w: f64,
+    text_h: f64,
+) -> Point {
+    let c = wall.point_at(o.center_offset);
+    let side = match placement {
+        LabelPlacement::Center => return c,
+        LabelPlacement::Interior => -exterior,
+        LabelPlacement::Exterior => exterior,
+    };
+    let n = wall.normal();
+    let reach = wall.thickness * 0.5 + 1.5 + n.x.abs() * text_w * 0.5 + n.y.abs() * text_h * 0.5;
+    c.add(n.scale(side * reach))
+}
+
+/// Rough width of `text` set `h` inches high.
+fn text_width(text: &str, h: f64) -> f64 {
+    text.chars().count() as f64 * CHAR_W * h
+}
+
+/// The text and the unmoved anchor of the label of `o` (before its dragged
+/// offset), or `None` when the label is suppressed or hidden in plan.
+fn label_base(
+    cx: &EditorContext,
+    o: &Opening,
+    wall: &Wall,
+    marks: &HashMap<Id, String>,
+    h: f64,
+) -> Option<(String, Option<String>, Point)> {
+    let mark = marks.get(&o.id).map(String::as_str);
+    let text = o.plan_label(&cx.defaults.opening_labels, mark)?;
+    let placement = o.label_settings(&cx.defaults.opening_labels).placement;
+    let ext = exterior_sign(wall, &cx.rooms);
+    let at = label_anchor(wall, o, placement, ext, text_width(&text, h), h);
+    Some((text, mark.map(str::to_string), at))
+}
+
+/// Where the dragged offset (along the wall, across it) puts a label.
+pub fn apply_label_offset(wall: &Wall, at: Point, offset: (f64, f64)) -> Point {
+    at.add(wall.direction().scale(offset.0))
+        .add(wall.normal().scale(offset.1))
+}
+
+/// Whether the labels of openings of `kind` are shown: both the object layer
+/// and its label layer ("Doors, Labels" / "Windows, Labels") are visible.
+pub fn labels_visible(cx: &EditorContext, kind: OpeningKind) -> bool {
+    let layer = match kind {
+        OpeningKind::Door => "Doors",
+        OpeningKind::Window => "Windows",
+    };
+    cx.layers().is_visible(layer)
+        && cx
+            .layers()
+            .is_visible(plan_core::LayerSet::label_layer_of(kind))
+}
+
+/// The labels to draw on the active floor: one per door or window whose
+/// layers are visible and whose label is not suppressed. An opening a
+/// schedule numbers shows its mark, any other its size (or custom text). A
+/// label dragged off its spot sits at the offset stored on the opening.
+pub fn opening_labels(cx: &EditorContext) -> Vec<OpeningLabel> {
+    let floor = cx.floor();
+    if floor.openings.is_empty() {
+        return Vec::new();
+    }
+    let h = schedule_view::label_style(&cx.project).map_or(4.5, |s| s.height_in);
+    let marks = marks(cx);
+    let mut out = Vec::new();
+    for o in &floor.openings {
+        if !labels_visible(cx, o.kind) {
+            continue;
+        }
+        let Some(wall) = floor.wall(o.wall_id) else {
+            continue;
+        };
+        let Some((text, mark, base)) = label_base(cx, o, wall, &marks, h) else {
+            continue;
+        };
+        let at = apply_label_offset(wall, base, o.extras.spec.label_offset);
+        let is_mark = mark.is_some_and(|m| m == text);
+        out.push(OpeningLabel {
+            opening: o.id,
+            kind: o.kind,
+            text,
+            is_mark,
+            at,
+        });
+    }
+    out
+}
+
+/// Drags the label of opening `id` so its center is at `to`: stores the
+/// offset from the unmoved spot on the opening (DW-63). `false` when the
+/// opening has no label to move.
+pub fn drag_label(cx: &mut EditorContext, id: Id, to: Point) -> bool {
+    let floor = cx.floor();
+    let Some(o) = floor.openings.iter().find(|o| o.id == id) else {
+        return false;
+    };
+    let Some(wall) = floor.wall(o.wall_id) else {
+        return false;
+    };
+    let h = schedule_view::label_style(&cx.project).map_or(4.5, |s| s.height_in);
+    let marks = marks(cx);
+    let Some((_, _, base)) = label_base(cx, o, wall, &marks, h) else {
+        return false;
+    };
+    let d = to.sub(base);
+    let offset = (d.dot(wall.direction()), d.dot(wall.normal()));
+    let fl = cx.floor;
+    match cx.project.floors[fl]
+        .openings
+        .iter_mut()
+        .find(|o| o.id == id)
+    {
+        Some(o) => {
+            o.extras.spec.label_offset = offset;
+            true
+        }
+        None => false,
+    }
+}
+
+/// Casing as small rectangles on the wall faces, once around a mulled unit
+/// (DW-52, DW-79), for the openings that ask for it.
+fn draw_casing(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let floor = cx.floor();
+    let pal = &cx.palette;
+    for o in &floor.openings {
+        if !o.extras.spec.casing_in_plan {
+            continue;
+        }
+        let layer = match o.kind {
+            OpeningKind::Door => "Doors",
+            OpeningKind::Window => "Windows",
+        };
+        if !cx.layers().is_visible(layer) {
+            continue;
+        }
+        let Some(wall) = floor.wall(o.wall_id) else {
+            continue;
+        };
+        let unit = o
+            .mull_group
+            .and_then(|_| cx.project.unit_span(cx.floor, o.id));
+        let ext = exterior_sign(wall, &cx.rooms);
+        for part in plan_core::opening_symbol::casing_parts(wall, o, unit, ext) {
+            let pts = screen(cam, &part.points);
+            painter.add(Shape::closed_line(
+                pts,
+                Stroke::new(0.8_f32, pal.opening_line),
+            ));
+        }
+    }
+}
+
+/// Draws the opening labels over the plan (and the casing rectangles, which
+/// belong to the same pass).
+pub fn draw_opening_labels(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    draw_casing(cx, painter, cam);
+    let style = schedule_view::label_style(&cx.project);
+    let h = style.map_or(4.5, |s| s.height_in);
+    let font_px = (h as f32 * cam.px_per_in as f32).clamp(1.0, 300.0);
+    if font_px < MIN_LABEL_PX {
+        return;
+    }
+    let pal = &cx.palette;
+    let ink = match style {
+        Some(s) if s.color != [0, 0, 0] => Color32::from_rgb(s.color[0], s.color[1], s.color[2]),
+        _ => pal.text,
+    };
+    for l in opening_labels(cx) {
+        let at = cam.world_to_screen(l.at);
+        if !cam.rect.expand(60.0).contains(at) {
+            continue;
+        }
+        if l.is_mark {
+            // The mark in its bubble, like the schedule's own callouts.
+            let kind = match l.kind {
+                OpeningKind::Door => plan_core::schedules::ScheduleKind::Door,
+                OpeningKind::Window => plan_core::schedules::ScheduleKind::Window,
+            };
+            let callout = Callout {
+                kind,
+                floor: cx.floor,
+                object: l.opening,
+                text: l.text,
+                at: l.at,
+            };
+            schedule_view::draw_label(painter, cam, &callout, h, ink, pal.background);
+        } else {
+            let galley = painter.layout_no_wrap(l.text.clone(), FontId::proportional(font_px), ink);
+            let r = Rect::from_center_size(at, galley.size() + Vec2::new(4.0, 2.0));
+            painter.rect_filled(r, 2.0, pal.background.gamma_multiply(0.85));
+            painter.galley(r.center() - galley.size() * 0.5, galley, ink);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan_defaults;
+    use plan_core::geometry::Point;
+    use plan_core::schedules::ScheduleKind;
+    use plan_core::{LabelMode, SizeFormat, SizeStyle, WallKind};
+
+    fn cx_with_wall() -> (EditorContext, Id) {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let w = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            109.125,
+            WallKind::Exterior,
+        );
+        (cx, w)
+    }
+
+    fn labels_of(cx: &mut EditorContext) -> Vec<OpeningLabel> {
+        cx.mark_dirty();
+        cx.refresh();
+        opening_labels(cx)
+    }
+
+    #[test]
+    fn labels_show_the_size_without_a_schedule() {
+        let (mut cx, w) = cx_with_wall();
+        let d = cx
+            .project
+            .add_opening(0, w, 60.0, OpeningKind::Door)
+            .unwrap();
+        let win = cx
+            .project
+            .add_opening(0, w, 150.0, OpeningKind::Window)
+            .unwrap();
+        let l = labels_of(&mut cx);
+        let text = |id| l.iter().find(|x| x.opening == id).unwrap().text.clone();
+        assert_eq!(text(d), "3068");
+        assert_eq!(text(win), "3050");
+        assert!(l.iter().all(|x| !x.is_mark));
+    }
+
+    #[test]
+    fn labels_follow_the_default_settings_formats() {
+        let (mut cx, w) = cx_with_wall();
+        let d = cx
+            .project
+            .add_opening(0, w, 60.0, OpeningKind::Door)
+            .unwrap();
+        cx.defaults.opening_labels.door.size_style = SizeStyle::Architectural;
+        let l = labels_of(&mut cx);
+        assert_eq!(l[0].text, "3'-0\" x 6'-8\"");
+        cx.defaults.opening_labels.door.size_format = SizeFormat::WidthOnly;
+        let l = labels_of(&mut cx);
+        assert_eq!(l[0].text, "3'-0\"");
+        cx.defaults.opening_labels.door.mode = LabelMode::Suppress;
+        assert!(labels_of(&mut cx).is_empty());
+        cx.defaults.opening_labels.door.mode = LabelMode::Automatic;
+        // The opening's own text beats the defaults.
+        cx.project.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == d)
+            .unwrap()
+            .label_override = Some("EXIT".into());
+        assert_eq!(labels_of(&mut cx)[0].text, "EXIT");
+        // A hidden layer hides the label.
+        cx.project.layers.set_display("Doors", false);
+        assert!(labels_of(&mut cx).is_empty());
+    }
+
+    #[test]
+    fn a_schedule_turns_the_size_into_the_mark() {
+        let (mut cx, w) = cx_with_wall();
+        let d1 = cx
+            .project
+            .add_opening(0, w, 200.0, OpeningKind::Door)
+            .unwrap();
+        let d2 = cx
+            .project
+            .add_opening(0, w, 60.0, OpeningKind::Door)
+            .unwrap();
+        let win = cx
+            .project
+            .add_opening(0, w, 130.0, OpeningKind::Window)
+            .unwrap();
+        let sid = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -80.0));
+        let mut def = schedule_view::find(&cx, sid).unwrap();
+        def.show_labels = true;
+        assert!(schedule_view::replace(&mut cx, 0, def));
+        let l = labels_of(&mut cx);
+        let get = |id| l.iter().find(|x| x.opening == id).unwrap().clone();
+        // Marks run in reading order across the plan: the door at 60" first.
+        assert_eq!((get(d2).text.as_str(), get(d2).is_mark), ("D01", true));
+        assert_eq!((get(d1).text.as_str(), get(d1).is_mark), ("D02", true));
+        // The window has no schedule: still its size.
+        assert_eq!((get(win).text.as_str(), get(win).is_mark), ("3050", false));
+        // A new door takes the next free mark.
+        let d3 = cx
+            .project
+            .add_opening(0, w, 10.0, OpeningKind::Door)
+            .unwrap();
+        let l = labels_of(&mut cx);
+        let marks: Vec<String> = [d3, d2, d1]
+            .iter()
+            .map(|id| l.iter().find(|x| x.opening == *id).unwrap().text.clone())
+            .collect();
+        assert_eq!(marks, ["D01", "D02", "D03"]);
+        // Removing it releases the numbers again.
+        cx.project.floors[0].openings.retain(|o| o.id != d3);
+        let l = labels_of(&mut cx);
+        assert_eq!(l.iter().find(|x| x.opening == d2).unwrap().text, "D01");
+        assert_eq!(l.iter().find(|x| x.opening == d1).unwrap().text, "D02");
+    }
+
+    #[test]
+    fn placement_puts_the_label_on_or_beside_the_wall() {
+        let (mut cx, w) = cx_with_wall();
+        let d = cx
+            .project
+            .add_opening(0, w, 120.0, OpeningKind::Door)
+            .unwrap();
+        let wall = cx.floor().wall(w).unwrap().clone();
+        let o = cx
+            .floor()
+            .openings
+            .iter()
+            .find(|o| o.id == d)
+            .unwrap()
+            .clone();
+        let ext = exterior_sign(&wall, &[]);
+        assert_eq!(ext, 1.0);
+        let center = label_anchor(&wall, &o, LabelPlacement::Center, ext, 20.0, 4.5);
+        assert!((center.y).abs() < 1e-9 && (center.x - 120.0).abs() < 1e-9);
+        let outside = label_anchor(&wall, &o, LabelPlacement::Exterior, ext, 20.0, 4.5);
+        let inside = label_anchor(&wall, &o, LabelPlacement::Interior, ext, 20.0, 4.5);
+        // Clear of the wall (3" half thickness) on opposite sides.
+        assert!(outside.y > 3.0 && inside.y < -3.0, "{outside:?} {inside:?}");
+        assert!((outside.x - 120.0).abs() < 1e-9);
+        // A vertical wall pushes the label out by the text's half width.
+        let v = Wall::new(
+            Point::ZERO,
+            Point::new(0.0, 240.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        let vo = Opening::new(1, 120.0, OpeningKind::Door, 36.0, 80.0, 0.0);
+        let side = label_anchor(&v, &vo, LabelPlacement::Exterior, 1.0, 20.0, 4.5);
+        assert!((side.x.abs() - (3.0 + 1.5 + 10.0)).abs() < 1e-9, "{side:?}");
+    }
+
+    #[test]
+    fn labels_have_their_own_layers_that_hide_them_alone() {
+        let (mut cx, w) = cx_with_wall();
+        // A plan from before the label layers gets them with its first opening
+        // (a new plan has them already).
+        cx.project
+            .layers
+            .layers
+            .retain(|l| !l.name.ends_with(", Labels"));
+        cx.project.ensure_opening_label_layers();
+        let d = cx
+            .project
+            .add_opening(0, w, 60.0, OpeningKind::Door)
+            .unwrap();
+        let win = cx
+            .project
+            .add_opening(0, w, 150.0, OpeningKind::Window)
+            .unwrap();
+        // The default layer set carries them, beside the object layers.
+        let names: Vec<&str> = cx
+            .project
+            .layers
+            .layers
+            .iter()
+            .map(|l| l.name.as_str())
+            .collect();
+        let i = names.iter().position(|n| *n == "Doors").unwrap();
+        assert_eq!(names[i + 1], "Doors, Labels");
+        assert!(names.contains(&"Windows, Labels"));
+        assert_eq!(labels_of(&mut cx).len(), 2);
+        // Hiding "Doors, Labels" hides the door label only; the door stays.
+        cx.project.layers.set_display("Doors, Labels", false);
+        let l = labels_of(&mut cx);
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].opening, win);
+        assert!(cx.layers().is_visible("Doors"));
+        cx.project.layers.set_display("Doors, Labels", true);
+        cx.project.layers.set_display("Windows, Labels", false);
+        let l = labels_of(&mut cx);
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].opening, d);
+        // Hiding the object layer hides its label too.
+        cx.project.layers.set_display("Windows, Labels", true);
+        cx.project.layers.set_display("Doors", false);
+        assert_eq!(labels_of(&mut cx).len(), 1);
+    }
+
+    #[test]
+    fn a_dragged_label_keeps_an_offset_on_the_opening_and_the_mark_follows() {
+        let (mut cx, w) = cx_with_wall();
+        let d = cx
+            .project
+            .add_opening(0, w, 60.0, OpeningKind::Door)
+            .unwrap();
+        let home = labels_of(&mut cx)[0].at;
+        // Drag it 20" along the wall and 10" farther into the room.
+        let to = Point::new(home.x + 20.0, home.y - 10.0);
+        assert!(drag_label(&mut cx, d, to));
+        let o = cx
+            .floor()
+            .openings
+            .iter()
+            .find(|o| o.id == d)
+            .unwrap()
+            .clone();
+        let n = cx.floor().wall(w).unwrap().normal();
+        assert!((o.extras.spec.label_offset.0 - 20.0).abs() < 1e-9);
+        assert!((o.extras.spec.label_offset.1 - -10.0 * n.y).abs() < 1e-9);
+        let moved = labels_of(&mut cx)[0].at;
+        assert!(moved.dist(to) < 1e-9, "{moved:?} vs {to:?}");
+        // It follows the opening when the wall's opening slides.
+        let slid = cx.project.slide_opening(0, d, 100.0);
+        assert!(slid);
+        let after = labels_of(&mut cx)[0].at;
+        assert!((after.x - (to.x + 40.0)).abs() < 1e-9 && (after.y - to.y).abs() < 1e-9);
+        // The offset survives a save and a load.
+        let json = serde_json::to_string(&cx.project).unwrap();
+        let back: plan_core::Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.floors[0].openings[0].extras.spec.label_offset,
+            o.extras.spec.label_offset
+        );
+        // A suppressed label cannot be dragged.
+        cx.defaults.opening_labels.door.mode = LabelMode::Suppress;
+        cx.mark_dirty();
+        cx.refresh();
+        assert!(!drag_label(&mut cx, d, home));
+    }
+
+    #[test]
+    fn the_schedule_mark_bubble_follows_the_dragged_label() {
+        let (mut cx, w) = cx_with_wall();
+        let d = cx
+            .project
+            .add_opening(0, w, 60.0, OpeningKind::Door)
+            .unwrap();
+        let sid = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -80.0));
+        let mut def = schedule_view::find(&cx, sid).unwrap();
+        def.show_labels = true;
+        assert!(schedule_view::replace(&mut cx, 0, def));
+        let l = labels_of(&mut cx);
+        assert!(l[0].is_mark);
+        let to = Point::new(l[0].at.x - 30.0, l[0].at.y);
+        drag_label(&mut cx, d, to);
+        let l = labels_of(&mut cx);
+        assert!(l[0].is_mark && l[0].at.dist(to) < 1e-9);
+    }
+}

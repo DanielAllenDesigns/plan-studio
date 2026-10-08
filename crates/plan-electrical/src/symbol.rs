@@ -165,11 +165,34 @@ fn blade(angle: f64) -> Stroke {
     poly(&pts, true, false)
 }
 
+/// Low-voltage jack: a triangle pointing into the room with its letters beside it.
+fn jack(letters: &str) -> Vec<Stroke> {
+    vec![
+        poly(&[(0.0, -3.0), (0.0, 3.0), (5.0, 0.0)], true, false),
+        text(8.0, 0.0, letters, 2.5),
+    ]
+}
+
 impl DeviceKind {
     /// The plan symbol in device-local coordinates (see the module docs).
     pub fn symbol(&self) -> Vec<Stroke> {
         match self {
             DeviceKind::Outlet110 => duplex(3.0),
+            DeviceKind::Outlet110Quad => vec![
+                circle(0.0, 0.0, 3.5, false),
+                line(-1.2, -2.6, -1.2, 2.6),
+                line(1.2, -2.6, 1.2, 2.6),
+                line(-2.6, -1.2, 2.6, -1.2),
+                line(-2.6, 1.2, 2.6, 1.2),
+            ],
+            DeviceKind::DataJack => jack("D"),
+            DeviceKind::PhoneJack => jack("T"),
+            DeviceKind::TvJack => jack("TV"),
+            DeviceKind::Switch4Way => {
+                let mut s = switch_base();
+                s.push(text(6.0, 4.5, "4", 2.5));
+                s
+            }
             DeviceKind::Gfci => {
                 let mut s = duplex(3.0);
                 s.push(line(0.0, 3.0, 0.0, 4.5));

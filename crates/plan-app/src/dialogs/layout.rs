@@ -14,7 +14,7 @@ use plan_layout::{BoxSource, LayoutBox};
 
 /// Shared dialog frame: a centered window with an OK / Cancel row. Enter is
 /// OK (unless a text field has focus) and Esc is Cancel.
-fn frame(
+pub(super) fn frame(
     ctx: &egui::Context,
     title: &str,
     width: f32,
@@ -101,6 +101,8 @@ pub enum SendSource {
     Plan { floor: usize, layer_set: String },
     /// An elevation or section camera.
     Camera { id: Id, name: String },
+    /// A perspective (full camera) view, ray traced at low samples.
+    Perspective { id: Id, name: String },
 }
 
 /// Which page receives the box.
@@ -202,6 +204,10 @@ impl SendDialog {
                 }
                 SendSource::Camera { name, .. } => {
                     row(ui, "Camera view", |ui| ui.label(name.as_str()));
+                }
+                SendSource::Perspective { name, .. } => {
+                    row(ui, "Perspective view", |ui| ui.label(name.as_str()));
+                    ui.weak("Rendered at low quality for the page; Update Views renders it again.");
                 }
             }
             section(ui, "Layout page");
@@ -413,7 +419,12 @@ impl BoxSpecDialog {
                 });
                 ui.weak("\"All\" ignores layer visibility.");
             }
-            BoxSource::Text { text, height_pt } => {
+            BoxSource::Text {
+                text,
+                height_pt,
+                align,
+                bold,
+            } => {
                 ui.add(
                     egui::TextEdit::multiline(text)
                         .desired_rows(4)
@@ -427,6 +438,74 @@ impl BoxSpecDialog {
                             .suffix(" pt"),
                     );
                 });
+                row(ui, "Alignment", |ui| align_buttons(ui, align));
+                row(ui, "Text fit", |ui| {
+                    fit_buttons(ui, &mut self.draft.text_fit)
+                });
+                ui.checkbox(bold, "Bold");
+                ui.weak(fit_help(self.draft.text_fit));
+            }
+            BoxSource::Perspective { camera_id } => {
+                ui.label(format!("Perspective view of camera {camera_id}"));
+                let b = &mut self.draft;
+                row(ui, "Resolution", |ui| {
+                    // 0 is the default (80 dpi: a 6" x 4.5" box renders at 480 x 360).
+                    let mut dpi = b.effective_dpi();
+                    ui.add(
+                        egui::DragValue::new(&mut dpi)
+                            .range(20..=600)
+                            .suffix(" dpi"),
+                    );
+                    b.dpi = if dpi == plan_layout::DEFAULT_PERSPECTIVE_DPI {
+                        0
+                    } else {
+                        dpi
+                    };
+                });
+                row(ui, "Quality", |ui| {
+                    let mut samples = b.effective_samples();
+                    ui.add(
+                        egui::DragValue::new(&mut samples)
+                            .range(1..=512)
+                            .suffix(" samples"),
+                    );
+                    b.samples = if samples == plan_layout::DEFAULT_PERSPECTIVE_SAMPLES {
+                        0
+                    } else {
+                        samples
+                    };
+                });
+                let (w, h) = (self.w, self.h);
+                let (px_w, px_h) = plan_layout::perspective_pixels(w, h, b.dpi);
+                ui.weak(format!(
+                    "Renders {px_w} x {px_h} pixels; Update Views renders it again."
+                ));
+            }
+            BoxSource::Materials { floor, category } => {
+                row(ui, "Floors", |ui| {
+                    let shown = floor
+                        .and_then(|f| self.floors.get(f).cloned())
+                        .unwrap_or_else(|| "All floors".into());
+                    egui::ComboBox::from_id_salt("box_materials_floor")
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(floor, None, "All floors");
+                            for (i, n) in self.floors.iter().enumerate() {
+                                ui.selectable_value(floor, Some(i), n);
+                            }
+                        });
+                });
+                row(ui, "Category", |ui| {
+                    egui::ComboBox::from_id_salt("box_materials_category")
+                        .selected_text(category.clone().unwrap_or_else(|| "All categories".into()))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(category, None, "All categories");
+                            for c in plan_docs::MATERIAL_CATEGORIES {
+                                ui.selectable_value(category, Some(c.to_string()), c);
+                            }
+                        });
+                });
+                ui.weak("The Materials List follows the plan; prices come from the Master List.");
             }
             BoxSource::Camera { camera_id } => {
                 ui.label(format!("Camera view {camera_id}"));
@@ -471,6 +550,302 @@ pub fn source_name(s: &BoxSource) -> String {
         BoxSource::Image { path } => format!("Image: {path}"),
         BoxSource::ImageData { width, height, .. } => format!("Image {width} x {height}"),
         BoxSource::Text { .. } => "Text".into(),
+        BoxSource::Perspective { .. } => "Perspective view".into(),
+        BoxSource::SheetIndex => "Sheet index".into(),
+        BoxSource::Materials { category, .. } => match category {
+            Some(c) => format!("Materials List: {c}"),
+            None => "Materials List".into(),
+        },
+    }
+}
+
+/// Wrap / Shrink to fit / As typed buttons for a text box.
+fn fit_buttons(ui: &mut Ui, fit: &mut plan_layout::TextFit) {
+    use plan_layout::TextFit as F;
+    for (f, name) in [
+        (F::Wrap, "Wrap"),
+        (F::Shrink, "Shrink to fit"),
+        (F::Off, "As typed"),
+    ] {
+        ui.selectable_value(fit, f, name);
+    }
+}
+
+fn fit_help(fit: plan_layout::TextFit) -> &'static str {
+    match fit {
+        plan_layout::TextFit::Wrap => "Wraps at the box width; text past the bottom is clipped.",
+        plan_layout::TextFit::Shrink => "Wraps, then makes the type smaller until it all fits.",
+        plan_layout::TextFit::Off => "One line per line break, no wrapping.",
+    }
+}
+
+/// Left / Center / Right buttons for a text box.
+fn align_buttons(ui: &mut Ui, align: &mut plan_layout::TextAlign) {
+    use plan_layout::TextAlign as A;
+    for (a, name) in [
+        (A::Left, "Left"),
+        (A::Center, "Center"),
+        (A::Right, "Right"),
+    ] {
+        ui.selectable_value(align, a, name);
+    }
+}
+
+// ------------------------------------------------------------ text editing --
+
+/// The answers of the Text Box dialog.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextBoxSpec {
+    pub id: Id,
+    pub text: String,
+    pub height_pt: f64,
+    pub align: plan_layout::TextAlign,
+    pub bold: bool,
+    pub fit: plan_layout::TextFit,
+}
+
+/// Editing a text box (double-click it in the layout view): the text, its
+/// height in points, bold and alignment.
+pub struct TextBoxDialog {
+    spec: TextBoxSpec,
+}
+
+impl TextBoxDialog {
+    /// `None` when `b` is not a text box.
+    pub fn new(b: &LayoutBox) -> Option<Self> {
+        let BoxSource::Text {
+            text,
+            height_pt,
+            align,
+            bold,
+        } = &b.source
+        else {
+            return None;
+        };
+        Some(Self {
+            spec: TextBoxSpec {
+                id: b.id,
+                text: text.clone(),
+                height_pt: *height_pt,
+                align: *align,
+                bold: *bold,
+                fit: b.text_fit,
+            },
+        })
+    }
+
+    pub fn spec(&self) -> &TextBoxSpec {
+        &self.spec
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let spec = &mut self.spec;
+        frame(ctx, "Text Box", 380.0, None, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut spec.text)
+                    .desired_rows(5)
+                    .desired_width(360.0),
+            );
+            row(ui, "Text height", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut spec.height_pt)
+                        .speed(0.25)
+                        .range(2.0..=200.0)
+                        .suffix(" pt"),
+                );
+            });
+            row(ui, "Alignment", |ui| align_buttons(ui, &mut spec.align));
+            row(ui, "Text fit", |ui| fit_buttons(ui, &mut spec.fit));
+            ui.checkbox(&mut spec.bold, "Bold");
+            ui.weak(fit_help(spec.fit));
+        })
+    }
+}
+
+/// A line of text on the page (layout CAD): its position, words and height.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CadTextSpec {
+    /// The CAD object being edited; `None` adds new text.
+    pub id: Option<Id>,
+    pub pos: Point,
+    pub text: String,
+    /// Text height, paper inches.
+    pub height_in: f64,
+}
+
+/// The layout Text tool's prompt (and double-click editing of page text).
+pub struct CadTextDialog {
+    spec: CadTextSpec,
+}
+
+impl CadTextDialog {
+    pub fn new(spec: CadTextSpec) -> Self {
+        Self { spec }
+    }
+
+    pub fn spec(&self) -> &CadTextSpec {
+        &self.spec
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let empty = self.spec.text.trim().is_empty();
+        let spec = &mut self.spec;
+        frame(
+            ctx,
+            "Page Text",
+            340.0,
+            empty.then_some("Enter some text"),
+            |ui| {
+                ui.add(egui::TextEdit::singleline(&mut spec.text).desired_width(320.0));
+                row(ui, "Text height", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut spec.height_in)
+                            .speed(0.01)
+                            .range(0.04..=3.0)
+                            .max_decimals(3)
+                            .suffix("\""),
+                    );
+                });
+                ui.weak("Text macros such as %sheet.number% work here.");
+            },
+        )
+    }
+}
+
+/// A leader on the page: where the arrow points, where the text sits, the words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeaderSpec {
+    /// The leader being edited; `None` adds a new one.
+    pub id: Option<Id>,
+    pub tip: Point,
+    pub elbow: Point,
+    pub text: String,
+    /// Text height, paper inches.
+    pub height_in: f64,
+    pub arrow: bool,
+}
+
+/// The Leader tool's prompt (and double-click editing of a leader).
+pub struct LeaderDialog {
+    spec: LeaderSpec,
+}
+
+impl LeaderDialog {
+    pub fn new(spec: LeaderSpec) -> Self {
+        Self { spec }
+    }
+
+    pub fn spec(&self) -> &LeaderSpec {
+        &self.spec
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let empty = self.spec.text.trim().is_empty();
+        let spec = &mut self.spec;
+        frame(
+            ctx,
+            "Leader",
+            340.0,
+            empty.then_some("Enter the leader's text"),
+            |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut spec.text)
+                        .desired_rows(2)
+                        .desired_width(320.0),
+                );
+                row(ui, "Text height", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut spec.height_in)
+                            .speed(0.01)
+                            .range(0.04..=2.0)
+                            .max_decimals(3)
+                            .suffix("\""),
+                    );
+                });
+                ui.checkbox(&mut spec.arrow, "Arrowhead");
+            },
+        )
+    }
+}
+
+/// A revision cloud on the page and the revision it belongs to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CloudSpec {
+    /// The cloud being edited; `None` adds a new one.
+    pub id: Option<Id>,
+    pub rect: (Point, Point),
+    pub revision: String,
+}
+
+/// The Revision Cloud tool's prompt (and double-click editing of a cloud).
+pub struct CloudDialog {
+    spec: CloudSpec,
+}
+
+impl CloudDialog {
+    pub fn new(spec: CloudSpec) -> Self {
+        Self { spec }
+    }
+
+    pub fn spec(&self) -> &CloudSpec {
+        &self.spec
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let spec = &mut self.spec;
+        frame(ctx, "Revision Cloud", 320.0, None, |ui| {
+            row(ui, "Revision", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut spec.revision).desired_width(80.0));
+            });
+            ui.weak("The mark (1, A, ...) is drawn in a triangle on the cloud; leave it empty for none.");
+        })
+    }
+}
+
+// -------------------------------------------------------- layer display --
+
+/// Layer Display Options of the layout view: show or hide each layout layer
+/// and set its line weight and colour.
+pub struct LayoutLayersDialog {
+    draft: plan_layout::LayoutLayers,
+}
+
+impl LayoutLayersDialog {
+    pub fn new(layers: plan_layout::LayoutLayers) -> Self {
+        Self { draft: layers }
+    }
+
+    pub fn layers(&self) -> &plan_layout::LayoutLayers {
+        &self.draft
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let layers = &mut self.draft;
+        frame(ctx, "Layout Layer Display Options", 420.0, None, |ui| {
+            egui::Grid::new("layout_layers")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("Show");
+                    ui.strong("Layer");
+                    ui.strong("Line weight");
+                    ui.strong("Color");
+                    ui.end_row();
+                    for l in &mut layers.layers {
+                        ui.checkbox(&mut l.display, "");
+                        ui.label(&l.name);
+                        ui.add(
+                            egui::DragValue::new(&mut l.line_weight_pt)
+                                .speed(0.05)
+                                .range(plan_layout::MIN_WEIGHT_PT..=plan_layout::MAX_WEIGHT_PT)
+                                .max_decimals(2)
+                                .suffix(" pt"),
+                        );
+                        ui.color_edit_button_srgb(&mut l.color);
+                        ui.end_row();
+                    }
+                });
+            ui.weak("Box borders, page drawings, text, the title block and revision clouds each print with their layer's weight; hidden layers do not print.");
+        })
     }
 }
 
@@ -586,56 +961,7 @@ impl PageTableDialog {
 
 // --------------------------------------------------------------- print --
 
-/// Print: all pages or a range of printed pages (1-based, inclusive).
-pub struct PrintDialog {
-    pages: usize,
-    all: bool,
-    from: usize,
-    to: usize,
-}
-
-impl PrintDialog {
-    pub fn new(printed_pages: usize) -> Self {
-        Self {
-            pages: printed_pages,
-            all: true,
-            from: 1,
-            to: printed_pages.max(1),
-        }
-    }
-
-    /// `None` prints every page.
-    pub fn range(&self) -> Option<(usize, usize)> {
-        (!self.all).then_some((self.from, self.to))
-    }
-
-    fn error(&self) -> Option<&'static str> {
-        if self.pages == 0 {
-            Some("The layout has no pages to print")
-        } else if !self.all && (self.from < 1 || self.to < self.from || self.to > self.pages) {
-            Some("Enter a page range inside the layout")
-        } else {
-            None
-        }
-    }
-
-    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        let error = self.error();
-        let pages = self.pages;
-        let (all, from, to) = (&mut self.all, &mut self.from, &mut self.to);
-        frame(ctx, "Print Layout", 340.0, error, |ui| {
-            ui.label(format!("The layout has {pages} printed page(s)."));
-            ui.radio_value(all, true, "All pages");
-            ui.horizontal(|ui| {
-                ui.radio_value(all, false, "Pages");
-                ui.add_enabled(!*all, egui::DragValue::new(from).range(1..=pages.max(1)));
-                ui.label("to");
-                ui.add_enabled(!*all, egui::DragValue::new(to).range(1..=pages.max(1)));
-            });
-            ui.weak("The pages are saved as a PDF.");
-        })
-    }
-}
+pub use super::print::PrintDialog;
 
 #[cfg(test)]
 mod tests {
@@ -707,20 +1033,6 @@ mod tests {
     }
 
     #[test]
-    fn print_range_is_validated() {
-        let mut d = PrintDialog::new(3);
-        assert_eq!(d.range(), None);
-        assert!(d.error().is_none());
-        d.all = false;
-        d.from = 2;
-        d.to = 5;
-        assert!(d.error().is_some());
-        d.to = 3;
-        assert_eq!(d.range(), Some((2, 3)));
-        assert!(PrintDialog::new(0).error().is_some());
-    }
-
-    #[test]
     fn page_setup_rejects_margins_wider_than_the_sheet() {
         let mut d = PageSetupDialog::new(PageSetup {
             sheet: SheetSize::Letter,
@@ -733,6 +1045,72 @@ mod tests {
         assert!(d.error().is_none());
         d.setup.margins_in = 5.0;
         assert!(d.error().is_some());
+    }
+
+    #[test]
+    fn perspective_and_text_box_fields_round_trip_through_the_box_dialog() {
+        let mut b = LayoutBox::new(
+            4,
+            (Point::new(1.0, 1.0), Point::new(7.0, 5.5)),
+            BoxSource::Perspective { camera_id: 2 },
+            Scale::QuarterInch,
+        );
+        b.dpi = 200;
+        b.samples = 32;
+        let d = BoxSpecDialog::new(&b, 1, vec![], vec![], vec![]);
+        assert_eq!(d.result().layout_box, b);
+        let mut t = LayoutBox::new(
+            5,
+            (Point::new(1.0, 1.0), Point::new(3.0, 2.0)),
+            BoxSource::text("hi", 10.0),
+            Scale::QuarterInch,
+        );
+        t.text_fit = plan_layout::TextFit::Shrink;
+        let td = TextBoxDialog::new(&t).unwrap();
+        assert_eq!(td.spec().fit, plan_layout::TextFit::Shrink);
+        let ctx = egui::Context::default();
+        let (mut p, mut x) = (
+            BoxSpecDialog::new(&b, 1, vec![], vec![], vec![]),
+            BoxSpecDialog::new(&t, 1, vec![], vec![], vec![]),
+        );
+        let mut td = td;
+        for tab in [BoxTab::Source, BoxTab::General] {
+            p.tab = tab;
+            x.tab = tab;
+            let _ = ctx.run(egui::RawInput::default(), |c| {
+                p.show(c);
+                x.show(c);
+                td.show(c);
+            });
+        }
+    }
+
+    #[test]
+    fn leader_cloud_and_layer_dialogs_validate_and_draw() {
+        let mut l = LeaderDialog::new(LeaderSpec {
+            id: None,
+            tip: Point::new(1.0, 1.0),
+            elbow: Point::new(2.0, 2.0),
+            text: String::new(),
+            height_in: 0.125,
+            arrow: true,
+        });
+        let ctx = egui::Context::default();
+        let mut c = CloudDialog::new(CloudSpec {
+            id: None,
+            rect: (Point::new(1.0, 1.0), Point::new(3.0, 3.0)),
+            revision: "1".into(),
+        });
+        let mut y = LayoutLayersDialog::new(plan_layout::LayoutLayers::default());
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                l.show(ctx);
+                c.show(ctx);
+                y.show(ctx);
+            });
+        }
+        assert_eq!(y.layers().layers.len(), 5);
+        assert_eq!(c.spec().revision, "1");
     }
 
     #[test]
@@ -776,7 +1154,7 @@ mod tests {
         dialogs.push(Box::new(move |c| {
             pt.show(c);
         }));
-        let mut pr = PrintDialog::new(2);
+        let mut pr = PrintDialog::for_layout(2, (36.0, 24.0), "Layout");
         dialogs.push(Box::new(move |c| {
             pr.show(c);
         }));

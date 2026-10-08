@@ -43,6 +43,91 @@ pub enum FoundationKind {
     Pier,
 }
 
+/// Per-floor defaults of the Floor Defaults dialog (R-56, R-58): the
+/// platform thicknesses that set the floor-to-floor rise, the finish
+/// thicknesses, and what rooms on the floor start with. Every floor owns one;
+/// the plan defaults carry the one new floors start from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FloorSettings {
+    /// Thickness of this floor's floor platform, inches. The floor sits this
+    /// far above the ceiling of the floor below (with that floor's ceiling
+    /// structure).
+    pub floor_structure_thickness: f64,
+    /// Thickness of this floor's ceiling platform, inches (adds to the rise
+    /// to the floor above).
+    pub ceiling_structure_thickness: f64,
+    /// Finish on the floor platform, inches (R-27).
+    pub floor_finish_thickness: f64,
+    /// Finish under the ceiling platform, inches (R-27).
+    pub ceiling_finish_thickness: f64,
+    /// Room type a new room on this floor starts with ("" = the plan's first).
+    pub default_room_type: String,
+    /// Floor surface material of a new room ("" = none).
+    pub floor_material: String,
+    /// Ceiling surface material of a new room ("" = none).
+    pub ceiling_material: String,
+}
+
+impl Default for FloorSettings {
+    fn default() -> Self {
+        Self {
+            floor_structure_thickness: FLOOR_PLATFORM_THICKNESS,
+            ceiling_structure_thickness: 0.0,
+            floor_finish_thickness: 0.75,
+            ceiling_finish_thickness: 0.625,
+            default_room_type: String::new(),
+            floor_material: String::new(),
+            ceiling_material: String::new(),
+        }
+    }
+}
+
+impl FloorSettings {
+    /// The floor height of Floor Defaults: ceiling height plus both
+    /// platforms, inches.
+    pub fn floor_height(&self, ceiling_height: f64) -> f64 {
+        ceiling_height + self.ceiling_structure_thickness + self.floor_structure_thickness
+    }
+}
+
+/// What a new floor copies from the floor it is built from (R-59).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DeriveFrom {
+    /// A blank plan.
+    Blank,
+    /// The exterior walls with their doors and windows.
+    #[default]
+    ExteriorWalls,
+    /// Every wall with its doors and windows.
+    AllWalls,
+}
+
+/// Where Build New Floor puts the floor relative to its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FloorPlacement {
+    #[default]
+    Above,
+    Below,
+}
+
+/// The Build New Floor dialog's choices (R-59).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NewFloorOptions {
+    /// The floor to derive from; `None` is the highest normal floor.
+    pub source: Option<usize>,
+    pub place: FloorPlacement,
+    pub derive: DeriveFrom,
+    /// Copy the source floor's room name entries.
+    pub copy_rooms: bool,
+    /// Copy the source floor's slab, pad and pier data.
+    pub copy_foundation: bool,
+    /// Ceiling height of the new floor; `None` follows the source floor.
+    pub ceiling_height: Option<f64>,
+    /// Floor Defaults of the new floor; `None` follows the source floor.
+    pub settings: Option<FloorSettings>,
+}
+
 /// "1st Floor", "2nd Floor", "3rd Floor", "4th Floor", ... for `n >= 1`.
 pub fn ordinal_floor_name(n: usize) -> String {
     let suffix = match (n % 100, n % 10) {
@@ -108,7 +193,8 @@ impl Project {
         for i in base + 1..self.floors.len() {
             self.floors[i].elevation = self.floors[i - 1].elevation
                 + self.floors[i - 1].ceiling_height
-                + FLOOR_PLATFORM_THICKNESS;
+                + self.floors[i - 1].settings.ceiling_structure_thickness
+                + self.floors[i].settings.floor_structure_thickness;
         }
     }
 
@@ -131,17 +217,67 @@ impl Project {
     /// walls of the floor below are copied with their doors and windows and
     /// fresh ids. Returns the new floor's index.
     pub fn build_new_floor(&mut self, copy_exterior_walls: bool) -> usize {
-        let src = self.top_normal_floor();
-        let at = src.map_or(self.floors.len(), |i| i + 1);
+        let derive = if copy_exterior_walls {
+            DeriveFrom::ExteriorWalls
+        } else {
+            DeriveFrom::Blank
+        };
+        self.build_new_floor_with(&NewFloorOptions {
+            derive,
+            ..NewFloorOptions::default()
+        })
+        .unwrap_or(0)
+    }
+
+    /// Build New Floor with the dialog's full set of choices (R-59): derive
+    /// the exterior walls, every wall or nothing from the source floor, copy
+    /// its rooms and slab data, and take the heights from the options or the
+    /// source floor. Returns the new floor's index, or `None` when the
+    /// placement is impossible (above the attic, below the foundation).
+    pub fn build_new_floor_with(&mut self, opts: &NewFloorOptions) -> Option<usize> {
+        let src = opts
+            .source
+            .filter(|&i| i < self.floors.len())
+            .or_else(|| self.top_normal_floor());
+        let at = match (opts.place, src) {
+            (FloorPlacement::Above, Some(i)) if opts.source.is_some() => {
+                if self.floors[i].kind == FloorKind::Attic {
+                    return None;
+                }
+                i + 1
+            }
+            (FloorPlacement::Above, Some(i)) => i + 1,
+            (FloorPlacement::Below, Some(i)) => {
+                if self.floors[i].kind == FloorKind::Foundation {
+                    return None;
+                }
+                i
+            }
+            (_, None) => self.floors.len(),
+        };
         let was_auto = self.auto_named();
-        let ceiling = src.map_or(crate::model::DEFAULT_CEILING_HEIGHT, |i| {
-            self.floors[i].ceiling_height
-        });
         let mut floor = Floor::new("", 0.0);
-        floor.ceiling_height = ceiling;
-        if copy_exterior_walls {
-            if let Some(i) = src {
-                self.copy_exterior_into(i, &mut floor);
+        floor.ceiling_height = opts.ceiling_height.unwrap_or_else(|| {
+            src.map_or(crate::model::DEFAULT_CEILING_HEIGHT, |i| {
+                self.floors[i].ceiling_height
+            })
+        });
+        if let Some(s) = &opts.settings {
+            floor.settings = s.clone();
+        } else if let Some(i) = src {
+            floor.settings = self.floors[i].settings.clone();
+        }
+        if let Some(i) = src {
+            match opts.derive {
+                DeriveFrom::Blank => {}
+                DeriveFrom::ExteriorWalls => self.copy_walls_into(i, &mut floor, false),
+                DeriveFrom::AllWalls => self.copy_walls_into(i, &mut floor, true),
+            }
+            if opts.copy_rooms {
+                floor.room_names = self.floors[i].room_names.clone();
+            }
+            if opts.copy_foundation {
+                floor.foundation = self.floors[i].foundation.clone();
             }
         }
         self.floors.insert(at, floor);
@@ -156,16 +292,17 @@ impl Project {
         self.floors[at].name = self.auto_floor_name(at);
         self.renumber_floors(&was_auto, &order);
         self.restack_floors();
-        at
+        Some(at)
     }
 
-    /// Copy the exterior walls (and their openings) of floor `src` into
-    /// `target` with fresh ids.
-    fn copy_exterior_into(&mut self, src: usize, target: &mut Floor) {
+    /// Copy the walls (and their openings) of floor `src` into `target` with
+    /// fresh ids: the exterior walls, or every wall when `all`. Foundation
+    /// walls are never copied.
+    fn copy_walls_into(&mut self, src: usize, target: &mut Floor, all: bool) {
         let walls: Vec<Wall> = self.floors[src]
             .walls
             .iter()
-            .filter(|w| w.kind == WallKind::Exterior && !w.flags.foundation)
+            .filter(|w| (all || w.kind == WallKind::Exterior) && !w.flags.foundation)
             .cloned()
             .collect();
         for mut w in walls {
@@ -197,6 +334,7 @@ impl Project {
         let was_auto = self.auto_named();
         let mut floor = Floor::new("", 0.0);
         floor.ceiling_height = self.floors[idx].ceiling_height;
+        floor.settings = self.floors[idx].settings.clone();
         self.floors.insert(at, floor);
         self.shift_cameras(at, 1);
         let order: Vec<usize> = (0..self.floors.len())
@@ -210,6 +348,61 @@ impl Project {
         self.renumber_floors(&was_auto, &order);
         self.restack_floors();
         Some(at)
+    }
+
+    /// Insert an empty floor directly below floor `idx` (R-60) and renumber.
+    /// Returns the new floor's index (`idx`), or `None` if `idx` is out of
+    /// range or is the foundation (nothing goes below it).
+    pub fn insert_floor_below(&mut self, idx: usize) -> Option<usize> {
+        if idx >= self.floors.len() || self.floors[idx].kind == FloorKind::Foundation {
+            return None;
+        }
+        let was_auto = self.auto_named();
+        let mut floor = Floor::new("", 0.0);
+        floor.ceiling_height = self.floors[idx].ceiling_height;
+        floor.settings = self.floors[idx].settings.clone();
+        self.floors.insert(idx, floor);
+        self.shift_cameras(idx, 1);
+        let order: Vec<usize> = (0..self.floors.len())
+            .map(|n| match n.cmp(&idx) {
+                std::cmp::Ordering::Less => n,
+                std::cmp::Ordering::Equal => usize::MAX,
+                std::cmp::Ordering::Greater => n - 1,
+            })
+            .collect();
+        self.floors[idx].name = self.auto_floor_name(idx);
+        self.renumber_floors(&was_auto, &order);
+        self.restack_floors();
+        Some(idx)
+    }
+
+    /// Floor Defaults (R-56, R-58): set floor `idx`'s ceiling height and
+    /// settings. Walls that stood at the old ceiling height (the default wall
+    /// top) follow the new one and every floor above moves by the change.
+    /// Returns `false` for an out-of-range index.
+    pub fn apply_floor_settings(
+        &mut self,
+        idx: usize,
+        ceiling_height: f64,
+        settings: FloorSettings,
+    ) -> bool {
+        let Some(floor) = self.floors.get_mut(idx) else {
+            return false;
+        };
+        let old = floor.ceiling_height;
+        if (old - ceiling_height).abs() > 1e-9 {
+            for w in floor
+                .walls
+                .iter_mut()
+                .filter(|w| (w.height - old).abs() < 0.01)
+            {
+                w.height = ceiling_height;
+            }
+        }
+        floor.ceiling_height = ceiling_height;
+        floor.settings = settings;
+        self.restack_floors();
+        true
     }
 
     /// Delete a floor (R-60, R-63) with its cameras. Refuses to delete the
@@ -421,6 +614,120 @@ mod tests {
         assert_eq!(third, 2);
         assert!(p.floors[2].walls.is_empty());
         assert_eq!(p.floors[2].name, "3rd Floor");
+    }
+
+    #[test]
+    fn derive_exterior_only_copies_only_the_exterior_walls() {
+        let mut p = house();
+        let up = p
+            .build_new_floor_with(&NewFloorOptions {
+                derive: DeriveFrom::ExteriorWalls,
+                ..NewFloorOptions::default()
+            })
+            .unwrap();
+        assert_eq!(p.floors[up].walls.len(), 4);
+        assert!(p.floors[up]
+            .walls
+            .iter()
+            .all(|w| w.kind == WallKind::Exterior));
+        assert_eq!(p.floors[up].openings.len(), 1);
+    }
+
+    #[test]
+    fn derive_all_walls_copies_the_partitions_and_rooms() {
+        let mut p = house();
+        p.floors[0].room_names.push(crate::model::RoomName::new(
+            Point::new(60.0, 60.0),
+            "Den",
+            "Den",
+        ));
+        let up = p
+            .build_new_floor_with(&NewFloorOptions {
+                derive: DeriveFrom::AllWalls,
+                copy_rooms: true,
+                ..NewFloorOptions::default()
+            })
+            .unwrap();
+        assert_eq!(p.floors[up].walls.len(), 5);
+        assert!(p.floors[up]
+            .walls
+            .iter()
+            .any(|w| w.kind == WallKind::Interior));
+        assert_eq!(p.floors[up].room_names.len(), 1);
+        // A blank floor copies nothing, and the rooms are only copied on ask.
+        let blank = p
+            .build_new_floor_with(&NewFloorOptions {
+                derive: DeriveFrom::Blank,
+                ..NewFloorOptions::default()
+            })
+            .unwrap();
+        assert!(p.floors[blank].walls.is_empty() && p.floors[blank].room_names.is_empty());
+    }
+
+    #[test]
+    fn a_floor_can_be_built_below_and_heights_come_from_the_options() {
+        let mut p = house();
+        let settings = FloorSettings {
+            floor_structure_thickness: 12.0,
+            ..FloorSettings::default()
+        };
+        let below = p
+            .build_new_floor_with(&NewFloorOptions {
+                source: Some(0),
+                place: FloorPlacement::Below,
+                derive: DeriveFrom::Blank,
+                ceiling_height: Some(96.0),
+                settings: Some(settings.clone()),
+                ..NewFloorOptions::default()
+            })
+            .unwrap();
+        assert_eq!(below, 0);
+        assert_eq!(p.floors.len(), 2);
+        assert_eq!(p.floors[0].ceiling_height, 96.0);
+        assert_eq!(p.floors[0].settings, settings);
+        assert_eq!(p.floors[0].name, "1st Floor");
+        assert_eq!(p.floors[1].name, "2nd Floor");
+        // The old first floor now sits above the new one.
+        assert_eq!(p.floors[1].walls.len(), 5);
+        // Nothing goes above the attic or below the foundation.
+        let mut q = house();
+        q.build_foundation(FoundationKind::MonolithicSlab);
+        assert!(q.insert_floor_below(0).is_none());
+        assert!(q
+            .build_new_floor_with(&NewFloorOptions {
+                source: Some(0),
+                place: FloorPlacement::Below,
+                ..NewFloorOptions::default()
+            })
+            .is_none());
+        assert_eq!(q.insert_floor_below(1), Some(1));
+        assert_eq!(q.floors.len(), 3);
+    }
+
+    #[test]
+    fn floor_defaults_restack_the_floors_above() {
+        let mut p = house();
+        let up = p.build_new_floor(false);
+        let before = p.floors[up].elevation;
+        assert!((before - (DEFAULT_CEILING_HEIGHT + FLOOR_PLATFORM_THICKNESS)).abs() < 1e-9);
+        // Lower the ceiling by 12": walls at the default top follow, the
+        // floor above comes down by the same amount.
+        let mut st = p.floors[0].settings.clone();
+        st.ceiling_structure_thickness = 1.0;
+        assert!(p.apply_floor_settings(0, DEFAULT_CEILING_HEIGHT - 12.0, st));
+        assert!(p.floors[0]
+            .walls
+            .iter()
+            .all(|w| (w.height - (DEFAULT_CEILING_HEIGHT - 12.0)).abs() < 1e-9));
+        assert!((p.floors[up].elevation - (before - 12.0 + 1.0)).abs() < 1e-9);
+        // The upper floor's own floor structure sets its rise.
+        let mut upper = p.floors[up].settings.clone();
+        upper.floor_structure_thickness = 14.0;
+        p.apply_floor_settings(up, p.floors[up].ceiling_height, upper);
+        assert!(
+            (p.floors[up].elevation - (DEFAULT_CEILING_HEIGHT - 12.0 + 1.0 + 14.0)).abs() < 1e-9
+        );
+        assert!(!p.apply_floor_settings(9, 96.0, FloorSettings::default()));
     }
 
     #[test]

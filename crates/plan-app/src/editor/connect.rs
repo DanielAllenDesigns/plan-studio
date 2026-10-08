@@ -25,7 +25,7 @@
 
 use super::ops::{self, JOIN_TOL};
 use super::EditorContext;
-use plan_core::geometry::{dist_to_segment, project_on_segment, segment_intersection, Point};
+use plan_core::geometry::{dist_to_segment, segment_intersection, Point};
 use plan_core::{Id, Project, Wall, WallEnd};
 
 /// Smallest connect distance, inches (Chief uses the wall thickness, min 6").
@@ -269,7 +269,8 @@ fn connect_end(
     let mut best_end: Option<(f64, Id, WallEnd, Point)> = None;
     let mut best_int: Option<(f64, Id, Point)> = None;
     for o in &project.floors[floor].walls {
-        if o.id == id || !straight(o) {
+        // A curved wall is a neighbour too: its ends and its arc.
+        if o.id == id || o.path_length() < MIN_WALL_LENGTH {
             continue;
         }
         for oe in [WallEnd::Start, WallEnd::End] {
@@ -279,7 +280,7 @@ fn connect_end(
                 best_end = Some((dist, o.id, oe, q));
             }
         }
-        let (_, foot) = project_on_segment(p, o.start, o.end);
+        let (foot, _) = o.closest_point(p);
         let dist = foot.dist(p);
         if dist <= d
             && foot.dist(o.start) > JOIN_TOL
@@ -304,7 +305,8 @@ fn connect_end(
         let joined_elsewhere = ops::walls_at(project, floor, q, JOIN_TOL, Some(oid))
             .iter()
             .any(|(j, _)| *j != id);
-        let x = if joined_elsewhere {
+        // A curved neighbour keeps its end: only this wall's end moves to it.
+        let x = if joined_elsewhere || o.is_curved() {
             None
         } else {
             corner_point(p, far, q, end_pos(&o, other_end(oe)), d)
@@ -334,7 +336,7 @@ fn connect_end(
     };
     let mut target = foot;
     let u = (p - far).normalized();
-    if dist > 1e-6 && u.cross(o.direction()).abs() >= MIN_SIN {
+    if dist > 1e-6 && !o.is_curved() && u.cross(o.direction()).abs() >= MIN_SIN {
         if let Some(x) = ops::line_intersection(p, u, o.start, o.direction()) {
             let inside = dist_to_segment(x, o.start, o.end) <= 1e-6
                 && x.dist(o.start) > JOIN_TOL
@@ -397,8 +399,57 @@ fn snap_curved_end(
             set_exact(project, floor, id, end, q);
             1
         }
-        _ => 0,
+        Some(_) => 0,
+        None => snap_curved_tee(project, floor, id, end, &w, opts),
     }
+}
+
+/// A curved wall's end that is near no wall end but near another wall's
+/// centerline (a straight wall's line or another arc) goes onto that
+/// centerline and, with `split_on_tee`, cuts the wall there: a T. The miter
+/// is the join's (`plan_core::joins`): the arc meets the host's face along
+/// its tangent. Returns the number of edits.
+fn snap_curved_tee(
+    project: &mut Project,
+    floor: usize,
+    id: Id,
+    end: WallEnd,
+    w: &Wall,
+    opts: &ConnectOptions,
+) -> usize {
+    let p = end_pos(w, end);
+    let far = end_pos(w, other_end(end));
+    let d = connect_distance_with(w, opts.connect_distance_min);
+    let best = project.floors[floor]
+        .walls
+        .iter()
+        .filter(|o| o.id != id && o.path_length() >= MIN_WALL_LENGTH)
+        .filter_map(|o| {
+            let (foot, _) = o.closest_point(p);
+            let dist = foot.dist(p);
+            (dist <= d
+                && foot.dist(o.start) > JOIN_TOL
+                && foot.dist(o.end) > JOIN_TOL
+                && foot.dist(far) >= MIN_WALL_LENGTH)
+                .then_some((dist, o.id, foot))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    let Some((dist, oid, foot)) = best else {
+        return 0;
+    };
+    let mut n = 0;
+    if dist > SAME {
+        set_exact(project, floor, id, end, foot);
+        n += 1;
+    }
+    if opts.split_on_tee {
+        if let Some(new) = ops::split_wall_at(project, floor, oid, foot) {
+            set_exact(project, floor, oid, WallEnd::End, foot);
+            set_exact(project, floor, new, WallEnd::Start, foot);
+            n += 1;
+        }
+    }
+    n
 }
 
 /// (c) Cuts wall `id` and every wall it crosses at the crossings (X
@@ -879,5 +930,96 @@ mod tests {
             at(&p, far),
             (Point::new(600.0, 0.0), Point::new(800.0, 0.0))
         );
+    }
+
+    #[test]
+    fn a_straight_wall_snaps_onto_the_end_of_a_curved_one() {
+        let mut p = Project::new("t");
+        let arc = wall(&mut p, (0.0, 0.0), (200.0, 0.0));
+        p.floors[0].wall_mut(arc).unwrap().curve = Some(plan_core::WallCurve { bulge: 40.0 });
+        // Drawn 4" off the arc's end: the straight wall's start goes to it.
+        let line = wall(&mut p, (204.0, 2.0), (204.0, 150.0));
+        assert!(auto_connect_project(&mut p, 0, line, &opts()) > 0);
+        assert_eq!(at(&p, line).0, Point::new(200.0, 0.0));
+        assert_eq!(at(&p, arc), (Point::new(0.0, 0.0), Point::new(200.0, 0.0)));
+        assert!(p.floors[0].wall(arc).unwrap().is_curved());
+        assert_eq!(auto_connect_project(&mut p, 0, line, &opts()), 0);
+    }
+
+    #[test]
+    fn a_wall_ending_near_an_arc_makes_a_tee_on_it_and_splits_it() {
+        let mut p = Project::new("t");
+        let arc = wall(&mut p, (0.0, 0.0), (200.0, 0.0));
+        p.floors[0].wall_mut(arc).unwrap().curve = Some(plan_core::WallCurve { bulge: 40.0 });
+        // 3" short of the arc's apex (100, 40).
+        let line = wall(&mut p, (100.0, 150.0), (100.0, 43.0));
+        assert!(auto_connect_project(&mut p, 0, line, &opts()) > 0);
+        let end = at(&p, line).1;
+        assert!(end.dist(Point::new(100.0, 40.0)) < 1e-6, "{end:?}");
+        let walls = &p.floors[0].walls;
+        assert_eq!(walls.len(), 3, "the arc is cut where the wall ends on it");
+        assert_eq!(walls.iter().filter(|w| w.is_curved()).count(), 2);
+        assert_eq!(auto_connect_project(&mut p, 0, line, &opts()), 0);
+        // Without splitting it only snaps onto the arc.
+        let mut q = Project::new("t");
+        let arc = wall(&mut q, (0.0, 0.0), (200.0, 0.0));
+        q.floors[0].wall_mut(arc).unwrap().curve = Some(plan_core::WallCurve { bulge: 40.0 });
+        let line = wall(&mut q, (100.0, 150.0), (100.0, 43.0));
+        let keep = ConnectOptions {
+            split_on_tee: false,
+            ..opts()
+        };
+        assert!(auto_connect_project(&mut q, 0, line, &keep) > 0);
+        assert!(at(&q, line).1.dist(Point::new(100.0, 40.0)) < 1e-6);
+        assert_eq!(q.floors[0].walls.len(), 2);
+    }
+
+    #[test]
+    fn a_curved_wall_ending_near_a_straight_wall_makes_a_tee() {
+        let mut p = Project::new("t");
+        let host = wall(&mut p, (0.0, 0.0), (300.0, 0.0));
+        let arc = wall(&mut p, (150.0, 100.0), (150.0, 4.0));
+        p.floors[0].wall_mut(arc).unwrap().curve = Some(plan_core::WallCurve { bulge: 20.0 });
+        assert!(auto_connect_project(&mut p, 0, arc, &opts()) > 0);
+        assert_eq!(at(&p, arc).1, Point::new(150.0, 0.0));
+        assert!(p.floors[0].wall(arc).unwrap().is_curved());
+        assert_eq!(p.floors[0].walls.len(), 3, "the host is cut at the tee");
+        assert!(p.floors[0].wall(host).is_some());
+        assert_eq!(auto_connect_project(&mut p, 0, arc, &opts()), 0);
+    }
+
+    #[test]
+    fn arcs_that_meet_tangent_join_through_and_a_kink_is_a_corner() {
+        use plan_core::joins::{wall_end_joins, ConnectionKind};
+        let mut p = Project::new("t");
+        let a = wall(&mut p, (0.0, 0.0), (200.0, 0.0));
+        p.floors[0].wall_mut(a).unwrap().curve = Some(plan_core::WallCurve { bulge: 30.0 });
+        let wa = p.floors[0].wall(a).unwrap().clone();
+        let tangent = wa.curve.unwrap().tangent_at_end(wa.start, wa.end);
+        let end = Point::new(400.0, -60.0);
+        let b = wall(&mut p, (200.0, 0.0), (end.x, end.y));
+        let curve = plan_core::WallCurve::tangent_to(Point::new(200.0, 0.0), end, tangent);
+        p.floors[0].wall_mut(b).unwrap().curve = curve;
+        // Already joined: nothing to do, and the join is a through join.
+        assert_eq!(auto_connect_project(&mut p, 0, b, &opts()), 0);
+        let walls = &p.floors[0].walls;
+        let i = walls.iter().position(|w| w.id == a).unwrap();
+        assert_eq!(
+            wall_end_joins(walls, i, WallEnd::End, 0.5),
+            vec![(1, ConnectionKind::Through)]
+        );
+        // Bend the second arc off the tangent: the same joint is a corner.
+        p.floors[0].wall_mut(b).unwrap().curve = Some(plan_core::WallCurve { bulge: 25.0 });
+        let walls = &p.floors[0].walls;
+        assert_eq!(
+            wall_end_joins(walls, i, WallEnd::End, 0.5),
+            vec![(1, ConnectionKind::Corner)]
+        );
+        // Drawn 4" off, the second arc's start snaps on and keeps its curve.
+        let c = wall(&mut p, (204.0, 0.0), (400.0, 80.0));
+        p.floors[0].wall_mut(c).unwrap().curve = Some(plan_core::WallCurve { bulge: 15.0 });
+        assert!(auto_connect_project(&mut p, 0, c, &opts()) > 0);
+        assert_eq!(at(&p, c).0, Point::new(200.0, 0.0));
+        assert!(p.floors[0].wall(c).unwrap().is_curved());
     }
 }

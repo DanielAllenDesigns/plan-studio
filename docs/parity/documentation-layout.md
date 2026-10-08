@@ -1,6 +1,6 @@
 # Parity spec: Documentation and Layout (Chief Architect X18)
 
-> Status (2026-10-08): 47 ids: 8 Works, 30 Partial, 8 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+> Status (2026-10-08, after the layout round): 47 ids: 17 Works, 24 Partial, 5 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
 
 Scope: Layout (Send to Layout, layout boxes, line weights, sheet sizes, title
 blocks, pages, plot plans), Printing and PDF, Schedules, Materials List, Plan

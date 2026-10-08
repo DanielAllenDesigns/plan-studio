@@ -8,20 +8,30 @@ in plain language. Terms are alphabetical. "See 4.1" points to a section of this
 **Active layer, Active Layer Display Options.** The panel that lists the plan's layers and lets you turn
 each on or off (Disp) or lock it (Lock). See 5.5.
 
-**Alt key.** In Plan Studio, holding Alt while drawing a wall turns off the 15 degree angle snap. Option
+**Align, Distribute.** Edit commands that line several selected objects up on their left, center, right, top, middle or bottom edge, or space them evenly. See 2.5.
+
+**Alt key.** In Plan Studio, holding Alt while drawing a wall turns off every snap (object, angle and grid), so the wall goes exactly where the pointer is. Option
 on a Mac.
 
 **Angle snap.** A drawing aid that makes a line fall on a neat angle, here every 15 degrees from the last
-point (so 0, 15, 30 ... 90). See 2.3.
+point (so 0, 15, 30 ... 90) unless Edit > Snap Settings sets another increment. Holding Shift keeps the increment even where angle snaps are off. See 2.3.
+
+**Arch (head).** A curved top on a window or door. The Arch tab of the opening specifications offers Round Top, Segmental, Tudor, Gothic and Eyebrow, drawn in 3D with the glass and the wall fill following the curve. See 3.5a.
+
+**Archive, Auto Archive.** The older copy of a plan that Plan Studio keeps each time you save over it, in an `Archives` folder beside the plan (the newest 20 by default). Manage Auto Archives lists them. See 12.2a.
 
 **Area, Interior / Standard / Centerline.** Three ways to measure a room. Interior Area is the floor
 between the inside faces of the walls. Standard Area runs to the outside of the exterior walls and the middle of
 shared walls. Centerline area runs to the middle of every wall. See 4.1.
 
+**Associative dimension.** A dimension whose ends are tied to the wall, opening, cabinet or fixture they were located on, so it follows when that object moves. See 5.2.
+
 **Attic wall.** A short wall in the attic, usually under the roof, that holds up the roof or defines a space. A
-floor of kind Attic sits above the top floor.
+floor of kind Attic sits above the top floor. In the 3D view Plan Studio also generates an attic wall where a lower roof leaves a gap under the bottom of a taller wall of the floor above (Auto Attic Walls in Roof Defaults), and the part of a gable wall above its plate takes the Attic Wall Type. See 8.3, 8.4a.
 
 **Auto elevations.** One click that makes the four exterior elevation cameras (north, east, south and west) around the building. See 10.11.
+
+**Autosave.** A copy of the plan with unsaved changes that the program writes by itself every few minutes (5 by default) beside the archives, never over your file, so that a crash or a power cut costs at most a few minutes. The next time you open the plan you are offered the copy if it is newer. See 12.2a.
 
 ## B
 
@@ -30,7 +40,9 @@ floor of kind Attic sits above the top floor.
 **Backsplash.** The strip of material behind a countertop, protecting the wall from splashes. Default
 height in the cabinet dialog is 0 until you set one.
 
-**Billboard.** A picture that stands upright and, in a full 3D renderer, turns to face the camera, used for trees and people. Plan Studio keeps its stored angle in the cached 3D scene. See 6.7.
+**Backup (Backup Entire Plan).** A zip file of the plan together with copies of the pictures it uses, made into a folder you choose, for safekeeping or for sending a job to someone. See 12.2a.
+
+**Billboard.** A picture that stands upright and, in a full 3D renderer, turns to face the camera, used for trees and people. The live 3D view turns it to face the camera; exports and the ray tracer use its stored angle. See 6.7.
 
 **Baseline.** In roof work, the line along the top outer edge of a wall where a roof plane begins (the eave
 line). In dimensioning, the line all measurements are taken from.
@@ -38,7 +50,7 @@ line). In dimensioning, the line all measurements are taken from.
 **Base cabinet.** A floor-standing kitchen or bath cabinet with a countertop on top. 24" deep and 36" tall,
 including the counter, in Daniel's template.
 
-**Bay window.** A window that projects out from the wall in angled sections. (Planned.)
+**Bay window.** A window that projects out from the wall in angled sections. A Bay Window (and the bow and box variants) is a flyout tool; see 3.2.
 
 **Bearing line.** A framing line you draw to say where floor joists break and a beam is added when Build Framing frames a room. See 11.11.
 
@@ -103,7 +115,7 @@ dimension**: a measurement that appears while you draw or select something and i
 **Doll house view.** A 3D view with the ceilings and roof hidden so you can look into the rooms from above.
 
 **Door types.** Hinged (swings on hinges), doorway (a cased opening with no door), sliding, pocket (slides into the wall),
-bifold, barn, garage, fixed and shower. Only hinged is built so far.
+bifold, barn, garage, fixed and shower. Every one is a tool in the Door flyout, with its own plan symbol and 3D leaf (3.2).
 
 **Dormer.** A small structure that sticks out of a sloped roof and holds a vertical window. Auto Dormer builds a gable, shed or hip dormer on a roof plane; Explode Dormer turns it into plain roof planes and real walls (8.2, 8.6).
 
@@ -124,7 +136,13 @@ code limits are in 4.8.
 **Face frame.** A frame of narrow boards on the front of a cabinet box that the doors attach to. The other style is
 **frameless**. See 6.3.
 
-**Fascia.** The board along the edge of the roof eave where a gutter is fastened. Nominal 6" in `plan-roof`.
+**Eave cut.** How the end of the roof structure is cut at the eave: Plumb (a vertical cut, so the fascia hangs straight down), Level (a horizontal cut) or Square (square to the rafter, so the fascia stands perpendicular to the roof). Set in Roof Defaults or per roof plane. See 8.4a.
+
+**Fascia.** The board along the edge of the roof eave where a gutter is fastened. 6" high by default; drawn in 3D along the eaves and, as a rake board, along gable ends (8.3, 8.4a).
+
+**Flat roof.** A roof that is level (or nearly). In Plan Studio a room can have a Flat Roof Over This Room, which Build Roof gives a level plane at the room's ceiling in place of the pitched roof. See 4.4, 8.1.
+
+**Flashing.** Thin metal that seals the line where a roof meets a taller wall. Plan Studio draws a flashing strip along the line where a lower roof is trimmed against a wall (8.3).
 
 **Fencing.** A wall variant (picket, privacy or rail style) drawn on the `Fencing` layer, 72" high by default. See 2.2.
 
@@ -144,7 +162,7 @@ footing), **monolithic slab** (one concrete pour with thickened edges) and **pie
 
 **Framing.** The wood or steel skeleton of a building: studs, joists, rafters, headers. Build > Framing builds it from the plan, and the framing tools place members by hand (11.11); the library is `plan-framing` (14.2).
 
-**Frieze.** A trim board where the top of the wall meets the soffit under the eave.
+**Frieze.** A trim board where the top of the wall meets the soffit under the eave. Drawn in 3D when the frieze switch is on (off by default; Roof Defaults or per roof plane; 8.3, 8.4a).
 
 **Full camera.** A 3D view from a person's eye height, 66", looking in a chosen direction. See 10.2.
 
@@ -153,7 +171,7 @@ footing), **monolithic slab** (one concrete pour with thickened edges) and **pie
 **Gable.** The triangular part of an end wall under a sloping roof. A **gable roof** has two slopes meeting at a ridge,
 with a gable at each end.
 
-**Gambrel.** A roof with two slopes on each side, the lower steeper (a barn roof). (Planned.)
+**Gambrel.** A roof with two slopes on each side, the lower steeper (a barn roof). Give the walls an Upper Pitch on the Wall Specification's Roof tab and Build Roof makes one (8.7).
 
 **Garden bed.** A landscape region of mulch or soil, optionally edged, drawn with the Terrain tools. See 9.6.
 
@@ -163,6 +181,8 @@ with a gable at each end.
 
 **Grid, reference grid and snap grid.** The reference grid is the visible background lines (12" in Daniel's
 template). The snap grid is the invisible spacing the cursor jumps to (1").
+
+**Gutter.** The trough along the eave that catches rain. Off by default; drawn in 3D as a board-shaped trough hung just below the eave when Gutters is on in Roof Defaults or on a roof plane. See 8.4a.
 
 ## H
 
@@ -216,9 +236,11 @@ and Dimensions each have their own. See 5.5.
 
 **Layout edge.** The weight of the border line around a layout page. See 11.3.
 
+**Leader.** A line with an arrowhead that points from a note to the thing it names. On a layout page, a leader is one line to an elbow with the text on a landing line; on the plan, Leader Line is a text tool. See 5.3, 11.3.
+
 **Light (plan light).** A point light placed in the plan with Add Lights; the ray tracer uses it. See 10.13.
 
-**Lintel.** A beam or trim piece over an opening.
+**Lintel.** A beam or trim piece over an opening. The Lintel tab of the opening specifications draws a flat, capped or keystone lintel outside and inside, and windows can have an exterior sill. See 3.5a.
 
 **Lite.** One pane of glass in a window or door. "Lites across and vertical" counts the panes. A **muntin** is the thin bar between lites.
 
@@ -226,11 +248,13 @@ and Dimensions each have their own. See 5.5.
 
 ## M
 
+**Locate Objects.** The Dimension Defaults settings that say what a dimension point snaps to: a wall's surfaces, main layer or centerline; an opening's sides or center; the sides of a cabinet or fixture. See 5.9.
+
 **Macro.** A `%...%` code in a title block (`%project.name%`, `%client%`, `%date.long%` ...) that is replaced by the project's value when the sheet is printed. The values come from Project Information. See 11.4.
 
 **Main layer.** The structural layer of a wall (the framing). Other layers (siding, sheathing, drywall) are measured from it. Exactly one layer per wall type.
 
-**Mansard.** A roof with two slopes on every side, the lower nearly vertical. (Planned.)
+**Mansard.** A roof with two slopes on every side, the lower nearly vertical. Build Roof makes one from an Upper Pitch with a steep lower pitch (8.7).
 
 **Marquee.** The rectangle you drag on empty space to select several objects.
 
@@ -240,11 +264,15 @@ and Dimensions each have their own. See 5.5.
 
 **Molding.** A profiled strip (crown, base, chair rail, casing) run along a line. The Molding tools sweep a profile along a line or polyline. See 17.
 
-**Mulled windows.** Two or more windows joined side by side into one unit. (Planned.)
+**Master List.** The prices, waste factors and lumber stock lengths behind the Materials List, kept in `~/.plan-studio/master-list.json`. See 11.5.
+
+**Mulled windows.** Two or more windows joined side by side into one unit, sharing one frame post and one casing. A door can be mulled with windows beside it (sidelites). The Edit toolbar's Mull and Unmull join and split them. See 3.2.
 
 ## N
 
-**Niche (wall niche).** A recess in a wall that does not go all the way through. (Planned.)
+**Nested room.** A room wholly inside another, such as a closet pod; the surrounding room gives up the island in its areas and its floor and ceiling. See 4.1.
+
+**Niche (wall niche).** A recess in a wall that does not go all the way through. See 3.2.
 
 **Newel.** The post at the end or corner of a railing that holds the rails. A stair's newels sit at the foot, the head and at least every maximum spacing along the flight. See 7.5.
 
@@ -284,7 +312,9 @@ and Dimensions each have their own. See 5.5.
 
 **Pony wall.** A short wall, often waist high; or a wall of two types stacked, a lower and an upper, split at a set height. Straight and Curved Pony Wall draw one (2.2, 2.6).
 
-**Pocket door.** A door that slides into a hollow space inside the wall. (Planned.)
+**Pocket door.** A door that slides into a hollow space inside the wall. The Pocket Door tool (`D, P`) draws it with a dashed pocket (3.2).
+
+**Printed size.** A text or dimension size given on paper (a 1/8" label) that holds at any drawing scale, as opposed to a character height in plan inches. See 5.9.
 
 ## Q
 
@@ -296,13 +326,19 @@ and Dimensions each have their own. See 5.5.
 
 **Rafter.** A sloping beam that carries the roof from the ridge down to the wall.
 
-**Rake.** The sloping edge of a gable roof at the end of the building.
+**Rafter tail.** The end of a rafter that sticks out past the wall under the eave. With Exposed Rafter Tails on (Roof Defaults), Plan Studio draws them every 24" (by default) in place of a soffit. See 8.3.
 
-**Reference display.** A view setting that shows the floor below (or above) in gray behind the current one, so you can line walls up. (View > Reference Display draws the floor below, walls only, in gray.)
+**Rake.** The sloping edge of a gable roof at the end of the building. Drawn in 3D with a rake fascia and a rake soffit (8.3).
+
+**Recovery file.** The copy of your unsaved work that Plan Studio leaves in `~/.plan-studio/recovery/` when it stops without saving, offered back at the next launch. See 12.2a.
+
+**Reference display.** A view setting that shows the floor below (or above, or any floor) in gray behind the current one, so you can line walls up. (View > Reference Display draws the reference floor's walls in gray, on the layers whose Ref box is on, and the pointer snaps to their ends and crossings.) See 4.5.
 
 **Reference marker (framing).** A point you place so that the first stud of nearby walls lands on it when Build Framing frames them. See 11.11.
 
 **Reveal.** A small step back, such as the 1/4" between a door jamb edge and its casing.
+
+**Revision cloud.** A scalloped outline drawn around part of a drawing to show what changed, tagged with a revision mark in a triangle. In the plan it is a CAD tool; on a layout page it is its own tool and sits on the Revision Clouds layer. See 5.4, 11.3.
 
 **Ridge.** The top line where two roof slopes meet. A **ridge cap** covers it.
 
@@ -332,13 +368,15 @@ and Dimensions each have their own. See 5.5.
 
 **Slab.** A flat concrete floor poured on the ground. The Slab tools draw one as a polygon, with or without a footing (chapter 16).
 
-**Soffit.** The underside of an overhang, or a boxed-in drop above cabinets or in a ceiling.
+**Sidelite.** A narrow window beside a door. Mull the door with the window and the pair shares one frame and casing. See 3.2.
+
+**Soffit.** The underside of an overhang, or a boxed-in drop above cabinets or in a ceiling. The roof's eave and rake soffits are drawn in 3D, level or sloped (8.3).
 
 **Space planning.** Laying out rooms by size and adjacency before drawing walls. See 4.7.
 
 **Specification dialog.** Chief's name for the dialog you open by double-clicking an object, with tabs for every setting.
 
-**Stem wall.** A short foundation wall that rises from the footing to the floor.
+**Stem wall.** A short foundation wall that rises from the footing to the floor. A garage whose floor is dropped below the house, and a room with a Stem Wall height, get one in the 3D view (4.4).
 
 **Stairwell.** The opening in the floor above where a stair passes through. Auto Stairwell cuts it as a platform hole and adds an invisible ring of room dividers, so a "Stairwell" room forms. See 7.4.
 
@@ -362,6 +400,10 @@ and Dimensions each have their own. See 5.5.
 
 **Terrain wall, terrain curb.** A retaining wall or low curb that follows the ground, with its top a set height above the terrain and its footing below it. See 9.6.
 
+**Texture.** A picture painted on a surface in 3D (siding, brick, shingles, grass ...). Plan Studio uses your Chief install's texture files when it finds them and generates its own otherwise; a texture repeats at a real-world tile size, such as 36" for `Brick(36).jpg`. See 10.8a.
+
+**Text fit.** How text sits in a layout text box: Wrap, Shrink to fit or As typed. See 11.3.
+
 **Tread.** The flat part of a stair step you stand on. 10" deep or more by the code.
 
 **Toe kick.** The recessed strip at the bottom of a base cabinet so you can stand close. 4" high, 3" deep by default.
@@ -371,6 +413,10 @@ and Dimensions each have their own. See 5.5.
 **Truss base.** The closed outline you draw on a plan that Build Framing fills with roof trusses. See 11.11.
 
 **Typed slot.** A field of the plan file that holds one kind of object, as JSON owned by a view module (roofs, details, schedules, stairs, the layout ...) or as a typed list (CAD styles and blocks, text macros, note types), saved and undone with the plan. See 12.2 and 14.3.
+
+## U
+
+**Underlay.** A picture (a scan, a photo of a sketch) placed under the plan so you can trace it. You scale it with a two-point calibration. See 12.4a.
 
 ## V
 
@@ -405,3 +451,4 @@ and Dimensions each have their own. See 5.5.
 | psplan | Plan Studio plan file |
 | QA | Quality assurance; the scenario tests and `docs/qa-findings.md` (14.8) |
 | sq ft | Square feet |
+| UTC | Coordinated Universal Time; the times in archive and recovery file names and in the recovery prompts (12.2a) |

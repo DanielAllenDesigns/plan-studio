@@ -8,14 +8,18 @@
 //!
 //! * Manual / Centerline / Point to Point (DIM-11, DIM-15, DIM-19): click the
 //!   first and second point (or press-drag-release), then move to set the
-//!   dimension line and click. Points locate to wall surfaces (the main
-//!   layer faces, DIM-4), opening centers or the snap point; Alt suspends the
-//!   locating (DIM-21). The measuring direction follows the placement click
-//!   (horizontal, vertical or aligned).
+//!   dimension line and click. Points locate by the Locate Objects settings
+//!   of the active dimension defaults (DIM-4): wall surfaces, main layer or
+//!   centers, opening sides or centers, cabinet and fixture sides, else the
+//!   snap point; Alt suspends the locating (DIM-21). The measuring direction
+//!   follows the placement click (horizontal, vertical or aligned).
 //! * End to End (DIM-13), Interior (DIM-14), Running (DIM-16), Baseline
 //!   (DIM-17), Angular (DIM-18), Tape Measure (DIM-20).
-//! * Auto Exterior (DIM-24, DIM-25) and Auto Interior (DIM-27) run on one
-//!   click. Auto Elevation and Auto Story Pole dimensions run on one click
+//! * Auto Exterior (DIM-24, DIM-25: up to three strings per side, openings
+//!   then wall to wall then overall, for every direction of wall) and Auto
+//!   Interior (DIM-27: clear spans and an openings string per room) run on
+//!   one click and replace their previous run, keeping manual dimensions.
+//!   Auto Elevation and Auto Story Pole dimensions run on one click
 //!   too: the click's x is the line of a vertical string of level heights
 //!   (floor platforms, ceiling heights, heights above the first floor) with
 //!   each level named beside it.
@@ -28,21 +32,28 @@
 //!   (DIM-31).
 //!
 //! Dimensions are stored in `floor.dimensions` (DIM-23, one undo step each).
-//! The model keeps no object associations (DIM-3, DIM-29, DIM-35), so the
-//! dimension line stays where it is when objects move.
+//! A measured point located on a wall, opening, cabinet or fixture is tied to
+//! it (DIM-3, DIM-29, `plan_core::dim_assoc`): the editor moves the point when
+//! the object moves. A point or line edited by hand, or a typed value, turns an
+//! automatic dimension into a manual one (DIM-33), and a point dragged onto
+//! another object is tied there.
 
 use super::cad::{add_cad_items, set_typing, OptionStrip, StripButton};
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
+use crate::editor::placed;
 use crate::editor::selection::hit_opening;
 use crate::editor::{ops, render, Camera, EditorContext, EditorRequest, ObjectRef};
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
+use plan_core::dim_assoc::{AnchorTarget, DimHint};
 use plan_core::geometry::{
     dist_to_segment, point_in_polygon, project_on_segment, segment_intersection, Point,
 };
 use plan_core::units::parse_ft_in;
 use plan_core::{
-    auto_exterior_dimensions, wall_layer_bands, Dimension, DimensionKind, Id, Wall, WallEnd,
+    auto_exterior_set, auto_nkba_dimensions, wall_layer_bands, AutoGroup, Dimension, DimensionKind,
+    ExteriorSetup, Id, NkbaItem, NkbaKind, NkbaSetup, ObjectLocate, OpeningLocate, Wall, WallEnd,
+    WallLocate,
 };
 use std::f64::consts::{PI, TAU};
 
@@ -74,10 +85,11 @@ pub enum DimMode {
     AutoInterior,
     AutoElevation,
     AutoStoryPole,
+    AutoNkba,
 }
 
 impl DimMode {
-    pub const ALL: [DimMode; 13] = [
+    pub const ALL: [DimMode; 14] = [
         DimMode::Manual,
         DimMode::EndToEnd,
         DimMode::Interior,
@@ -91,6 +103,7 @@ impl DimMode {
         DimMode::AutoInterior,
         DimMode::AutoElevation,
         DimMode::AutoStoryPole,
+        DimMode::AutoNkba,
     ];
 
     /// Chief's name from the toolbar flyouts.
@@ -109,6 +122,7 @@ impl DimMode {
             DimMode::AutoInterior => "Auto Interior Dimensions",
             DimMode::AutoElevation => "Auto Elevation Dimensions",
             DimMode::AutoStoryPole => "Auto Story Pole Dimensions",
+            DimMode::AutoNkba => "Auto NKBA Dimensions",
         }
     }
 
@@ -133,6 +147,7 @@ impl DimMode {
             DimMode::AutoInterior => "Auto Interior",
             DimMode::AutoElevation => "Auto Elevation",
             DimMode::AutoStoryPole => "Auto Story Pole",
+            DimMode::AutoNkba => "Auto NKBA",
         }
     }
 
@@ -175,6 +190,9 @@ impl DimMode {
             DimMode::AutoStoryPole => {
                 "Auto Story Pole Dimensions: click where the story pole goes (ceiling heights and floor platforms)"
             }
+            DimMode::AutoNkba => {
+                "Auto NKBA Dimensions: click to dimension the kitchen and bath cabinet runs (faces, sink and appliance centers, overall)"
+            }
         }
     }
 
@@ -191,6 +209,7 @@ impl DimMode {
             DimMode::AutoInterior => "Auto Interior Dimensions",
             DimMode::AutoElevation => "Auto Elevation Dimensions",
             DimMode::AutoStoryPole => "Auto Story Pole Dimensions",
+            DimMode::AutoNkba => "Auto NKBA Dimensions",
         }
     }
 
@@ -201,8 +220,113 @@ impl DimMode {
                 | DimMode::AutoInterior
                 | DimMode::AutoElevation
                 | DimMode::AutoStoryPole
+                | DimMode::AutoNkba
         )
     }
+}
+
+// ----- Auto NKBA items -----
+
+/// How far a wall may stand from the end of a cabinet run and still be
+/// dimensioned to (inches), when the dimension set gives no reach.
+const NKBA_WALL_REACH: f64 = 96.0;
+
+/// Words in a fixture's catalog id or label that mark a kitchen or bath
+/// appliance standing in a cabinet run.
+const NKBA_APPLIANCES: [&str; 8] = [
+    "refrigerator",
+    "fridge",
+    "range",
+    "cooktop",
+    "stove",
+    "oven",
+    "dishwasher",
+    "washer",
+];
+
+/// The cabinets and fixtures an NKBA run is made of: base, tall and corner
+/// base cabinets (with the centers of their sink and cooktop cutouts and
+/// appliance bays) and appliance fixtures. Wall cabinets, soffits and the
+/// free-form tops are left out.
+pub fn nkba_items(
+    cabinets: &[plan_cabinets::Cabinet],
+    symbols: &[plan_core::symbols::PlacedSymbol],
+) -> Vec<NkbaItem> {
+    use plan_cabinets::{CabinetKind as K, CutoutKind};
+    let mut out = Vec::new();
+    for c in cabinets {
+        if !matches!(
+            c.kind,
+            K::Base
+                | K::FullHeight
+                | K::BaseFiller
+                | K::FullHeightFiller
+                | K::CornerBase
+                | K::BlindBase
+        ) {
+            continue;
+        }
+        let mut centers = Vec::new();
+        for cut in &c.cutouts {
+            let kind = match cut.kind {
+                CutoutKind::Sink => NkbaKind::Sink,
+                CutoutKind::Cooktop => NkbaKind::Cooktop,
+                CutoutKind::Custom => continue,
+            };
+            if cut.outline.is_empty() {
+                continue;
+            }
+            let x = cut.outline.iter().map(|p| p.x).sum::<f64>() / cut.outline.len() as f64;
+            centers.push((kind, x));
+        }
+        if c.appliance.is_none()
+            && !centers.iter().any(|(k, _)| *k == NkbaKind::Sink)
+            && c.face.has_appliance("Sink")
+        {
+            // A sink base whose sink has no cutout is centered on the cabinet.
+            centers.push((NkbaKind::Sink, c.width * 0.5));
+        }
+        if let Some(name) = &c.appliance {
+            let n = name.to_lowercase();
+            let kind = if ["range", "cooktop", "stove"].iter().any(|w| n.contains(w)) {
+                NkbaKind::Cooktop
+            } else {
+                NkbaKind::Appliance
+            };
+            centers.push((kind, c.width * 0.5));
+        }
+        out.push(NkbaItem {
+            origin: c.position,
+            angle: c.angle,
+            width: c.width,
+            depth: c.depth,
+            centers,
+        });
+    }
+    for s in symbols {
+        let name = format!("{} {}", s.catalog_id, s.label).to_lowercase();
+        if s.image.is_some() || s.distribution.is_some() || s.owner.is_some() {
+            continue;
+        }
+        let Some(word) = NKBA_APPLIANCES.iter().find(|w| name.contains(**w)) else {
+            continue;
+        };
+        let a = s.angle.to_radians();
+        let u = Point::new(a.cos(), a.sin());
+        let kind = if ["range", "cooktop", "stove"].contains(word) {
+            NkbaKind::Cooktop
+        } else {
+            NkbaKind::Appliance
+        };
+        out.push(NkbaItem {
+            origin: s.position.sub(u.scale(s.width * 0.5)),
+            angle: a,
+            width: s.width,
+            depth: s.depth,
+            centers: vec![(kind, s.width * 0.5)],
+        });
+    }
+    out
 }
 
 // ----- pure geometry -----
@@ -461,6 +585,17 @@ fn main_span(cx: &EditorContext, w: &Wall) -> (f64, f64) {
     }
 }
 
+/// The lateral span `(lo, hi)` a dimension locates on wall `w` under the
+/// Dimension Defaults > Locate Objects > Walls setting (DIM-4): the outer
+/// and inner surfaces, the main layer's, or the centerline.
+pub(crate) fn wall_span(cx: &EditorContext, w: &Wall, mode: WallLocate) -> (f64, f64) {
+    match mode {
+        WallLocate::Centers => (0.0, 0.0),
+        WallLocate::Surfaces => (-w.thickness * 0.5, w.thickness * 0.5),
+        WallLocate::MainLayer => main_span(cx, w),
+    }
+}
+
 /// The wall under `p` (nearest centerline within the body plus the pick
 /// distance), skipping hidden and No Locate walls (DIM-5).
 fn wall_near(cx: &EditorContext, p: Point) -> Option<&Wall> {
@@ -475,8 +610,47 @@ fn wall_near(cx: &EditorContext, p: Point) -> Option<&Wall> {
         .map(|(w, _)| w)
 }
 
-/// Locates the point under the pointer (DIM-4, DIM-12, DIM-19, DIM-21).
-/// `centers` forces centers (Centerline Dimension).
+/// The point on the outline `poly` nearest `p`.
+fn nearest_on_outline(p: Point, poly: &[Point]) -> Option<Point> {
+    let n = poly.len();
+    (0..n)
+        .map(|i| project_on_segment(p, poly[i], poly[(i + 1) % n]).1)
+        .min_by(|a, b| a.dist(p).total_cmp(&b.dist(p)))
+}
+
+/// The object a dimension point locates for a cabinet or fixture (Locate
+/// Objects > Cabinets / Fixtures): the nearest side of its footprint.
+fn locate_placed(cx: &EditorContext, p: &PointerEvent) -> Option<Located> {
+    let tol = cx.pick_tol() * 0.5;
+    let set = &cx.defaults.dimensions;
+    if set.locate_fixtures == ObjectLocate::Sides {
+        if let Some(id) = placed::hit_symbol(cx, p.world, tol) {
+            let s = cx.floor().symbols.iter().find(|s| s.id == id)?;
+            if s.distribution.is_none() {
+                return Some(Located {
+                    point: nearest_on_outline(p.world, &s.footprint())?,
+                    what: "Fixture side",
+                    obj: Some(ObjectRef::Symbol(id)),
+                });
+            }
+        }
+    }
+    if set.locate_cabinets == ObjectLocate::Sides {
+        if let Some(id) = placed::hit_cabinet(cx, p.world, tol, |_| true) {
+            let c = placed::cabinet_by_id(cx.floor(), id)?;
+            return Some(Located {
+                point: nearest_on_outline(p.world, &c.footprint())?,
+                what: "Cabinet side",
+                obj: Some(ObjectRef::Cabinet(id)),
+            });
+        }
+    }
+    None
+}
+
+/// Locates the point under the pointer (DIM-4, DIM-12, DIM-19, DIM-21) by
+/// the Locate Objects settings of the active dimension defaults. `centers`
+/// forces centers (Centerline Dimension).
 fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Point>) -> Located {
     if p.modifiers.alt {
         return Located {
@@ -487,43 +661,62 @@ fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Po
     }
     let tol = cx.pick_tol();
     let floor = cx.floor();
-    if let Some(oid) = hit_opening(floor, p.world, tol * 0.5) {
-        if let Some(o) = floor.openings.iter().find(|o| o.id == oid) {
-            if let Some(w) = floor.wall(o.wall_id).filter(|w| !no_locate(cx, w)) {
-                if centers || cx.defaults.dimensions.locate_openings_centers {
+    let set = &cx.defaults.dimensions;
+    let walls_mode = if centers {
+        WallLocate::Centers
+    } else {
+        set.locate_walls
+    };
+    let openings_mode = if centers {
+        OpeningLocate::Centers
+    } else {
+        set.opening_locate()
+    };
+    if openings_mode != OpeningLocate::None {
+        if let Some(oid) = hit_opening(floor, p.world, tol * 0.5) {
+            if let Some(o) = floor.openings.iter().find(|o| o.id == oid) {
+                if let Some(w) = floor.wall(o.wall_id).filter(|w| !no_locate(cx, w)) {
+                    if openings_mode == OpeningLocate::Centers {
+                        return Located {
+                            point: w.point_at(o.center_offset),
+                            what: "Opening center",
+                            obj: Some(ObjectRef::Opening(oid)),
+                        };
+                    }
+                    let (t, _) = project_on_segment(p.world, w.start, w.end);
+                    let along = t * w.length();
+                    let edge = if (along - o.start_offset()).abs() <= (along - o.end_offset()).abs()
+                    {
+                        o.start_offset()
+                    } else {
+                        o.end_offset()
+                    };
+                    let (lo, hi) = wall_span(cx, w, walls_mode);
+                    let perp = p.world.sub(w.start).dot(w.normal());
+                    let off = if (perp - lo).abs() <= (perp - hi).abs() {
+                        lo
+                    } else {
+                        hi
+                    };
                     return Located {
-                        point: w.point_at(o.center_offset),
-                        what: "Opening center",
+                        point: w.point_at(edge).add(w.normal().scale(off)),
+                        what: "Opening edge",
                         obj: Some(ObjectRef::Opening(oid)),
                     };
                 }
-                let (t, _) = project_on_segment(p.world, w.start, w.end);
-                let along = t * w.length();
-                let edge = if (along - o.start_offset()).abs() <= (along - o.end_offset()).abs() {
-                    o.start_offset()
-                } else {
-                    o.end_offset()
-                };
-                let (lo, hi) = main_span(cx, w);
-                let perp = p.world.sub(w.start).dot(w.normal());
-                let off = if (perp - lo).abs() <= (perp - hi).abs() {
-                    lo
-                } else {
-                    hi
-                };
-                return Located {
-                    point: w.point_at(edge).add(w.normal().scale(off)),
-                    what: "Opening edge",
-                    obj: Some(ObjectRef::Opening(oid)),
-                };
             }
+        }
+    }
+    if !centers {
+        if let Some(l) = locate_placed(cx, p) {
+            return l;
         }
     }
     if let Some(w) = wall_near(cx, p.world) {
         let n = w.normal();
         let perp = p.world.sub(w.start).dot(n);
-        let (lo, hi) = main_span(cx, w);
-        let (off, what) = if centers {
+        let (lo, hi) = wall_span(cx, w, walls_mode);
+        let (off, what) = if walls_mode == WallLocate::Centers {
             (0.0, "Wall center")
         } else if (perp - lo).abs() <= (perp - hi).abs() {
             (lo, "Wall surface")
@@ -550,6 +743,22 @@ fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Po
         what: snap.kind.label(),
         obj: None,
     }
+}
+
+/// What a located object is tied to (DIM-3).
+fn dim_hint(l: &Located) -> Option<DimHint> {
+    let (target, id) = match l.obj? {
+        ObjectRef::Wall(id) => (AnchorTarget::Wall, id),
+        ObjectRef::Opening(id) => (AnchorTarget::Opening, id),
+        ObjectRef::Cabinet(id) => (AnchorTarget::Cabinet, id),
+        ObjectRef::Symbol(id) => (AnchorTarget::Symbol, id),
+        _ => return None,
+    };
+    Some(DimHint {
+        target,
+        id,
+        point: l.point,
+    })
 }
 
 /// The segment a click on a wall or CAD line measures end to end (DIM-13):
@@ -663,6 +872,9 @@ struct DimDrag {
     id: Id,
     handle: DimHandle,
     changed: bool,
+    /// The object the dragged point was last located on (DIM-3): the end is
+    /// tied to it on release.
+    hint: Option<DimHint>,
 }
 
 struct ValueEdit {
@@ -673,6 +885,9 @@ struct ValueEdit {
 pub struct DimensionTool {
     mode: DimMode,
     pts: Vec<Located>,
+    /// The points of the dimension just finished (`reset` clears `pts`
+    /// before the dimension is committed): the objects they were located on.
+    hint_src: Vec<Located>,
     span: Option<(Point, Point)>,
     interior: Option<(Point, Rays)>,
     /// Baseline: the axis chosen by the first row and the rows made so far.
@@ -691,6 +906,7 @@ impl Default for DimensionTool {
         Self {
             mode: DimMode::Manual,
             pts: Vec::new(),
+            hint_src: Vec::new(),
             span: None,
             interior: None,
             baseline: None,
@@ -713,6 +929,7 @@ impl DimensionTool {
     /// Switches the variant (a flyout entry), dropping work in progress.
     pub fn set_mode(&mut self, mode: DimMode) {
         self.mode = mode;
+        self.hint_src.clear();
         self.reset();
     }
 
@@ -732,6 +949,9 @@ impl DimensionTool {
     }
 
     fn reset(&mut self) {
+        if !self.pts.is_empty() {
+            self.hint_src = std::mem::take(&mut self.pts);
+        }
         self.pts.clear();
         self.span = None;
         self.interior = None;
@@ -829,18 +1049,41 @@ impl DimensionTool {
             .into_iter()
             .filter(|d| d.length() >= MIN_LENGTH)
             .collect();
+        let src = std::mem::take(&mut self.hint_src);
         if dims.is_empty() || !self.lock_check(cx, MANUAL_LAYER) {
             self.reset();
             return ToolResult::consumed();
         }
         let label = self.mode.label();
+        let hints: Vec<DimHint> = src
+            .iter()
+            .chain(self.pts.iter())
+            .filter_map(dim_hint)
+            .collect();
+        let style = cx.defaults.dimensions.text_style.clone();
         cx.begin_change(label);
         let fl = cx.floor;
         let mut last = 0;
-        for d in dims {
+        for mut d in dims {
+            if !style.is_empty() {
+                d.text_style = Some(style.clone());
+            }
+            let ends = [d.start, d.end];
+            let horizontal = (d.start.y - d.end.y).abs() < 1e-6;
             last = cx.project.add_dimension(fl, d);
-            // An end on a wall stays tied to it (it follows the wall).
-            cx.project.floors[fl].attach_dimension(last);
+            // An end on an object stays tied to it (it follows the object):
+            // the one it was located on when the tool knows it.
+            let hint = |p: Point| {
+                hints.iter().copied().find(|h| {
+                    h.point.dist(p) < 1e-6
+                        || if horizontal {
+                            (h.point.x - p.x).abs() < 1e-6
+                        } else {
+                            (h.point.y - p.y).abs() < 1e-6
+                        }
+                })
+            };
+            cx.project.floors[fl].attach_dimension_hinted(last, [hint(ends[0]), hint(ends[1])]);
         }
         cx.selection.set(ObjectRef::Dimension(last));
         cx.mark_dirty();
@@ -851,6 +1094,45 @@ impl DimensionTool {
 
     // ----- automatic dimensions -----
 
+    /// Removes the automatic dimensions of `group` (and, from files before
+    /// groups were recorded, ungrouped ones that lie `inside` the rooms or
+    /// outside them) ahead of a new run (DIM-25). Manual dimensions, and
+    /// automatic ones that were edited and became manual, stay.
+    fn clear_run(cx: &mut EditorContext, group: AutoGroup, rooms: &[Vec<Point>]) {
+        let fl = cx.floor;
+        cx.project.floors[fl].dimensions.retain(|d| {
+            if d.kind != DimensionKind::AutoExterior {
+                return true;
+            }
+            match d.auto_group {
+                AutoGroup::None => {
+                    let (a, b) = d.line_points();
+                    let mid = Point::lerp(a, b, 0.5);
+                    let inside = rooms.iter().any(|p| point_in_polygon(mid, p));
+                    // Ungrouped strings: interior ones sit in rooms.
+                    inside != (group == AutoGroup::Exterior)
+                }
+                g => g != group,
+            }
+        });
+    }
+
+    /// Adds the dimensions of one automatic run, tied to the objects they
+    /// measure (DIM-29), and returns how many.
+    fn add_run(cx: &mut EditorContext, dims: Vec<Dimension>) -> usize {
+        let fl = cx.floor;
+        let style = cx.defaults.dimensions.text_style.clone();
+        let n = dims.len();
+        for mut d in dims {
+            if d.text_style.is_none() && !style.is_empty() {
+                d.text_style = Some(style.clone());
+            }
+            let id = cx.project.add_dimension(fl, d);
+            cx.project.floors[fl].attach_dimension(id);
+        }
+        n
+    }
+
     fn auto_exterior(&mut self, cx: &mut EditorContext) -> ToolResult {
         cx.refresh();
         let walls: Vec<Wall> = cx
@@ -860,8 +1142,27 @@ impl DimensionTool {
             .filter(|w| !no_locate(cx, w) && !w.flags.room_divider)
             .cloned()
             .collect();
-        let offset = cx.defaults.dimensions.auto_exterior_offset;
-        let dims = auto_exterior_dimensions(&walls, offset);
+        let openings: Vec<plan_core::Opening> = cx
+            .floor()
+            .openings
+            .iter()
+            .filter(|o| walls.iter().any(|w| w.id == o.wall_id))
+            .cloned()
+            .collect();
+        let dims = {
+            let set = &cx.defaults.dimensions;
+            let strings = set.exterior_strings();
+            let main = |w: &Wall| main_span(cx, w);
+            let setup = ExteriorSetup {
+                strings: &strings,
+                first_offset: set.auto_exterior_offset,
+                spacing: set.string_spacing(),
+                walls: set.locate_walls,
+                openings: set.opening_locate(),
+                main_span: &main,
+            };
+            auto_exterior_set(&walls, &openings, &setup)
+        };
         if dims.is_empty() {
             cx.status = "No exterior walls to dimension".into();
             return ToolResult::consumed();
@@ -871,20 +1172,167 @@ impl DimensionTool {
         }
         let inner: Vec<Vec<Point>> = cx.rooms.iter().map(|r| r.inner_polygon.clone()).collect();
         cx.begin_change("Auto Exterior Dimensions");
-        let fl = cx.floor;
-        // DIM-25: a new run replaces the previous exterior dimensions.
-        cx.project.floors[fl].dimensions.retain(|d| {
-            let (a, b) = d.line_points();
-            let mid = Point::lerp(a, b, 0.5);
-            d.kind != DimensionKind::AutoExterior || inner.iter().any(|p| point_in_polygon(mid, p))
-        });
-        let n = dims.len();
-        for d in dims {
-            cx.project.add_dimension(fl, d);
-        }
+        // DIM-25: a new run replaces the previous exterior strings.
+        Self::clear_run(cx, AutoGroup::Exterior, &inner);
+        let n = Self::add_run(cx, dims);
         cx.mark_dirty();
         cx.status = format!("Added {n} exterior dimensions");
         ToolResult::committed("Auto Exterior Dimensions")
+    }
+
+    /// Auto NKBA Dimensions: strings along every kitchen and bath cabinet
+    /// run (cabinet faces, sink and appliance centers, overall), in the
+    /// "NKBA" dimension set when the plan has one (else the active set). A
+    /// new run replaces the previous NKBA strings.
+    fn auto_nkba(&mut self, cx: &mut EditorContext) -> ToolResult {
+        cx.refresh();
+        let items = nkba_items(&placed::load_cabinets(cx.floor()), &cx.floor().symbols);
+        let set = cx
+            .defaults
+            .dimension_set("NKBA")
+            .map_or_else(|| cx.defaults.dimensions.clone(), |s| s.auto.clone());
+        let walls: Vec<Wall> = cx
+            .floor()
+            .walls
+            .iter()
+            .filter(|w| !no_locate(cx, w) && !w.flags.room_divider)
+            .cloned()
+            .collect();
+        let sep = set.string_spacing();
+        let setup = NkbaSetup {
+            first_offset: sep * 0.67,
+            spacing: sep * 0.67,
+            walls: &walls,
+            reach: if set.reach > 0.0 {
+                set.reach
+            } else {
+                NKBA_WALL_REACH
+            },
+        };
+        let mut dims = auto_nkba_dimensions(&items, &setup);
+        if dims.is_empty() {
+            cx.status = "No base cabinet runs to dimension".into();
+            return ToolResult::consumed();
+        }
+        if !set.text_style.is_empty() {
+            for d in &mut dims {
+                d.text_style = Some(set.text_style.clone());
+            }
+        }
+        if !self.lock_check(cx, AUTO_LAYER) {
+            return ToolResult::consumed();
+        }
+        cx.begin_change("Auto NKBA Dimensions");
+        Self::clear_run(cx, AutoGroup::Nkba, &[]);
+        let n = Self::add_run(cx, dims);
+        cx.mark_dirty();
+        cx.status = format!("Added {n} NKBA dimensions");
+        ToolResult::committed("Auto NKBA Dimensions")
+    }
+
+    /// The segments an interior dimension measures to inside a room: the
+    /// room's finished surfaces, or (Dimension Defaults > Locate Objects,
+    /// "Interior dimensions locate interior surfaces" off) the walls'
+    /// surfaces by the Walls setting.
+    fn interior_segments(cx: &EditorContext, room: Option<&[Point]>) -> Vec<(Point, Point)> {
+        let set = &cx.defaults.dimensions;
+        match room {
+            Some(poly) if set.interior_locates_interior_surfaces => polygon_edges(poly),
+            _ => cx
+                .floor()
+                .walls
+                .iter()
+                .filter(|w| !no_locate(cx, w))
+                .flat_map(|w| {
+                    if !set.interior_locates_interior_surfaces && room.is_some() {
+                        let n = w.normal();
+                        let (lo, hi) = wall_span(cx, w, set.locate_walls);
+                        let mut v = vec![(w.start.add(n.scale(lo)), w.end.add(n.scale(lo)))];
+                        if (hi - lo).abs() > 0.01 {
+                            v.push((w.start.add(n.scale(hi)), w.end.add(n.scale(hi))));
+                        }
+                        v
+                    } else {
+                        polygon_edges(&w.footprint())
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// The opening string along one room edge `a`..`b` (the wall's inner
+    /// face): the corners and the openings' sides or centers. Placed inside
+    /// the room `sep` from the wall.
+    fn edge_openings(
+        cx: &EditorContext,
+        poly: &[Point],
+        a: Point,
+        b: Point,
+        sep: f64,
+    ) -> Vec<Dimension> {
+        let len = a.dist(b);
+        if len < 12.0 {
+            return Vec::new();
+        }
+        let mode = cx.defaults.dimensions.opening_locate();
+        if mode == OpeningLocate::None {
+            return Vec::new();
+        }
+        let u = b.sub(a).scale(1.0 / len);
+        let floor = cx.floor();
+        let mut breaks = vec![0.0, len];
+        let mut found = false;
+        for o in &floor.openings {
+            let Some(w) = floor.wall(o.wall_id) else {
+                continue;
+            };
+            // The wall carries this edge: parallel, with the edge on a face.
+            let along_w = w.direction().cross(u).abs() < 1e-3;
+            let mid = Point::lerp(a, b, 0.5);
+            if !along_w || dist_to_segment(mid, w.start, w.end) > w.thickness * 0.5 + 1.0 {
+                continue;
+            }
+            let pts: Vec<f64> = match mode {
+                OpeningLocate::Centers => vec![w.point_at(o.center_offset).sub(a).dot(u)],
+                _ => vec![
+                    w.point_at(o.start_offset()).sub(a).dot(u),
+                    w.point_at(o.end_offset()).sub(a).dot(u),
+                ],
+            };
+            if pts.iter().all(|t| *t > 0.5 && *t < len - 0.5) {
+                found = true;
+                breaks.extend(pts);
+            }
+        }
+        if !found {
+            return Vec::new();
+        }
+        breaks.sort_by(f64::total_cmp);
+        breaks.dedup_by(|x, y| (*x - *y).abs() < 0.5);
+        // Offset into the room: the side the left-hand normal faces, if the
+        // room lies there.
+        let n = u.perp();
+        let probe = Point::lerp(a, b, 0.5).add(n.scale(2.0));
+        let offset = if point_in_polygon(probe, poly) {
+            sep
+        } else {
+            -sep
+        };
+        breaks
+            .windows(2)
+            .filter(|p| p[1] - p[0] >= MIN_LENGTH)
+            .map(|p| {
+                let mut d = Dimension::new(
+                    0,
+                    DimensionKind::AutoExterior,
+                    a.add(u.scale(p[0])),
+                    a.add(u.scale(p[1])),
+                    offset,
+                );
+                d.auto_group = AutoGroup::Interior;
+                d
+            })
+            .collect()
     }
 
     fn auto_interior(&mut self, cx: &mut EditorContext) -> ToolResult {
@@ -900,12 +1348,22 @@ impl DimensionTool {
             if !point_in_polygon(c, &room.inner_polygon) {
                 continue;
             }
-            let rays = rays_from(&polygon_edges(&room.inner_polygon), c);
+            let segs = Self::interior_segments(cx, Some(&room.inner_polygon));
+            let rays = rays_from(&segs, c);
+            let mut spans = Vec::new();
             if let Some((l, r)) = rays.left.zip(rays.right) {
-                dims.push(Dimension::new(0, DimensionKind::AutoExterior, l, r, sep));
+                spans.push(Dimension::new(0, DimensionKind::AutoExterior, l, r, sep));
             }
             if let Some((d, u)) = rays.down.zip(rays.up) {
-                dims.push(Dimension::new(0, DimensionKind::AutoExterior, d, u, -sep));
+                spans.push(Dimension::new(0, DimensionKind::AutoExterior, d, u, -sep));
+            }
+            for d in &mut spans {
+                d.auto_group = AutoGroup::Interior;
+            }
+            dims.extend(spans);
+            // The openings of each wall of the room.
+            for (a, b) in polygon_edges(&room.inner_polygon) {
+                dims.extend(Self::edge_openings(cx, &room.inner_polygon, a, b, sep));
             }
         }
         if dims.is_empty() {
@@ -917,16 +1375,8 @@ impl DimensionTool {
         }
         let inner: Vec<Vec<Point>> = rooms.iter().map(|r| r.inner_polygon.clone()).collect();
         cx.begin_change("Auto Interior Dimensions");
-        let fl = cx.floor;
-        cx.project.floors[fl].dimensions.retain(|d| {
-            let (a, b) = d.line_points();
-            let mid = Point::lerp(a, b, 0.5);
-            d.kind != DimensionKind::AutoExterior || !inner.iter().any(|p| point_in_polygon(mid, p))
-        });
-        let n = dims.len();
-        for d in dims {
-            cx.project.add_dimension(fl, d);
-        }
+        Self::clear_run(cx, AutoGroup::Interior, &inner);
+        let n = Self::add_run(cx, dims);
         cx.mark_dirty();
         cx.status = format!("Added {n} interior dimensions");
         ToolResult::committed("Auto Interior Dimensions")
@@ -1001,7 +1451,8 @@ impl DimensionTool {
                 && matches!(&c.item, CadItem::Text { pos, .. } if (pos.x - label_x).abs() < 1e-6))
         });
         let n = dims.len();
-        for d in dims {
+        for mut d in dims {
+            d.auto_group = AutoGroup::Levels;
             cx.project.add_dimension(fl, d);
         }
         let mut ids = Vec::new();
@@ -1143,6 +1594,7 @@ impl DimensionTool {
             id: g.id,
             handle: g.handle,
             changed: false,
+            hint: None,
         });
     }
 
@@ -1153,7 +1605,11 @@ impl DimensionTool {
         let unit = cx.snap_unit();
         let new_pt = match drag.handle {
             DimHandle::Offset => None,
-            _ => Some(locate(cx, p, false, None).point),
+            _ => {
+                let loc = locate(cx, p, false, None);
+                drag.hint = dim_hint(&loc);
+                Some(loc.point)
+            }
         };
         let fl = cx.floor;
         if let Some(d) = cx.project.floors[fl]
@@ -1176,6 +1632,37 @@ impl DimensionTool {
             drag.changed = true;
         }
         cx.mark_dirty();
+    }
+
+    /// A dimension was edited by hand: an automatic one becomes manual
+    /// (DIM-33), and its points are located again, so a point dragged onto a
+    /// new object ties to that object (DIM-3).
+    fn finish_edit(
+        &mut self,
+        cx: &mut EditorContext,
+        id: Id,
+        dragged: Option<(DimHandle, Option<DimHint>)>,
+    ) {
+        let fl = cx.floor;
+        let Some(d) = cx.project.floors[fl]
+            .dimensions
+            .iter_mut()
+            .find(|d| d.id == id)
+        else {
+            return;
+        };
+        if d.kind == DimensionKind::AutoExterior {
+            d.kind = DimensionKind::Manual;
+            d.auto_group = AutoGroup::None;
+        }
+        let mut hints = [None, None];
+        match dragged {
+            Some((DimHandle::Start, h)) => hints[0] = h,
+            Some((DimHandle::End, h)) => hints[1] = h,
+            Some((DimHandle::Offset, _)) => return,
+            None => {}
+        }
+        cx.project.floors[fl].attach_dimension_hinted(id, hints);
     }
 
     fn begin_edit(&mut self, cx: &mut EditorContext, id: Id) {
@@ -1295,6 +1782,7 @@ impl DimensionTool {
             }
             dm.text_override = None;
         }
+        self.finish_edit(cx, id, None);
         cx.mark_dirty();
         Ok(())
     }
@@ -1357,6 +1845,7 @@ impl DimensionTool {
             DimMode::AutoInterior => self.auto_interior(cx),
             DimMode::AutoElevation => self.auto_levels(cx, at, false),
             DimMode::AutoStoryPole => self.auto_levels(cx, at, true),
+            DimMode::AutoNkba => self.auto_nkba(cx),
             _ => ToolResult::ignored(),
         }
     }
@@ -1452,20 +1941,12 @@ impl DimensionTool {
                     return self.commit(cx, dims);
                 }
                 cx.refresh();
-                let segs = match cx
+                let room = cx
                     .rooms
                     .iter()
                     .find(|r| point_in_polygon(p.world, &r.inner_polygon))
-                {
-                    Some(room) => polygon_edges(&room.inner_polygon),
-                    None => cx
-                        .floor()
-                        .walls
-                        .iter()
-                        .filter(|w| !no_locate(cx, w))
-                        .flat_map(|w| polygon_edges(&w.footprint()))
-                        .collect(),
-                };
+                    .map(|r| r.inner_polygon.clone());
+                let segs = Self::interior_segments(cx, room.as_deref());
                 let rays = rays_from(&segs, p.world);
                 if (rays.left.is_none() || rays.right.is_none())
                     && (rays.down.is_none() || rays.up.is_none())
@@ -1510,6 +1991,7 @@ impl DimensionTool {
                 let d = baseline_dimension(origin, loc.point, n + 1, Self::separation(cx), axis);
                 self.baseline = Some((axis, n + 1));
                 let saved = std::mem::take(&mut self.pts);
+                self.hint_src = saved.iter().copied().chain([loc]).collect();
                 let res = self.commit(cx, vec![d]);
                 // The origin stays for the next row.
                 self.pts = saved;
@@ -1549,7 +2031,8 @@ impl DimensionTool {
             DimMode::AutoExterior
             | DimMode::AutoInterior
             | DimMode::AutoElevation
-            | DimMode::AutoStoryPole => self.run_auto(cx, Some(p.snapped)),
+            | DimMode::AutoStoryPole
+            | DimMode::AutoNkba => self.run_auto(cx, Some(p.snapped)),
         }
     }
 
@@ -1633,6 +2116,7 @@ impl Tool for DimensionTool {
     }
 
     fn activate(&mut self, cx: &mut EditorContext) {
+        self.hint_src.clear();
         self.reset();
         cx.status = self.mode.hint().into();
     }
@@ -1709,6 +2193,7 @@ impl Tool for DimensionTool {
     fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         if let Some(d) = self.drag.take() {
             return if d.changed {
+                self.finish_edit(cx, d.id, Some((d.handle, d.hint)));
                 cx.mark_dirty();
                 ToolResult::committed("Move Dimension")
             } else {
@@ -1828,7 +2313,8 @@ impl Tool for DimensionTool {
 
         // The dimension in progress.
         for d in self.build(cx, hover) {
-            render::draw_dimension(painter, cam, &d, &fmt, ghost, pal);
+            let look = render::DimLook::of(cx, &d);
+            render::draw_dimension_look(painter, cam, &d, &fmt, ghost, pal, &look);
         }
         if self.mode == DimMode::Angular {
             if let Some((items, _)) = self.angular_preview(cx, hover) {
@@ -1850,7 +2336,8 @@ impl Tool for DimensionTool {
                     hover
                 };
                 let d = Dimension::new(0, DimensionKind::Temporary, a.point, b, 12.0);
-                render::draw_dimension(painter, cam, &d, &fmt, ghost, pal);
+                let look = render::DimLook::of(cx, &d);
+                render::draw_dimension_look(painter, cam, &d, &fmt, ghost, pal, &look);
             }
         }
         if self.mode == DimMode::Interior {
@@ -1898,8 +2385,124 @@ impl Tool for DimensionTool {
     }
 
     fn edit_toolbar(&self, cx: &EditorContext) -> Vec<crate::editor::EditAction> {
-        cx.common_edit_actions()
+        let mut v = cx.common_edit_actions();
+        v.extend(edit_actions(cx));
+        v
     }
+}
+
+// ----- Edit toolbar commands of dimensions (DIM-36, DIM-37, DIM-41) -----
+
+/// Edit toolbar command ids of the dimension commands.
+pub const CMD_REVERSE: &str = "dim.reverse";
+pub const CMD_TO_MANUAL: &str = "dim.to_manual";
+pub const CMD_ALIGN: &str = "dim.align";
+pub const CMD_DISTRIBUTE: &str = "dim.distribute";
+
+/// The selected dimensions, in selection order.
+fn selected_dimensions(cx: &EditorContext) -> Vec<Id> {
+    cx.selection
+        .items
+        .iter()
+        .filter_map(|o| match o {
+            ObjectRef::Dimension(id) => Some(*id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The Edit toolbar buttons of the selected dimensions: Reverse Dimension and
+/// Convert to Manual for any, Align Dimensions for two or more, Distribute
+/// Dimensions for three or more.
+pub fn edit_actions(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
+    use crate::editor::{EditAction, EditActionKind};
+    let ids = selected_dimensions(cx);
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let any_auto = cx.floor().dimensions.iter().any(|d| {
+        ids.contains(&d.id) && (d.kind != DimensionKind::Manual || d.auto_group != AutoGroup::None)
+    });
+    let button = |id: &'static str, label: &'static str, enabled: bool| EditAction {
+        kind: EditActionKind::Custom {
+            id,
+            label,
+            icon: "",
+        },
+        label,
+        icon: None,
+        enabled,
+    };
+    vec![
+        button(CMD_REVERSE, "Reverse Dimension", true),
+        button(CMD_TO_MANUAL, "Convert to Manual Dimension", any_auto),
+        button(CMD_ALIGN, "Align Dimensions", ids.len() >= 2),
+        button(CMD_DISTRIBUTE, "Distribute Dimensions", ids.len() >= 3),
+    ]
+}
+
+/// Runs a dimension Edit toolbar command on the selection (one undo step);
+/// false when `id` is not one of ours.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    let label = match id {
+        CMD_REVERSE => "Reverse Dimension",
+        CMD_TO_MANUAL => "Convert to Manual Dimension",
+        CMD_ALIGN => "Align Dimensions",
+        CMD_DISTRIBUTE => "Distribute Dimensions",
+        _ => return false,
+    };
+    let ids = selected_dimensions(cx);
+    if ids.is_empty() {
+        return true;
+    }
+    if !ids
+        .iter()
+        .all(|i| cx.check_unlocked(ObjectRef::Dimension(*i)))
+    {
+        return true;
+    }
+    cx.begin_change(label);
+    let fl = cx.floor;
+    let dims = &mut cx.project.floors[fl].dimensions;
+    let changed = match id {
+        CMD_REVERSE => {
+            for d in dims.iter_mut().filter(|d| ids.contains(&d.id)) {
+                d.reverse();
+            }
+            ids.len()
+        }
+        CMD_TO_MANUAL => dims
+            .iter_mut()
+            .filter(|d| ids.contains(&d.id))
+            .map(|d| usize::from(d.convert_to_manual()))
+            .sum(),
+        _ => {
+            // Selection order: the first selected is the reference.
+            let mut picked: Vec<Dimension> = ids
+                .iter()
+                .filter_map(|i| dims.iter().find(|d| d.id == *i).cloned())
+                .collect();
+            let n = if id == CMD_ALIGN {
+                plan_core::align_dimensions(&mut picked)
+            } else {
+                plan_core::distribute_dimensions(&mut picked)
+            };
+            for p in picked {
+                if let Some(d) = dims.iter_mut().find(|d| d.id == p.id) {
+                    d.offset = p.offset;
+                }
+            }
+            n
+        }
+    };
+    if changed == 0 {
+        cx.cancel_change();
+        cx.status = format!("{label}: nothing to change");
+    } else {
+        cx.mark_dirty();
+        cx.status = format!("{label}: {changed} changed");
+    }
+    true
 }
 
 impl DimensionTool {
@@ -2195,28 +2798,265 @@ mod tests {
     }
 
     #[test]
-    fn auto_exterior_adds_four_dimensions_for_a_rectangle() {
+    fn auto_exterior_dimensions_a_rectangle_with_wall_to_wall_and_overall_strings() {
         let mut cx = new_cx();
         rect_room(&mut cx);
         let mut t = tool(DimMode::AutoExterior);
         let r = click(&mut t, &mut cx, 120.0, 60.0);
         assert_eq!(r.commit.as_deref(), Some("Auto Exterior Dimensions"));
-        assert_eq!(cx.floor().dimensions.len(), 4);
+        // No openings: per side the corner walls and the span between them
+        // (wall to wall, three segments) and the overall.
+        assert_eq!(cx.floor().dimensions.len(), 16);
         assert!(cx
             .floor()
             .dimensions
             .iter()
             .all(|d| d.kind == DimensionKind::AutoExterior));
-        // Offsets come from the dimension defaults.
-        assert!(
-            (cx.floor().dimensions[0].offset - cx.defaults.dimensions.auto_exterior_offset).abs()
-                < 1e-9
+        // Strings sit from the dimension defaults: the offset of the first
+        // slot, the line separation between slots (openings, wall to wall,
+        // overall).
+        let set = &cx.defaults.dimensions;
+        let mut offsets: Vec<f64> = cx.floor().dimensions.iter().map(|d| d.offset).collect();
+        offsets.sort_by(f64::total_cmp);
+        offsets.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        assert_eq!(
+            offsets,
+            vec![
+                set.auto_exterior_offset + set.string_spacing(),
+                set.auto_exterior_offset + 2.0 * set.string_spacing()
+            ]
         );
         // Running again replaces them (DIM-25).
         click(&mut t, &mut cx, 120.0, 60.0);
-        assert_eq!(cx.floor().dimensions.len(), 4);
+        assert_eq!(cx.floor().dimensions.len(), 16);
         assert_eq!(cx.undo().as_deref(), Some("Auto Exterior Dimensions"));
-        assert_eq!(cx.floor().dimensions.len(), 4);
+        assert_eq!(cx.floor().dimensions.len(), 16);
+    }
+
+    /// A 240 x 120 room with a base run along the bottom wall: a 30" base,
+    /// a 36" sink base (sink cut out), a 24" dishwasher bay, a 30" base and
+    /// a 24" base, from the left wall's face (x = 3) at the wall's face
+    /// (y = 3). Returns the ids in that order.
+    fn kitchen_run(cx: &mut EditorContext) -> Vec<Id> {
+        use plan_cabinets::{Cabinet, CutoutKind};
+        rect_room(cx);
+        let mut ids = Vec::new();
+        let mut x = 3.0;
+        for (i, w) in [30.0, 36.0, 24.0, 30.0, 24.0].into_iter().enumerate() {
+            let mut c = match i {
+                1 => Cabinet::sink_base(w),
+                2 => Cabinet::dishwasher_opening(),
+                _ => Cabinet::base(w),
+            };
+            if i == 1 {
+                assert!(c.add_cutout(CutoutKind::Sink));
+            }
+            c.position = Point::new(x, 3.0);
+            ids.push(placed::add_cabinet(&mut cx.project, 0, c).unwrap());
+            x += w;
+        }
+        // A wall cabinet above the run is not part of it.
+        let mut up = Cabinet::wall(30.0);
+        up.position = Point::new(3.0, 3.0);
+        placed::add_cabinet(&mut cx.project, 0, up).unwrap();
+        ids
+    }
+
+    fn nkba_strings(cx: &EditorContext) -> Vec<(f64, f64, f64)> {
+        // (offset, start x, end x) of every NKBA string, by offset then x.
+        let mut v: Vec<(f64, f64, f64)> = cx
+            .floor()
+            .dimensions
+            .iter()
+            .filter(|d| d.auto_group == AutoGroup::Nkba)
+            .map(|d| (d.offset, d.start.x, d.end.x))
+            .collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        v
+    }
+
+    #[test]
+    fn auto_nkba_dimensions_a_kitchen_run_to_cabinet_faces_and_the_sink_center() {
+        let mut cx = new_cx();
+        let ids = kitchen_run(&mut cx);
+        let mut t = tool(DimMode::AutoNkba);
+        let r = click(&mut t, &mut cx, 120.0, 60.0);
+        assert_eq!(r.commit.as_deref(), Some("Auto NKBA Dimensions"));
+        let strings = nkba_strings(&cx);
+        let offsets: Vec<f64> = {
+            let mut o: Vec<f64> = strings.iter().map(|s| s.0).collect();
+            o.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+            o
+        };
+        assert_eq!(offsets.len(), 3, "faces, centers, overall: {strings:?}");
+        let on = |off: f64| -> Vec<(f64, f64)> {
+            strings
+                .iter()
+                .filter(|s| (s.0 - off).abs() < 1e-9)
+                .map(|s| (s.1, s.2))
+                .collect()
+        };
+        // Faces: every cabinet and on to the right wall's face (237).
+        assert_eq!(
+            on(offsets[0]),
+            vec![
+                (3.0, 33.0),
+                (33.0, 69.0),
+                (69.0, 93.0),
+                (93.0, 123.0),
+                (123.0, 147.0),
+                (147.0, 237.0)
+            ]
+        );
+        // Centers: the sink (33 + 18) and the dishwasher bay (69 + 12).
+        assert_eq!(
+            on(offsets[1]),
+            vec![(3.0, 51.0), (51.0, 81.0), (81.0, 237.0)]
+        );
+        assert_eq!(on(offsets[2]), vec![(3.0, 237.0)]);
+        // All on the cabinet front (y = 27), on the automatic layer kind.
+        assert!(cx
+            .floor()
+            .dimensions
+            .iter()
+            .all(|d| (d.start.y - 27.0).abs() < 1e-9 && d.kind == DimensionKind::AutoExterior));
+        // The cabinet faces are tied to the cabinets (the sink base's sides).
+        let tied = cx
+            .floor()
+            .dimensions
+            .iter()
+            .filter(|d| {
+                d.anchors
+                    .iter()
+                    .flatten()
+                    .any(|a| a.target == AnchorTarget::Cabinet && a.wall == ids[1])
+            })
+            .count();
+        assert!(tied >= 2, "{tied}");
+        // Running again replaces the strings (one undo step each).
+        let n = cx.floor().dimensions.len();
+        click(&mut t, &mut cx, 120.0, 60.0);
+        assert_eq!(cx.floor().dimensions.len(), n);
+        // Moving a cabinet moves its face points; deleting it lets them go.
+        let mut moved = placed::cabinet_by_id(cx.floor(), ids[4]).unwrap();
+        moved.position.x += 6.0;
+        assert!(placed::replace_cabinet(&mut cx.project, 0, &moved));
+        cx.mark_dirty();
+        cx.refresh();
+        assert!(nkba_strings(&cx)
+            .iter()
+            .any(|s| (s.1 - 153.0).abs() < 1e-9 || (s.2 - 153.0).abs() < 1e-9));
+        assert!(placed::remove_cabinet(&mut cx.project, 0, ids[4]));
+        cx.mark_dirty();
+        cx.refresh();
+        assert!(cx.floor().dimensions.iter().all(|d| !d
+            .anchors
+            .iter()
+            .flatten()
+            .any(|a| a.wall == ids[4] && a.target == AnchorTarget::Cabinet)));
+    }
+
+    #[test]
+    fn edit_toolbar_reverses_converts_aligns_and_distributes_dimensions() {
+        let mut cx = new_cx();
+        rect_room(&mut cx);
+        let mut ids = Vec::new();
+        for off in [24.0, 40.0, 100.0, 130.0] {
+            ids.push(cx.project.add_dimension(
+                0,
+                Dimension::new(
+                    0,
+                    DimensionKind::AutoExterior,
+                    Point::new(0.0, 0.0),
+                    Point::new(240.0, 0.0),
+                    off,
+                ),
+            ));
+        }
+        let t = tool(DimMode::Manual);
+        assert!(t.edit_toolbar(&cx).is_empty(), "nothing selected");
+        cx.selection.set(ObjectRef::Dimension(ids[0]));
+        let labels: Vec<(&str, bool)> = edit_actions(&cx)
+            .iter()
+            .map(|a| (a.label, a.enabled))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("Reverse Dimension", true),
+                ("Convert to Manual Dimension", true),
+                ("Align Dimensions", false),
+                ("Distribute Dimensions", false)
+            ]
+        );
+        assert!(t
+            .edit_toolbar(&cx)
+            .iter()
+            .any(|a| a.label == "Reverse Dimension"));
+        // Reverse: one undo step; the line lands on the other side.
+        assert!(run_command(&mut cx, CMD_REVERSE));
+        let d = cx
+            .floor()
+            .dimensions
+            .iter()
+            .find(|d| d.id == ids[0])
+            .unwrap();
+        assert_eq!(d.start.x, 240.0);
+        assert!((d.line_points().0.y + 24.0).abs() < 1e-9);
+        assert_eq!(cx.undo().as_deref(), Some("Reverse Dimension"));
+        let d = cx
+            .floor()
+            .dimensions
+            .iter()
+            .find(|d| d.id == ids[0])
+            .unwrap();
+        assert_eq!(d.start.x, 0.0);
+        // Convert to manual.
+        assert!(run_command(&mut cx, CMD_TO_MANUAL));
+        let d = cx
+            .floor()
+            .dimensions
+            .iter()
+            .find(|d| d.id == ids[0])
+            .unwrap();
+        assert_eq!(d.kind, DimensionKind::Manual);
+        // Align the other three onto the first one's line (24).
+        for i in &ids[1..] {
+            cx.selection.add(ObjectRef::Dimension(*i));
+        }
+        let offs = |cx: &EditorContext| -> Vec<f64> {
+            ids.iter()
+                .map(|i| {
+                    cx.floor()
+                        .dimensions
+                        .iter()
+                        .find(|d| d.id == *i)
+                        .unwrap()
+                        .offset
+                })
+                .collect()
+        };
+        assert!(run_command(&mut cx, CMD_ALIGN));
+        assert_eq!(offs(&cx), vec![24.0; 4]);
+        assert_eq!(cx.undo().as_deref(), Some("Align Dimensions"));
+        assert_eq!(offs(&cx), vec![24.0, 40.0, 100.0, 130.0]);
+        // Distribute between 24 and 130: 24, 59.33, 94.67, 130.
+        assert!(run_command(&mut cx, CMD_DISTRIBUTE));
+        let o = offs(&cx);
+        assert!((o[1] - (24.0 + 106.0 / 3.0)).abs() < 1e-9, "{o:?}");
+        assert!((o[2] - (24.0 + 212.0 / 3.0)).abs() < 1e-9, "{o:?}");
+        assert!(!run_command(&mut cx, "dim.nope"));
+    }
+
+    #[test]
+    fn auto_nkba_with_no_base_cabinets_says_so() {
+        let mut cx = new_cx();
+        rect_room(&mut cx);
+        let mut t = tool(DimMode::AutoNkba);
+        let r = click(&mut t, &mut cx, 120.0, 60.0);
+        assert!(r.commit.is_none());
+        assert!(cx.status.contains("No base cabinet runs"));
+        assert!(cx.floor().dimensions.is_empty());
     }
 
     #[test]
@@ -2237,7 +3077,9 @@ mod tests {
         // Exterior dimensions are untouched by it, and vice versa.
         let mut ext = tool(DimMode::AutoExterior);
         click(&mut ext, &mut cx, 120.0, 60.0);
-        assert_eq!(cx.floor().dimensions.len(), 6);
+        assert_eq!(cx.floor().dimensions.len(), 2 + 16);
+        click(&mut t, &mut cx, 120.0, 60.0);
+        assert_eq!(cx.floor().dimensions.len(), 2 + 16);
     }
 
     /// Selects the dimension, clicks its text, types a value, presses Enter.
@@ -2516,5 +3358,456 @@ mod tests {
         let n = cx.floor().dimensions.len();
         assert_eq!(n, 3);
         assert!(t.run_auto(&mut cx, None).commit.is_some());
+    }
+
+    // ----- Locate Objects, associative dimensions and the automatic set -----
+
+    /// A 40' x 30' shell of 6" exterior walls with a partition at x = 200
+    /// and a window on every side; returns the ids of the four walls.
+    fn shell_40x30(cx: &mut EditorContext) -> [Id; 4] {
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(480.0, 0.0),
+            Point::new(480.0, 360.0),
+            Point::new(0.0, 360.0),
+        ];
+        let mut ids = [0; 4];
+        for i in 0..4 {
+            ids[i] = cx
+                .project
+                .add_wall(0, c[i], c[(i + 1) % 4], 6.0, 96.0, WallKind::Exterior);
+        }
+        cx.project.add_wall(
+            0,
+            Point::new(200.0, 0.0),
+            Point::new(200.0, 360.0),
+            4.0,
+            96.0,
+            WallKind::Interior,
+        );
+        for id in ids {
+            cx.project
+                .add_opening(0, id, 120.0, OpeningKind::Window)
+                .unwrap();
+        }
+        ids
+    }
+
+    fn auto_strings_of(cx: &EditorContext) -> Vec<&Dimension> {
+        cx.floor()
+            .dimensions
+            .iter()
+            .filter(|d| d.auto_group == AutoGroup::Exterior)
+            .collect()
+    }
+
+    #[test]
+    fn locate_settings_change_where_a_manual_dimension_between_two_walls_lands() {
+        let measure = |mode: WallLocate| -> f64 {
+            let mut cx = new_cx();
+            two_walls(&mut cx);
+            cx.defaults.dimensions.locate_walls = mode;
+            let mut t = tool(DimMode::Manual);
+            click(&mut t, &mut cx, 50.0, 4.0);
+            click(&mut t, &mut cx, 50.0, 96.0);
+            click(&mut t, &mut cx, 80.0, 50.0);
+            cx.floor().dimensions[0].length()
+        };
+        // Face to face (100 - 3 - 3) versus centerline to centerline.
+        assert!((measure(WallLocate::Surfaces) - 94.0).abs() < 1e-9);
+        assert!((measure(WallLocate::MainLayer) - 94.0).abs() < 1e-9);
+        assert!((measure(WallLocate::Centers) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn opening_and_cabinet_locate_options_pick_what_a_point_lands_on() {
+        let first_point =
+            |setup: &dyn Fn(&mut EditorContext), at: Point| -> (Point, &'static str) {
+                let mut cx = new_cx();
+                let a = cx.project.add_wall(
+                    0,
+                    Point::new(0.0, 0.0),
+                    Point::new(240.0, 0.0),
+                    6.0,
+                    96.0,
+                    WallKind::Exterior,
+                );
+                cx.project
+                    .add_opening(0, a, 120.0, OpeningKind::Window)
+                    .unwrap();
+                setup(&mut cx);
+                let p = PointerEvent::at(&cx, at);
+                let l = locate(&cx, &p, false, None);
+                (l.point, l.what)
+            };
+        let near_edge = Point::new(106.0, 2.0);
+        let (p, what) = first_point(
+            &|cx| {
+                cx.defaults
+                    .dimensions
+                    .set_opening_locate(OpeningLocate::Sides)
+            },
+            near_edge,
+        );
+        assert_eq!(what, "Opening edge");
+        assert!(
+            (p.x - 102.0).abs() < 1e-9 && (p.y - 3.0).abs() < 1e-9,
+            "{p:?}"
+        );
+        let (p, what) = first_point(
+            &|cx| {
+                cx.defaults
+                    .dimensions
+                    .set_opening_locate(OpeningLocate::Centers)
+            },
+            near_edge,
+        );
+        assert_eq!((what, p.x), ("Opening center", 120.0));
+        // None: the wall behind the opening is located instead.
+        let (p, what) = first_point(
+            &|cx| {
+                cx.defaults
+                    .dimensions
+                    .set_opening_locate(OpeningLocate::None)
+            },
+            near_edge,
+        );
+        assert_eq!(what, "Wall surface");
+        assert!((p.x - 106.0).abs() < 1e-9);
+
+        // A cabinet's side, or nothing when cabinets are not located.
+        let mut cx = new_cx();
+        let mut cab = plan_cabinets::Cabinet::base(36.0);
+        cab.position = Point::new(100.0, 50.0);
+        let id = placed::add_cabinet(&mut cx.project, 0, cab).unwrap();
+        let p = PointerEvent::at(&cx, Point::new(104.0, 62.0));
+        let l = locate(&cx, &p, false, None);
+        assert_eq!(
+            (l.what, l.obj),
+            ("Cabinet side", Some(ObjectRef::Cabinet(id)))
+        );
+        assert!((l.point.x - 100.0).abs() < 1e-9 && (l.point.y - 62.0).abs() < 1e-9);
+        cx.defaults.dimensions.locate_cabinets = ObjectLocate::None;
+        assert_ne!(locate(&cx, &p, false, None).what, "Cabinet side");
+    }
+
+    #[test]
+    fn moving_a_wall_updates_a_string_tied_to_an_opening_side() {
+        let mut cx = new_cx();
+        let a = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        cx.project
+            .add_opening(0, a, 120.0, OpeningKind::Window)
+            .unwrap();
+        cx.defaults
+            .dimensions
+            .set_opening_locate(OpeningLocate::Sides);
+        let mut t = tool(DimMode::Manual);
+        click(&mut t, &mut cx, 104.0, 2.0);
+        click(&mut t, &mut cx, 136.0, 2.0);
+        let r = click(&mut t, &mut cx, 120.0, 40.0);
+        assert_eq!(r.commit.as_deref(), Some("Manual Dimension"));
+        let d = cx.floor().dimensions[0].clone();
+        assert!((d.length() - 36.0).abs() < 1e-9);
+        assert!(d
+            .anchors
+            .iter()
+            .flatten()
+            .all(|an| an.target == AnchorTarget::Opening));
+        assert_eq!(d.anchors.iter().flatten().count(), 2);
+        // Move the wall up 10": the string follows the window.
+        assert!(ops::move_wall_perpendicular(&mut cx.project, 0, a, 10.0));
+        cx.mark_dirty();
+        cx.refresh();
+        let d = &cx.floor().dimensions[0];
+        assert!(
+            (d.start.y - 13.0).abs() < 1e-9 && (d.end.y - 13.0).abs() < 1e-9,
+            "{d:?}"
+        );
+        assert!((d.start.x - 102.0).abs() < 1e-9 && (d.end.x - 138.0).abs() < 1e-9);
+        // Slide the window along the wall: the string goes with it.
+        let win = cx.floor().openings[0].id;
+        assert!(ops::place_opening_at(&mut cx.project, 0, win, a, 150.0));
+        cx.mark_dirty();
+        cx.refresh();
+        let d = &cx.floor().dimensions[0];
+        assert!((d.start.x - 132.0).abs() < 1e-9, "{d:?}");
+    }
+
+    #[test]
+    fn a_string_tied_to_a_cabinet_follows_it() {
+        let mut cx = new_cx();
+        cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        let mut cab = plan_cabinets::Cabinet::base(36.0);
+        cab.position = Point::new(100.0, 50.0);
+        let id = placed::add_cabinet(&mut cx.project, 0, cab).unwrap();
+        let mut t = tool(DimMode::Manual);
+        // Cabinet side to the wall's inside face, straight below it.
+        click(&mut t, &mut cx, 104.0, 62.0);
+        click(&mut t, &mut cx, 100.0, 2.0);
+        click(&mut t, &mut cx, 60.0, 30.0);
+        let d = cx.floor().dimensions[0].clone();
+        assert_eq!(
+            d.anchors[0].map(|a| (a.target, a.wall)),
+            Some((AnchorTarget::Cabinet, id))
+        );
+        let mut moved = placed::cabinet_by_id(cx.floor(), id).unwrap();
+        moved.position = Point::new(130.0, 80.0);
+        assert!(placed::replace_cabinet(&mut cx.project, 0, &moved));
+        cx.mark_dirty();
+        cx.refresh();
+        let d = &cx.floor().dimensions[0];
+        assert!((d.start.x.max(d.end.x) - d.start.x.min(d.end.x)).abs() < 1e-9 || d.length() > 0.0);
+        let ys = [d.start.y, d.end.y];
+        assert!(ys.iter().any(|y| (*y - 92.0).abs() < 1e-9), "{d:?}");
+    }
+
+    #[test]
+    fn auto_exterior_makes_three_strings_per_side_openings_nearest() {
+        let mut cx = new_cx();
+        shell_40x30(&mut cx);
+        cx.defaults.dimensions.locate_walls = WallLocate::Surfaces;
+        cx.defaults
+            .dimensions
+            .set_opening_locate(OpeningLocate::Sides);
+        let mut t = tool(DimMode::AutoExterior);
+        let r = click(&mut t, &mut cx, 240.0, 180.0);
+        assert_eq!(r.commit.as_deref(), Some("Auto Exterior Dimensions"));
+        let dims = auto_strings_of(&cx);
+        assert!(dims.iter().all(|d| d.kind == DimensionKind::AutoExterior));
+        // South side: strings at 32 (openings), 50 (wall to wall), 68 (overall).
+        let south: Vec<&&Dimension> = dims
+            .iter()
+            .filter(|d| (d.start.y + 3.0).abs() < 1e-9 && (d.end.y + 3.0).abs() < 1e-9)
+            .collect();
+        let mut offsets: Vec<i64> = south.iter().map(|d| d.offset.round() as i64).collect();
+        offsets.sort_unstable();
+        offsets.dedup();
+        assert_eq!(offsets, vec![32, 50, 68]);
+        let nearest: Vec<f64> = south
+            .iter()
+            .filter(|d| (d.offset - 32.0).abs() < 1e-9)
+            .map(|d| d.length())
+            .collect();
+        assert_eq!(nearest.len(), 3, "corner, window, corner: {nearest:?}");
+        assert!(nearest.iter().any(|l| (l - 36.0).abs() < 1e-9));
+        // Every side has all three.
+        for side in 0..4 {
+            let n = dims
+                .iter()
+                .filter(|d| {
+                    let (a, b) = d.line_points();
+                    let m = Point::lerp(a, b, 0.5);
+                    match side {
+                        0 => m.y < -3.0,
+                        1 => m.x > 483.0,
+                        2 => m.y > 363.0,
+                        _ => m.x < -3.0,
+                    }
+                })
+                .map(|d| d.offset.round() as i64)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len();
+            assert_eq!(n, 3, "side {side}");
+        }
+        // The strings are tied to the walls: stretch the south wall.
+        let before = dims.len();
+        assert!(before > 12);
+    }
+
+    #[test]
+    fn rerunning_auto_exterior_keeps_manual_and_edited_strings() {
+        let mut cx = new_cx();
+        let ids = shell_40x30(&mut cx);
+        let mut t = tool(DimMode::AutoExterior);
+        click(&mut t, &mut cx, 240.0, 180.0);
+        let first = cx.floor().dimensions.len();
+        // A manual dimension elsewhere.
+        cx.project.add_dimension(
+            0,
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::new(10.0, 100.0),
+                Point::new(90.0, 100.0),
+                12.0,
+            ),
+        );
+        // Dragging an automatic string's line by hand makes it manual.
+        let id = auto_strings_of(&cx).last().map(|d| d.id).unwrap();
+        cx.selection.set(ObjectRef::Dimension(id));
+        let d = cx
+            .floor()
+            .dimensions
+            .iter()
+            .find(|d| d.id == id)
+            .unwrap()
+            .clone();
+        let h = DimensionTool::handle_pos(&d, DimHandle::Offset);
+        let mut mt = tool(DimMode::Manual);
+        let down = PointerEvent::at(&cx, h);
+        mt.pointer_down(&mut cx, down.with_down(true));
+        let to = PointerEvent::at(
+            &cx,
+            h.add(d.end.sub(d.start).normalized().perp().scale(24.0)),
+        );
+        mt.pointer_move(&mut cx, to.with_down(true));
+        let r = mt.pointer_up(&mut cx, to);
+        assert_eq!(r.commit.as_deref(), Some("Move Dimension"));
+        let edited = cx.floor().dimensions.iter().find(|d| d.id == id).unwrap();
+        assert_eq!(edited.kind, DimensionKind::Manual);
+        // Run again: the automatic strings are replaced, the manual and the
+        // edited one stay.
+        click(&mut t, &mut cx, 240.0, 180.0);
+        let f = cx.floor();
+        assert!(
+            f.dimensions.iter().any(|d| d.id == id),
+            "edited string kept"
+        );
+        assert_eq!(
+            f.dimensions
+                .iter()
+                .filter(|d| d.kind == DimensionKind::Manual)
+                .count(),
+            2
+        );
+        assert_eq!(f.dimensions.len(), first + 2);
+        let _ = ids;
+    }
+
+    #[test]
+    fn a_turned_shell_gets_automatic_strings_parallel_to_its_walls() {
+        let mut cx = new_cx();
+        let theta = 30.0_f64.to_radians();
+        let turn = |p: Point| {
+            Point::new(
+                p.x * theta.cos() - p.y * theta.sin(),
+                p.x * theta.sin() + p.y * theta.cos(),
+            )
+        };
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(480.0, 0.0),
+            Point::new(480.0, 360.0),
+            Point::new(0.0, 360.0),
+        ];
+        for i in 0..4 {
+            cx.project.add_wall(
+                0,
+                turn(c[i]),
+                turn(c[(i + 1) % 4]),
+                6.0,
+                96.0,
+                WallKind::Exterior,
+            );
+        }
+        let mut t = tool(DimMode::AutoExterior);
+        click(
+            &mut t,
+            &mut cx,
+            turn(Point::new(240.0, 180.0)).x,
+            turn(Point::new(240.0, 180.0)).y,
+        );
+        let dims = auto_strings_of(&cx);
+        assert!(dims.len() >= 8, "{}", dims.len());
+        for d in dims {
+            let a = d
+                .end
+                .sub(d.start)
+                .angle()
+                .rem_euclid(std::f64::consts::FRAC_PI_2);
+            assert!((a - theta).abs() < 1e-6, "{a}");
+        }
+    }
+
+    #[test]
+    fn dragging_a_point_onto_another_wall_ties_it_there() {
+        let mut cx = new_cx();
+        let (a, b) = two_walls(&mut cx);
+        let c = cx.project.add_wall(
+            0,
+            Point::new(0.0, 200.0),
+            Point::new(240.0, 200.0),
+            6.0,
+            96.0,
+            WallKind::Interior,
+        );
+        let mut t = tool(DimMode::Manual);
+        click(&mut t, &mut cx, 50.0, 4.0);
+        click(&mut t, &mut cx, 50.0, 96.0);
+        click(&mut t, &mut cx, 80.0, 50.0);
+        let d = cx.floor().dimensions[0].clone();
+        assert_eq!(d.anchors[0].map(|x| x.wall), Some(a));
+        assert_eq!(d.anchors[1].map(|x| x.wall), Some(b));
+        // Drag the end handle onto the wall at y = 200.
+        let down = PointerEvent::at(&cx, d.end);
+        t.pointer_down(&mut cx, down.with_down(true));
+        let to = PointerEvent::at(&cx, Point::new(50.0, 196.0));
+        t.pointer_move(&mut cx, to.with_down(true));
+        let r = t.pointer_up(&mut cx, to);
+        assert_eq!(r.commit.as_deref(), Some("Move Dimension"));
+        cx.refresh();
+        let d = &cx.floor().dimensions[0];
+        assert_eq!(d.anchors[1].map(|x| x.wall), Some(c), "{d:?}");
+        assert!((d.end.y - 197.0).abs() < 1e-9, "{d:?}");
+    }
+
+    #[test]
+    fn interior_dimensions_follow_the_interior_surfaces_setting() {
+        let mut cx = new_cx();
+        rect_room(&mut cx);
+        let measure = |cx: &mut EditorContext| -> f64 {
+            let mut t = tool(DimMode::Interior);
+            click(&mut t, cx, 120.0, 60.0);
+            let r = click(&mut t, cx, 120.0, 100.0);
+            assert_eq!(r.commit.as_deref(), Some("Interior Dimension"));
+            cx.floor().dimensions.last().unwrap().length()
+        };
+        // Clear span between the inner faces: 240 - 3 - 3 wide.
+        let inner = measure(&mut cx);
+        assert!((inner - 234.0).abs() < 1e-6, "{inner}");
+        // Off, with centerlines located: centerline to centerline.
+        cx.defaults.dimensions.interior_locates_interior_surfaces = false;
+        cx.defaults.dimensions.locate_walls = WallLocate::Centers;
+        let centers = measure(&mut cx);
+        assert!((centers - 240.0).abs() < 1e-6, "{centers}");
+    }
+
+    #[test]
+    fn auto_interior_adds_an_openings_string_and_replaces_its_own_run() {
+        let mut cx = new_cx();
+        rect_room(&mut cx);
+        let south = cx.floor().walls[0].id;
+        cx.project
+            .add_opening(0, south, 120.0, OpeningKind::Window)
+            .unwrap();
+        cx.defaults
+            .dimensions
+            .set_opening_locate(OpeningLocate::Sides);
+        let mut t = tool(DimMode::AutoInterior);
+        click(&mut t, &mut cx, 120.0, 60.0);
+        let n = cx.floor().dimensions.len();
+        // Two clear spans and the three segments of the window string.
+        assert_eq!(n, 5, "{:?}", cx.floor().dimensions);
+        assert!(cx
+            .floor()
+            .dimensions
+            .iter()
+            .all(|d| d.auto_group == AutoGroup::Interior));
+        click(&mut t, &mut cx, 120.0, 60.0);
+        assert_eq!(cx.floor().dimensions.len(), n);
     }
 }

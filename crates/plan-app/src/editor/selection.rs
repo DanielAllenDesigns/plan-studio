@@ -149,6 +149,63 @@ impl ObjectRef {
     }
 }
 
+impl ObjectRef {
+    /// The reference as a group member (`plan_core::groups`); rooms and
+    /// terrain cannot be grouped.
+    pub fn to_group_ref(self) -> Option<plan_core::ObjectRef> {
+        use plan_core::ObjectRef as G;
+        Some(match self {
+            ObjectRef::Wall(i) => G::Wall(i),
+            ObjectRef::Opening(i) => G::Opening(i),
+            ObjectRef::Dimension(i) => G::Dimension(i),
+            ObjectRef::Cad(i) | ObjectRef::Text(i) => G::Cad(i),
+            ObjectRef::Symbol(i) => G::Symbol(i),
+            ObjectRef::Camera(i) => G::Camera(i),
+            ObjectRef::Cabinet(i) => G::Cabinet(i),
+            ObjectRef::Stair(i) => G::Stair(i),
+            ObjectRef::Device(i) => G::Device(i),
+            ObjectRef::RoofPlane(i) => G::RoofPlane(i),
+            ObjectRef::Foundation(i) => G::Foundation(i),
+            ObjectRef::Framing(i) => G::Framing(i),
+            ObjectRef::Detail(i) => G::Detail(i),
+            ObjectRef::Schedule(i) => G::Schedule(i),
+            ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::TerrainObject(_) => return None,
+        })
+    }
+
+    /// The editor reference of a group member.
+    pub fn from_group_ref(r: plan_core::ObjectRef) -> ObjectRef {
+        use plan_core::ObjectRef as G;
+        match r {
+            G::Wall(i) => ObjectRef::Wall(i),
+            G::Opening(i) => ObjectRef::Opening(i),
+            G::Dimension(i) => ObjectRef::Dimension(i),
+            G::Cad(i) => ObjectRef::Cad(i),
+            G::Symbol(i) => ObjectRef::Symbol(i),
+            G::Camera(i) => ObjectRef::Camera(i),
+            G::Cabinet(i) => ObjectRef::Cabinet(i),
+            G::Stair(i) => ObjectRef::Stair(i),
+            G::Device(i) => ObjectRef::Device(i),
+            G::RoofPlane(i) => ObjectRef::RoofPlane(i),
+            G::Foundation(i) => ObjectRef::Foundation(i),
+            G::Framing(i) => ObjectRef::Framing(i),
+            G::Detail(i) => ObjectRef::Detail(i),
+            G::Schedule(i) => ObjectRef::Schedule(i),
+        }
+    }
+
+    /// Do both name the same object type (Select Same Type)? CAD lines and
+    /// text are one type.
+    pub fn same_type(self, other: ObjectRef) -> bool {
+        match (self, other) {
+            (ObjectRef::Cad(_) | ObjectRef::Text(_), ObjectRef::Cad(_) | ObjectRef::Text(_)) => {
+                true
+            }
+            (a, b) => std::mem::discriminant(&a) == std::mem::discriminant(&b),
+        }
+    }
+}
+
 /// The selected objects, in selection order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Selection {
@@ -439,7 +496,13 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
             out.push(ObjectRef::Stair(id));
         }
     }
-    out.extend(dim_cad_hits(floor, p, tol, &visible));
+    // Printed-size text is picked by the box it is drawn in at the sheet's scale.
+    out.extend(super::render::settle_text_hits(
+        cx,
+        dim_cad_hits(floor, p, tol, &visible),
+        p,
+        tol,
+    ));
     // A schedule table is an opaque rectangle drawn over the plan.
     if let Some(id) = schedule_view::pick(cx, p) {
         out.push(ObjectRef::Schedule(id));
@@ -656,6 +719,103 @@ pub fn pick_for_mesh_id(project: &Project, floor: usize, id: Id) -> Option<(usiz
         return r.exists_in(project, floor).then_some((floor, r));
     }
     object_for_mesh_id(project, id)
+}
+
+/// Every object of the active floor that a click could select and an edit
+/// could change: on a displayed, unlocked layer (Select All, S-33). Rooms
+/// are not objects of the selection.
+pub fn all_selectable(cx: &EditorContext) -> Vec<ObjectRef> {
+    let floor = cx.floor();
+    let layers = cx.layers();
+    let usable = |o: ObjectRef| {
+        layer_of(floor, o).is_none_or(|l| layers.is_visible(&l) && !layers.is_locked(&l))
+    };
+    let mut out = Vec::new();
+    for w in &floor.walls {
+        let r = ObjectRef::Wall(w.id);
+        if usable(r) {
+            out.push(r);
+        }
+    }
+    for o in &floor.openings {
+        let r = ObjectRef::Opening(o.id);
+        if usable(r) {
+            out.push(r);
+        }
+    }
+    for d in &floor.dimensions {
+        let r = ObjectRef::Dimension(d.id);
+        if usable(r) {
+            out.push(r);
+        }
+    }
+    for c in &floor.cad {
+        let r = ObjectRef::Cad(c.id);
+        if usable(r) {
+            out.push(r);
+        }
+    }
+    let far = 1.0e12;
+    out.extend(extra_in_rect(
+        cx,
+        Point::new(-far, -far),
+        Point::new(far, far),
+        true,
+    ));
+    out
+}
+
+/// Select All (Cmd+A): everything [`all_selectable`] names becomes the
+/// selection. Returns how many objects.
+pub fn select_all(cx: &mut EditorContext) -> usize {
+    let all = all_selectable(cx);
+    rooms_edit::clear_room_selection();
+    cx.selection.items = all;
+    cx.selection.len()
+}
+
+/// Select Same Type: with objects selected, selects every object of the
+/// same types on the active floor (displayed, unlocked layers). Returns the
+/// new selection size; 0 when nothing was selected.
+pub fn select_same_type(cx: &mut EditorContext) -> usize {
+    let kinds: Vec<ObjectRef> = cx.selection.items.clone();
+    if kinds.is_empty() {
+        return 0;
+    }
+    let same: Vec<ObjectRef> = all_selectable(cx)
+        .into_iter()
+        .filter(|o| kinds.iter().any(|k| k.same_type(*o)))
+        .collect();
+    cx.selection.items = same;
+    cx.selection.len()
+}
+
+/// `items` plus the rest of every group they belong to (a click on a group
+/// member selects the group, S-35).
+pub fn expand_groups(cx: &EditorContext, items: &[ObjectRef]) -> Vec<ObjectRef> {
+    let floor = cx.floor();
+    let mut out: Vec<ObjectRef> = Vec::new();
+    for o in items {
+        let members = match o.to_group_ref() {
+            Some(g) => floor
+                .group_members_of(g)
+                .into_iter()
+                .map(ObjectRef::from_group_ref)
+                .collect(),
+            None => vec![*o],
+        };
+        for m in members {
+            // A group names the same object under either CAD variant.
+            let known = out
+                .iter()
+                .any(|x| x.to_group_ref() == m.to_group_ref() && m.to_group_ref().is_some())
+                || out.contains(&m);
+            if !known && (m == *o || m.exists_in(&cx.project, cx.floor)) {
+                out.push(m);
+            }
+        }
+    }
+    out
 }
 
 /// A CAD object by id.

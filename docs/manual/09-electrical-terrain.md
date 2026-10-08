@@ -18,18 +18,19 @@ floor's typed `electrical` slot, so the plan file carries them and undo restores
 from before this change kept them as one hidden record on an `Electrical, Data` layer; opening
 such a file converts it and removes the layer.)
 
-Device kinds known to the engine (`plan-electrical`, 18 kinds): 110V Outlet, 220V Outlet,
-GFCI Outlet, Floor Outlet, Switch, 3-Way Switch, Dimmer Switch, Ceiling Light, Recessed Can,
+Device kinds known to the engine (`plan-electrical`, 23 kinds): 110V Outlet, Quad Outlet, 220V Outlet,
+GFCI Outlet, Floor Outlet, Switch, 3-Way Switch, 4-Way Switch, Dimmer Switch, Ceiling Light, Recessed Can,
 Pendant Light, Wall Sconce, Ceiling Fan, Smoke Detector, CO Detector, Thermostat, Doorbell,
-Panel and Rope Light.
+Data, Phone and TV Jacks, Panel and Rope Light. Every kind has its own plan symbol (the legend lists them all).
 
 Default heights above the floor:
 
 | Device | Height |
 |---|---|
-| Outlets (110V, 220V, GFCI) | 12" |
+| Outlets (110V, quad, 220V, GFCI), data and phone jacks | 12" |
+| Kitchen counter outlets (Auto Place Outlets) | 42" |
 | Floor outlet | 0" |
-| Switches, doorbell | 48" |
+| Switches (all kinds), doorbell, TV jack | 48" |
 | Thermostat | 52" |
 | Wall sconce | 66" |
 | Panel, CO detector | 60" |
@@ -51,10 +52,13 @@ the room. Ceiling devices are placed freely.
 | Light | `E, L` | Places a ceiling light where you click; it snaps to a room's center within 12". |
 | Rope Light | `Ctrl+Alt+Shift+Cmd+A` | Places a strip light. |
 | Switch | `E, S` | Places a switch on a wall at 48". |
-| 3-Way Switch | | Switch variant. |
-| Ceiling Fan | | Ceiling device. |
-| Smoke Detector | | Ceiling device. |
-| Electrical Connection | `E, C` | Click a switch (or outlet), then the light it controls. A dashed arc is drawn between them and stored. |
+| 3-Way, 4-Way and Dimmer Switch | | Switch variants. |
+| Quad Outlet, Floor Outlet | | Receptacle variants. |
+| Recessed, Pendant and Wall Light | | Light variants (ceiling devices, the wall light on a wall). |
+| Ceiling Fan, Smoke and CO Detector | | Ceiling and wall devices. |
+| Thermostat, Doorbell, Data, Phone and TV Jack, Electrical Panel | | Wall devices. |
+| Auto Place Switches | | One click: a switch 6" past the latch jamb of every door of every room, a ceiling light for a room without one, and the connections. Two doors in a room make a 3-way pair. |
+| Electrical Connection | `E, C` | Click a switch (or outlet), then every light it controls (Esc ends the run). A dashed arc is drawn to each and stored. Clicking a second 3-way or 4-way switch wires the pair, and both then control the lights of either. Drag the square handle at the middle of an arc to bend it. |
 | Auto Place Outlets | `E, A, O` | One click places outlets for every room of the floor, from the room names and types. |
 
 All of them start the one Electrical tool, and the Electrical flyout does pass your choice
@@ -74,11 +78,10 @@ through to it.
 
 - No point along a wall is more than 6' from an outlet.
 - Outlets stay clear of door jambs.
-- Kitchen counters get GFCI outlets at 44".
+- Kitchen counters get GFCI outlets at 42", at most 4' apart.
 - Wet rooms and garages get GFCI outlets.
 
-A related engine function places a room light and a switch 6" past the latch jamb at 48";
-they are not offered as buttons yet (planned).
+Auto Place Switches (above) places the room light and the switches.
 
 ## 9.3 Dialog: Electrical Service Specification
 
@@ -86,10 +89,11 @@ Double-click a device with the Electrical tool.
 
 | Tab | Fields |
 |---|---|
-| General | Type (read-only), Height, Label, Circuit (a number, or blank) |
-| Options | **Switched By**: check boxes for the switches on this floor that control this device (a switch is not switched by another switch) |
+| General | Type (any kind of the same family, e.g. a duplex outlet becomes a GFCI), Height, Label, Circuit (a number, or blank) |
+| Switches | For a switch: **Connected Lights and Outlets**, check boxes that add and remove connection arcs. For other devices: **Switched By**, the switches that control it |
+| Materials | Plate or fixture finish (White, Ivory, Light Almond, Brown, Black, Stainless Steel), shown on the 3D plate or fixture |
+| Label | Show label in plan, Label text, Text height (disabled) |
 | Layer | The layer (disabled, `Electrical`) |
-| Label | Show label in plan, Text height (disabled) |
 
 ## 9.4 Circuits, schedules and legends (engine)
 
@@ -97,7 +101,20 @@ The engine groups devices into circuits (`assign_circuits`), counts devices by k
 schedule, and lists a legend of symbols. No menu uses the circuit and legend functions yet: circuit assignment and the electrical legend
 are (planned; engine in `plan-electrical`). The **Electrical Schedule** from the Schedule flyout (chapter 11.2) lists the plan's devices (mark, type, label, mount height, circuit) as a live table placed in the plan.
 Light fixtures also emit light in the ray tracer (chapter 10.13).
-Electrical devices are also not drawn in the 3D view yet (planned).
+The schedule's Count column sums grouped rows.
+
+### 9.4a Devices in 3D, connections and switches
+
+Electrical devices are in the 3D view (`plan_electrical::electrical_meshes`, called by the 3D scene build, and the scene rebuilds when a device changes). They honor the
+Electrical layer's display and each device's finish: cover **plates** with slots and toggles (outlets, switches, dimmers, jacks), **trim rings and dark apertures** for recessed cans,
+flush ceiling fixtures, **pendants** with a cord and a shade, **ceiling fans**, **sconces**, **smoke and CO detectors**, the **panel box**, floor boxes and **rope-light** strips.
+The plate or fixture takes the finish chosen on the Materials tab (White by default).
+
+**Connections** (the dashed arcs from a switch or outlet to the lights it controls) have a handle at the middle of the arc: drag it to **bend** the arc (it is stored as the arc's
+bulge, so a bent connection saves and undoes with the plan). **3-way and 4-way** switches are wired as pairs: click one, then the other, and both then control the lights of either.
+**Auto Place Switches** puts a switch 6" past the latch jamb of every door of every room, a ceiling light in a room that has none, and the connections; a room with two doors gets a
+3-way pair. The **Switches** tab of the Electrical Service Specification adds and removes connection arcs by tick box, also when the dialog is opened with Select Objects (it
+opens from either tool the same way).
 
 # Part B: Terrain and landscaping
 
@@ -175,8 +192,18 @@ In every polyline gesture `Enter` or a double-click ends the line; in every poly
 | Kidney Shaped Feature | Click both ends of the long axis, then a third click sets the width. |
 | Spline Feature | Click control points of a closed spline; `Enter` closes it. |
 
-The three shaped features are slabs 4" thick over the surface (set the height in the dialog). They are
-not cut or fill: the ground under them does not change. Only Terrain Hole features cut the surface.
+The three shaped features are **cut and fill pads**. The terrain under the outline is levelled to a flat top at
+the mean ground under it plus the feature's height (4" by default; a negative height cuts the pad into the
+ground), and the pad's sides slope back to the existing ground at the **side slope** (1 rise to 2 run by default).
+The build finds the daylight line where each side meets the ground. Untick "Grade the terrain" in the feature's
+dialog for the old behavior, a slab over the ground. A Terrain Hole cuts the surface away. A kidney or spline
+outline keeps its control points: select it and drag them, and the curve follows (a smooth closed spline).
+The cut and fill in cubic yards is listed in the Terrain Specification (Building Pad page), in the plan-docs
+cut/fill table and in the Materials List under Landscaping.
+
+**Building Pad** (command `TerrainVariant::BuildingPad`): levels the terrain under the building walls plus a
+24" margin to the first floor's elevation less the *Terrain to first floor* distance of the Terrain
+Specification, with sloped sides. The Building Pad page edits the margin, the slope and the first floor.
 
 ### Terrain Wall and Curb
 
@@ -187,6 +214,11 @@ not cut or fill: the ground under them does not change. Only Terrain Hole featur
 
 A terrain wall follows the ground: its top is a set height above the terrain along the whole path (3'-0" for a
 wall, 6" for a curb) and its bottom a footing depth below it (1'-0" and 4"). Thickness defaults to 8" and 6".
+
+A wall also **cuts the terrain surface**. The strip under the wall is a gap with vertical faces, so contours stop
+at the wall. The ground on the left of the drawing direction keeps its grade (the retained side) and the ground on
+the right is lowered by the wall's *grade step* (2'-0" for a new wall, none for a curb), sloping back up to the
+existing ground at 1:4. Untick "Cut the terrain along the wall" to leave the surface whole.
 
 ### Landscaping
 
@@ -213,7 +245,17 @@ kidney shapes are stored flattened as polylines.
 | Polyline Sidewalk | Same, default width 4'-0". |
 | Spline Road, Spline Driveway, Spline Sidewalk | The same, with the clicks as control points of a curve. |
 
-Roads drape 0.5" above the terrain surface.
+Roads drape 0.5" above the terrain surface. A road's specification has a **Crown** (how much higher the centerline sits than the edges, so the road sheds water to both sides) and **Curbs** with a **Curb height**; the roadway and its curb blocks are in the 3D scene.
+
+### Site objects: North Pointer, Scale Bar, Building Pad
+
+| Variant | Gesture |
+|---|---|
+| North Pointer | Click the center, then click toward true north; the distance between the clicks is the pointer's radius (12" to 100'). It draws a circle with an arrow toward north and an "N" beyond the tip, as CAD objects on the `Site Plan` layer, and **sets the plan's north angle** (to a tenth of a degree). Placing a second pointer replaces the first. One undo step. |
+| Scale Bar | Click the start, then the end; the length is rounded to whole feet (at least one foot) and drawn as a bar in four parts (fewer when short) with a tick and a length label at each division and alternate parts hatched, on the `Site Plan` layer. |
+| Building Pad | One click levels the terrain under the building walls (above). |
+
+The north angle is also a field of the Terrain Specification (General). A true compass azimuth maps to a plan direction through it (`site_view::plan_sun_azimuth`), and the facing labels use the same angle.
 
 ### Terrain menu commands
 
@@ -232,8 +274,7 @@ At the top of the Terrain menu:
 With a Terrain tool active: `Delete` removes the element under the pointer (one undo step), the arrow keys
 nudge it, and a double-click on an element that has a specification opens it; a double-click outside any
 element opens the Terrain Specification, which Select Objects can also open (there is one terrain, so Select
-Objects picks the whole terrain). **Select Objects cannot pick or move one terrain object yet**, and the 3D
-view cannot pick them either; both are planned (Round 9).
+Objects picks the whole terrain). **Select Objects picks single terrain objects** (features, breaks, walls, curbs, roads and landscape objects): click to select, drag to move, the arrow keys nudge, `Delete` removes, and a double-click opens the object's specification. An element with 40 points or fewer also shows vertex handles. The 3D view picks them too (chapter 10).
 
 ## 9.7 What the plan shows
 
@@ -253,16 +294,15 @@ Each object can name another layer in its specification. The surface is cached a
 changes; the layer the terrain itself draws on is set in the Terrain Specification.
 
 **In 3D** (Round 8): the terrain surface, the roads draped on it and the landscape objects are in the 3D
-scene, and the scene rebuilds when the terrain changes. plan-3d has no grass, mulch or foliage material, so the
-stand-ins are: grass, mulch and canopies the brown Floor material; trunks Framing; bed edging, stepping stones and
-water basins Stone; water translucent window glass; walls Concrete, Stone or Brick by the object's material. A
-green material is (planned; Round 9 landscape materials).
+scene, and the scene rebuilds when the terrain changes. The 3D materials now include Grass, Mulch, Foliage, Water, Asphalt and Gravel, and the landscape uses them: the terrain surface and lawn or grass regions Grass, garden beds Mulch (or the bed's named material, such as Gravel), canopies Foliage, water Water (translucent), trunks Framing, edging, basins and stepping stones Stone, roads and driveways Asphalt, walls Concrete, Stone or Brick by the object's material.
 
 ## 9.8 Dialog: Terrain Specification
 
 | Tab | Fields |
 |---|---|
-| General | Subfloor height above terrain, Building pad elevation, Contour interval, Grid spacing, Smoothing passes. A line reports the Finished floor elevation. |
+| General | Terrain to first floor (subfloor height above terrain), Building pad elevation, Grid spacing, Subdivision, Smoothing passes, North angle, and the "Rebuild the terrain after every edit" switch (off keeps the built surface until Build Terrain runs again; the plan then writes "Terrain out of date" at the perimeter). A line reports the Finished floor elevation. |
+| Contours | Contour interval, Major contour every N, Label spacing (elevation text every N feet along the labeled contours, 0 = one per line), Label the major contours only. |
+| Building Pad | Level the terrain under the building; margin, side slope and first floor elevation of the pad; the Cut and Fill table in cubic yards per pad with the total. |
 | Materials | Ground (Grass), Bare ground (Dirt): disabled. |
 | Layer | The layer the terrain is drawn on. |
 
@@ -284,10 +324,11 @@ Line Style and Layer.
 
 ## 9.9 Differences from Chief
 
-- Terrain walls and curbs do not cut the surface or stop contours; features are slabs over the surface, not cut and fill.
-- Water has no ripple fill, sprinkler heads are not connected to a supply, and a kidney shape is one fixed blob
-  (axis, width, notch) rather than a freely edited curve.
+- Sprinkler heads are not connected to a supply, and the 3D water surface is flat (the ripple is a plan fill).
+- Build Terrain runs on the UI thread: it reports its stages (with a percentage) in the readout while it builds and ends with a triangle count and time, with no separate progress bar. The Materials page of the Terrain Specification is disabled, and an elevation point has no
+  dialog of its own (delete and place it again, or drag it).
 - Plants are terrain-owned runs, not placed library symbols: the Plant Schedule (chapter 11.2) does not list them and Replace
   From Library does not see them.
-- No elevation reference points on the building.
+- North Pointer and Scale Bar are CAD objects on the "Site Plan" layer (Terrain tool); the pointer sets the plan's
+  north angle, which the sun angle reads through `site_view::plan_sun_azimuth`.
 - No site plan layout box for a plot plan yet (chapter 11).

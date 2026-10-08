@@ -24,8 +24,7 @@ Round 7 changed nothing outside `scenarios/`, the one `mod scenarios;` line in
   `project_hash` includes `room_names`.
 * QA-03: the room schedule's area is the Interior Area and its ceiling column
   uses the room override. The row also carries a `standard_area` (centerline)
-  cell; the column itself is not offered yet because the column list
-  (`ROOM_FIELDS` in `plan-core/src/schedules.rs`) is outside this round's files.
+  cell; the column is `standard_area` in `ROOM_FIELDS` (`plan-core/src/schedules.rs`), hidden by default.
 * QA-05 / QA-06: `build_view_scene` meshes placed cabinets (`plan_cabinets::meshes`)
   and stairs, ramps and landings (`plan_stairs::tagged_meshes`); `project_hash`
   includes cabinets and stairs. Cabinet countertops map to Stone and handles to
@@ -44,12 +43,71 @@ Round 7 changed nothing outside `scenarios/`, the one `mod scenarios;` line in
 | QA-05 | 3D scene: cabinets | parity `3d-views-cameras.md` "3D scene contents" (documented gap), CB-6 | High | Finished house (walls, door, window, slab, roof). Base Cabinet tool, click (200, 10). Compare `build_view_scene` triangle count and `project_hash` before and after. | Placed cabinets are meshed (`plan_cabinets::meshes`) and the 3D view rebuilds. | 278 triangles before and after, same hash: `build_view_scene` never calls `plan_cabinets::meshes`, and `project_hash` ignores cabinets. | `s09_scene_3d::placed_cabinets_appear_in_the_3d_scene_and_change_the_hash` | fixed in Round 8 |
 | QA-06 | 3D scene: stairs | parity `3d-views-cameras.md` "3D scene contents" (documented gap), CB-22 | High | Same house, Draw Stairs drag (100,100) to (250,100). Compare scene triangles and hash. | Stairs are meshed (`plan_stairs::model3d::meshes`) and the view rebuilds. | 278 triangles before and after, same hash: stairs are not in `build_view_scene` or `project_hash`. | `s09_scene_3d::stairs_appear_in_the_3d_scene_and_change_the_hash` | fixed in Round 8 |
 | QA-07 | Roof tool name | architecture-tools.md (`Tool::name` is Chief's name) | Low | Activate each `ToolId::RoofVariant(mode)` and read `tools.active().name()`. | "Roof Plane", "Build Roof", "Auto Dormer", ... as every other multi-mode tool does ("Draw Line", "Auto Exterior Dimensions"). | All twelve modes answer "Roof". | `s06_roof::each_roof_mode_names_itself_like_its_toolbar_entry` | fixed in Round 8 |
+| QA-08 | Auto Exterior Dimensions on a hand-drawn shell | DIM-24, DIM-26 | Medium | `draw_shell` 40x30 (four click-drag walls; the closing west wall ends 2" off plumb), a window on each side, Auto Exterior Dimensions, click inside. Look at the strings left of the west wall. | Three strings (openings, wall to wall, overall) on every side, all outside the walls, nearest string first. | The west side gets its set twice: three strings outside at x = -36 / -72 and a second full set of three inside the house at x = +37 / +72 (36" and 72" inside the west wall). Without windows the west wall's wall-to-wall string is missing outside and lands inside. The other three sides are right; on a plumb west wall (`exact_house`, `auto_exterior_puts_three_strings_...`) all 12 strings are right. | `s17_dimensions::auto_exterior_on_a_hand_drawn_shell_keeps_every_string_outside_the_house` | fixed |
+| QA-09 | File menu rows do nothing | S-1, files.rs (File > Close / Revert to Saved / Save a Copy / Backup Entire Plan / Open Recent > Clear Menu / Manage Auto Archives) | High | Save a plan (`Action::FileSave`), then `Action::Custom(files::CLEAR_RECENT)`; or `files::REVERT`, `files::CLOSE`. | Clear Menu empties the Open Recent list, Revert reloads the saved plan (after the prompt), Close empties the window. | Nothing happens. `PlanApp::apply` sends every `Action::Custom` to `EditorContext::run_custom`, which does not know the `file.*` ids; `PlanApp::file_command` (and `save_a_copy`) have no caller (rustc: "methods `file_command` and `save_a_copy` are never used"). Looks like the `files::is_command` branch was lost when `main.rs` was rebuilt after it was overwritten with the Action History file at 09:05 on 2026-10-08. Open Recent rows (`recent.N`) still work, they go through `app_info`. | `s22_files::the_file_menu_rows_clear_recent_close_and_revert_reach_the_files_module` | fixed |
+| QA-10 | Archive rotation can delete the newest copy | files.rs archive_previous / rotate_archives | Low | Archive limit 3, save five or six times inside one second (stamps are per second). | The newest copy stays, the oldest go. | Names are `maple-<stamp>`, `-2`, `-3` ...; once the unsuffixed first copy has been rotated away, the next save of that second reuses the plain name, which sorts lowest and is rotated away at once. After six quick saves the newest archive is the version from three saves ago. Needs 4+ saves in one second, so it only shows with scripted or very fast saving. | `s22_files::rapid_saves_over_the_archive_limit_never_rotate_away_the_newest_copy` | fixed |
+| QA-11 | Billboard picture colored like a roof vanishes in the Doll House | C-43, Create Billboard Image | Low | Place a billboard whose average color is [100, 120, 90] (it maps to the Roof material) inside the shell; Doll House view; click it. | Pictures stay visible and pickable in every view. | `image_mesh` gives the picture the nearest opaque scene material; the Doll House and overview modes hide every mesh of the Ceiling and Roof material (`pick::is_drawn`, the viewport), so a green-ish tree billboard disappears with the roof and cannot be clicked. A brick-colored one works. | `s24_view3d_picking_textures::a_green_billboard_is_not_hidden_with_the_roofs_in_the_doll_house` | fixed |
 
 QA-05 and QA-06 are already listed as gaps in `docs/parity/3d-views-cameras.md`;
 they are recorded here with a test so the day a mesh builder is wired in the
 test flips to green.
 
+## Round 12: scenarios s15 to s24
+
+Ten more scenario files (95 tests, 4 of them `#[ignore]`d for QA-08 to QA-11)
+cover the Edit menu, typed wall input and wall edits, dimensions, door and
+window 3D parts, rooms and floors, roofs in 3D, the layout and print path,
+files, cabinets/underlays/preferences and the 3D view. `s21_layout_print::isolate_home`
+points `$HOME` at a temp folder once per test process, so nothing reads or
+writes `~/.plan-studio`; the Open Recent list is in memory under `cfg(test)`.
+The s01 to s14 scenarios all still pass unchanged (no expectation needed
+updating).
+
+Notes that are by design, not findings: a partition ending on an exterior wall
+splits it, so Build New Floor "exterior only" copies one wall more per tee;
+the Arch tab leaves the hole in the wall square and adds a spandrel to the
+opening's own mesh; unnamed rooms share one floor slab, per-room platforms
+start once a room is named; the CAD Line tool drags the handle of the selected
+line when a new line starts on that handle; walls drawn after Floor Defaults
+keep their own tool height (W-6).
+
 ## Behaviors the scenarios confirmed (no finding)
+
+* Round 12: cursor-attached Paste lands the copy's center on the click, Esc
+  cancels with no undo step, Paste Hold Position and Duplicate (12", -12") are
+  one step each, Select All skips locked and hidden layers, Transform/Replicate
+  3 copies step by the offset, a radial copy turns 90 degrees each, Reflect
+  About Object mirrors the swing and exterior side, Point to Point, Center
+  Object (room and opening), Align/Distribute, Group, Delete Objects and the
+  Action History all undo in one step.
+* Round 12: typed 12' at 90 degrees, Shift (15 degrees) and Alt (raw point),
+  Break Wall (both halves connected, refused inside a window), Remove Break,
+  Reverse Layers (plan and 3D), Change Line/Arc with the bulge handle and the
+  Arc section round trip, Snap Settings toggles and Edit Behaviors Resize.
+* Round 12: Locate walls surfaces < main layer < centers, strings that follow a
+  wall and a window, 12 Auto Exterior strings on a plumb shell, Auto Interior,
+  Auto NKBA, printed-size text at 1/4" and 1/8".
+* Round 12: every door and window flavor builds its 3D parts, the new opening
+  is selected, labels go size then mark, Sash/Arch/Shutters change the 3D
+  triangles, a door and its sidelite mull.
+* Round 12: garage drops 24" with a slab and stem walls, Open Below removes the
+  floor and the ceiling under it, Floor Defaults cascade, Reference Display
+  snaps, a nested closet, the dragged room label and the Floor Structure
+  Define thickness reach 3D.
+* Round 12: gable walls reach the ridge, the baseline at the plate closes the
+  gap, eave cut changes the fascia geometry, Roof Cuts Wall at Bottom and Auto
+  Attic Walls switch from the Roof Defaults.
+* Round 12: New Layout, Send to Layout (plan and camera), text box, page CAD
+  moves, layout layers, Page Setup, Print with tiling (page counts), Materials
+  List with the Master List, construction set (10 pages with a sheet index).
+* Round 12: atomic save, archive rotation, autosave only while dirty, startup
+  and open-time recovery, Open Recent, the unsaved prompt (Save / Don't Save /
+  Cancel) and the dirty dot in the title.
+* Round 12: cabinet depth and corner handles, fit to gap, auto-joined
+  countertops, underlay calibration, DXF layer map, Preferences round trip,
+  Material Painter pick hook, 3D pick/open/delete, terrain pick, Textures toggle
+  (store prefetch and viewport flag), billboards facing the eye.
+
 
 * Walls: four click-drag walls with ends 1 to 2" off close into a 4-wall loop
   with shared endpoints, mitered outlines, one room, interior area within 1% of

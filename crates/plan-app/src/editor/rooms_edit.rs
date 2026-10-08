@@ -18,8 +18,12 @@ use super::{Camera, EditorContext};
 use crate::dialogs::room::RoomInit;
 use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Shape, Stroke};
 use plan_core::cad::{CadItem, DEFAULT_CAD_LAYER};
-use plan_core::extras::{AreaKind, MoldingKind, MoldingRef, RoomFill, RoomLabelOptions};
-use plan_core::geometry::{point_in_polygon, polygon_area, Point};
+use plan_core::extras::{
+    AreaKind, MoldingKind, MoldingRef, RoomFill, RoomLabelOptions, StructureLayer,
+};
+use plan_core::floors::{DeriveFrom, FloorPlacement, FloorSettings, NewFloorOptions};
+use plan_core::geometry::{polygon_area, Point};
+use plan_core::rooms::{apply_function_defaults, function_defaults};
 use plan_core::{detect_rooms, FloorKind, FoundationKind, PlanDefaults, Room, RoomName};
 use plan_spaceplan::{bump, plan_symbols, RoomBox, Stroke as SpStroke, GRID};
 use std::cell::RefCell;
@@ -121,6 +125,8 @@ pub struct RoomExtras {
     /// `None` follows the room type (R-43).
     pub conditioned: Option<bool>,
     pub roof_over: bool,
+    /// Flat Roof over This Room: Build Roof levels the roof over it.
+    pub flat_roof: bool,
     pub floor_height_absolute: bool,
     pub ceiling_height_absolute: bool,
     pub floor_finish_thickness: f64,
@@ -132,6 +138,10 @@ pub struct RoomExtras {
     pub wall_covering: String,
     pub fill: FillStyle,
     pub label: LabelOptions,
+    /// Floor Structure layers (R-28); empty follows the floor's default.
+    pub floor_structure: Vec<StructureLayer>,
+    /// Ceiling Structure layers (R-29); empty follows the floor's default.
+    pub ceiling_structure: Vec<StructureLayer>,
 }
 
 impl RoomExtras {
@@ -139,6 +149,7 @@ impl RoomExtras {
         Self {
             conditioned: None,
             roof_over: true,
+            flat_roof: false,
             floor_height_absolute: false,
             ceiling_height_absolute: false,
             floor_finish_thickness: d.rooms.floor_finish_thickness,
@@ -150,6 +161,8 @@ impl RoomExtras {
             wall_covering: String::new(),
             fill: FillStyle::default(),
             label: LabelOptions::default(),
+            floor_structure: Vec::new(),
+            ceiling_structure: Vec::new(),
         }
     }
 
@@ -166,11 +179,14 @@ impl RoomExtras {
         self.label = name.label.clone();
         if let Some(m) = &name.misc {
             self.roof_over = m.roof_over;
+            self.flat_roof = m.flat_roof;
             self.floor_height_absolute = m.floor_height_absolute;
             self.ceiling_height_absolute = m.ceiling_height_absolute;
             self.floor_finish_thickness = m.floor_finish_thickness;
             self.ceiling_finish_thickness = m.ceiling_finish_thickness;
             self.wall_covering = m.wall_covering.clone();
+            self.floor_structure = m.floor_structure.clone();
+            self.ceiling_structure = m.ceiling_structure.clone();
         }
         self
     }
@@ -195,11 +211,14 @@ impl RoomExtras {
         name.label = self.label.clone();
         name.misc = Some(plan_core::extras::RoomMisc {
             roof_over: self.roof_over,
+            flat_roof: self.flat_roof,
             floor_height_absolute: self.floor_height_absolute,
             ceiling_height_absolute: self.ceiling_height_absolute,
             floor_finish_thickness: self.floor_finish_thickness,
             ceiling_finish_thickness: self.ceiling_finish_thickness,
             wall_covering: self.wall_covering.clone(),
+            floor_structure: self.floor_structure.clone(),
+            ceiling_structure: self.ceiling_structure.clone(),
         });
     }
 }
@@ -264,6 +283,18 @@ struct State {
     drag: Option<BoxDrag>,
     /// Snap distance of the running box drag, inches (`editing.bumping_distance`).
     bump_snap: f64,
+    /// A room label being dragged (R-44).
+    label_drag: Option<LabelDrag>,
+}
+
+/// A drag of one room label: the room is remembered by a point inside it.
+#[derive(Clone, Copy, Debug)]
+struct LabelDrag {
+    floor: usize,
+    room_point: Point,
+    grab: Point,
+    start_offset: Point,
+    begun: bool,
 }
 
 thread_local! {
@@ -280,14 +311,14 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
 /// concave rooms).
 pub fn room_anchor(room: &Room) -> Point {
     let poly = &room.polygon;
-    if point_in_polygon(room.centroid, poly) {
+    if room.contains(room.centroid) {
         return room.centroid;
     }
     let n = poly.len();
     for i in 0..n {
         let (a, b, c) = (poly[i], poly[(i + 1) % n], poly[(i + 2) % n]);
         let t = Point::new((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0);
-        if point_in_polygon(t, poly) {
+        if room.contains(t) {
             return t;
         }
     }
@@ -300,17 +331,14 @@ pub fn room_index_at(cx: &EditorContext, p: Point) -> Option<usize> {
     cx.rooms
         .iter()
         .enumerate()
-        .filter(|(_, r)| point_in_polygon(p, &r.polygon))
+        .filter(|(_, r)| r.contains(p))
         .min_by(|a, b| a.1.area_sq_in.total_cmp(&b.1.area_sq_in))
         .map(|(i, _)| i)
 }
 
 /// The name entry of `room` on the active floor.
 pub fn name_entry<'a>(cx: &'a EditorContext, room: &Room) -> Option<&'a RoomName> {
-    cx.floor()
-        .room_names
-        .iter()
-        .find(|n| point_in_polygon(n.anchor, &room.polygon))
+    room.name_entry(&cx.floor().room_names)
 }
 
 /// The Room Specification values of `room`: the session settings (or the
@@ -403,11 +431,95 @@ pub fn interior_dims_text(cx: &EditorContext, room: &Room) -> String {
     format!("{} x {}", cx.fmt_dim(hi.x - lo.x), cx.fmt_dim(hi.y - lo.y))
 }
 
-/// The label text of a room per the label options stored with it: the name,
-/// then the interior dimensions and the area (interior, standard or
-/// centerline) when checked. Empty when nothing is shown (R-50).
+/// The values the label macros stand for (R-47).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LabelValues {
+    pub name: String,
+    pub room_type: String,
+    pub area: String,
+    pub standard_area: String,
+    pub centerline_area: String,
+    pub dims: String,
+    pub ceiling: String,
+    pub floor: String,
+    pub perimeter: String,
+}
+
+/// The macros a label template understands, with what each stands for.
+pub const LABEL_MACROS: [(&str, &str); 9] = [
+    ("<name>", "room name"),
+    ("<type>", "room type"),
+    ("<area>", "interior area"),
+    ("<std_area>", "standard area"),
+    ("<cl_area>", "centerline area"),
+    ("<dims>", "interior dimensions"),
+    ("<ceiling>", "ceiling height"),
+    ("<floor>", "floor name"),
+    ("<perimeter>", "interior perimeter"),
+];
+
+/// Replaces the label macros of `template` with `vals`. Unknown text stays
+/// as typed; `\n` in the template starts a new line.
+pub fn expand_label_macros(template: &str, vals: &LabelValues) -> String {
+    let pairs = [
+        ("<name>", &vals.name),
+        ("<type>", &vals.room_type),
+        ("<area>", &vals.area),
+        ("<std_area>", &vals.standard_area),
+        ("<cl_area>", &vals.centerline_area),
+        ("<dims>", &vals.dims),
+        ("<ceiling>", &vals.ceiling),
+        ("<floor>", &vals.floor),
+        ("<perimeter>", &vals.perimeter),
+    ];
+    let mut out = template.replace("\\n", "\n");
+    for (token, value) in pairs {
+        out = out.replace(token, value);
+    }
+    out
+}
+
+fn sq_ft_text(v: f64) -> String {
+    format!("{} sq ft", v.round())
+}
+
+/// The macro values of `room` on the active floor.
+pub fn label_values(cx: &EditorContext, room: &Room) -> LabelValues {
+    let entry = name_entry(cx, room);
+    let outline = if room.inner_polygon.len() >= 3 {
+        &room.inner_polygon
+    } else {
+        &room.polygon
+    };
+    let perimeter: f64 = (0..outline.len())
+        .map(|i| outline[i].dist(outline[(i + 1) % outline.len()]))
+        .sum();
+    LabelValues {
+        name: cx.room_name(room),
+        room_type: entry.map_or_else(String::new, |n| n.room_type.clone()),
+        area: sq_ft_text(room.interior_area_sq_ft()),
+        standard_area: sq_ft_text(room.standard_area_sq_ft()),
+        centerline_area: sq_ft_text(room.area_sq_ft()),
+        dims: interior_dims_text(cx, room),
+        ceiling: cx.fmt_dim(
+            entry
+                .and_then(|n| n.ceiling_height)
+                .unwrap_or(cx.floor().ceiling_height),
+        ),
+        floor: cx.floor().name.clone(),
+        perimeter: cx.fmt_dim(perimeter),
+    }
+}
+
+/// The label text of a room per the label options stored with it: a macro
+/// template when it has one, else the name, then the interior dimensions and
+/// the area (interior, standard or centerline) when checked. Empty when
+/// nothing is shown (R-50).
 pub fn room_label_text(cx: &EditorContext, room: &Room) -> String {
     let opts = label_options(cx, room);
+    if !opts.template.trim().is_empty() {
+        return expand_label_macros(&opts.template, &label_values(cx, room));
+    }
     let mut lines = Vec::new();
     if opts.show_name {
         lines.push(cx.room_name(room));
@@ -423,6 +535,150 @@ pub fn room_label_text(cx: &EditorContext, room: &Room) -> String {
         });
     }
     lines.join("\n")
+}
+
+// ----- draggable labels (R-44) -----
+
+/// Plan label font size, points (the size `draw_rooms` uses).
+pub const LABEL_FONT_PX: f64 = 13.0;
+
+/// Where `room`'s label is drawn: the room's label point plus the offset the
+/// label was dragged by.
+pub fn label_position(cx: &EditorContext, room: &Room) -> Point {
+    let off = name_entry(cx, room).map_or(Point::ZERO, |n| n.label.offset);
+    room_anchor(room) + off
+}
+
+/// Half the width and height of `room`'s label box in plan inches at the
+/// current zoom.
+fn label_half_extent(cx: &EditorContext, text: &str) -> (f64, f64) {
+    let ppi = cx.px_per_in.max(1e-6);
+    let lines = text.lines().count().max(1) as f64;
+    let chars = text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f64;
+    (
+        (chars * LABEL_FONT_PX * 0.28 + 3.0) / ppi,
+        (lines * LABEL_FONT_PX * 0.6 + 2.0) / ppi,
+    )
+}
+
+/// The room whose label is under `p`, if any (nested rooms first).
+pub fn label_at(cx: &EditorContext, p: Point) -> Option<usize> {
+    if !cx.layers().is_visible("Room Labels") {
+        return None;
+    }
+    let mut best: Option<(usize, f64)> = None;
+    for (i, room) in cx.rooms.iter().enumerate() {
+        let text = room_label_text(cx, room);
+        if text.trim().is_empty() {
+            continue;
+        }
+        let c = label_position(cx, room);
+        let (hw, hh) = label_half_extent(cx, &text);
+        if (p.x - c.x).abs() <= hw
+            && (p.y - c.y).abs() <= hh
+            && best.is_none_or(|(_, a)| room.area_sq_in < a)
+        {
+            best = Some((i, room.area_sq_in));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// Index into the active floor's `room_names` of room `idx`'s entry, creating
+/// the entry (the floor's default room type) when the room has none.
+fn ensure_name_entry(cx: &mut EditorContext, idx: usize) -> Option<usize> {
+    let room = cx.rooms.get(idx)?.clone();
+    if let Some(e) = name_entry(cx, &room) {
+        let anchor = e.anchor;
+        return cx
+            .floor()
+            .room_names
+            .iter()
+            .position(|n| n.anchor == anchor);
+    }
+    let anchor = room_anchor(&room);
+    let ty = draft_room_type(cx);
+    let (fl, rooms) = (cx.floor, cx.rooms.clone());
+    cx.project
+        .set_room_name(fl, anchor, room.label.clone(), ty, &rooms);
+    cx.project.floors[fl]
+        .room_names
+        .iter()
+        .position(|n| n.anchor == anchor)
+}
+
+/// Moves room `idx`'s label to `offset` from its label point as one undo step
+/// (the name entry is created when the room has none).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn set_label_offset(cx: &mut EditorContext, idx: usize, offset: Point) -> bool {
+    cx.begin_change("Move Room Label");
+    let Some(i) = ensure_name_entry(cx, idx) else {
+        cx.cancel_change();
+        return false;
+    };
+    let fl = cx.floor;
+    cx.project.floors[fl].room_names[i].label.offset = offset;
+    cx.mark_dirty();
+    true
+}
+
+/// Pointer pressed on a label: selects its room and starts the drag. False
+/// when no label is under `world`.
+pub fn label_pointer_down(cx: &mut EditorContext, world: Point) -> bool {
+    let Some(idx) = label_at(cx, world) else {
+        return false;
+    };
+    let room = cx.rooms[idx].clone();
+    let drag = LabelDrag {
+        floor: cx.floor,
+        room_point: room_anchor(&room),
+        grab: world,
+        start_offset: name_entry(cx, &room).map_or(Point::ZERO, |n| n.label.offset),
+        begun: false,
+    };
+    select_room(cx, idx);
+    with(|s| s.label_drag = Some(drag));
+    true
+}
+
+/// Is a label drag running?
+pub fn label_dragging() -> bool {
+    with(|s| s.label_drag.is_some())
+}
+
+/// Pointer moved during a label drag. The first real movement opens the undo
+/// step.
+pub fn label_pointer_move(cx: &mut EditorContext, world: Point) -> bool {
+    let Some(mut d) = with(|s| s.label_drag) else {
+        return false;
+    };
+    let delta = world - d.grab;
+    if !d.begun && delta.length() < 2.0 / cx.px_per_in.max(1e-6) {
+        return true;
+    }
+    let Some(idx) = (d.floor == cx.floor)
+        .then(|| room_index_at(cx, d.room_point))
+        .flatten()
+    else {
+        with(|s| s.label_drag = None);
+        return false;
+    };
+    if !d.begun {
+        cx.begin_change("Move Room Label");
+        d.begun = true;
+        with(|s| s.label_drag = Some(d));
+    }
+    if let Some(i) = ensure_name_entry(cx, idx) {
+        let fl = cx.floor;
+        cx.project.floors[fl].room_names[i].label.offset = d.start_offset + delta;
+        cx.mark_dirty();
+    }
+    true
+}
+
+/// Pointer released: ends a label drag. True when one was running.
+pub fn label_pointer_up() -> bool {
+    with(|s| s.label_drag.take().is_some())
 }
 
 // ----- living area (R-51..R-54) -----
@@ -445,10 +701,7 @@ pub fn living_area_total_sq_ft(cx: &EditorContext) -> f64 {
     let mut total = 0.0;
     for f in &cx.project.floors {
         for room in detect_rooms(&f.walls, 0.5) {
-            let entry = f
-                .room_names
-                .iter()
-                .find(|n| point_in_polygon(n.anchor, &room.polygon));
+            let entry = room.name_entry(&f.room_names);
             if counts_as_living(&cx.defaults, entry) {
                 total += room.interior_area_sq_ft();
             }
@@ -459,18 +712,57 @@ pub fn living_area_total_sq_ft(cx: &EditorContext) -> f64 {
 
 // ----- the Room Specification (R-19..R-36) -----
 
-/// Everything the Room Specification dialog starts from.
-pub fn room_dialog_init(cx: &EditorContext, idx: usize) -> Option<RoomInit> {
-    let room = cx.rooms.get(idx)?;
-    let default_type = cx
-        .defaults
+/// The room type a new room on the active floor starts with: the floor's
+/// default room type (Floor Defaults) when it names a known type, else the
+/// first of the plan's types.
+pub fn draft_room_type(cx: &EditorContext) -> String {
+    let wanted = &cx.floor().settings.default_room_type;
+    if !wanted.is_empty() && cx.defaults.room_type(wanted).is_some() {
+        return wanted.clone();
+    }
+    cx.defaults
         .rooms
         .room_types
         .first()
-        .map_or(String::new(), |t| t.name.clone());
-    let name = match name_entry(cx, room) {
-        Some(e) => e.clone(),
-        None => RoomName::new(room_anchor(room), room.label.clone(), default_type),
+        .map_or(String::new(), |t| t.name.clone())
+}
+
+/// The draft a room without a name entry starts the Room Specification from:
+/// the floor's default type and materials and finish thicknesses (Floor
+/// Defaults, R-56); when the floor names a default type its function sets the
+/// platform defaults too (R-41).
+fn new_room_draft(cx: &EditorContext, room: &Room) -> (RoomName, RoomExtras) {
+    let st = &cx.floor().settings;
+    let ty = draft_room_type(cx);
+    let mut name = RoomName::new(room_anchor(room), room.label.clone(), ty.clone());
+    if !st.floor_material.is_empty() {
+        name.floor_finish = Some(st.floor_material.clone());
+    }
+    if !st.ceiling_material.is_empty() {
+        name.ceiling_finish = Some(st.ceiling_material.clone());
+    }
+    let mut extras = extras_for(cx, room);
+    extras.floor_finish_thickness = st.floor_finish_thickness;
+    extras.ceiling_finish_thickness = st.ceiling_finish_thickness;
+    if !st.default_room_type.is_empty() {
+        if let Some(def) = cx.defaults.room_type(&ty) {
+            let fd = function_defaults(&def.function, &ty);
+            apply_function_defaults(&mut name, &fd, st.floor_finish_thickness);
+            if let Some(m) = name.misc.take() {
+                extras.floor_finish_thickness = m.floor_finish_thickness;
+                extras.floor_structure = m.floor_structure;
+            }
+        }
+    }
+    (name, extras)
+}
+
+/// Everything the Room Specification dialog starts from.
+pub fn room_dialog_init(cx: &EditorContext, idx: usize) -> Option<RoomInit> {
+    let room = cx.rooms.get(idx)?;
+    let (name, extras) = match name_entry(cx, room) {
+        Some(e) => (e.clone(), extras_for(cx, room)),
+        None => new_room_draft(cx, room),
     };
     let outline = if room.inner_polygon.len() >= 3 {
         room.inner_polygon.clone()
@@ -483,7 +775,7 @@ pub fn room_dialog_init(cx: &EditorContext, idx: usize) -> Option<RoomInit> {
     Some(RoomInit {
         room_index: idx,
         name,
-        extras: extras_for(cx, room),
+        extras,
         types: cx.defaults.rooms.room_types.clone(),
         polygon: outline,
         interior_dims: interior_dims_text(cx, room),
@@ -492,6 +784,7 @@ pub fn room_dialog_init(cx: &EditorContext, idx: usize) -> Option<RoomInit> {
         perimeter_in: perimeter,
         floor_elevation: cx.floor().elevation,
         floor_ceiling_height: cx.floor().ceiling_height,
+        default_floor_finish: cx.floor().settings.floor_finish_thickness,
         default_name: room.label.clone(),
         total_living_sq_ft: living_area_total_sq_ft(cx),
         floor_name: cx.floor().name.clone(),
@@ -509,7 +802,7 @@ pub fn apply_room_spec(
         return false;
     };
     let old_key = name_entry(cx, &room).map(|n| extras_key(cx.floor, n.anchor));
-    let anchor = if point_in_polygon(draft.anchor, &room.polygon) {
+    let anchor = if room.contains(draft.anchor) {
         draft.anchor
     } else {
         room_anchor(&room)
@@ -602,9 +895,26 @@ fn triangulate(poly: &[Point]) -> Vec<[usize; 3]> {
     out
 }
 
-/// Parallel hatch segments across `poly`: lines where `n . p` is a multiple of
-/// `spacing`, clipped to the polygon by pairing the edge crossings.
-fn hatch_segments(poly: &[Point], n: Point, spacing: f64) -> Vec<(Point, Point)> {
+/// The hatch segments the plan draws (see [`hatch_segments`]), for tests.
+#[cfg(test)]
+pub fn hatch_lines(
+    poly: &[Point],
+    holes: &[Vec<Point>],
+    n: Point,
+    spacing: f64,
+) -> Vec<(Point, Point)> {
+    hatch_segments(poly, holes, n, spacing)
+}
+
+/// Parallel hatch segments across `poly` minus `holes`: lines where `n . p`
+/// is a multiple of `spacing`, clipped to the polygon by pairing the edge
+/// crossings (the holes' edges make the gaps).
+fn hatch_segments(
+    poly: &[Point],
+    holes: &[Vec<Point>],
+    n: Point,
+    spacing: f64,
+) -> Vec<(Point, Point)> {
     let f = |p: Point| n.x * p.x + n.y * p.y;
     let g = |p: Point| -n.y * p.x + n.x * p.y;
     let (mut lo, mut hi) = (f64::MAX, f64::MIN);
@@ -621,11 +931,13 @@ fn hatch_segments(poly: &[Point], n: Point, spacing: f64) -> Vec<(Point, Point)>
     for k in first..=last {
         let c = k as f64 * spacing + 1e-7;
         let mut hits: Vec<Point> = Vec::new();
-        for i in 0..poly.len() {
-            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
-            let (fa, fb) = (f(a), f(b));
-            if (fa - c) * (fb - c) < 0.0 {
-                hits.push(Point::lerp(a, b, (c - fa) / (fb - fa)));
+        for ring in std::iter::once(poly).chain(holes.iter().map(Vec::as_slice)) {
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                let (fa, fb) = (f(a), f(b));
+                if (fa - c) * (fb - c) < 0.0 {
+                    hits.push(Point::lerp(a, b, (c - fa) / (fb - fa)));
+                }
             }
         }
         hits.sort_by(|p, q| g(*p).total_cmp(&g(*q)));
@@ -636,7 +948,13 @@ fn hatch_segments(poly: &[Point], n: Point, spacing: f64) -> Vec<(Point, Point)>
     out
 }
 
-fn draw_fill(painter: &egui::Painter, cam: &Camera, poly: &[Point], fill: FillStyle) {
+fn draw_fill(
+    painter: &egui::Painter,
+    cam: &Camera,
+    poly: &[Point],
+    holes: &[Vec<Point>],
+    fill: FillStyle,
+) {
     if fill.pattern == FillPattern::None || poly.len() < 3 {
         return;
     }
@@ -645,13 +963,24 @@ fn draw_fill(painter: &egui::Painter, cam: &Camera, poly: &[Point], fill: FillSt
     match fill.pattern {
         FillPattern::Solid => {
             let col = Color32::from_rgba_unmultiplied(r, g, b, alpha(70.0));
-            let pts = screen_poly(cam, poly);
             let mut mesh = Mesh::default();
-            for p in &pts {
-                mesh.colored_vertex(*p, col);
-            }
-            for t in triangulate(poly) {
-                mesh.add_triangle(t[0] as u32, t[1] as u32, t[2] as u32);
+            if holes.is_empty() {
+                let pts = screen_poly(cam, poly);
+                for p in &pts {
+                    mesh.colored_vertex(*p, col);
+                }
+                for t in triangulate(poly) {
+                    mesh.add_triangle(t[0] as u32, t[1] as u32, t[2] as u32);
+                }
+            } else {
+                // Nested rooms (R-11) are left open.
+                for tri in plan_3d::foundation::cut_platform(poly, holes) {
+                    let base = mesh.vertices.len() as u32;
+                    for p in tri {
+                        mesh.colored_vertex(cam.world_to_screen(p), col);
+                    }
+                    mesh.add_triangle(base, base + 1, base + 2);
+                }
             }
             painter.add(Shape::mesh(mesh));
         }
@@ -671,7 +1000,7 @@ fn draw_fill(painter: &egui::Painter, cam: &Camera, poly: &[Point], fill: FillSt
                 spacing
             };
             for d in &dirs {
-                for (a, b) in hatch_segments(poly, *d, spacing) {
+                for (a, b) in hatch_segments(poly, holes, *d, spacing) {
                     painter.line_segment([cam.world_to_screen(a), cam.world_to_screen(b)], stroke);
                 }
             }
@@ -689,7 +1018,7 @@ pub fn draw_room_selection(cx: &EditorContext, painter: &egui::Painter, cam: &Ca
         } else {
             &room.polygon
         };
-        draw_fill(painter, cam, poly, fill);
+        draw_fill(painter, cam, poly, &room.holes, fill);
     }
     let Some(room) = selected_room(cx).and_then(|i| cx.rooms.get(i)) else {
         return;
@@ -916,6 +1245,92 @@ pub fn build_new_floor(cx: &mut EditorContext, derive: bool) -> usize {
     idx
 }
 
+/// The choices of the Build New Floor dialog (R-59, R-61).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewFloorSpec {
+    /// What to copy from the current floor.
+    pub derive: DeriveFrom,
+    pub place: FloorPlacement,
+    /// Copy the current floor's room name entries.
+    pub copy_rooms: bool,
+    /// Copy the current floor's slab, pad and pier data.
+    pub copy_foundation: bool,
+    /// Take the ceiling height and Floor Defaults from the plan defaults
+    /// instead of the current floor.
+    pub heights_from_defaults: bool,
+    /// Build this foundation too when the plan has none.
+    pub foundation: Option<FoundationSpec>,
+}
+
+impl NewFloorSpec {
+    /// Chief's starting choices: derive the exterior walls, put the floor
+    /// above, heights from the Floor Defaults.
+    pub fn new() -> Self {
+        Self {
+            derive: DeriveFrom::ExteriorWalls,
+            place: FloorPlacement::Above,
+            copy_rooms: false,
+            copy_foundation: false,
+            heights_from_defaults: true,
+            foundation: None,
+        }
+    }
+}
+
+impl Default for NewFloorSpec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Does the plan have a foundation floor?
+pub fn has_foundation(cx: &EditorContext) -> bool {
+    cx.project
+        .floors
+        .first()
+        .is_some_and(|f| f.kind == FloorKind::Foundation)
+}
+
+/// Build New Floor with the dialog's full set of choices (R-59): derives from
+/// the current floor (the top normal floor when that is the foundation),
+/// places the new floor above or below it, takes heights from the Floor
+/// Defaults when asked and builds a foundation when the plan has none and one
+/// was chosen. One undo step; the new floor becomes the active one.
+pub fn build_new_floor_with(cx: &mut EditorContext, spec: &NewFloorSpec) -> Option<usize> {
+    let cur = cx.floor;
+    let source = (cx.project.floors.get(cur)?.kind != FloorKind::Foundation).then_some(cur);
+    let mut opts = NewFloorOptions {
+        source,
+        place: spec.place,
+        derive: spec.derive,
+        copy_rooms: spec.copy_rooms,
+        copy_foundation: spec.copy_foundation,
+        ceiling_height: None,
+        settings: None,
+    };
+    if spec.heights_from_defaults {
+        opts.ceiling_height = Some(cx.defaults.rooms.ceiling_height);
+        opts.settings = Some(cx.defaults.rooms.floor.clone());
+    }
+    let build_foundation = spec.foundation.filter(|_| !has_foundation(cx));
+    cx.begin_change("Build New Floor");
+    let Some(mut idx) = cx.project.build_new_floor_with(&opts) else {
+        cx.cancel_change();
+        cx.status = match spec.place {
+            FloorPlacement::Above => "Cannot build a floor above the attic".into(),
+            FloorPlacement::Below => "Cannot build a floor below the foundation".into(),
+        };
+        return None;
+    };
+    if let Some(f) = build_foundation {
+        cx.project.build_foundation(f.to_kind());
+        idx += 1;
+    }
+    after_floor_change(cx, idx);
+    cx.status = format!("Built {}", cx.project.floors[idx].name);
+    Some(idx)
+}
+
 /// Insert New Floor (R-60): an empty floor above the current one.
 pub fn insert_floor(cx: &mut EditorContext) -> Option<usize> {
     cx.begin_change("Insert New Floor");
@@ -931,6 +1346,64 @@ pub fn insert_floor(cx: &mut EditorContext) -> Option<usize> {
             None
         }
     }
+}
+
+/// Insert New Floor Below (R-60): an empty floor under the current one.
+pub fn insert_floor_below(cx: &mut EditorContext) -> Option<usize> {
+    cx.begin_change("Insert New Floor Below");
+    match cx.project.insert_floor_below(cx.floor) {
+        Some(idx) => {
+            after_floor_change(cx, idx);
+            cx.status = format!("Inserted {}", cx.project.floors[idx].name);
+            Some(idx)
+        }
+        None => {
+            cx.cancel_change();
+            cx.status = "Cannot insert a floor below the foundation".into();
+            None
+        }
+    }
+}
+
+/// Floor Defaults (R-56, R-58): sets the ceiling height and settings of the
+/// active floor as one undo step; walls at the old ceiling height follow and
+/// the floors above move by the change. With `as_plan_default` the plan
+/// defaults take them too, for floors built from now on.
+pub fn apply_floor_defaults(
+    cx: &mut EditorContext,
+    ceiling_height: f64,
+    settings: FloorSettings,
+    as_plan_default: bool,
+) -> bool {
+    cx.begin_change("Floor Defaults");
+    let fl = cx.floor;
+    if !cx
+        .project
+        .apply_floor_settings(fl, ceiling_height, settings.clone())
+    {
+        cx.cancel_change();
+        return false;
+    }
+    if as_plan_default {
+        set_plan_floor_defaults(cx, ceiling_height, settings);
+    }
+    cx.mark_dirty();
+    cx.refresh();
+    cx.status = "Updated the floor defaults".into();
+    true
+}
+
+/// Edit > Default Settings > Floors and Rooms > Floor Defaults: the ceiling
+/// height and settings every floor built from now on starts with.
+pub fn set_plan_floor_defaults(
+    cx: &mut EditorContext,
+    ceiling_height: f64,
+    settings: FloorSettings,
+) {
+    cx.defaults.rooms.ceiling_height = ceiling_height;
+    cx.defaults.rooms.floor_finish_thickness = settings.floor_finish_thickness;
+    cx.defaults.rooms.ceiling_finish_thickness = settings.ceiling_finish_thickness;
+    cx.defaults.rooms.floor = settings;
 }
 
 /// Delete Current Floor (R-60).
@@ -1171,6 +1644,7 @@ mod tests {
         extras.label.show_dimensions = true;
         extras.label.area_kind = AreaKind::Centerline;
         extras.roof_over = false;
+        extras.flat_roof = true;
         extras.ceiling_height_absolute = true;
         extras.floor_finish_thickness = 0.75;
         extras.wall_covering = "Wainscot".into();
@@ -1201,7 +1675,7 @@ mod tests {
         assert_eq!(back.crown_molding, "Cove");
         assert_eq!(back.fill, extras.fill);
         assert_eq!(back.label, extras.label);
-        assert!(!back.roof_over && back.ceiling_height_absolute);
+        assert!(!back.roof_over && back.flat_roof && back.ceiling_height_absolute);
         assert_eq!(back.floor_finish_thickness, 0.75);
         assert_eq!(back.wall_covering, "Wainscot");
         assert_eq!(fill_style(&cx2, &room2).pattern, FillPattern::Hatch);
@@ -1356,6 +1830,384 @@ mod tests {
             .map(|t| polygon_area(&[l[t[0]], l[t[1]], l[t[2]]]).abs())
             .sum();
         assert!((total - 300.0).abs() < 1e-6, "{total}");
+    }
+
+    /// The highest and lowest vertex height of the floor platform meshes at
+    /// plan x in `[x0, x1]`.
+    fn floor_span(cx: &EditorContext, x0: f32, x1: f32) -> (f32, f32) {
+        let scene = plan_3d::build_scene(&cx.project);
+        let ys: Vec<f32> = scene
+            .meshes
+            .iter()
+            .filter(|m| m.material == plan_3d::Material::Floor)
+            .flat_map(|m| m.vertices.iter())
+            .filter(|v| v.position[0] >= x0 && v.position[0] <= x1)
+            .map(|v| v.position[1])
+            .collect();
+        (
+            ys.iter().copied().fold(f32::MIN, f32::max),
+            ys.iter().copied().fold(f32::MAX, f32::min),
+        )
+    }
+
+    /// Names room 0 through the Room Specification dialog as `ty`.
+    fn name_room_through_dialog(cx: &mut EditorContext, ty: &str) {
+        let init = room_dialog_init(cx, 0).unwrap();
+        let mut d = crate::dialogs::room::RoomDialog::new(init);
+        d.set_room_type(ty);
+        let draft = d.room_name().clone();
+        assert!(apply_room_spec(cx, 0, &draft, d.extras()));
+    }
+
+    #[test]
+    fn a_garage_drops_its_3d_floor_24_inches_through_the_dialog() {
+        let mut cx = house();
+        let (house_top, _) = floor_span(&cx, 0.0, 240.0);
+        name_room_through_dialog(&mut cx, "Garage");
+        let (top, low) = floor_span(&cx, 0.0, 240.0);
+        // 24" down, and the finish layer goes (the slab is bare concrete).
+        assert!((top - (house_top - 24.0 - 0.75)).abs() < 0.01, "{top}");
+        assert!((top - low - 4.0).abs() < 0.01, "a 4 in slab");
+        // The values are the room's own, editable afterwards.
+        let n = name_entry(&cx, &cx.rooms[0].clone()).unwrap().clone();
+        assert_eq!(n.floor_height_offset, -24.0);
+        name_room_through_dialog(&mut cx, "Bedroom");
+        let (top, _) = floor_span(&cx, 0.0, 240.0);
+        assert!((top - house_top).abs() < 0.01, "back to the house floor");
+    }
+
+    #[test]
+    fn a_deck_has_no_ceiling_and_open_below_has_no_floor_in_3d() {
+        let count = |cx: &EditorContext, m: plan_3d::Material| {
+            plan_3d::build_scene(&cx.project)
+                .meshes
+                .iter()
+                .filter(|x| x.material == m)
+                .count()
+        };
+        let mut cx = house();
+        assert_eq!(count(&cx, plan_3d::Material::Ceiling), 1);
+        name_room_through_dialog(&mut cx, "Deck");
+        assert_eq!(
+            count(&cx, plan_3d::Material::Ceiling),
+            0,
+            "no ceiling platform"
+        );
+        assert_eq!(count(&cx, plan_3d::Material::Floor), 1, "a deck platform");
+        name_room_through_dialog(&mut cx, "Open Below");
+        assert_eq!(count(&cx, plan_3d::Material::Floor), 0, "no floor platform");
+        assert_eq!(count(&cx, plan_3d::Material::Ceiling), 1);
+        // The Structure switches are the dialog's to flip afterwards.
+        let init = room_dialog_init(&cx, 0).unwrap();
+        let mut draft = init.name.clone();
+        draft.has_floor = true;
+        assert!(apply_room_spec(&mut cx, 0, &draft, &init.extras));
+        assert_eq!(count(&cx, plan_3d::Material::Floor), 1);
+    }
+
+    #[test]
+    fn the_structure_define_changes_the_platform_thickness() {
+        let mut cx = house();
+        let init = room_dialog_init(&cx, 0).unwrap();
+        let mut d = crate::dialogs::room::RoomDialog::new(init);
+        d.structure_mut(crate::dialogs::room::Define::Floor)
+            .extend([
+                StructureLayer::new("Subfloor", 0.75),
+                StructureLayer::new("Joist", 9.25),
+            ]);
+        let draft = d.room_name().clone();
+        assert!(apply_room_spec(&mut cx, 0, &draft, d.extras()));
+        let (top, low) = floor_span(&cx, 0.0, 240.0);
+        assert!((top - low - 10.0).abs() < 0.01, "{}", top - low);
+        // The layers come back in the dialog and survive a save.
+        let again = room_dialog_init(&cx, 0).unwrap();
+        assert_eq!(again.extras.floor_structure.len(), 2);
+        let json = serde_json::to_string(&cx.project).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        let misc = back.floors[0].room_names[0].misc.clone().unwrap();
+        assert_eq!(misc.floor_structure.len(), 2);
+    }
+
+    #[test]
+    fn floor_defaults_change_what_new_rooms_start_with() {
+        let mut cx = house();
+        let before = room_dialog_init(&cx, 0).unwrap();
+        assert_eq!(before.floor_ceiling_height, cx.floor().ceiling_height);
+        let settings = FloorSettings {
+            default_room_type: "Garage".into(),
+            floor_finish_thickness: 0.5,
+            floor_material: "Oak".into(),
+            ..FloorSettings::default()
+        };
+        assert!(apply_floor_defaults(&mut cx, 96.0, settings, false));
+        let init = room_dialog_init(&cx, 0).unwrap();
+        assert_eq!(init.floor_ceiling_height, 96.0);
+        assert_eq!(init.name.room_type, "Garage");
+        assert_eq!(init.name.floor_finish.as_deref(), Some("Oak"));
+        assert_eq!(init.default_floor_finish, 0.5);
+        // The Garage function brought its platform defaults along.
+        assert_eq!(init.name.floor_height_offset, -24.0);
+        // Walls at the old ceiling height came down with it.
+        let scene = plan_3d::build_scene(&cx.project);
+        let ceil_y = scene
+            .meshes
+            .iter()
+            .filter(|m| m.material == plan_3d::Material::Ceiling)
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[1]))
+            .fold(f32::MAX, f32::min);
+        assert!((ceil_y - 96.0).abs() < 0.01, "{ceil_y}");
+        // One undo step brings the old values back.
+        assert!(cx.can_undo());
+        cx.undo();
+        assert_eq!(cx.floor().ceiling_height, before.floor_ceiling_height);
+    }
+
+    #[test]
+    fn plan_floor_defaults_set_the_next_floor_built() {
+        let mut cx = house();
+        let st = FloorSettings {
+            floor_structure_thickness: 12.0,
+            ..FloorSettings::default()
+        };
+        set_plan_floor_defaults(&mut cx, 120.0, st.clone());
+        let idx = build_new_floor_with(&mut cx, &NewFloorSpec::new()).unwrap();
+        assert_eq!(cx.project.floors[idx].ceiling_height, 120.0);
+        assert_eq!(cx.project.floors[idx].settings, st);
+        let want = cx.project.floors[0].ceiling_height + 12.0;
+        assert!((cx.project.floors[idx].elevation - want).abs() < 1e-9);
+        // Same as the floor below keeps the heights of the floor below.
+        let spec = NewFloorSpec {
+            heights_from_defaults: false,
+            ..NewFloorSpec::new()
+        };
+        cx.floor = 0;
+        let next = build_new_floor_with(&mut cx, &spec).unwrap();
+        assert_eq!(
+            cx.project.floors[next].ceiling_height,
+            cx.project.floors[0].ceiling_height
+        );
+    }
+
+    #[test]
+    fn build_new_floor_derives_exterior_only_all_walls_or_blank() {
+        let mut cx = house();
+        cx.project.add_wall(
+            0,
+            Point::new(120.0, 0.0),
+            Point::new(120.0, 180.0),
+            4.5,
+            109.0,
+            WallKind::Interior,
+        );
+        let exterior = build_new_floor_with(&mut cx, &NewFloorSpec::new()).unwrap();
+        assert_eq!(cx.project.floors[exterior].walls.len(), 4);
+        assert_eq!(cx.floor, exterior);
+        cx.floor = 0;
+        let all = build_new_floor_with(
+            &mut cx,
+            &NewFloorSpec {
+                derive: DeriveFrom::AllWalls,
+                ..NewFloorSpec::new()
+            },
+        )
+        .unwrap();
+        assert_eq!(cx.project.floors[all].walls.len(), 5);
+        cx.floor = 0;
+        let blank = build_new_floor_with(
+            &mut cx,
+            &NewFloorSpec {
+                derive: DeriveFrom::Blank,
+                ..NewFloorSpec::new()
+            },
+        )
+        .unwrap();
+        assert!(cx.project.floors[blank].walls.is_empty());
+        // One undo step per command.
+        cx.undo();
+        assert_eq!(cx.project.floors.len(), 3);
+    }
+
+    #[test]
+    fn build_new_floor_below_and_with_a_foundation() {
+        let mut cx = house();
+        let below = build_new_floor_with(
+            &mut cx,
+            &NewFloorSpec {
+                place: FloorPlacement::Below,
+                derive: DeriveFrom::Blank,
+                ..NewFloorSpec::new()
+            },
+        )
+        .unwrap();
+        assert_eq!(below, 0);
+        assert_eq!(cx.project.floors.len(), 2);
+        assert!(
+            cx.project.floors[1].walls.len() == 4,
+            "the old floor moved up"
+        );
+        // A foundation is built too when the plan has none and one was chosen.
+        let mut cx = house();
+        let spec = NewFloorSpec {
+            foundation: Some(FoundationSpec::from_defaults(&cx.defaults)),
+            ..NewFloorSpec::new()
+        };
+        let idx = build_new_floor_with(&mut cx, &spec).unwrap();
+        assert!(has_foundation(&cx));
+        assert_eq!(cx.project.floors.len(), 3);
+        assert_eq!(idx, 2);
+        assert_eq!(cx.floor, 2);
+        // With a foundation already there, the option does nothing.
+        let again = build_new_floor_with(&mut cx, &spec).unwrap();
+        assert_eq!(cx.project.floors.len(), 4);
+        assert_eq!(again, 3);
+        // Nothing is built below the foundation floor itself.
+        cx.floor = 0;
+        assert!(insert_floor_below(&mut cx).is_none());
+        cx.floor = 1;
+        assert_eq!(insert_floor_below(&mut cx), Some(1));
+    }
+
+    /// A 240 x 180 room with a free-standing 60 x 36 closet loop inside it.
+    fn house_with_closet() -> EditorContext {
+        let mut cx = house();
+        let k = [
+            Point::new(60.0, 60.0),
+            Point::new(120.0, 60.0),
+            Point::new(120.0, 96.0),
+            Point::new(60.0, 96.0),
+        ];
+        for i in 0..4 {
+            cx.project
+                .add_wall(0, k[i], k[(i + 1) % 4], 4.5, 109.0, WallKind::Interior);
+        }
+        cx.mark_dirty();
+        cx.refresh();
+        cx
+    }
+
+    #[test]
+    fn a_nested_closet_subtracts_from_the_room_around_it() {
+        let cx = house_with_closet();
+        assert_eq!(cx.rooms.len(), 2);
+        let outer = cx.rooms.iter().find(|r| !r.holes.is_empty()).unwrap();
+        let closet = cx.rooms.iter().find(|r| r.holes.is_empty()).unwrap();
+        assert!((outer.area_sq_in - (240.0 * 180.0 - 60.0 * 36.0)).abs() < 1e-6);
+        assert!((closet.area_sq_in - 60.0 * 36.0).abs() < 1e-6);
+        // Picking inside the closet gives the closet, outside it the room.
+        let (inside, around) = (Point::new(90.0, 78.0), Point::new(30.0, 30.0));
+        let at = |p| room_index_at(&cx, p).map(|i| cx.rooms[i].area_sq_in);
+        assert_eq!(at(inside), Some(closet.area_sq_in));
+        assert_eq!(at(around), Some(outer.area_sq_in));
+        // The living area counts the closet once.
+        let total = living_area_total_sq_ft(&cx);
+        let box_inner = (240.0 - 6.0) * (180.0 - 6.0) / 144.0;
+        assert!(total < box_inner + 0.01, "{total} <= {box_inner}");
+    }
+
+    #[test]
+    fn a_name_in_the_closet_belongs_to_the_closet() {
+        let mut cx = house_with_closet();
+        let outer_i = cx.rooms.iter().position(|r| !r.holes.is_empty()).unwrap();
+        let closet_i = 1 - outer_i;
+        let closet = cx.rooms[closet_i].clone();
+        let draft = RoomName::new(room_anchor(&closet), "Walk-in", "Closet");
+        let extras = extras_for(&cx, &closet);
+        assert!(apply_room_spec(&mut cx, closet_i, &draft, &extras));
+        let (outer, closet) = (cx.rooms[outer_i].clone(), cx.rooms[closet_i].clone());
+        assert_eq!(name_entry(&cx, &closet).unwrap().name, "Walk-in");
+        assert!(name_entry(&cx, &outer).is_none());
+        assert_eq!(cx.room_name(&closet), "Walk-in");
+        // Naming the room around it leaves the closet's name alone.
+        let draft = RoomName::new(room_anchor(&outer), "Bedroom", "Bedroom");
+        let extras = extras_for(&cx, &outer);
+        assert!(apply_room_spec(&mut cx, outer_i, &draft, &extras));
+        assert_eq!(cx.floor().room_names.len(), 2);
+        let (outer, closet) = (cx.rooms[outer_i].clone(), cx.rooms[closet_i].clone());
+        assert_eq!(cx.room_name(&closet), "Walk-in");
+        assert_eq!(cx.room_name(&outer), "Bedroom");
+    }
+
+    #[test]
+    fn a_dragged_label_offset_round_trips_and_is_picked() {
+        let mut cx = house();
+        cx.px_per_in = 1.0;
+        let room = cx.rooms[0].clone();
+        let home = label_position(&cx, &room);
+        assert_eq!(home, room_anchor(&room));
+        assert_eq!(label_at(&cx, home), Some(0));
+        // Dragging with the pointer: press on the label, move, release.
+        assert!(label_pointer_down(&mut cx, home));
+        assert_eq!(selected_room(&cx), Some(0), "the press picks the room");
+        assert!(label_dragging());
+        assert!(label_pointer_move(
+            &mut cx,
+            Point::new(home.x + 40.0, home.y - 25.0)
+        ));
+        assert!(label_pointer_up());
+        assert!(!label_dragging());
+        let room = cx.rooms[0].clone();
+        let moved = label_position(&cx, &room);
+        assert!((moved.x - (home.x + 40.0)).abs() < 1e-9);
+        assert!((moved.y - (home.y - 25.0)).abs() < 1e-9);
+        assert_eq!(label_at(&cx, moved), Some(0));
+        assert_eq!(label_at(&cx, Point::new(5000.0, 5000.0)), None);
+        // The offset is part of the file.
+        let json = serde_json::to_string(&cx.project).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        let n = &back.floors[0].room_names[0];
+        assert_eq!(n.label.offset, Point::new(40.0, -25.0));
+        // One undo step puts the label back.
+        cx.undo();
+        let room = cx.rooms[0].clone();
+        assert_eq!(label_position(&cx, &room), home);
+        // A press without a move changes nothing.
+        assert!(label_pointer_down(&mut cx, home));
+        assert!(label_pointer_up());
+        assert!(cx.floor().room_names.is_empty());
+        // Setting it directly, and resetting through the dialog's extras.
+        assert!(set_label_offset(&mut cx, 0, Point::new(-10.0, 12.0)));
+        let room = cx.rooms[0].clone();
+        assert_eq!(
+            label_position(&cx, &room),
+            Point::new(home.x - 10.0, home.y + 12.0)
+        );
+        let mut extras = extras_for(&cx, &room);
+        assert_eq!(extras.label.offset, Point::new(-10.0, 12.0));
+        extras.label.offset = Point::ZERO;
+        let draft = name_entry(&cx, &room).unwrap().clone();
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+        let room = cx.rooms[0].clone();
+        assert_eq!(label_position(&cx, &room), home);
+    }
+
+    #[test]
+    fn label_macros_expand_to_the_rooms_values() {
+        let mut cx = house();
+        let room = cx.rooms[0].clone();
+        let mut extras = extras_for(&cx, &room);
+        extras.label.template = "<name> (<type>)\\n<dims> <area> h=<ceiling> <floor>".into();
+        let mut draft = RoomName::new(room_anchor(&room), "Study", "Study");
+        draft.ceiling_height = Some(120.0);
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+        let room = cx.rooms[0].clone();
+        let text = room_label_text(&cx, &room);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert_eq!(lines[0], "Study (Study)");
+        assert!(
+            lines[1].contains(" x ") && lines[1].contains("sq ft"),
+            "{text}"
+        );
+        assert!(lines[1].contains(&cx.fmt_dim(120.0)), "{text}");
+        assert!(lines[1].contains(&cx.floor().name), "{text}");
+        assert!(!text.contains('<'), "{text}");
+        // Unknown text stays, and an empty template falls back to the lines.
+        let vals = label_values(&cx, &room);
+        assert_eq!(expand_label_macros("<foo> <name>", &vals), "<foo> Study");
+        extras.label.template.clear();
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+        let room = cx.rooms[0].clone();
+        assert!(room_label_text(&cx, &room).starts_with("Study\n"));
     }
 
     #[test]

@@ -10,14 +10,25 @@
 //! * [`walls`]: [`cad_to_walls`] turns pairs of parallel lines into wall
 //!   proposals, and [`apply_walls`] adds them to a project.
 //!
+//! * [`obj`] and [`gltf`]: readers for 3D library symbols (Wavefront OBJ,
+//!   glTF 2.0 `.gltf` / `.glb`) that produce a
+//!   [`ImportedModel`] in inches with Y up.
+//!
 //! All lengths are inches once converted; the reader itself keeps the raw
 //! drawing units.
 
 pub mod convert;
 pub mod dxf;
+pub mod gltf;
+pub mod model;
+pub mod obj;
 pub mod walls;
 
-pub use convert::{apply_cad, to_cad_objects, to_inches_factor};
+pub use convert::{
+    apply_cad, to_cad_objects, to_cad_objects_with, to_inches_factor, ImportOptions, LayerMapping,
+    LayerTarget,
+};
+pub use model::{ImportedModel, ImportedPart, ModelError, ModelOptions, UpAxis};
 pub use dxf::{parse_dxf, DxfBlock, DxfDrawing, DxfEntity, DxfLayer, DxfUnits};
 pub use walls::{apply_walls, cad_to_walls, CadToWallsOptions, CadToWallsResult, WallProposal};
 

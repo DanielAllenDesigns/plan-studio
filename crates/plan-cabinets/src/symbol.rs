@@ -118,7 +118,7 @@ pub fn plan_symbol(cabinet: &Cabinet) -> Vec<Stroke> {
         angle += FRAC_PI_2;
     }
     out.push(Stroke::Text {
-        at: q(label_point(&local, cabinet)),
+        at: q(label_point(&local, cabinet)).add(cabinet.label_offset),
         text: cabinet.display_label(),
         height: LABEL_HEIGHT,
         angle,
@@ -184,7 +184,9 @@ fn corner_strokes(cabinet: &Cabinet, out: &mut Vec<Stroke>) {
 
 /// The inset edge line of a custom countertop with a bevel or bullnose.
 fn edge_line(cabinet: &Cabinet, custom: &CustomTop, out: &mut Vec<Stroke>) {
-    if custom.edge == EdgeProfile::Square || custom.edge_size <= 0.0 {
+    if matches!(custom.edge, EdgeProfile::Square | EdgeProfile::Waterfall)
+        || custom.edge_size <= 0.0
+    {
         return;
     }
     let inner = geom::offset_ring(&custom.outline, -custom.edge_size);

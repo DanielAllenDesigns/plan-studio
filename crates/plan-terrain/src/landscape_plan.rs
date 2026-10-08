@@ -5,6 +5,7 @@
 use std::f64::consts::PI;
 
 use plan_3d::triangulate::ear_clip;
+use plan_core::geometry::point_in_polygon;
 use plan_core::units::fmt_ft_in_frac;
 use plan_core::Point;
 
@@ -59,6 +60,10 @@ const PLANT_COLOR: [u8; 3] = [0x2E, 0x7D, 0x32];
 const SPRINKLER_COLOR: [u8; 3] = [0x1E, 0x88, 0xE5];
 const LABEL_HEIGHT: f64 = 8.0;
 const SOLID_ALPHA: u8 = 90;
+/// The water ripple: row spacing, wave height and wavelength, inches.
+const RIPPLE_SPACING: f64 = 24.0;
+const RIPPLE_AMPLITUDE: f64 = 2.0;
+const RIPPLE_WAVELENGTH: f64 = 24.0;
 
 /// A circle as a closed polyline, `n` corners, starting at angle `start`.
 pub fn circle_points(c: Point, r: f64, n: usize, start: f64) -> Vec<Point> {
@@ -102,6 +107,62 @@ pub fn hatch_segments(poly: &[Point], spacing: f64, angle: f64) -> Vec<[Point; 2
             out.push([from(Point::new(pair[0], y)), from(Point::new(pair[1], y))]);
         }
         y += spacing;
+    }
+    out
+}
+
+/// Rows of wavy lines clipped to `poly`: the water ripple pattern. Rows are
+/// `spacing` apart, wave `amplitude` high and `wavelength` long, each row a
+/// little out of step with the one before; a row that leaves the outline is
+/// cut into one piece per stretch inside it.
+pub fn ripple_lines(
+    poly: &[Point],
+    spacing: f64,
+    amplitude: f64,
+    wavelength: f64,
+) -> Vec<Vec<Point>> {
+    let pts = dedup_points(poly, true);
+    if pts.len() < 3 || spacing <= 0.0 || wavelength <= 0.0 {
+        return Vec::new();
+    }
+    let (lo, hi) = pts.iter().fold(
+        (
+            Point::new(f64::INFINITY, f64::INFINITY),
+            Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), p| {
+            (
+                Point::new(lo.x.min(p.x), lo.y.min(p.y)),
+                Point::new(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        },
+    );
+    let step = wavelength / 8.0;
+    let mut out = Vec::new();
+    let mut y = (lo.y / spacing).floor() * spacing + spacing;
+    let mut row = 0_usize;
+    while y < hi.y {
+        let phase = row as f64 * 1.3;
+        let mut run: Vec<Point> = Vec::new();
+        let mut x = lo.x;
+        while x <= hi.x + step {
+            let p = Point::new(x, y + amplitude * (2.0 * PI * x / wavelength + phase).sin());
+            if point_in_polygon(p, &pts) {
+                run.push(p);
+            } else if !run.is_empty() {
+                if run.len() >= 2 {
+                    out.push(std::mem::take(&mut run));
+                } else {
+                    run.clear();
+                }
+            }
+            x += step;
+        }
+        if run.len() >= 2 {
+            out.push(run);
+        }
+        y += spacing;
+        row += 1;
     }
     out
 }
@@ -191,6 +252,19 @@ impl Sink<'_> {
                     });
                 }
             }
+            FillStyle::Ripple => {
+                self.fill(poly, style, FillStyle::Solid, color);
+                for line in ripple_lines(poly, RIPPLE_SPACING, RIPPLE_AMPLITUDE, RIPPLE_WAVELENGTH)
+                {
+                    self.push(PlanShape::Polyline {
+                        points: line,
+                        closed: false,
+                        color,
+                        weight: 0.4,
+                        dashed: false,
+                    });
+                }
+            }
             FillStyle::None | FillStyle::Default => {}
         }
     }
@@ -237,6 +311,16 @@ fn feature_plan(f: &Feature, items: &mut Vec<PlanItem>) {
         (false, false) => f.material.clone(),
         (true, true) => fmt_ft_in_frac(f.height, 2),
         (true, false) => String::new(),
+    };
+    let label = if f.pad && f.height < 0.0 {
+        let cut = format!("Cut {}", fmt_ft_in_frac(-f.height, 2));
+        if label.is_empty() {
+            cut
+        } else {
+            format!("{label}, {cut}")
+        }
+    } else {
+        label
     };
     if !label.is_empty() {
         s.text(centroid(&f.polygon), label, l.line);
@@ -308,10 +392,17 @@ fn object_plan(o: &Landscape, items: &mut Vec<PlanItem>) {
         }
         LandscapeKind::WaterFeature => {
             let l = look(&o.style, WATER_COLOR, 1.0, false);
-            s.fill(&o.points, &o.style, FillStyle::Solid, WATER_COLOR);
+            s.fill(&o.points, &o.style, FillStyle::Ripple, WATER_COLOR);
             s.line(o.points.clone(), true, &l);
             if o.edging && o.size > 0.0 {
                 s.line(offset_polygon(&o.points, o.size), true, &l);
+            }
+            if o.points.len() >= 3 && o.depth > 0.0 {
+                s.text(
+                    centroid(&o.points),
+                    format!("Depth {}", fmt_ft_in_frac(o.depth, 2)),
+                    l.line,
+                );
             }
         }
         LandscapeKind::SteppingStones => {

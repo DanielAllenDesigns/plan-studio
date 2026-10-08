@@ -76,6 +76,10 @@ pub struct MaterialDef {
     pub cost_per_sq_ft: f64,
     /// Accounting / cost-code reference.
     pub accounting_code: String,
+    /// An image file that paints the material in place of the generated
+    /// texture (Material Builder); `None` for the library's own materials.
+    #[serde(default)]
+    pub texture_path: Option<String>,
 }
 
 impl MaterialDef {
@@ -95,6 +99,7 @@ impl MaterialDef {
             bump: 0.0,
             cost_per_sq_ft: 0.0,
             accounting_code: String::new(),
+            texture_path: None,
         }
     }
 
@@ -146,5 +151,67 @@ impl MaterialDef {
             c(self.color[2]),
             (1.0 - self.transparency).clamp(0.0, 1.0),
         ]
+    }
+}
+
+/// How a scene material responds to light in the 3D views: the Standard
+/// shader and the path tracer both read this one table.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSurface {
+    /// 0 = mirror, 1 = fully diffuse (same scale as [`MaterialDef::roughness`]).
+    pub roughness: f32,
+    /// 0 = dielectric, 1 = metal.
+    pub metallic: f32,
+}
+
+/// Roughness and metalness of a [`plan_3d::Material`] (the 23 shaded scene
+/// materials; the selection tint is fully matte).
+pub fn scene_surface(m: plan_3d::Material) -> SceneSurface {
+    use plan_3d::Material as M;
+    let (roughness, metallic) = match m {
+        M::WallExterior => (0.85, 0.0),
+        M::WallInterior => (0.9, 0.0),
+        M::Floor => (0.4, 0.0),
+        M::Ceiling => (0.95, 0.0),
+        M::DoorPanel => (0.45, 0.0),
+        M::WindowGlass | M::Glass => (0.0, 0.0),
+        M::WindowFrame => (0.35, 0.0),
+        M::Roof => (0.75, 0.0),
+        M::Stucco => (0.95, 0.0),
+        M::Siding => (0.8, 0.0),
+        M::Brick => (0.9, 0.0),
+        M::Stone => (0.85, 0.0),
+        M::Concrete => (0.9, 0.0),
+        M::Trim => (0.5, 0.0),
+        M::Metal => (0.35, 0.9),
+        M::Framing => (0.8, 0.0),
+        M::Grass => (0.95, 0.0),
+        M::Mulch => (0.98, 0.0),
+        M::Foliage => (0.9, 0.0),
+        M::Water => (0.05, 0.0),
+        M::Asphalt => (0.92, 0.0),
+        M::Gravel => (0.97, 0.0),
+        M::Selection => (1.0, 0.0),
+    };
+    SceneSurface {
+        roughness,
+        metallic,
+    }
+}
+
+#[cfg(test)]
+mod scene_surface_tests {
+    use super::*;
+
+    #[test]
+    fn every_scene_material_has_a_valid_surface() {
+        for m in plan_3d::Material::ALL {
+            let s = scene_surface(m);
+            assert!((0.0..=1.0).contains(&s.roughness), "{m:?}");
+            assert!((0.0..=1.0).contains(&s.metallic), "{m:?}");
+        }
+        assert!(scene_surface(plan_3d::Material::Metal).metallic > 0.5);
+        assert!(scene_surface(plan_3d::Material::Stucco).metallic == 0.0);
+        assert!(scene_surface(plan_3d::Material::WindowGlass).roughness < 0.1);
     }
 }

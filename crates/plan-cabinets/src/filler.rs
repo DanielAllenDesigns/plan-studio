@@ -25,6 +25,33 @@ fn vertical_overlap(a: &Cabinet, b: &Cabinet) -> bool {
     a.elevation.max(b.elevation) < (a.elevation + a.height).min(b.elevation + b.height) - 0.5
 }
 
+/// The free stretch of `cab`'s own depth strip around its centre, as
+/// `(left, right)` offsets along its width axis from its position, bounded on
+/// each side by a wall (`walls` are plan polygons, see [`wall_polygon`]) or by
+/// another cabinet at the same height. `None` when a side is open or the
+/// centre lies inside an obstacle.
+fn gap_bounds(cab: &Cabinet, others: &[Cabinet], walls: &[Vec<Point>]) -> Option<(f64, f64)> {
+    let u = Point::new(cab.angle.cos(), cab.angle.sin());
+    let v = u.perp();
+    let mut obstacles: Vec<Vec<Point>> = walls.to_vec();
+    obstacles.extend(
+        others
+            .iter()
+            .filter(|o| o.id != cab.id && !o.kind.is_custom() && vertical_overlap(o, cab))
+            .map(Cabinet::footprint),
+    );
+    let (left, right) = geom::free_span(
+        &obstacles,
+        cab.position,
+        u,
+        v,
+        (STRIP_INSET, cab.depth - STRIP_INSET),
+        cab.width / 2.0,
+    )
+    .ok()?;
+    Some((left?, right?))
+}
+
 /// Resizes `filler` to fill the gap it sits in along its width axis.
 ///
 /// The gap is the free stretch of the filler's own depth strip around its
@@ -34,31 +61,36 @@ fn vertical_overlap(a: &Cabinet, b: &Cabinet) -> bool {
 /// filler's position and width are set to match it exactly and the width is
 /// returned; otherwise nothing changes and `None` comes back.
 pub fn fit_between(filler: &mut Cabinet, others: &[Cabinet], walls: &[Vec<Point>]) -> Option<f64> {
-    let u = Point::new(filler.angle.cos(), filler.angle.sin());
-    let v = u.perp();
-    let mut obstacles: Vec<Vec<Point>> = walls.to_vec();
-    obstacles.extend(
-        others
-            .iter()
-            .filter(|o| o.id != filler.id && !o.kind.is_custom() && vertical_overlap(o, filler))
-            .map(Cabinet::footprint),
-    );
-    let (left, right) = geom::free_span(
-        &obstacles,
-        filler.position,
-        u,
-        v,
-        (STRIP_INSET, filler.depth - STRIP_INSET),
-        filler.width / 2.0,
-    )
-    .ok()?;
-    let (l, r) = (left?, right?);
+    let (l, r) = gap_bounds(filler, others, walls)?;
     let gap = r - l;
     if gap <= 1e-6 || gap > MAX_FILLER_GAP {
         return None;
     }
+    let u = Point::new(filler.angle.cos(), filler.angle.sin());
     filler.position = filler.position.add(u.scale(l));
     filler.width = gap;
+    Some(gap)
+}
+
+/// Fit to gap (CB-5): a cabinet dragged between a wall and a cabinet (or
+/// between two cabinets) whose gap is within `tolerance` inches of its own
+/// width takes the gap's width and position exactly. Returns the new width, or
+/// `None` (changing nothing) when the gap is open on a side or differs from
+/// the width by more than `tolerance`.
+pub fn fit_to_gap(
+    cab: &mut Cabinet,
+    others: &[Cabinet],
+    walls: &[Vec<Point>],
+    tolerance: f64,
+) -> Option<f64> {
+    let (l, r) = gap_bounds(cab, others, walls)?;
+    let gap = r - l;
+    if gap <= 1e-6 || (gap - cab.width).abs() > tolerance + 1e-9 {
+        return None;
+    }
+    let u = Point::new(cab.angle.cos(), cab.angle.sin());
+    cab.position = cab.position.add(u.scale(l));
+    cab.width = gap;
     Some(gap)
 }
 
@@ -123,5 +155,37 @@ mod tests {
         let side = wall_polygon(Point::new(31.0, -10.0), Point::new(31.0, 60.0), 6.0);
         let mut f = at(Cabinet::filler(CabinetKind::BaseFiller, 3.0), 25.0, 3);
         assert!((fit_between(&mut f, &[base, wall_cab], &[side]).unwrap() - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fit_to_gap_snaps_a_nearly_fitting_cabinet_and_ignores_the_rest() {
+        // A wall face at x = 0 and a base cabinet starting at x = 31: a
+        // 31" gap. A 30" cabinet 0.5" off the wall snaps to the gap.
+        let wall = wall_polygon(Point::new(-3.0, -10.0), Point::new(-3.0, 60.0), 6.0);
+        let next = at(Cabinet::base(24.0), 31.0, 1);
+        let mut c = at(Cabinet::base(30.0), 0.5, 2);
+        let w = fit_to_gap(
+            &mut c,
+            std::slice::from_ref(&next),
+            std::slice::from_ref(&wall),
+            2.0,
+        )
+        .unwrap();
+        assert!((w - 31.0).abs() < 1e-9 && (c.width - 31.0).abs() < 1e-9);
+        assert!(c.position.x.abs() < 1e-9);
+        // A 24" cabinet is 7" short of the gap: left alone.
+        let mut small = at(Cabinet::base(24.0), 1.0, 3);
+        let before = small.clone();
+        assert!(fit_to_gap(
+            &mut small,
+            std::slice::from_ref(&next),
+            std::slice::from_ref(&wall),
+            2.0,
+        )
+        .is_none());
+        assert_eq!(small, before);
+        // No wall or cabinet on the left: an open side never fits.
+        let mut open = at(Cabinet::base(30.0), 0.5, 4);
+        assert!(fit_to_gap(&mut open, &[next], &[], 2.0).is_none());
     }
 }

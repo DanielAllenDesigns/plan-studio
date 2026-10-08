@@ -6,37 +6,62 @@
 //! an `egui::Window`; each object supplies its pages through [`SpecPages`].
 //!
 //! Dialogs edit a cloned draft. OK hands the draft back to the app, Cancel or
-//! Escape drops it, Enter is OK. Controls the model cannot store yet are drawn
+//! Escape drops it, Enter is OK, and Cmd+Enter is Apply
+//! ([`SpecDialog::show_with_apply`], which adds the Apply button). The first
+//! length field of the first page takes the keyboard focus when the dialog
+//! opens. Each dialog type (its title) remembers its size and position in
+//! `~/.plan-studio/settings.json`; the window never opens larger than the
+//! screen, whatever the UI scale, and the preview drops out when the window is
+//! narrow. Controls the model cannot store yet are drawn
 //! disabled (the full option set stays discoverable) or, where the spec asks
 //! for it, kept per session by the app (see `WallExtras` / `OpeningExtras`).
 
+pub mod action_history;
+pub mod app_info;
 pub mod build_tools;
 pub mod cabinet;
 pub mod cad;
 pub mod camera;
+pub mod customize_toolbars;
 mod default_lists;
-mod defaults;
+pub mod defaults;
+pub mod delete_objects;
 pub mod details;
 pub mod dimension;
+pub mod edit_behaviors;
 pub mod electrical;
 pub mod exchange;
 pub mod find_replace;
 pub mod floor;
+pub mod floor_defaults;
 pub mod foundation;
 pub mod framing;
+pub mod help;
 pub mod hotkeys;
 pub mod images;
 pub mod layer_display;
+pub mod layer_sets;
 pub mod layout;
+pub mod materials;
 mod opening;
+pub mod plan_check;
+pub mod plan_views;
+pub mod preferences;
+pub mod print;
 pub mod project_info;
+pub mod reference_display;
 pub mod roof;
 pub mod room;
 pub mod schedule_spec;
+pub mod send_to_layer;
+pub mod snap_settings;
 pub mod stairs;
 pub mod symbol;
 pub mod terrain;
 pub mod text;
+pub mod transform;
+pub mod underlay;
+pub mod unsaved;
 mod wall;
 mod wall_types;
 
@@ -63,7 +88,12 @@ const BOTTOM_HEIGHT: f32 = 40.0;
 const LABEL_WIDTH: f32 = 175.0;
 const SESSION_NOTE: &str = "Stored per session until the model grows these fields";
 
-const ERROR_RED: Color32 = Color32::from_rgb(0xE0, 0x4B, 0x4B);
+/// Error text: 4.6:1 on the dialog's dark panel gray.
+const ERROR_RED: Color32 = Color32::from_rgb(0xFF, 0x7B, 0x7B);
+/// The window below this width (points) drops the preview panel.
+const NARROW_WIDTH: f32 = 560.0;
+/// The window is never larger than this share of the screen.
+const SCREEN_SHARE: f32 = 0.96;
 
 // The preview is drawn like a drawing sheet so it reads at any UI brightness.
 const PV_BG: Color32 = Color32::from_rgb(0xEC, 0xEA, 0xE3);
@@ -118,6 +148,8 @@ pub struct SpecDialog {
     id: egui::Id,
     active: usize,
     show_help: bool,
+    /// Nothing has been drawn yet: the first field takes the focus.
+    fresh: bool,
 }
 
 impl SpecDialog {
@@ -129,73 +161,147 @@ impl SpecDialog {
             id: egui::Id::new(("spec_dialog", key)),
             active: 0,
             show_help: false,
+            fresh: true,
         }
     }
 
+    /// The dialog type's name in the settings file (its title).
+    #[allow(dead_code)]
+    pub fn geometry_key(&self) -> &str {
+        &self.title
+    }
+
     pub fn show(&mut self, ctx: &egui::Context, pages: &mut dyn SpecPages) -> Outcome {
+        self.frame(ctx, pages, false).0
+    }
+
+    /// [`SpecDialog::show`] with an Apply button between Cancel and OK. The
+    /// second value is true on the frame Apply (or Cmd+Enter) was used: the
+    /// caller applies the draft and the dialog stays open.
+    #[allow(dead_code)]
+    pub fn show_with_apply(
+        &mut self,
+        ctx: &egui::Context,
+        pages: &mut dyn SpecPages,
+    ) -> (Outcome, bool) {
+        self.frame(ctx, pages, true)
+    }
+
+    /// The window size and position this dialog opens with: what was
+    /// remembered for its type, else the default, kept inside the screen.
+    fn start_geometry(&self, screen: Rect) -> (Vec2, Option<Pos2>, Vec2) {
+        let max = screen.size() * SCREEN_SHARE;
+        let min = Vec2::new(640.0_f32.min(max.x), 380.0_f32.min(max.y));
+        let saved = crate::theme::dialog_geometry(&self.title);
+        let size = saved
+            .map_or(Vec2::new(820.0, 560.0), |g| Vec2::new(g.size[0], g.size[1]))
+            .min(max)
+            .max(min);
+        let pos = saved.map(|g| {
+            Pos2::new(
+                g.pos[0].clamp(screen.min.x, (screen.max.x - 120.0).max(screen.min.x)),
+                g.pos[1].clamp(screen.min.y, (screen.max.y - 60.0).max(screen.min.y)),
+            )
+        });
+        (size, pos, min)
+    }
+
+    fn frame(
+        &mut self,
+        ctx: &egui::Context,
+        pages: &mut dyn SpecPages,
+        with_apply: bool,
+    ) -> (Outcome, bool) {
         let mut outcome = Outcome::Open;
+        let mut apply = false;
         let mut open = true;
         let error = pages.error();
         let tabs = pages.tabs();
         if !tabs.get(self.active).is_some_and(|t| t.enabled) {
             self.active = 0;
         }
-        egui::Window::new(self.title.clone())
+        FOCUS_FIRST.with(|f| f.set(self.fresh));
+        let (size, pos, min) = self.start_geometry(ctx.screen_rect());
+        let mut window = egui::Window::new(self.title.clone())
             .id(self.id)
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_size([820.0, 560.0])
-            .min_size([640.0, 380.0])
-            .pivot(Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
-            .show(ctx, |ui| {
-                let avail = ui.available_rect_before_wrap();
-                ui.allocate_rect(avail, Sense::hover());
-                let body = Rect::from_min_max(
-                    avail.min,
-                    Pos2::new(avail.max.x, avail.max.y - BOTTOM_HEIGHT),
-                );
-                let bottom = Rect::from_min_max(Pos2::new(avail.min.x, body.max.y), avail.max);
-                let tab_rect =
-                    Rect::from_min_size(body.min, Vec2::new(TAB_LIST_WIDTH, body.height()));
-                let prev_rect =
-                    Rect::from_min_max(Pos2::new(body.max.x - PREVIEW_WIDTH, body.min.y), body.max);
-                let mid_rect = Rect::from_min_max(
-                    Pos2::new(tab_rect.max.x + 10.0, body.min.y),
-                    Pos2::new(prev_rect.min.x - 10.0, body.max.y),
-                );
+            .default_size(size)
+            .min_size(min)
+            .constrain(true);
+        window = match pos {
+            Some(p) => window.default_pos(p),
+            None => window
+                .pivot(Align2::CENTER_CENTER)
+                .default_pos(ctx.screen_rect().center()),
+        };
+        let mut content_size = size;
+        let shown = window.show(ctx, |ui| {
+            let avail = ui.available_rect_before_wrap();
+            content_size = avail.size();
+            ui.allocate_rect(avail, Sense::hover());
+            // Wider text gets wider label and tab columns.
+            let k = (ui.style().text_styles[&egui::TextStyle::Body].size / 15.0).max(1.0);
+            let tab_width = TAB_LIST_WIDTH * k;
+            let body = Rect::from_min_max(
+                avail.min,
+                Pos2::new(avail.max.x, avail.max.y - BOTTOM_HEIGHT),
+            );
+            let bottom = Rect::from_min_max(Pos2::new(avail.min.x, body.max.y), avail.max);
+            let tab_rect = Rect::from_min_size(body.min, Vec2::new(tab_width, body.height()));
+            let preview_width = if body.width() < NARROW_WIDTH {
+                0.0
+            } else {
+                PREVIEW_WIDTH
+            };
+            let prev_rect = Rect::from_min_max(
+                Pos2::new(body.max.x - preview_width, body.min.y),
+                body.max,
+            );
+            let mid_rect = Rect::from_min_max(
+                Pos2::new(tab_rect.max.x + 10.0, body.min.y),
+                Pos2::new(
+                    if preview_width > 0.0 {
+                        prev_rect.min.x - 10.0
+                    } else {
+                        body.max.x
+                    },
+                    body.max.y,
+                ),
+            );
 
-                // Tab list.
-                let mut tc = ui.new_child(UiBuilder::new().max_rect(tab_rect));
-                tc.painter()
-                    .rect_filled(tab_rect, 3.0, tc.visuals().extreme_bg_color);
-                egui::ScrollArea::vertical()
-                    .id_salt("spec_tab_list")
-                    .auto_shrink([false, false])
-                    .show(&mut tc, |ui| {
-                        ui.add_space(4.0);
-                        ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                            for (i, tab) in tabs.iter().enumerate() {
-                                let label = egui::SelectableLabel::new(self.active == i, tab.name);
-                                if ui.add_enabled(tab.enabled, label).clicked() {
-                                    self.active = i;
-                                }
+            // Tab list.
+            let mut tc = ui.new_child(UiBuilder::new().max_rect(tab_rect));
+            tc.painter()
+                .rect_filled(tab_rect, 3.0, tc.visuals().extreme_bg_color);
+            egui::ScrollArea::vertical()
+                .id_salt("spec_tab_list")
+                .auto_shrink([false, false])
+                .show(&mut tc, |ui| {
+                    ui.add_space(4.0);
+                    ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+                        for (i, tab) in tabs.iter().enumerate() {
+                            let label = egui::SelectableLabel::new(self.active == i, tab.name);
+                            if ui.add_enabled(tab.enabled, label).clicked() {
+                                self.active = i;
                             }
-                        });
+                        }
                     });
+                });
 
-                // Active tab panel.
-                let mut mc = ui.new_child(UiBuilder::new().max_rect(mid_rect));
-                egui::ScrollArea::vertical()
-                    .id_salt(("spec_page", self.active))
-                    .auto_shrink([false, false])
-                    .show(&mut mc, |ui| {
-                        ui.set_width(ui.available_width());
-                        pages.page(ui, self.active);
-                    });
+            // Active tab panel.
+            let mut mc = ui.new_child(UiBuilder::new().max_rect(mid_rect));
+            egui::ScrollArea::vertical()
+                .id_salt(("spec_page", self.active))
+                .auto_shrink([false, false])
+                .show(&mut mc, |ui| {
+                    ui.set_width(ui.available_width());
+                    pages.page(ui, self.active);
+                });
 
-                // Preview.
+            // Preview.
+            if preview_width > 0.0 {
                 let painter = ui.painter_at(prev_rect);
                 painter.rect_filled(prev_rect, 4.0, PV_BG);
                 painter.rect_stroke(
@@ -205,50 +311,98 @@ impl SpecDialog {
                     StrokeKind::Inside,
                 );
                 pages.preview(&painter, prev_rect.shrink(8.0));
+            }
 
-                // Bottom row.
-                ui.painter().hline(
-                    avail.x_range(),
-                    bottom.min.y + 2.0,
-                    ui.visuals().widgets.noninteractive.bg_stroke,
-                );
-                let mut bc = ui.new_child(
-                    UiBuilder::new()
-                        .max_rect(bottom.shrink2(Vec2::new(0.0, 5.0)))
-                        .layout(Layout::left_to_right(Align::Center)),
-                );
-                if bc.button("Help").clicked() {
-                    self.show_help = !self.show_help;
+            // Bottom row.
+            ui.painter().hline(
+                avail.x_range(),
+                bottom.min.y + 2.0,
+                ui.visuals().widgets.noninteractive.bg_stroke,
+            );
+            let mut bc = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(bottom.shrink2(Vec2::new(0.0, 5.0)))
+                    .layout(Layout::left_to_right(Align::Center)),
+            );
+            if bc.button("Help").clicked() {
+                self.show_help = !self.show_help;
+            }
+            if self.show_help {
+                bc.weak("Help pages are not written yet. Hover a control for a tooltip.");
+            }
+            bc.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let ok = egui::Button::new(RichText::new("   OK   ").strong());
+                let clicked = ui.add_enabled(error.is_none(), ok).clicked();
+                if clicked {
+                    outcome = Outcome::Ok;
                 }
-                if self.show_help {
-                    bc.weak("Help pages are not written yet. Hover a control for a tooltip.");
+                if with_apply {
+                    let button = egui::Button::new("Apply");
+                    let r = ui
+                        .add_enabled(error.is_none(), button)
+                        .on_hover_text("Apply the changes and keep the dialog open (Cmd+Enter)");
+                    apply |= r.clicked();
                 }
-                bc.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let ok = egui::Button::new(RichText::new("   OK   ").strong());
-                    let clicked = ui.add_enabled(error.is_none(), ok).clicked();
-                    if clicked {
-                        outcome = Outcome::Ok;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        outcome = Outcome::Cancel;
-                    }
-                    if let Some(e) = &error {
-                        ui.colored_label(ERROR_RED, e);
-                    }
-                });
+                if ui.button("Cancel").clicked() {
+                    outcome = Outcome::Cancel;
+                }
+                if let Some(e) = &error {
+                    ui.colored_label(ERROR_RED, e);
+                }
             });
+        });
         if !open {
             outcome = Outcome::Cancel;
         }
+        if let Some(r) = &shown {
+            // Remember where the window is and how large its content is.
+            crate::theme::remember_dialog(
+                &self.title,
+                crate::theme::DialogGeometry {
+                    pos: [r.response.rect.min.x, r.response.rect.min.y],
+                    size: [content_size.x, content_size.y],
+                },
+            );
+            crate::theme::flush_dialog_geometry(ctx);
+        }
+        if self.fresh && shown.is_some() {
+            self.fresh = false;
+        }
+        FOCUS_FIRST.with(|f| f.set(false));
         // Consumed so a dialog stacked underneath (Default Settings) does not
-        // also react to the same key press.
+        // also react to the same key press. Cmd+Enter is Apply; Enter is OK
+        // unless a button or list row has the keyboard focus (then Enter
+        // presses that control).
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             outcome = Outcome::Cancel;
-        } else if error.is_none() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+        } else if error.is_none()
+            && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter))
+        {
+            if with_apply {
+                apply = true;
+            } else {
+                outcome = Outcome::Ok;
+            }
+        } else if error.is_none()
+            && outcome == Outcome::Open
+            && !(ctx.memory(|m| m.focused()).is_some() && !ctx.wants_keyboard_input())
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+        {
             outcome = Outcome::Ok;
         }
-        outcome
+        (outcome, apply && outcome == Outcome::Open)
     }
+}
+
+thread_local! {
+    /// Set for the first frame of a dialog: the first length field draws
+    /// with the keyboard focus.
+    static FOCUS_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// True once per dialog opening, for the first field that asks.
+fn take_focus_first() -> bool {
+    FOCUS_FIRST.with(|f| f.replace(false))
 }
 
 // ----- field helpers -----
@@ -272,9 +426,11 @@ pub fn section(ui: &mut Ui, title: &str) {
 
 /// A labelled row: fixed-width label, then the control(s).
 pub fn row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    // The label column grows with the text size (17 pt "Larger text").
+    let k = (ui.style().text_styles[&egui::TextStyle::Body].size / 15.0).max(1.0);
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
-            Vec2::new(LABEL_WIDTH, 20.0),
+            Vec2::new(LABEL_WIDTH * k, 22.0),
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.label(label);
@@ -411,6 +567,9 @@ impl Fields {
             edit = edit.text_color(ERROR_RED);
         }
         let resp = ui.add(edit);
+        if take_focus_first() {
+            resp.request_focus();
+        }
         let mut changed = false;
         if resp.changed() {
             if let Some(v) = kind.parse(&text) {

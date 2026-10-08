@@ -12,9 +12,6 @@
 //! `plan_cabinets::FaceLayout` addressed by a path of indices, so they test
 //! without a GUI.
 
-// The shell opens this dialog; until it is wired the items are unused.
-#![allow(dead_code)]
-
 use super::{
     dis_check, dis_combo, dis_radio, fmt_short, off, on, pv_text, row, section, Fields, Outcome,
     SpecDialog, SpecPages, Tab, PV_GLASS, PV_INK, PV_WALL,
@@ -440,18 +437,14 @@ impl CabinetDialog {
 }
 
 fn handle_name(h: HandleStyle) -> &'static str {
-    match h {
-        HandleStyle::None => "None",
-        HandleStyle::Knob => "Knob",
-        HandleStyle::Pull => "Pull",
-    }
+    h.name()
 }
 
 fn handle_combo(ui: &mut Ui, salt: &str, value: &mut HandleStyle) {
     egui::ComboBox::from_id_salt(salt)
         .selected_text(handle_name(*value))
         .show_ui(ui, |ui| {
-            for h in [HandleStyle::None, HandleStyle::Knob, HandleStyle::Pull] {
+            for h in HandleStyle::ALL {
                 ui.selectable_value(value, h, handle_name(h));
             }
         });
@@ -466,7 +459,14 @@ impl CabinetForm {
         let f = &mut self.fields;
         let d = &mut self.draft;
         section(ui, "Cabinet Style");
-        row(ui, "Type", |ui| dis_combo(ui, "cab_type", d.kind.name()));
+        row(ui, "Type", |ui| {
+            dis_combo(
+                ui,
+                "cab_type",
+                d.preset
+                    .map_or_else(|| d.kind.name(), plan_cabinets::CabinetPreset::name),
+            )
+        });
         dis_check(ui, "Treat As Filler", d.kind.is_filler());
         section(ui, "Size/Position");
         if d.kind.is_custom() {
@@ -516,6 +516,12 @@ impl CabinetForm {
         }
         if let Some(c) = d.custom.as_mut() {
             section(ui, "Custom Top");
+            if !d.joined.is_empty() {
+                ui.weak(format!(
+                    "Joined from {} cabinets: its outline and thickness follow them and are rebuilt when they change; the edge and corner treatment are kept.",
+                    d.joined.len()
+                ));
+            }
             if f.length_row(ui, "Thickness", "cust_thick", &mut c.thickness)
                 && d.kind == CabinetKind::CustomCountertop
             {
@@ -534,7 +540,7 @@ impl CabinetForm {
                             }
                         });
                 });
-                if c.edge != EdgeProfile::Square {
+                if !matches!(c.edge, EdgeProfile::Square | EdgeProfile::Waterfall) {
                     f.length_row(ui, "Edge Size", "cust_edge_size", &mut c.edge_size);
                 }
                 row(ui, "Corner Treatment", |ui| {
@@ -558,13 +564,18 @@ impl CabinetForm {
             section(ui, "Backsplash");
             let mut has = d.backsplash.is_some();
             if ui.checkbox(&mut has, "Backsplash").changed() {
-                d.backsplash = has.then_some(Backsplash {
-                    height: 4.0,
-                    thickness: 0.5,
-                });
+                d.backsplash = has.then_some(Backsplash::new(4.0, 0.5));
             }
             if let Some(b) = d.backsplash.as_mut() {
-                f.length_row(ui, "Height", "bs_height", &mut b.height);
+                ui.checkbox(
+                    &mut b.full_height,
+                    "Full Height (to the wall cabinet above)",
+                );
+                if b.full_height {
+                    row(ui, "Height", |ui| ui.label(fmt_short(b.height)));
+                } else {
+                    f.length_row(ui, "Height", "bs_height", &mut b.height);
+                }
                 f.length_row(ui, "Thickness", "bs_thick", &mut b.thickness);
             }
 
@@ -642,8 +653,11 @@ impl CabinetForm {
                             }
                         });
                 });
-                if t.edge != EdgeProfile::Square {
+                if !matches!(t.edge, EdgeProfile::Square | EdgeProfile::Waterfall) {
                     f.length_row(ui, "Edge Size", "ct_edge_size", &mut t.edge_size);
+                }
+                if t.edge == EdgeProfile::Waterfall {
+                    ui.weak("The slab runs down to the floor at both ends of the cabinet.");
                 }
             }
         }
@@ -1042,6 +1056,21 @@ impl CabinetForm {
             "door_h_edge",
             &mut d.door_style.handle_from_edge,
         );
+        if matches!(
+            d.door_style.handle,
+            HandleStyle::Pull | HandleStyle::Edge | HandleStyle::Cup
+        ) {
+            f.length_row(
+                ui,
+                "Pull Length",
+                "door_h_len",
+                &mut d.door_style.handle_length,
+            );
+        }
+        ui.weak(
+            "Base doors measure from the top, wall doors from the bottom; a pull \
+             is measured to its near end. Tall doors hang their handle at 38\".",
+        );
         section(ui, "Door Hinges");
         row(ui, "Main Style", |ui| {
             ui.radio_value(&mut d.door_style.hinge, HingeStyle::Hidden, "Hidden");
@@ -1090,6 +1119,26 @@ impl CabinetForm {
             ui.radio_value(&mut d.drawer_style.handle_centered, true, "Centered");
             ui.radio_value(&mut d.drawer_style.handle_centered, false, "Near the top");
         });
+        if !d.drawer_style.handle_centered {
+            f.length_row(
+                ui,
+                "Distance From Top",
+                "drawer_h_top",
+                &mut d.drawer_style.handle_from_top,
+            );
+        }
+        if matches!(
+            d.drawer_style.handle,
+            HandleStyle::Pull | HandleStyle::Edge | HandleStyle::Cup
+        ) {
+            f.length_row(
+                ui,
+                "Pull Length",
+                "drawer_h_len",
+                &mut d.drawer_style.handle_length,
+            );
+        }
+        ui.weak("Cup and edge pulls always sit at the top edge of the drawer front.");
     }
 
     fn indicators(&mut self, ui: &mut Ui) {
@@ -1101,6 +1150,14 @@ impl CabinetForm {
         ui.weak(
             "Doors draw a quarter-circle swing from their hinge; drawers draw \
              pulled out in front of the cabinet.",
+        );
+        ui.checkbox(
+            &mut self.draft.indicators_3d,
+            "Show open doors and drawers in 3D (shelves and drawer boxes inside)",
+        );
+        ui.weak(
+            "Doors stand open at 90 degrees with their shelves showing; drawers \
+             stand part way out with their boxes.",
         );
     }
 
@@ -1213,8 +1270,24 @@ impl CabinetForm {
             row(ui, "Shown in plan", |ui| {
                 ui.label(self.draft.display_label())
             });
-            ui.weak("Macros: <W> width, <D> depth, <H> height, <T> type letters, <L> the automatic label.");
+            ui.weak(
+                "Macros: <L> automatic label, <T> type letters, <W> <D> <H> sizes, \
+                 <WxD> <WxH> <WxDxH> joined sizes, <N> cabinet name, <S> door style, \
+                 <F> finish, <HW> hardware, <A> appliance.",
+            );
         }
+        row(ui, "Label position", |ui| {
+            let moved = self.draft.label_offset != Point::ZERO;
+            ui.label(if moved {
+                "Moved from the centre"
+            } else {
+                "Centred"
+            });
+            if ui.add_enabled(moved, egui::Button::new("Reset")).clicked() {
+                self.draft.label_offset = Point::ZERO;
+            }
+        });
+        ui.weak("Drag the square handle next to the label in the plan to move it.");
     }
 }
 
@@ -1655,6 +1728,334 @@ fn draw_front_preview(p: &Painter, area: Rect, cab: &Cabinet) {
     );
 }
 
+// ----- Default Settings > Cabinets -----
+
+use plan_core::defaults::{BoxDefaults, CabinetDefaults};
+
+const DEFAULTS_TABS: &[Tab] = &[
+    on("Base"),
+    on("Wall"),
+    on("Full Height"),
+    on("Soffit"),
+    on("Shelf"),
+    on("Partition"),
+    on("Countertop"),
+    on("Backsplash"),
+    on("Library Types"),
+    on("Fillers and Corners"),
+];
+
+/// Edit > Default Settings > Cabinets: the sizes, styles and hardware every
+/// new cabinet starts with, one page per kind (Base, Wall, Full Height,
+/// Soffit, Shelf, Partition), the Countertop and Backsplash pages, the
+/// library types (Vanity, Pantry, Tall Oven, Refrigerator) and the fillers
+/// and corner cabinets. OK stores `draft()` in `PlanDefaults::cabinets`.
+pub struct CabinetDefaultsDialog {
+    frame: SpecDialog,
+    form: DefaultsForm,
+}
+
+struct DefaultsForm {
+    draft: CabinetDefaults,
+    fields: Fields,
+}
+
+impl CabinetDefaultsDialog {
+    pub fn new(defaults: &CabinetDefaults) -> Self {
+        Self {
+            frame: SpecDialog::new("Cabinet Defaults", "cabinet_defaults"),
+            form: DefaultsForm {
+                draft: defaults.clone(),
+                fields: Fields::default(),
+            },
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        self.frame.show(ctx, &mut self.form)
+    }
+
+    pub fn draft(&self) -> &CabinetDefaults {
+        &self.form.draft
+    }
+
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut CabinetDefaults {
+        &mut self.form.draft
+    }
+}
+
+/// Width, depth, height and elevation rows of a box-like kind. `keys` are
+/// the four field keys.
+fn box_rows(ui: &mut Ui, f: &mut Fields, d: &mut BoxDefaults, keys: [&'static str; 4], elev: &str) {
+    f.length_row(ui, "Width", keys[0], &mut d.width);
+    f.length_row(ui, "Depth", keys[1], &mut d.depth);
+    f.length_row(ui, "Height", keys[2], &mut d.height);
+    if !elev.is_empty() {
+        f.length_row(ui, elev, keys[3], &mut d.elevation);
+    }
+}
+
+/// A combo box over names, storing the chosen name.
+fn name_combo(ui: &mut Ui, salt: &str, value: &mut String, names: &[&str]) {
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(value.clone())
+        .show_ui(ui, |ui| {
+            for n in names {
+                if ui.selectable_label(value == n, *n).clicked() {
+                    *value = (*n).to_string();
+                }
+            }
+        });
+}
+
+impl DefaultsForm {
+    fn base(&mut self, ui: &mut Ui) {
+        let (f, b) = (&mut self.fields, &mut self.draft.base);
+        section(ui, "Base Cabinet");
+        f.length_row(ui, "Width", "dbase_w", &mut b.width);
+        f.length_row(ui, "Depth", "dbase_d", &mut b.depth);
+        f.length_row(ui, "Height (with countertop)", "dbase_h", &mut b.height);
+        section(ui, "Countertop");
+        f.length_row(ui, "Thickness", "dbase_ct", &mut b.countertop_thickness);
+        f.length_row(ui, "Overhang Front", "dbase_ov", &mut b.countertop_overhang);
+        section(ui, "Toe Kick");
+        f.length_row(ui, "Height", "dbase_tkh", &mut b.toe_kick_height);
+        f.length_row(ui, "Depth", "dbase_tkd", &mut b.toe_kick_depth);
+        section(ui, "Door and Drawer Hardware");
+        let door_names: Vec<&str> = DoorStyle::BUILTIN.iter().map(|(n, _)| *n).collect();
+        let drawer_names: Vec<&str> = DrawerStyle::BUILTIN.iter().map(|(n, _)| *n).collect();
+        row(ui, "Door Style", |ui| {
+            name_combo(ui, "dbase_door", &mut b.door_style, &door_names)
+        });
+        row(ui, "Drawer Style", |ui| {
+            name_combo(ui, "dbase_drawer", &mut b.drawer_style, &drawer_names)
+        });
+        let handles: Vec<&str> = HandleStyle::ALL.iter().map(|h| h.name()).collect();
+        row(ui, "Handle", |ui| {
+            name_combo(ui, "dbase_handle", &mut b.handle, &handles)
+        });
+    }
+
+    fn wall(&mut self, ui: &mut Ui) {
+        let (f, w) = (&mut self.fields, &mut self.draft.wall);
+        section(ui, "Wall Cabinet");
+        f.length_row(ui, "Width", "dwall_w", &mut w.width);
+        f.length_row(ui, "Depth", "dwall_d", &mut w.depth);
+        f.length_row(ui, "Height", "dwall_h", &mut w.height);
+        f.length_row(ui, "Bottom From Floor", "dwall_e", &mut w.elevation);
+    }
+
+    fn full_height(&mut self, ui: &mut Ui) {
+        let (f, c) = (&mut self.fields, &mut self.draft.full_height);
+        section(ui, "Full Height Cabinet");
+        f.length_row(ui, "Width", "dfull_w", &mut c.width);
+        f.length_row(ui, "Depth", "dfull_d", &mut c.depth);
+        f.length_row(ui, "Height", "dfull_h", &mut c.height);
+    }
+
+    fn countertop(&mut self, ui: &mut Ui) {
+        let f = &mut self.fields;
+        let (base, c) = (&mut self.draft.base, &mut self.draft.countertop);
+        section(ui, "Countertop");
+        f.length_row(ui, "Thickness", "dct_thick", &mut base.countertop_thickness);
+        f.length_row(
+            ui,
+            "Overhang Front",
+            "dct_front",
+            &mut base.countertop_overhang,
+        );
+        f.length_row(ui, "Overhang Back", "dct_back", &mut c.overhang_back);
+        f.length_row(ui, "Overhang Sides", "dct_sides", &mut c.overhang_sides);
+        section(ui, "Edge");
+        let edges: Vec<&str> = EdgeProfile::ALL.iter().map(|e| e.name()).collect();
+        row(ui, "Edge Profile", |ui| {
+            name_combo(ui, "dct_edge", &mut c.edge, &edges)
+        });
+        if !matches!(c.edge.as_str(), "Square" | "Waterfall") {
+            f.length_row(ui, "Edge Size", "dct_edge_size", &mut c.edge_size);
+        }
+        section(ui, "Corners");
+        row(ui, "Corner Treatment", |ui| {
+            for k in CornerTreatment::ALL {
+                ui.radio_value(&mut c.corner, k.name().to_string(), k.name());
+            }
+        });
+        if c.corner != "None" {
+            f.length_row(ui, "Corner Size", "dct_corner", &mut c.corner_size);
+        }
+    }
+
+    fn backsplash(&mut self, ui: &mut Ui) {
+        let (f, b) = (&mut self.fields, &mut self.draft.backsplash);
+        section(ui, "Backsplash");
+        ui.checkbox(&mut b.enabled, "New base cabinets get a backsplash");
+        ui.checkbox(
+            &mut b.full_height,
+            "Full Height (to the wall cabinet above)",
+        );
+        if !b.full_height {
+            f.length_row(ui, "Height", "dbs_h", &mut b.height);
+        }
+        f.length_row(ui, "Thickness", "dbs_t", &mut b.thickness);
+    }
+
+    fn library_types(&mut self, ui: &mut Ui) {
+        let (f, d) = (&mut self.fields, &mut self.draft);
+        section(ui, "Vanity Cabinet");
+        box_rows(ui, f, &mut d.vanity, ["dv_w", "dv_d", "dv_h", ""], "");
+        section(ui, "Pantry Cabinet");
+        box_rows(ui, f, &mut d.pantry, ["dp_w", "dp_d", "dp_h", ""], "");
+        section(ui, "Tall Oven Cabinet");
+        box_rows(ui, f, &mut d.tall_oven, ["dt_w", "dt_d", "dt_h", ""], "");
+        section(ui, "Refrigerator Cabinet");
+        box_rows(ui, f, &mut d.refrigerator, ["dr_w", "dr_d", "dr_h", ""], "");
+    }
+
+    fn fillers_and_corners(&mut self, ui: &mut Ui) {
+        let (f, d) = (&mut self.fields, &mut self.draft);
+        section(ui, "Fillers");
+        f.length_row(ui, "Starting Width", "dfill_w", &mut d.filler_width);
+        section(ui, "Corner Cabinets");
+        f.length_row(ui, "Corner Base Leg", "dcorner_b", &mut d.corner_base_leg);
+        f.length_row(ui, "Corner Wall Leg", "dcorner_w", &mut d.corner_wall_leg);
+        section(ui, "Blind Cabinets");
+        f.length_row(ui, "Blind Base Width", "dblind_w", &mut d.blind_base_width);
+        f.length_row(ui, "Hidden Width", "dblind_h", &mut d.blind_hidden_width);
+    }
+}
+
+impl SpecPages for DefaultsForm {
+    fn tabs(&self) -> &'static [Tab] {
+        DEFAULTS_TABS
+    }
+
+    fn error(&self) -> Option<String> {
+        if self.fields.any_invalid() {
+            return Some("Enter valid lengths".into());
+        }
+        let d = &self.draft;
+        let sized = [
+            (d.base.width, d.base.depth, d.base.height),
+            (d.wall.width, d.wall.depth, d.wall.height),
+            (
+                d.full_height.width,
+                d.full_height.depth,
+                d.full_height.height,
+            ),
+            (d.soffit.width, d.soffit.depth, d.soffit.height),
+            (d.shelf.width, d.shelf.depth, d.shelf.height),
+            (d.partition.width, d.partition.depth, d.partition.height),
+            (d.vanity.width, d.vanity.depth, d.vanity.height),
+            (d.pantry.width, d.pantry.depth, d.pantry.height),
+            (d.tall_oven.width, d.tall_oven.depth, d.tall_oven.height),
+            (
+                d.refrigerator.width,
+                d.refrigerator.depth,
+                d.refrigerator.height,
+            ),
+        ];
+        if sized
+            .iter()
+            .any(|(w, dp, h)| *w < 1.0 || *dp <= 0.0 || *h <= 0.0)
+        {
+            return Some("Width, depth and height must be positive".into());
+        }
+        if d.base.countertop_thickness >= d.base.height {
+            return Some("The countertop must be thinner than the base cabinet".into());
+        }
+        None
+    }
+
+    fn page(&mut self, ui: &mut Ui, tab: usize) {
+        match DEFAULTS_TABS[tab].name {
+            "Base" => self.base(ui),
+            "Wall" => self.wall(ui),
+            "Full Height" => self.full_height(ui),
+            "Soffit" => {
+                section(ui, "Soffit");
+                box_rows(
+                    ui,
+                    &mut self.fields,
+                    &mut self.draft.soffit,
+                    ["dso_w", "dso_d", "dso_h", "dso_e"],
+                    "Bottom From Floor",
+                );
+            }
+            "Shelf" => {
+                section(ui, "Shelf");
+                box_rows(
+                    ui,
+                    &mut self.fields,
+                    &mut self.draft.shelf,
+                    ["dsh_w", "dsh_d", "dsh_h", "dsh_e"],
+                    "Height From Floor",
+                );
+            }
+            "Partition" => {
+                section(ui, "Partition");
+                box_rows(
+                    ui,
+                    &mut self.fields,
+                    &mut self.draft.partition,
+                    ["dpt_w", "dpt_d", "dpt_h", "dpt_e"],
+                    "Bottom From Floor",
+                );
+            }
+            "Countertop" => self.countertop(ui),
+            "Backsplash" => self.backsplash(ui),
+            "Library Types" => self.library_types(ui),
+            "Fillers and Corners" => self.fillers_and_corners(ui),
+            _ => {}
+        }
+    }
+
+    fn preview(&self, painter: &Painter, rect: Rect) {
+        let d = &self.draft;
+        let lines = [
+            format!(
+                "Base {} x {} x {}",
+                fmt_short(d.base.width),
+                fmt_short(d.base.depth),
+                fmt_short(d.base.height)
+            ),
+            format!(
+                "Wall {} x {} x {} at {}",
+                fmt_short(d.wall.width),
+                fmt_short(d.wall.depth),
+                fmt_short(d.wall.height),
+                fmt_short(d.wall.elevation)
+            ),
+            format!(
+                "Full Height {} x {} x {}",
+                fmt_short(d.full_height.width),
+                fmt_short(d.full_height.depth),
+                fmt_short(d.full_height.height)
+            ),
+            format!("Top edge: {}", d.countertop.edge),
+            format!(
+                "Backsplash: {}",
+                if !d.backsplash.enabled {
+                    "none".to_string()
+                } else if d.backsplash.full_height {
+                    "full height".to_string()
+                } else {
+                    fmt_short(d.backsplash.height)
+                }
+            ),
+        ];
+        for (i, text) in lines.iter().enumerate() {
+            pv_text(
+                painter,
+                Pos2::new(rect.center().x, rect.min.y + 14.0 + 16.0 * i as f32),
+                Align2::CENTER_CENTER,
+                text,
+                11.0,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2051,5 +2452,104 @@ mod tests {
         // The dialog's apply path keeps all of it.
         let dlg = CabinetDialog::new(d.clone());
         assert_eq!(dlg.draft(), &d);
+    }
+
+    fn defaults_page_texts(dlg: &mut CabinetDefaultsDialog, tab: usize) -> Vec<String> {
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|x| texts(x, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| dlg.form.page(ui, tab));
+        });
+        let mut all = Vec::new();
+        for c in &out.shapes {
+            texts(&c.shape, &mut all);
+        }
+        all
+    }
+
+    #[test]
+    fn the_cabinet_defaults_dialog_has_a_page_for_every_kind() {
+        let defaults = plan_core::PlanDefaults::chief_x18_daniel().cabinets;
+        let mut dlg = CabinetDefaultsDialog::new(&defaults);
+        let names: Vec<_> = DEFAULTS_TABS.iter().map(|t| t.name).collect();
+        for want in [
+            "Base",
+            "Wall",
+            "Full Height",
+            "Soffit",
+            "Shelf",
+            "Partition",
+            "Countertop",
+            "Backsplash",
+        ] {
+            assert!(names.contains(&want), "{want} in {names:?}");
+        }
+        let wants = [
+            ("Base", "Door Style"),
+            ("Wall", "Bottom From Floor"),
+            ("Full Height", "Full Height Cabinet"),
+            ("Soffit", "Bottom From Floor"),
+            ("Shelf", "Height From Floor"),
+            ("Partition", "Partition"),
+            ("Countertop", "Edge Profile"),
+            ("Backsplash", "Thickness"),
+            ("Library Types", "Refrigerator Cabinet"),
+            ("Fillers and Corners", "Hidden Width"),
+        ];
+        for (tab, want) in wants {
+            let i = names.iter().position(|n| *n == tab).unwrap();
+            let texts = defaults_page_texts(&mut dlg, i);
+            assert!(texts.iter().any(|t| t.contains(want)), "{tab}: {texts:?}");
+        }
+        assert!(dlg.form.error().is_none());
+        // Edits land in the draft, bad sizes are refused.
+        dlg.draft_mut().shelf.elevation = 60.0;
+        dlg.draft_mut().backsplash.enabled = true;
+        assert_eq!(dlg.draft().shelf.elevation, 60.0);
+        dlg.draft_mut().vanity.width = 0.0;
+        assert!(dlg.form.error().is_some());
+        dlg.draft_mut().vanity.width = 30.0;
+        dlg.draft_mut().base.countertop_thickness = 40.0;
+        assert!(dlg.form.error().is_some());
+        // The preview draws.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (_, p) = ui.allocate_painter(Vec2::new(200.0, 120.0), egui::Sense::hover());
+                dlg.form.preview(&p, p.clip_rect());
+            });
+        });
+    }
+
+    #[test]
+    fn the_specification_offers_full_height_backsplash_hardware_and_3d_indicators() {
+        let mut dlg = CabinetDialog::new(Cabinet::base(24.0));
+        let tab = |name: &str| TABS.iter().position(|t| t.name == name).unwrap();
+        dlg.form.draft.backsplash = Some(Backsplash::new(4.0, 0.5));
+        let general = cabinet_page_texts(&mut dlg, tab("General"));
+        assert!(
+            general.iter().any(|t| t.contains("Full Height")),
+            "{general:?}"
+        );
+        dlg.form.draft.countertop.as_mut().unwrap().edge = EdgeProfile::Waterfall;
+        let general = cabinet_page_texts(&mut dlg, tab("General"));
+        assert!(general.iter().any(|t| t.contains("runs down to the floor")));
+        let ind = cabinet_page_texts(&mut dlg, tab("Opening Indicators"));
+        assert!(ind.iter().any(|t| t.contains("3D")), "{ind:?}");
+        dlg.form.draft.door_style.handle = HandleStyle::Pull;
+        dlg.form.draft.drawer_style.handle_centered = false;
+        let dd = cabinet_page_texts(&mut dlg, tab("Door/Drawer"));
+        assert!(dd.iter().any(|t| t.contains("Pull Length")), "{dd:?}");
+        assert!(dd.iter().any(|t| t.contains("Distance From Top")));
+        let label = cabinet_page_texts(&mut dlg, tab("Label"));
+        assert!(label.iter().any(|t| t.contains("Label position")));
+        assert_eq!(HandleStyle::ALL.len(), 5);
+        assert_eq!(handle_name(HandleStyle::Cup), "Cup Pull");
     }
 }

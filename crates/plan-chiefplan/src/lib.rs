@@ -176,7 +176,7 @@ pub fn write_inventory_json(dir: &Path, out_path: &Path) -> Result<usize> {
             .strip_prefix(dir)
             .unwrap_or(&p)
             .to_string_lossy()
-            .into_owned();
+            .replace('\\', "/");
         invs.push((rel, inv));
         reports.push(rep);
     }

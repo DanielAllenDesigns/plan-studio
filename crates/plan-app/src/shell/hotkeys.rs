@@ -335,6 +335,29 @@ fn binding_sequence(b: &Binding) -> Vec<Chord> {
         .collect()
 }
 
+/// Ctrl+Option+Cmd+L (Adjust Lights) as this platform keeps it: off the Mac
+/// the Control and Command flags fold into the one Control key, so the chord
+/// is Ctrl+Alt+L there.
+fn adjust_lights_chord(mac: bool) -> Chord {
+    let (ctrl, meta) = platform_modifiers(true, true, mac);
+    Chord {
+        ctrl,
+        alt: true,
+        shift: false,
+        meta,
+        key: Key::L,
+    }
+}
+
+/// Chief defaults that need the Option (alt) key, which a
+/// [`toolbar::Binding`] cannot express: command name and sequence.
+fn alt_defaults() -> Vec<(&'static str, Vec<Chord>)> {
+    vec![(
+        "Adjust Lights",
+        vec![adjust_lights_chord(cfg!(target_os = "macos"))],
+    )]
+}
+
 /// Plan Studio's own extras (number keys, Shift+Cmd+Z) survive Daniel's
 /// overrides as long as his chords do not take them.
 fn is_plan_studio_alias(b: &Binding) -> bool {
@@ -360,6 +383,11 @@ impl HotkeyMap {
         for b in BINDINGS {
             if let Some(name) = name_of(b.action) {
                 push_unique(bindings.entry(name).or_default(), binding_sequence(b));
+            }
+        }
+        for (name, seq) in alt_defaults() {
+            if commands.iter().any(|c| c.name == name) {
+                push_unique(bindings.entry(name.to_string()).or_default(), seq);
             }
         }
 
@@ -854,6 +882,53 @@ mod tests {
             map.lookup(&[plain(Key::Num1)]),
             Some(Action::SetTool(ToolId::Select))
         );
+    }
+
+    #[test]
+    fn adjust_lights_is_bound_to_ctrl_option_cmd_l() {
+        let map = HotkeyMap::defaults();
+        let cmd = map.command("Adjust Lights").expect("the command exists");
+        assert_eq!(cmd.action, Action::View3d(View3dCommand::AdjustLights));
+        assert!(cmd.is_live());
+        let chord = adjust_lights_chord(cfg!(target_os = "macos"));
+        assert_eq!(map.lookup(&[chord]), Some(cmd.action));
+        assert!(map.sequences("Adjust Lights").contains(&vec![chord]));
+        // The chord is the same one a key press builds.
+        let pressed = if cfg!(target_os = "macos") {
+            Modifiers {
+                ctrl: true,
+                alt: true,
+                mac_cmd: true,
+                command: true,
+                ..Modifiers::NONE
+            }
+        } else {
+            Modifiers {
+                ctrl: true,
+                alt: true,
+                command: true,
+                ..Modifiers::NONE
+            }
+        };
+        assert_eq!(Chord::from_event(Key::L, &pressed), chord);
+        // Mac keeps Control and Command apart; elsewhere they fold into one
+        // Control key (shown as Ctrl).
+        let mac = adjust_lights_chord(true);
+        assert!(mac.ctrl && mac.meta && mac.alt);
+        let other = adjust_lights_chord(false);
+        assert!(!other.ctrl && other.meta && other.alt);
+        assert_eq!(other.normalized(), other);
+        assert_eq!(
+            label_for_platform(&sequence_label(&[mac]), true)
+                .matches('+')
+                .count(),
+            3
+        );
+        // A user override can still take the chord.
+        let mut map = map;
+        map.assign("Zoom In", vec![chord], true).unwrap();
+        assert_eq!(map.lookup(&[chord]), Some(Action::ZoomIn));
+        assert!(map.sequences("Adjust Lights").is_empty());
     }
 
     #[test]

@@ -35,12 +35,16 @@ impl Default for WallLook {
 }
 
 /// The hole an opening cuts in its wall, or `None` if it falls outside the wall.
+///
+/// Heights are measured from the floor the wall stands on, so a wall that
+/// starts above the floor (`bottom_offset`, a dormer wall) only holds the part
+/// of the opening between its bottom and its top.
 pub fn hole_for(wall: &Wall, opening: &Opening) -> Option<Hole> {
     let hole = Hole {
         s0: opening.start_offset().max(0.0),
         s1: opening.end_offset().min(wall.length()),
-        h0: opening.sill_height.max(0.0),
-        h1: (opening.sill_height + opening.height).min(wall.height),
+        h0: opening.sill_height.max(wall.bottom_offset).max(0.0),
+        h1: (opening.sill_height + opening.height).min(wall.bottom_offset + wall.height),
         niche_depth: (opening.style == OpeningStyle::WallNiche)
             .then(|| (wall.thickness - 1.0).clamp(0.5, 3.5)),
     };
@@ -140,7 +144,23 @@ fn wall_materials(
     }
 }
 
+/// Holes measured from the floor, re-measured from the bottom of a wall that
+/// starts `bottom` above it and clipped to its `height`.
+fn holes_from_wall_bottom(holes: &[Hole], bottom: f64, height: f64) -> Vec<Hole> {
+    holes
+        .iter()
+        .filter_map(|h| {
+            let (h0, h1) = ((h.h0 - bottom).max(0.0), (h.h1 - bottom).min(height));
+            (h1 - h0 > EPS).then_some(Hole { h0, h1, ..*h })
+        })
+        .collect()
+}
+
 /// Build the meshes for one wall at `elevation`, with `holes` cut through it.
+///
+/// The wall spans `wall.bottom_offset..wall.bottom_offset + wall.height` above
+/// `elevation`; `holes` are measured from `elevation` too (as [`hole_for`]
+/// makes them).
 pub fn build_wall(
     wall: &Wall,
     elevation: f64,
@@ -152,7 +172,14 @@ pub fn build_wall(
     if length <= EPS || height <= EPS || half <= EPS {
         return Vec::new();
     }
-    let frame = Frame::new(wall, elevation);
+    let raised;
+    let holes = if wall.bottom_offset == 0.0 {
+        holes
+    } else {
+        raised = holes_from_wall_bottom(holes, wall.bottom_offset, height);
+        &raised
+    };
+    let frame = Frame::new(wall, elevation + wall.bottom_offset);
     let (left, right, trim) = wall_materials(wall, interior, look.exterior);
     let mut set = MeshSet::default();
 
@@ -236,6 +263,61 @@ mod tests {
         let hole = hole_for(&w, &win).unwrap();
         let rects = solid_rects(120.0, 100.0, &[hole]);
         assert_eq!(rects.len(), 4);
+    }
+
+    fn y_range(meshes: &[Mesh]) -> (f32, f32) {
+        let ys: Vec<f32> = meshes
+            .iter()
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[1]))
+            .collect();
+        (
+            ys.iter().copied().fold(f32::MAX, f32::min),
+            ys.iter().copied().fold(f32::MIN, f32::max),
+        )
+    }
+
+    #[test]
+    fn a_raised_wall_spans_bottom_offset_to_bottom_plus_height() {
+        let mut w = wall();
+        let floor = 12.0;
+        let flat = build_wall(&w, floor, &[], 1.0, WallLook::default());
+        assert_eq!(y_range(&flat), (12.0, 112.0));
+        w.bottom_offset = 30.0;
+        let raised = build_wall(&w, floor, &[], 1.0, WallLook::default());
+        assert_eq!(y_range(&raised), (42.0, 142.0));
+        // Same face area, just higher.
+        let area = |m: &[Mesh]| m.iter().map(|x| x.indices.len()).sum::<usize>();
+        assert_eq!(area(&flat), area(&raised));
+    }
+
+    #[test]
+    fn openings_in_a_raised_wall_keep_their_height_above_the_floor() {
+        let mut w = wall();
+        w.bottom_offset = 30.0;
+        // A window with its sill at 50" above the floor: 20" above the wall bottom.
+        let mut win = Opening::default_window(2, w.id, 60.0);
+        win.sill_height = 50.0;
+        win.height = 24.0;
+        let hole = hole_for(&w, &win).unwrap();
+        assert_eq!((hole.h0, hole.h1), (50.0, 74.0));
+        // A door whose head is below the wall bottom falls outside the wall;
+        // one that starts below it is cut at the wall bottom.
+        let mut low = Opening::default_window(3, w.id, 20.0);
+        low.sill_height = 0.0;
+        low.height = 20.0;
+        assert!(hole_for(&w, &low).is_none());
+        low.height = 50.0;
+        let cut = hole_for(&w, &low).unwrap();
+        assert_eq!((cut.h0, cut.h1), (30.0, 50.0));
+        let raised = build_wall(&w, 0.0, &[hole], 1.0, WallLook::default());
+        assert!(!raised.is_empty());
+        // The hole is cut at 50..74 above the floor: reveals sit there.
+        let reveal_ys: Vec<f32> = raised
+            .iter()
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[1]))
+            .filter(|y| (*y - 50.0).abs() < 1e-3 || (*y - 74.0).abs() < 1e-3)
+            .collect();
+        assert!(!reveal_ys.is_empty(), "no reveal at the sill or head");
     }
 
     #[test]

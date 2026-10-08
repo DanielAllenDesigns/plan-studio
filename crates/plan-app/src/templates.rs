@@ -550,11 +550,19 @@ pub fn layout_sheet(info: Option<&LayoutInfoSeed>) -> SheetSize {
         .unwrap_or(SheetSize::ArchC)
 }
 
-/// An empty layout on the layout template's sheet with Daniel's title block.
-/// File > New Layout prints it through `dialogs::build_tools::new_layout_pdf`.
+/// Title of the template page of a new layout (Chief's "Page Template").
+pub const TEMPLATE_PAGE_TITLE: &str = "Page Template";
+
+/// A layout on the layout template's sheet with Daniel's title block and
+/// Chief's two starting pages: page 0, the Page Template (not printed; its
+/// boxes and CAD repeat on every page, and the border and title block are
+/// drawn on every page), and an empty page 1. File > New Layout opens it in
+/// the layout window (`shell::layout_window`).
 pub fn new_layout(name: &str, info: Option<&LayoutInfoSeed>) -> Layout {
     let mut layout = Layout::new(name, layout_sheet(info));
     layout.title_block = TitleBlockTemplate::from_daniel_18x24();
+    layout.add_page(0, TEMPLATE_PAGE_TITLE).template_page = true;
+    layout.add_page(1, "Page 1");
     layout
 }
 
@@ -1020,6 +1028,11 @@ mod tests {
         assert_eq!(l.sheet, SheetSize::ArchC);
         assert_eq!(l.title_block, TitleBlockTemplate::from_daniel_18x24());
         assert_eq!(sheet_for_inches(7.0, 7.0), None);
+        // Page 0 is the unprinted template page, page 1 the first sheet.
+        assert_eq!(l.pages.len(), 2);
+        assert!(l.pages[0].template_page && l.pages[0].number == 0);
+        assert!(!l.pages[1].template_page && l.pages[1].number == 1);
+        assert_eq!(l.content_pages().len(), 1);
     }
 
     #[test]

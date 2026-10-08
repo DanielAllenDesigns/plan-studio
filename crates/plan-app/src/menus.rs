@@ -5,8 +5,10 @@
 //! as the toolbar ([`toolbar::flyout_menu`]). Items that are not built yet are
 //! shown disabled so the target shape of the product is visible.
 
+use crate::shell::layout_window::{self, LayoutCommand};
 use crate::theme::{CanvasTheme, BRIGHTNESS_MAX, BRIGHTNESS_MIN};
 use crate::toolbar::{self, Action, BarState, Dock, FileCommand, FramingCommand, ViewFlag};
+use crate::tools::cad::CadMode;
 use crate::tools::ToolId;
 use eframe::egui;
 
@@ -37,6 +39,7 @@ pub fn bar(
     ui.menu_button("3D", |ui| three_d_menu(ui, state, out));
     ui.menu_button("CAD", |ui| cad_menu(ui, state, out));
     ui.menu_button("Tools", |ui| tools_menu(ui, out));
+    ui.menu_button("Layout", |ui| layout_menu(ui, out));
     ui.menu_button("View", |ui| view_menu(ui, state, theme, brightness, out));
     ui.menu_button("Window", |ui| window_menu(ui, state, out));
     ui.menu_button("Help", |ui| help_menu(ui, out));
@@ -149,10 +152,17 @@ fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         Action::FileOpen,
         out,
     );
+    live(
+        ui,
+        "Open Layout\u{2026}",
+        "",
+        false,
+        Action::Layout(LayoutCommand::ShowLayout),
+        out,
+    );
     inert(
         ui,
         &[
-            "Open Layout\u{2026}",
             "Open Recent Documents>",
             "-",
             "Dashboard\u{2026}",
@@ -222,7 +232,34 @@ fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
             out,
         );
     });
-    inert(ui, &["Print>", "-", "Send to Layout\u{2026}\tS, L", "-"]);
+    ui.menu_button("Print", |ui| {
+        live(
+            ui,
+            "Print Layout\u{2026}",
+            "",
+            false,
+            Action::Layout(LayoutCommand::Print),
+            out,
+        );
+        live(
+            ui,
+            "Export Layout PDF\u{2026}",
+            "",
+            false,
+            Action::Layout(LayoutCommand::ExportPdf),
+            out,
+        );
+    });
+    inert(ui, &["-"]);
+    live(
+        ui,
+        "Send to Layout\u{2026}",
+        "S, L",
+        false,
+        Action::Layout(LayoutCommand::SendToLayout),
+        out,
+    );
+    inert(ui, &["-"]);
     live(ui, "Quit", "", false, Action::Quit, out);
 }
 
@@ -522,6 +559,18 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     );
 }
 
+/// A CAD menu entry that starts the CAD tool in mode `m`.
+fn cad_mode(ui: &mut egui::Ui, label: &str, m: CadMode, out: &mut Vec<Action>) {
+    live(
+        ui,
+        label,
+        "",
+        false,
+        Action::SetTool(ToolId::CadVariant(m)),
+        out,
+    );
+}
+
 fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     inert(ui, &["Current CAD Layer\u{2026}", "-"]);
     for f in [
@@ -533,13 +582,40 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ] {
         toolbar::flyout_menu(ui, &f, state, out);
     }
-    inert(ui, &["Revision Cloud", "Spline", "-"]);
+    cad_mode(ui, "Revision Cloud", CadMode::RevisionCloud, out);
+    cad_mode(ui, "Spline", CadMode::Spline, out);
+    ui.separator();
     toolbar::flyout_menu(ui, &toolbar::dimensions(), state, out);
     toolbar::flyout_menu(ui, &toolbar::auto_dimensions(), state, out);
     ui.separator();
     toolbar::flyout_menu(ui, &toolbar::text_tools(), state, out);
-    inert(ui, &["Patterns>"]);
+    ui.menu_button("Patterns", |ui| {
+        cad_mode(ui, "Hatch Closed Shape", CadMode::Hatch, out);
+    });
     toolbar::flyout_menu(ui, &toolbar::cad_blocks(), state, out);
+    ui.menu_button("Edit CAD", |ui| {
+        for m in [
+            CadMode::Fillet,
+            CadMode::Chamfer,
+            CadMode::Offset,
+            CadMode::Trim,
+            CadMode::Extend,
+            CadMode::BreakLine,
+            CadMode::ReverseDirection,
+            CadMode::MakeParallel,
+            CadMode::MakePerpendicular,
+        ] {
+            cad_mode(ui, m.name(), m, out);
+        }
+        ui.separator();
+        for m in [
+            CadMode::ConvertToPolyline,
+            CadMode::ConvertToSpline,
+            CadMode::PolylineToLines,
+        ] {
+            cad_mode(ui, m.name(), m, out);
+        }
+    });
     inert(
         ui,
         &[
@@ -550,12 +626,17 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "Plan Footprint",
             "Auto Detail",
             "-",
-            "CAD Block Management\u{2026}",
-            "CAD Detail Management\u{2026}",
-            "CAD Detail From View",
-            "-",
         ],
     );
+    cad_mode(
+        ui,
+        "CAD Block Management\u{2026}",
+        CadMode::BlockManagement,
+        out,
+    );
+    inert(ui, &["CAD Detail Management\u{2026}"]);
+    cad_mode(ui, "CAD Detail From View", CadMode::DetailFromView, out);
+    ui.separator();
     live(
         ui,
         "CAD to Walls\u{2026}",
@@ -633,6 +714,21 @@ fn tools_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         live(ui, "Room Schedule", "", false, Action::RoomSchedule, out);
         live(ui, "Wall Schedule", "", false, Action::WallSchedule, out);
         ui.separator();
+        // Click in the plan to place the schedule as a table that stays up
+        // to date (the Schedule flyout's tool).
+        ui.menu_button("Place on Plan", |ui| {
+            for k in crate::tools::schedule::FLYOUT_KINDS {
+                live(
+                    ui,
+                    crate::tools::schedule::entry_name(k),
+                    "",
+                    false,
+                    Action::SetTool(ToolId::ScheduleVariant(k)),
+                    out,
+                );
+            }
+        });
+        ui.separator();
         live(
             ui,
             "Create Construction Set\u{2026}",
@@ -659,13 +755,18 @@ fn tools_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         Action::MaterialsList,
         out,
     );
+    inert(ui, &["Object Painter>", "Fill Style Painter>", "-"]);
+    live(
+        ui,
+        "Project Information\u{2026}",
+        "",
+        false,
+        Action::SetTool(ToolId::ProjectInfo),
+        out,
+    );
     inert(
         ui,
         &[
-            "Object Painter>",
-            "Fill Style Painter>",
-            "-",
-            "Project Information\u{2026}",
             "Loan Calculator\u{2026}",
             "Ruby Console\u{2026}",
             "-",
@@ -863,9 +964,68 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "Select Next Tab\t\u{2303}\u{21E5}",
             "Select Previous Tab\t\u{2303}\u{21E7}\u{21E5}",
             "-",
-            "+Untitled 1: Floor Plan View",
         ],
     );
+    let in_layout = layout_window::is_active();
+    live(
+        ui,
+        "Floor Plan View",
+        "",
+        !in_layout,
+        Action::Layout(LayoutCommand::ShowPlan),
+        out,
+    );
+    live(
+        ui,
+        "Layout",
+        "",
+        in_layout,
+        Action::Layout(LayoutCommand::ShowLayout),
+        out,
+    );
+}
+
+/// The Layout menu: Chief's layout commands (page management, the page
+/// table, box specification) plus Page Setup and Project Information.
+fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
+    use LayoutCommand as C;
+    let row = |ui: &mut egui::Ui, label: &str, c: C, out: &mut Vec<Action>| {
+        live(ui, label, "", false, Action::Layout(c), out);
+    };
+    row(ui, "Send to Layout\u{2026}", C::SendToLayout, out);
+    row(ui, "Send All Floors to Layout", C::SendAllFloors, out);
+    ui.separator();
+    row(
+        ui,
+        "Layout Box Specification\u{2026}",
+        C::BoxSpecification,
+        out,
+    );
+    row(ui, "Delete Layout Box", C::DeleteBox, out);
+    row(ui, "Update Layout Views", C::UpdateViews, out);
+    ui.separator();
+    row(ui, "Insert Page Before", C::InsertPageBefore, out);
+    row(ui, "Insert Page After", C::InsertPageAfter, out);
+    row(ui, "Duplicate Page", C::DuplicatePage, out);
+    row(ui, "Delete Page", C::DeletePage, out);
+    row(
+        ui,
+        "Exchange With Previous Page",
+        C::ExchangeWithPrevious,
+        out,
+    );
+    row(ui, "Exchange With Next Page", C::ExchangeWithNext, out);
+    ui.separator();
+    row(ui, "Previous Page", C::PreviousPage, out);
+    row(ui, "Next Page", C::NextPage, out);
+    row(ui, "Layout Page Table\u{2026}", C::PageTable, out);
+    ui.separator();
+    row(ui, "Page Setup\u{2026}", C::PageSetup, out);
+    row(ui, "Project Information\u{2026}", C::ProjectInfo, out);
+    row(ui, "Fit Page in Window", C::FitPage, out);
+    ui.separator();
+    row(ui, "Print Layout\u{2026}", C::Print, out);
+    row(ui, "Export Layout PDF\u{2026}", C::ExportPdf, out);
 }
 
 fn help_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {

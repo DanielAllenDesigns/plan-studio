@@ -5,11 +5,12 @@
 //! [`extra_in_rect`] ask the view module that owns the kind.
 
 use super::{
-    foundation_view, framing_view, placed, roof_view, rooms_edit, site_view, stairs_view,
-    EditorContext,
+    details_view, foundation_view, framing_view, placed, roof_view, rooms_edit, site_view,
+    stairs_view, EditorContext,
 };
 use crate::tools::camera as camera_tool;
 use plan_core::cad::CadItem;
+use plan_core::details::DetailsLayer;
 use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::{dist_to_segment, point_in_polygon, project_on_segment, Point};
 use plan_core::{CadObject, DimensionKind, Floor, Id, LayerSet, OpeningKind, Project};
@@ -44,6 +45,9 @@ pub enum ObjectRef {
     /// A manually placed framing object: a member or a layout line
     /// (`framing_view::Record`).
     Framing(Id),
+    /// A corner board, quoin, molding, material region, wall hatch, deck or
+    /// 3D solid (`DetailsLayer::find(id)` tells which).
+    Detail(Id),
 }
 
 impl ObjectRef {
@@ -61,7 +65,8 @@ impl ObjectRef {
             | ObjectRef::Text(i)
             | ObjectRef::Device(i)
             | ObjectRef::Foundation(i)
-            | ObjectRef::Framing(i) => i,
+            | ObjectRef::Framing(i)
+            | ObjectRef::Detail(i) => i,
             ObjectRef::Room(i) => i as Id,
             ObjectRef::Terrain => 0,
         }
@@ -85,6 +90,7 @@ impl ObjectRef {
             ObjectRef::Terrain => "Terrain",
             ObjectRef::Foundation(_) => "Foundation Object",
             ObjectRef::Framing(_) => "Framing Object",
+            ObjectRef::Detail(_) => "Detail Object",
         }
     }
 
@@ -104,6 +110,7 @@ impl ObjectRef {
             ObjectRef::Device(i) => site_view::load_electrical(floor).device(i).is_some(),
             ObjectRef::Foundation(i) => FoundationLayer::load(floor).find(i).is_some(),
             ObjectRef::Framing(i) => framing_view::find(floor, i).is_some(),
+            ObjectRef::Detail(i) => DetailsLayer::load(floor).find(i).is_some(),
             ObjectRef::Camera(_) | ObjectRef::Room(_) | ObjectRef::Terrain => false,
         }
     }
@@ -212,6 +219,10 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
             layer.find(i).and_then(|r| layer.layer_of(r))
         }
         ObjectRef::Framing(i) => framing_view::find(floor, i).map(|r| r.layer().to_string()),
+        ObjectRef::Detail(i) => {
+            let layer = DetailsLayer::load(floor);
+            layer.find(i).and_then(|r| layer.layer_of(r))
+        }
         ObjectRef::Device(_) => Some(site_view::ELECTRICAL_LAYER.to_string()),
         ObjectRef::Camera(_) => Some(camera_tool::CAMERA_LAYER.to_string()),
         ObjectRef::Terrain => Some(site_view::TERRAIN_LAYER.to_string()),
@@ -405,7 +416,21 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
         }
     }
     out.extend(dim_cad_hits(floor, p, tol, &visible));
+
+    // Details: trim, moldings and solids sit above the walls, wall regions
+    // and hatching belong to their wall (below it), floor regions and decks
+    // lie under the rooms like slabs.
+    let details = details_view::pick_all(cx, p, tol);
+    let tier = |t: details_view::Tier| {
+        details
+            .iter()
+            .filter(move |(_, x)| *x == t)
+            .map(|(r, _)| ObjectRef::Detail(r.id()))
+            .collect::<Vec<_>>()
+    };
+    out.extend(tier(details_view::Tier::Above));
     out.extend(wall_hits(floor, p, tol, &visible));
+    out.extend(tier(details_view::Tier::Wall));
 
     // Foundation objects: edges (and pads and piers) win over the room; a
     // slab picked only by its interior comes after it.
@@ -449,6 +474,7 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
         }
     }
     out.extend(interior);
+    out.extend(tier(details_view::Tier::Below));
     out.extend(slab_interior);
     if layers.is_visible(site_view::TERRAIN_LAYER) {
         if let Some(view) = site_view::terrain_view(&cx.project) {
@@ -524,6 +550,12 @@ pub fn extra_in_rect(cx: &EditorContext, lo: Point, hi: Point, crossing: bool) -
         let pts = rec.extent();
         if !pts.is_empty() && usable(r) && hit(&pts) {
             out.push(r);
+        }
+    }
+    for r in details_view::in_rect(cx, lo, hi, crossing) {
+        let o = ObjectRef::Detail(r.id());
+        if usable(o) {
+            out.push(o);
         }
     }
     for c in cx.project.cameras_on(cx.floor) {

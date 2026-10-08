@@ -8,9 +8,12 @@
 //! the plan goes through `cx.begin_change`, so each command is one undo step.
 
 use super::floor::FloorDialog;
+use super::project_info::{self, ProjectInfoDialog};
 use super::room::RoomDialog;
+use super::schedule_spec::ScheduleSpecDialog;
 use super::Outcome;
 use crate::editor::rooms_edit::{self, FoundationSpec};
+use crate::editor::schedule_view;
 use crate::editor::{Camera, EditorContext, ObjectRef};
 use crate::toolbar::Action;
 use eframe::egui::{self, Color32, RichText};
@@ -413,6 +416,19 @@ pub enum SchedKind {
     Wall,
 }
 
+impl SchedKind {
+    /// The placeable schedule kind this window lists.
+    pub fn plan_kind(self) -> plan_core::schedules::ScheduleKind {
+        use plan_core::schedules::ScheduleKind as K;
+        match self {
+            SchedKind::Door => K::Door,
+            SchedKind::Window => K::Window,
+            SchedKind::Room => K::Room,
+            SchedKind::Wall => K::Wall,
+        }
+    }
+}
+
 /// The live schedule of the active floor.
 pub fn schedule_for(cx: &EditorContext, kind: SchedKind) -> Schedule {
     match kind {
@@ -471,10 +487,16 @@ fn table(ui: &mut egui::Ui, id: &str, columns: &[String], rows: &[Vec<String>]) 
         });
 }
 
-fn schedule_window(ctx: &egui::Context, cx: &mut EditorContext, kind: SchedKind) -> bool {
+fn schedule_window(
+    ctx: &egui::Context,
+    cx: &mut EditorContext,
+    cam: &Camera,
+    kind: SchedKind,
+) -> bool {
     let sched = schedule_for(cx, kind);
     let mut open = true;
     let mut export = false;
+    let mut place = false;
     egui::Window::new(sched.title.clone())
         .id(egui::Id::new(("schedule", kind as u8)))
         .open(&mut open)
@@ -491,10 +513,54 @@ fn schedule_window(ctx: &egui::Context, cx: &mut EditorContext, kind: SchedKind)
             );
             ui.separator();
             ui.horizontal(|ui| {
-                ui.add_enabled(false, egui::Button::new("Place on Plan"))
-                    .on_hover_text("Placing a schedule on the plan comes with Layout");
+                place = ui
+                    .button("Place on Plan")
+                    .on_hover_text(
+                        "Puts this schedule in the plan as a table that stays up to date",
+                    )
+                    .clicked();
                 export = ui.button("Export CSV\u{2026}").clicked();
             });
+        });
+    if place {
+        let id = schedule_view::add(cx, kind.plan_kind(), cam.center);
+        schedule_view::select(id);
+        cx.status = format!("{} placed in the plan", sched.title);
+    }
+    if export {
+        let name = format!("{}.csv", sched.title.replace(' ', "_"));
+        cx.status = save_text(&name, "csv", &sched.to_csv());
+    }
+    open
+}
+
+/// A placed schedule shown in its own window: the same table as in the plan.
+fn placed_window(
+    ctx: &egui::Context,
+    cx: &mut EditorContext,
+    floor: usize,
+    id: plan_core::Id,
+) -> bool {
+    let layer = plan_core::schedules::ScheduleLayer::load(&cx.project.floors[floor]);
+    let Some(def) = layer.find(id) else {
+        return false;
+    };
+    let sched = schedule_view::table_for(cx, def, floor);
+    let mut open = true;
+    let mut export = false;
+    egui::Window::new(sched.title.clone())
+        .id(egui::Id::new(("placed_schedule", id)))
+        .open(&mut open)
+        .default_pos(ctx.screen_rect().center())
+        .show(ctx, |ui| {
+            table(
+                ui,
+                &format!("placed_sched_{id}"),
+                &sched.columns,
+                &sched.rows,
+            );
+            ui.separator();
+            export = ui.button("Export CSV\u{2026}").clicked();
         });
     if export {
         let name = format!("{}.csv", sched.title.replace(' ', "_"));
@@ -546,51 +612,10 @@ pub fn construction_set_pdf(project: &plan_core::Project) -> Vec<u8> {
     render_pdf(&layout, &rcx)
 }
 
-/// File > New Layout: Daniel's layout template (ARCH C 18x24, his title
-/// block) with every floor sent in at the largest Chief scale that fits, one
-/// floor per page, saved as a PDF. Plan Studio has no layout window yet, so
-/// the new layout goes straight to paper.
-pub fn new_layout_pdf(project: &plan_core::Project) -> Vec<u8> {
-    let layout = new_layout_document(project);
-    let rcx = LayoutRenderContext::new(project);
-    render_pdf(&layout, &rcx)
-}
-
-/// The layout `new_layout_pdf` prints.
-pub fn new_layout_document(project: &plan_core::Project) -> plan_layout::Layout {
-    let settings = crate::templates::load_settings();
-    let seed = crate::templates::refresh(&settings, false);
-    let mut layout = crate::templates::new_layout(
-        &format!("{} Layout", project.name),
-        seed.cache.layout.as_ref(),
-    );
-    let rcx = LayoutRenderContext::new(project);
-    for floor in 0..project.floors.len() {
-        let page = u32::try_from(floor).unwrap_or(0);
-        if layout.page(page).is_none() {
-            let title = plan_layout::plan_label(project, floor);
-            layout.add_page(page, title);
-        }
-        let source = plan_layout::BoxSource::PlanView {
-            floor,
-            layer_set: project.layer_sets.active.clone(),
-        };
-        plan_layout::send_to_layout_auto(&mut layout, &rcx, page, source, None, None);
-    }
-    layout
-}
-
+/// File > New Layout: makes the project's layout from the template and shows
+/// it in the layout window.
 fn new_layout_from_template(cx: &mut EditorContext) {
-    let Some(path) = rfd::FileDialog::new()
-        .set_file_name(format!("{} Layout.pdf", cx.project.name))
-        .add_filter("pdf", &["pdf"])
-        .save_file()
-    else {
-        cx.status = "New Layout cancelled".into();
-        return;
-    };
-    let bytes = new_layout_pdf(&cx.project);
-    cx.status = write_file(&path, &bytes);
+    crate::shell::layout_window::new_layout(cx);
 }
 
 fn create_construction_set(cx: &mut EditorContext) {
@@ -616,6 +641,14 @@ struct Windows {
     check: Option<CheckWindow>,
     materials: bool,
     schedules: Vec<SchedKind>,
+    /// Tools > Project Information.
+    project_info: Option<ProjectInfoDialog>,
+    /// Schedule Specification of a placed schedule.
+    sched_spec: Option<ScheduleSpecDialog>,
+    /// A double-click asked for this schedule's specification `(floor, id)`.
+    sched_spec_request: Option<(usize, plan_core::Id)>,
+    /// Placed schedules shown in their own window `(floor, id)`.
+    placed: Vec<(usize, plan_core::Id)>,
 }
 
 thread_local! {
@@ -697,6 +730,58 @@ fn open_schedule(kind: SchedKind) {
     });
 }
 
+/// Opens the Project Information dialog on the plan's current values.
+pub fn open_project_info(cx: &EditorContext) {
+    let d = ProjectInfoDialog::new(&cx.project.info);
+    with_windows(|w| w.project_info = Some(d));
+}
+
+/// Is the Project Information dialog open?
+#[cfg(test)]
+pub fn project_info_open() -> bool {
+    with_windows(|w| w.project_info.is_some())
+}
+
+/// Closes the Project Information dialog without applying it.
+#[cfg(test)]
+pub fn close_project_info() {
+    with_windows(|w| w.project_info = None);
+}
+
+/// Asks for the Schedule Specification of schedule `id` placed on `floor`;
+/// the dialog opens on the next frame.
+pub fn open_schedule_spec(floor: usize, id: plan_core::Id) {
+    with_windows(|w| w.sched_spec_request = Some((floor, id)));
+}
+
+/// Builds the Schedule Specification dialog for schedule `id` on `floor`.
+fn schedule_spec_dialog(
+    cx: &EditorContext,
+    floor: usize,
+    id: plan_core::Id,
+) -> Option<ScheduleSpecDialog> {
+    let layer = plan_core::schedules::ScheduleLayer::load(cx.project.floors.get(floor)?);
+    let def = layer.find(id)?.clone();
+    let styles = cx
+        .project
+        .text_styles
+        .names()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let mut layers: Vec<String> = cx
+        .project
+        .layers
+        .layers
+        .iter()
+        .map(|l| l.name.clone())
+        .collect();
+    if !layers.contains(&def.layer) {
+        layers.push(def.layer.clone());
+    }
+    Some(ScheduleSpecDialog::new(floor, def, styles, layers))
+}
+
 /// Draws every open window of this module and applies what the user accepted.
 pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext, cam: &mut Camera) {
     let mut w = with_windows(std::mem::take);
@@ -761,8 +846,68 @@ impl Windows {
         let kinds = std::mem::take(&mut self.schedules);
         self.schedules = kinds
             .into_iter()
-            .filter(|k| schedule_window(ctx, cx, *k))
+            .filter(|k| schedule_window(ctx, cx, cam, *k))
             .collect();
+        self.show_placed_schedules(ctx, cx);
+        self.show_project_info(ctx, cx);
+    }
+
+    /// Project Information: OK stores the values as one undo step.
+    fn show_project_info(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        let Some(mut d) = self.project_info.take() else {
+            return;
+        };
+        match d.show(ctx) {
+            Outcome::Open => self.project_info = Some(d),
+            Outcome::Cancel => {}
+            Outcome::Ok => {
+                project_info::apply(cx, d.draft());
+            }
+        }
+    }
+
+    /// The Schedule Specification dialog and the placed-schedule windows.
+    fn show_placed_schedules(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        if let Some((floor, id)) = self.sched_spec_request.take() {
+            if self.sched_spec.is_none() {
+                self.sched_spec = schedule_spec_dialog(cx, floor, id);
+            }
+        }
+        if let Some(mut d) = self.sched_spec.take() {
+            let outcome = d.show(ctx);
+            let actions = d.take_actions();
+            if actions.export_csv || actions.open_window {
+                // Preview the unsaved edits in the table that is exported.
+                let table = schedule_view::table_for(cx, d.draft(), d.floor());
+                if actions.export_csv {
+                    let name = format!("{}.csv", table.title.replace(' ', "_"));
+                    cx.status = save_text(&name, "csv", &table.to_csv());
+                }
+                if actions.open_window {
+                    // The window reads the stored schedule, so store the edits.
+                    schedule_view::replace(cx, d.floor(), d.draft().clone());
+                    self.placed_open(d.floor(), d.id());
+                }
+            }
+            match outcome {
+                Outcome::Open => self.sched_spec = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    schedule_view::replace(cx, d.floor(), d.draft().clone());
+                }
+            }
+        }
+        let placed = std::mem::take(&mut self.placed);
+        self.placed = placed
+            .into_iter()
+            .filter(|(f, id)| placed_window(ctx, cx, *f, *id))
+            .collect();
+    }
+
+    fn placed_open(&mut self, floor: usize, id: plan_core::Id) {
+        if !self.placed.contains(&(floor, id)) {
+            self.placed.push((floor, id));
+        }
     }
 }
 
@@ -904,5 +1049,116 @@ mod tests {
         let pdf = construction_set_pdf(&cx.project);
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
+    }
+
+    /// One frame of `show_all`, with Enter pressed (OK) when `enter`.
+    fn frame(ctx: &egui::Context, cx: &mut EditorContext, enter: bool) {
+        let mut input = egui::RawInput::default();
+        if enter {
+            input.events.push(egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        let mut cam = Camera::default_view();
+        let _ = ctx.run(input, |ctx| show_all(ctx, cx, &mut cam));
+    }
+
+    #[test]
+    fn schedule_specification_ok_stores_the_edits_as_one_undo_step() {
+        use plan_core::schedules::{ScheduleKind, ScheduleLayer};
+        let mut cx = house();
+        let id = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -40.0));
+        open_schedule_spec(0, id);
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut cx, false);
+        frame(&ctx, &mut cx, false);
+        with_windows(|w| {
+            let d = w.sched_spec.as_mut().expect("dialog opened");
+            assert_eq!(d.id(), id);
+            let i = d
+                .draft()
+                .columns
+                .iter()
+                .position(|c| c.field == "swing")
+                .unwrap();
+            d.draft_mut().set_column_visible(i, false);
+            d.draft_mut().title = "Doors".into();
+        });
+        frame(&ctx, &mut cx, true);
+        assert!(with_windows(|w| w.sched_spec.is_none()), "OK closes it");
+        let def = ScheduleLayer::load(cx.floor()).schedules[0].clone();
+        assert!(!def.visible_columns().any(|c| c.field == "swing"));
+        let t = schedule_view::table_for(&cx, &def, 0);
+        assert_eq!(t.title, "Doors");
+        assert!(!t.columns.contains(&"Swing".to_string()));
+        assert_eq!(cx.undo_label(), Some("Schedule Specification"));
+        cx.undo();
+        let back = ScheduleLayer::load(cx.floor()).schedules[0].clone();
+        assert!(back.visible_columns().any(|c| c.field == "swing"));
+    }
+
+    #[test]
+    fn cancel_leaves_the_schedule_alone_and_open_in_window_lists_it() {
+        use plan_core::schedules::{ScheduleKind, ScheduleLayer};
+        let mut cx = house();
+        let id = schedule_view::add(&mut cx, ScheduleKind::Window, Point::ZERO);
+        let before = ScheduleLayer::load(cx.floor());
+        open_schedule_spec(0, id);
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut cx, false);
+        frame(&ctx, &mut cx, false);
+        with_windows(|w| {
+            let d = w.sched_spec.as_mut().unwrap();
+            d.draft_mut().title = "Edited".into();
+            d.raise_open_window();
+        });
+        frame(&ctx, &mut cx, false);
+        // Open in Window stores the edits and shows the table.
+        assert_eq!(with_windows(|w| w.placed.clone()), vec![(0, id)]);
+        assert_ne!(ScheduleLayer::load(cx.floor()), before);
+        // The placed window draws.
+        frame(&ctx, &mut cx, false);
+        assert_eq!(with_windows(|w| w.placed.len()), 1);
+        // Deleting the schedule closes its window.
+        schedule_view::delete(&mut cx, id);
+        frame(&ctx, &mut cx, false);
+        assert!(with_windows(|w| w.placed.is_empty()));
+    }
+
+    #[test]
+    fn project_information_ok_applies_and_undoes() {
+        let mut cx = house();
+        open_project_info(&cx);
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut cx, false);
+        with_windows(|w| {
+            let d = w.project_info.as_mut().expect("dialog open");
+            d.info_mut().client_name = "Pat Smith".into();
+            d.info_mut().project_number = "26-014".into();
+        });
+        frame(&ctx, &mut cx, true);
+        assert!(!project_info_open());
+        assert_eq!(cx.project.info.client_name, "Pat Smith");
+        assert_eq!(cx.undo_label(), Some("Project Information"));
+        cx.undo();
+        assert!(cx.project.info.client_name.is_empty());
+    }
+
+    #[test]
+    fn schedule_windows_map_to_placeable_kinds() {
+        use plan_core::schedules::ScheduleKind as K;
+        let kinds = [
+            (SchedKind::Door, K::Door),
+            (SchedKind::Window, K::Window),
+            (SchedKind::Room, K::Room),
+            (SchedKind::Wall, K::Wall),
+        ];
+        for (w, k) in kinds {
+            assert_eq!(w.plan_kind(), k);
+        }
     }
 }

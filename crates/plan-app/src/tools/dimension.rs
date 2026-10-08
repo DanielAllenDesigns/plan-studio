@@ -15,7 +15,10 @@
 //! * End to End (DIM-13), Interior (DIM-14), Running (DIM-16), Baseline
 //!   (DIM-17), Angular (DIM-18), Tape Measure (DIM-20).
 //! * Auto Exterior (DIM-24, DIM-25) and Auto Interior (DIM-27) run on one
-//!   click.
+//!   click. Auto Elevation and Auto Story Pole dimensions run on one click
+//!   too: the click's x is the line of a vertical string of level heights
+//!   (floor platforms, ceiling heights, heights above the first floor) with
+//!   each level named beside it.
 //! * A dimension is selected by clicking it (DIM-30). Its handles move the
 //!   dimension line and relocate either measured point; clicking its text
 //!   opens an inline value edit that moves the located object at the end
@@ -69,10 +72,12 @@ pub enum DimMode {
     TapeMeasure,
     AutoExterior,
     AutoInterior,
+    AutoElevation,
+    AutoStoryPole,
 }
 
 impl DimMode {
-    pub const ALL: [DimMode; 11] = [
+    pub const ALL: [DimMode; 13] = [
         DimMode::Manual,
         DimMode::EndToEnd,
         DimMode::Interior,
@@ -84,6 +89,8 @@ impl DimMode {
         DimMode::TapeMeasure,
         DimMode::AutoExterior,
         DimMode::AutoInterior,
+        DimMode::AutoElevation,
+        DimMode::AutoStoryPole,
     ];
 
     /// Chief's name from the toolbar flyouts.
@@ -100,6 +107,8 @@ impl DimMode {
             DimMode::TapeMeasure => "Tape Measure",
             DimMode::AutoExterior => "Auto Exterior Dimensions",
             DimMode::AutoInterior => "Auto Interior Dimensions",
+            DimMode::AutoElevation => "Auto Elevation Dimensions",
+            DimMode::AutoStoryPole => "Auto Story Pole Dimensions",
         }
     }
 
@@ -122,6 +131,8 @@ impl DimMode {
             DimMode::TapeMeasure => "Tape",
             DimMode::AutoExterior => "Auto Exterior",
             DimMode::AutoInterior => "Auto Interior",
+            DimMode::AutoElevation => "Auto Elevation",
+            DimMode::AutoStoryPole => "Auto Story Pole",
         }
     }
 
@@ -158,6 +169,12 @@ impl DimMode {
                 "Auto Exterior Dimensions: click to dimension the exterior walls"
             }
             DimMode::AutoInterior => "Auto Interior Dimensions: click to dimension every room",
+            DimMode::AutoElevation => {
+                "Auto Elevation Dimensions: click where the level dimensions go (heights above the first floor)"
+            }
+            DimMode::AutoStoryPole => {
+                "Auto Story Pole Dimensions: click where the story pole goes (ceiling heights and floor platforms)"
+            }
         }
     }
 
@@ -172,11 +189,19 @@ impl DimMode {
             DimMode::TapeMeasure => "Tape Measure",
             DimMode::AutoExterior => "Auto Exterior Dimensions",
             DimMode::AutoInterior => "Auto Interior Dimensions",
+            DimMode::AutoElevation => "Auto Elevation Dimensions",
+            DimMode::AutoStoryPole => "Auto Story Pole Dimensions",
         }
     }
 
     fn is_auto(self) -> bool {
-        matches!(self, DimMode::AutoExterior | DimMode::AutoInterior)
+        matches!(
+            self,
+            DimMode::AutoExterior
+                | DimMode::AutoInterior
+                | DimMode::AutoElevation
+                | DimMode::AutoStoryPole
+        )
     }
 }
 
@@ -905,6 +930,99 @@ impl DimensionTool {
         ToolResult::committed("Auto Interior Dimensions")
     }
 
+    // ----- elevation and story pole dimensions -----
+
+    /// The x of the pole: the click, or a little east of the building.
+    fn pole_x(cx: &EditorContext, at: Option<Point>) -> f64 {
+        if let Some(p) = at {
+            return p.x;
+        }
+        let east = cx
+            .project
+            .floors
+            .iter()
+            .flat_map(|f| f.walls.iter())
+            .flat_map(|w| [w.start.x, w.end.x])
+            .fold(f64::NEG_INFINITY, f64::max);
+        if east.is_finite() {
+            east + 96.0
+        } else {
+            0.0
+        }
+    }
+
+    /// `+9'-0"` / `-3'-0"`: a level's height above the datum.
+    fn level_text(cx: &EditorContext, height: f64) -> String {
+        let sign = if height < -0.5 { "-" } else { "+" };
+        format!("{sign}{}", cx.fmt_dim(height.abs()))
+    }
+
+    /// Story pole (`pole`) or elevation level dimensions: a string of vertical
+    /// dimensions on one line, each level named beside it. The Y axis of the
+    /// string is the height, so the values read as heights (the plan has no
+    /// elevation view to put them on). A new run on the same line replaces
+    /// the last one.
+    fn auto_levels(&mut self, cx: &mut EditorContext, at: Option<Point>, pole: bool) -> ToolResult {
+        let levels = plan_core::dimension::story_levels(&cx.project.floors);
+        if levels.len() < 2 {
+            cx.status = "There are no floor levels to dimension".into();
+            return ToolResult::consumed();
+        }
+        let datum = plan_core::dimension::elevation_datum(&cx.project.floors);
+        let x = Self::pole_x(cx, at);
+        let sep = Self::separation(cx);
+        let dims = if pole {
+            plan_core::dimension::story_pole_dimensions(&levels, x, sep)
+        } else {
+            plan_core::dimension::elevation_dimensions(&levels, datum, x, sep)
+        };
+        if dims.is_empty() {
+            cx.status = "There are no level heights to dimension".into();
+            return ToolResult::consumed();
+        }
+        if !self.lock_check(cx, AUTO_LAYER) {
+            return ToolResult::consumed();
+        }
+        let label = self.mode.label();
+        let label_x = x + sep * 3.0 + 6.0;
+        let text_h = cx.defaults.text.height.max(3.0);
+        cx.begin_change(label);
+        let fl = cx.floor;
+        // A new run replaces the previous one on this line.
+        cx.project.floors[fl].dimensions.retain(|d| {
+            !(d.kind == DimensionKind::AutoExterior
+                && (d.start.x - x).abs() < 1e-6
+                && (d.end.x - x).abs() < 1e-6)
+        });
+        cx.project.floors[fl].cad.retain(|c| {
+            !(c.layer == AUTO_LAYER
+                && matches!(&c.item, CadItem::Text { pos, .. } if (pos.x - label_x).abs() < 1e-6))
+        });
+        let n = dims.len();
+        for d in dims {
+            cx.project.add_dimension(fl, d);
+        }
+        let mut ids = Vec::new();
+        for l in &levels {
+            let h = l.elevation - datum;
+            let text = format!("{}  {}", l.name, Self::level_text(cx, h));
+            ids.push(cx.project.add_cad(
+                fl,
+                AUTO_LAYER,
+                CadItem::Text {
+                    pos: Point::new(label_x, l.elevation - text_h * 0.5),
+                    text,
+                    height: text_h,
+                    angle: 0.0,
+                },
+            ));
+        }
+        super::cad::group_cad(cx, &ids);
+        cx.mark_dirty();
+        cx.status = format!("Added {n} level dimensions");
+        ToolResult::committed(label)
+    }
+
     // ----- angular and tape measure -----
 
     fn angular_preview(&self, cx: &EditorContext, place: Point) -> Option<(Vec<CadItem>, f64)> {
@@ -1229,10 +1347,14 @@ impl DimensionTool {
             .collect()
     }
 
-    fn run_auto(&mut self, cx: &mut EditorContext) -> ToolResult {
+    /// Runs an automatic mode; `at` is the click that placed it (the story
+    /// pole and the level dimensions go on its vertical line).
+    fn run_auto(&mut self, cx: &mut EditorContext, at: Option<Point>) -> ToolResult {
         match self.mode {
             DimMode::AutoExterior => self.auto_exterior(cx),
             DimMode::AutoInterior => self.auto_interior(cx),
+            DimMode::AutoElevation => self.auto_levels(cx, at, false),
+            DimMode::AutoStoryPole => self.auto_levels(cx, at, true),
             _ => ToolResult::ignored(),
         }
     }
@@ -1422,7 +1544,10 @@ impl DimensionTool {
                 };
                 ToolResult::consumed()
             }
-            DimMode::AutoExterior | DimMode::AutoInterior => self.run_auto(cx),
+            DimMode::AutoExterior
+            | DimMode::AutoInterior
+            | DimMode::AutoElevation
+            | DimMode::AutoStoryPole => self.run_auto(cx, Some(p.snapped)),
         }
     }
 
@@ -1562,7 +1687,7 @@ impl Tool for DimensionTool {
                 self.set_mode(m);
                 cx.status = m.hint().into();
                 if m.is_auto() {
-                    return self.run_auto(cx);
+                    return self.run_auto(cx, None);
                 }
             }
             return ToolResult::consumed();
@@ -2323,5 +2448,71 @@ mod tests {
         for m in DimMode::ALL {
             assert_eq!(DimMode::from_name(m.name()), Some(m));
         }
+    }
+
+    #[test]
+    fn story_pole_dimensions_stack_heights_and_name_the_levels() {
+        let mut cx = new_cx();
+        let second = cx.project.build_new_floor(false);
+        cx.floor = 0;
+        let mut t = tool(DimMode::AutoStoryPole);
+        click(&mut t, &mut cx, 400.0, 0.0);
+        let dims: Vec<&Dimension> = cx.floor().dimensions.iter().collect();
+        // 1st floor ceiling, platform, 2nd floor ceiling, plus the overall.
+        assert_eq!(dims.len(), 4);
+        assert!(dims.iter().all(|d| d.start.x == 400.0 && d.end.x == 400.0));
+        let ceiling = cx.project.floors[0].ceiling_height;
+        assert!(dims.iter().any(|d| (d.length() - ceiling).abs() < 1e-6));
+        assert!(dims
+            .iter()
+            .any(|d| (d.length() - plan_core::floors::FLOOR_PLATFORM_THICKNESS).abs() < 1e-6));
+        let names: Vec<&str> = cx
+            .floor()
+            .cad
+            .iter()
+            .filter_map(|c| match &c.item {
+                CadItem::Text { text, .. } if c.layer == AUTO_LAYER => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names.len(), 4);
+        assert!(names
+            .iter()
+            .any(|n| n.starts_with("1st Floor Floor") || n.contains("Floor")));
+        let _ = second;
+        // Running it again on the same line replaces, not stacks.
+        click(&mut t, &mut cx, 400.0, 20.0);
+        assert_eq!(cx.floor().dimensions.len(), 4);
+        assert_eq!(
+            cx.floor()
+                .cad
+                .iter()
+                .filter(|c| c.layer == AUTO_LAYER)
+                .count(),
+            4
+        );
+        assert_eq!(cx.undo().as_deref(), Some("Auto Story Pole Dimensions"));
+    }
+
+    #[test]
+    fn elevation_dimensions_measure_from_the_first_floor() {
+        let mut cx = new_cx();
+        cx.project.build_new_floor(false);
+        cx.floor = 0;
+        let mut t = tool(DimMode::AutoElevation);
+        click(&mut t, &mut cx, 400.0, 0.0);
+        let dims = &cx.floor().dimensions;
+        // Levels above the datum: 1st ceiling, 2nd floor, 2nd ceiling.
+        assert_eq!(dims.len(), 3);
+        let top = dims.iter().map(|d| d.length()).fold(0.0, f64::max);
+        let f1 = &cx.project.floors[0];
+        let f2 = &cx.project.floors[1];
+        assert!((top - (f2.elevation + f2.ceiling_height - f1.elevation)).abs() < 1e-6);
+        assert!(dims[1].offset > dims[0].offset, "stacked baseline style");
+        // Strip click runs it east of the building without a click.
+        let mut t = tool(DimMode::AutoStoryPole);
+        let n = cx.floor().dimensions.len();
+        assert_eq!(n, 3);
+        assert!(t.run_auto(&mut cx, None).commit.is_some());
     }
 }

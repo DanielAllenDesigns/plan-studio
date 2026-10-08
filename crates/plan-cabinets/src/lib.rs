@@ -16,13 +16,24 @@
 
 mod cabinet;
 mod face;
+mod filler;
+mod geom;
 mod mesh3d;
+mod mesh_extra;
 mod symbol;
+mod top;
 
 pub use cabinet::{
-    auto_label, run_along_wall, Backsplash, Cabinet, CabinetKind, Countertop, DoorStyle,
-    DrawerStyle, HandleStyle, Overlay, ToeKick,
+    auto_label, expand_label, run_along_wall, type_code, Backsplash, BlindSide, BlindSpec, Cabinet,
+    CabinetKind, CornerSpec, CornerStyle, Countertop, DoorProfile, DoorStyle, DrawerStyle,
+    HandleStyle, HingeStyle, MaterialChoice, Molding, MoldingKind, Overlay, PartMaterials, ToeKick,
 };
-pub use face::{FaceCell, FaceItem, FaceLayout, ResolvedFace};
+pub use face::{Divider, DividerHandle, FaceCell, FaceItem, FaceLayout, ResolvedFace, MIN_ITEM};
+pub use filler::{fit_between, wall_polygon, MAX_FILLER_GAP};
+pub use geom::{
+    area as ring_area, bbox as ring_bbox, ccw as ring_ccw, free_span, offset_ring, thicken_path,
+    triangulate, union_polygons, InsideObstacle,
+};
 pub use mesh3d::meshes;
 pub use symbol::{plan_symbol, Stroke};
+pub use top::{generate_countertops, CustomTop, Cutout, CutoutKind, EdgeProfile, GeneratedTop};

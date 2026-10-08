@@ -15,12 +15,11 @@ use super::{Camera, EditorContext, ObjectRef};
 use crate::tools::library::find_item;
 use eframe::egui::{self, Color32, CursorIcon, FontId, Pos2, Shape, Vec2};
 use plan_cabinets::Stroke as CabStroke;
-use plan_cabinets::{auto_label, plan_symbol, Cabinet, CabinetKind, FaceItem, FaceLayout};
+use plan_cabinets::{plan_symbol, Cabinet, CabinetKind, CutoutKind, FaceItem, FaceLayout};
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
 use plan_core::{Floor, Id, PlacedSymbol, Project};
 use plan_library::{Placement, Stroke as LibStroke, Symbol2d};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 /// A cabinet or a symbol of the plan.
@@ -64,9 +63,10 @@ thread_local! {
 
 /// The layer a cabinet is drawn on (and hidden/locked with).
 pub fn cabinet_layer(kind: CabinetKind) -> &'static str {
-    match kind {
-        CabinetKind::Base | CabinetKind::FullHeight | CabinetKind::Partition => "Cabinets, Base",
-        CabinetKind::Wall | CabinetKind::Soffit | CabinetKind::Shelf => "Cabinets, Wall",
+    if kind.is_wall_like() || matches!(kind, CabinetKind::Soffit | CabinetKind::Shelf) {
+        "Cabinets, Wall"
+    } else {
+        "Cabinets, Base"
     }
 }
 
@@ -166,189 +166,13 @@ pub fn same_angle(a: f64, b: f64) -> bool {
     d < 1e-6 || TAU - d < 1e-6
 }
 
-/// Footprint corner of the cabinet's countertop in its local frame:
-/// `(x0, y0, x1, y1)`.
-pub fn countertop_local(c: &Cabinet) -> Option<(f64, f64, f64, f64)> {
-    let t = c.countertop?;
-    Some((
-        -t.overhang_sides,
-        -t.overhang_back,
-        c.width + t.overhang_sides,
-        c.depth + t.overhang_front,
-    ))
-}
-
-#[derive(Clone, Copy)]
-struct IRect {
-    x0: i64,
-    y0: i64,
-    x1: i64,
-    y1: i64,
-}
-
-const QUANT: f64 = 1000.0;
-
-fn touches(a: &IRect, b: &IRect) -> bool {
-    let xo = a.x1.min(b.x1) - a.x0.max(b.x0);
-    let yo = a.y1.min(b.y1) - a.y0.max(b.y0);
-    (xo > 0 && yo >= 0) || (yo > 0 && xo >= 0)
-}
-
-/// The boundary loops of the union of axis-aligned rectangles.
-fn union_outline(rects: &[IRect]) -> Vec<Vec<(i64, i64)>> {
-    let mut xs: Vec<i64> = rects.iter().flat_map(|r| [r.x0, r.x1]).collect();
-    let mut ys: Vec<i64> = rects.iter().flat_map(|r| [r.y0, r.y1]).collect();
-    xs.sort_unstable();
-    xs.dedup();
-    ys.sort_unstable();
-    ys.dedup();
-    let (nx, ny) = (xs.len() - 1, ys.len() - 1);
-    let mut filled = vec![false; nx * ny];
-    for r in rects {
-        let ix = |v: i64| xs.binary_search(&v).unwrap_or(0);
-        let iy = |v: i64| ys.binary_search(&v).unwrap_or(0);
-        for i in ix(r.x0)..ix(r.x1) {
-            for j in iy(r.y0)..iy(r.y1) {
-                filled[i * ny + j] = true;
-            }
-        }
-    }
-    let is_filled = |i: isize, j: isize| {
-        i >= 0
-            && j >= 0
-            && (i as usize) < nx
-            && (j as usize) < ny
-            && filled[i as usize * ny + j as usize]
-    };
-    let mut edges: HashMap<(i64, i64), Vec<(i64, i64)>> = HashMap::new();
-    for i in 0..nx {
-        for j in 0..ny {
-            if !filled[i * ny + j] {
-                continue;
-            }
-            let (x0, x1, y0, y1) = (xs[i], xs[i + 1], ys[j], ys[j + 1]);
-            let (ii, jj) = (i as isize, j as isize);
-            if !is_filled(ii, jj - 1) {
-                edges.entry((x0, y0)).or_default().push((x1, y0));
-            }
-            if !is_filled(ii + 1, jj) {
-                edges.entry((x1, y0)).or_default().push((x1, y1));
-            }
-            if !is_filled(ii, jj + 1) {
-                edges.entry((x1, y1)).or_default().push((x0, y1));
-            }
-            if !is_filled(ii - 1, jj) {
-                edges.entry((x0, y1)).or_default().push((x0, y0));
-            }
-        }
-    }
-    let mut loops = Vec::new();
-    while let Some(start) = edges
-        .iter()
-        .filter(|(_, v)| !v.is_empty())
-        .map(|(k, _)| *k)
-        .min()
-    {
-        let mut pts = vec![start];
-        let mut cur = start;
-        while let Some(next) = edges.get_mut(&cur).and_then(Vec::pop) {
-            if next == start {
-                break;
-            }
-            pts.push(next);
-            cur = next;
-        }
-        // Drop vertices in the middle of straight runs.
-        let n = pts.len();
-        let keep: Vec<(i64, i64)> = (0..n)
-            .filter(|&i| {
-                let (a, b, c) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
-                (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0) != 0
-            })
-            .map(|i| pts[i])
-            .collect();
-        if keep.len() >= 3 {
-            loops.push(keep);
-        }
-    }
-    loops
-}
-
-/// Countertops of touching cabinets merged into one outline (CB-14): the
-/// cabinets that share an angle and whose top rectangles share an edge of
-/// positive length are unioned; overhangs therefore show on free edges only.
-/// Returns closed polygons in plan coordinates.
+/// Countertops of touching cabinets merged into one outline (CB-14): the tops
+/// of every cabinet (any angle, corner cabinets included) are unioned, so
+/// shared sides disappear and overhangs show on free edges only. Returns the
+/// closed boundary rings in plan coordinates (holes wind clockwise).
 pub fn merged_countertops(cabs: &[Cabinet]) -> Vec<Vec<Point>> {
-    let mut groups: Vec<(f64, Vec<IRect>)> = Vec::new();
-    for c in cabs {
-        let Some((lx0, ly0, lx1, ly1)) = countertop_local(c) else {
-            continue;
-        };
-        let a = c.angle.rem_euclid(TAU);
-        let (s, co) = a.sin_cos();
-        let (px, py) = (
-            c.position.x * co + c.position.y * s,
-            -c.position.x * s + c.position.y * co,
-        );
-        let q = |v: f64| (v * QUANT).round() as i64;
-        let r = IRect {
-            x0: q(px + lx0),
-            y0: q(py + ly0),
-            x1: q(px + lx1),
-            y1: q(py + ly1),
-        };
-        match groups.iter_mut().find(|(ga, _)| same_angle(*ga, a)) {
-            Some((_, v)) => v.push(r),
-            None => groups.push((a, vec![r])),
-        }
-    }
-    let mut out = Vec::new();
-    for (a, rects) in groups {
-        // Connected components of touching rectangles.
-        let mut parent: Vec<usize> = (0..rects.len()).collect();
-        fn find(p: &mut [usize], i: usize) -> usize {
-            let mut r = i;
-            while p[r] != r {
-                r = p[r];
-            }
-            let mut c = i;
-            while p[c] != r {
-                let n = p[c];
-                p[c] = r;
-                c = n;
-            }
-            r
-        }
-        for i in 0..rects.len() {
-            for j in i + 1..rects.len() {
-                if touches(&rects[i], &rects[j]) {
-                    let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-                    parent[ri] = rj;
-                }
-            }
-        }
-        let mut comps: HashMap<usize, Vec<IRect>> = HashMap::new();
-        for (i, rect) in rects.iter().enumerate() {
-            let r = find(&mut parent, i);
-            comps.entry(r).or_default().push(*rect);
-        }
-        let mut keys: Vec<usize> = comps.keys().copied().collect();
-        keys.sort_unstable();
-        let (s, co) = a.sin_cos();
-        for k in keys {
-            for lp in union_outline(&comps[&k]) {
-                out.push(
-                    lp.into_iter()
-                        .map(|(x, y)| {
-                            let (x, y) = (x as f64 / QUANT, y as f64 / QUANT);
-                            Point::new(x * co - y * s, x * s + y * co)
-                        })
-                        .collect(),
-                );
-            }
-        }
-    }
-    out
+    let polys: Vec<Vec<Point>> = cabs.iter().filter_map(Cabinet::top_polygon).collect();
+    plan_cabinets::union_polygons(&polys)
 }
 
 // ----- symbols -----
@@ -455,7 +279,7 @@ pub fn hit_cabinet(
         .iter()
         .rev()
         .filter(|c| cx.layers().is_visible(cabinet_layer(c.kind)) && filter(c))
-        .find(|c| poly_dist(p, &c.corners()) <= tol)
+        .find(|c| poly_dist(p, &c.footprint()) <= tol)
         .map(|c| c.id)
 }
 
@@ -497,28 +321,30 @@ pub fn placed_handles(floor: &Floor, r: PlacedRef, scale: f64) -> Vec<Handle> {
             };
             let v = unit(c.angle).perp();
             let (w, d) = (c.width, c.depth);
-            vec![
-                h(
-                    HandleKind::Move,
-                    c.to_plan(Point::new(w / 2.0, d / 2.0)),
-                    CursorIcon::Move,
-                ),
-                h(
+            let mut hs = vec![h(
+                HandleKind::Move,
+                c.to_plan(Point::new(w / 2.0, d / 2.0)),
+                CursorIcon::Move,
+            )];
+            // A free-form top has no width to stretch: its outline is the shape.
+            if !c.kind.is_custom() {
+                hs.push(h(
                     HandleKind::ResizeStart,
                     c.to_plan(Point::new(0.0, d / 2.0)),
                     CursorIcon::ResizeHorizontal,
-                ),
-                h(
+                ));
+                hs.push(h(
                     HandleKind::ResizeEnd,
                     c.to_plan(Point::new(w, d / 2.0)),
                     CursorIcon::ResizeHorizontal,
-                ),
-                h(
-                    HandleKind::Rotate,
-                    c.to_plan(Point::new(w / 2.0, d)) + v * off,
-                    CursorIcon::Grab,
-                ),
-            ]
+                ));
+            }
+            hs.push(h(
+                HandleKind::Rotate,
+                c.to_plan(Point::new(w / 2.0, d)) + v * off,
+                CursorIcon::Grab,
+            ));
+            hs
         }
         PlacedRef::Symbol(id) => {
             let Some(s) = floor.symbol(id) else {
@@ -766,10 +592,7 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
     let outline = |r: ObjectRef, stroke: egui::Stroke| {
         let poly = match r {
-            ObjectRef::Cabinet(id) => cabs
-                .iter()
-                .find(|c| c.id == id)
-                .map(|c| c.corners().to_vec()),
+            ObjectRef::Cabinet(id) => cabs.iter().find(|c| c.id == id).map(Cabinet::footprint),
             ObjectRef::Symbol(id) => floor.symbol(id).map(|s| s.footprint().to_vec()),
             _ => None,
         };
@@ -990,12 +813,144 @@ pub fn apply_symbol(cx: &mut EditorContext, draft: &PlacedSymbol) -> bool {
     }
 }
 
-/// The label drawn for a cabinet.
+/// The label drawn for a cabinet: its override with the macros expanded
+/// (`<W>`, `<H>`, `<D>`, `<T>`, `<L>`), or the automatic one (`B36`, `W2430`).
 pub fn cabinet_label(c: &Cabinet) -> String {
-    if c.label.is_empty() {
-        auto_label(c)
+    c.display_label()
+}
+
+// ----- countertops, holes and fixtures -----
+
+/// Edit-toolbar command id of Generate Countertop (run it with
+/// [`run_command`]).
+pub const GENERATE_COUNTERTOP: &str = "cabinet.generate_countertop";
+
+/// Runs a cabinet command by id; false when the id is not one of ours.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    match id {
+        GENERATE_COUNTERTOP => {
+            generate_countertops(cx);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Generate Countertop (CB-14, CB-15): joins the countertops of touching base
+/// cabinets (the selected ones, or all when none is selected) into custom
+/// countertops. The cabinets give up their own slab, shrinking by its
+/// thickness, and their sink and cooktop holes move to the new top. One undo
+/// step. Returns how many countertops were made.
+pub fn generate_countertops(cx: &mut EditorContext) -> usize {
+    let selected: Vec<Id> = selected_placed(cx)
+        .into_iter()
+        .filter_map(|r| match r {
+            PlacedRef::Cabinet(id) => Some(id),
+            PlacedRef::Symbol(_) => None,
+        })
+        .collect();
+    let cabs: Vec<Cabinet> = load_cabinets(cx.floor())
+        .into_iter()
+        .filter(|c| {
+            (selected.is_empty() || selected.contains(&c.id))
+                && c.countertop.is_some()
+                && !cx.layers().is_locked(cabinet_layer(c.kind))
+        })
+        .collect();
+    let tops = plan_cabinets::generate_countertops(&cabs);
+    if tops.is_empty() {
+        cx.status = "No base cabinet countertops to join".into();
+        return 0;
+    }
+    cx.begin_change("Generate Countertop");
+    let fl = cx.floor;
+    let mut made = Vec::new();
+    for g in tops {
+        let Some(id) = add_cabinet(&mut cx.project, fl, g.top) else {
+            continue;
+        };
+        made.push(ObjectRef::Cabinet(id));
+        for sid in g.sources {
+            if let Some(mut src) = cabinet_by_id(cx.floor(), sid) {
+                if src.hand_over_top() {
+                    replace_cabinet(&mut cx.project, fl, &src);
+                }
+            }
+        }
+    }
+    if made.is_empty() {
+        cx.cancel_change();
+        cx.status = "The plan's cabinets could not be read".into();
+        return 0;
+    }
+    let n = made.len();
+    cx.selection.items = made;
+    cx.mark_dirty();
+    cx.status = format!("Generated {n} countertop{}", if n == 1 { "" } else { "s" });
+    n
+}
+
+/// A plan point in the cabinet's local frame.
+fn to_local(c: &Cabinet, p: Point) -> Point {
+    let d = p.sub(c.position);
+    let (s, co) = c.angle.sin_cos();
+    Point::new(d.x * co + d.y * s, -d.x * s + d.y * co)
+}
+
+/// The topmost countertop (a cabinet's own slab or a custom countertop)
+/// whose outline contains every point of `ring`.
+fn countertop_under(floor: &Floor, ring: &[Point]) -> Option<Cabinet> {
+    load_cabinets(floor).into_iter().rev().find(|c| {
+        c.top_polygon()
+            .is_some_and(|top| ring.iter().all(|p| point_in_polygon(*p, &top)))
+    })
+}
+
+/// Custom Counter Hole: cuts the polygon `ring` (plan coordinates) out of the
+/// countertop it lies in. Returns the countertop's cabinet id, or `None`
+/// (changing nothing) when no countertop contains the whole polygon or its
+/// layer is locked. The caller owns the undo step.
+pub fn add_counter_hole(cx: &mut EditorContext, ring: &[Point]) -> Option<Id> {
+    if ring.len() < 3 || plan_cabinets::ring_area(ring) < 1.0 {
+        return None;
+    }
+    let mut target = countertop_under(cx.floor(), ring)?;
+    if cx.layers().is_locked(cabinet_layer(target.kind)) {
+        return None;
+    }
+    let local: Vec<Point> = ring.iter().map(|p| to_local(&target, *p)).collect();
+    target.cutouts.push(plan_cabinets::Cutout {
+        kind: CutoutKind::Custom,
+        name: "Opening".to_string(),
+        outline: plan_cabinets::ring_ccw(&local),
+    });
+    let fl = cx.floor;
+    replace_cabinet(&mut cx.project, fl, &target).then_some(target.id)
+}
+
+/// Sets a sink or cooktop into the countertop of cabinet `id` (hole plus
+/// fixture symbol). One undo step; false when the cabinet has no countertop
+/// or the fixture does not fit.
+pub fn add_fixture(cx: &mut EditorContext, id: Id, kind: CutoutKind) -> bool {
+    let Some(mut cab) = cabinet_by_id(cx.floor(), id) else {
+        return false;
+    };
+    if !cab.add_cutout(kind) {
+        cx.status = "That countertop has no room for the fixture".into();
+        return false;
+    }
+    cx.begin_change(match kind {
+        CutoutKind::Sink => "Place Sink",
+        CutoutKind::Cooktop => "Place Cooktop",
+        CutoutKind::Custom => "Place Counter Hole",
+    });
+    let fl = cx.floor;
+    if replace_cabinet(&mut cx.project, fl, &cab) {
+        cx.mark_dirty();
+        true
     } else {
-        c.label.clone()
+        cx.cancel_change();
+        false
     }
 }
 
@@ -1232,5 +1187,159 @@ mod tests {
     fn align_helpers() {
         assert!(same_angle(0.0, TAU));
         assert!(!same_angle(0.0, 0.1));
+    }
+
+    fn base_ids(cx: &mut EditorContext, cabs: Vec<Cabinet>) -> Vec<Id> {
+        cabs.into_iter()
+            .map(|c| add_cabinet(&mut cx.project, 0, c).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn tops_of_corner_and_perpendicular_runs_merge_into_one_outline() {
+        let mut corner = Cabinet::corner_base(36.0).with_pie_cut(true);
+        corner.position = Point::ZERO;
+        let mut a = Cabinet::base(30.0);
+        a.position = Point::new(36.0, 0.0);
+        let mut b = Cabinet::base(30.0);
+        b.angle = -std::f64::consts::FRAC_PI_2;
+        b.position = Point::new(0.0, 66.0);
+        let rings = merged_countertops(&[corner, a, b]);
+        assert_eq!(rings.len(), 1);
+        // The L: two 25" wide arms, the long way 66" each.
+        let area = plan_cabinets::ring_area(&rings[0]);
+        assert!(
+            (area - (66.0 * 25.0 + 66.0 * 25.0 - 25.0 * 25.0)).abs() < 1e-6,
+            "{area}"
+        );
+    }
+
+    #[test]
+    fn generate_countertop_covers_adjacent_bases_in_one_undo_step() {
+        let mut cx = cx();
+        let mut run = plan_cabinets::run_along_wall(
+            Point::new(0.0, 0.0),
+            Point::new(120.0, 0.0),
+            6.0,
+            &[24.0, 36.0, 24.0],
+            CabinetKind::Base,
+        );
+        assert!(run[1].add_cutout(CutoutKind::Sink));
+        let mut apart = Cabinet::base(24.0);
+        apart.position = Point::new(200.0, 3.0);
+        run.push(apart);
+        let mut wall = Cabinet::wall(30.0);
+        wall.position = Point::new(0.0, 3.0);
+        run.push(wall);
+        let ids = base_ids(&mut cx, run);
+        cx.selection.items.clear();
+        assert_eq!(generate_countertops(&mut cx), 2);
+        let cabs = load_cabinets(cx.floor());
+        let tops: Vec<&Cabinet> = cabs
+            .iter()
+            .filter(|c| c.kind == CabinetKind::CustomCountertop)
+            .collect();
+        assert_eq!(tops.len(), 2);
+        let main = tops.iter().find(|t| t.width > 80.0).unwrap();
+        // 84" by 24" plus the front overhang, less the sink hole.
+        let expected = (84.0 * 25.0 - 30.0 * 18.0) * 1.5;
+        assert!((main.countertop_volume() - expected).abs() < 1e-6);
+        // Each source cabinet gave up its slab and shrank to sit under it.
+        for id in &ids[..3] {
+            let c = cabinet_by_id(cx.floor(), *id).unwrap();
+            assert!(c.countertop.is_none() && c.cutouts.is_empty());
+            assert_eq!(c.height, 34.5);
+        }
+        // The wall cabinet is untouched, and the top lands on the boxes.
+        assert_eq!(cabinet_by_id(cx.floor(), ids[4]).unwrap().height, 30.0);
+        assert_eq!(main.elevation + main.height, 36.0);
+        assert_eq!(cx.undo().as_deref(), Some("Generate Countertop"));
+        let back = load_cabinets(cx.floor());
+        assert_eq!(back.len(), 5);
+        assert!(back.iter().take(3).all(|c| c.countertop.is_some()));
+        // A selection limits the joined cabinets; nothing to join says so.
+        cx.redo();
+        assert_eq!(generate_countertops(&mut cx), 0);
+        assert!(cx.status.contains("No base cabinet"));
+    }
+
+    #[test]
+    fn counter_holes_cut_the_countertop_under_them() {
+        let mut cx = cx();
+        let mut c = Cabinet::base(36.0);
+        c.position = Point::new(10.0, 10.0);
+        c.angle = std::f64::consts::FRAC_PI_2;
+        let id = add_cabinet(&mut cx.project, 0, c).unwrap();
+        // Rotated 90 degrees: width runs along +y, depth along -x.
+        let hole = [
+            Point::new(-5.0, 20.0),
+            Point::new(5.0, 20.0),
+            Point::new(5.0, 30.0),
+            Point::new(-5.0, 30.0),
+        ];
+        assert_eq!(add_counter_hole(&mut cx, &hole), Some(id));
+        let got = cabinet_by_id(cx.floor(), id).unwrap();
+        assert_eq!(got.cutouts.len(), 1);
+        assert!((plan_cabinets::ring_area(&got.cutouts[0].outline) - 100.0).abs() < 1e-9);
+        assert!((got.countertop_volume() - (36.0 * 25.0 - 100.0) * 1.5).abs() < 1e-6);
+        // Off the countertop: nothing happens.
+        let off: Vec<Point> = hole.iter().map(|p| *p + Point::new(500.0, 0.0)).collect();
+        assert_eq!(add_counter_hole(&mut cx, &off), None);
+        // A sink goes in through add_fixture, as one undo step.
+        assert!(add_fixture(&mut cx, id, CutoutKind::Sink));
+        assert_eq!(cabinet_by_id(cx.floor(), id).unwrap().cutouts.len(), 2);
+        assert_eq!(cx.undo().as_deref(), Some("Place Sink"));
+        assert_eq!(cabinet_by_id(cx.floor(), id).unwrap().cutouts.len(), 1);
+    }
+
+    #[test]
+    fn picking_follows_the_true_footprint_and_custom_tops_have_no_resize() {
+        let mut cx = cx();
+        let corner = add_cabinet(
+            &mut cx.project,
+            0,
+            Cabinet::corner_base(36.0).with_pie_cut(false),
+        )
+        .unwrap();
+        // Inside the notch of the L (past both 24" arms) there is nothing.
+        assert_eq!(hit_placed(&cx, Point::new(30.0, 30.0), 1.0), None);
+        assert_eq!(
+            hit_placed(&cx, Point::new(30.0, 10.0), 1.0),
+            Some(PlacedRef::Cabinet(corner))
+        );
+        let ring = [
+            Point::new(100.0, 0.0),
+            Point::new(160.0, 0.0),
+            Point::new(160.0, 30.0),
+            Point::new(100.0, 30.0),
+        ];
+        let top = add_cabinet(
+            &mut cx.project,
+            0,
+            Cabinet::custom_countertop(&ring, 1.5, 36.0).unwrap(),
+        )
+        .unwrap();
+        let kinds: Vec<HandleKind> = placed_handles(cx.floor(), PlacedRef::Cabinet(top), 2.0)
+            .iter()
+            .map(|h| h.kind)
+            .collect();
+        assert_eq!(kinds, [HandleKind::Move, HandleKind::Rotate]);
+        assert_eq!(cabinet_layer(CabinetKind::CornerWall), "Cabinets, Wall");
+        assert_eq!(cabinet_layer(CabinetKind::BaseFiller), "Cabinets, Base");
+        assert_eq!(
+            cabinet_layer(CabinetKind::CustomCountertop),
+            "Cabinets, Base"
+        );
+        assert_eq!(cabinet_layer(CabinetKind::Soffit), "Cabinets, Wall");
+    }
+
+    #[test]
+    fn cabinet_labels_expand_macros() {
+        let mut c = Cabinet::wall(24.0);
+        assert_eq!(cabinet_label(&c), "W2430");
+        c.label = "<T><W>/<H>".into();
+        assert_eq!(cabinet_label(&c), "W24/30");
+        assert_eq!(cabinet_label(&Cabinet::base(36.0)), "B36");
+        assert!(!run_command(&mut cx(), "nope"));
     }
 }

@@ -10,6 +10,7 @@ use crate::theme::Palette;
 use crate::tools::camera::{self as camera_tool, CamHandle};
 use eframe::egui::{self, CursorIcon, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
+use plan_core::details::{DetailRef, DetailsLayer};
 use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::Point;
 use plan_core::OpeningKind;
@@ -224,6 +225,29 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 .unwrap_or_default(),
             None => Vec::new(),
         },
+        // Region, deck and outline-solid corners (a corner handle each) and
+        // the points of a molding: its two ends for a line, a corner handle
+        // each for a polyline. Everything else moves by its body.
+        ObjectRef::Detail(id) => {
+            let layer = DetailsLayer::load(floor);
+            let Some(r) = layer.find(id) else {
+                return Vec::new();
+            };
+            let Some(pts) = layer.vertices(r) else {
+                return Vec::new();
+            };
+            if matches!(r, DetailRef::Molding(_)) && pts.len() == 2 {
+                let resize = resize_cursor(pts[1].sub(pts[0]));
+                return vec![
+                    h(HandleKind::ResizeStart, pts[0], resize),
+                    h(HandleKind::ResizeEnd, pts[1], resize),
+                ];
+            }
+            pts.into_iter()
+                .enumerate()
+                .map(|(i, p)| h(HandleKind::Reshape(i), p, CursorIcon::Crosshair))
+                .collect()
+        }
         ObjectRef::Room(_) | ObjectRef::Terrain => Vec::new(),
     }
 }
@@ -295,6 +319,54 @@ mod tests {
     use super::*;
     use crate::plan_defaults;
     use plan_core::WallKind;
+
+    #[test]
+    fn details_get_corner_and_end_handles() {
+        use crate::editor::details_view as dv;
+        use plan_core::details::MoldingProfile;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let sq = |s: f64| {
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(s, 0.0),
+                Point::new(s, s),
+                Point::new(0.0, s),
+            ]
+        };
+        let deck = dv::add_deck(&mut cx, sq(96.0));
+        let line = dv::add_molding(
+            &mut cx,
+            vec![Point::new(0.0, 200.0), Point::new(100.0, 200.0)],
+            MoldingProfile::Crown,
+        );
+        let poly = dv::add_molding(
+            &mut cx,
+            vec![
+                Point::new(0.0, 300.0),
+                Point::new(100.0, 300.0),
+                Point::new(100.0, 400.0),
+            ],
+            MoldingProfile::Crown,
+        );
+        let sphere = dv::add_solid(
+            &mut cx,
+            plan_core::details::SolidKind::Sphere { r: 6.0 },
+            Point::new(500.0, 0.0),
+        );
+        cx.selection.set(ObjectRef::Detail(deck));
+        let hs = handles_for(&cx, 2.0);
+        assert_eq!(hs.len(), 4);
+        assert!(hs.iter().all(|h| matches!(h.kind, HandleKind::Reshape(_))));
+        assert_eq!(hs[2].pos, Point::new(96.0, 96.0));
+        cx.selection.set(ObjectRef::Detail(line));
+        let ends: Vec<HandleKind> = handles_for(&cx, 2.0).iter().map(|h| h.kind).collect();
+        assert_eq!(ends, vec![HandleKind::ResizeStart, HandleKind::ResizeEnd]);
+        cx.selection.set(ObjectRef::Detail(poly));
+        assert_eq!(handles_for(&cx, 2.0).len(), 3);
+        // A sphere has no corners; it moves by its body.
+        cx.selection.set(ObjectRef::Detail(sphere));
+        assert!(handles_for(&cx, 2.0).is_empty());
+    }
 
     #[test]
     fn wall_handles_and_hit_priority() {

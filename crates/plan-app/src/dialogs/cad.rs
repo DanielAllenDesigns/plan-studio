@@ -6,10 +6,12 @@
 //!
 //! General edits the geometry: a line by its end points, length and angle; a
 //! circle by center and radius; an arc by center, radius and angles; a
-//! polyline lists its vertices and can be closed or opened. The model keeps
-//! no per-object line weight, color, dash style or fill, so the Line Style and
-//! Fill Style pages show the values the object's layer gives and the fill
-//! options disabled. The layer is editable.
+//! polyline lists its vertices and can be closed or opened. Line Style, Fill
+//! Style and Arrow edit the object's own look (`plan_core::cad::CadAttrs`):
+//! color, weight and dash style instead of the layer's, a solid or pattern
+//! fill (a pattern is drawn as hatch lines grouped with the shape) and the
+//! arrow ends of an open shape. The layer is editable. Everything applies as
+//! one undo step.
 //!
 //! [`open_for`] builds the dialog for an `ObjectRef::Cad` that is not text;
 //! call [`CadDialog::show`] each frame and [`CadDialog::apply`] on
@@ -17,19 +19,22 @@
 
 #![allow(dead_code)]
 
+pub mod blocks;
+
 use super::{
-    dis_check, dis_combo, dis_radio, fmt_short, on, pv_text, row, section, Fields, Outcome,
-    SpecDialog, SpecPages, Tab, PV_ACCENT, PV_FAINT, PV_INK,
+    fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
+    PV_FAINT, PV_INK,
 };
 use crate::editor::selection::cad_by_id;
 use crate::editor::{EditorContext, ObjectRef};
+use crate::tools::cad::{apply_hatch, plan_hatch, HATCHES};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Ui, Vec2};
-use plan_core::cad::CadItem;
+use plan_core::cad::{ArrowStyle, CadAttrs, CadItem, FillAttr};
 use plan_core::geometry::{polygon_area, Point};
 use plan_core::{CadObject, Id, LineStyle};
 use std::f64::consts::TAU;
 
-const OPEN_TABS: &[Tab] = &[on("General"), on("Line Style"), on("Layer")];
+const OPEN_TABS: &[Tab] = &[on("General"), on("Line Style"), on("Arrow"), on("Layer")];
 const CLOSED_TABS: &[Tab] = &[
     on("General"),
     on("Line Style"),
@@ -55,6 +60,8 @@ pub struct CadDialog {
 struct CadForm {
     orig: CadObject,
     draft: CadObject,
+    orig_attrs: CadAttrs,
+    attrs: CadAttrs,
     layers: Vec<LayerLook>,
     fields: Fields,
 }
@@ -71,12 +78,25 @@ impl CadDialog {
         Self {
             frame: SpecDialog::new(title, "cad"),
             form: CadForm {
+                orig_attrs: CadAttrs::new(obj.id),
+                attrs: CadAttrs::new(obj.id),
                 orig: obj.clone(),
                 draft: obj,
                 layers,
                 fields: Fields::default(),
             },
         }
+    }
+
+    /// The object's own look (color, weight, fill, arrows) to start from.
+    pub fn with_attrs(mut self, attrs: CadAttrs) -> Self {
+        self.form.orig_attrs = attrs.clone();
+        self.form.attrs = attrs;
+        self
+    }
+
+    pub fn attrs(&self) -> &CadAttrs {
+        &self.form.attrs
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -91,11 +111,13 @@ impl CadDialog {
         &self.form.draft
     }
 
-    /// Stores the edited object (one undo step). Returns false when nothing
-    /// changed, the object is gone or its layer is locked.
+    /// Stores the edited object and its look (one undo step). Returns false
+    /// when nothing changed, the object is gone, its layer is locked or the
+    /// fill cannot be drawn.
     pub fn apply(&self, cx: &mut EditorContext) -> bool {
         let new = &self.form.draft;
-        if *new == self.form.orig {
+        let attrs_changed = self.form.attrs != self.form.orig_attrs;
+        if *new == self.form.orig && !attrs_changed {
             return false;
         }
         if !cx.check_unlocked(ObjectRef::Cad(new.id)) {
@@ -109,6 +131,27 @@ impl CadDialog {
         if cad_by_id(cx.floor(), new.id).is_none() {
             return false;
         }
+        // Work out a changed fill first so a failure leaves the plan alone.
+        let old_fill = self.form.orig_attrs.fill.as_ref();
+        let new_fill = self.form.attrs.fill.as_ref();
+        let refill = match new_fill {
+            Some(f)
+                if old_fill.is_none_or(|o| o.pattern != f.pattern || o.spacing != f.spacing) =>
+            {
+                let choice = HATCHES
+                    .iter()
+                    .position(|(n, _)| *n == f.pattern)
+                    .unwrap_or(0);
+                match plan_hatch(cx, new.id, choice, f.spacing) {
+                    Ok(job) => Some(job),
+                    Err(e) => {
+                        cx.status = e;
+                        return false;
+                    }
+                }
+            }
+            _ => None,
+        };
         cx.begin_change("Change CAD Object");
         if let Some(slot) = cx.project.floors[fl]
             .cad
@@ -116,6 +159,25 @@ impl CadDialog {
             .find(|c| c.id == new.id)
         {
             *slot = new.clone();
+        }
+        if attrs_changed {
+            let mut a = self.form.attrs.clone();
+            a.target = new.id;
+            cx.project.set_cad_attrs(fl, a);
+        }
+        if let Some(job) = refill {
+            apply_hatch(cx, job);
+        } else if new_fill.is_none() {
+            // No Fill: the hatch lines of an earlier fill go.
+            for l in old_fill.map(|f| f.lines.clone()).unwrap_or_default() {
+                cx.project.remove_cad(fl, l);
+            }
+            let me = plan_core::ObjectRef::Cad(new.id);
+            let f = &mut cx.project.floors[fl];
+            for g in &mut f.groups {
+                g.members.retain(|m| *m == me || matches!(m, plan_core::ObjectRef::Cad(id) if f.cad.iter().any(|c| c.id == *id)));
+            }
+            f.groups.retain(|g| g.members.len() >= 2);
         }
         cx.mark_dirty();
         true
@@ -143,7 +205,22 @@ pub fn open_for(cx: &EditorContext, o: ObjectRef) -> Option<CadDialog> {
             style: l.line_style,
         })
         .collect();
-    Some(CadDialog::new(obj.clone(), layers))
+    Some(
+        CadDialog::new(obj.clone(), layers).with_attrs(
+            cx.floor()
+                .cad_attrs(id)
+                .unwrap_or_else(|| CadAttrs::new(id)),
+        ),
+    )
+}
+
+fn style_name(s: LineStyle) -> &'static str {
+    match s {
+        LineStyle::Solid => "Solid",
+        LineStyle::Dashed => "Dashed",
+        LineStyle::Dotted => "Dotted",
+        LineStyle::DashDot => "Dash-Dot",
+    }
 }
 
 fn polar(len: f64, deg: f64) -> Point {
@@ -270,46 +347,164 @@ impl CadForm {
 
     fn line_style(&mut self, ui: &mut Ui) {
         let look = self.look().cloned();
-        section(ui, "Line (by layer)");
-        row(ui, "Line Weight", |ui| match &look {
-            Some(l) => {
-                ui.label(format!("{:.2} mm", f64::from(l.weight) / 100.0));
+        let layer_weight = look.as_ref().map_or(25, |l| l.weight);
+        let layer_color = look.as_ref().map_or([0, 0, 0], |l| l.color);
+        let layer_style = look.as_ref().map_or(LineStyle::Solid, |l| l.style);
+        let attrs = &mut self.attrs;
+        section(ui, "Line Weight");
+        let mut own = attrs.weight.is_some();
+        if ui.checkbox(&mut own, "Use a weight of its own").changed() {
+            attrs.weight = own.then_some(layer_weight);
+        }
+        match &mut attrs.weight {
+            Some(w) => {
+                let mut mm = f64::from(*w) / 100.0;
+                row(ui, "Line Weight", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut mm)
+                            .range(0.05..=5.0)
+                            .speed(0.01)
+                            .suffix(" mm"),
+                    )
+                });
+                *w = (mm * 100.0).round() as u32;
             }
-            None => dis_combo(ui, "cad_weight", "Default"),
-        });
-        row(ui, "Color", |ui| match &look {
-            Some(l) => {
-                let (r, _) = ui.allocate_exact_size(Vec2::new(36.0, 14.0), egui::Sense::hover());
-                ui.painter().rect_filled(
-                    r,
-                    2.0,
-                    Color32::from_rgb(l.color[0], l.color[1], l.color[2]),
-                );
-                ui.painter().rect_stroke(
-                    r,
-                    2.0,
-                    Stroke::new(1.0_f32, PV_INK),
-                    egui::StrokeKind::Inside,
-                );
+            None => {
+                row(ui, "Line Weight", |ui| {
+                    ui.label(format!("{:.2} mm (layer)", f64::from(layer_weight) / 100.0))
+                });
             }
-            None => dis_combo(ui, "cad_color", "Black"),
-        });
+        }
+        section(ui, "Color");
+        let mut own = attrs.color.is_some();
+        if ui.checkbox(&mut own, "Use a color of its own").changed() {
+            attrs.color = own.then_some(layer_color);
+        }
+        match &mut attrs.color {
+            Some(c) => {
+                row(ui, "Color", |ui| ui.color_edit_button_srgb(c));
+            }
+            None => {
+                row(ui, "Color", |ui| {
+                    let (r, _) =
+                        ui.allocate_exact_size(Vec2::new(36.0, 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(
+                        r,
+                        2.0,
+                        Color32::from_rgb(layer_color[0], layer_color[1], layer_color[2]),
+                    );
+                    ui.painter().rect_stroke(
+                        r,
+                        2.0,
+                        Stroke::new(1.0_f32, PV_INK),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.label("layer");
+                });
+            }
+        }
         section(ui, "Line Style");
-        let style = look.as_ref().map_or(LineStyle::Solid, |l| l.style);
-        dis_radio(ui, "Solid", style == LineStyle::Solid);
-        dis_radio(ui, "Dashed", style == LineStyle::Dashed);
-        dis_radio(ui, "Dotted", style == LineStyle::Dotted);
-        dis_radio(ui, "Dash-Dot", style == LineStyle::DashDot);
-        ui.weak("Weight, color and style come from the layer until objects can carry their own.");
+        let mut pick = attrs.dash;
+        ui.radio_value(
+            &mut pick,
+            None,
+            format!("By layer ({})", style_name(layer_style)),
+        );
+        for s in [
+            LineStyle::Solid,
+            LineStyle::Dashed,
+            LineStyle::Dotted,
+            LineStyle::DashDot,
+        ] {
+            ui.radio_value(&mut pick, Some(s), style_name(s));
+        }
+        attrs.dash = pick;
     }
 
     fn fill_style(&mut self, ui: &mut Ui) {
+        let fields = &mut self.fields;
+        let attrs = &mut self.attrs;
         section(ui, "Fill Style");
-        dis_radio(ui, "No Fill", true);
-        dis_radio(ui, "Solid", false);
-        dis_radio(ui, "Pattern", false);
-        dis_check(ui, "Fill Is Transparent", false);
-        ui.weak("Fills are not stored in the model yet.");
+        #[derive(PartialEq, Clone, Copy)]
+        enum Kind {
+            None,
+            Solid,
+            Pattern,
+        }
+        let kind = match &attrs.fill {
+            None => Kind::None,
+            Some(f) if f.pattern.is_empty() => Kind::Solid,
+            Some(_) => Kind::Pattern,
+        };
+        let mut pick = kind;
+        ui.radio_value(&mut pick, Kind::None, "No Fill");
+        ui.radio_value(&mut pick, Kind::Solid, "Solid");
+        ui.radio_value(&mut pick, Kind::Pattern, "Pattern");
+        if pick != kind {
+            attrs.fill = match pick {
+                Kind::None => None,
+                Kind::Solid => Some(FillAttr {
+                    pattern: String::new(),
+                    ..attrs.fill.take().unwrap_or_default()
+                }),
+                Kind::Pattern => Some(FillAttr {
+                    pattern: HATCHES[1].0.to_string(),
+                    ..attrs.fill.take().unwrap_or_default()
+                }),
+            };
+        }
+        let Some(f) = &mut attrs.fill else {
+            return;
+        };
+        section(ui, "Fill");
+        row(ui, "Color", |ui| ui.color_edit_button_srgb(&mut f.color));
+        row(ui, "Opacity", |ui| {
+            ui.add(egui::Slider::new(&mut f.opacity, 0..=255).show_value(false))
+        });
+        ui.weak("A solid fill is drawn by the plan renderer; lower the opacity to see through it.");
+        if !f.pattern.is_empty() {
+            row(ui, "Pattern", |ui| {
+                egui::ComboBox::from_id_salt("cad_fill_pattern")
+                    .selected_text(f.pattern.clone())
+                    .show_ui(ui, |ui| {
+                        for (name, _) in HATCHES.iter().skip(1) {
+                            ui.selectable_value(&mut f.pattern, (*name).to_string(), *name);
+                        }
+                    });
+            });
+            let spaced = HATCHES.iter().any(|(n, uses)| *n == f.pattern && *uses);
+            if spaced {
+                fields.length_row(ui, "Spacing", "fill_spacing", &mut f.spacing);
+            }
+            ui.weak("The pattern is drawn as lines grouped with the shape when you press OK.");
+        }
+    }
+
+    fn arrow(&mut self, ui: &mut Ui) {
+        let fields = &mut self.fields;
+        let attrs = &mut self.attrs;
+        section(ui, "Arrows");
+        for (label, key, sel) in [
+            ("Start", "arrow_start", &mut attrs.arrow_start),
+            ("End", "arrow_end", &mut attrs.arrow_end),
+        ] {
+            row(ui, label, |ui| {
+                egui::ComboBox::from_id_salt(key)
+                    .selected_text(sel.name())
+                    .show_ui(ui, |ui| {
+                        for a in ArrowStyle::ALL {
+                            ui.selectable_value(sel, a, a.name());
+                        }
+                    });
+            });
+        }
+        if attrs.arrow_start != ArrowStyle::None || attrs.arrow_end != ArrowStyle::None {
+            if attrs.arrow_size <= 0.0 {
+                attrs.arrow_size = 6.0;
+            }
+            fields.length_row(ui, "Arrow Size", "arrow_size", &mut attrs.arrow_size);
+        }
+        ui.weak("Arrows made with Line With Arrow are separate shapes; these settings add arrowheads to the line itself.");
     }
 
     fn layer(&mut self, ui: &mut Ui) {
@@ -356,6 +551,7 @@ impl SpecPages for CadForm {
             "General" => self.general(ui),
             "Line Style" => self.line_style(ui),
             "Fill Style" => self.fill_style(ui),
+            "Arrow" => self.arrow(ui),
             "Layer" => self.layer(ui),
             _ => {}
         }
@@ -375,7 +571,11 @@ impl SpecPages for CadForm {
                 rect.center().y - 6.0 - ((q.y - c.y) * s) as f32,
             )
         };
-        let ink = Stroke::new(1.6_f32, PV_INK);
+        let ink_color = self
+            .attrs
+            .color
+            .map_or(PV_INK, |c| Color32::from_rgb(c[0], c[1], c[2]));
+        let ink = Stroke::new(1.6_f32, ink_color);
         match &self.draft.item {
             CadItem::Line { a, b } => {
                 p.line_segment([to(*a), to(*b)], ink);
@@ -544,5 +744,126 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn own_line_look_is_stored_with_the_object_in_one_undo_step() {
+        let (mut cx, id) = cx_with(line());
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        assert!(!d.apply(&mut cx), "nothing changed yet");
+        d.form.attrs.color = Some([200, 0, 0]);
+        d.form.attrs.weight = Some(70);
+        d.form.attrs.dash = Some(LineStyle::Dashed);
+        d.form.attrs.arrow_end = ArrowStyle::Filled;
+        d.form.attrs.arrow_size = 8.0;
+        assert!(d.apply(&mut cx));
+        let a = cx.floor().cad_attrs(id).unwrap();
+        assert_eq!(a.color, Some([200, 0, 0]));
+        assert_eq!((a.weight, a.dash), (Some(70), Some(LineStyle::Dashed)));
+        assert_eq!(a.arrow_end, ArrowStyle::Filled);
+        // Reopened, the dialog shows the stored look and a further change keeps it.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        assert_eq!(d.attrs().weight, Some(70));
+        assert!(!d.apply(&mut cx));
+        d.form.attrs.weight = None;
+        assert!(d.apply(&mut cx));
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().weight, None);
+        assert_eq!(cx.undo().as_deref(), Some("Change CAD Object"));
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().weight, Some(70));
+        assert_eq!(cx.undo().as_deref(), Some("Change CAD Object"));
+        assert!(cx.floor().cad_attrs(id).is_none());
+    }
+
+    #[test]
+    fn fill_style_draws_a_hatch_and_no_fill_takes_it_away() {
+        let (mut cx, id) = cx_with(CadItem::Polyline {
+            points: vec![
+                Point::ZERO,
+                Point::new(120.0, 0.0),
+                Point::new(120.0, 120.0),
+                Point::new(0.0, 120.0),
+            ],
+            closed: true,
+        });
+        let count = |cx: &EditorContext| {
+            cx.floor()
+                .cad
+                .iter()
+                .filter(|c| c.layer == "CAD, Default")
+                .count()
+        };
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.attrs.fill = Some(FillAttr {
+            pattern: "Diagonal Lines".into(),
+            spacing: 12.0,
+            ..FillAttr::default()
+        });
+        assert!(d.apply(&mut cx));
+        let lines = count(&cx);
+        assert!(lines > 8, "{lines}");
+        assert_eq!(
+            cx.floor().cad_attrs(id).unwrap().fill.unwrap().lines.len(),
+            lines - 1
+        );
+        // A different pattern replaces the lines.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.attrs.fill.as_mut().unwrap().pattern = "Cross Hatch".into();
+        assert!(d.apply(&mut cx));
+        let cross = count(&cx);
+        assert!(cross > lines && cross < lines * 3, "{cross} vs {lines}");
+        // A solid fill keeps the outline alone.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.attrs.fill.as_mut().unwrap().pattern = String::new();
+        assert!(d.apply(&mut cx));
+        assert_eq!(count(&cx), 1);
+        // And no fill at all drops the record of it.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.attrs.fill = Some(FillAttr {
+            pattern: "Brick".into(),
+            ..FillAttr::default()
+        });
+        assert!(d.apply(&mut cx));
+        assert!(count(&cx) > 1);
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.attrs.fill = None;
+        assert!(d.apply(&mut cx));
+        assert_eq!(count(&cx), 1);
+        assert!(cx.floor().groups.is_empty());
+        assert!(cx.floor().cad_attrs(id).is_none());
+        // Undo brings the brick back.
+        assert_eq!(cx.undo().as_deref(), Some("Change CAD Object"));
+        assert!(count(&cx) > 1);
+    }
+
+    #[test]
+    fn the_arrow_and_style_pages_draw() {
+        let (cx, id) = cx_with(line());
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        let ctx = egui::Context::default();
+        for name in ["Line Style", "Arrow"] {
+            let tab = d.form.tabs().iter().position(|t| t.name == name).unwrap();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
+            });
+        }
+        d.form.attrs.fill = Some(FillAttr::default());
+        let (cx, id) = cx_with(CadItem::Circle {
+            center: Point::ZERO,
+            radius: 5.0,
+        });
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.attrs.fill = Some(FillAttr {
+            pattern: "Brick".into(),
+            ..FillAttr::default()
+        });
+        let tab = d
+            .form
+            .tabs()
+            .iter()
+            .position(|t| t.name == "Fill Style")
+            .unwrap();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
+        });
     }
 }

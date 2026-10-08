@@ -361,6 +361,7 @@ impl Wall {
             class: WallClass::Standard,
             foundation_height: DEFAULT_FOUNDATION_HEIGHT,
             is_deck_edge: false,
+            bottom_offset: 0.0,
         }
     }
 
@@ -1091,9 +1092,13 @@ mod tests {
         assert_eq!(w.flags, WallFlags::default());
         assert_eq!(w.roof, WallRoofDirective::default());
         assert!(w.curve.is_none() && w.wall_type.is_none());
-        let s = serde_json::to_string(&w).unwrap();
+        assert_eq!(w.bottom_offset, 0.0, "old walls start at the floor");
+        let mut raised = w.clone();
+        raised.bottom_offset = 31.5;
+        let s = serde_json::to_string(&raised).unwrap();
         let back: Wall = serde_json::from_str(&s).unwrap();
         assert_eq!(back.roof, w.roof);
+        assert_eq!(back.bottom_offset, 31.5);
     }
 
     fn every_class() -> Vec<WallClass> {

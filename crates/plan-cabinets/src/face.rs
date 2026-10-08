@@ -27,6 +27,8 @@ pub enum FaceItem {
     DoubleDoor { height: f64 },
     /// An open (front-less) bay.
     Opening { height: f64 },
+    /// A solid slab front with no handle (fillers, finished ends).
+    Panel { height: f64 },
     /// An appliance or fixture front (for example a dishwasher or a sink tip-out).
     Appliance { height: f64, name: String },
     /// Items placed side by side. Its own `height` follows the vertical rules;
@@ -53,6 +55,7 @@ impl FaceItem {
             | FaceItem::DoorRight { height }
             | FaceItem::DoubleDoor { height }
             | FaceItem::Opening { height }
+            | FaceItem::Panel { height }
             | FaceItem::Appliance { height, .. }
             | FaceItem::HorizontalLayout { height, .. } => *height,
         }
@@ -69,11 +72,34 @@ impl FaceItem {
             | FaceItem::DoorRight { height }
             | FaceItem::DoubleDoor { height }
             | FaceItem::Opening { height }
+            | FaceItem::Panel { height }
             | FaceItem::Appliance { height, .. }
             | FaceItem::HorizontalLayout { height, .. } => *height = h,
         }
         item
     }
+}
+
+/// Smallest height or width a dragged divider leaves an item, inches.
+pub const MIN_ITEM: f64 = 1.5;
+
+/// A draggable boundary in a face layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Divider {
+    /// Between top-level items `above` and `above + 1`.
+    Horizontal { above: usize },
+    /// Between cells `left` and `left + 1` of the horizontal layout at top-level index `layout`.
+    Vertical { layout: usize, left: usize },
+}
+
+/// Where a [`Divider`] sits in face coordinates measured from the top-left.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DividerHandle {
+    pub divider: Divider,
+    /// Distance from the top (horizontal dividers) or the left (vertical ones).
+    pub pos: f64,
+    /// The extent along the divider: `(left, right)` or `(top, bottom)`.
+    pub span: (f64, f64),
 }
 
 /// A leaf face item placed in face coordinates.
@@ -190,6 +216,145 @@ impl FaceLayout {
             ],
             frame_width: SEPARATION,
         }
+    }
+
+    /// A single solid panel: the face of a filler.
+    pub fn filler_panel() -> Self {
+        Self {
+            items: vec![FaceItem::Panel { height: 0.0 }],
+            frame_width: SEPARATION,
+        }
+    }
+
+    /// A single open bay: an appliance opening.
+    pub fn opening() -> Self {
+        Self {
+            items: vec![FaceItem::Opening { height: 0.0 }],
+            frame_width: SEPARATION,
+        }
+    }
+
+    /// The dividers a user can drag, with where each sits (see [`Divider`]).
+    ///
+    /// Horizontal dividers lie between neighbouring top-level items; each is
+    /// listed when a movable (non-separation) item exists on both sides of it.
+    /// Vertical dividers lie between cells of a horizontal layout. Fails like
+    /// [`FaceLayout::resolve`].
+    pub fn dividers(
+        &self,
+        total_height: f64,
+        total_width: f64,
+    ) -> Result<Vec<DividerHandle>, String> {
+        let heights = distribute(
+            self.items.iter().map(FaceItem::height).collect(),
+            total_height,
+            "height",
+        )?;
+        let mut out = Vec::new();
+        let mut top = 0.0;
+        for (i, (item, h)) in self.items.iter().zip(&heights).enumerate() {
+            if i + 1 < self.items.len()
+                && self.movable_above(i).is_some()
+                && self.movable_below(i + 1).is_some()
+            {
+                out.push(DividerHandle {
+                    divider: Divider::Horizontal { above: i },
+                    pos: top + h,
+                    span: (0.0, total_width),
+                });
+            }
+            if let FaceItem::HorizontalLayout { cells, .. } = item {
+                let widths = distribute(
+                    cells.iter().map(|c| c.width.unwrap_or(0.0)).collect(),
+                    total_width,
+                    "width",
+                )?;
+                let mut x = 0.0;
+                for (j, w) in widths
+                    .iter()
+                    .enumerate()
+                    .take(cells.len().saturating_sub(1))
+                {
+                    x += w;
+                    out.push(DividerHandle {
+                        divider: Divider::Vertical { layout: i, left: j },
+                        pos: x,
+                        span: (top, top + h),
+                    });
+                }
+            }
+            top += h;
+        }
+        Ok(out)
+    }
+
+    fn movable_above(&self, from: usize) -> Option<usize> {
+        (0..=from)
+            .rev()
+            .find(|&i| !matches!(self.items[i], FaceItem::Separation { .. }))
+    }
+
+    fn movable_below(&self, from: usize) -> Option<usize> {
+        (from..self.items.len()).find(|&i| !matches!(self.items[i], FaceItem::Separation { .. }))
+    }
+
+    /// Drags `divider` by `delta` inches (down for horizontal dividers,
+    /// right for vertical ones). The two items either side take the change
+    /// and become fixed-size; everything else, separations included, keeps
+    /// its size. Nothing changes on error.
+    ///
+    /// # Errors
+    /// When the divider does not exist, the layout does not resolve, or an
+    /// item would shrink below [`MIN_ITEM`].
+    pub fn drag_divider(
+        &mut self,
+        total_height: f64,
+        total_width: f64,
+        divider: Divider,
+        delta: f64,
+    ) -> Result<(), String> {
+        match divider {
+            Divider::Horizontal { above } => {
+                let heights = distribute(
+                    self.items.iter().map(FaceItem::height).collect(),
+                    total_height,
+                    "height",
+                )?;
+                let a = self
+                    .movable_above(above)
+                    .ok_or("nothing above that divider can move")?;
+                let b = self
+                    .movable_below(above + 1)
+                    .ok_or("nothing below that divider can move")?;
+                let (ha, hb) = (heights[a] + delta, heights[b] - delta);
+                if ha < MIN_ITEM - EPS || hb < MIN_ITEM - EPS {
+                    return Err(format!("items cannot be smaller than {MIN_ITEM}\""));
+                }
+                self.items[a] = self.items[a].with_height(ha);
+                self.items[b] = self.items[b].with_height(hb);
+            }
+            Divider::Vertical { layout, left } => {
+                let Some(FaceItem::HorizontalLayout { cells, .. }) = self.items.get_mut(layout)
+                else {
+                    return Err("that item is not a horizontal layout".to_string());
+                };
+                if left + 1 >= cells.len() {
+                    return Err("no cell to the right of that divider".to_string());
+                }
+                let widths = distribute(
+                    cells.iter().map(|c| c.width.unwrap_or(0.0)).collect(),
+                    total_width,
+                    "width",
+                )?;
+                let (wa, wb) = (widths[left] + delta, widths[left + 1] - delta);
+                if wa < MIN_ITEM - EPS || wb < MIN_ITEM - EPS {
+                    return Err(format!("items cannot be narrower than {MIN_ITEM}\""));
+                }
+                cells[left].width = Some(wa);
+                cells[left + 1].width = Some(wb);
+            }
+        }
+        Ok(())
     }
 
     /// True when any item (at any depth) is an [`FaceItem::Appliance`] named `name`.
@@ -375,5 +540,84 @@ mod tests {
         assert!(FaceLayout::sink_base().has_appliance("Sink"));
         assert!(!FaceLayout::base_default(34.5).has_appliance("Sink"));
         assert!(FaceLayout::drawer_bank(0).items.is_empty());
+    }
+
+    #[test]
+    fn dragging_a_divider_moves_only_its_two_neighbours() {
+        let mut l = FaceLayout::base_default(34.5);
+        let before = l.resolve(34.5, 24.0).unwrap();
+        // Drawer 6", door 24": move the divider under the drawer down 3".
+        l.drag_divider(34.5, 24.0, Divider::Horizontal { above: 1 }, 3.0)
+            .unwrap();
+        let after = l.resolve(34.5, 24.0).unwrap();
+        assert!((after[1].rect.3 - 9.0).abs() < 1e-9);
+        assert!((after[3].rect.3 - 21.0).abs() < 1e-9);
+        // Separations and the total stay put.
+        assert_eq!(after[0].rect.3, before[0].rect.3);
+        let sum: f64 = after.iter().map(|f| f.rect.3).sum();
+        assert!((sum - 34.5).abs() < 1e-9);
+        // Dragging back restores the layout's resolved rects.
+        l.drag_divider(34.5, 24.0, Divider::Horizontal { above: 1 }, -3.0)
+            .unwrap();
+        let back = l.resolve(34.5, 24.0).unwrap();
+        for (a, b) in before.iter().zip(&back) {
+            assert!((a.rect.1 - b.rect.1).abs() < 1e-9 && (a.rect.3 - b.rect.3).abs() < 1e-9);
+        }
+        // Too far leaves everything untouched.
+        let snapshot = l.clone();
+        assert!(l
+            .drag_divider(34.5, 24.0, Divider::Horizontal { above: 1 }, 30.0)
+            .is_err());
+        assert_eq!(l, snapshot);
+    }
+
+    #[test]
+    fn dragging_a_vertical_divider_resizes_cells() {
+        let mut l = FaceLayout {
+            items: vec![FaceItem::HorizontalLayout {
+                height: 0.0,
+                cells: vec![
+                    FaceCell {
+                        item: FaceItem::DoorLeft { height: 0.0 },
+                        width: None,
+                    },
+                    FaceCell {
+                        item: FaceItem::DoorRight { height: 0.0 },
+                        width: None,
+                    },
+                ],
+            }],
+            frame_width: 1.5,
+        };
+        let d = l.dividers(30.0, 40.0).unwrap();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].divider, Divider::Vertical { layout: 0, left: 0 });
+        assert!((d[0].pos - 20.0).abs() < 1e-9);
+        l.drag_divider(30.0, 40.0, d[0].divider, 5.0).unwrap();
+        let r = l.resolve(30.0, 40.0).unwrap();
+        assert!((r[0].rect.2 - 25.0).abs() < 1e-9 && (r[1].rect.2 - 15.0).abs() < 1e-9);
+        assert!(l.drag_divider(30.0, 40.0, d[0].divider, -30.0).is_err());
+        assert!(l
+            .drag_divider(30.0, 40.0, Divider::Vertical { layout: 3, left: 0 }, 1.0)
+            .is_err());
+    }
+
+    #[test]
+    fn dividers_skip_separations_only_runs() {
+        let l = FaceLayout::base_default(34.5);
+        let d = l.dividers(34.5, 24.0).unwrap();
+        // Of the four boundaries (sep|drawer, drawer|sep, sep|door, door|sep)
+        // the first has nothing movable above and the last nothing below.
+        assert_eq!(d.len(), 2);
+        assert!((d[0].pos - 7.5).abs() < 1e-9);
+        assert!((d[1].pos - 9.0).abs() < 1e-9);
+        assert!(FaceLayout::filler_panel()
+            .dividers(30.0, 3.0)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            FaceLayout::opening().items,
+            vec![FaceItem::Opening { height: 0.0 }]
+        );
     }
 }

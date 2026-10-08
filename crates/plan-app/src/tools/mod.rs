@@ -25,6 +25,7 @@ pub mod library;
 pub mod opening;
 pub mod pan;
 pub mod roof;
+pub mod schedule;
 pub mod select;
 pub mod stairs;
 pub mod terrain;
@@ -63,7 +64,7 @@ pub enum ToolId {
     StairsVariant(crate::editor::stairs_view::StairKind),
     /// A mode of the roof tool (Roof Plane, Build Roof, Gable Line, ...).
     RoofVariant(roof::RoofMode),
-    /// A cabinet kind (Base, Wall, Full Height, ...).
+    /// A cabinet kind (Base, Wall, Full Height, ..., Custom Counter Hole).
     CabinetVariant(plan_cabinets::CabinetKind),
     /// A dimension tool (Manual, End to End, ...).
     DimensionVariant(dimension::DimMode),
@@ -85,6 +86,11 @@ pub enum ToolId {
     Framing,
     /// A flavor of the framing tool (the flyout entry picked).
     FramingVariant(framing::FramingVariant),
+    /// The Schedule tool (Schedule flyout), with the kind it places.
+    Schedule,
+    ScheduleVariant(plan_core::schedules::ScheduleKind),
+    /// Tools > Project Information (opens the dialog, returns to Select).
+    ProjectInfo,
 }
 
 impl ToolId {
@@ -122,6 +128,7 @@ impl ToolId {
             ToolId::FoundationVariant(_) => ToolId::Foundation,
             ToolId::DetailsVariant(_) => ToolId::Details,
             ToolId::FramingVariant(_) => ToolId::Framing,
+            ToolId::ScheduleVariant(_) | ToolId::ProjectInfo => ToolId::Schedule,
             other => other,
         }
     }
@@ -306,6 +313,7 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(foundation::FoundationTool::default()),
         Box::new(details::DetailsTool::default()),
         Box::new(framing::FramingTool::default()),
+        Box::new(schedule::ScheduleTool::default()),
     ]
 }
 
@@ -415,6 +423,7 @@ mod tests {
             ToolId::Foundation,
             ToolId::Details,
             ToolId::Framing,
+            ToolId::Schedule,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");
         }

@@ -671,7 +671,9 @@ pub fn layout_context(project: &Project) -> plan_layout::LayoutRenderContext<'_>
 
 /// Sends camera `camera` to page `page` of `layout` as a camera box at the
 /// largest scale that fits. `None` when the camera does not exist or has no
-/// 2D view.
+/// 2D view. The layout view's Send to Layout dialog does this for the app;
+/// tests use it directly.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn send_camera_to_layout(
     layout: &mut plan_layout::Layout,
     project: &Project,

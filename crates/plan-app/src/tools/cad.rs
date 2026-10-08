@@ -31,6 +31,7 @@ use crate::editor::tempdim::EditField;
 use crate::editor::{render, Camera, EditorContext, EditorRequest, ObjectRef};
 use crate::theme::Palette;
 use crate::toolbar::ViewFlag;
+use edit::{EditState, SplineKind};
 use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
 use plan_core::geometry::{polygon_area, Point};
@@ -38,6 +39,19 @@ use plan_core::units::parse_ft_in;
 use plan_core::Id;
 use std::cell::RefCell;
 use std::f64::consts::{PI, TAU};
+
+mod edit;
+#[cfg(test)]
+mod edit_tests;
+mod style;
+#[allow(unused_imports)]
+pub use edit::{
+    apply_hatch, closed_outline, hatch_lines, hatch_pattern, item_segments, offset_item,
+    plan_hatch, trim_polyline, HatchJob, HATCHES,
+};
+use edit::{ensure_layer, TEMP_POINT_LAYER};
+#[allow(unused_imports)]
+pub use style::draw_cad_styled;
 
 /// The layer new CAD objects go on (CAD-1).
 pub const CAD_LAYER: &str = plan_core::cad::DEFAULT_CAD_LAYER;
@@ -453,7 +467,7 @@ impl ArcMode {
 }
 
 /// The CAD tool variants (the Lines, Arcs, Circles, Boxes, Points and CAD
-/// Block flyouts of the toolbar).
+/// Block flyouts of the toolbar, and the CAD edit tools).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CadMode {
     Line,
@@ -476,10 +490,36 @@ pub enum CadMode {
     PointMarker,
     MakeBlock,
     ExplodeBlock,
+    /// Boxes: click an edge, then the depth.
+    Box,
+    CrossBox,
+    BlockingBox,
+    Insulation,
+    /// Removes the points Place Point and Input Point dropped.
+    DeleteTempPoints,
+    AddInsertionPoint,
+    AddBackoffPoint,
+    EditBlock,
+    BlockManagement,
+    InsertBlock,
+    Fillet,
+    Chamfer,
+    Offset,
+    Trim,
+    Extend,
+    BreakLine,
+    ReverseDirection,
+    MakeParallel,
+    MakePerpendicular,
+    ConvertToPolyline,
+    ConvertToSpline,
+    PolylineToLines,
+    Hatch,
+    DetailFromView,
 }
 
 impl CadMode {
-    pub const ALL: [CadMode; 20] = [
+    pub const ALL: [CadMode; 44] = [
         CadMode::Line,
         CadMode::InputLine,
         CadMode::LineArrow,
@@ -500,6 +540,30 @@ impl CadMode {
         CadMode::PointMarker,
         CadMode::MakeBlock,
         CadMode::ExplodeBlock,
+        CadMode::Box,
+        CadMode::CrossBox,
+        CadMode::BlockingBox,
+        CadMode::Insulation,
+        CadMode::DeleteTempPoints,
+        CadMode::AddInsertionPoint,
+        CadMode::AddBackoffPoint,
+        CadMode::EditBlock,
+        CadMode::BlockManagement,
+        CadMode::InsertBlock,
+        CadMode::Fillet,
+        CadMode::Chamfer,
+        CadMode::Offset,
+        CadMode::Trim,
+        CadMode::Extend,
+        CadMode::BreakLine,
+        CadMode::ReverseDirection,
+        CadMode::MakeParallel,
+        CadMode::MakePerpendicular,
+        CadMode::ConvertToPolyline,
+        CadMode::ConvertToSpline,
+        CadMode::PolylineToLines,
+        CadMode::Hatch,
+        CadMode::DetailFromView,
     ];
 
     /// Chief's name from the toolbar flyouts.
@@ -525,6 +589,30 @@ impl CadMode {
             CadMode::PointMarker => "Point Marker",
             CadMode::MakeBlock => "Make CAD Block",
             CadMode::ExplodeBlock => "Explode CAD Block",
+            CadMode::Box => "Box",
+            CadMode::CrossBox => "Cross Box",
+            CadMode::BlockingBox => "Blocking Box",
+            CadMode::Insulation => "Insulation",
+            CadMode::DeleteTempPoints => "Delete Temporary Points",
+            CadMode::AddInsertionPoint => "Add Insertion Point",
+            CadMode::AddBackoffPoint => "Add Arrow Backoff Point",
+            CadMode::EditBlock => "Edit CAD Block",
+            CadMode::BlockManagement => "CAD Block Management",
+            CadMode::InsertBlock => "Insert CAD Block",
+            CadMode::Fillet => "Fillet",
+            CadMode::Chamfer => "Chamfer",
+            CadMode::Offset => "Offset",
+            CadMode::Trim => "Trim Line",
+            CadMode::Extend => "Extend Line",
+            CadMode::BreakLine => "Break Line",
+            CadMode::ReverseDirection => "Reverse Direction",
+            CadMode::MakeParallel => "Make Parallel",
+            CadMode::MakePerpendicular => "Make Perpendicular",
+            CadMode::ConvertToPolyline => "Convert to Polyline",
+            CadMode::ConvertToSpline => "Convert to Spline",
+            CadMode::PolylineToLines => "Convert Polyline to Lines",
+            CadMode::Hatch => "Hatch",
+            CadMode::DetailFromView => "CAD Detail From View",
         }
     }
 
@@ -556,11 +644,35 @@ impl CadMode {
             CadMode::PointMarker => "Point Marker",
             CadMode::MakeBlock => "Make Block",
             CadMode::ExplodeBlock => "Explode Block",
+            CadMode::Box => "Box",
+            CadMode::CrossBox => "Cross Box",
+            CadMode::BlockingBox => "Blocking Box",
+            CadMode::Insulation => "Insulation",
+            CadMode::DeleteTempPoints => "Delete Temp Points",
+            CadMode::AddInsertionPoint => "Insertion Pt",
+            CadMode::AddBackoffPoint => "Backoff Pt",
+            CadMode::EditBlock => "Edit Block",
+            CadMode::BlockManagement => "Blocks...",
+            CadMode::InsertBlock => "Insert Block",
+            CadMode::Fillet => "Fillet",
+            CadMode::Chamfer => "Chamfer",
+            CadMode::Offset => "Offset",
+            CadMode::Trim => "Trim",
+            CadMode::Extend => "Extend",
+            CadMode::BreakLine => "Break",
+            CadMode::ReverseDirection => "Reverse",
+            CadMode::MakeParallel => "Parallel",
+            CadMode::MakePerpendicular => "Perpendicular",
+            CadMode::ConvertToPolyline => "To Polyline",
+            CadMode::ConvertToSpline => "To Spline",
+            CadMode::PolylineToLines => "To Lines",
+            CadMode::Hatch => "Hatch",
+            CadMode::DetailFromView => "Detail From View",
         }
     }
 
-    /// Clicks that complete the shape; `None` for variable-length modes and
-    /// the typed ones.
+    /// Clicks that complete the shape; `None` for variable-length modes, the
+    /// typed ones and the edit tools.
     fn clicks(self) -> Option<usize> {
         match self {
             CadMode::Line
@@ -571,7 +683,13 @@ impl CadMode {
             | CadMode::Circle
             | CadMode::CircleAboutCenter
             | CadMode::Oval => Some(2),
-            CadMode::Arc | CadMode::ArcArrow | CadMode::Ellipse => Some(3),
+            CadMode::Arc
+            | CadMode::ArcArrow
+            | CadMode::Ellipse
+            | CadMode::Box
+            | CadMode::CrossBox
+            | CadMode::BlockingBox
+            | CadMode::Insulation => Some(3),
             CadMode::PlacePoint | CadMode::PointMarker | CadMode::InputPoint => Some(1),
             _ => None,
         }
@@ -591,8 +709,105 @@ impl CadMode {
         )
     }
 
+    /// Runs once when picked (on the selection or by opening a dialog).
     fn is_command(self) -> bool {
-        matches!(self, CadMode::MakeBlock | CadMode::ExplodeBlock)
+        matches!(
+            self,
+            CadMode::MakeBlock
+                | CadMode::ExplodeBlock
+                | CadMode::DeleteTempPoints
+                | CadMode::EditBlock
+                | CadMode::BlockManagement
+                | CadMode::ConvertToPolyline
+                | CadMode::ConvertToSpline
+                | CadMode::PolylineToLines
+                | CadMode::DetailFromView
+        )
+    }
+
+    /// Edit tools that work on the CAD objects clicked.
+    fn is_pick(self) -> bool {
+        matches!(
+            self,
+            CadMode::AddInsertionPoint
+                | CadMode::AddBackoffPoint
+                | CadMode::InsertBlock
+                | CadMode::Fillet
+                | CadMode::Chamfer
+                | CadMode::Offset
+                | CadMode::Trim
+                | CadMode::Extend
+                | CadMode::BreakLine
+                | CadMode::ReverseDirection
+                | CadMode::MakeParallel
+                | CadMode::MakePerpendicular
+                | CadMode::Hatch
+        )
+    }
+
+    /// The modes shown together in the option strip.
+    fn family(self) -> &'static [CadMode] {
+        use CadMode as C;
+        match self {
+            C::PlacePoint | C::InputPoint | C::PointMarker | C::DeleteTempPoints => &[
+                C::PlacePoint,
+                C::InputPoint,
+                C::PointMarker,
+                C::DeleteTempPoints,
+            ],
+            C::Line | C::InputLine | C::LineArrow | C::Polyline | C::Spline => {
+                &[C::Line, C::InputLine, C::LineArrow, C::Polyline, C::Spline]
+            }
+            C::Arc | C::InputArc | C::ArcArrow => &[C::Arc, C::InputArc, C::ArcArrow],
+            C::Circle | C::CircleAboutCenter | C::Ellipse | C::Oval => {
+                &[C::Circle, C::CircleAboutCenter, C::Ellipse, C::Oval]
+            }
+            C::RectPolyline
+            | C::Polygon
+            | C::Box
+            | C::CrossBox
+            | C::BlockingBox
+            | C::Insulation
+            | C::RevisionCloud => &[
+                C::RectPolyline,
+                C::Box,
+                C::Polygon,
+                C::CrossBox,
+                C::BlockingBox,
+                C::Insulation,
+                C::RevisionCloud,
+            ],
+            C::MakeBlock
+            | C::ExplodeBlock
+            | C::AddInsertionPoint
+            | C::AddBackoffPoint
+            | C::EditBlock
+            | C::BlockManagement
+            | C::InsertBlock => &[
+                C::MakeBlock,
+                C::ExplodeBlock,
+                C::AddInsertionPoint,
+                C::AddBackoffPoint,
+                C::EditBlock,
+                C::BlockManagement,
+            ],
+            _ => &[
+                C::Fillet,
+                C::Chamfer,
+                C::Offset,
+                C::Trim,
+                C::Extend,
+                C::BreakLine,
+                C::ReverseDirection,
+                C::MakeParallel,
+                C::MakePerpendicular,
+                C::ConvertToPolyline,
+                C::ConvertToSpline,
+                C::PolylineToLines,
+                C::Hatch,
+                C::DetailFromView,
+            ],
+        }
     }
 
     fn hint(self) -> &'static str {
@@ -626,11 +841,63 @@ impl CadMode {
             CadMode::RevisionCloud => {
                 "Revision Cloud: click the outline; click the first to close; Enter ends"
             }
-            CadMode::PlacePoint => "Place Point: click to drop a point",
+            CadMode::PlacePoint => "Place Point: click to drop a temporary point",
             CadMode::InputPoint => "Input Point: type X, Tab, Y, Enter",
             CadMode::PointMarker => "Point Marker: click to drop a marked point",
             CadMode::MakeBlock => "Make CAD Block: select the CAD objects, then use this command",
             CadMode::ExplodeBlock => "Explode CAD Block: select a block, then use this command",
+            CadMode::Box => "Box: click the ends of one edge, then click the depth",
+            CadMode::CrossBox => "Cross Box: click the ends of one edge, then click the depth",
+            CadMode::BlockingBox => {
+                "Blocking Box: click the ends of one edge, then click the depth"
+            }
+            CadMode::Insulation => {
+                "Insulation: click the ends of one edge, then click the thickness"
+            }
+            CadMode::DeleteTempPoints => "Delete Temporary Points: removes every temporary point",
+            CadMode::AddInsertionPoint => {
+                "Add Insertion Point: click a CAD block, then click its insertion point"
+            }
+            CadMode::AddBackoffPoint => {
+                "Add Arrow Backoff Point: click a CAD block, then click where arrows stop"
+            }
+            CadMode::EditBlock => "Edit CAD Block: select a block to edit its name and points",
+            CadMode::BlockManagement => "CAD Block Management: rename, insert, edit or delete blocks",
+            CadMode::InsertBlock => "Insert CAD Block: click where the block's insertion point goes",
+            CadMode::Fillet => {
+                "Fillet: click two lines (or a polyline corner); Enter types the radius"
+            }
+            CadMode::Chamfer => {
+                "Chamfer: click two lines (or a polyline corner); Enter types the distances"
+            }
+            CadMode::Offset => {
+                "Offset: click an object, then the side; Enter types a distance (0 = through the click)"
+            }
+            CadMode::Trim => "Trim Line: click the part of a line to remove at its nearest cutters",
+            CadMode::Extend => "Extend Line: click the end of a line to extend it to the next object",
+            CadMode::BreakLine => "Break Line: click the point where a line or polyline splits",
+            CadMode::ReverseDirection => "Reverse Direction: click a line or polyline to reverse it",
+            CadMode::MakeParallel => {
+                "Make Parallel: click the end of a line to turn, then the line to match"
+            }
+            CadMode::MakePerpendicular => {
+                "Make Perpendicular: click the end of a line to turn, then the line to square to"
+            }
+            CadMode::ConvertToPolyline => {
+                "Convert to Polyline: select connected lines, then use this command"
+            }
+            CadMode::ConvertToSpline => {
+                "Convert to Spline: select polylines, then use this command"
+            }
+            CadMode::PolylineToLines => {
+                "Convert Polyline to Lines: select polylines, then use this command"
+            }
+            CadMode::Hatch => {
+                "Hatch: click inside a closed polyline or circle (pattern in the option strip)"
+            }
+            CadMode::DetailFromView => {
+                "CAD Detail From View: copies this view's lines into a new CAD Detail floor"
+            }
         }
     }
 }
@@ -643,6 +910,8 @@ enum TypedKind {
     Arc,
     Point,
     Radius,
+    /// Fillet radius, chamfer distances or the offset distance.
+    Setting,
 }
 
 /// The inline replacement for Chief's Input Line / Input Arc / Input Point
@@ -827,6 +1096,8 @@ pub struct CadTool {
     drag: Option<HandleDrag>,
     grab: Option<Grab>,
     strip: OptionStrip,
+    /// Settings and state of the edit tools, blocks and hatching.
+    edit: EditState,
 }
 
 impl Default for CadTool {
@@ -842,6 +1113,7 @@ impl Default for CadTool {
             drag: None,
             grab: None,
             strip: OptionStrip::default(),
+            edit: EditState::default(),
         }
     }
 }
@@ -849,6 +1121,12 @@ impl Default for CadTool {
 const BTN_ARC_MODE: u16 = 100;
 const BTN_SIDES_MINUS: u16 = 110;
 const BTN_SIDES_PLUS: u16 = 111;
+const BTN_SET_MINUS: u16 = 120;
+const BTN_SET_LABEL: u16 = 121;
+const BTN_SET_PLUS: u16 = 122;
+const BTN_HATCH_NEXT: u16 = 123;
+const BTN_SPLINE_FIT: u16 = 124;
+const BTN_SPLINE_BEZIER: u16 = 125;
 
 impl CadTool {
     pub fn mode(&self) -> CadMode {
@@ -876,6 +1154,9 @@ impl CadTool {
         self.typed = None;
         self.drag = None;
         self.grab = None;
+        self.edit.pick = None;
+        self.edit.block = None;
+        self.edit.pending = mode.is_command();
     }
 
     /// Switches the variant by Chief's name; false when the name is unknown.
@@ -949,9 +1230,30 @@ impl CadTool {
                 closed: false,
             }]),
             CadMode::Spline if two => Some(vec![CadItem::Polyline {
-                points: catmull_rom(pts, false, SPLINE_SEGMENTS_PER_SPAN),
+                points: self.spline_points(pts, false),
                 closed: false,
             }]),
+            CadMode::Box | CadMode::CrossBox | CadMode::BlockingBox | CadMode::Insulation
+                if two =>
+            {
+                if pts.len() == 2 {
+                    return (first.dist(last) >= MIN_SIZE)
+                        .then(|| vec![CadItem::Line { a: first, b: last }]);
+                }
+                let corners = plan_core::cad::oriented_box(pts[0], pts[1], pts[2]);
+                if corners.is_empty() {
+                    return None;
+                }
+                Some(match self.mode {
+                    CadMode::CrossBox => plan_core::cad::cross_box_items(&corners),
+                    CadMode::BlockingBox => plan_core::cad::blocking_box_items(&corners),
+                    CadMode::Insulation => plan_core::cad::insulation_items(&corners),
+                    _ => vec![CadItem::Polyline {
+                        points: corners,
+                        closed: true,
+                    }],
+                })
+            }
             CadMode::RevisionCloud if pts.len() >= 3 => Some(vec![CadItem::Polyline {
                 points: revision_cloud(pts, CLOUD_ARC),
                 closed: true,
@@ -1068,9 +1370,34 @@ impl CadTool {
         Some(items)
     }
 
+    /// The layer the current mode draws on: Place Point and Input Point drop
+    /// temporary points on their own layer (Delete Temporary Points).
+    fn draw_layer(&self, cx: &mut EditorContext) -> &'static str {
+        if matches!(self.mode, CadMode::PlacePoint | CadMode::InputPoint) {
+            ensure_layer(&mut cx.project, TEMP_POINT_LAYER, [200, 0, 200], 13);
+            TEMP_POINT_LAYER
+        } else {
+            CAD_LAYER
+        }
+    }
+
+    /// The curve through spline points in the chosen fit.
+    fn spline_points(&self, pts: &[Point], closed: bool) -> Vec<Point> {
+        match self.edit.spline {
+            SplineKind::Fit => catmull_rom(pts, closed, SPLINE_SEGMENTS_PER_SPAN),
+            SplineKind::Bezier => plan_core::cad::bezier_spline(
+                pts,
+                closed,
+                SPLINE_SEGMENTS_PER_SPAN,
+                self.edit.tension,
+            ),
+        }
+    }
+
     fn commit(&mut self, cx: &mut EditorContext, items: Vec<CadItem>) -> ToolResult {
         let label = format!("Draw {}", self.mode.short());
-        match add_cad_items(cx, CAD_LAYER, items, &label) {
+        let layer = self.draw_layer(cx);
+        match add_cad_items(cx, layer, items, &label) {
             Some(_) => {
                 cx.status.clear();
                 cx.readout = None;
@@ -1121,7 +1448,7 @@ impl CadTool {
                 closed,
             },
             CadMode::Spline => CadItem::Polyline {
-                points: catmull_rom(&pts, closed, SPLINE_SEGMENTS_PER_SPAN),
+                points: self.spline_points(&pts, closed),
                 closed,
             },
             _ => CadItem::Polyline {
@@ -1248,6 +1575,7 @@ impl CadTool {
                     }],
                 )
             }
+            TypedKind::Setting => self.commit_setting(cx, &t),
             TypedKind::Point => {
                 let (Some(x), Some(y)) = (t.value(0), t.value(1)) else {
                     return bad(cx);
@@ -1395,25 +1723,29 @@ impl CadTool {
             return ToolResult::consumed();
         }
         cx.begin_change("Make CAD Block");
-        group_cad(cx, &ids);
+        let fl = cx.floor;
+        if cx.project.make_cad_block(fl, &ids, None).is_none() {
+            cx.cancel_change();
+            cx.status = "Those objects cannot be made into a CAD block".into();
+            return ToolResult::consumed();
+        }
+        cx.mark_dirty();
         cx.status = format!("Made a CAD block of {} objects", ids.len());
         ToolResult::committed("Make CAD Block")
     }
 
     fn explode_block(&mut self, cx: &mut EditorContext) -> ToolResult {
         let fl = cx.floor;
-        let groups: Vec<Id> = cx
-            .selection
-            .items
-            .iter()
-            .filter_map(|o| match o {
-                ObjectRef::Cad(id) | ObjectRef::Text(id) => cx
-                    .floor()
-                    .group_of(plan_core::ObjectRef::Cad(*id))
-                    .map(|g| g.id),
-                _ => None,
-            })
-            .collect();
+        let mut groups: Vec<Id> = Vec::new();
+        for o in &cx.selection.items {
+            if let ObjectRef::Cad(id) | ObjectRef::Text(id) = o {
+                if let Some(g) = cx.floor().group_of(plan_core::ObjectRef::Cad(*id)) {
+                    if !groups.contains(&g.id) {
+                        groups.push(g.id);
+                    }
+                }
+            }
+        }
         if groups.is_empty() {
             cx.status = "Select a CAD block to explode".into();
             return ToolResult::consumed();
@@ -1421,9 +1753,14 @@ impl CadTool {
         cx.begin_change("Explode CAD Block");
         let mut freed = Vec::new();
         for g in groups {
-            if let Some(m) = cx.project.explode_group(fl, g) {
-                freed.extend(m);
-            }
+            let members = if cx.floor().cad_block(g).is_some() {
+                cx.project
+                    .explode_cad_block(fl, g)
+                    .map(|ids| ids.into_iter().map(plan_core::ObjectRef::Cad).collect())
+            } else {
+                cx.project.explode_group(fl, g)
+            };
+            freed.extend(members.unwrap_or_default());
         }
         cx.selection.items = freed
             .into_iter()
@@ -1432,6 +1769,7 @@ impl CadTool {
                 _ => None,
             })
             .collect();
+        cx.mark_dirty();
         cx.status = format!("Exploded into {} objects", cx.selection.len());
         ToolResult::committed("Explode CAD Block")
     }
@@ -1502,11 +1840,14 @@ impl CadTool {
     }
 
     fn strip_items(&self) -> Vec<StripButton> {
-        let mut v: Vec<StripButton> = CadMode::ALL
+        let index = |m: &CadMode| CadMode::ALL.iter().position(|x| x == m).unwrap_or(0) as u16;
+        let mut v: Vec<StripButton> = self
+            .mode
+            .family()
             .iter()
-            .enumerate()
-            .map(|(i, m)| StripButton::new(m.short(), i as u16, *m == self.mode))
+            .map(|m| StripButton::new(m.short(), index(m), *m == self.mode))
             .collect();
+        v.extend(self.setting_buttons());
         if matches!(self.mode, CadMode::Arc) {
             for (i, m) in ArcMode::ALL.iter().enumerate() {
                 v.push(StripButton::new(
@@ -1536,11 +1877,14 @@ impl CadTool {
             if m == CadMode::InputPoint {
                 self.start_typed_point(cx);
             }
-            return match m {
-                CadMode::MakeBlock => self.make_block(cx),
-                CadMode::ExplodeBlock => self.explode_block(cx),
-                _ => ToolResult::consumed(),
-            };
+            if m.is_command() {
+                self.edit.pending = false;
+                return self.run_command(cx, m);
+            }
+            return ToolResult::consumed();
+        }
+        if self.setting_click(id) {
+            return ToolResult::consumed();
         }
         match id {
             i if (BTN_ARC_MODE..BTN_ARC_MODE + 3).contains(&i) => {
@@ -1607,6 +1951,19 @@ impl Tool for CadTool {
         }
     }
 
+    fn frame(&mut self, cx: &mut EditorContext, ctx: &egui::Context) {
+        if self.edit.pending {
+            self.edit.pending = false;
+            let mode = self.mode;
+            self.run_command(cx, mode);
+            if self.edit.dialog.is_none() {
+                // The command is done: back to Select Objects.
+                cx.requests.push(EditorRequest::SetTool(ToolId::Select));
+            }
+        }
+        self.frame_dialogs(cx, ctx);
+    }
+
     fn activate(&mut self, cx: &mut EditorContext) {
         self.pts.clear();
         self.typed = None;
@@ -1654,8 +2011,11 @@ impl Tool for CadTool {
         if let Some(id) = self.strip.hit(p.screen) {
             return self.strip_click(cx, id);
         }
-        if self.mode.is_command() {
+        if self.mode.is_command() || self.edit.dialog.is_some() {
             return ToolResult::consumed();
+        }
+        if self.mode.is_pick() {
+            return self.pick_click(cx, p);
         }
         if self.idle() {
             if self.grab_handle(cx, &p) {
@@ -1698,7 +2058,7 @@ impl Tool for CadTool {
         if self.mode.is_variable() && !self.pts.is_empty() {
             return self.finish_variable(cx, false);
         }
-        if self.idle() {
+        if self.idle() && !self.mode.is_pick() {
             let tol = cx.pick_tol();
             let hit = hit_test(cx.floor(), cx.layers(), p.world, tol)
                 .into_iter()
@@ -1721,7 +2081,23 @@ impl Tool for CadTool {
                 self.cancel(cx);
                 return ToolResult::consumed();
             }
+            if self.edit.pick.is_some() || self.edit.block.is_some() {
+                self.edit.pick = None;
+                self.edit.block = None;
+                cx.status = self.mode.hint().into();
+                return ToolResult::consumed();
+            }
             return ToolResult::ignored();
+        }
+        if k.is(egui::Key::Enter)
+            && self.pts.is_empty()
+            && matches!(
+                self.mode,
+                CadMode::Fillet | CadMode::Chamfer | CadMode::Offset
+            )
+        {
+            self.start_typed_setting(cx);
+            return ToolResult::consumed();
         }
         if k.is(egui::Key::Enter) && !self.pts.is_empty() {
             if self.mode.is_variable() {
@@ -1746,6 +2122,7 @@ impl Tool for CadTool {
     fn draw_overlay(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         let pal = &cx.palette;
         self.strip.draw(painter, cam, pal, &self.strip_items());
+        self.draw_edit_overlay(cx, painter, cam);
         let ghost = Stroke::new(1.0_f32, pal.ghost_stroke);
         // Handles of the selected object.
         if self.idle() {

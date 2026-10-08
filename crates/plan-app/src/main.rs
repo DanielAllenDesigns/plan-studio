@@ -13,6 +13,8 @@ mod icons;
 mod menus;
 mod paths;
 mod plan_defaults;
+#[cfg(test)]
+mod scenarios;
 mod shell;
 mod templates;
 mod theme;
@@ -132,7 +134,10 @@ impl PlanApp {
 
     /// Is a specification dialog open (any kind)?
     fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.spec.is_open() || self.lists.is_some()
+        self.dialog.is_some()
+            || self.spec.is_open()
+            || self.lists.is_some()
+            || shell::layout_window::dialog_open()
     }
 
     fn push_zoom_history(&mut self) {
@@ -227,13 +232,24 @@ impl PlanApp {
                 }
             }
             Action::Undo => {
-                self.cx.status = match self.cx.undo() {
+                // The layout view has its own history.
+                let undone = if shell::layout_window::is_active() {
+                    shell::layout_window::undo(&mut self.cx)
+                } else {
+                    self.cx.undo()
+                };
+                self.cx.status = match undone {
                     Some(l) => format!("Undid {l}"),
                     None => "Nothing to undo".into(),
                 };
             }
             Action::Redo => {
-                self.cx.status = match self.cx.redo() {
+                let redone = if shell::layout_window::is_active() {
+                    shell::layout_window::redo(&mut self.cx)
+                } else {
+                    self.cx.redo()
+                };
+                self.cx.status = match redone {
                     Some(l) => format!("Redid {l}"),
                     None => "Nothing to redo".into(),
                 };
@@ -288,7 +304,20 @@ impl PlanApp {
             Action::OpenHotkeyDialog => self.docks.open_hotkey_dialog(&self.hotkeys),
             Action::OpenLayerDisplay => self.docks.open_layer_dialog(),
             Action::View3d(c) => {
+                shell::layout_window::deactivate();
                 shell::view3d_panel::dispatch(c, &mut self.cx, &mut self.tools, &mut self.view3d)
+            }
+            Action::Layout(c) => {
+                // Send to Layout sends the open 3D view's camera, else the plan view.
+                if c == shell::layout_window::LayoutCommand::ShowPlan {
+                    self.view3d.active = false;
+                }
+                let camera = self
+                    .view3d
+                    .active
+                    .then_some(self.view3d.active_camera)
+                    .flatten();
+                shell::layout_window::dispatch(c, &mut self.cx, camera);
             }
             Action::NotImplemented(name) => {
                 self.cx.status = format!("Not yet implemented: {name}");
@@ -532,6 +561,10 @@ impl PlanApp {
     fn send_key(&mut self, ctx: &egui::Context, k: KeyEvent) {
         let is_esc = k.is(egui::Key::Escape);
         let is_del = k.is(egui::Key::Delete) || k.is(egui::Key::Backspace);
+        if shell::layout_window::is_active() {
+            // The layout view reads its own keys.
+            return;
+        }
         if is_del && self.view3d.active {
             // The 3D view has no selection to delete.
             return;
@@ -1386,7 +1419,9 @@ impl eframe::App for PlanApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                if self.view3d.frame(ctx, &mut self.cx) {
+                if shell::layout_window::is_active() {
+                    shell::layout_window::show_central(ctx, ui, &mut self.cx);
+                } else if self.view3d.frame(ctx, &mut self.cx) {
                     shell::view3d_panel::show(ui, &mut self.cx, &mut self.view3d);
                 } else {
                     self.canvas(ctx, ui);
@@ -1397,6 +1432,7 @@ impl eframe::App for PlanApp {
         self.dialogs(ctx);
         shell::docks::show_dialogs(ctx, &mut self.cx, &mut self.docks, &mut self.hotkeys);
         dialogs::build_tools::show_all(ctx, &mut self.cx, &mut self.camera);
+        shell::layout_window::show_dialogs(ctx, &mut self.cx);
         dialogs::exchange::show_all(ctx, &mut self.cx);
         self.sync_settings(ctx);
         if self.cx.is_dirty() {

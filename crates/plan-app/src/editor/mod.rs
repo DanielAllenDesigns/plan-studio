@@ -20,6 +20,7 @@ pub mod render;
 pub mod restyle;
 pub mod roof_view;
 pub mod rooms_edit;
+pub mod schedule_view;
 pub mod selection;
 pub mod sheet;
 pub mod site_view;

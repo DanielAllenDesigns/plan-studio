@@ -214,6 +214,41 @@ pub struct CabinetDefaults {
     pub base: BaseCabinetDefaults,
     pub wall: WallCabinetDefaults,
     pub full_height: FullHeightCabinetDefaults,
+    /// Width a new filler starts with before it snaps to the gap it fills.
+    #[serde(default = "default_filler_width")]
+    pub filler_width: f64,
+    /// Both legs of a corner base cabinet.
+    #[serde(default = "default_corner_base_leg")]
+    pub corner_base_leg: f64,
+    /// Both legs of a corner wall cabinet.
+    #[serde(default = "default_corner_wall_leg")]
+    pub corner_wall_leg: f64,
+    /// Overall width of a blind corner base cabinet.
+    #[serde(default = "default_blind_width")]
+    pub blind_base_width: f64,
+    /// The hidden part of a blind corner cabinet.
+    #[serde(default = "default_blind_hidden")]
+    pub blind_hidden_width: f64,
+}
+
+fn default_filler_width() -> f64 {
+    3.0
+}
+
+fn default_corner_base_leg() -> f64 {
+    36.0
+}
+
+fn default_corner_wall_leg() -> f64 {
+    24.0
+}
+
+fn default_blind_width() -> f64 {
+    48.0
+}
+
+fn default_blind_hidden() -> f64 {
+    15.0
 }
 
 // ----- dimensions -----
@@ -641,6 +676,11 @@ impl PlanDefaults {
                     depth: 24.0,
                     height: 84.0,
                 },
+                filler_width: default_filler_width(),
+                corner_base_leg: default_corner_base_leg(),
+                corner_wall_leg: default_corner_wall_leg(),
+                blind_base_width: default_blind_width(),
+                blind_hidden_width: default_blind_hidden(),
             },
             dimensions: dimensions.clone(),
             dimension_sets: chief_dimension_sets(&dimensions),
@@ -1071,5 +1111,25 @@ mod tests {
             serde_json::from_str(r#"{"editing":{"bumping_distance":8.0}}"#).unwrap();
         assert_eq!(partial.editing.bumping_distance, 8.0);
         assert!(partial.editing.bumping);
+    }
+
+    #[test]
+    fn cabinet_defaults_added_later_fall_back_when_missing() {
+        let d = PlanDefaults::chief_x18_daniel();
+        let mut v = serde_json::to_value(&d.cabinets).unwrap();
+        let o = v.as_object_mut().unwrap();
+        for k in [
+            "filler_width",
+            "corner_base_leg",
+            "corner_wall_leg",
+            "blind_base_width",
+            "blind_hidden_width",
+        ] {
+            o.remove(k);
+        }
+        let back: CabinetDefaults = serde_json::from_value(v).unwrap();
+        assert_eq!(back, d.cabinets);
+        assert_eq!(back.filler_width, 3.0);
+        assert_eq!((back.corner_base_leg, back.corner_wall_leg), (36.0, 24.0));
     }
 }

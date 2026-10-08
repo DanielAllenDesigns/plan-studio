@@ -2300,7 +2300,11 @@ dependencies = [
 name = "plan-docs"
 version = "0.1.0"
 dependencies = [
+ "plan-cabinets",
  "plan-core",
+ "plan-electrical",
+ "plan-framing",
+ "plan-library",
  "serde",
  "serde_json",
 ]

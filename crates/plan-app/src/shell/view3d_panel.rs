@@ -1229,8 +1229,6 @@ pub struct View3dState {
     pub walk: Option<WalkPlay>,
     recording: Option<Recording>,
     adjust_lights: Option<AdjustLightsDialog>,
-    /// Sheets of camera views sent to layout.
-    pub layout: plan_layout::Layout,
 }
 
 impl Default for View3dState {
@@ -1266,7 +1264,6 @@ impl View3dState {
             walk: None,
             recording: None,
             adjust_lights: None,
-            layout: plan_layout::Layout::new("Camera Views", plan_docs::SheetSize::ArchC),
         }
     }
 
@@ -1611,8 +1608,8 @@ impl View3dState {
 
     // ----- layout -----
 
-    /// Send to Layout: the active elevation or section camera becomes a box on
-    /// page 1 of the camera layout.
+    /// Send to Layout: the active elevation or section camera goes to the
+    /// project's layout through the Send to Layout dialog.
     pub fn send_to_layout(&mut self, cx: &mut EditorContext) {
         let Some(id) = self
             .active_camera
@@ -1621,41 +1618,24 @@ impl View3dState {
             cx.status = "Open an elevation or section camera to send it to layout".into();
             return;
         };
-        cx.status = match crate::dialogs::camera::send_camera_to_layout(
-            &mut self.layout,
-            &cx.project,
-            id,
-            1,
-        ) {
-            Some(_) => format!(
-                "Sent to layout ({} views)",
-                self.layout
-                    .pages
-                    .iter()
-                    .map(|p| p.boxes.len())
-                    .sum::<usize>()
-            ),
-            None => "That camera has no 2D view to send".into(),
-        };
+        crate::shell::layout_window::send_camera(cx, id);
     }
 
-    /// Prints the camera layout to a PDF.
+    /// Prints the project's layout to a PDF.
     pub fn export_layout_pdf(&mut self, cx: &mut EditorContext) {
-        if self.layout.pages.iter().all(|p| p.boxes.is_empty()) {
-            cx.status = "Send a camera view to layout first".into();
+        let Some(bytes) = crate::shell::layout_window::layout_pdf(&cx.project) else {
+            cx.status =
+                "The layout has no printed pages yet (File > New Layout, then Send to Layout)"
+                    .into();
             return;
-        }
+        };
         let Some(path) = rfd::FileDialog::new()
             .add_filter("PDF", &["pdf"])
-            .set_file_name("camera views.pdf")
+            .set_file_name(format!("{} Layout.pdf", cx.project.name))
             .save_file()
         else {
             return;
         };
-        let bytes = plan_layout::render_pdf(
-            &self.layout,
-            &crate::dialogs::camera::layout_context(&cx.project),
-        );
         cx.status = match std::fs::write(&path, bytes) {
             Ok(()) => format!("Saved {}", path.display()),
             Err(e) => format!("Could not save: {e}"),

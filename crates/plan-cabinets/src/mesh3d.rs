@@ -1,23 +1,29 @@
-//! 3D meshes for a cabinet: carcass, toe kick, countertop, fronts, handles.
+//! 3D meshes for a cabinet: carcass, toe kick, countertop, fronts, handles,
+//! moldings, corner and blind cabinets, fillers, appliance bays, custom
+//! countertops and backsplashes.
 //!
 //! `plan-3d` has no wood or laminate materials, so the carcass and fronts use
 //! [`Material::WallInterior`], the countertop uses [`Material::Floor`] as a
-//! stand-in and handles use [`Material::WindowFrame`] as a metal stand-in.
+//! stand-in and handles use [`Material::WindowFrame`] as a metal stand-in. A
+//! cabinet's [`PartMaterials`] override those per part.
 
 use plan_3d::{Material, Mesh, Vertex};
+use plan_core::geometry::Point;
 use plan_core::Id;
 
-use crate::cabinet::{Cabinet, CabinetKind, HandleStyle, Overlay};
+use crate::cabinet::{
+    BlindSide, Cabinet, CabinetKind, DoorProfile, HandleStyle, HingeStyle, MaterialChoice, Overlay,
+};
 use crate::face::FaceItem;
 
 /// Side, back, top and bottom panel thickness, inches.
-const PANEL: f64 = 0.75;
+pub(crate) const PANEL: f64 = 0.75;
 /// Face-frame thickness, inches.
-const FRAME: f64 = 0.75;
+pub(crate) const FRAME: f64 = 0.75;
 /// How far handles stand proud of the front, inches.
 const HANDLE_PROJECTION: f64 = 1.0;
 
-type V3 = [f64; 3];
+pub(crate) type V3 = [f64; 3];
 
 /// The six faces of a box: outward normal and the four `(ix, iy, iz)` corner
 /// selectors (0 = min, 1 = max), wound counter-clockwise seen from outside.
@@ -48,19 +54,33 @@ const FACES: [([f64; 3], [[u8; 3]; 4]); 6] = [
     ),
 ];
 
+/// Maps a material choice onto a `plan-3d` material; `Default` keeps
+/// `fallback`.
+pub(crate) fn pick(choice: MaterialChoice, fallback: Material) -> Material {
+    match choice {
+        MaterialChoice::Default => fallback,
+        MaterialChoice::Wood => Material::WallInterior,
+        MaterialChoice::Painted => Material::Trim,
+        MaterialChoice::Stone => Material::Stone,
+        MaterialChoice::Concrete => Material::Concrete,
+        MaterialChoice::Metal => Material::Metal,
+        MaterialChoice::Glass => Material::Glass,
+    }
+}
+
 /// Local-frame to scene-frame transform plus the output mesh list.
-struct Builder {
+pub(crate) struct Builder {
     id: Id,
     x: f64,
     y: f64,
     cos: f64,
     sin: f64,
     elevation: f64,
-    meshes: Vec<Mesh>,
+    pub(crate) meshes: Vec<Mesh>,
 }
 
 impl Builder {
-    fn new(cab: &Cabinet) -> Self {
+    pub(crate) fn new(cab: &Cabinet) -> Self {
         let (sin, cos) = cab.angle.sin_cos();
         Self {
             id: cab.id,
@@ -74,21 +94,33 @@ impl Builder {
     }
 
     /// Local `(x, y, z-up)` to scene `(X, Y-up, Z = -plan y)`.
-    fn point(&self, p: V3) -> [f32; 3] {
+    pub(crate) fn point(&self, p: V3) -> [f32; 3] {
         let px = self.x + p[0] * self.cos - p[1] * self.sin;
         let py = self.y + p[0] * self.sin + p[1] * self.cos;
         [px as f32, (self.elevation + p[2]) as f32, (-py) as f32]
     }
 
-    fn direction(&self, n: V3) -> [f32; 3] {
+    pub(crate) fn direction(&self, n: V3) -> [f32; 3] {
         let nx = n[0] * self.cos - n[1] * self.sin;
         let ny = n[0] * self.sin + n[1] * self.cos;
         [nx as f32, n[2] as f32, (-ny) as f32]
     }
 
+    pub(crate) fn push(&mut self, vertices: Vec<Vertex>, indices: Vec<u32>, material: Material) {
+        if indices.is_empty() {
+            return;
+        }
+        self.meshes.push(Mesh {
+            vertices,
+            indices,
+            material,
+            object_id: Some(self.id),
+        });
+    }
+
     /// Add an axis-aligned (in the local frame) box as one mesh. Degenerate
     /// boxes are skipped.
-    fn add_box(&mut self, min: V3, max: V3, material: Material) {
+    pub(crate) fn add_box(&mut self, min: V3, max: V3, material: Material) {
         if (0..3).any(|k| max[k] - min[k] <= 1e-9) {
             return;
         }
@@ -112,12 +144,167 @@ impl Builder {
             }
             indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
-        self.meshes.push(Mesh {
-            vertices,
-            indices,
+        self.push(vertices, indices, material);
+    }
+}
+
+/// A front line of a cabinet: a start point, the direction along it, the
+/// outward normal (the direction dir rotated 90 degrees counter-clockwise)
+/// and its length. The ordinary cabinet front is [`Frame::front`].
+#[derive(Clone, Copy)]
+pub(crate) struct Frame {
+    pub(crate) origin: Point,
+    pub(crate) dir: Point,
+    pub(crate) nrm: Point,
+    pub(crate) len: f64,
+}
+
+impl Frame {
+    /// The front of a rectangular cabinet.
+    pub(crate) fn front(w: f64, d: f64) -> Frame {
+        Frame {
+            origin: Point::new(0.0, d),
+            dir: Point::new(1.0, 0.0),
+            nrm: Point::new(0.0, 1.0),
+            len: w,
+        }
+    }
+
+    /// A front running from `from` to `to`, facing the left of that run
+    /// rotated -90 degrees... i.e. `nrm` is `dir` turned counter-clockwise.
+    pub(crate) fn along(from: Point, to: Point) -> Frame {
+        let dir = to.sub(from).normalized();
+        Frame {
+            origin: from,
+            dir,
+            nrm: dir.perp(),
+            len: from.dist(to),
+        }
+    }
+
+    fn is_front(&self) -> bool {
+        self.dir == Point::new(1.0, 0.0) && self.nrm == Point::new(0.0, 1.0) && self.origin.x == 0.0
+    }
+
+    pub(crate) fn pt(&self, x: f64, y: f64) -> Point {
+        self.origin.add(self.dir.scale(x)).add(self.nrm.scale(y))
+    }
+}
+
+/// A box in frame coordinates: `x0..x1` along the front, `z0..z1` up and
+/// `y0..y1` out from the front line (negative is behind it).
+pub(crate) fn frame_box(
+    b: &mut Builder,
+    f: Frame,
+    (x0, x1): (f64, f64),
+    (z0, z1): (f64, f64),
+    (y0, y1): (f64, f64),
+    material: Material,
+) {
+    if f.is_front() {
+        b.add_box(
+            [x0, f.origin.y + y0, z0],
+            [x1, f.origin.y + y1, z1],
             material,
-            object_id: Some(self.id),
-        });
+        );
+    } else {
+        let ring = [f.pt(x0, y0), f.pt(x1, y0), f.pt(x1, y1), f.pt(x0, y1)];
+        b.add_prism(&ring, &[], z0, z1, material);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Hinge {
+    Left,
+    Right,
+}
+
+/// Everything the front builders share about the cabinet being meshed.
+pub(crate) struct FrontCtx<'a> {
+    pub(crate) cab: &'a Cabinet,
+    pub(crate) frame: Frame,
+    /// Y of the carcass front relative to the front line (`cf - depth`).
+    pub(crate) carcass_y: f64,
+    /// Lowest and highest z of the face.
+    pub(crate) z0: f64,
+    pub(crate) z1: f64,
+}
+
+/// Builds the face items (rails, drawers, doors, panels) along `ctx.frame`.
+/// `x_off` is where the face starts along the frame and `face_w` its width.
+pub(crate) fn build_fronts(b: &mut Builder, ctx: &FrontCtx, x_off: f64, face_w: f64) {
+    let cab = ctx.cab;
+    let wi = pick(cab.materials.carcass, Material::WallInterior);
+    let Ok(items) = cab.face.resolve(ctx.z1 - ctx.z0, face_w) else {
+        return;
+    };
+    for r in items {
+        let (x, y, iw, ih) = r.rect;
+        let (rx0, rx1, rz0, rz1) = (x_off + x, x_off + x + iw, ctx.z0 + y, ctx.z0 + y + ih);
+        let rect = (rx0, rx1, rz0, rz1);
+        match &r.item {
+            FaceItem::Separation { .. } => {
+                if cab.framed {
+                    frame_box(
+                        b,
+                        ctx.frame,
+                        (rx0, rx1),
+                        (rz0, rz1),
+                        (ctx.carcass_y - FRAME, ctx.carcass_y),
+                        wi,
+                    );
+                }
+            }
+            FaceItem::Opening { .. } => {}
+            FaceItem::Drawer { .. } => {
+                let style = &cab.drawer_style;
+                front_panel(
+                    b,
+                    ctx,
+                    rect,
+                    style.thickness,
+                    style.profile,
+                    false,
+                    pick(cab.materials.drawer, Material::WallInterior),
+                );
+                let (cx, cz) = ((rx0 + rx1) / 2.0, (rz0 + rz1) / 2.0);
+                let cz = if style.handle_centered {
+                    cz
+                } else {
+                    (rz1 - 1.5).max(rz0)
+                };
+                handle(b, ctx.frame, style.handle, cx, cz, true);
+            }
+            FaceItem::Appliance { .. } | FaceItem::Panel { .. } => {
+                let style = &cab.door_style;
+                front_panel(
+                    b,
+                    ctx,
+                    rect,
+                    style.thickness,
+                    DoorProfile::Slab,
+                    false,
+                    pick(cab.materials.door, Material::WallInterior),
+                );
+            }
+            FaceItem::DoorLeft { .. } => door(b, ctx, rect, Hinge::Left),
+            FaceItem::DoorRight { .. } => door(b, ctx, rect, Hinge::Right),
+            FaceItem::DoorAuto { .. } => {
+                // Hinge toward the nearer end of the face; centred doors hinge right.
+                let hinge = if (rx0 + rx1) / 2.0 < ctx.frame.len / 2.0 - 1e-9 {
+                    Hinge::Left
+                } else {
+                    Hinge::Right
+                };
+                door(b, ctx, rect, hinge);
+            }
+            FaceItem::DoubleDoor { .. } => {
+                let mid = (rx0 + rx1) / 2.0;
+                door(b, ctx, (rx0, mid, rz0, rz1), Hinge::Left);
+                door(b, ctx, (mid, rx1, rz0, rz1), Hinge::Right);
+            }
+            FaceItem::HorizontalLayout { .. } => {}
+        }
     }
 }
 
@@ -127,15 +314,23 @@ impl Builder {
 ///   base cabinet, whose countertop acts as the top), 3/4" thick.
 /// * Base/full-height toe kick: a 3/4" board whose front face is `depth` back
 ///   from the cabinet front, spanning the toe kick height.
-/// * Countertop slab with its overhangs, and an optional backsplash.
+/// * Countertop slab with its overhangs (with holes for sink and cooktop
+///   cutouts and their fixtures), and an optional backsplash.
 /// * Framed cabinets: stiles at both ends and a rail for every separation.
 /// * Each drawer, door and appliance front as a panel (door/drawer thickness)
-///   adjusted by the [`Overlay`], with a small box handle. Openings and
-///   separations in frameless cabinets get no geometry.
+///   adjusted by the [`Overlay`] and built as a slab, a shaker frame or a
+///   raised panel, with a small box handle (and two hinge blocks for exposed
+///   hinges). Openings and separations in frameless cabinets get no geometry.
+/// * Moldings: front and both returns per crown or light rail.
+/// * Fillers are just their front panel (plus top and toe kick); a blind
+///   cabinet closes its hidden end with a solid panel; an appliance bay has
+///   two side panels around a placeholder appliance box.
+/// * Corner cabinets are built from their L or diagonal footprint (see
+///   `corner`), custom countertops and backsplashes as extruded outlines.
 ///
 /// Shelves are a single board and partitions a single 3/4" vertical panel at
-/// the local origin end. If the face layout cannot be resolved (fixed items
-/// exceed the face) only the carcass is produced.
+/// the local origin end; a soffit is one solid box. If the face layout cannot
+/// be resolved (fixed items exceed the face) only the carcass is produced.
 pub fn meshes(cabinet: &Cabinet) -> Vec<Mesh> {
     let mut b = Builder::new(cabinet);
     let (w, d, h) = (cabinet.width, cabinet.depth, cabinet.height);
@@ -157,182 +352,311 @@ pub fn meshes(cabinet: &Cabinet) -> Vec<Mesh> {
             );
             return b.meshes;
         }
+        CabinetKind::Soffit => {
+            b.add_box(
+                [0.0, 0.0, 0.0],
+                [w, d, h],
+                pick(cabinet.materials.carcass, Material::WallInterior),
+            );
+            return b.meshes;
+        }
+        CabinetKind::CustomCountertop => {
+            b.custom_countertop(cabinet);
+            return b.meshes;
+        }
+        CabinetKind::CustomBacksplash => {
+            b.custom_backsplash(cabinet);
+            return b.meshes;
+        }
+        CabinetKind::CounterHole => return b.meshes,
+        CabinetKind::CornerBase | CabinetKind::CornerWall => {
+            b.corner(cabinet);
+            b.moldings(cabinet);
+            return b.meshes;
+        }
         _ => {}
     }
-
-    let toe = cabinet.toe_kick.filter(|t| t.height > 0.0);
-    let z0 = toe.map_or(0.0, |t| t.height);
-    let top = cabinet.countertop;
-    let z1 = h - top.map_or(0.0, |c| c.thickness);
-    let door_t = cabinet.door_style.thickness;
-    let front_t = door_t.max(cabinet.drawer_style.thickness);
-    // Front of the carcass: inset fronts sit flush with it, others stand proud
-    // of it so the overall depth stays `depth`.
-    let cf = match cabinet.overlay {
-        Overlay::Inset { .. } => d,
-        _ => d - front_t,
-    };
-
-    // Carcass.
-    let wi = Material::WallInterior;
-    b.add_box([0.0, 0.0, z0], [PANEL, cf, z1], wi);
-    b.add_box([w - PANEL, 0.0, z0], [w, cf, z1], wi);
-    b.add_box([PANEL, 0.0, z0], [w - PANEL, PANEL, z1], wi);
-    b.add_box([PANEL, PANEL, z0], [w - PANEL, cf, z0 + PANEL], wi);
-    if cabinet.kind != CabinetKind::Base {
-        b.add_box([PANEL, PANEL, z1 - PANEL], [w - PANEL, cf, z1], wi);
-    }
-
-    // Toe kick board, front face `depth` back from the cabinet front.
-    if let Some(tk) = toe {
-        let front = d - tk.depth;
-        b.add_box(
-            [0.0, (front - FRAME).max(0.0), 0.0],
-            [w, front, tk.height],
-            wi,
-        );
-    }
-
-    // Countertop and backsplash.
-    if let Some(t) = top {
-        b.add_box(
-            [-t.overhang_sides, -t.overhang_back, z1],
-            [w + t.overhang_sides, d + t.overhang_front, h],
-            Material::Floor,
-        );
-        if let Some(bs) = cabinet.backsplash.filter(|s| s.height > 0.0) {
-            b.add_box(
-                [-t.overhang_sides, -t.overhang_back, h],
-                [
-                    w + t.overhang_sides,
-                    -t.overhang_back + bs.thickness,
-                    h + bs.height,
-                ],
-                Material::Floor,
-            );
-        }
-    }
-
-    // Face frame and fronts.
-    let fw = if cabinet.framed {
-        cabinet.face.frame_width
-    } else {
-        0.0
-    };
-    let face_w = w - 2.0 * fw;
-    if face_w <= 0.0 || z1 <= z0 {
-        return b.meshes;
-    }
-    if cabinet.framed {
-        b.add_box([0.0, cf - FRAME, z0], [fw, cf, z1], wi);
-        b.add_box([w - fw, cf - FRAME, z0], [w, cf, z1], wi);
-    }
-    let Ok(items) = cabinet.face.resolve(z1 - z0, face_w) else {
-        return b.meshes;
-    };
-    for r in items {
-        let (x, y, iw, ih) = r.rect;
-        let (rx0, rx1, rz0, rz1) = (fw + x, fw + x + iw, z0 + y, z0 + y + ih);
-        match &r.item {
-            FaceItem::Separation { .. } => {
-                if cabinet.framed {
-                    b.add_box([rx0, cf - FRAME, rz0], [rx1, cf, rz1], wi);
-                }
-            }
-            FaceItem::Opening { .. } => {}
-            FaceItem::Drawer { .. } => {
-                let t = cabinet.drawer_style.thickness;
-                front_panel(&mut b, cabinet, (rx0, rx1, rz0, rz1), t);
-                let (cx, cz) = ((rx0 + rx1) / 2.0, (rz0 + rz1) / 2.0);
-                handle(&mut b, cabinet.drawer_style.handle, d, cx, cz, true);
-            }
-            FaceItem::Appliance { .. } => {
-                front_panel(&mut b, cabinet, (rx0, rx1, rz0, rz1), door_t);
-            }
-            FaceItem::DoorLeft { .. } => door(&mut b, cabinet, (rx0, rx1, rz0, rz1), Hinge::Left),
-            FaceItem::DoorRight { .. } => door(&mut b, cabinet, (rx0, rx1, rz0, rz1), Hinge::Right),
-            FaceItem::DoorAuto { .. } => {
-                // Hinge toward the nearer end of the cabinet; centred doors hinge right.
-                let hinge = if (rx0 + rx1) / 2.0 < w / 2.0 - 1e-9 {
-                    Hinge::Left
-                } else {
-                    Hinge::Right
-                };
-                door(&mut b, cabinet, (rx0, rx1, rz0, rz1), hinge);
-            }
-            FaceItem::DoubleDoor { .. } => {
-                let mid = (rx0 + rx1) / 2.0;
-                door(&mut b, cabinet, (rx0, mid, rz0, rz1), Hinge::Left);
-                door(&mut b, cabinet, (mid, rx1, rz0, rz1), Hinge::Right);
-            }
-            FaceItem::HorizontalLayout { .. } => {}
-        }
-    }
+    b.rectangular(cabinet);
+    b.moldings(cabinet);
     b.meshes
 }
 
-#[derive(Clone, Copy)]
-enum Hinge {
-    Left,
-    Right,
+impl Builder {
+    /// Base, wall, full-height, filler, blind and appliance-bay cabinets.
+    fn rectangular(&mut self, cabinet: &Cabinet) {
+        let (w, d, h) = (cabinet.width, cabinet.depth, cabinet.height);
+        let toe = cabinet.toe_kick.filter(|t| t.height > 0.0);
+        let z0 = toe.map_or(0.0, |t| t.height);
+        let top = cabinet.countertop;
+        let z1 = h - top.map_or(0.0, |c| c.thickness);
+        let door_t = cabinet.door_style.thickness;
+        let front_t = door_t.max(cabinet.drawer_style.thickness);
+        // Front of the carcass: inset fronts sit flush with it, others stand proud
+        // of it so the overall depth stays `depth`.
+        let cf = match cabinet.overlay {
+            Overlay::Inset { .. } => d,
+            _ => d - front_t,
+        };
+        let wi = pick(cabinet.materials.carcass, Material::WallInterior);
+        let bay = cabinet.appliance.is_some();
+        let filler = cabinet.kind.is_filler();
+
+        // Carcass.
+        if bay {
+            self.add_box([0.0, 0.0, z0], [PANEL, d, z1], wi);
+            self.add_box([w - PANEL, 0.0, z0], [w, d, z1], wi);
+        } else if !filler {
+            self.add_box([0.0, 0.0, z0], [PANEL, cf, z1], wi);
+            self.add_box([w - PANEL, 0.0, z0], [w, cf, z1], wi);
+            self.add_box([PANEL, 0.0, z0], [w - PANEL, PANEL, z1], wi);
+            self.add_box([PANEL, PANEL, z0], [w - PANEL, cf, z0 + PANEL], wi);
+            if !cabinet.kind.is_base_like() {
+                self.add_box([PANEL, PANEL, z1 - PANEL], [w - PANEL, cf, z1], wi);
+            }
+        }
+
+        // Toe kick board, front face `depth` back from the cabinet front.
+        if let Some(tk) = toe {
+            let front = d - tk.depth;
+            self.add_box(
+                [0.0, (front - FRAME).max(0.0), 0.0],
+                [w, front, tk.height],
+                pick(cabinet.materials.toe_kick, Material::WallInterior),
+            );
+        }
+
+        // Countertop and backsplash.
+        if let Some(t) = top {
+            self.countertop(cabinet, z1, h);
+            if let Some(bs) = cabinet.backsplash.filter(|s| s.height > 0.0) {
+                self.add_box(
+                    [-t.overhang_sides, -t.overhang_back, h],
+                    [
+                        w + t.overhang_sides,
+                        -t.overhang_back + bs.thickness,
+                        h + bs.height,
+                    ],
+                    pick(cabinet.materials.backsplash, Material::Floor),
+                );
+            }
+        }
+
+        if bay {
+            // Placeholder appliance filling the bay.
+            self.add_box(
+                [PANEL + 0.1, 1.0, z0 + 0.5],
+                [w - PANEL - 0.1, d - 0.5, (z1 - 0.25).max(z0 + 1.0)],
+                Material::Metal,
+            );
+            return;
+        }
+
+        // Face frame and fronts.
+        let fw = if cabinet.framed {
+            cabinet.face.frame_width
+        } else {
+            0.0
+        };
+        let (x_lo, x_hi) = match cabinet.blind {
+            Some(bl) => match bl.side {
+                BlindSide::Left => (bl.blind_width.min(w), w),
+                BlindSide::Right => (0.0, (w - bl.blind_width).max(0.0)),
+            },
+            None => (0.0, w),
+        };
+        let face_w = x_hi - x_lo - 2.0 * fw;
+        if face_w <= 0.0 || z1 <= z0 {
+            return;
+        }
+        if let Some(bl) = cabinet.blind {
+            // The hidden end: a solid front panel.
+            let (bx0, bx1) = match bl.side {
+                BlindSide::Left => (0.0, x_lo),
+                BlindSide::Right => (x_hi, w),
+            };
+            let ctx = FrontCtx {
+                cab: cabinet,
+                frame: Frame::front(w, d),
+                carcass_y: cf - d,
+                z0,
+                z1,
+            };
+            front_panel(
+                self,
+                &ctx,
+                (bx0, bx1, z0, z1),
+                door_t,
+                DoorProfile::Slab,
+                false,
+                pick(cabinet.materials.door, Material::WallInterior),
+            );
+        }
+        if cabinet.framed {
+            self.add_box([x_lo, cf - FRAME, z0], [x_lo + fw, cf, z1], wi);
+            self.add_box([x_hi - fw, cf - FRAME, z0], [x_hi, cf, z1], wi);
+        }
+        let ctx = FrontCtx {
+            cab: cabinet,
+            frame: Frame::front(w, d),
+            carcass_y: cf - d,
+            z0,
+            z1,
+        };
+        build_fronts(self, &ctx, x_lo + fw, face_w);
+    }
+
+    /// The countertop slab of a cabinet's own top, with holes and fixtures.
+    pub(crate) fn countertop(&mut self, cabinet: &Cabinet, z1: f64, h: f64) {
+        let material = pick(cabinet.materials.countertop, Material::Floor);
+        if cabinet.cutouts.is_empty() {
+            if let Some(t) = cabinet.countertop {
+                if cabinet.kind.is_corner() {
+                    if let Some(ring) = cabinet.top_local() {
+                        self.add_prism(&ring, &[], z1, h, material);
+                    }
+                } else {
+                    self.add_box(
+                        [-t.overhang_sides, -t.overhang_back, z1],
+                        [
+                            cabinet.width + t.overhang_sides,
+                            cabinet.depth + t.overhang_front,
+                            h,
+                        ],
+                        material,
+                    );
+                }
+            }
+        } else if let Some(ring) = cabinet.top_local() {
+            self.add_prism(&ring, &cabinet.holes_local(), z1, h, material);
+            self.fixtures(cabinet, h);
+        }
+    }
 }
 
-/// Panel rect `(x0, x1, z0, z1)` adjusted for the overlay and clamped to the cabinet.
-fn overlay_rect(cab: &Cabinet, r: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+/// Panel rect `(x0, x1, z0, z1)` adjusted for the overlay and clamped to the face.
+fn overlay_rect(
+    cab: &Cabinet,
+    r: (f64, f64, f64, f64),
+    z: (f64, f64),
+    len: f64,
+) -> (f64, f64, f64, f64) {
     let grow = match cab.overlay {
         Overlay::Full { reveal } => -reveal / 2.0,
         Overlay::Traditional { overlap } => overlap,
         Overlay::Inset { clearance } => -clearance,
     };
-    let z0 = cab.toe_kick.map_or(0.0, |t| t.height);
-    let z1 = cab.height - cab.countertop.map_or(0.0, |c| c.thickness);
     (
-        (r.0 - grow).max(0.0).min(cab.width),
-        (r.1 + grow).max(0.0).min(cab.width),
-        (r.2 - grow).max(z0),
-        (r.3 + grow).min(z1),
+        (r.0 - grow).max(0.0).min(len),
+        (r.1 + grow).max(0.0).min(len),
+        (r.2 - grow).max(z.0),
+        (r.3 + grow).min(z.1),
     )
 }
 
-/// A slab front flush with the cabinet's front plane (`y = depth`).
-fn front_panel(b: &mut Builder, cab: &Cabinet, r: (f64, f64, f64, f64), thickness: f64) {
-    let (x0, x1, z0, z1) = overlay_rect(cab, r);
-    b.add_box(
-        [x0, cab.depth - thickness, z0],
-        [x1, cab.depth, z1],
-        Material::WallInterior,
+/// A front panel flush with the front line, built as a slab, a shaker frame
+/// or a raised panel. Glass fronts are shaker frames with a glass centre.
+fn front_panel(
+    b: &mut Builder,
+    ctx: &FrontCtx,
+    r: (f64, f64, f64, f64),
+    thickness: f64,
+    profile: DoorProfile,
+    glass: bool,
+    material: Material,
+) {
+    let (x0, x1, z0, z1) = overlay_rect(ctx.cab, r, (ctx.z0, ctx.z1), ctx.frame.len);
+    let f = ctx.frame;
+    let profile = if glass && profile == DoorProfile::Slab {
+        DoorProfile::Shaker
+    } else {
+        profile
+    };
+    let (w, h) = (x1 - x0, z1 - z0);
+    let rail = ctx.cab.door_style.frame_width;
+    if profile == DoorProfile::Slab || w <= 2.0 * rail + 0.5 || h <= 2.0 * rail + 0.5 {
+        frame_box(b, f, (x0, x1), (z0, z1), (-thickness, 0.0), material);
+        return;
+    }
+    // Frame: two stiles, two rails; then the centre panel.
+    let y = (-thickness, 0.0);
+    frame_box(b, f, (x0, x0 + rail), (z0, z1), y, material);
+    frame_box(b, f, (x1 - rail, x1), (z0, z1), y, material);
+    frame_box(b, f, (x0 + rail, x1 - rail), (z0, z0 + rail), y, material);
+    frame_box(b, f, (x0 + rail, x1 - rail), (z1 - rail, z1), y, material);
+    let (centre, cy) = match profile {
+        DoorProfile::Raised => (material, (-thickness * 0.75, -0.05)),
+        _ => (material, (-thickness * 0.65, -thickness * 0.3)),
+    };
+    let centre = if glass { Material::Glass } else { centre };
+    frame_box(
+        b,
+        f,
+        (x0 + rail, x1 - rail),
+        (z0 + rail, z1 - rail),
+        cy,
+        centre,
     );
 }
 
-/// A door panel with its handle on the free edge.
-fn door(b: &mut Builder, cab: &Cabinet, r: (f64, f64, f64, f64), hinge: Hinge) {
+/// A door panel with its handle on the free edge and hinges on the other.
+fn door(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), hinge: Hinge) {
+    let cab = ctx.cab;
     let style = &cab.door_style;
-    front_panel(b, cab, r, style.thickness);
-    let (x0, x1, z0, z1) = overlay_rect(cab, r);
+    front_panel(
+        b,
+        ctx,
+        r,
+        style.thickness,
+        style.profile,
+        style.glass,
+        pick(cab.materials.door, Material::WallInterior),
+    );
+    let (x0, x1, z0, z1) = overlay_rect(cab, r, (ctx.z0, ctx.z1), ctx.frame.len);
     let cx = match hinge {
         Hinge::Left => x1 - style.handle_from_edge,
         Hinge::Right => x0 + style.handle_from_edge,
     };
     // Handles sit near the top of base/tall doors and the bottom of wall doors.
-    let cz = if cab.kind == CabinetKind::Wall {
+    let cz = if style.handle_centered {
+        (z0 + z1) / 2.0
+    } else if cab.kind.is_wall_like() {
         z0 + style.handle_from_top
     } else {
         z1 - style.handle_from_top
     };
-    handle(b, style.handle, cab.depth, cx, cz, false);
+    handle(b, ctx.frame, style.handle, cx, cz, false);
+    if style.hinge == HingeStyle::Exposed {
+        let hx = match hinge {
+            Hinge::Left => (x0, x0 + 0.5),
+            Hinge::Right => (x1 - 0.5, x1),
+        };
+        for hz in [z0 + style.hinge_from_edge, z1 - style.hinge_from_edge] {
+            frame_box(
+                b,
+                ctx.frame,
+                hx,
+                (hz - 1.0, hz + 1.0),
+                (0.0, 0.1),
+                Material::Metal,
+            );
+        }
+    }
 }
 
 /// A tiny box handle centred at `(cx, cz)` on the front plane.
-fn handle(b: &mut Builder, style: HandleStyle, depth: f64, cx: f64, cz: f64, horizontal: bool) {
+fn handle(b: &mut Builder, f: Frame, style: HandleStyle, cx: f64, cz: f64, horizontal: bool) {
     let (hw, hh) = match (style, horizontal) {
         (HandleStyle::None, _) => return,
         (HandleStyle::Knob, _) => (1.0, 1.0),
         (HandleStyle::Pull, true) => (4.0, 0.5),
         (HandleStyle::Pull, false) => (0.5, 4.0),
     };
-    b.add_box(
-        [cx - hw / 2.0, depth, cz - hh / 2.0],
-        [cx + hw / 2.0, depth + HANDLE_PROJECTION, cz + hh / 2.0],
+    frame_box(
+        b,
+        f,
+        (cx - hw / 2.0, cx + hw / 2.0),
+        (cz - hh / 2.0, cz + hh / 2.0),
+        (0.0, HANDLE_PROJECTION),
         Material::WindowFrame,
     );
 }
@@ -434,5 +758,330 @@ mod tests {
     fn shelf_and_partition_are_single_panels() {
         assert_eq!(meshes(&Cabinet::new(CabinetKind::Shelf, 36.0)).len(), 1);
         assert_eq!(meshes(&Cabinet::new(CabinetKind::Partition, 0.75)).len(), 1);
+    }
+
+    use crate::cabinet::{BlindSide, DoorProfile, HingeStyle, Molding};
+    use crate::top::{CutoutKind, EdgeProfile};
+
+    /// Signed volume of the meshes passing `keep` (divergence theorem); positive
+    /// when every triangle faces outward.
+    fn volume(ms: &[Mesh], keep: impl Fn(&Mesh) -> bool) -> f64 {
+        let mut sum = 0.0;
+        for m in ms.iter().filter(|m| keep(m)) {
+            for t in m.indices.chunks(3) {
+                let p: Vec<[f64; 3]> = t
+                    .iter()
+                    .map(|&i| m.vertices[i as usize].position.map(f64::from))
+                    .collect();
+                let c = [
+                    p[1][1] * p[2][2] - p[1][2] * p[2][1],
+                    p[1][2] * p[2][0] - p[1][0] * p[2][2],
+                    p[1][0] * p[2][1] - p[1][1] * p[2][0],
+                ];
+                sum += (p[0][0] * c[0] + p[0][1] * c[1] + p[0][2] * c[2]) / 6.0;
+            }
+        }
+        sum
+    }
+
+    fn assert_outward(ms: &[Mesh], what: &str) {
+        for m in ms {
+            for t in m.indices.chunks(3) {
+                let v: Vec<[f32; 3]> = t.iter().map(|&i| m.vertices[i as usize].position).collect();
+                let n = m.vertices[t[0] as usize].normal;
+                let e1 = [v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]];
+                let e2 = [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]];
+                let cr = [
+                    e1[1] * e2[2] - e1[2] * e2[1],
+                    e1[2] * e2[0] - e1[0] * e2[2],
+                    e1[0] * e2[1] - e1[1] * e2[0],
+                ];
+                assert!(
+                    cr[0] * n[0] + cr[1] * n[1] + cr[2] * n[2] > 0.0,
+                    "inward triangle in {what} ({:?})",
+                    m.material
+                );
+            }
+        }
+    }
+
+    fn counter(w: f64, d: f64) -> Cabinet {
+        let ring = [
+            Point::new(10.0, 20.0),
+            Point::new(10.0 + w, 20.0),
+            Point::new(10.0 + w, 20.0 + d),
+            Point::new(10.0, 20.0 + d),
+        ];
+        Cabinet::custom_countertop(&ring, 1.5, 36.0).unwrap()
+    }
+
+    #[test]
+    fn filler_meshes_are_panel_plus_top_and_kick() {
+        assert_eq!(
+            meshes(&Cabinet::filler(CabinetKind::BaseFiller, 3.0)).len(),
+            3
+        );
+        assert_eq!(
+            meshes(&Cabinet::filler(CabinetKind::WallFiller, 3.0)).len(),
+            1
+        );
+        assert_eq!(
+            meshes(&Cabinet::filler(CabinetKind::FullHeightFiller, 3.0)).len(),
+            2
+        );
+        // The filler panel has no handle.
+        assert!(meshes(&Cabinet::filler(CabinetKind::WallFiller, 3.0))
+            .iter()
+            .all(|m| m.material != Material::WindowFrame));
+        let mut f = Cabinet::filler(CabinetKind::BaseFiller, 3.0);
+        f.angle = 0.4;
+        assert_outward(&meshes(&f), "filler");
+    }
+
+    #[test]
+    fn door_profiles_add_frame_pieces() {
+        let slab = Cabinet::wall(30.0);
+        let n = meshes(&slab).len();
+        let mut shaker = slab.clone();
+        shaker.door_style.apply_builtin("Shaker Door");
+        // Four frame pieces and the centre panel replace the single slab.
+        assert_eq!(meshes(&shaker).len(), n + 4);
+        let mut raised = slab.clone();
+        raised.door_style.profile = DoorProfile::Raised;
+        assert_eq!(meshes(&raised).len(), n + 4);
+        // The panel of a raised door stands further out than a shaker's.
+        let front = |c: &Cabinet| {
+            meshes(c)
+                .iter()
+                .filter(|m| m.material == Material::WallInterior)
+                .map(|m| m.bounds().unwrap().1[2])
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(front(&raised) >= front(&shaker) - 1e-4);
+        // Glass doors get a glass centre, even from a slab profile.
+        let mut glass = slab.clone();
+        glass.door_style.glass = true;
+        let ms = meshes(&glass);
+        assert_eq!(ms.len(), n + 4);
+        assert!(ms.iter().any(|m| m.material == Material::Glass));
+        for c in [&shaker, &raised, &glass] {
+            assert_outward(&meshes(c), "door");
+        }
+        // A drawer profile applies to drawer fronts too.
+        let mut drawers = Cabinet::base(24.0);
+        let base_n = meshes(&drawers).len();
+        drawers.drawer_style.apply_builtin("Shaker Drawer");
+        assert_eq!(meshes(&drawers).len(), base_n + 4);
+    }
+
+    #[test]
+    fn hinges_handles_and_overlays() {
+        let mut c = Cabinet::wall(30.0);
+        let n = meshes(&c).len();
+        c.door_style.hinge = HingeStyle::Exposed;
+        assert_eq!(meshes(&c).len(), n + 2);
+        c.door_style.hinge = HingeStyle::Hidden;
+        c.door_style.handle = HandleStyle::None;
+        assert_eq!(meshes(&c).len(), n - 1);
+        // A centred handle moves to mid height of the door.
+        c.door_style.handle = HandleStyle::Pull;
+        c.door_style.handle_centered = true;
+        let h = meshes(&c)
+            .into_iter()
+            .find(|m| m.material == Material::WindowFrame)
+            .unwrap();
+        let (lo, hi) = h.bounds().unwrap();
+        let mid = (lo[1] + hi[1]) / 2.0;
+        assert!((mid - 69.0).abs() < 1.0, "{mid}");
+    }
+
+    #[test]
+    fn moldings_add_a_front_and_two_returns() {
+        let mut c = Cabinet::wall(30.0);
+        let n = meshes(&c).len();
+        c.moldings = vec![Molding::crown(), Molding::light_rail()];
+        let ms = meshes(&c);
+        assert_eq!(ms.len(), n + 6);
+        let trim = ms.iter().filter(|m| m.material == Material::Trim).count();
+        assert_eq!(trim, 6);
+        // Crown sits on top (y 84..87.5), light rail under the bottom (52..54).
+        let (lo, hi) = ms
+            .iter()
+            .filter(|m| m.material == Material::Trim)
+            .map(|m| m.bounds().unwrap())
+            .fold(([f32::MAX; 3], [f32::MIN; 3]), |(mut a, mut b), (l, h)| {
+                for k in 0..3 {
+                    a[k] = a[k].min(l[k]);
+                    b[k] = b[k].max(h[k]);
+                }
+                (a, b)
+            });
+        assert!((lo[1] - 52.0).abs() < 1e-4 && (hi[1] - 87.5).abs() < 1e-4);
+        assert_outward(&ms, "moldings");
+    }
+
+    #[test]
+    fn blind_cabinets_close_their_hidden_end() {
+        let plain = Cabinet::base(48.0);
+        let blind = Cabinet::blind_base(48.0, 15.0, BlindSide::Left);
+        assert_eq!(meshes(&blind).len(), meshes(&plain).len() + 1);
+        // The doors move over: the left-most front starts at the blind width.
+        let min_x = |c: &Cabinet| {
+            meshes(c)
+                .iter()
+                .filter(|m| m.material == Material::WindowFrame)
+                .map(|m| m.bounds().unwrap().0[0])
+                .fold(f32::MAX, f32::min)
+        };
+        assert!(min_x(&blind) > min_x(&plain) + 10.0);
+        assert_outward(&meshes(&blind), "blind");
+    }
+
+    #[test]
+    fn appliance_bays_have_sides_and_a_placeholder() {
+        let dw = meshes(&Cabinet::dishwasher_opening());
+        // Two sides, toe kick, countertop, appliance.
+        assert_eq!(dw.len(), 5);
+        assert!(dw.iter().any(|m| m.material == Material::Metal));
+        assert!(dw.iter().all(|m| m.material != Material::WindowFrame));
+        let range = meshes(&Cabinet::range_opening(30.0));
+        assert_eq!(range.len(), 3);
+        assert_outward(&dw, "dishwasher");
+    }
+
+    #[test]
+    fn corner_meshes_cover_the_footprint() {
+        let diag = Cabinet::corner_base(36.0);
+        let pie = Cabinet::corner_base(36.0).with_pie_cut(false);
+        let susan = Cabinet::corner_base(36.0).with_pie_cut(true);
+        for (c, name) in [(&diag, "diagonal"), (&pie, "pie"), (&susan, "susan")] {
+            let ms = meshes(c);
+            assert!(!ms.is_empty());
+            assert_outward(&ms, name);
+            // A top at 36" and handles; everything stays within the 36" legs
+            // plus the 1.5" of overhang and handles at the fronts.
+            let (lo, hi) = ms.iter().filter_map(|m| m.bounds()).fold(
+                ([f32::MAX; 3], [f32::MIN; 3]),
+                |(mut a, mut b), (l, h)| {
+                    for k in 0..3 {
+                        a[k] = a[k].min(l[k]);
+                        b[k] = b[k].max(h[k]);
+                    }
+                    (a, b)
+                },
+            );
+            assert!(lo[0] >= -1e-4 && lo[2] >= -36.0 - 1.5, "{lo:?}");
+            assert!(hi[0] <= 36.0 + 1.5 && hi[2] <= 1e-4, "{hi:?}");
+            assert!((hi[1] - 36.0).abs() < 1e-4, "{hi:?}");
+        }
+        // The lazy susan adds two shelves and a pole.
+        assert_eq!(meshes(&susan).len(), meshes(&pie).len() + 3);
+        // The countertop slab has the footprint's L area times its thickness.
+        let top_volume = volume(&meshes(&pie), |m| m.material == Material::Floor);
+        let expected = crate::geom::area(&pie.top_local().unwrap()) * 1.5;
+        assert!(
+            (top_volume - expected).abs() < 1e-2,
+            "{top_volume} vs {expected}"
+        );
+        // Wall corners hang at 54".
+        let wall = meshes(&Cabinet::corner_wall(24.0));
+        assert!(wall.iter().all(|m| m.bounds().unwrap().0[1] >= 54.0 - 1e-4));
+        assert_outward(&wall, "wall corner");
+    }
+
+    #[test]
+    fn custom_countertop_mesh_volume_matches_the_model() {
+        let mut c = counter(60.0, 25.0);
+        let slab = |c: &Cabinet| volume(&meshes(c), |m| m.material == Material::Floor);
+        assert!((slab(&c) - 60.0 * 25.0 * 1.5).abs() < 1e-3);
+        // Top face at 36", bottom at 34.5".
+        let ms = meshes(&c);
+        let (lo, hi) = ms[0].bounds().unwrap();
+        assert!((lo[1] - 34.5).abs() < 1e-4 && (hi[1] - 36.0).abs() < 1e-4);
+        assert_outward(&ms, "custom top");
+        // A sink hole removes volume and adds a basin.
+        c.cutouts.push(crate::top::Cutout::rect(
+            CutoutKind::Sink,
+            "Sink",
+            Point::new(30.0, 12.5),
+            30.0,
+            18.0,
+        ));
+        c.cutouts.push(crate::top::Cutout::rect(
+            CutoutKind::Cooktop,
+            "Cooktop",
+            Point::new(50.0, 12.5),
+            8.0,
+            8.0,
+        ));
+        let ms = meshes(&c);
+        assert!((slab(&c) - c.countertop_volume()).abs() < 1e-3);
+        assert!(ms.iter().any(|m| m.material == Material::Metal));
+        assert!(ms.iter().any(|m| m.material == Material::Glass));
+        assert_outward(&ms, "top with holes");
+        // Bevel and bullnose shave the edge but keep most of the volume.
+        let square = slab(&counter(60.0, 25.0));
+        for edge in [EdgeProfile::Beveled, EdgeProfile::Bullnose] {
+            let mut e = counter(60.0, 25.0);
+            let cu = e.custom.as_mut().unwrap();
+            cu.edge = edge;
+            cu.edge_size = 0.75;
+            let v = slab(&e);
+            assert!(v < square && v > square * 0.97, "{edge:?} {v} vs {square}");
+            assert_outward(&meshes(&e), "edge");
+        }
+        // Rotation about the position does not change the volume.
+        let mut r = counter(60.0, 25.0);
+        r.angle = 0.9;
+        assert!((slab(&r) - square).abs() < 1e-3);
+    }
+
+    #[test]
+    fn concave_custom_tops_and_backsplashes() {
+        let l = [
+            Point::new(0.0, 0.0),
+            Point::new(60.0, 0.0),
+            Point::new(60.0, 25.0),
+            Point::new(25.0, 25.0),
+            Point::new(25.0, 60.0),
+            Point::new(0.0, 60.0),
+        ];
+        let c = Cabinet::custom_countertop(&l, 1.5, 36.0).unwrap();
+        let v = volume(&meshes(&c), |_| true);
+        assert!((v - (60.0 * 25.0 + 25.0 * 35.0) * 1.5).abs() < 1e-3, "{v}");
+        let bs = Cabinet::custom_backsplash(
+            &[Point::ZERO, Point::new(48.0, 0.0), Point::new(48.0, 30.0)],
+            4.0,
+            0.5,
+            36.0,
+        )
+        .unwrap();
+        let ms = meshes(&bs);
+        assert_eq!(ms.len(), 1);
+        assert_outward(&ms, "backsplash");
+        let (lo, hi) = ms[0].bounds().unwrap();
+        assert!((lo[1] - 36.0).abs() < 1e-4 && (hi[1] - 40.0).abs() < 1e-4);
+        // Strip area of the 78" long, 0.5" thick path (mitered corner) times 4".
+        assert!((volume(&ms, |_| true) - 78.0 * 0.5 * 4.0).abs() < 0.3);
+    }
+
+    #[test]
+    fn part_materials_override_the_stand_ins() {
+        use crate::cabinet::MaterialChoice;
+        let mut c = Cabinet::base(24.0);
+        c.materials.countertop = MaterialChoice::Stone;
+        c.materials.door = MaterialChoice::Painted;
+        let ms = meshes(&c);
+        assert!(ms.iter().any(|m| m.material == Material::Stone));
+        assert!(ms.iter().all(|m| m.material != Material::Floor));
+        assert!(ms.iter().any(|m| m.material == Material::Trim));
+    }
+
+    #[test]
+    fn soffit_is_one_solid_box() {
+        let ms = meshes(&Cabinet::new(CabinetKind::Soffit, 48.0));
+        assert_eq!(ms.len(), 1);
+        let (lo, hi) = ms[0].bounds().unwrap();
+        assert!((lo[1] - 84.0).abs() < 1e-4 && (hi[1] - 96.0).abs() < 1e-4);
     }
 }

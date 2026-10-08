@@ -11,11 +11,15 @@
 //!
 //! # Selection
 //!
-//! The details tool keeps its own selection here ([`selected`], [`select`]),
-//! like `rooms_edit`. The Select tool cannot pick these objects until
-//! `ObjectRef::Detail(Id)` exists (see `docs/integration-queue.md`); the
-//! picking, box-select, move and delete helpers it needs are
-//! [`pick`], [`in_rect`], [`translate_ids`] and [`delete_ids`].
+//! The objects are `ObjectRef::Detail(id)` in `cx.selection`, shared by the
+//! Select tool and the details tool ([`selected`], [`select`],
+//! [`clear_selection`] take the context). `editor::selection` hit-tests with
+//! [`pick_all`], box-selects with [`in_rect`], and `editor::dispatch` moves
+//! and deletes with [`translate_ids`] and [`delete_ids`]. The corners the
+//! Select tool drags are [`vertices`] / [`move_vertex_in`]. Wall material
+//! regions and hatches belong to their wall: [`drop_orphans`] removes them
+//! with it and [`follow_walls`] keeps corner boards and quoins on their
+//! corners when walls move.
 //!
 //! # Drawing and 3D
 //!
@@ -24,7 +28,7 @@
 //! trim and moldings, over the walls). The 3D view adds
 //! [`detail_meshes`] to its scene.
 
-use super::{Camera, EditorContext};
+use super::{Camera, EditorContext, ObjectRef};
 use eframe::egui::{self, Color32, Pos2, Shape, Stroke};
 use plan_3d::triangulate::ear_clip;
 use plan_core::details::{
@@ -41,7 +45,7 @@ use plan_core::{Id, Layer, LayerSet, LineStyle, Project, Wall, WallClass};
 use plan_materials::{
     clip_strokes_to_polygon, core_library, pattern_strokes, MaterialLibrary, Pattern,
 };
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -247,9 +251,7 @@ pub fn delete(cx: &mut EditorContext, r: DetailRef) -> bool {
     edit(cx, &format!("Delete {}", r.name()), |l| {
         l.remove(r);
     });
-    if selected() == Some(r) {
-        clear_selection();
-    }
+    forget(cx, &[r.id()]);
     true
 }
 
@@ -280,10 +282,62 @@ pub fn delete_ids(cx: &mut EditorContext, ids: &[Id]) -> usize {
             l.remove(*r);
         }
     });
-    if selected().is_some_and(|s| refs.contains(&s)) {
-        clear_selection();
-    }
+    forget(cx, ids);
     refs.len()
+}
+
+/// Deletes the wall material regions and wall hatches whose wall is gone,
+/// inside the caller's undo step (deleting walls). Returns how many went.
+pub fn drop_orphans(cx: &mut EditorContext) -> usize {
+    if cx.floor().details.is_none() {
+        return 0;
+    }
+    let mut layer = load(cx);
+    let gone: Vec<Id> = layer
+        .regions
+        .iter()
+        .filter(|r| r.wall_id().is_some_and(|w| cx.floor().wall(w).is_none()))
+        .map(|r| r.id)
+        .chain(
+            layer
+                .hatches
+                .iter()
+                .filter(|h| cx.floor().wall(h.wall_id).is_none())
+                .map(|h| h.id),
+        )
+        .collect();
+    if gone.is_empty() {
+        return 0;
+    }
+    let n = layer.drop_orphans(cx.floor());
+    let fl = cx.floor;
+    save(&mut cx.project, fl, &layer);
+    forget(cx, &gone);
+    cx.mark_dirty();
+    n
+}
+
+/// Makes the corner boards and quoins of floor `fi` follow their walls after
+/// the walls changed from `before` (the floor's walls as they were): the trim
+/// slides to where the faces of its two walls meet now. Wall material regions
+/// and hatches are measured along their wall and follow on their own.
+/// Returns whether any trim moved.
+pub fn follow_walls(project: &mut Project, fi: usize, before: &[Wall]) -> bool {
+    let Some(floor) = project.floors.get(fi) else {
+        return false;
+    };
+    if floor.details.is_none() {
+        return false;
+    }
+    let mut layer = DetailsLayer::load(floor);
+    if layer.corner_boards.is_empty() && layer.quoins.is_empty() {
+        return false;
+    }
+    if !layer.follow_walls(before, &floor.walls) {
+        return false;
+    }
+    save(project, fi, &layer);
+    true
 }
 
 /// Translates the objects with these ids by `d` inside the caller's undo
@@ -313,21 +367,33 @@ pub fn exists(cx: &EditorContext, r: DetailRef) -> bool {
 // Selection
 // ===================================================================
 
-thread_local! {
-    static SELECTED: Cell<Option<DetailRef>> = const { Cell::new(None) };
+/// The selected detail object, if any: the first selected `Detail` that
+/// still exists.
+pub fn selected(cx: &EditorContext) -> Option<DetailRef> {
+    let layer = load(cx);
+    cx.selection.items.iter().find_map(|o| match o {
+        ObjectRef::Detail(id) => layer.find(*id),
+        _ => None,
+    })
 }
 
-/// The selected detail object, if any.
-pub fn selected() -> Option<DetailRef> {
-    SELECTED.with(Cell::get)
+/// Selects `r` alone.
+pub fn select(cx: &mut EditorContext, r: DetailRef) {
+    cx.selection.set(ObjectRef::Detail(r.id()));
 }
 
-pub fn select(r: DetailRef) {
-    SELECTED.with(|s| s.set(Some(r)));
+/// Drops the detail objects from the selection.
+pub fn clear_selection(cx: &mut EditorContext) {
+    cx.selection
+        .items
+        .retain(|o| !matches!(o, ObjectRef::Detail(_)));
 }
 
-pub fn clear_selection() {
-    SELECTED.with(|s| s.set(None));
+/// Drops the objects with these ids from the selection.
+fn forget(cx: &mut EditorContext, ids: &[Id]) {
+    cx.selection
+        .items
+        .retain(|o| !matches!(o, ObjectRef::Detail(i) if ids.contains(i)));
 }
 
 // ===================================================================
@@ -347,20 +413,36 @@ fn visible(cx: &EditorContext, layer: &str) -> bool {
     cx.layers().is_visible(layer)
 }
 
-/// The object at `p` within `tol` inches. Corner trim and moldings first
-/// (they are small), then solids, wall regions and hatches, decks and last
-/// the floor regions; among shapes the smallest wins.
-pub fn pick(cx: &EditorContext, p: Point, tol: f64) -> Option<DetailRef> {
+/// How a picked object ranks against the rest of the plan: `Above` the walls
+/// (trim, moldings, solids), `Wall` objects belong to a wall and rank just
+/// after it (wall regions, hatching) and `Below` the rooms (floor regions,
+/// decks).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tier {
+    Above,
+    Wall,
+    Below,
+}
+
+/// Every object at `p` within `tol` inches, topmost first, with its [`Tier`].
+/// Corner trim and moldings first (they are small), then solids, wall regions
+/// and hatches, decks and last the floor regions; among shapes the smallest
+/// wins.
+pub fn pick_all(cx: &EditorContext, p: Point, tol: f64) -> Vec<(DetailRef, Tier)> {
+    if cx.floor().details.is_none() {
+        return Vec::new();
+    }
     let layer = load(cx);
     let floor = cx.floor();
+    let mut out = Vec::new();
     for b in &layer.corner_boards {
         if visible(cx, &b.layer) && near_or_inside(&b.outline(), p, tol) {
-            return Some(DetailRef::CornerBoard(b.id));
+            out.push((DetailRef::CornerBoard(b.id), Tier::Above));
         }
     }
     for q in &layer.quoins {
         if visible(cx, &q.layer) && near_or_inside(&q.outline(), p, tol) {
-            return Some(DetailRef::Quoin(q.id));
+            out.push((DetailRef::Quoin(q.id), Tier::Above));
         }
     }
     for m in &layer.moldings {
@@ -369,14 +451,12 @@ pub fn pick(cx: &EditorContext, p: Point, tol: f64) -> Option<DetailRef> {
             .windows(2)
             .any(|s| dist_to_segment(p, s[0], s[1]) <= tol + m.width);
         if visible(cx, &m.layer) && hit {
-            return Some(DetailRef::Molding(m.id));
+            out.push((DetailRef::Molding(m.id), Tier::Above));
         }
     }
-    let smallest = |cands: Vec<(DetailRef, f64)>| {
-        cands
-            .into_iter()
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|c| c.0)
+    let smallest_first = |mut c: Vec<(DetailRef, f64)>| {
+        c.sort_by(|a, b| a.1.total_cmp(&b.1));
+        c.into_iter().map(|x| x.0).collect::<Vec<_>>()
     };
     let solids = layer
         .solids
@@ -384,15 +464,13 @@ pub fn pick(cx: &EditorContext, p: Point, tol: f64) -> Option<DetailRef> {
         .filter(|s| visible(cx, &s.layer) && near_or_inside(&s.footprint(), p, tol))
         .map(|s| (DetailRef::Solid(s.id), polygon_area(&s.footprint()).abs()))
         .collect();
-    if let Some(r) = smallest(solids) {
-        return Some(r);
-    }
+    out.extend(smallest_first(solids).into_iter().map(|r| (r, Tier::Above)));
     for r in layer.regions.iter().filter(|r| !r.is_floor()) {
         let hit = r
             .plan_polygon(floor)
             .is_some_and(|poly| near_or_inside(&poly, p, tol));
         if visible(cx, &r.layer) && hit {
-            return Some(DetailRef::Region(r.id));
+            out.push((DetailRef::Region(r.id), Tier::Wall));
         }
     }
     for h in &layer.hatches {
@@ -400,7 +478,7 @@ pub fn pick(cx: &EditorContext, p: Point, tol: f64) -> Option<DetailRef> {
             .wall(h.wall_id)
             .is_some_and(|w| near_or_inside(&w.footprint(), p, tol));
         if visible(cx, &h.layer) && hit {
-            return Some(DetailRef::Hatch(h.id));
+            out.push((DetailRef::Hatch(h.id), Tier::Wall));
         }
     }
     let decks = layer
@@ -409,16 +487,35 @@ pub fn pick(cx: &EditorContext, p: Point, tol: f64) -> Option<DetailRef> {
         .filter(|d| visible(cx, &d.layer) && near_or_inside(&d.outline, p, tol))
         .map(|d| (DetailRef::Deck(d.id), d.area()))
         .collect();
-    if let Some(r) = smallest(decks) {
-        return Some(r);
-    }
+    out.extend(smallest_first(decks).into_iter().map(|r| (r, Tier::Below)));
     let regions = layer
         .regions
         .iter()
         .filter(|r| r.is_floor() && visible(cx, &r.layer) && near_or_inside(&r.outline, p, tol))
         .map(|r| (DetailRef::Region(r.id), r.area()))
         .collect();
-    smallest(regions)
+    out.extend(
+        smallest_first(regions)
+            .into_iter()
+            .map(|r| (r, Tier::Below)),
+    );
+    out
+}
+
+/// The object at `p` within `tol` inches (the first of [`pick_all`]).
+pub fn pick(cx: &EditorContext, p: Point, tol: f64) -> Option<DetailRef> {
+    pick_all(cx, p, tol).first().map(|x| x.0)
+}
+
+/// The corners of the object the Select tool can drag, in plan coordinates
+/// (see `DetailsLayer::vertices`).
+pub fn vertices(cx: &EditorContext, r: DetailRef) -> Option<Vec<Point>> {
+    load(cx).vertices(r)
+}
+
+/// Moves corner `i` of `r` in `layer` to `to`; returns whether it moved.
+pub fn move_vertex_in(layer: &mut DetailsLayer, r: DetailRef, i: usize, to: Point) -> bool {
+    layer.move_vertex(r, i, to)
 }
 
 /// Every object whose plan bounds lie inside the box `lo`..`hi`, or, with
@@ -1029,8 +1126,15 @@ fn draw_molding(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, m: &M
 }
 
 fn draw_selection(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, layer: &DetailsLayer) {
-    let mut refs: Vec<DetailRef> = selected().into_iter().collect();
-    refs.dedup();
+    let refs: Vec<DetailRef> = cx
+        .selection
+        .items
+        .iter()
+        .filter_map(|o| match o {
+            ObjectRef::Detail(id) => layer.find(*id),
+            _ => None,
+        })
+        .collect();
     let stroke = Stroke::new(2.6_f32, cx.palette.selection);
     for r in refs {
         let Some((lo, hi)) = layer.plan_bounds(cx.floor(), r) else {
@@ -1224,9 +1328,12 @@ mod tests {
         assert_eq!(cx.undo().as_deref(), Some("Move Deck"));
         assert_eq!(load(&cx).deck(deck).unwrap().outline[0], Point::ZERO);
         // Delete.
-        select(DetailRef::Solid(solid));
+        select(&mut cx, DetailRef::Solid(solid));
+        assert_eq!(selected(&cx), Some(DetailRef::Solid(solid)));
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Detail(solid)));
         assert!(delete(&mut cx, DetailRef::Solid(solid)));
-        assert_eq!(selected(), None);
+        assert_eq!(selected(&cx), None);
+        assert!(cx.selection.is_empty());
         assert!(load(&cx).solid(solid).is_none());
         assert_eq!(cx.undo().as_deref(), Some("Delete 3D Solid"));
         assert!(load(&cx).solid(solid).is_some());
@@ -1373,5 +1480,159 @@ mod tests {
             Point::new(500.0, 0.0),
         );
         assert_eq!(detail_meshes(&cx.project).len(), 5);
+    }
+    #[test]
+    fn details_are_selected_through_the_shared_selection() {
+        let mut cx = cx();
+        let a = add_deck(&mut cx, square(0.0, 0.0, 96.0));
+        let b = add_deck(&mut cx, square(300.0, 0.0, 96.0));
+        select(&mut cx, DetailRef::Deck(a));
+        cx.selection.add(ObjectRef::Detail(b));
+        assert_eq!(cx.selection.len(), 2);
+        assert!(cx.selection.items.iter().all(|o| o.exists(cx.floor())));
+        clear_selection(&mut cx);
+        assert!(cx.selection.is_empty());
+        // Deleting one drops only it from the selection.
+        select(&mut cx, DetailRef::Deck(a));
+        cx.selection.add(ObjectRef::Detail(b));
+        delete(&mut cx, DetailRef::Deck(a));
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Detail(b)));
+        // A selected object that vanishes with undo is not "selected".
+        cx.undo();
+        cx.undo();
+        assert_eq!(selected(&cx), None);
+    }
+
+    #[test]
+    fn pick_all_ranks_trim_above_walls_regions_with_them_and_floor_shapes_below() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        auto_corner_boards(&mut cx);
+        let region = add_floor_region(&mut cx, square(40.0, 40.0, 100.0));
+        let deck = add_deck(&mut cx, square(60.0, 60.0, 40.0));
+        let wall = cx.floor().walls[0].id;
+        let wr = add_wall_region(&mut cx, wall, Side::Left, (60.0, 120.0), (0.0, 96.0));
+        // Inside the room: the deck (smaller) beats the region, both Below.
+        let hits = pick_all(&cx, Point::new(80.0, 80.0), 2.0);
+        assert_eq!(
+            hits,
+            vec![
+                (DetailRef::Deck(deck), Tier::Below),
+                (DetailRef::Region(region), Tier::Below)
+            ]
+        );
+        // On the wall: the wall region ranks as a wall object.
+        let on_wall = pick_all(&cx, Point::new(90.0, 0.0), 2.0);
+        assert_eq!(on_wall, vec![(DetailRef::Region(wr), Tier::Wall)]);
+        // At a corner the corner board is above everything.
+        let at_corner = pick_all(&cx, Point::new(-3.0, -3.0), 2.0);
+        assert!(matches!(
+            at_corner[0],
+            (DetailRef::CornerBoard(_), Tier::Above)
+        ));
+        assert_eq!(
+            pick(&cx, Point::new(80.0, 80.0), 2.0),
+            Some(DetailRef::Deck(deck))
+        );
+    }
+
+    #[test]
+    fn deleting_a_wall_drops_its_regions_and_hatches() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        let (a, b) = (cx.floor().walls[0].id, cx.floor().walls[1].id);
+        add_wall_region(&mut cx, a, Side::Left, (0.0, 60.0), (0.0, 96.0));
+        let keep = add_wall_region(&mut cx, b, Side::Left, (0.0, 60.0), (0.0, 96.0));
+        wall_hatch(&mut cx, a);
+        let floor_region = add_floor_region(&mut cx, square(40.0, 40.0, 100.0));
+        select_all(&mut cx);
+        assert_eq!(drop_orphans(&mut cx), 0, "nothing orphaned yet");
+        cx.selection.set(ObjectRef::Wall(a));
+        cx.begin_change("Delete");
+        cx.project.remove_wall(0, a);
+        assert_eq!(drop_orphans(&mut cx), 2);
+        let l = load(&cx);
+        assert_eq!(l.regions.len(), 2);
+        assert!(l.region(keep).is_some() && l.region(floor_region).is_some());
+        assert!(l.hatches.is_empty());
+    }
+
+    fn select_all(cx: &mut EditorContext) {
+        let ids: Vec<Id> = {
+            let l = load(cx);
+            l.regions
+                .iter()
+                .map(|r| r.id)
+                .chain(l.hatches.iter().map(|h| h.id))
+                .collect()
+        };
+        cx.selection.items = ids.into_iter().map(ObjectRef::Detail).collect();
+    }
+
+    #[test]
+    fn trim_follows_a_wall_that_moves() {
+        let mut cx = cx();
+        box_walls(&mut cx);
+        cx.refresh();
+        auto_corner_boards(&mut cx);
+        auto_quoins(&mut cx);
+        let before = cx.floor().walls.clone();
+        // The north wall (third) moves 30" south, its neighbours following.
+        let ids: Vec<Id> = before.iter().map(|w| w.id).collect();
+        for w in &mut cx.project.floors[0].walls {
+            if w.id == ids[2] {
+                w.start.y = 150.0;
+                w.end.y = 150.0;
+            } else if w.id == ids[1] {
+                w.end.y = 150.0;
+            } else if w.id == ids[3] {
+                w.start.y = 150.0;
+            }
+        }
+        assert!(follow_walls(&mut cx.project, 0, &before));
+        let l = load(&cx);
+        let north: Vec<f64> = l
+            .corner_boards
+            .iter()
+            .map(|b| b.wall_corner.y)
+            .filter(|y| *y > 100.0)
+            .collect();
+        assert_eq!(north.len(), 2);
+        assert!(
+            north.iter().all(|y| (*y - 153.25).abs() < 1e-6),
+            "{north:?}"
+        );
+        assert!(l.quoins.iter().filter(|q| q.corner.y > 100.0).count() == 2);
+        // Following again with the walls where they are changes nothing.
+        let now = cx.floor().walls.clone();
+        assert!(!follow_walls(&mut cx.project, 0, &now));
+        // And nothing happens on a floor without details.
+        let mut empty = Project::new("e");
+        assert!(!follow_walls(&mut empty, 0, &[]));
+    }
+
+    #[test]
+    fn corners_of_polygons_are_draggable_and_lines_have_two_ends() {
+        let mut cx = cx();
+        let deck = add_deck(&mut cx, square(0.0, 0.0, 96.0));
+        let line = add_molding(
+            &mut cx,
+            vec![Point::new(0.0, 300.0), Point::new(100.0, 300.0)],
+            MoldingProfile::Base,
+        );
+        assert_eq!(vertices(&cx, DetailRef::Deck(deck)).unwrap().len(), 4);
+        assert_eq!(vertices(&cx, DetailRef::Molding(line)).unwrap().len(), 2);
+        let mut layer = load(&cx);
+        assert!(move_vertex_in(
+            &mut layer,
+            DetailRef::Deck(deck),
+            2,
+            Point::new(120.0, 130.0)
+        ));
+        save(&mut cx.project, 0, &layer);
+        assert_eq!(
+            load(&cx).deck(deck).unwrap().outline[2],
+            Point::new(120.0, 130.0)
+        );
     }
 }

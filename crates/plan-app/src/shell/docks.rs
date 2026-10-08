@@ -533,9 +533,53 @@ fn layout_section(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec<
             }
         });
     ui.weak("Shown by View > Drawing Sheet and Print Preview.");
+    ui.separator();
+    layout_pages(ui, cx, requests);
     if ui.button("Create Construction Set\u{2026}").clicked() {
         requests.push(DockRequest::Run(Action::CreateConstructionSet));
     }
+}
+
+/// The project's layout: its pages (click to open one in the layout view)
+/// and the buttons that make, open and print it.
+fn layout_pages(ui: &mut egui::Ui, cx: &EditorContext, requests: &mut Vec<DockRequest>) {
+    use super::layout_window::{self, LayoutCommand as C};
+    let run = |requests: &mut Vec<DockRequest>, c: C| {
+        requests.push(DockRequest::Run(Action::Layout(c)));
+    };
+    let pages = layout_window::page_list(&cx.project);
+    if pages.is_empty() {
+        ui.weak("This plan has no layout");
+        if ui.button("New Layout").clicked() {
+            requests.push(DockRequest::Run(Action::FileNewLayout));
+        }
+        return;
+    }
+    let showing = layout_window::is_active().then(layout_window::current_page_index);
+    for (i, label, template) in pages {
+        let text = if template {
+            egui::RichText::new(label).italics()
+        } else {
+            egui::RichText::new(label)
+        };
+        if ui.selectable_label(showing == Some(i), text).clicked() {
+            run(requests, C::GoToPage(i));
+        }
+    }
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Open Layout").clicked() {
+            run(requests, C::ShowLayout);
+        }
+        if ui.button("Add Page").clicked() {
+            run(requests, C::InsertPageAfter);
+        }
+        if ui.button("Page Setup\u{2026}").clicked() {
+            run(requests, C::PageSetup);
+        }
+        if ui.button("Print\u{2026}").clicked() {
+            run(requests, C::Print);
+        }
+    });
 }
 
 fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec<DockRequest>) {

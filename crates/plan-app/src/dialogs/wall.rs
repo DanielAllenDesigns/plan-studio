@@ -802,6 +802,15 @@ impl WallForm {
         }
         self.fields
             .length_row(ui, "Thickness", "thickness", &mut self.draft.thickness);
+        // Chief's wall "Bottom" value: where the wall starts above its floor.
+        ui.add_enabled_ui(!is_default, |ui| {
+            self.fields.length_row(
+                ui,
+                "Bottom Height",
+                "bottom_offset",
+                &mut self.draft.bottom_offset,
+            );
+        });
         ui.add_enabled_ui(!is_default, |ui| {
             let mut len = self.draft.length();
             if self
@@ -1066,6 +1075,9 @@ impl SpecPages for WallForm {
         if self.draft.height <= 0.0 {
             return Some("Wall height must be greater than zero".into());
         }
+        if self.draft.bottom_offset < 0.0 {
+            return Some("Bottom height cannot be negative".into());
+        }
         let len = self.draft.length();
         let too_short = self.adjusted_openings().iter().any(|o| {
             o.start_offset() < OPENING_MARGIN - 1e-6 || o.end_offset() > len - OPENING_MARGIN + 1e-6
@@ -1313,6 +1325,46 @@ mod tests {
         assert!(f.offers_type(&stucco) && !f.offers_type(&glass));
         f.change_class(WallClass::Glass);
         assert!(f.offers_type(&glass) && !f.offers_type(&stucco));
+    }
+
+    /// Every text the general page draws.
+    fn page_texts(f: &mut WallForm, tab: usize) -> Vec<String> {
+        fn texts(s: &egui::Shape, out: &mut Vec<String>) {
+            match s {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|x| texts(x, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| f.page(ui, tab));
+        });
+        let mut all = Vec::new();
+        for c in &out.shapes {
+            texts(&c.shape, &mut all);
+        }
+        all
+    }
+
+    #[test]
+    fn the_general_page_has_a_bottom_height_that_must_not_be_negative() {
+        let mut f = form(WallLock::Start);
+        let general = WALL_TABS.iter().position(|t| t.name == "General").unwrap();
+        let drawn = page_texts(&mut f, general);
+        assert!(drawn.iter().any(|t| t == "Bottom Height"), "{drawn:?}");
+        // Defaults to the floor; a raised wall keeps its value through the JSON.
+        assert_eq!(f.draft.bottom_offset, 0.0);
+        assert!(f.error().is_none());
+        f.draft.bottom_offset = 42.0;
+        assert!(f.error().is_none());
+        let back: Wall = serde_json::from_str(&serde_json::to_string(&f.draft).unwrap()).unwrap();
+        assert_eq!(back.bottom_offset, 42.0);
+        f.draft.bottom_offset = -1.0;
+        assert_eq!(
+            f.error().as_deref(),
+            Some("Bottom height cannot be negative")
+        );
     }
 
     #[test]

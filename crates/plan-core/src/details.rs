@@ -954,6 +954,29 @@ impl Solid3d {
     pub fn translate(&mut self, d: Point) {
         self.position = self.position + d;
     }
+
+    /// Is the footprint an outline the user drew (3D Solid, Pyramid, Face),
+    /// as opposed to a box or round solid made from a size?
+    pub fn has_outline(&self) -> bool {
+        matches!(
+            self.kind,
+            SolidKind::PolylineSolid { .. } | SolidKind::Pyramid { .. } | SolidKind::Face { .. }
+        )
+    }
+
+    /// Moves corner `i` of an outline solid to the plan point `to`. Returns
+    /// whether it moved.
+    pub fn move_outline_vertex(&mut self, i: usize, to: Point) -> bool {
+        let local = rotate_deg(to - self.position, -self.rotation);
+        let pts = match &mut self.kind {
+            SolidKind::PolylineSolid { outline, .. } | SolidKind::Pyramid { outline, .. } => {
+                outline
+            }
+            SolidKind::Face { polygon } => polygon,
+            _ => return false,
+        };
+        pts.get_mut(i).map(|p| *p = local).is_some()
+    }
 }
 
 // ===================================================================
@@ -1174,6 +1197,80 @@ impl DetailsLayer {
         (!pts.is_empty()).then(|| bounds(&pts))
     }
 
+    // ----- corners (reshaping) -----
+
+    /// The corners the user can drag, in plan coordinates: the outline of a
+    /// floor region or deck, the points of a molding polyline, and the outline
+    /// of a 3D solid made from one (3D Solid, Pyramid, Face). `None` for
+    /// everything else (trim, hatches, wall regions and the primitive solids).
+    pub fn vertices(&self, r: DetailRef) -> Option<Vec<Point>> {
+        match r {
+            DetailRef::Region(i) => self
+                .region(i)
+                .filter(|x| x.is_floor())
+                .map(|x| x.outline.clone()),
+            DetailRef::Deck(i) => self.deck(i).map(|x| x.outline.clone()),
+            DetailRef::Molding(i) => self.molding(i).map(|x| x.polyline.clone()),
+            DetailRef::Solid(i) => self
+                .solid(i)
+                .filter(|x| x.has_outline())
+                .map(|x| x.footprint()),
+            _ => None,
+        }
+    }
+
+    /// Moves corner `i` (an index of [`vertices`](Self::vertices)) to the plan
+    /// point `to`. Returns whether it moved.
+    pub fn move_vertex(&mut self, r: DetailRef, i: usize, to: Point) -> bool {
+        fn set(pts: &mut [Point], i: usize, to: Point) -> bool {
+            pts.get_mut(i).map(|p| *p = to).is_some()
+        }
+        match r {
+            DetailRef::Region(id) => self
+                .region_mut(id)
+                .filter(|x| x.is_floor())
+                .is_some_and(|x| set(&mut x.outline, i, to)),
+            DetailRef::Deck(id) => self
+                .deck_mut(id)
+                .is_some_and(|x| set(&mut x.outline, i, to)),
+            DetailRef::Molding(id) => self
+                .molding_mut(id)
+                .is_some_and(|x| set(&mut x.polyline, i, to)),
+            DetailRef::Solid(id) => self
+                .solid_mut(id)
+                .is_some_and(|x| x.move_outline_vertex(i, to)),
+            _ => false,
+        }
+    }
+
+    // ----- following walls -----
+
+    /// Drops the wall material regions and wall hatches whose wall is not on
+    /// `floor` any more. Returns how many went.
+    pub fn drop_orphans(&mut self, floor: &Floor) -> usize {
+        let n = self.regions.len() + self.hatches.len();
+        self.regions
+            .retain(|r| r.wall_id().is_none_or(|w| floor.wall(w).is_some()));
+        self.hatches.retain(|h| floor.wall(h.wall_id).is_some());
+        n - self.regions.len() - self.hatches.len()
+    }
+
+    /// Makes corner boards and quoins follow their walls after the walls moved
+    /// from `before` to `after`: the apex slides to where the two outer faces
+    /// meet now and the axes turn with the walls. (Wall material regions and
+    /// hatches are measured along their wall, so they follow on their own.)
+    /// Returns whether anything changed.
+    pub fn follow_walls(&mut self, before: &[Wall], after: &[Wall]) -> bool {
+        let mut changed = false;
+        for b in &mut self.corner_boards {
+            changed |= follow_corner(&mut b.wall_corner, &mut b.axes, before, after);
+        }
+        for q in &mut self.quoins {
+            changed |= follow_corner(&mut q.corner, &mut q.axes, before, after);
+        }
+        changed
+    }
+
     // ----- auto placement -----
 
     /// Auto Place Corner Boards: a board on every convex exterior corner of
@@ -1268,6 +1365,99 @@ pub fn bounds(pts: &[Point]) -> (Point, Point) {
     } else {
         (lo, hi)
     }
+}
+
+/// A wall whose outer face carries the corner at `apex` along direction `dir`:
+/// a straight exterior wall parallel to `dir` with the apex on its face.
+fn corner_wall(walls: &[Wall], apex: Point, dir: Point) -> Option<&Wall> {
+    walls
+        .iter()
+        .filter(|w| {
+            w.kind == WallKind::Exterior
+                && !w.flags.invisible
+                && !w.is_curved()
+                && matches!(w.class, WallClass::Standard | WallClass::Foundation)
+                && w.length() > 1e-6
+                && w.direction().cross(dir).abs() < 0.05
+                && ((apex - w.start).dot(w.normal()).abs() - w.thickness * 0.5).abs() <= 0.6
+        })
+        .map(|w| (dist_to_segment(apex, w.start, w.end), w))
+        .filter(|(d, w)| *d <= w.thickness + 0.6)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, w)| w)
+}
+
+/// Moves one trim corner to where the faces of its two walls meet after the
+/// walls changed from `before` to `after` (see [`DetailsLayer::follow_walls`]).
+fn follow_corner(apex: &mut Point, axes: &mut CornerAxes, before: &[Wall], after: &[Wall]) -> bool {
+    let (Some(wa), Some(wb)) = (
+        corner_wall(before, *apex, axes.dir_a),
+        corner_wall(before, *apex, axes.dir_b),
+    ) else {
+        return false;
+    };
+    if wa.id == wb.id {
+        return false;
+    }
+    let (Some(na), Some(nb)) = (
+        after.iter().find(|w| w.id == wa.id),
+        after.iter().find(|w| w.id == wb.id),
+    ) else {
+        return false;
+    };
+    // The face line of a wall: through the centerline offset to the side the
+    // apex was on.
+    let face = |old: &Wall, new: &Wall| {
+        let side = (*apex - old.start).dot(old.normal()).signum();
+        (
+            new.start + new.normal() * (side * new.thickness * 0.5),
+            new.direction(),
+        )
+    };
+    let ((pa, da), (pb, db)) = (face(wa, na), face(wb, nb));
+    let det = da.cross(db);
+    if det.abs() < 0.02 || na.length() < 1e-6 || nb.length() < 1e-6 {
+        return false;
+    }
+    let new_apex = pa + da * ((pb - pa).cross(db) / det);
+    let turn = |new_dir: Point, old_dir: Point, new_n: Point, old_out: Point| {
+        (
+            if new_dir.dot(old_dir) >= 0.0 {
+                new_dir
+            } else {
+                -new_dir
+            },
+            if new_n.dot(old_out) >= 0.0 {
+                new_n
+            } else {
+                -new_n
+            },
+        )
+    };
+    let (dir_a, out_a) = turn(da, axes.dir_a, na.normal(), axes.out_a);
+    let (dir_b, out_b) = turn(db, axes.dir_b, nb.normal(), axes.out_b);
+    let new_axes = CornerAxes {
+        dir_a,
+        dir_b,
+        out_a,
+        out_b,
+    };
+    let moved = new_apex.dist(*apex) > 1e-9;
+    let turned = [
+        new_axes.dir_a.dist(axes.dir_a),
+        new_axes.dir_b.dist(axes.dir_b),
+        new_axes.out_a.dist(axes.out_a),
+        new_axes.out_b.dist(axes.out_b),
+    ]
+    .iter()
+    .any(|d| *d > 1e-9);
+    if moved {
+        *apex = new_apex;
+    }
+    if turned {
+        *axes = new_axes;
+    }
+    moved || turned
 }
 
 fn translate_all(pts: &mut [Point], d: Point) {
@@ -1616,5 +1806,187 @@ mod tests {
         let (lo, hi) = bounds(&strip);
         assert!((lo.x - 24.0).abs() < 1e-9 && (hi.x - 72.0).abs() < 1e-9);
         assert!((hi.y - lo.y - 6.5).abs() < 1e-9);
+    }
+    #[test]
+    fn orphans_are_wall_regions_and_hatches_of_missing_walls() {
+        let mut p = box_project();
+        let (a, b) = (p.floors[0].walls[0].id, p.floors[0].walls[1].id);
+        let mut l = DetailsLayer::default();
+        l.regions
+            .push(MaterialRegion::wall(1, a, Side::Left, 0.0, 40.0, 0.0, 40.0));
+        l.regions
+            .push(MaterialRegion::wall(2, b, Side::Left, 0.0, 40.0, 0.0, 40.0));
+        l.regions
+            .push(MaterialRegion::floor(3, vec![Point::ZERO; 3]));
+        l.hatches.push(WallHatch {
+            id: 4,
+            wall_id: a,
+            ..WallHatch::default()
+        });
+        assert_eq!(l.drop_orphans(&p.floors[0]), 0);
+        p.remove_wall(0, a);
+        assert_eq!(l.drop_orphans(&p.floors[0]), 2);
+        assert_eq!(
+            l.regions.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert!(l.hatches.is_empty());
+    }
+
+    #[test]
+    fn corners_follow_their_walls_when_one_moves() {
+        let mut p = box_project();
+        let rooms = detect_rooms(&p.floors[0].walls, 0.5);
+        let mut l = DetailsLayer::default();
+        let mut next = 100;
+        let mut alloc = || {
+            next += 1;
+            next
+        };
+        assert_eq!(l.auto_corner_boards(&p.floors[0], &rooms, &mut alloc), 4);
+        assert_eq!(l.auto_quoins(&p.floors[0], &rooms, &mut alloc), 4);
+        let before = p.floors[0].walls.clone();
+        // Nothing moved: nothing follows.
+        assert!(!l.follow_walls(&before, &before));
+        // Move the north wall (y = 180) down 30" the way a perpendicular
+        // move does: its two neighbours shrink to meet it.
+        let ids: Vec<Id> = before.iter().map(|w| w.id).collect();
+        let mut after = before.clone();
+        for w in &mut after {
+            if w.id == ids[2] {
+                w.start.y = 150.0;
+                w.end.y = 150.0;
+            }
+            if w.id == ids[1] {
+                w.end.y = 150.0;
+            }
+            if w.id == ids[3] {
+                w.start.y = 150.0;
+            }
+        }
+        assert!(l.follow_walls(&before, &after));
+        // The two north corners moved 30" south; the south ones did not.
+        let ys: Vec<f64> = l.corner_boards.iter().map(|b| b.wall_corner.y).collect();
+        assert_eq!(
+            ys.iter()
+                .filter(|y| (**y - 180.0 + 30.0 - 3.25).abs() < 1e-6)
+                .count(),
+            2,
+            "{ys:?}"
+        );
+        assert_eq!(
+            ys.iter().filter(|y| (**y + 3.25).abs() < 1e-6).count(),
+            2,
+            "{ys:?}"
+        );
+        let qs: Vec<f64> = l.quoins.iter().map(|q| q.corner.y).collect();
+        assert_eq!(
+            qs.iter()
+                .filter(|y| (**y - 150.0 - 3.25).abs() < 1e-6)
+                .count(),
+            2,
+            "{qs:?}"
+        );
+        // The boards still hug the new faces: their outlines are unchanged in
+        // shape, so a second follow with the same walls changes nothing.
+        assert!(!l.follow_walls(&before, &after));
+        // A moved wall that carries a wall region leaves the region measured
+        // along it.
+        let r = MaterialRegion::wall(1, ids[2], Side::Left, 24.0, 72.0, 0.0, 48.0);
+        p.floors[0].walls = after;
+        let strip = r.plan_polygon(&p.floors[0]).unwrap();
+        assert!(strip.iter().all(|q| (q.y - 150.0).abs() <= 3.25 + 1e-9));
+    }
+
+    #[test]
+    fn rotated_walls_turn_the_corner_axes() {
+        let p = box_project();
+        let rooms = detect_rooms(&p.floors[0].walls, 0.5);
+        let mut l = DetailsLayer::default();
+        let mut next = 0;
+        l.auto_corner_boards(&p.floors[0], &rooms, &mut || {
+            next += 1;
+            next
+        });
+        let before = p.floors[0].walls.clone();
+        let mut after = before.clone();
+        // Stretch the east wall's north end 30" east: the north wall tilts and
+        // the east wall leans.
+        let east = before[1].id;
+        for w in &mut after {
+            if w.id == east {
+                w.end.x = 270.0;
+            }
+            if w.id == before[2].id {
+                w.start.x = 270.0;
+            }
+        }
+        l.follow_walls(&before, &after);
+        let ne = l
+            .corner_boards
+            .iter()
+            .find(|b| b.wall_corner.x > 250.0 && b.wall_corner.y > 100.0)
+            .expect("the north-east board followed");
+        let (a, b) = (ne.axes.dir_a, ne.axes.dir_b);
+        // Unit axes, still pointing along the faces away from the apex.
+        assert!((a.length() - 1.0).abs() < 1e-9 && (b.length() - 1.0).abs() < 1e-9);
+        assert!(a.cross(b).abs() > 0.5);
+        assert!(ne.axes.out_a.dot(a).abs() < 1e-9 && ne.axes.out_b.dot(b).abs() < 1e-9);
+    }
+
+    #[test]
+    fn corners_of_regions_decks_moldings_and_outline_solids_can_be_moved() {
+        let mut l = DetailsLayer::default();
+        let sq = vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ];
+        l.decks.push(DeckPolygon::new(1, sq.clone()));
+        l.regions.push(MaterialRegion::floor(2, sq.clone()));
+        l.regions.push(MaterialRegion::wall(
+            3,
+            99,
+            Side::Left,
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+        ));
+        l.moldings.push(MoldingLine::new(
+            4,
+            vec![Point::ZERO, Point::new(50.0, 0.0)],
+            MoldingProfile::Base,
+            96.0,
+        ));
+        let mut s = Solid3d::new(
+            5,
+            SolidKind::PolylineSolid {
+                outline: sq.clone(),
+                h: 12.0,
+            },
+            Point::new(100.0, 100.0),
+        );
+        s.rotation = 90.0;
+        l.solids.push(s);
+        l.solids
+            .push(Solid3d::new(6, SolidKind::Sphere { r: 5.0 }, Point::ZERO));
+        assert_eq!(l.vertices(DetailRef::Deck(1)).unwrap().len(), 4);
+        assert_eq!(l.vertices(DetailRef::Region(2)).unwrap().len(), 4);
+        assert!(l.vertices(DetailRef::Region(3)).is_none());
+        assert_eq!(l.vertices(DetailRef::Molding(4)).unwrap().len(), 2);
+        assert!(l.vertices(DetailRef::Solid(6)).is_none());
+        assert!(l.move_vertex(DetailRef::Deck(1), 2, Point::new(20.0, 20.0)));
+        assert_eq!(l.deck(1).unwrap().outline[2], Point::new(20.0, 20.0));
+        assert!(l.move_vertex(DetailRef::Molding(4), 1, Point::new(60.0, 5.0)));
+        assert!(!l.move_vertex(DetailRef::Molding(4), 2, Point::ZERO));
+        assert!(!l.move_vertex(DetailRef::Region(3), 0, Point::ZERO));
+        assert!(!l.move_vertex(DetailRef::Solid(6), 0, Point::ZERO));
+        // A rotated outline solid takes plan coordinates.
+        let target = Point::new(90.0, 130.0);
+        assert!(l.move_vertex(DetailRef::Solid(5), 1, target));
+        let foot = l.solid(5).unwrap().footprint();
+        assert!(foot[1].dist(target) < 1e-9, "{:?}", foot[1]);
     }
 }

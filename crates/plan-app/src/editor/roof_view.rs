@@ -964,6 +964,8 @@ pub fn migrate_legacy(project: &mut Project) -> bool {
     super::site_view::drop_data_layer(project, LAYER_DATA);
     // The slab record kept the same way.
     changed |= plan_core::foundation::migrate_legacy(project);
+    // Lights kept as hidden text records move into `Project::lights`.
+    changed |= plan_core::camera::migrate_legacy(project);
     changed
 }
 
@@ -1747,10 +1749,28 @@ pub fn dormer_spec_at(set: &RoofSet, main: Id, at: Point) -> DormerSpec {
     spec
 }
 
+/// What Explode Dormer made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exploded {
+    /// Plain roof plane records.
+    pub planes: usize,
+    /// Real walls on the floor the roof sits on.
+    pub walls: usize,
+}
+
 /// Explode Dormer (RF-51): the dormer's roof planes become plain plane
-/// records and its footprint a plain hole in the main plane. The dormer's
-/// walls are not kept. Returns the number of planes made.
-pub fn explode_dormer_record(project: &mut Project, fi: usize, id: Id) -> Result<usize, String> {
+/// records, its footprint a plain hole in the main plane, and its front and
+/// cheek walls real walls of the roof's floor. A dormer wall starts at the
+/// roof surface under it (`Wall::bottom_offset`, measured from that floor's
+/// elevation) and rises the dormer's wall height; it takes the default
+/// exterior wall type and thickness of `defaults`, with its outer face on the
+/// dormer footprint. A window in the front wall becomes a window opening.
+pub fn explode_dormer_record(
+    project: &mut Project,
+    fi: usize,
+    id: Id,
+    defaults: &PlanDefaults,
+) -> Result<Exploded, String> {
     let mut set = load(&project.floors[fi]);
     let rec = set.dormer(id).cloned().ok_or("That is not a dormer")?;
     let geom = dormer_geometry(&set, &rec).ok_or("The dormer no longer fits its roof plane")?;
@@ -1759,7 +1779,7 @@ pub fn explode_dormer_record(project: &mut Project, fi: usize, id: Id) -> Result
         .plane(rec.main)
         .map(|p| (p.material.clone(), p.layer.clone()))
         .unwrap_or_else(|| (ROOF_MATERIALS[0].to_string(), LAYER_PLANES.to_string()));
-    let mut made = 0;
+    let mut planes = 0;
     for pl in exploded.roof_planes {
         let mut r = RoofPlaneRecord::new(
             project.alloc_id(),
@@ -1770,7 +1790,7 @@ pub fn explode_dormer_record(project: &mut Project, fi: usize, id: Id) -> Result
         r.material = material.clone();
         r.layer = layer.clone();
         set.planes.push(r);
-        made += 1;
+        planes += 1;
     }
     // A floating dormer never cut the roof under it.
     if let (Some(main), false) = (set.plane_mut(rec.main), rec.floating) {
@@ -1778,7 +1798,64 @@ pub fn explode_dormer_record(project: &mut Project, fi: usize, id: Id) -> Result
     }
     set.dormers.retain(|d| d.id != id);
     store(project, fi, &mut set);
-    Ok(made)
+
+    // The walls: the front wall first, then the cheek walls.
+    let thickness = defaults.exterior_thickness();
+    let type_name = defaults.exterior_wall.wall_type.clone();
+    if let Some(def) = defaults.wall_type(&type_name) {
+        if project.wall_type_def(&type_name).is_none() {
+            project.register_wall_type(def.clone());
+        }
+    }
+    let typed = defaults.wall_type(&type_name).is_some();
+    let floor_elevation = project.floors[fi].elevation;
+    let mut front_wall = None;
+    let mut walls = 0;
+    for (i, dw) in exploded.walls.iter().enumerate() {
+        // The footprint is the outer face: the centerline sits half a wall
+        // thickness inside it.
+        let out = Point::new(dw.normal[0], -dw.normal[2]);
+        let inward = out * (-thickness * 0.5);
+        let height = dw.height.min(rec.spec.wall_height).max(1.0);
+        let wid = project.add_wall(
+            fi,
+            dw.start + inward,
+            dw.end + inward,
+            thickness,
+            height,
+            WallKind::Exterior,
+        );
+        if let Some(w) = project.floors[fi].wall_mut(wid) {
+            w.bottom_offset = dw.base_elevation - floor_elevation;
+            if typed {
+                w.wall_type = Some(type_name.clone());
+            }
+            if w.normal().dot(out) < 0.0 {
+                w.exterior_side = plan_core::walls::Side::Right;
+            }
+        }
+        if i == 0 {
+            front_wall = Some(wid);
+        }
+        walls += 1;
+    }
+    if let (Some(wid), Some(win)) = (front_wall, exploded.window_opening) {
+        let center = project.floors[fi]
+            .wall(wid)
+            .map_or(0.0, |w| w.length() * 0.5);
+        if let Some(oid) = project.add_opening(fi, wid, center, plan_core::OpeningKind::Window) {
+            let bottom = project.floors[fi]
+                .wall(wid)
+                .map_or(0.0, |w| w.bottom_offset);
+            if let Some(o) = project.floors[fi].openings.iter_mut().find(|o| o.id == oid) {
+                o.width = win.width;
+                o.height = win.height;
+                // Sills are measured from the floor, like every opening.
+                o.sill_height = bottom + win.sill_height;
+            }
+        }
+    }
+    Ok(Exploded { planes, walls })
 }
 
 /// The roof plane edge nearest `p` within `tol`: `(plane id, edge index)`,
@@ -2434,6 +2511,45 @@ mod tests {
 
     fn site_view_migrate(p: &mut Project) -> bool {
         crate::editor::site_view::migrate_legacy_storage(p)
+    }
+
+    #[test]
+    fn the_load_migration_moves_legacy_lights_into_the_typed_slot() {
+        use plan_core::camera::LIGHTS_LAYER;
+        let mut p = Project::new("old lights");
+        let record = |id: Id, text: String| CadObject {
+            id,
+            layer: LIGHTS_LAYER.to_string(),
+            item: CadItem::Text {
+                pos: Point::ZERO,
+                text,
+                height: 1.0,
+                angle: 0.0,
+            },
+        };
+        p.floors[0].cad.push(record(
+            41,
+            r#"plan-light:{"name":"Hall","position":{"x":30.0,"y":40.0},"height":80.0,"intensity":2.0,"color":[255,255,255],"enabled":true,"cast_shadows":false}"#.into(),
+        ));
+        p.floors[0].cad.push(record(
+            42,
+            r#"plan-lightset:{"use_electrical":false}"#.into(),
+        ));
+        assert!(p.lights.is_empty());
+        // The same chain EditorContext runs on load.
+        assert!(crate::editor::site_view::migrate_legacy_storage(&mut p));
+        assert_eq!(p.lights().len(), 1);
+        let l = p.light(41).expect("the id carries over");
+        assert_eq!(
+            (l.floor, l.name.as_str(), l.cast_shadows),
+            (0, "Hall", false)
+        );
+        assert!(!p.light_settings().use_electrical);
+        assert!(p.floors[0].cad.is_empty());
+        // Saved and loaded again it stays put and migrates nothing more.
+        let mut back = Project::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(back.lights().len(), 1);
+        assert!(!crate::editor::site_view::migrate_legacy_storage(&mut back));
     }
 
     #[test]

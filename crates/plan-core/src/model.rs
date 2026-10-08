@@ -94,6 +94,12 @@ pub struct Wall {
     /// Deck edge (rim board, no railing); set with the `DeckEdge` class.
     #[serde(default)]
     pub is_deck_edge: bool,
+    /// Where the wall starts above the floor it is drawn on, inches (Chief's
+    /// wall "Bottom" value). `height` is measured from here: the wall spans
+    /// `bottom_offset..bottom_offset + height`. Zero for ordinary walls; dormer
+    /// walls start at the roof surface.
+    #[serde(default)]
+    pub bottom_offset: f64,
 }
 
 fn default_foundation_height() -> f64 {
@@ -324,6 +330,9 @@ pub struct Floor {
     /// see [`crate::details::DetailsLayer`].
     #[serde(default)]
     pub details: Option<serde_json::Value>,
+    /// Opaque schedules placed on this floor; see [`crate::schedules::ScheduleLayer`].
+    #[serde(default)]
+    pub schedules: Option<serde_json::Value>,
 }
 
 impl Floor {
@@ -347,6 +356,7 @@ impl Floor {
             framing: Vec::new(),
             foundation: None,
             details: None,
+            schedules: None,
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -388,6 +398,20 @@ pub struct Project {
     /// Opaque terrain data; see [`Project::terrain_as`].
     #[serde(default)]
     pub terrain: Option<serde_json::Value>,
+    /// Tools > Project Information (client, designer, job number, revisions).
+    #[serde(default)]
+    pub info: crate::schedules::ProjectInfo,
+    /// Point lights of the plan (C-64), all floors; see [`crate::camera`].
+    #[serde(default)]
+    pub lights: Vec<crate::camera::PlanLight>,
+    /// Plan-wide light options.
+    #[serde(default)]
+    pub light_options: crate::camera::LightSettings,
+    /// The project's layout (Chief's layout file kept in the plan), as the
+    /// JSON of a `plan_layout::Layout`. plan-core must not depend on
+    /// plan-layout, so the app reads and writes it (`shell::layout_window`).
+    #[serde(default)]
+    pub layout: Option<serde_json::Value>,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -407,6 +431,10 @@ impl Project {
             active_plan_view: crate::layer_sets::default_active_plan_view(),
             text_styles: TextStyles::default(),
             terrain: None,
+            info: crate::schedules::ProjectInfo::default(),
+            lights: Vec::new(),
+            light_options: crate::camera::LightSettings::default(),
+            layout: None,
         }
     }
 

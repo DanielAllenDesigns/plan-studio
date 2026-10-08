@@ -180,6 +180,8 @@ pub enum Action {
 
     /// The 3D view, cameras and rendering (`shell::view3d_panel`).
     View3d(View3dCommand),
+    /// The layout view, Send to Layout and Print (`shell::layout_window`).
+    Layout(crate::shell::layout_window::LayoutCommand),
 }
 
 /// One toolbar button (or one flyout variant).
@@ -724,53 +726,83 @@ pub fn window() -> Flyout {
 
 pub fn cabinet() -> Flyout {
     use plan_cabinets::CabinetKind as K;
-    let cab = |icon, name, key, k| {
-        with_hotkey(
-            item(icon, name, Action::SetTool(ToolId::CabinetVariant(k))),
-            key,
-        )
+    let cab = |icon, name, key: Option<&'static str>, v: K| {
+        let it = item(icon, name, Action::SetTool(ToolId::CabinetVariant(v)));
+        match key {
+            Some(k) => with_hotkey(it, k),
+            None => it,
+        }
     };
     fly(
         "Cabinet",
         vec![
-            cab("cabinet_base", "Base Cabinet", "\u{21E7}T", K::Base),
-            cab("cabinet_wall", "Wall Cabinet", "\u{2318}T", K::Wall),
+            cab("cabinet_base", "Base Cabinet", Some("\u{21E7}T"), K::Base),
+            cab("cabinet_wall", "Wall Cabinet", Some("\u{2318}T"), K::Wall),
             cab(
                 "cabinet_full",
                 "Full Height",
-                "\u{2303}\u{2325}\u{2318}X",
+                Some("\u{2303}\u{2325}\u{2318}X"),
                 K::FullHeight,
             ),
-            cab("soffit", "Soffit", "T", K::Soffit),
-            cab("shelf", "Shelf", "\u{2303}\u{2325}\u{2318}Y", K::Shelf),
+            cab("soffit", "Soffit", Some("T"), K::Soffit),
+            cab(
+                "shelf",
+                "Shelf",
+                Some("\u{2303}\u{2325}\u{2318}Y"),
+                K::Shelf,
+            ),
             cab(
                 "partition",
                 "Partition",
-                "\u{2303}\u{2325}\u{2318}Z",
+                Some("\u{2303}\u{2325}\u{2318}Z"),
                 K::Partition,
             ),
-            todo_k("cabinet_base", "Base Filler", "\u{2303}\u{2325}\u{2318}0"),
-            todo_k("cabinet_wall", "Wall Filler", "\u{2303}\u{2325}\u{2318}1"),
-            todo_k(
+            cab(
+                "cabinet_base",
+                "Base Filler",
+                Some("\u{2303}\u{2325}\u{2318}0"),
+                K::BaseFiller,
+            ),
+            cab(
+                "cabinet_wall",
+                "Wall Filler",
+                Some("\u{2303}\u{2325}\u{2318}1"),
+                K::WallFiller,
+            ),
+            cab(
                 "cabinet_full",
                 "Full Height Filler",
-                "\u{2303}\u{2325}\u{2318}2",
+                Some("\u{2303}\u{2325}\u{2318}2"),
+                K::FullHeightFiller,
             ),
-            todo_k(
+            cab(
                 "countertop",
                 "Custom Countertop",
-                "\u{2303}\u{2325}\u{2318}3",
+                Some("\u{2303}\u{2325}\u{2318}3"),
+                K::CustomCountertop,
             ),
-            todo_k(
+            cab(
                 "countertop",
                 "Custom Backsplash",
-                "\u{2303}\u{2325}\u{2318}4",
+                Some("\u{2303}\u{2325}\u{2318}4"),
+                K::CustomBacksplash,
             ),
-            todo_k(
+            cab(
                 "countertop",
                 "Custom Counter Hole",
-                "\u{2303}\u{2325}\u{2318}5",
+                Some("\u{2303}\u{2325}\u{2318}5"),
+                K::CounterHole,
             ),
+            // Corner and blind cabinets have no Chief hotkey of their own.
+            sep(cab(
+                "cabinet_base",
+                "Corner Base Cabinet",
+                None,
+                K::CornerBase,
+            )),
+            cab("cabinet_wall", "Corner Wall Cabinet", None, K::CornerWall),
+            cab("cabinet_base", "Blind Base Cabinet", None, K::BlindBase),
+            cab("cabinet_wall", "Blind Wall Cabinet", None, K::BlindWall),
         ],
     )
 }
@@ -1233,14 +1265,20 @@ pub fn auto_dimensions() -> Flyout {
                 D::AutoInterior.name(),
                 Action::SetTool(ToolId::DimensionVariant(D::AutoInterior)),
             ),
-            todo_k(
-                "dim_auto_exterior",
-                "Auto Elevation Dimensions",
+            with_hotkey(
+                item(
+                    "dim_auto_exterior",
+                    D::AutoElevation.name(),
+                    Action::SetTool(ToolId::DimensionVariant(D::AutoElevation)),
+                ),
                 "\u{2303}\u{2325}\u{2318}H",
             ),
-            todo_k(
-                "dim_auto_interior",
-                "Auto Story Pole Dimensions",
+            with_hotkey(
+                item(
+                    "dim_auto_interior",
+                    D::AutoStoryPole.name(),
+                    Action::SetTool(ToolId::DimensionVariant(D::AutoStoryPole)),
+                ),
                 "\u{2303}\u{2325}\u{2318}I",
             ),
         ],
@@ -1255,6 +1293,7 @@ pub fn text_tools() -> Flyout {
             key,
         )
     };
+    let txt_plain = |icon, m: T| item(icon, m.name(), Action::SetTool(ToolId::TextVariant(m)));
     let mut f = fly(
         "Text",
         vec![
@@ -1265,12 +1304,34 @@ pub fn text_tools() -> Flyout {
             txt("callout", T::Callout, "\u{2303}\u{2325}\u{2318}K"),
             txt("marker", T::Marker, "\u{2303}\u{2325}\u{2318}M"),
             txt("note", T::Note, "\u{2303}\u{2325}\u{2318}N"),
-            sep(todo("note", "Note Type Management")),
-            todo("text", "Text Macro Management"),
+            sep(txt_plain("note", T::NoteTypes)),
+            txt_plain("text", T::Macros),
         ],
     );
     f.current = 2;
     f
+}
+
+/// The Schedule flyout: each entry starts the Schedule tool for a kind, and
+/// a click in the plan places that schedule as a table that stays up to date.
+pub fn schedule() -> Flyout {
+    use crate::tools::schedule::{entry_name, FLYOUT_KINDS};
+    let entries = FLYOUT_KINDS
+        .iter()
+        .map(|k| {
+            let it = item(
+                "note",
+                entry_name(*k),
+                Action::SetTool(ToolId::ScheduleVariant(*k)),
+            );
+            if *k == plan_core::schedules::ScheduleKind::General {
+                sep(it)
+            } else {
+                it
+            }
+        })
+        .collect();
+    fly("Schedule", entries)
 }
 
 /// A CAD flyout entry that starts the CAD tool in `m`.
@@ -1286,7 +1347,7 @@ pub fn points() -> Flyout {
             cad_item("point", C::PlacePoint),
             cad_item("point", C::InputPoint),
             cad_item("point", C::PointMarker),
-            todo("point", "Delete Temporary Points"),
+            cad_item("point", C::DeleteTempPoints),
         ],
     )
 }
@@ -1335,11 +1396,11 @@ pub fn boxes() -> Flyout {
         "Boxes",
         vec![
             with_hotkey(cad_item("rect_polyline", C::RectPolyline), "\u{21E7}P"),
-            todo("box", "Box"),
+            cad_item("box", C::Box),
             cad_item("polygon", C::Polygon),
-            todo("box", "Cross Box"),
-            todo("box", "Blocking Box"),
-            todo("box", "Insulation"),
+            cad_item("box", C::CrossBox),
+            cad_item("box", C::BlockingBox),
+            cad_item("box", C::Insulation),
         ],
     )
 }
@@ -1349,12 +1410,12 @@ pub fn cad_blocks() -> Flyout {
     fly(
         "CAD Blocks",
         vec![
-            todo("point", "Add Insertion Point"),
-            todo("point", "Add Arrow Backoff Point"),
+            cad_item("point", C::AddInsertionPoint),
+            cad_item("point", C::AddBackoffPoint),
             cad_item("box", C::MakeBlock),
-            todo("box", "Edit CAD Block"),
+            cad_item("box", C::EditBlock),
             cad_item("box", C::ExplodeBlock),
-            todo_k("box", "CAD Block Management", "V"),
+            with_hotkey(cad_item("box", C::BlockManagement), "V"),
         ],
     )
 }
@@ -1761,7 +1822,11 @@ fn row1_slots() -> Vec<Slot> {
         Slot::Button(item("file_save", "Save", Action::FileSave)),
         Sep,
         button("file_print", "Print"),
-        button("send_to_layout", "Send to Layout"),
+        Slot::Button(item(
+            "send_to_layout",
+            "Send to Layout",
+            Action::Layout(crate::shell::layout_window::LayoutCommand::SendToLayout),
+        )),
         Sep,
         Slot::Button(with_hotkey(item("undo", "Undo", Action::Undo), "\u{2318}Z")),
         Slot::Button(with_hotkey(item("redo", "Redo", Action::Redo), "\u{2318}Y")),
@@ -1846,6 +1911,7 @@ fn row2_slots() -> Vec<Slot> {
         Sep,
         flyout_slot(text_tools()),
         toggle("revision_cloud", "Revision Cloud"),
+        flyout_slot(schedule()),
         Sep,
         flyout_slot(points()),
         flyout_slot(lines()),
@@ -2420,51 +2486,44 @@ mod tests {
 
     /// Entries of the built groups that are still `NotImplemented`.
     const ALLOWED_NOT_IMPLEMENTED: &[&str] = &[
-        "Polygon Shaped Deck",
-        "Slab Footing",
-        "Wall Hatching",
-        "Wall Material Region",
-        "Base Filler",
-        "Wall Filler",
-        "Full Height Filler",
-        "Custom Countertop",
-        "Custom Backsplash",
-        "Custom Counter Hole",
-        "Delete Temporary Points",
-        "Auto Elevation Dimensions",
-        "Auto Story Pole Dimensions",
-        "Note Type Management",
-        "Text Macro Management",
-        "Add Arrow Backoff Point",
-        "Add Insertion Point",
-        "CAD Block Management",
-        "Edit CAD Block",
         "Elevation Spline",
         "Terrain Break",
         "Spline Road",
         "Spline Driveway",
         "Spline Sidewalk",
-        "Box",
-        "Cross Box",
-        "Blocking Box",
-        "Insulation",
     ];
 
     #[test]
     fn flyout_entries_are_live_except_the_allowlist() {
         let mut unexpected: Vec<(&str, &str)> = Vec::new();
+        let mut still_stubs: Vec<&str> = Vec::new();
         for f in all_flyouts() {
             for e in &f.entries {
                 if !matches!(e.action, Action::NotImplemented(_)) {
                     continue;
                 }
                 println!("NotImplemented: {} / {}", f.group, e.name);
-                if BUILT_GROUPS.contains(&f.group) && !ALLOWED_NOT_IMPLEMENTED.contains(&e.name) {
+                if !BUILT_GROUPS.contains(&f.group) {
+                    continue;
+                }
+                if ALLOWED_NOT_IMPLEMENTED.contains(&e.name) {
+                    still_stubs.push(e.name);
+                } else {
                     unexpected.push((f.group, e.name));
                 }
             }
         }
         assert!(unexpected.is_empty(), "{unexpected:?}");
+        // The allowlist stays honest: an entry that went live comes off it.
+        let now_live: Vec<&str> = ALLOWED_NOT_IMPLEMENTED
+            .iter()
+            .copied()
+            .filter(|n| !still_stubs.contains(n))
+            .collect();
+        assert!(
+            now_live.is_empty(),
+            "live now; remove from ALLOWED_NOT_IMPLEMENTED: {now_live:?}"
+        );
     }
 
     #[test]

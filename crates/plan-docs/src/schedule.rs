@@ -74,17 +74,17 @@ pub(crate) fn push_csv_row(out: &mut String, cells: &[String]) {
 }
 
 /// Reading-order key: x then y, rounded to 0.1" so near-equal values tie.
-fn reading_key(p: Point) -> (i64, i64) {
+pub(crate) fn reading_key(p: Point) -> (i64, i64) {
     ((p.x * 10.0).round() as i64, (p.y * 10.0).round() as i64)
 }
 
-fn floor_of(project: &Project, floor: usize) -> Option<&Floor> {
+pub(crate) fn floor_of(project: &Project, floor: usize) -> Option<&Floor> {
     project.floors.get(floor)
 }
 
 /// Wall ids in reading order of their midpoints, paired with their number
 /// (`WL01`, `WL02`, ...).
-fn wall_numbers(f: &Floor) -> Vec<(&Wall, String)> {
+pub(crate) fn wall_numbers(f: &Floor) -> Vec<(&Wall, String)> {
     let mut walls: Vec<&Wall> = f.walls.iter().collect();
     walls.sort_by_key(|w| (reading_key(w.start.add(w.end).scale(0.5)), w.id));
     walls
@@ -96,7 +96,7 @@ fn wall_numbers(f: &Floor) -> Vec<(&Wall, String)> {
 
 /// Openings of one kind with their host wall, in reading order of their
 /// world-space centre.
-fn ordered_openings(f: &Floor, kind: OpeningKind) -> Vec<(&Opening, &Wall)> {
+pub(crate) fn ordered_openings(f: &Floor, kind: OpeningKind) -> Vec<(&Opening, &Wall)> {
     let mut v: Vec<(&Opening, &Wall, Point)> = f
         .openings
         .iter()
@@ -110,7 +110,7 @@ fn ordered_openings(f: &Floor, kind: OpeningKind) -> Vec<(&Opening, &Wall)> {
     v.into_iter().map(|(o, w, _)| (o, w)).collect()
 }
 
-fn wall_number_of(numbers: &[(&Wall, String)], id: Id) -> String {
+pub(crate) fn wall_number_of(numbers: &[(&Wall, String)], id: Id) -> String {
     numbers
         .iter()
         .find(|(w, _)| w.id == id)
@@ -118,7 +118,7 @@ fn wall_number_of(numbers: &[(&Wall, String)], id: Id) -> String {
         .unwrap_or_default()
 }
 
-fn kind_label(k: WallKind) -> &'static str {
+pub(crate) fn kind_label(k: WallKind) -> &'static str {
     match k {
         WallKind::Exterior => "Exterior",
         WallKind::Interior => "Interior",
@@ -202,7 +202,7 @@ pub fn room_name(f: &Floor, room: &Room) -> String {
 }
 
 /// Perimeter of a closed polygon, inches.
-fn perimeter(poly: &[Point]) -> f64 {
+pub(crate) fn perimeter(poly: &[Point]) -> f64 {
     (0..poly.len())
         .map(|i| poly[i].dist(poly[(i + 1) % poly.len()]))
         .sum()

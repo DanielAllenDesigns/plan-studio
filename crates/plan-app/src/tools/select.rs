@@ -22,13 +22,16 @@ use crate::editor::rooms_edit;
 use crate::editor::selection::{extra_in_rect, hit_test_cx, layer_of};
 use crate::editor::snap::snap_to_grid;
 use crate::editor::stairs_view::{self, StairHandleKind};
-use crate::editor::{foundation_view, framing_view, placed, roof_view, site_view, tempdim};
+use crate::editor::{
+    details_view, foundation_view, framing_view, placed, roof_view, site_view, tempdim,
+};
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, EditorRequest, ObjectRef};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use crate::toolbar::ViewFlag;
 use crate::tools::camera::{self as camera_tool, CamHandle};
 use eframe::egui::{self, Key, Pos2, Rect, Shape, Stroke};
 use plan_core::cad::CadItem;
+use plan_core::details::DetailsLayer;
 use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::{
     dist_to_segment, point_in_polygon, project_on_segment, segment_intersection, Point,
@@ -66,6 +69,9 @@ enum Op {
     FramingEnd(Id, bool),
     /// Corner `n` of a Truss Base.
     FramingVertex(Id, usize),
+    /// Corner `n` of a deck, floor region, molding or outline solid (a
+    /// molding line's two ends are corners 0 and 1).
+    DetailVertex(Id, usize),
     Camera(Id, CamHandle),
 }
 
@@ -88,6 +94,7 @@ impl Op {
             Op::FoundationVertex(..) => "Reshape Foundation Object",
             Op::FramingEnd(..) => "Stretch Framing",
             Op::FramingVertex(..) => "Reshape Truss Base",
+            Op::DetailVertex(..) => "Reshape Detail",
             Op::Camera(..) => "Edit Camera",
         }
     }
@@ -381,6 +388,10 @@ impl SelectTool {
             (ObjectRef::Framing(id), HandleKind::ResizeStart) => Op::FramingEnd(id, false),
             (ObjectRef::Framing(id), HandleKind::ResizeEnd) => Op::FramingEnd(id, true),
             (ObjectRef::Framing(id), HandleKind::Reshape(i)) => Op::FramingVertex(id, i),
+            (ObjectRef::Detail(id), HandleKind::Reshape(i)) => Op::DetailVertex(id, i),
+            // Only a two-point molding line has end handles.
+            (ObjectRef::Detail(id), HandleKind::ResizeStart) => Op::DetailVertex(id, 0),
+            (ObjectRef::Detail(id), HandleKind::ResizeEnd) => Op::DetailVertex(id, 1),
             (ObjectRef::Wall(id), HandleKind::ResizeStart) => Op::WallEnd(id, WallEnd::Start),
             (ObjectRef::Wall(id), HandleKind::ResizeEnd) => Op::WallEnd(id, WallEnd::End),
             (ObjectRef::Wall(id), HandleKind::PerpendicularMove) => Op::WallMove(id),
@@ -586,6 +597,22 @@ impl SelectTool {
                 let to = cx.snap_at(p.world, None, alt, &[]).point;
                 framing_view::move_vertex_in(&mut cx.project.floors[fl], id, i, to);
             }
+            Op::DetailVertex(id, i) => {
+                let mut layer = DetailsLayer::load(&a.original.floors[fl]);
+                if let Some(r) = layer.find(id) {
+                    // A molding line's end snaps from the other end.
+                    let from = (i < 2)
+                        .then(|| layer.vertices(r))
+                        .flatten()
+                        .filter(|v| v.len() == 2)
+                        .map(|v| v[1 - i]);
+                    let to = cx.snap_at(p.world, from, alt, &[]).point;
+                    let too_short = from.is_some_and(|f| f.dist(to) < 1.0);
+                    if !too_short && details_view::move_vertex_in(&mut layer, r, i, to) {
+                        details_view::save(&mut cx.project, fl, &layer);
+                    }
+                }
+            }
             Op::Camera(id, h) => {
                 if let Some(orig) = a.original.camera(id).cloned() {
                     let unit = cx.snap_unit();
@@ -610,6 +637,9 @@ impl SelectTool {
                     });
                 }
             }
+        }
+        if matches!(a.op, Op::WallMove(_) | Op::WallEnd(..) | Op::Group) {
+            details_view::follow_walls(&mut cx.project, fl, &a.original.floors[fl].walls);
         }
         cx.mark_dirty();
     }
@@ -663,6 +693,8 @@ impl SelectTool {
         // walls (W-31..W-36); run inside the drag's own undo step.
         if let Op::WallEnd(id, _) | Op::WallMove(id) = a.op {
             crate::editor::connect::auto_connect(cx, id);
+            // Joining may have moved the wall again: trim follows it.
+            details_view::follow_walls(&mut cx.project, fl, &a.original.floors[fl].walls);
         }
         cx.last_snap = None;
         cx.mark_dirty();
@@ -722,11 +754,14 @@ impl SelectTool {
             return ToolResult::consumed();
         }
         cx.begin_change("Nudge");
+        let before = cx.floor().walls.clone();
         match cx.selection.single() {
             Some(ObjectRef::Wall(id)) => move_wall(cx, id, delta, false),
             Some(ObjectRef::Opening(id)) => slide_opening_by(cx, id, delta),
             _ => move_group(cx, &items, delta),
         }
+        let fl = cx.floor;
+        details_view::follow_walls(&mut cx.project, fl, &before);
         cx.mark_dirty();
         ToolResult::committed("Nudge")
     }
@@ -1587,5 +1622,201 @@ mod tests {
         // Platform holes have corner handles too.
         cx.selection.set(ObjectRef::Foundation(hole));
         assert_eq!(handles::handles_for(&cx, cx.px_per_in).len(), 4);
+    }
+    fn square(x: f64, y: f64, s: f64) -> Vec<Point> {
+        vec![
+            Point::new(x, y),
+            Point::new(x + s, y),
+            Point::new(x + s, y + s),
+            Point::new(x, y + s),
+        ]
+    }
+
+    #[test]
+    fn select_picks_moves_opens_and_deletes_details_with_undo() {
+        use plan_core::details::{DetailRef, MoldingProfile};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let deck = details_view::add_deck(&mut cx, square(100.0, 100.0, 96.0));
+        let mold = details_view::add_molding(
+            &mut cx,
+            vec![Point::new(0.0, 400.0), Point::new(100.0, 400.0)],
+            MoldingProfile::Base,
+        );
+        cx.refresh();
+        let mut t = SelectTool::default();
+        // A click selects the deck as a Detail object on its layer.
+        let p = ev(&cx, 150.0, 150.0);
+        t.pointer_down(&mut cx, p.with_down(true));
+        t.pointer_up(&mut cx, p);
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Detail(deck)));
+        assert!(ObjectRef::Detail(deck).exists(cx.floor()));
+        assert_eq!(
+            layer_of(cx.floor(), ObjectRef::Detail(deck)).as_deref(),
+            Some("Decks")
+        );
+        // The details tool reads the same selection.
+        assert_eq!(details_view::selected(&cx), Some(DetailRef::Deck(deck)));
+        // Dragging the body moves it, as one undo step.
+        drag(&mut t, &mut cx, (150.0, 150.0), (174.0, 150.0));
+        assert_eq!(
+            details_view::load(&cx).deck(deck).unwrap().outline[0],
+            Point::new(124.0, 100.0)
+        );
+        assert_eq!(cx.undo_label(), Some("Move Objects"));
+        // Double-click asks for the specification.
+        cx.requests.clear();
+        let at = ev(&cx, 170.0, 150.0);
+        assert!(t.double_click(&mut cx, at).consumed);
+        assert!(cx
+            .requests
+            .iter()
+            .any(|r| matches!(r, EditorRequest::OpenSpec(ObjectRef::Detail(i)) if *i == deck)));
+        // Box select finds both; crossing from the right finds the deck too.
+        let boxed = objects_in_rect(&cx, Point::new(0.0, 0.0), Point::new(500.0, 500.0));
+        assert!(boxed.contains(&ObjectRef::Detail(deck)));
+        assert!(boxed.contains(&ObjectRef::Detail(mold)));
+        // A molding line is picked by its stroke and has two end handles.
+        let q = ev(&cx, 50.0, 401.0);
+        t.pointer_down(&mut cx, q.with_down(true));
+        t.pointer_up(&mut cx, q);
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Detail(mold)));
+        let hs = handles::handles_for(&cx, cx.px_per_in);
+        assert_eq!(hs.len(), 2);
+        // Dragging its end stretches it: one undo step.
+        let end = hs[1].pos;
+        drag(&mut t, &mut cx, (end.x, end.y), (end.x + 60.0, end.y));
+        let line = details_view::load(&cx)
+            .molding(mold)
+            .unwrap()
+            .polyline
+            .clone();
+        assert!(
+            (line[1].x - 160.0).abs() < 1e-6 && line[1].y == 400.0,
+            "{line:?}"
+        );
+        assert_eq!(cx.undo_label(), Some("Reshape Detail"));
+        cx.undo();
+        assert_eq!(
+            details_view::load(&cx).molding(mold).unwrap().polyline[1],
+            Point::new(100.0, 400.0)
+        );
+        // Delete removes the selected molding; undo brings it back.
+        assert!(t.key(&mut cx, KeyEvent::key(Key::Delete)).consumed);
+        assert!(details_view::load(&cx).molding(mold).is_none());
+        assert!(cx.selection.is_empty());
+        cx.undo();
+        assert!(details_view::load(&cx).molding(mold).is_some());
+    }
+
+    #[test]
+    fn a_deck_corner_handle_reshapes_it() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let deck = details_view::add_deck(&mut cx, square(100.0, 100.0, 96.0));
+        cx.selection.set(ObjectRef::Detail(deck));
+        cx.refresh();
+        let hs = handles::handles_for(&cx, cx.px_per_in);
+        assert_eq!(hs.len(), 4);
+        let corner = hs[2].pos;
+        let mut t = SelectTool::default();
+        drag(
+            &mut t,
+            &mut cx,
+            (corner.x, corner.y),
+            (corner.x + 48.0, corner.y + 24.0),
+        );
+        let moved = details_view::load(&cx).deck(deck).unwrap().outline[2];
+        assert!(
+            (moved.x - corner.x - 48.0).abs() < 1e-6 && (moved.y - corner.y - 24.0).abs() < 1e-6,
+            "{moved:?}"
+        );
+        assert_eq!(cx.undo_label(), Some("Reshape Detail"));
+    }
+
+    #[test]
+    fn deleting_a_wall_drops_its_material_regions_and_hatches_in_one_step() {
+        let (mut cx, ids) = room();
+        let region = details_view::add_wall_region(
+            &mut cx,
+            ids[0],
+            plan_core::walls::Side::Left,
+            (10.0, 60.0),
+            (0.0, 96.0),
+        );
+        details_view::wall_hatch(&mut cx, ids[0]);
+        let other = details_view::add_wall_region(
+            &mut cx,
+            ids[1],
+            plan_core::walls::Side::Left,
+            (10.0, 60.0),
+            (0.0, 96.0),
+        );
+        cx.selection.set(ObjectRef::Wall(ids[0]));
+        cx.delete_selection();
+        let l = details_view::load(&cx);
+        assert!(l.region(region).is_none() && l.hatches.is_empty());
+        assert!(l.region(other).is_some(), "other walls keep theirs");
+        // Undo restores the wall and its regions together.
+        let steps = std::iter::from_fn(|| cx.undo()).count();
+        assert!(steps >= 1);
+        assert!(cx.floor().wall(ids[0]).is_some());
+    }
+
+    #[test]
+    fn moving_a_wall_moves_its_corner_trim_and_keeps_its_regions() {
+        let (mut cx, ids) = room();
+        cx.refresh();
+        details_view::auto_corner_boards(&mut cx);
+        details_view::auto_quoins(&mut cx);
+        let region = details_view::add_wall_region(
+            &mut cx,
+            ids[2],
+            plan_core::walls::Side::Left,
+            (10.0, 60.0),
+            (0.0, 96.0),
+        );
+        let top = |cx: &EditorContext| -> Vec<f64> {
+            details_view::load(cx)
+                .corner_boards
+                .iter()
+                .map(|b| b.wall_corner.y)
+                .filter(|y| *y > 50.0)
+                .collect()
+        };
+        assert_eq!(top(&cx), vec![99.0, 99.0]);
+        let mut t = SelectTool::default();
+        // Drag the top wall (y = 96) down 20".
+        drag(&mut t, &mut cx, (60.0, 96.0), (75.0, 76.0));
+        assert_eq!(cx.undo_label(), Some("Move Wall"));
+        assert_eq!(top(&cx), vec![79.0, 79.0]);
+        let l = details_view::load(&cx);
+        assert_eq!(
+            l.quoins
+                .iter()
+                .filter(|q| (q.corner.y - 79.0).abs() < 1e-6)
+                .count(),
+            2
+        );
+        // The wall region is measured along the wall, so it moved with it.
+        let strip = l.region(region).unwrap().plan_polygon(cx.floor()).unwrap();
+        assert!(
+            strip.iter().all(|q| (q.y - 76.0).abs() <= 3.0 + 1e-9),
+            "{strip:?}"
+        );
+        // The bottom corners stay; one undo puts everything back.
+        assert_eq!(
+            l.corner_boards
+                .iter()
+                .filter(|b| b.wall_corner.y < 0.0)
+                .count(),
+            2
+        );
+        cx.undo();
+        assert_eq!(top(&cx), vec![99.0, 99.0]);
+        // A nudge moves trim too.
+        cx.selection.set(ObjectRef::Wall(ids[2]));
+        cx.refresh();
+        let snap = cx.snap_unit();
+        t.key(&mut cx, KeyEvent::key(Key::ArrowDown));
+        assert_eq!(top(&cx), vec![99.0 - snap, 99.0 - snap]);
     }
 }

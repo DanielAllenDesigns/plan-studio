@@ -658,11 +658,14 @@ impl RoofTool {
             return false;
         };
         cx.begin_change("Explode Dormer");
-        match roof_view::explode_dormer_record(&mut cx.project, fi, id) {
-            Ok(n) => {
+        match roof_view::explode_dormer_record(&mut cx.project, fi, id, &cx.defaults) {
+            Ok(done) => {
                 self.selected = None;
                 cx.mark_dirty();
-                cx.status = format!("Exploded the dormer into {n} roof planes");
+                cx.status = format!(
+                    "Exploded the dormer into {} roof planes and {} walls",
+                    done.planes, done.walls
+                );
                 true
             }
             Err(e) => {
@@ -1823,7 +1826,7 @@ mod tests {
         roof_view::apply_dormer(&mut cx.project, 0, main, Some(id), spec).unwrap();
         assert!(load(cx.floor()).dormers[0].floating);
         // Exploding it leaves the main plane uncut.
-        roof_view::explode_dormer_record(&mut cx.project, 0, id).unwrap();
+        roof_view::explode_dormer_record(&mut cx.project, 0, id, &cx.defaults).unwrap();
         assert!(load(cx.floor()).plane(main).unwrap().holes.is_empty());
     }
 
@@ -1943,6 +1946,7 @@ mod tests {
             roof_view::dormer_geometry(&set, &set.dormers[0]).unwrap()
         };
         let at = geom.roof_planes[0].plan_polygon();
+        let geom_walls = plan_roof::explode_dormer(&geom).walls;
         click(
             &mut t,
             &mut cx,
@@ -1957,9 +1961,47 @@ mod tests {
             "the main plane and the two dormer planes"
         );
         assert_eq!(set.planes[0].holes.len(), 1, "the footprint stays a hole");
+        // The front and the two cheek walls are real walls that start at the
+        // roof surface under them and take the default exterior type.
+        let floor = cx.floor();
+        assert_eq!(floor.walls.len(), 3);
+        let default_type = cx.defaults.exterior_wall.wall_type.clone();
+        for (w, dw) in floor.walls.iter().zip(&geom_walls) {
+            assert!(
+                (w.bottom_offset - (dw.base_elevation - floor.elevation)).abs() < 1e-9,
+                "{} vs {}",
+                w.bottom_offset,
+                dw.base_elevation
+            );
+            assert!(w.bottom_offset > 0.0, "the roof is above the floor");
+            assert_eq!(w.height, spec.wall_height);
+            assert_eq!(w.kind, WallKind::Exterior);
+            assert_eq!(w.wall_type.as_deref(), Some(default_type.as_str()));
+            assert_eq!(w.thickness, cx.defaults.exterior_thickness());
+        }
+        // The front wall spans the dormer width (its outer face is on the
+        // footprint), the cheeks run up the slope.
+        assert!((floor.walls[0].length() - spec.width).abs() < 1e-6);
+        assert!(floor.walls[1].length() > 1.0 && floor.walls[2].length() > 1.0);
+        // They are also meshed in 3D, up at the roof.
+        let scene = plan_3d::build_scene(&cx.project);
+        let ys: Vec<f32> = scene
+            .meshes
+            .iter()
+            .filter(|m| floor.walls.iter().any(|w| m.object_id == Some(w.id)))
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[1]))
+            .collect();
+        let low = floor.walls[0].bottom_offset as f32 + floor.elevation as f32;
+        assert!(!ys.is_empty());
+        assert!((ys.iter().copied().fold(f32::MAX, f32::min) - low).abs() < 1e-3);
+        assert!(
+            (ys.iter().copied().fold(f32::MIN, f32::max) - low - spec.wall_height as f32).abs()
+                < 1e-3
+        );
         assert_eq!(cx.undo_label(), Some("Explode Dormer"));
         cx.undo();
         assert_eq!(load(cx.floor()).dormers.len(), 1);
+        assert!(cx.floor().walls.is_empty(), "undo takes the walls back");
     }
 
     fn polygon_center(p: &[Point]) -> Point {

@@ -6,8 +6,8 @@
 use super::actions::{EditAction, EditActionKind};
 use super::selection::ObjectRef;
 use super::{
-    foundation_view, framing_view, placed, roof_view, site_view, stairs_view, EditorContext,
-    EditorRequest,
+    details_view, foundation_view, framing_view, placed, roof_view, site_view, stairs_view,
+    EditorContext, EditorRequest,
 };
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use crate::tools::roof::RoofMode;
@@ -74,10 +74,19 @@ impl EditorContext {
     }
 
     /// Deletes the selected stairs, cabinets, symbols, devices, roof records,
-    /// foundation objects and cameras (each kind is one undo step). Returns
-    /// how many went.
+    /// foundation objects, details and cameras (each kind is one undo step),
+    /// and the wall material regions and hatches of deleted walls (inside the
+    /// walls' own undo step). Returns how many went.
     pub(super) fn delete_extra(&mut self) -> usize {
         let mut n = 0;
+        if self
+            .selection
+            .items
+            .iter()
+            .any(|o| matches!(o, ObjectRef::Wall(_)))
+        {
+            n += details_view::drop_orphans(self);
+        }
         if self
             .selection
             .items
@@ -139,6 +148,14 @@ impl EditorContext {
         if !framing.is_empty() {
             // delete_records drops them from the selection itself.
             n += framing_view::delete_records(self, &framing);
+        }
+        let details = self.selected_ids(|o| match o {
+            ObjectRef::Detail(i) => Some(i),
+            _ => None,
+        });
+        if !details.is_empty() {
+            // delete_ids drops them from the selection itself.
+            n += details_view::delete_ids(self, &details);
         }
         let cams = self.selected_ids(|o| match o {
             ObjectRef::Camera(i) => Some(i),
@@ -270,6 +287,7 @@ impl EditorContext {
             cmd::ROOF_DELETE_CEILINGS => self.delete_all_ceiling_planes(),
             cmd::ROOF_EXPLODE_DORMER => self.explode_selected_dormer(),
             cmd::SYMBOL_REPLACE => self.replace_symbol_from_library(),
+            _ if crate::editor::placed::run_command(self, id) => {}
             cmd::DEVICE_FLIP => self.edit_selected_device("Flip Side", |d, wall| {
                 site_view::flip_side(d, wall);
             }),
@@ -322,11 +340,14 @@ impl EditorContext {
         };
         self.begin_change("Explode Dormer");
         let fl = self.floor;
-        match roof_view::explode_dormer_record(&mut self.project, fl, id) {
-            Ok(n) => {
+        match roof_view::explode_dormer_record(&mut self.project, fl, id, &self.defaults) {
+            Ok(done) => {
                 self.selection.clear();
                 self.mark_dirty();
-                self.status = format!("Exploded the dormer into {n} roof planes");
+                self.status = format!(
+                    "Exploded the dormer into {} roof planes and {} walls",
+                    done.planes, done.walls
+                );
             }
             Err(e) => {
                 self.cancel_change();
@@ -399,8 +420,8 @@ impl EditorContext {
     }
 
     /// Translates the selected stairs, cabinets, symbols, devices, roof
-    /// records, foundation objects and cameras by `d` (group drags and
-    /// nudges).
+    /// records, foundation objects, details and cameras by `d` (group drags
+    /// and nudges).
     pub fn translate_extra(&mut self, items: &[ObjectRef], d: plan_core::geometry::Point) {
         let fl = self.floor;
         for o in items {
@@ -463,6 +484,14 @@ impl EditorContext {
         if !framing.is_empty() {
             framing_view::translate_in(&mut self.project.floors[fl], &framing, d);
         }
+        let details: Vec<Id> = items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::Detail(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        details_view::translate_ids(self, &details, d);
         self.mark_dirty();
     }
 }

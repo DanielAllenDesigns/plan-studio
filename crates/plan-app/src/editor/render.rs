@@ -67,14 +67,21 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             });
         }
     }
+    let attrs = floor.cad_attr_map();
     for c in &floor.cad {
-        if cx.layers().is_visible(&c.layer) {
-            weighted(cx, painter, &c.layer, || {
+        if !cx.layers().is_visible(&c.layer) {
+            continue;
+        }
+        match attrs.get(&c.id) {
+            Some(a) => crate::tools::cad::draw_cad_styled(cx, painter, cam, c, Some(a)),
+            None => weighted(cx, painter, &c.layer, || {
                 draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
-            });
+            }),
         }
     }
     crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam);
+    // Placed schedule tables and their callout labels.
+    crate::editor::schedule_view::draw_schedules(cx, painter, cam);
     crate::tools::camera::draw_camera_symbols(cx, painter, cam, None);
     draw_sheet(cx, painter, cam);
     if !cx.view_flags.contains(&ViewFlag::Color) {

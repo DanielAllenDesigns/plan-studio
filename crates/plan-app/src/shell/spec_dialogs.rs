@@ -1,11 +1,13 @@
 //! Hosts the specification dialogs of every object kind except walls and
 //! openings (those two keep their extras in `main.rs`): stairs, cabinets,
 //! symbols, roof planes, ceiling planes and dormers, framing members, slabs and other foundation objects,
+//! corner trim, moldings, material regions, hatching, decks and 3D solids,
 //! electrical devices, terrain, dimensions, text and CAD. [`SpecDialogs::open`] is the one place that maps an [`ObjectRef`] to
 //! its dialog; OK applies the draft as one undo step.
 
 use crate::dialogs::cabinet::CabinetDialog;
 use crate::dialogs::cad::CadDialog;
+use crate::dialogs::details::DetailsDialog;
 use crate::dialogs::dimension::{self, DimensionDialog};
 use crate::dialogs::electrical::ElectricalDialog;
 use crate::dialogs::foundation::FoundationDialog;
@@ -17,7 +19,8 @@ use crate::dialogs::terrain::TerrainDialog;
 use crate::dialogs::text::TextDialog;
 use crate::dialogs::{cad, text, Outcome};
 use crate::editor::{
-    foundation_view, framing_view, placed, roof_view, rooms_edit, site_view, stairs_view,
+    details_view, foundation_view, framing_view, placed, roof_view, rooms_edit, site_view,
+    stairs_view,
 };
 use crate::editor::{EditorContext, ObjectRef};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
@@ -32,6 +35,7 @@ enum Active {
     /// A dormer: its id, the plane it stands on and the dialog.
     Dormer(Id, Id, Box<DormerDialog>),
     Foundation(Box<FoundationDialog>),
+    Details(Box<DetailsDialog>),
     Ceiling(Box<CeilingDialog>),
     Framing(Box<FramingMemberDialog>),
     Device(Id, Box<ElectricalDialog>),
@@ -94,6 +98,16 @@ impl SpecDialogs {
                         .map(|d| Active::Foundation(Box::new(d)))
                 })
             }
+            ObjectRef::Detail(id) => {
+                let layer = details_view::load(cx);
+                layer.find(id).and_then(|r| {
+                    let mut names = layer_names(cx);
+                    if let Some(own) = layer.layer_of(r).filter(|l| !names.contains(l)) {
+                        names.push(own);
+                    }
+                    DetailsDialog::new(&layer, r, names).map(|d| Active::Details(Box::new(d)))
+                })
+            }
             ObjectRef::Framing(id) => match framing_view::find(cx.floor(), id) {
                 Some(framing_view::Record::Manual(m) | framing_view::Record::Built(m)) => Some(
                     Active::Framing(Box::new(FramingMemberDialog::new(&m, layer_names(cx)))),
@@ -146,6 +160,7 @@ impl SpecDialogs {
             Active::RoofPlane(d) => d.show(ctx),
             Active::Dormer(_, _, d) => d.show(ctx),
             Active::Foundation(d) => d.show(ctx),
+            Active::Details(d) => d.show(ctx),
             Active::Ceiling(d) => d.show(ctx),
             Active::Framing(d) => d.show(ctx),
             Active::Device(_, d) => d.show(ctx),
@@ -196,6 +211,15 @@ fn apply(cx: &mut EditorContext, a: &Active) {
             let draft = d.draft().clone();
             let mut found = false;
             foundation_view::edit(cx, draft.title(), |l| found = draft.apply(l));
+            if !found {
+                cx.cancel_change();
+                cx.status = "The object is gone".into();
+            }
+        }
+        Active::Details(d) => {
+            let draft = d.draft().clone();
+            let mut found = false;
+            details_view::edit(cx, draft.title(), |l| found = draft.apply(l));
             if !found {
                 cx.cancel_change();
                 cx.status = "The object is gone".into();
@@ -303,6 +327,45 @@ mod tests {
         assert!(matches!(dialogs.active, Some(Active::Dormer(..))));
         assert!(dialogs.open(&mut cx, ObjectRef::RoofPlane(pid)));
         assert!(matches!(dialogs.active, Some(Active::RoofPlane(_))));
+    }
+
+    #[test]
+    fn details_open_the_details_dialog_and_ok_applies_with_undo() {
+        use plan_core::details::MoldingProfile;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let mut dialogs = SpecDialogs::default();
+        let deck = details_view::add_deck(
+            &mut cx,
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(96.0, 0.0),
+                Point::new(96.0, 96.0),
+            ],
+        );
+        let mold = details_view::add_molding(
+            &mut cx,
+            vec![Point::new(0.0, 200.0), Point::new(80.0, 200.0)],
+            MoldingProfile::Crown,
+        );
+        for id in [deck, mold] {
+            assert!(dialogs.open(&mut cx, ObjectRef::Detail(id)), "{id}");
+            assert!(matches!(dialogs.active, Some(Active::Details(_))));
+        }
+        assert!(!dialogs.open(&mut cx, ObjectRef::Detail(deck + 999)));
+        assert!(dialogs.open(&mut cx, ObjectRef::Detail(deck)));
+        if let Some(Active::Details(d)) = dialogs.active.as_mut() {
+            if let crate::dialogs::details::Draft::Deck(x) = d.draft_mut() {
+                x.elevation = 30.0;
+                x.railing = true;
+            }
+        }
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        let d = details_view::load(&cx).deck(deck).unwrap().clone();
+        assert_eq!((d.elevation, d.railing), (30.0, true));
+        assert_eq!(cx.undo_label(), Some("Deck Specification"));
+        cx.undo();
+        assert_eq!(details_view::load(&cx).deck(deck).unwrap().elevation, 0.0);
     }
 
     #[test]

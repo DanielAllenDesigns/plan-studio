@@ -48,6 +48,31 @@ pub struct LayoutRenderContext<'a> {
     camera_cache: RefCell<HashMap<plan_core::Id, Option<Rc<Drawing>>>>,
 }
 
+/// The title block macros of `project`: its name plus Project Information
+/// (client, address, designer, date, project number, revision, revisions).
+pub fn macros_for(project: &Project) -> MacroContext {
+    let info = &project.info;
+    let pairs = info.macro_pairs();
+    let get = |key: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k.trim_matches('%') == key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    MacroContext {
+        project_name: project.name.clone(),
+        client: get("client"),
+        address: get("address"),
+        designer: get("designer"),
+        date: get("date"),
+        project_number: get("project.number"),
+        revision: get("revision"),
+        revisions: info.revisions.clone(),
+        ..MacroContext::default()
+    }
+}
+
 impl<'a> LayoutRenderContext<'a> {
     /// A context for `project`: rooms detected on every floor, no scene, and
     /// macros holding only the project name.
@@ -60,10 +85,7 @@ impl<'a> LayoutRenderContext<'a> {
                 .map(|f| detect_rooms(&f.walls, 1.0))
                 .collect(),
             scene: None,
-            macros: MacroContext {
-                project_name: project.name.clone(),
-                ..MacroContext::default()
-            },
+            macros: macros_for(project),
             camera_drawing: None,
             camera_cache: RefCell::new(HashMap::new()),
         }

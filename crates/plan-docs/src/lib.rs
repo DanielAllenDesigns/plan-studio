@@ -1,9 +1,13 @@
 //! plan-docs: construction-document outputs generated from a plan.
 //!
-//! Everything here is headless and dependency-free (beyond `plan-core`):
+//! Everything here is headless (it reads the plan through `plan-core` and the
+//! object crates for cabinets, electrical, framing and the library):
 //!
 //! * [`schedule`]: door, window, room and wall schedules with CSV and
 //!   Markdown export.
+//! * [`schedule_kinds`]: rows, columns and callout labels for the schedules
+//!   placed in the plan (`plan_core::schedules`): door, window, room, wall,
+//!   cabinet, electrical, framing, fixture, furniture, plant and general.
 //! * [`materials`]: a framing / finish quantity take-off and its CSV export.
 //! * [`pdf`]: a PDF 1.4 writer (RGB colour, dashes, clipping, rotated and
 //!   bold text, Bezier curves, hatches, embedded RGB images, mixed page
@@ -16,6 +20,7 @@
 pub mod materials;
 pub mod pdf;
 pub mod schedule;
+pub mod schedule_kinds;
 
 pub use materials::{materials_list, to_csv as materials_to_csv, MaterialLine};
 pub use pdf::{

@@ -1,10 +1,13 @@
 //! Text Specification (TXT-3, `docs/parity/dimensions-text-cad.md`). Tabs:
-//! Text, Appearance and Layer.
+//! Text, Text Style, Appearance and Layer.
 //!
 //! A text object is a `CadItem::Text` (position, text, height, angle) on a
-//! layer. Those are editable here. Font, bold/italic/underline, alignment,
-//! border and fill have no model fields yet and are shown disabled, as in the
-//! other specification dialogs.
+//! layer. Those are editable here, and so are the extras kept with the object
+//! (`plan_core::cad::CadAttrs`): the named text style and rich text runs
+//! (bold, italic, underline, size scale, color), typed as markup like
+//! `<b>bold</b> <size=1.5>big</size>`. Alignment, border and fill have no
+//! model fields yet and are shown disabled, as in the other specification
+//! dialogs.
 //!
 //! [`open_for`] builds the dialog for an `ObjectRef::Cad`/`Text` that holds a
 //! text item; call [`TextDialog::show`] each frame and
@@ -12,17 +15,20 @@
 
 #![allow(dead_code)]
 
+pub mod manage;
+
 use super::{
-    dis_check, dis_combo, dis_radio, fmt_short, on, pv_text, row, section, Fields, Outcome,
-    SpecDialog, SpecPages, Tab, PV_FAINT, PV_INK,
+    dis_check, dis_radio, fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog,
+    SpecPages, Tab, PV_FAINT, PV_INK,
 };
 use crate::editor::selection::cad_by_id;
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
-use plan_core::cad::CadItem;
+use plan_core::cad::{CadAttrs, CadItem};
+use plan_core::text_styles::{runs_from_markup, runs_plain, runs_to_markup, RichRun};
 use plan_core::{CadObject, Id};
 
-const TEXT_TABS: &[Tab] = &[on("Text"), on("Appearance"), on("Layer")];
+const TEXT_TABS: &[Tab] = &[on("Text"), on("Text Style"), on("Appearance"), on("Layer")];
 
 pub struct TextDialog {
     frame: SpecDialog,
@@ -32,6 +38,13 @@ pub struct TextDialog {
 struct TextForm {
     orig: CadObject,
     draft: CadObject,
+    orig_attrs: CadAttrs,
+    attrs: CadAttrs,
+    /// The text as typed: the words, or markup when `rich`.
+    markup: String,
+    rich: bool,
+    /// Text style names to pick from.
+    styles: Vec<String>,
     layers: Vec<String>,
     font: String,
     fields: Fields,
@@ -42,6 +55,14 @@ impl TextDialog {
         Self {
             frame: SpecDialog::new("Text Specification", "text"),
             form: TextForm {
+                orig_attrs: CadAttrs::new(obj.id),
+                attrs: CadAttrs::new(obj.id),
+                markup: match &obj.item {
+                    CadItem::Text { text, .. } => text.clone(),
+                    _ => String::new(),
+                },
+                rich: false,
+                styles: Vec::new(),
                 orig: obj.clone(),
                 draft: obj,
                 layers,
@@ -49,6 +70,22 @@ impl TextDialog {
                 fields: Fields::default(),
             },
         }
+    }
+
+    /// The extras stored with the text, and the text style names to pick from.
+    pub fn with_attrs(mut self, attrs: CadAttrs, styles: Vec<String>) -> Self {
+        self.form.rich = !attrs.runs.is_empty();
+        if self.form.rich {
+            self.form.markup = runs_to_markup(&attrs.runs);
+        }
+        self.form.orig_attrs = attrs.clone();
+        self.form.attrs = attrs;
+        self.form.styles = styles;
+        self
+    }
+
+    pub fn attrs(&self) -> &CadAttrs {
+        &self.form.attrs
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -63,11 +100,12 @@ impl TextDialog {
         &self.form.draft
     }
 
-    /// Stores the edited text (one undo step). Returns false when nothing
-    /// changed, the object is gone or its layer is locked.
+    /// Stores the edited text and its extras (one undo step). Returns false
+    /// when nothing changed, the object is gone or its layer is locked.
     pub fn apply(&self, cx: &mut EditorContext) -> bool {
         let new = &self.form.draft;
-        if *new == self.form.orig {
+        let attrs_changed = self.form.attrs != self.form.orig_attrs;
+        if *new == self.form.orig && !attrs_changed {
             return false;
         }
         if !cx.check_unlocked(ObjectRef::Cad(new.id)) {
@@ -85,6 +123,11 @@ impl TextDialog {
         {
             *slot = new.clone();
         }
+        if attrs_changed {
+            let mut a = self.form.attrs.clone();
+            a.target = new.id;
+            cx.project.set_cad_attrs(fl, a);
+        }
         cx.mark_dirty();
         true
     }
@@ -101,27 +144,79 @@ pub fn open_for(cx: &EditorContext, o: ObjectRef) -> Option<TextDialog> {
         return None;
     }
     let layers = cx.layers().layers.iter().map(|l| l.name.clone()).collect();
-    Some(TextDialog::new(
-        obj.clone(),
-        layers,
-        cx.defaults.text.font.clone(),
-    ))
+    let styles = cx
+        .project
+        .text_styles
+        .names()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    Some(
+        TextDialog::new(obj.clone(), layers, cx.defaults.text.font.clone()).with_attrs(
+            cx.floor()
+                .cad_attrs(id)
+                .unwrap_or_else(|| CadAttrs::new(id)),
+            styles,
+        ),
+    )
+}
+
+/// The runs worth keeping: none when no run carries a format.
+fn normalized(runs: Vec<RichRun>) -> Vec<RichRun> {
+    let formatted = runs.iter().any(|r| {
+        r.bold || r.italic || r.underline || (r.scale - 1.0).abs() > 1e-9 || r.color.is_some()
+    });
+    if formatted {
+        runs
+    } else {
+        Vec::new()
+    }
 }
 
 impl TextForm {
-    fn text_page(&mut self, ui: &mut Ui) {
-        let CadItem::Text {
-            pos, text, angle, ..
-        } = &mut self.draft.item
-        else {
+    /// Keeps the item's words and the runs in step with what was typed.
+    fn sync_text(&mut self) {
+        let CadItem::Text { text, .. } = &mut self.draft.item else {
             return;
         };
+        if self.rich {
+            let runs = runs_from_markup(&self.markup);
+            *text = runs_plain(&runs);
+            self.attrs.runs = normalized(runs);
+        } else {
+            *text = self.markup.clone();
+            self.attrs.runs.clear();
+        }
+    }
+
+    fn text_page(&mut self, ui: &mut Ui) {
         section(ui, "Text");
-        ui.add(
-            egui::TextEdit::multiline(text)
-                .desired_rows(5)
-                .desired_width(f32::INFINITY),
-        );
+        let mut rich = self.rich;
+        if ui
+            .checkbox(&mut rich, "Rich text (markup: <b> <i> <u> <size=1.5>)")
+            .changed()
+        {
+            if rich {
+                self.markup = runs_to_markup(&[RichRun::plain(self.markup.clone())]);
+            } else {
+                self.markup = runs_plain(&runs_from_markup(&self.markup));
+            }
+            self.rich = rich;
+            self.sync_text();
+        }
+        let changed = ui
+            .add(
+                egui::TextEdit::multiline(&mut self.markup)
+                    .desired_rows(5)
+                    .desired_width(f32::INFINITY),
+            )
+            .changed();
+        if changed {
+            self.sync_text();
+        }
+        let CadItem::Text { pos, angle, .. } = &mut self.draft.item else {
+            return;
+        };
         let mut deg = angle.to_degrees();
         if self.fields.degrees_row(ui, "Angle", "deg_angle", &mut deg) {
             *angle = deg.to_radians();
@@ -131,6 +226,71 @@ impl TextForm {
         self.fields.length_row(ui, "Y", "pos_y", &mut pos.y);
     }
 
+    /// Is `get` set on every run?
+    fn all_runs(&self, get: impl Fn(&RichRun) -> bool) -> bool {
+        !self.attrs.runs.is_empty() && self.attrs.runs.iter().all(get)
+    }
+
+    /// Sets a format on the whole text, making it rich if needed.
+    fn set_format(&mut self, set: impl Fn(&mut RichRun)) {
+        let mut runs = if self.rich {
+            runs_from_markup(&self.markup)
+        } else {
+            vec![RichRun::plain(self.markup.clone())]
+        };
+        for r in &mut runs {
+            set(r);
+        }
+        let formatted = !normalized(runs.clone()).is_empty();
+        self.rich = formatted;
+        self.markup = if formatted {
+            runs_to_markup(&runs)
+        } else {
+            runs_plain(&runs)
+        };
+        self.sync_text();
+    }
+
+    fn text_style(&mut self, ui: &mut Ui) {
+        section(ui, "Text Style");
+        row(ui, "Style", |ui| {
+            let shown = self
+                .attrs
+                .text_style
+                .clone()
+                .unwrap_or_else(|| "(layer's style)".to_string());
+            egui::ComboBox::from_id_salt("text_style_pick")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.attrs.text_style, None, "(layer's style)");
+                    for n in &self.styles {
+                        ui.selectable_value(
+                            &mut self.attrs.text_style,
+                            Some(n.clone()),
+                            n.as_str(),
+                        );
+                    }
+                });
+        });
+        row(ui, "Font", |ui| ui.label(self.font.clone()));
+        section(ui, "Format");
+        for (label, get, set) in [
+            (
+                "Bold",
+                (|r: &RichRun| r.bold) as fn(&RichRun) -> bool,
+                (|r: &mut RichRun, on: bool| r.bold = on) as fn(&mut RichRun, bool),
+            ),
+            ("Italic", |r| r.italic, |r, on| r.italic = on),
+            ("Underline", |r| r.underline, |r, on| r.underline = on),
+        ] {
+            let mut on = self.all_runs(get);
+            if ui.checkbox(&mut on, label).changed() {
+                self.set_format(|r| set(r, on));
+            }
+        }
+        ui.weak("Mixed formats inside one text are typed as markup on the Text tab.");
+    }
+
     fn appearance(&mut self, ui: &mut Ui) {
         let CadItem::Text { height, .. } = &mut self.draft.item else {
             return;
@@ -138,11 +298,6 @@ impl TextForm {
         section(ui, "Size");
         self.fields.length_row(ui, "Text Height", "height", height);
         ui.weak("Plan inches; the printed size follows the plan scale.");
-        section(ui, "Font");
-        row(ui, "Family", |ui| dis_combo(ui, "text_font", &self.font));
-        dis_check(ui, "Bold", false);
-        dis_check(ui, "Italic", false);
-        dis_check(ui, "Underline", false);
         section(ui, "Alignment");
         ui.horizontal(|ui| {
             dis_radio(ui, "Left", true);
@@ -189,6 +344,7 @@ impl SpecPages for TextForm {
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match TEXT_TABS[tab].name {
             "Text" => self.text_page(ui),
+            "Text Style" => self.text_style(ui),
             "Appearance" => self.appearance(ui),
             "Layer" => self.layer(ui),
             _ => {}
@@ -316,5 +472,58 @@ mod tests {
                 d.show(ctx);
             });
         }
+    }
+
+    #[test]
+    fn text_style_and_rich_formats_are_stored_with_the_text() {
+        let (mut cx, id) = cx_with_text();
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        assert!(d.form.styles.contains(&"Room Label Style".to_string()));
+        d.form.attrs.text_style = Some("Room Label Style".into());
+        d.form.set_format(|r| r.bold = true);
+        assert!(d.form.rich, "a format makes the text rich");
+        assert_eq!(d.form.markup, "<b>Hello</b>");
+        d.form.set_format(|r| r.underline = true);
+        assert!(d.apply(&mut cx));
+        let a = cx.floor().cad_attrs(id).unwrap();
+        assert_eq!(a.text_style.as_deref(), Some("Room Label Style"));
+        assert_eq!(a.runs.len(), 1);
+        assert!(a.runs[0].bold && a.runs[0].underline);
+        // The item keeps the plain words.
+        assert!(matches!(&cad_by_id(cx.floor(), id).unwrap().item,
+            CadItem::Text { text, .. } if text == "Hello"));
+        // Reopened it is rich again; typing markup updates the runs.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        assert!(d.form.rich);
+        d.form.markup = "<i>Hi</i> there".into();
+        d.form.sync_text();
+        assert!(matches!(&d.form.draft.item, CadItem::Text { text, .. } if text == "Hi there"));
+        assert_eq!(
+            d.form.attrs.runs,
+            vec![RichRun::italic("Hi"), RichRun::plain(" there")]
+        );
+        assert!(d.apply(&mut cx));
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().runs.len(), 2);
+        // Turning every format off makes it plain again.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.set_format(|r| r.italic = false);
+        assert!(!d.form.rich && d.form.attrs.runs.is_empty());
+        assert!(d.apply(&mut cx));
+        assert!(cx.floor().cad_attrs(id).unwrap().runs.is_empty());
+        assert_eq!(cx.undo().as_deref(), Some("Change Text"));
+    }
+
+    #[test]
+    fn the_text_style_page_draws() {
+        let (cx, id) = cx_with_text();
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        let ctx = egui::Context::default();
+        let tab = TEXT_TABS
+            .iter()
+            .position(|t| t.name == "Text Style")
+            .unwrap();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
+        });
     }
 }

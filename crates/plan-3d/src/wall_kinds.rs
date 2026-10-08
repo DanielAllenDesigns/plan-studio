@@ -96,6 +96,19 @@ pub fn build_class(
     interior: InteriorSign,
     lookup: Lookup,
 ) -> Vec<Mesh> {
+    // A wall that starts above the floor is built as an ordinary wall of its
+    // class standing on a higher base, with its holes re-measured from it.
+    if wall.bottom_offset != 0.0 {
+        let mut grounded = wall.clone();
+        grounded.bottom_offset = 0.0;
+        return build_class(
+            &grounded,
+            elevation + wall.bottom_offset,
+            &shift_holes(holes, wall.bottom_offset),
+            interior,
+            lookup,
+        );
+    }
     let look_of = |name: Option<&str>| WallLook {
         exterior: name
             .and_then(lookup)
@@ -368,4 +381,80 @@ fn build_curved(wall: &Wall, elevation: f64, interior: InteriorSign, lookup: Loo
         out.extend(build_class(&facet, elevation, &[], interior, lookup));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plan_core::{Point, Project, WallKind};
+
+    fn wall_of(class: WallClass, bottom: f64) -> (Project, Wall) {
+        let mut p = Project::new("t");
+        let id = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(120.0, 0.0),
+            6.0,
+            60.0,
+            WallKind::Exterior,
+        );
+        let mut w = p.floors[0].wall(id).unwrap().clone();
+        w.class = class;
+        w.bottom_offset = bottom;
+        (p, w)
+    }
+
+    fn y_range(meshes: &[Mesh]) -> (f32, f32) {
+        let ys: Vec<f32> = meshes
+            .iter()
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[1]))
+            .collect();
+        (
+            ys.iter().copied().fold(f32::MAX, f32::min),
+            ys.iter().copied().fold(f32::MIN, f32::max),
+        )
+    }
+
+    #[test]
+    fn every_straight_class_honors_the_bottom_offset() {
+        let classes = [
+            WallClass::Standard,
+            WallClass::Glass,
+            WallClass::HalfWall { height: 36.0 },
+            WallClass::Pony {
+                upper_type: "A".into(),
+                lower_type: "B".into(),
+                split_height: 24.0,
+                upper_sets_plan_display: false,
+            },
+        ];
+        for class in classes {
+            let none = |_: &str| None;
+            let (_, flat) = wall_of(class.clone(), 0.0);
+            let (_, raised) = wall_of(class.clone(), 40.0);
+            let a = y_range(&build_class(&flat, 0.0, &[], 1.0, &none));
+            let b = y_range(&build_class(&raised, 0.0, &[], 1.0, &none));
+            assert_eq!((b.0 - a.0, b.1 - a.1), (40.0, 40.0), "{class:?}");
+        }
+    }
+
+    #[test]
+    fn raised_wall_holes_are_measured_from_the_floor() {
+        use plan_core::Opening;
+        let (_, w) = wall_of(WallClass::Standard, 40.0);
+        let mut win = Opening::default_window(2, w.id, 60.0);
+        win.sill_height = 50.0;
+        win.height = 24.0;
+        let hole = hole_for(&opening_basis(&w), &win).unwrap();
+        assert_eq!((hole.h0, hole.h1), (50.0, 74.0));
+        let none = |_: &str| None;
+        let meshes = build_class(&w, 0.0, &[hole], 1.0, &none);
+        // Reveals of the hole at its sill and head, in scene height.
+        let at = |y: f32| {
+            meshes
+                .iter()
+                .any(|m| m.vertices.iter().any(|v| (v.position[1] - y).abs() < 1e-3))
+        };
+        assert!(at(50.0) && at(74.0));
+    }
 }

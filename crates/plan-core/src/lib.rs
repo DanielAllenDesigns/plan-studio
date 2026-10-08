@@ -48,6 +48,7 @@ pub mod layers;
 pub mod model;
 pub mod openings;
 pub mod rooms;
+pub mod schedules;
 pub mod symbols;
 pub mod text_styles;
 pub mod units;

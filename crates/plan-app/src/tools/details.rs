@@ -278,7 +278,7 @@ impl DetailsTool {
     // ----- creating -----
 
     fn finish_ok(&mut self, cx: &mut EditorContext, r: DetailRef, open: bool) {
-        dv::select(r);
+        dv::select(cx, r);
         self.reset(cx);
         cx.status.clear();
         if open {
@@ -426,7 +426,7 @@ impl DetailsTool {
             DetailsVariant::Quoins => DetailRef::Quoin(dv::add_quoin(cx, &corner)),
             _ => DetailRef::CornerBoard(dv::add_corner_board(cx, &corner)),
         };
-        dv::select(r);
+        dv::select(cx, r);
         cx.status.clear();
         ToolResult::committed(self.variant.name())
     }
@@ -472,7 +472,7 @@ impl DetailsTool {
 
     /// The object to delete: the selected one, else the one under the pointer.
     fn delete_target(&self, cx: &EditorContext) -> Option<DetailRef> {
-        dv::selected()
+        dv::selected(cx)
             .filter(|r| dv::exists(cx, *r))
             .or_else(|| self.hover.and_then(|h| dv::pick(cx, h, cx.pick_tol())))
     }
@@ -699,7 +699,7 @@ impl Tool for DetailsTool {
         if self.points.is_empty() && draw != Draw::Auto && Self::is_move_click(&p) {
             return match dv::pick(cx, p.world, cx.pick_tol()) {
                 Some(target) => {
-                    dv::select(target);
+                    dv::select(cx, target);
                     cx.begin_change(&format!("Move {}", target.name()));
                     self.moving = Some(MoveState {
                         target,
@@ -710,7 +710,7 @@ impl Tool for DetailsTool {
                     ToolResult::consumed()
                 }
                 None => {
-                    dv::clear_selection();
+                    dv::clear_selection(cx);
                     ToolResult::consumed()
                 }
             };
@@ -847,7 +847,7 @@ impl Tool for DetailsTool {
         self.reset(cx);
         match dv::pick(cx, p.world, cx.pick_tol()) {
             Some(r) => {
-                dv::select(r);
+                dv::select(cx, r);
                 self.open_spec(cx, r);
                 ToolResult::consumed()
             }
@@ -1294,7 +1294,7 @@ mod tests {
         t.pointer_up(&mut cx, down);
         assert_eq!(cx.undo_label().map(str::to_string), before);
         // Delete removes the selected object.
-        assert_eq!(dv::selected(), Some(DetailRef::Deck(id)));
+        assert_eq!(dv::selected(&cx), Some(DetailRef::Deck(id)));
         let r = t.key(&mut cx, KeyEvent::key(Key::Delete));
         assert_eq!(r.commit.as_deref(), Some("Delete Deck"));
         assert!(layer(&cx).is_empty());

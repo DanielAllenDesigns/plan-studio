@@ -2,9 +2,8 @@
 //! C-4..C-30). The 3D viewer builds its views from these; here they are plain
 //! data plus the plan symbol geometry.
 
-use crate::cad::{CadItem, CadObject};
+use crate::cad::CadItem;
 use crate::geometry::Point;
-use crate::layers::Layer;
 use crate::model::{Id, Project};
 use serde::{Deserialize, Serialize};
 
@@ -348,9 +347,10 @@ impl Project {
 
 // ----- lights (C-64..C-66) -----
 
-/// The hidden layer the light records live on. Lights are kept as tagged
-/// text records in the floor's CAD list because the project model has no typed
-/// slot for them yet; the accessors below are the only code that knows that.
+/// The hidden layer the light records used to live on. Lights are now the
+/// typed slots [`Project::lights`] and [`Project::light_options`]; files saved
+/// before that hold them as tagged text records in the floors' CAD lists on
+/// this layer, and [`migrate_legacy`] converts them once on load.
 pub const LIGHTS_LAYER: &str = "Lights, Data";
 const LIGHT_TAG: &str = "plan-light:";
 const LIGHT_SET_TAG: &str = "plan-lightset:";
@@ -359,11 +359,11 @@ const LIGHT_SET_TAG: &str = "plan-lightset:";
 /// intensity (1.0 is a typical room light), colour and shadow options.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanLight {
-    /// The record id (assigned by [`Project::add_light`]; not stored in the JSON).
-    #[serde(skip)]
+    /// The record id (assigned by [`Project::add_light`]).
+    #[serde(default)]
     pub id: Id,
-    /// The floor the light was placed on (not stored in the JSON).
-    #[serde(skip)]
+    /// The floor the light was placed on.
+    #[serde(default)]
     pub floor: usize,
     pub name: String,
     pub position: Point,
@@ -409,142 +409,101 @@ impl Default for LightSettings {
     }
 }
 
-fn data_text<'a>(o: &'a CadObject, tag: &str) -> Option<&'a str> {
-    if o.layer != LIGHTS_LAYER {
-        return None;
-    }
-    match &o.item {
-        CadItem::Text { text, .. } => text.strip_prefix(tag),
-        _ => None,
-    }
-}
-
 impl Project {
-    fn ensure_lights_layer(&mut self) {
-        if self.layers.get(LIGHTS_LAYER).is_none() {
-            let mut l = Layer::new(LIGHTS_LAYER, [0xC8, 0xA0, 0x20], 18);
-            l.display = false;
-            self.layers.add(l);
-        }
-    }
-
-    /// Every light of the plan, floor by floor.
+    /// Every light of the plan, in the order they were added.
     pub fn lights(&self) -> Vec<PlanLight> {
-        let mut out = Vec::new();
-        for (floor, f) in self.floors.iter().enumerate() {
-            for o in &f.cad {
-                if let Some(json) = data_text(o, LIGHT_TAG) {
-                    if let Ok(mut l) = serde_json::from_str::<PlanLight>(json) {
-                        l.id = o.id;
-                        l.floor = floor;
-                        out.push(l);
-                    }
-                }
-            }
-        }
-        out
+        self.lights.clone()
     }
 
     pub fn light(&self, id: Id) -> Option<PlanLight> {
-        self.lights().into_iter().find(|l| l.id == id)
+        self.lights.iter().find(|l| l.id == id).cloned()
     }
 
     /// Adds a light to `floor`; `None` if the floor does not exist.
-    pub fn add_light(&mut self, floor: usize, light: PlanLight) -> Option<Id> {
+    pub fn add_light(&mut self, floor: usize, mut light: PlanLight) -> Option<Id> {
         if floor >= self.floors.len() {
             return None;
         }
-        self.ensure_lights_layer();
         let id = self.alloc_id();
-        let json = serde_json::to_string(&light).ok()?;
-        self.floors[floor].cad.push(CadObject {
-            id,
-            layer: LIGHTS_LAYER.to_string(),
-            item: CadItem::Text {
-                pos: light.position,
-                text: format!("{LIGHT_TAG}{json}"),
-                height: 1.0,
-                angle: 0.0,
-            },
-        });
+        light.id = id;
+        light.floor = floor;
+        self.lights.push(light);
         Some(id)
     }
 
     /// Edits a light in place; `false` if there is no such light. Its id and
     /// floor cannot be changed by `edit`.
     pub fn update_light(&mut self, id: Id, edit: impl FnOnce(&mut PlanLight)) -> bool {
-        for f in &mut self.floors {
-            let Some(o) = f
-                .cad
-                .iter_mut()
-                .find(|o| o.id == id && data_text(o, LIGHT_TAG).is_some())
-            else {
-                continue;
-            };
-            let Some(mut l) =
-                data_text(o, LIGHT_TAG).and_then(|j| serde_json::from_str::<PlanLight>(j).ok())
-            else {
-                return false;
-            };
-            edit(&mut l);
-            if let Ok(json) = serde_json::to_string(&l) {
-                o.item = CadItem::Text {
-                    pos: l.position,
-                    text: format!("{LIGHT_TAG}{json}"),
-                    height: 1.0,
-                    angle: 0.0,
-                };
-                return true;
-            }
+        let Some(l) = self.lights.iter_mut().find(|l| l.id == id) else {
             return false;
-        }
-        false
+        };
+        let floor = l.floor;
+        edit(l);
+        l.id = id;
+        l.floor = floor;
+        true
     }
 
     /// Removes a light; returns whether it existed.
     pub fn remove_light(&mut self, id: Id) -> bool {
-        let mut found = false;
-        for f in &mut self.floors {
-            let n = f.cad.len();
-            f.cad
-                .retain(|o| !(o.id == id && data_text(o, LIGHT_TAG).is_some()));
-            found |= f.cad.len() != n;
-        }
-        found
+        let n = self.lights.len();
+        self.lights.retain(|l| l.id != id);
+        self.lights.len() != n
     }
 
     /// The plan-wide light options (defaults when none are stored).
     pub fn light_settings(&self) -> LightSettings {
-        self.floors
-            .iter()
-            .flat_map(|f| f.cad.iter())
-            .find_map(|o| data_text(o, LIGHT_SET_TAG))
-            .and_then(|j| serde_json::from_str(j).ok())
-            .unwrap_or_default()
+        self.light_options
     }
 
     pub fn set_light_settings(&mut self, settings: LightSettings) {
-        if self.floors.is_empty() {
-            return;
-        }
-        self.ensure_lights_layer();
-        for f in &mut self.floors {
-            f.cad.retain(|o| data_text(o, LIGHT_SET_TAG).is_none());
-        }
-        let id = self.alloc_id();
-        if let Ok(json) = serde_json::to_string(&settings) {
-            self.floors[0].cad.push(CadObject {
-                id,
-                layer: LIGHTS_LAYER.to_string(),
-                item: CadItem::Text {
-                    pos: Point::ZERO,
-                    text: format!("{LIGHT_SET_TAG}{json}"),
-                    height: 1.0,
-                    angle: 0.0,
-                },
-            });
+        self.light_options = settings;
+    }
+}
+
+/// Moves lights stored the old way (tagged text records on the hidden
+/// [`LIGHTS_LAYER`] of the floors' CAD lists) into [`Project::lights`] and
+/// [`Project::light_options`], removes the records and the layer. Runs once
+/// when a project is loaded; returns whether anything changed.
+pub fn migrate_legacy(project: &mut Project) -> bool {
+    let mut changed = false;
+    let mut found: Vec<PlanLight> = Vec::new();
+    let mut options = None;
+    for (floor, f) in project.floors.iter_mut().enumerate() {
+        let n = f.cad.len();
+        f.cad.retain(|o| {
+            if o.layer != LIGHTS_LAYER {
+                return true;
+            }
+            if let CadItem::Text { text, .. } = &o.item {
+                if let Some(json) = text.strip_prefix(LIGHT_TAG) {
+                    if let Ok(mut l) = serde_json::from_str::<PlanLight>(json) {
+                        l.id = o.id;
+                        l.floor = floor;
+                        found.push(l);
+                    }
+                } else if let Some(json) = text.strip_prefix(LIGHT_SET_TAG) {
+                    if let Ok(s) = serde_json::from_str::<LightSettings>(json) {
+                        options = Some(s);
+                    }
+                }
+            }
+            false
+        });
+        changed |= f.cad.len() != n;
+    }
+    for l in found {
+        if !project.lights.iter().any(|x| x.id == l.id) {
+            project.lights.push(l);
         }
     }
+    if let Some(s) = options {
+        project.light_options = s;
+    }
+    let n = project.layers.layers.len();
+    project.layers.layers.retain(|l| l.name != LIGHTS_LAYER);
+    changed |= project.layers.layers.len() != n;
+    changed
 }
 
 #[cfg(test)]
@@ -677,8 +636,9 @@ mod tests {
         assert_eq!(got.color, [200, 220, 255]);
         assert!(!back.light(other).unwrap().enabled);
         assert!(!back.light_settings().use_electrical);
-        // The data layer is hidden.
-        assert!(!back.layers.is_visible(LIGHTS_LAYER));
+        // Typed slot: no data layer, no CAD records.
+        assert!(back.layers.get(LIGHTS_LAYER).is_none());
+        assert!(back.floors[0].cad.is_empty());
         let mut back = back;
         assert!(back.remove_light(id));
         assert!(!back.remove_light(id));
@@ -687,7 +647,55 @@ mod tests {
         back.set_light_settings(LightSettings::default());
         back.set_light_settings(LightSettings::default());
         assert!(back.light_settings().use_electrical);
-        assert_eq!(back.floors[0].cad.len(), 2);
+        assert!(back.floors[0].cad.is_empty());
+    }
+
+    #[test]
+    fn legacy_light_records_move_into_the_typed_slot_once() {
+        use crate::cad::CadObject;
+        let mut p = Project::new("old");
+        let rec = |id, text: String| CadObject {
+            id,
+            layer: LIGHTS_LAYER.to_string(),
+            item: CadItem::Text {
+                pos: Point::ZERO,
+                text,
+                height: 1.0,
+                angle: 0.0,
+            },
+        };
+        let mut l = PlanLight::new(Point::new(30.0, 40.0), 80.0);
+        l.name = "Hall".into();
+        // The old format kept neither id nor floor in the JSON.
+        let mut json: serde_json::Value = serde_json::to_value(&l).unwrap();
+        json.as_object_mut().unwrap().remove("id");
+        json.as_object_mut().unwrap().remove("floor");
+        p.floors[0].cad.push(rec(7, format!("{LIGHT_TAG}{json}")));
+        p.floors[0].cad.push(rec(
+            8,
+            format!("{LIGHT_SET_TAG}{}", r#"{"use_electrical":false}"#),
+        ));
+        p.floors[0].cad.push(CadObject {
+            id: 9,
+            layer: "CAD, Default".into(),
+            item: CadItem::Line {
+                a: Point::ZERO,
+                b: Point::new(1.0, 0.0),
+            },
+        });
+        let mut layer = crate::layers::Layer::new(LIGHTS_LAYER, [0, 0, 0], 1);
+        layer.display = false;
+        p.layers.add(layer);
+        assert!(migrate_legacy(&mut p));
+        assert_eq!(p.lights.len(), 1);
+        assert_eq!((p.lights[0].id, p.lights[0].floor), (7, 0));
+        assert_eq!(p.lights[0].name, "Hall");
+        assert!(!p.light_settings().use_electrical);
+        // Only the unrelated CAD object stays; the data layer is gone.
+        assert_eq!(p.floors[0].cad.len(), 1);
+        assert!(p.layers.get(LIGHTS_LAYER).is_none());
+        assert!(!migrate_legacy(&mut p));
+        assert_eq!(p.lights.len(), 1);
     }
 
     #[test]

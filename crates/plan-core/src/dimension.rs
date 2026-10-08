@@ -281,6 +281,105 @@ pub fn auto_exterior_dimensions(walls: &[Wall], offset: f64) -> Vec<Dimension> {
     overall
 }
 
+// ===== elevation and story pole dimensions =====
+
+/// A height of the building above the first floor's finished floor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Level {
+    pub name: String,
+    /// Inches above the datum (the first normal floor's finished floor).
+    pub elevation: f64,
+}
+
+/// The levels of a plan, lowest first: each floor's finished floor and its
+/// ceiling. Equal elevations keep the first name.
+pub fn story_levels(floors: &[crate::model::Floor]) -> Vec<Level> {
+    let mut out: Vec<Level> = Vec::new();
+    for f in floors {
+        out.push(Level {
+            name: format!("{} Floor", f.name),
+            elevation: f.elevation,
+        });
+        out.push(Level {
+            name: format!("{} Ceiling", f.name),
+            elevation: f.elevation + f.ceiling_height,
+        });
+    }
+    out.sort_by(|a, b| a.elevation.total_cmp(&b.elevation));
+    out.dedup_by(|b, a| (a.elevation - b.elevation).abs() < 1e-6);
+    out
+}
+
+/// A story pole: one vertical dimension between each pair of neighbouring
+/// levels (ceiling heights and floor platforms) on the line `x`, with an
+/// overall dimension from the lowest to the highest level outside them. The
+/// vertical axis of the pole is the plan's Y axis, so lengths read as
+/// heights. Ids are `0`.
+pub fn story_pole_dimensions(levels: &[Level], x: f64, offset: f64) -> Vec<Dimension> {
+    let at = |l: &Level| Point::new(x, l.elevation);
+    let mut out: Vec<Dimension> = levels
+        .windows(2)
+        .filter(|w| w[1].elevation - w[0].elevation >= 0.5)
+        .map(|w| Dimension::new(0, DimensionKind::AutoExterior, at(&w[0]), at(&w[1]), offset))
+        .collect();
+    if let (Some(first), Some(last)) = (levels.first(), levels.last()) {
+        if levels.len() > 2 && last.elevation - first.elevation >= 0.5 {
+            out.push(Dimension::new(
+                0,
+                DimensionKind::AutoExterior,
+                at(first),
+                at(last),
+                offset * 2.0,
+            ));
+        }
+    }
+    out
+}
+
+/// Elevation dimensions: the height of every level above the datum level
+/// (the first normal floor's finished floor), as stacked baseline
+/// dimensions on the line `x`, `separation` apart. Levels below the datum
+/// run downward. Ids are `0`.
+pub fn elevation_dimensions(
+    levels: &[Level],
+    datum: f64,
+    x: f64,
+    separation: f64,
+) -> Vec<Dimension> {
+    let mut above: Vec<&Level> = levels
+        .iter()
+        .filter(|l| l.elevation - datum > 0.5)
+        .collect();
+    let mut below: Vec<&Level> = levels
+        .iter()
+        .filter(|l| datum - l.elevation > 0.5)
+        .collect();
+    above.sort_by(|a, b| a.elevation.total_cmp(&b.elevation));
+    below.sort_by(|a, b| b.elevation.total_cmp(&a.elevation));
+    let mut out = Vec::new();
+    for group in [above, below] {
+        for (i, l) in group.iter().enumerate() {
+            out.push(Dimension::new(
+                0,
+                DimensionKind::AutoExterior,
+                Point::new(x, datum),
+                Point::new(x, l.elevation),
+                separation * (i + 1) as f64,
+            ));
+        }
+    }
+    out
+}
+
+/// The datum of a plan's elevations: the finished floor of the first floor
+/// that is not a foundation.
+pub fn elevation_datum(floors: &[crate::model::Floor]) -> f64 {
+    floors
+        .iter()
+        .find(|f| f.kind != crate::floors::FloorKind::Foundation)
+        .map_or(0.0, |f| f.elevation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,5 +497,45 @@ mod tests {
             .collect();
         seg.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert_eq!(seg, vec![100.0, 100.0, 140.0, 140.0]);
+    }
+
+    #[test]
+    fn story_pole_and_elevation_dimensions_read_as_heights() {
+        use crate::floors::FloorKind;
+        use crate::model::Floor;
+        let mut found = Floor::new("Foundation", -36.0);
+        found.kind = FloorKind::Foundation;
+        found.ceiling_height = 36.0;
+        let mut first = Floor::new("1st Floor", 0.0);
+        first.ceiling_height = 108.0;
+        let mut second = Floor::new("2nd Floor", 118.25);
+        second.ceiling_height = 96.0;
+        let floors = [found, first, second];
+        let levels = story_levels(&floors);
+        let heights: Vec<f64> = levels.iter().map(|l| l.elevation).collect();
+        // Foundation ceiling and first floor share an elevation (0).
+        assert_eq!(heights, vec![-36.0, 0.0, 108.0, 118.25, 214.25]);
+        assert_eq!(levels[1].name, "Foundation Ceiling");
+
+        let pole = story_pole_dimensions(&levels, 500.0, 24.0);
+        // Four gaps and one overall.
+        assert_eq!(pole.len(), 5);
+        let lens: Vec<f64> = pole.iter().map(|d| d.length()).collect();
+        assert_eq!(lens, vec![36.0, 108.0, 10.25, 96.0, 250.25]);
+        assert!(pole.iter().all(|d| d.start.x == 500.0 && d.end.x == 500.0));
+        assert_eq!(pole[4].offset, 48.0);
+        // The ceiling-height dimension reads 9'-0".
+        assert_eq!(pole[1].label(&DimFormat::default()), "9'-0\"");
+
+        let datum = elevation_datum(&floors);
+        assert_eq!(datum, 0.0);
+        let elev = elevation_dimensions(&levels, datum, 500.0, 18.0);
+        // Above the datum: 108, 118.25, 214.25; below: 36.
+        assert_eq!(elev.len(), 4);
+        assert_eq!(elev[0].length(), 108.0);
+        assert_eq!(elev[2].length(), 214.25);
+        assert_eq!(elev[2].offset, 54.0);
+        assert_eq!(elev[3].end.y, -36.0);
+        assert!(story_pole_dimensions(&[], 0.0, 1.0).is_empty());
     }
 }

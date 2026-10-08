@@ -74,7 +74,7 @@ impl EditorContext {
     }
 
     /// Deletes the selected stairs, cabinets, symbols, devices, roof records,
-    /// foundation objects, details, schedules and cameras (each kind is one undo step),
+    /// foundation objects, details, schedules, terrain elements and cameras (each kind is one undo step),
     /// and the wall material regions and hatches of deleted walls (inside the
     /// walls' own undo step). Returns how many went.
     pub(super) fn delete_extra(&mut self) -> usize {
@@ -165,6 +165,29 @@ impl EditorContext {
             // delete_ids drops them from the selection itself.
             n += schedule_view::delete_ids(self, &schedules);
         }
+        let terrain: Vec<site_view::TerrainHit> = self
+            .selection
+            .items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::TerrainObject(h) => Some(*h),
+                _ => None,
+            })
+            .collect();
+        if !terrain.is_empty() {
+            let mut removed = 0;
+            site_view::edit_terrain(self, "Delete Terrain Element", |rec| {
+                removed = site_view::remove_terrain_elements(&mut rec.terrain, &terrain);
+            });
+            if removed == 0 {
+                self.cancel_change();
+            }
+            // The remaining indices are stale: nothing of the terrain stays selected.
+            self.selection
+                .items
+                .retain(|o| !matches!(o, ObjectRef::TerrainObject(_)));
+            n += removed;
+        }
         let cams = self.selected_ids(|o| match o {
             ObjectRef::Camera(i) => Some(i),
             _ => None,
@@ -201,7 +224,13 @@ impl EditorContext {
 
     /// Pastes the placed-object clipboard. Returns how many.
     pub(super) fn paste_extra(&mut self) -> usize {
-        placed::paste_placed(self)
+        let n = placed::paste_placed(self);
+        // A pasted distribution record brings its copies (they are rebuilt
+        // from the record at its new place).
+        if n > 0 {
+            placed::sync_distributions(self);
+        }
+        n
     }
 
     /// Does the Paste in Place button have anything to paste?
@@ -232,6 +261,8 @@ impl EditorContext {
             enabled,
         };
         match one {
+            // The CAD edit tools (fillet, chamfer, offset, ...) under Select.
+            ObjectRef::Cad(_) => v.extend(crate::tools::cad::edit_actions(self)),
             ObjectRef::Stair(_) => {
                 for (c, on) in stairs_view::edit_commands(self) {
                     v.push(custom(stair_id(c), c.label(), c.icon().unwrap_or(""), on));
@@ -428,8 +459,8 @@ impl EditorContext {
     }
 
     /// Translates the selected stairs, cabinets, symbols, devices, roof
-    /// records, foundation objects, details and cameras by `d` (group drags
-    /// and nudges).
+    /// records, foundation objects, details, terrain elements and cameras by
+    /// `d` (group drags and nudges).
     pub fn translate_extra(&mut self, items: &[ObjectRef], d: plan_core::geometry::Point) {
         let fl = self.floor;
         for o in items {
@@ -508,6 +539,20 @@ impl EditorContext {
             })
             .collect();
         schedule_view::translate_ids(self, &schedules, d);
+        let terrain: Vec<site_view::TerrainHit> = items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::TerrainObject(h) => Some(*h),
+                _ => None,
+            })
+            .collect();
+        if !terrain.is_empty() {
+            if let Some(mut rec) = site_view::load_terrain(&self.project) {
+                if site_view::move_terrain_elements(&mut rec.terrain, &terrain, d) > 0 {
+                    site_view::save_terrain(&mut self.project, &rec);
+                }
+            }
+        }
         self.mark_dirty();
     }
 }

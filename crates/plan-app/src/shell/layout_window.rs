@@ -81,25 +81,8 @@ pub fn store(project: &mut Project, layout: &Layout) {
 /// The values the title block macros expand to: the project's name and its
 /// Project Information (Tools > Project Information, `Project::info`).
 pub fn macro_context(project: &Project) -> MacroContext {
-    let pairs = project.info.macro_pairs();
-    let get = |name: &str| {
-        pairs
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default()
-    };
-    MacroContext {
-        project_name: project.name.clone(),
-        client: get("%client%"),
-        address: get("%address%"),
-        designer: get("%designer%"),
-        date: get("%date%"),
-        project_number: get("%project.number%"),
-        revision: get("%revision%"),
-        revisions: project.info.revisions.clone(),
-        ..MacroContext::default()
-    }
+    // Includes %company%, %client.phone%, %drawn.by%, %custom.<key>%...
+    plan_layout::macros_for(project)
 }
 
 /// Today as `2026-10-08` (UTC).
@@ -542,20 +525,15 @@ impl Default for LayoutView {
     }
 }
 
-/// Hash of what plan views, elevations and camera drawings depend on.
-fn project_sig(p: &Project) -> u64 {
+/// Names the state of the plan that plan views, elevations and camera
+/// drawings were drawn from: it differs after every change signal of the
+/// editor context (`EditorContext::cache_key`), so the box caches are dropped
+/// exactly when the plan may have changed. (This used to serialize the floors,
+/// layers, cameras and terrain to JSON and hash the text every frame, which
+/// costs tens of milliseconds on a real house.)
+fn project_sig(cx: &EditorContext) -> u64 {
     let mut h = DefaultHasher::new();
-    let parts = [
-        serde_json::to_string(&p.floors),
-        serde_json::to_string(&p.layers),
-        serde_json::to_string(&p.layer_sets),
-        serde_json::to_string(&p.cameras),
-        serde_json::to_string(&p.text_styles),
-        serde_json::to_string(&p.terrain),
-    ];
-    for s in parts {
-        s.unwrap_or_default().hash(&mut h);
-    }
+    cx.cache_key().hash(&mut h);
     h.finish()
 }
 
@@ -865,6 +843,7 @@ impl LayoutView {
             page_background: l.page_background,
             edge_line_weight: l.edge_line_weight,
             sheet_index: l.sheet_index,
+            portrait: l.portrait,
         })
     }
 
@@ -874,7 +853,9 @@ impl LayoutView {
                 || (l.margins_in - s.margins_in).abs() > 1e-9
                 || l.page_background != s.page_background
                 || l.edge_line_weight != s.edge_line_weight
-                || l.sheet_index != s.sheet_index;
+                || l.sheet_index != s.sheet_index
+                || l.portrait != s.portrait;
+            l.portrait = s.portrait;
             l.sheet = s.sheet;
             l.margins_in = s.margins_in;
             l.page_background = s.page_background;
@@ -1065,7 +1046,7 @@ impl LayoutView {
 
     fn fit(&mut self, area: Rect) {
         let Some(l) = &self.layout else { return };
-        let (w, h) = l.sheet.inches();
+        let (w, h) = l.sheet_inches();
         let z = ((area.width() - 40.0) / w as f32).min((area.height() - 40.0) / h as f32);
         self.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
         self.offset = Vec2::new(
@@ -1139,6 +1120,12 @@ pub fn page_list(project: &Project) -> Vec<(usize, String, bool)> {
             (i, format!("A-{n}  {title}"), template)
         })
         .collect()
+}
+
+/// Shows page `index` (the benchmark draws a floor plan sheet).
+#[cfg(test)]
+pub(crate) fn show_page(index: usize) {
+    with_view(|v| v.set_page(index));
 }
 
 /// The page the layout view shows.
@@ -1799,7 +1786,7 @@ fn paint_field(painter: &egui::Painter, r: Rect, label: &str, value: &str) {
 
 /// The border and title block of a page, macros expanded for that sheet.
 fn paint_title_block(painter: &egui::Painter, xf: &Xf, layout: &Layout, ctx: &MacroContext) {
-    let (w, h) = layout.sheet.inches();
+    let (w, h) = layout.sheet_inches();
     let m = layout.margins_in;
     let edge =
         (f32::from(u16::try_from(layout.edge_line_weight).unwrap_or(18)) / 100.0 * xf.z * 0.04)
@@ -1883,7 +1870,7 @@ impl LayoutView {
         project: &Project,
         index: usize,
     ) {
-        let (w, h) = layout.sheet.inches();
+        let (w, h) = layout.sheet_inches();
         let sheet = xf.rect([0.0, 0.0, w, h]);
         painter.rect_filled(
             sheet.translate(Vec2::new(3.0, 3.0)),
@@ -2191,7 +2178,7 @@ impl LayoutView {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
         let Some(layout) = &self.layout else { return };
-        let (_, sheet_h) = layout.sheet.inches();
+        let (_, sheet_h) = layout.sheet_inches();
         if self.fit_pending {
             self.fit(rect);
         }
@@ -2211,7 +2198,7 @@ impl LayoutView {
         };
         self.last_xf = Some(xf);
         if self.drag.is_none() {
-            self.sig = project_sig(&cx.project);
+            self.sig = project_sig(cx);
         }
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, SURROUND);

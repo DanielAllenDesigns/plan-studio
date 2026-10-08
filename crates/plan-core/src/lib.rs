@@ -34,9 +34,11 @@ pub mod cad;
 pub mod camera;
 pub mod defaults;
 pub mod details;
+pub mod dim_assoc;
 pub mod dimension;
 pub mod export;
 pub mod extras;
+pub mod find_text;
 pub mod floors;
 pub mod foundation;
 pub mod geometry;
@@ -73,7 +75,7 @@ pub use history::History;
 pub use images::{Distribution, ImageSpec};
 pub use joins::{
     main_layer_lines, wall_end_joins, wall_faces, wall_layer_bands, wall_layer_outlines,
-    wall_outlines, ConnectionKind, LayerBand, WallLayerOutline, WallOutline,
+    wall_outlines, walls_equal, ConnectionKind, LayerBand, WallLayerOutline, WallOutline,
 };
 pub use layer_sets::{LayerSetDef, LayerSets, LayerState, SavedPlanView};
 pub use layers::{Layer, LayerSet, LineStyle};

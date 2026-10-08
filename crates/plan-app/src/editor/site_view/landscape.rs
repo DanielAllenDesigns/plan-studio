@@ -13,8 +13,8 @@ use plan_terrain::{
         LAYER_BEDS, LAYER_BREAKS, LAYER_FEATURES, LAYER_GRASS, LAYER_PLANTS, LAYER_SPRINKLERS,
         LAYER_STONES, LAYER_WALLS, LAYER_WATER,
     },
-    landscape_meshes, ElevationLine, Feature, Landscape, PlanItem, PlanShape, RoadStrip, Terrain,
-    TerrainBreak, TerrainWall,
+    landscape_meshes, terrain_object_id, terrain_object_of, ElevationLine, Feature, Landscape,
+    PlanItem, PlanShape, RoadStrip, Terrain, TerrainBreak, TerrainPart, TerrainWall,
 };
 
 /// An element of the terrain that has its own specification dialog.
@@ -145,6 +145,244 @@ pub fn move_terrain_element(t: &mut Terrain, hit: TerrainHit, delta: Point) -> b
             .map(|l| shift(&mut l.points, delta))
             .is_some(),
     }
+}
+
+// ----- terrain elements as selectable objects -----
+
+/// Does the element `hit` names exist?
+pub fn hit_exists(t: &Terrain, hit: TerrainHit) -> bool {
+    match hit {
+        TerrainHit::Perimeter => !t.perimeter.is_empty(),
+        TerrainHit::Point(i) => i < t.elevation_points.len(),
+        TerrainHit::Line(i) => i < t.elevation_lines.len(),
+        TerrainHit::Region(i) => i < t.elevation_regions.len(),
+        TerrainHit::Modifier(i) => i < t.modifiers.len(),
+        TerrainHit::Feature(i) => i < t.features.len(),
+        TerrainHit::Road(i) => i < t.roads.len(),
+        TerrainHit::Break(i) => i < t.breaks.len(),
+        TerrainHit::Wall(i) => i < t.walls.len(),
+        TerrainHit::Landscape(i) => i < t.landscape.len(),
+    }
+}
+
+/// Every element the Select tool can pick, in drawing order: everything but
+/// the perimeter (that is the whole terrain, `ObjectRef::Terrain`).
+pub fn all_hits(t: &Terrain) -> Vec<TerrainHit> {
+    let mut out = Vec::new();
+    out.extend((0..t.elevation_points.len()).map(TerrainHit::Point));
+    out.extend((0..t.elevation_lines.len()).map(TerrainHit::Line));
+    out.extend((0..t.elevation_regions.len()).map(TerrainHit::Region));
+    out.extend((0..t.modifiers.len()).map(TerrainHit::Modifier));
+    out.extend((0..t.features.len()).map(TerrainHit::Feature));
+    out.extend((0..t.roads.len()).map(TerrainHit::Road));
+    out.extend((0..t.breaks.len()).map(TerrainHit::Break));
+    out.extend((0..t.walls.len()).map(TerrainHit::Wall));
+    out.extend((0..t.landscape.len()).map(TerrainHit::Landscape));
+    out
+}
+
+/// The plan points that outline the element: the vertices its handles sit on
+/// (empty when it is gone).
+pub fn hit_points(t: &Terrain, hit: TerrainHit) -> Vec<Point> {
+    match hit {
+        TerrainHit::Perimeter => t.perimeter.clone(),
+        TerrainHit::Point(i) => t
+            .elevation_points
+            .get(i)
+            .map(|e| e.pos)
+            .into_iter()
+            .collect(),
+        TerrainHit::Line(i) => t
+            .elevation_lines
+            .get(i)
+            .map(|l| l.points.clone())
+            .unwrap_or_default(),
+        TerrainHit::Region(i) => t
+            .elevation_regions
+            .get(i)
+            .map(|r| r.polygon.clone())
+            .unwrap_or_default(),
+        TerrainHit::Modifier(i) => t
+            .modifiers
+            .get(i)
+            .map(|m| m.polygon.clone())
+            .unwrap_or_default(),
+        TerrainHit::Feature(i) => t
+            .features
+            .get(i)
+            .map(|f| f.polygon.clone())
+            .unwrap_or_default(),
+        TerrainHit::Road(i) => t
+            .roads
+            .get(i)
+            .map(|r| r.centerline.clone())
+            .unwrap_or_default(),
+        TerrainHit::Break(i) => t
+            .breaks
+            .get(i)
+            .map(|b| b.points.clone())
+            .unwrap_or_default(),
+        TerrainHit::Wall(i) => t.walls.get(i).map(|w| w.points.clone()).unwrap_or_default(),
+        TerrainHit::Landscape(i) => t
+            .landscape
+            .get(i)
+            .map(|l| l.points.clone())
+            .unwrap_or_default(),
+    }
+}
+
+/// Is the element's outline closed (a region) rather than a path or a point?
+pub fn hit_is_closed(t: &Terrain, hit: TerrainHit) -> bool {
+    match hit {
+        TerrainHit::Perimeter
+        | TerrainHit::Region(_)
+        | TerrainHit::Modifier(_)
+        | TerrainHit::Feature(_) => true,
+        TerrainHit::Landscape(i) => t.landscape.get(i).is_some_and(Landscape::is_region),
+        _ => false,
+    }
+}
+
+/// Moves vertex `n` of the element to `to`; false when either is gone.
+pub fn move_terrain_vertex(t: &mut Terrain, hit: TerrainHit, n: usize, to: Point) -> bool {
+    fn put(v: &mut [Point], n: usize, to: Point) -> bool {
+        v.get_mut(n).map(|p| *p = to).is_some()
+    }
+    match hit {
+        TerrainHit::Perimeter => put(&mut t.perimeter, n, to),
+        TerrainHit::Point(i) => {
+            n == 0 && t.elevation_points.get_mut(i).map(|e| e.pos = to).is_some()
+        }
+        TerrainHit::Line(i) => t
+            .elevation_lines
+            .get_mut(i)
+            .is_some_and(|l| put(&mut l.points, n, to)),
+        TerrainHit::Region(i) => t
+            .elevation_regions
+            .get_mut(i)
+            .is_some_and(|r| put(&mut r.polygon, n, to)),
+        TerrainHit::Modifier(i) => t
+            .modifiers
+            .get_mut(i)
+            .is_some_and(|m| put(&mut m.polygon, n, to)),
+        TerrainHit::Feature(i) => t
+            .features
+            .get_mut(i)
+            .is_some_and(|f| put(&mut f.polygon, n, to)),
+        TerrainHit::Road(i) => t
+            .roads
+            .get_mut(i)
+            .is_some_and(|r| put(&mut r.centerline, n, to)),
+        TerrainHit::Break(i) => t
+            .breaks
+            .get_mut(i)
+            .is_some_and(|b| put(&mut b.points, n, to)),
+        TerrainHit::Wall(i) => t
+            .walls
+            .get_mut(i)
+            .is_some_and(|w| put(&mut w.points, n, to)),
+        TerrainHit::Landscape(i) => t
+            .landscape
+            .get_mut(i)
+            .is_some_and(|l| put(&mut l.points, n, to)),
+    }
+}
+
+/// The layer the element is drawn on when it has one of its own (features,
+/// breaks, walls and landscape objects); the others share the terrain's.
+pub fn hit_layer(t: &Terrain, hit: TerrainHit) -> Option<String> {
+    match hit {
+        TerrainHit::Feature(i) => t
+            .features
+            .get(i)
+            .map(|f| f.style.layer_or(LAYER_FEATURES).to_string()),
+        TerrainHit::Break(i) => t
+            .breaks
+            .get(i)
+            .map(|b| b.style.layer_or(LAYER_BREAKS).to_string()),
+        TerrainHit::Wall(i) => t
+            .walls
+            .get(i)
+            .map(|w| w.style.layer_or(w.default_layer()).to_string()),
+        TerrainHit::Landscape(i) => t.landscape.get(i).map(|l| l.layer().to_string()),
+        _ => None,
+    }
+}
+
+/// Chief's name for the kind of element.
+pub fn hit_type_name(t: Option<&Terrain>, hit: TerrainHit) -> &'static str {
+    match hit {
+        TerrainHit::Perimeter => "Terrain Perimeter",
+        TerrainHit::Point(_) => "Elevation Point",
+        TerrainHit::Line(_) => "Elevation Line",
+        TerrainHit::Region(_) => "Elevation Region",
+        TerrainHit::Modifier(_) => "Terrain Modifier",
+        TerrainHit::Feature(_) => "Terrain Feature",
+        TerrainHit::Road(_) => "Road",
+        TerrainHit::Break(_) => "Terrain Break",
+        TerrainHit::Wall(i) => match t.and_then(|t| t.walls.get(i)) {
+            Some(w) if w.kind == plan_terrain::WallKind::Curb => "Terrain Curb",
+            _ => "Terrain Wall",
+        },
+        TerrainHit::Landscape(i) => t
+            .and_then(|t| t.landscape.get(i))
+            .map_or("Landscape Object", Landscape::name),
+    }
+}
+
+/// Removes several elements; deleting from the highest index down keeps the
+/// others addressable. Returns how many went.
+pub fn remove_terrain_elements(t: &mut Terrain, hits: &[TerrainHit]) -> usize {
+    fn rank(h: &TerrainHit) -> (u8, usize) {
+        match *h {
+            TerrainHit::Perimeter => (0, 0),
+            TerrainHit::Point(i) => (1, i),
+            TerrainHit::Line(i) => (2, i),
+            TerrainHit::Region(i) => (3, i),
+            TerrainHit::Modifier(i) => (4, i),
+            TerrainHit::Feature(i) => (5, i),
+            TerrainHit::Road(i) => (6, i),
+            TerrainHit::Break(i) => (7, i),
+            TerrainHit::Wall(i) => (8, i),
+            TerrainHit::Landscape(i) => (9, i),
+        }
+    }
+    let mut sorted = hits.to_vec();
+    sorted.sort_by_key(|h| std::cmp::Reverse(rank(h)));
+    sorted.dedup();
+    sorted
+        .into_iter()
+        .filter(|h| super::remove_terrain_element(t, *h))
+        .count()
+}
+
+/// Moves several elements by `delta`; returns how many moved.
+pub fn move_terrain_elements(t: &mut Terrain, hits: &[TerrainHit], delta: Point) -> usize {
+    hits.iter()
+        .filter(|h| move_terrain_element(t, **h, delta))
+        .count()
+}
+
+/// The `object_id` of the 3D meshes of the element (0 when it has none: only
+/// features, roads, walls and landscape objects are meshed).
+pub fn hit_mesh_id(hit: TerrainHit) -> u64 {
+    match hit {
+        TerrainHit::Feature(i) => terrain_object_id(TerrainPart::Feature, i),
+        TerrainHit::Road(i) => terrain_object_id(TerrainPart::Road, i),
+        TerrainHit::Wall(i) => terrain_object_id(TerrainPart::Wall, i),
+        TerrainHit::Landscape(i) => terrain_object_id(TerrainPart::Landscape, i),
+        _ => 0,
+    }
+}
+
+/// The element a 3D mesh `object_id` belongs to, if it is a terrain object's.
+pub fn hit_for_mesh_id(id: u64) -> Option<TerrainHit> {
+    terrain_object_of(id).map(|(part, i)| match part {
+        TerrainPart::Feature => TerrainHit::Feature(i),
+        TerrainPart::Wall => TerrainHit::Wall(i),
+        TerrainPart::Landscape => TerrainHit::Landscape(i),
+        TerrainPart::Road => TerrainHit::Road(i),
+    })
 }
 
 /// Adds the Chief layers of the landscape objects to the plan's layer list
@@ -443,5 +681,110 @@ mod tests {
         cx.undo();
         assert!(load_terrain(&cx.project).is_none_or(|r| r.terrain.walls.is_empty()));
         assert!(terrain_feature_meshes(&cx.project).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod element_tests {
+    use super::*;
+    use plan_terrain::{Landscape, LandscapeKind, ShapeKind, WallKind};
+
+    fn pt(x: f64, y: f64) -> Point {
+        Point::new(x, y)
+    }
+
+    fn terrain() -> Terrain {
+        let mut t = Terrain::default();
+        for i in 0..3 {
+            t.walls.push(TerrainWall::new(
+                WallKind::Wall,
+                vec![
+                    pt(0.0, f64::from(i) * 100.0),
+                    pt(100.0, f64::from(i) * 100.0),
+                ],
+                false,
+            ));
+        }
+        t.landscape.push(Landscape::new(
+            LandscapeKind::GardenBed,
+            ShapeKind::Polyline,
+            vec![pt(0.0, 500.0), pt(100.0, 500.0), pt(100.0, 600.0)],
+        ));
+        t
+    }
+
+    #[test]
+    fn several_elements_are_removed_without_disturbing_each_other() {
+        let mut t = terrain();
+        // Wall 0 and wall 2 together: removing 0 first would shift 2 onto 1.
+        let n = remove_terrain_elements(&mut t, &[TerrainHit::Wall(0), TerrainHit::Wall(2)]);
+        assert_eq!(n, 2);
+        assert_eq!(t.walls.len(), 1);
+        assert_eq!(t.walls[0].points[0].y, 100.0, "wall 1 is the one left");
+        // Duplicates and elements that are gone count once or not at all.
+        let n = remove_terrain_elements(
+            &mut t,
+            &[
+                TerrainHit::Wall(0),
+                TerrainHit::Wall(0),
+                TerrainHit::Wall(7),
+            ],
+        );
+        assert_eq!(n, 1);
+        assert!(t.walls.is_empty() && t.landscape.len() == 1);
+    }
+
+    #[test]
+    fn vertices_move_and_elements_describe_themselves() {
+        let mut t = terrain();
+        let bed = TerrainHit::Landscape(0);
+        assert!(hit_exists(&t, bed) && !hit_exists(&t, TerrainHit::Landscape(1)));
+        assert_eq!(hit_points(&t, bed).len(), 3);
+        assert!(hit_is_closed(&t, bed));
+        assert!(!hit_is_closed(&t, TerrainHit::Wall(0)));
+        assert!(move_terrain_vertex(&mut t, bed, 1, pt(120.0, 520.0)));
+        assert_eq!(hit_points(&t, bed)[1], pt(120.0, 520.0));
+        assert!(!move_terrain_vertex(&mut t, bed, 9, pt(0.0, 0.0)));
+        assert!(!move_terrain_vertex(
+            &mut t,
+            TerrainHit::Wall(9),
+            0,
+            pt(0.0, 0.0)
+        ));
+        assert_eq!(
+            hit_layer(&t, bed).as_deref(),
+            Some("Landscaping, Garden Beds")
+        );
+        assert_eq!(
+            hit_layer(&t, TerrainHit::Wall(1)).as_deref(),
+            Some("Terrain, Walls")
+        );
+        assert_eq!(hit_layer(&t, TerrainHit::Point(0)), None);
+        assert_eq!(hit_type_name(Some(&t), bed), "Garden Bed");
+        assert_eq!(hit_type_name(None, TerrainHit::Wall(0)), "Terrain Wall");
+        let curb = {
+            let mut c = TerrainWall::new(WallKind::Curb, vec![pt(0.0, 0.0), pt(10.0, 0.0)], false);
+            c.height = 6.0;
+            c
+        };
+        t.walls.push(curb);
+        assert_eq!(hit_type_name(Some(&t), TerrainHit::Wall(3)), "Terrain Curb");
+        // Every pickable element but the perimeter.
+        assert_eq!(all_hits(&t).len(), 5);
+        assert!(!all_hits(&t).contains(&TerrainHit::Perimeter));
+    }
+
+    #[test]
+    fn mesh_ids_name_the_element_they_came_from() {
+        for hit in [
+            TerrainHit::Feature(2),
+            TerrainHit::Road(0),
+            TerrainHit::Wall(5),
+            TerrainHit::Landscape(11),
+        ] {
+            assert_eq!(hit_for_mesh_id(hit_mesh_id(hit)), Some(hit));
+        }
+        assert_eq!(hit_mesh_id(TerrainHit::Point(1)), 0);
+        assert_eq!(hit_for_mesh_id(17), None);
     }
 }

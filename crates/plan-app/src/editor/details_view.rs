@@ -33,7 +33,7 @@ use eframe::egui::{self, Color32, Pos2, Shape, Stroke};
 use plan_3d::triangulate::ear_clip;
 use plan_core::details::{
     self, bounds, circle_points, corner_near, exterior_corners, wall_strip, CornerBoard,
-    DeckPolygon, DetailRef, DetailsLayer, ExteriorCorner, MaterialRegion, MoldingLine,
+    DeckPolygon, DetailRef, DetailStyle, DetailsLayer, ExteriorCorner, MaterialRegion, MoldingLine,
     MoldingProfile, Quoin, RegionKind, Solid3d, SolidKind, WallHatch, CORNER_TRIM_LAYER,
     DECK_LAYER, MOLDING_LAYER, REGION_LAYER, SOLID_LAYER,
 };
@@ -804,6 +804,25 @@ fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
+/// The ink of a detail: its own color (Line Style page), else its layer's.
+fn ink_of(cx: &EditorContext, s: &DetailStyle, layer: &str, fallback: [u8; 3]) -> Color32 {
+    s.color
+        .map(rgb)
+        .unwrap_or_else(|| layer_color(cx, layer, fallback))
+}
+
+/// Pixel width of a detail's main line: `base` px, or its own plotted weight
+/// (1/100 mm) scaled from the 0.18 mm that `base` stands for.
+fn width_of(s: &DetailStyle, base: f32) -> f32 {
+    s.weight
+        .map_or(base, |w| (w as f32 / 18.0 * base).clamp(0.3, 8.0))
+}
+
+/// The dash of a detail's main line: its own, else `default`.
+fn dash_of(s: &DetailStyle, default: LineStyle) -> LineStyle {
+    s.dash.unwrap_or(default)
+}
+
 /// A world outline in `stroke`, optionally closed, in the given line style
 /// (also the tool's rubber band).
 pub fn stroke_line(
@@ -865,7 +884,7 @@ fn draw_floor_region(
     if r.outline.len() < 3 {
         return;
     }
-    let ink = layer_color(cx, &r.layer, [110, 110, 140]);
+    let ink = ink_of(cx, &r.style, &r.layer, [110, 110, 140]);
     let (pattern, color) = material_look(&r.material);
     fill_polygon(painter, cam, &r.outline, rgb(color).gamma_multiply(0.35));
     if cam.px_per_in >= MIN_HATCH_PX_PER_IN && pattern != Pattern::None {
@@ -891,8 +910,8 @@ fn draw_floor_region(
         cam,
         &r.outline,
         true,
-        Stroke::new(1.2_f32, ink),
-        LineStyle::Solid,
+        Stroke::new(width_of(&r.style, 1.2), ink),
+        dash_of(&r.style, LineStyle::Solid),
     );
 }
 
@@ -900,7 +919,7 @@ fn draw_deck(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, d: &Deck
     if d.outline.len() < 3 {
         return;
     }
-    let ink = layer_color(cx, &d.layer, [150, 110, 60]);
+    let ink = ink_of(cx, &d.style, &d.layer, [150, 110, 60]);
     fill_polygon(painter, cam, &d.outline, ink.gamma_multiply(0.25));
     if cam.px_per_in >= MIN_HATCH_PX_PER_IN {
         let pattern = Pattern::Lines {
@@ -918,14 +937,14 @@ fn draw_deck(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, d: &Deck
             Stroke::new(0.6_f32, ink.gamma_multiply(0.7)),
         );
     }
-    let width = if d.railing { 2.8_f32 } else { 1.6_f32 };
+    let width = width_of(&d.style, if d.railing { 2.8_f32 } else { 1.6_f32 });
     stroke_line(
         painter,
         cam,
         &d.outline,
         true,
         Stroke::new(width, ink),
-        LineStyle::Solid,
+        dash_of(&d.style, LineStyle::Solid),
     );
     if d.railing {
         // Posts at the corners.
@@ -936,14 +955,24 @@ fn draw_deck(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, d: &Deck
 }
 
 fn draw_solid(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, s: &Solid3d) {
-    let ink = layer_color(cx, &s.layer, [90, 90, 90]);
+    let ink = ink_of(cx, &s.style, &s.layer, [90, 90, 90]);
     let foot = s.footprint();
-    let style = match s.kind {
-        SolidKind::Face { .. } => LineStyle::Dotted,
-        _ => LineStyle::Dashed,
-    };
+    let style = dash_of(
+        &s.style,
+        match s.kind {
+            SolidKind::Face { .. } => LineStyle::Dotted,
+            _ => LineStyle::Dashed,
+        },
+    );
     fill_polygon(painter, cam, &foot, ink.gamma_multiply(0.12));
-    stroke_line(painter, cam, &foot, true, Stroke::new(1.3_f32, ink), style);
+    stroke_line(
+        painter,
+        cam,
+        &foot,
+        true,
+        Stroke::new(width_of(&s.style, 1.3), ink),
+        style,
+    );
     // The apex or center of round and pointed solids.
     let mark = matches!(
         s.kind,
@@ -996,7 +1025,7 @@ fn draw_wall_region(
         return;
     };
     let strip = wall_strip(wall, u0, u1);
-    let ink = layer_color(cx, &r.layer, [110, 110, 140]);
+    let ink = ink_of(cx, &r.style, &r.layer, [110, 110, 140]);
     let (pattern, color) = material_look(&r.material);
     fill_polygon(painter, cam, &strip, rgb(color).gamma_multiply(0.5));
     if cam.px_per_in >= MIN_HATCH_PX_PER_IN && pattern != Pattern::None {
@@ -1012,8 +1041,8 @@ fn draw_wall_region(
         cam,
         &strip,
         true,
-        Stroke::new(1.0_f32, ink),
-        LineStyle::Solid,
+        Stroke::new(width_of(&r.style, 1.0), ink),
+        dash_of(&r.style, LineStyle::Solid),
     );
 }
 
@@ -1028,7 +1057,7 @@ fn draw_hatch(
         return;
     }
     let poly = hatch_polygon(cx, wall);
-    let ink = layer_color(cx, &h.layer, [110, 110, 140]);
+    let ink = ink_of(cx, &h.style, &h.layer, [110, 110, 140]);
     let scale = paper(cx);
     let strokes = cached_strokes(
         (
@@ -1041,11 +1070,16 @@ fn draw_hatch(
         ),
         || hatch_strokes(h, &poly, scale),
     );
-    draw_strokes(painter, cam, &strokes, Stroke::new(0.75_f32, ink));
+    draw_strokes(
+        painter,
+        cam,
+        &strokes,
+        Stroke::new(width_of(&h.style, 0.75), ink),
+    );
 }
 
 fn draw_corner_board(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, b: &CornerBoard) {
-    let ink = layer_color(cx, &b.layer, [150, 110, 70]);
+    let ink = ink_of(cx, &b.style, &b.layer, [150, 110, 70]);
     let outline = b.outline();
     fill_polygon(painter, cam, &outline, Color32::from_rgb(250, 248, 240));
     stroke_line(
@@ -1053,13 +1087,13 @@ fn draw_corner_board(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, 
         cam,
         &outline,
         true,
-        Stroke::new(1.2_f32, ink),
-        LineStyle::Solid,
+        Stroke::new(width_of(&b.style, 1.2), ink),
+        dash_of(&b.style, LineStyle::Solid),
     );
 }
 
 fn draw_quoin(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, q: &Quoin) {
-    let ink = layer_color(cx, &q.layer, [150, 110, 70]);
+    let ink = ink_of(cx, &q.style, &q.layer, [150, 110, 70]);
     let (la, lb) = q.course_lengths(0);
     let top = q.axes.l_polygon(q.corner, la, lb, q.depth);
     fill_polygon(painter, cam, &top, ink.gamma_multiply(0.3));
@@ -1068,8 +1102,8 @@ fn draw_quoin(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, q: &Quo
         cam,
         &top,
         true,
-        Stroke::new(1.2_f32, ink),
-        LineStyle::Solid,
+        Stroke::new(width_of(&q.style, 1.2), ink),
+        dash_of(&q.style, LineStyle::Solid),
     );
     // The next course (long and short swap) as ticks past the top block.
     if q.alternating && q.courses() > 1 {
@@ -1097,14 +1131,14 @@ fn draw_molding(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, m: &M
     if m.polyline.len() < 2 {
         return;
     }
-    let ink = layer_color(cx, &m.layer, [160, 90, 50]);
+    let ink = ink_of(cx, &m.style, &m.layer, [160, 90, 50]);
     stroke_line(
         painter,
         cam,
         &m.polyline,
         false,
-        Stroke::new(1.6_f32, ink),
-        LineStyle::Solid,
+        Stroke::new(width_of(&m.style, 1.6), ink),
+        dash_of(&m.style, LineStyle::Solid),
     );
     // The projection side, dashed.
     let mut edge: Vec<Point> = Vec::new();

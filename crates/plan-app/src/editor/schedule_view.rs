@@ -11,7 +11,10 @@
 //!
 //! [`draw_schedules`] is called once from `render::draw_plan`. Each schedule
 //! is a table (title row, header row, one row per object) whose rows come
-//! from the plan every frame, so it is always live. Text sizes are the plan
+//! from the plan, so it is always live: the built tables, their sizes and the
+//! callout labels are kept in a cache that is dropped on every change signal
+//! of the editor context (`EditorContext::cache_key`), so a frame that
+//! changed nothing only draws. Text sizes are the plan
 //! text style's character height in plan inches (the same scale as every
 //! other annotation). The same call draws the callout labels (D01, W03, C-01
 //! ...) next to doors, windows, cabinets and fixtures when a schedule of that
@@ -32,6 +35,9 @@ use plan_core::schedules::{
 use plan_core::{Id, Project, TextStyle};
 use plan_docs::schedule_kinds::{self, Callout};
 use plan_docs::Schedule as Table;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Characters narrower than this many character heights are rare; a column is
 /// sized as `chars * CHAR_W * height`.
@@ -87,7 +93,75 @@ pub fn is_selected(cx: &EditorContext, id: Id) -> bool {
 
 /// The schedules of the active floor.
 pub fn load(cx: &EditorContext) -> ScheduleLayer {
-    ScheduleLayer::load(cx.floor())
+    ScheduleLayer::clone(&layer_rc(cx))
+}
+
+// ===================================================================
+// Cache
+// ===================================================================
+
+/// What was built for the active floor since the last change signal.
+struct FloorCache {
+    key: (u64, u64),
+    floor: usize,
+    layer: Rc<ScheduleLayer>,
+    /// The built layout of a schedule (by floor and id), with the definition
+    /// it was built from.
+    layouts: HashMap<(usize, Id), (Schedule, Rc<Layout>)>,
+    /// Callouts per label source.
+    labels: Option<Rc<LabelSources>>,
+}
+
+/// Per label source: the layer its schedule is drawn on and its callouts.
+type LabelSources = Vec<(String, Vec<Callout>)>;
+
+thread_local! {
+    static CACHE: RefCell<Option<FloorCache>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` on the cache of `cx`'s current state, starting it afresh when a
+/// change signal or a floor switch happened since it was filled. `f` must not
+/// call back into this module.
+fn with_cache<R>(cx: &EditorContext, f: impl FnOnce(&mut FloorCache) -> R) -> R {
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let key = cx.cache_key();
+        if c.as_ref()
+            .is_none_or(|x| x.key != key || x.floor != cx.floor)
+        {
+            *c = Some(FloorCache {
+                key,
+                floor: cx.floor,
+                layer: Rc::new(ScheduleLayer::load(cx.floor())),
+                layouts: HashMap::new(),
+                labels: None,
+            });
+        }
+        f(c.as_mut().expect("just filled"))
+    })
+}
+
+fn layer_rc(cx: &EditorContext) -> Rc<ScheduleLayer> {
+    with_cache(cx, |c| c.layer.clone())
+}
+
+/// [`layout_of`] without the copy: the cached layout when `def` is the
+/// schedule it was built from, else built (and kept) now.
+pub fn layout_rc(cx: &EditorContext, def: &Schedule, floor: usize) -> Rc<Layout> {
+    with_cache(cx, |c| {
+        if let Some((d, l)) = c.layouts.get(&(floor, def.id)) {
+            if d == def {
+                return l.clone();
+            }
+        }
+        let l = Rc::new(layout(
+            table_for(cx, def, floor),
+            def,
+            text_height(&cx.project, def),
+        ));
+        c.layouts.insert((floor, def.id), (def.clone(), l.clone()));
+        l
+    })
 }
 
 /// Stores `layer` on floor `fi` and adds the layer the tables are drawn on.
@@ -209,17 +283,19 @@ pub fn translate_ids(cx: &mut EditorContext, ids: &[Id], d: Point) {
     }
     if any {
         layer.store(&mut cx.project.floors[fl]);
+        // The tables and labels drawn so far were built for the old place.
+        cx.mark_dirty();
     }
 }
 
 /// The screen-independent extent `(id, lower-left, upper-right)` of every
 /// schedule on the active floor (for box selection).
 pub fn extents(cx: &EditorContext) -> Vec<(Id, Point, Point)> {
-    load(cx)
+    layer_rc(cx)
         .schedules
         .iter()
         .map(|s| {
-            let (lo, hi) = layout_of(cx, s, cx.floor).bounds(s.position);
+            let (lo, hi) = layout_rc(cx, s, cx.floor).bounds(s.position);
             (s.id, lo, hi)
         })
         .collect()
@@ -339,24 +415,20 @@ impl Layout {
 
 /// The layout of schedule `def` placed on floor `floor`.
 pub fn layout_of(cx: &EditorContext, def: &Schedule, floor: usize) -> Layout {
-    layout(
-        table_for(cx, def, floor),
-        def,
-        text_height(&cx.project, def),
-    )
+    Layout::clone(&layout_rc(cx, def, floor))
 }
 
 /// The schedule of the active floor under `p` (the topmost one when tables
 /// overlap).
 pub fn pick(cx: &EditorContext, p: Point) -> Option<Id> {
-    let layer = load(cx);
+    let layer = layer_rc(cx);
     layer
         .schedules
         .iter()
         .rev()
         .filter(|s| cx.layers().is_visible(&s.layer))
         .find(|s| {
-            let l = layout_of(cx, s, cx.floor);
+            let l = layout_rc(cx, s, cx.floor);
             let (lo, hi) = l.bounds(s.position);
             p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
         })
@@ -370,7 +442,21 @@ pub fn pick(cx: &EditorContext, p: Point) -> Option<Id> {
 /// The labels to draw on the active floor: for each kind with labels, the
 /// first schedule on the floor that shows them (when its layer is visible).
 pub fn labels(cx: &EditorContext) -> Vec<Callout> {
-    let layer = load(cx);
+    let sources = label_sources(cx);
+    sources
+        .iter()
+        .filter(|(layer, _)| cx.layers().is_visible(layer))
+        .flat_map(|(_, callouts)| callouts.iter().cloned())
+        .collect()
+}
+
+/// The callouts of each label source on the active floor, whatever the
+/// visibility of its layer (cached with the tables).
+fn label_sources(cx: &EditorContext) -> Rc<LabelSources> {
+    if let Some(l) = with_cache(cx, |c| c.labels.clone()) {
+        return l;
+    }
+    let layer = layer_rc(cx);
     let mut out = Vec::new();
     for kind in [
         ScheduleKind::Door,
@@ -378,13 +464,15 @@ pub fn labels(cx: &EditorContext) -> Vec<Callout> {
         ScheduleKind::Cabinet,
         ScheduleKind::Fixture,
     ] {
-        let Some(def) = layer.label_source(kind) else {
-            continue;
-        };
-        if cx.layers().is_visible(&def.layer) {
-            out.extend(schedule_kinds::callouts(&cx.project, cx.floor, def));
+        if let Some(def) = layer.label_source(kind) {
+            out.push((
+                def.layer.clone(),
+                schedule_kinds::callouts(&cx.project, cx.floor, def),
+            ));
         }
     }
+    let out = Rc::new(out);
+    with_cache(cx, |c| c.labels = Some(out.clone()));
     out
 }
 
@@ -529,7 +617,7 @@ fn draw_label(
 /// Draws the active floor's schedule tables and callout labels. Called from
 /// `render::draw_plan`.
 pub fn draw_schedules(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    let layer = load(cx);
+    let layer = layer_rc(cx);
     if layer.is_empty() {
         return;
     }
@@ -538,7 +626,7 @@ pub fn draw_schedules(cx: &EditorContext, painter: &egui::Painter, cam: &Camera)
         if !cx.layers().is_visible(&s.layer) {
             continue;
         }
-        let l = layout_of(cx, s, cx.floor);
+        let l = layout_rc(cx, s, cx.floor);
         let style = cx.project.text_styles.resolve(&s.text_style);
         let ink = color_of(style, pal.text);
         draw_table(painter, cam, &l, s.position, ink, pal.background);

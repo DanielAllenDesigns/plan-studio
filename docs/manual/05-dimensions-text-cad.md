@@ -187,8 +187,7 @@ CAD blocks are named groups of CAD objects you can insert again. The **CAD Block
 | CAD Block Management (`V`) | A dialog listing the plan's blocks: rename, insert, edit or delete. |
 | Insert CAD Block | From the manager: click where the block's insertion point goes. |
 
-The commands that act on a selection run on the first frame after you pick them and return to Select Objects. Copy and paste carries a block as a plain group (no name, insertion point or attributes), because the clipboard copies only the selected objects;
-insert it from the manager instead.
+The commands that act on a selection run on the first frame after you pick them and return to Select Objects. Copy and paste carries a block whole when every object of the block was copied (its name, insertion point and the objects' styles come with it); copy only some of its objects and you get plain objects.
 
 ### Editing CAD objects
 
@@ -225,7 +224,7 @@ Dimensions, Automatic; Text; CAD, Default; Cabinets, Base; Cabinets, Wall; Elect
 Stairs; Roof Planes; Framing), each with a color and line weight. The tools add layers as they
 need them: `Ceiling Planes`, `Slabs`, `Piers/Pads`, `Floors, Holes`, `Ceilings, Holes`, `Deck Railing`,
 `Fencing` and the manual framing layers (`Framing, Floor Joists`, `Framing, Rafters`, `Framing, Posts`,
-`Framing, Beams`, `Framing, Trusses`). Roof, electrical, terrain and slab data no longer ride on
+`Framing, Beams`, `Framing, Trusses`). Roof, electrical, terrain, slab and CAD-style data no longer ride on
 hidden `... , Data` layers: they live in typed fields of the plan, as does framing (chapter 12.2), and files
 that still carry those layers are converted when opened.
 
@@ -248,7 +247,7 @@ Options...) shows a table with Name, Used (object count), Disp and Lock, plus Co
   (Presentation, Working, Electrical, Foundation, Roof Plan ...) come in through File > Templates > Import
   Chief Template.... Save Active View, Save Active View As, Edit Active View and creating views are (planned).
 - Line weights are stored in hundredths of a millimeter; View > Line Weights scales the on-screen strokes by them (chapter 1.4). A CAD object can carry a weight, color and dash of its own (5.6).
-- Per-object CAD styles, CAD blocks and the plan's text macros and note types are kept in small hidden records on the locked layer `CAD, Data` at the Round 7 commit; Round 8 is moving them into typed slots (chapter 14.3). Delete does not sweep a deleted object's record yet (harmless).
+- **Typed storage** (Round 8). A CAD object's own style (color, weight, dash, fill, arrows, rich text runs), the name and insertion point of a CAD block, the plan's text macros and its note types are no longer small hidden records on a locked `CAD, Data` layer. They are typed, serde-default fields of the plan: `Floor.cad_attrs` and `Floor.cad_blocks` for each floor, `Project.text_macros` and `Project.note_types` for the project (chapter 12.2). They save, undo and copy with the plan. A file from before this change is converted when it opens (the old records move into the fields once and the `CAD, Data` layer is removed; it is not an undo step). Deleting a CAD object deletes its style, and a block goes when none of its objects is left. Copy carries the styles of the copied objects and every CAD block whose objects were all copied, and Paste in Place gives each pasted block a group, name and points of its own, so the earlier remark that a pasted block loses its name and attributes no longer applies to the clipboard. A deleted block's empty object group stays in the group list (harmless).
 
 ## 5.6 Dialog: CAD Line / Polyline Specification
 

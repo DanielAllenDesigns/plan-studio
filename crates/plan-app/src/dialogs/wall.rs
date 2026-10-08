@@ -12,6 +12,13 @@ use plan_core::units::fmt_ft_in;
 use plan_core::walls::{DEFAULT_HALF_WALL_HEIGHT, DEFAULT_PONY_SPLIT};
 use plan_core::{FenceStyle, Id, Opening, Wall, WallClass, WallKind, WallTypeDef};
 
+/// Values a Roof tab control starts with when it is switched on.
+const ROOF_PITCH_DEFAULT: f64 = 8.0;
+const ROOF_UPPER_PITCH_DEFAULT: f64 = 12.0;
+const ROOF_OVERHANG_DEFAULT: f64 = 16.0;
+const ROOF_EXTEND_DEFAULT: f64 = 24.0;
+const ROOF_RETURN_DEFAULT: f64 = 24.0;
+
 /// Extras-map keys for the two default-wall dialogs (real ids count up from 1).
 const DEFAULT_EXTERIOR_KEY: Id = Id::MAX;
 const DEFAULT_INTERIOR_KEY: Id = Id::MAX - 1;
@@ -105,6 +112,26 @@ fn special_type(t: &WallTypeDef) -> Option<&'static str> {
         None
     }
 }
+
+/// The tabs of an exterior wall: its Roof tab is live.
+const WALL_TABS_EXTERIOR: &[Tab] = &[
+    on("General"),
+    on("Structure"),
+    on("Roof"),
+    off("Foundation"),
+    on("Wall Types"),
+    off("Wall Cap"),
+    off("Wall Covering"),
+    on("Rail Style"),
+    off("Newels/Balusters"),
+    off("Rails"),
+    on("Layer"),
+    off("Materials"),
+    on("Label"),
+    off("Components"),
+    off("Object Information"),
+    off("Schedule"),
+];
 
 const WALL_TABS: &[Tab] = &[
     on("General"),
@@ -932,6 +959,100 @@ impl WallForm {
         });
     }
 
+    /// Roof tab (RF-18..RF-27): what Build Roof does at this wall.
+    fn roof(&mut self, ui: &mut Ui) {
+        use plan_core::defaults::RoofWallKind as K;
+        section(ui, "Roof Options");
+        let r = &mut self.draft.roof;
+        for (kind, label) in [
+            (K::Hip, "Hip Wall"),
+            (K::FullGable, "Full Gable Wall"),
+            (K::DutchGable, "Dutch Gable Wall"),
+            (K::HighShedGable, "High Shed/Gable Wall"),
+            (K::KneeWall, "Knee Wall"),
+            (K::ExtendSlopeDownward, "Extend Slope Downward"),
+        ] {
+            ui.radio_value(&mut r.kind, kind, label);
+        }
+        if r.kind == K::ExtendSlopeDownward {
+            let mut drop = r.extend_drop.unwrap_or(ROOF_EXTEND_DEFAULT);
+            if self
+                .fields
+                .length_row(ui, "Drop below Eave", "roof_extend", &mut drop)
+            {
+                r.extend_drop = Some(drop.max(0.0));
+            }
+        }
+        if r.kind == K::KneeWall {
+            ui.weak("A knee wall makes no roof plane of its own; the roof passes over it.");
+        }
+
+        section(ui, "Pitch Options");
+        let mut own = r.pitch_in_12.is_some();
+        if ui.checkbox(&mut own, "Specify Pitch").changed() {
+            r.pitch_in_12 = own.then_some(ROOF_PITCH_DEFAULT);
+        }
+        if let Some(p) = &mut r.pitch_in_12 {
+            row(ui, "Pitch", |ui| {
+                ui.add(
+                    egui::DragValue::new(p)
+                        .range(0.5..=24.0)
+                        .speed(0.1)
+                        .max_decimals(2)
+                        .suffix(" : 12"),
+                );
+            });
+        }
+        let mut upper = r.upper_pitch.is_some();
+        let label = if r.kind == K::DutchGable {
+            "Starts Dutch Gable at Height"
+        } else {
+            "Upper Pitch"
+        };
+        if ui.checkbox(&mut upper, label).changed() {
+            r.upper_pitch = upper.then_some((ROOF_UPPER_PITCH_DEFAULT, self.draft.height + 48.0));
+        }
+        if let Some((rise, start)) = &mut r.upper_pitch {
+            if r.kind != K::DutchGable {
+                row(ui, "Upper Pitch", |ui| {
+                    ui.add(
+                        egui::DragValue::new(rise)
+                            .range(0.5..=60.0)
+                            .speed(0.1)
+                            .max_decimals(2)
+                            .suffix(" : 12"),
+                    );
+                });
+            }
+            self.fields
+                .length_row(ui, "Starts at Height", "roof_upper_start", start);
+            ui.weak("Height above the floor of this wall.");
+        }
+
+        section(ui, "Overhang");
+        let mut own = r.overhang.is_some();
+        if ui.checkbox(&mut own, "Specify Overhang").changed() {
+            r.overhang = own.then_some(ROOF_OVERHANG_DEFAULT);
+        }
+        if let Some(o) = &mut r.overhang {
+            self.fields.length_row(ui, "Length", "roof_overhang", o);
+            *o = o.max(0.0);
+        }
+
+        section(ui, "Auto Roof Return");
+        ui.checkbox(&mut r.auto_roof_return, "Auto Roof Return");
+        if r.auto_roof_return {
+            let mut len = r.return_length.unwrap_or(ROOF_RETURN_DEFAULT);
+            if self
+                .fields
+                .length_row(ui, "Length", "roof_return_length", &mut len)
+            {
+                r.return_length = Some(len.max(2.0));
+            }
+            ui.weak("Returns are made where this wall is a gable end.");
+        }
+    }
+
     fn wall_types(&mut self, ui: &mut Ui) {
         section(ui, "General");
         let current = self.current_type();
@@ -1062,7 +1183,11 @@ impl WallForm {
 
 impl SpecPages for WallForm {
     fn tabs(&self) -> &'static [Tab] {
-        WALL_TABS
+        if self.draft.kind == WallKind::Exterior && !self.target.is_default() {
+            WALL_TABS_EXTERIOR
+        } else {
+            WALL_TABS
+        }
     }
 
     fn error(&self) -> Option<String> {
@@ -1078,6 +1203,11 @@ impl SpecPages for WallForm {
         if self.draft.bottom_offset < 0.0 {
             return Some("Bottom height cannot be negative".into());
         }
+        if let Some((rise, _)) = self.draft.roof.upper_pitch {
+            if rise <= 0.0 {
+                return Some("Upper pitch must be greater than zero".into());
+            }
+        }
         let len = self.draft.length();
         let too_short = self.adjusted_openings().iter().any(|o| {
             o.start_offset() < OPENING_MARGIN - 1e-6 || o.end_offset() > len - OPENING_MARGIN + 1e-6
@@ -1086,9 +1216,10 @@ impl SpecPages for WallForm {
     }
 
     fn page(&mut self, ui: &mut Ui, tab: usize) {
-        match WALL_TABS[tab].name {
+        match self.tabs()[tab].name {
             "General" => self.general(ui),
             "Structure" => self.structure(ui),
+            "Roof" => self.roof(ui),
             "Wall Types" => self.wall_types(ui),
             "Rail Style" => self.rail_style(ui),
             "Layer" => self.layer(ui),
@@ -1365,6 +1496,36 @@ mod tests {
             f.error().as_deref(),
             Some("Bottom height cannot be negative")
         );
+    }
+
+    #[test]
+    fn the_roof_tab_of_an_exterior_wall_edits_the_directive() {
+        use plan_core::defaults::RoofWallKind;
+        let mut f = form(WallLock::Start);
+        f.draft.kind = WallKind::Interior;
+        assert!(f.tabs().iter().any(|t| t.name == "Roof" && !t.enabled));
+        f.draft.kind = WallKind::Exterior;
+        let roof = f.tabs().iter().position(|t| t.name == "Roof").unwrap();
+        assert!(f.tabs()[roof].enabled);
+        f.draft.roof.kind = RoofWallKind::ExtendSlopeDownward;
+        f.draft.roof.auto_roof_return = true;
+        f.draft.roof.upper_pitch = Some((18.0, 120.0));
+        f.draft.roof.pitch_in_12 = Some(6.0);
+        let drawn = page_texts(&mut f, roof);
+        for want in [
+            "Dutch Gable Wall",
+            "Knee Wall",
+            "Extend Slope Downward",
+            "Drop below Eave",
+            "Upper Pitch",
+            "Starts at Height",
+            "Auto Roof Return",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        assert!(f.error().is_none());
+        f.draft.roof.upper_pitch = Some((0.0, 120.0));
+        assert!(f.error().is_some());
     }
 
     #[test]

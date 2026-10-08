@@ -1,5 +1,7 @@
 # Parity spec: doors and windows (openings)
 
+> Status (2026-10-08): 110 ids: 42 Works, 34 Partial, 33 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+
 Reference: Chief Architect X18 door and window tools, opening edit handles and labels. Source: Chief's Reference
 Manual and documented behavior plus `docs/chief-x18-subtools.md` and the Door/Window Specification capture in
 `docs/chief-x18-dialogs.md`. **(verify in Chief)** marks recalled-but-unconfirmed detail. Ids are `DW-n`.

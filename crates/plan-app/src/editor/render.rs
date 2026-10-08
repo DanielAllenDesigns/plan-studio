@@ -14,6 +14,30 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec
 use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
 use plan_core::{Dimension, DimensionKind, Opening, OpeningKind, Wall, WallClass, WallKind};
+use std::collections::HashMap;
+
+/// Runs one stage of [`draw_plan`]. Test builds add the stage's time to
+/// [`SECTION_MS`] so the benchmark can say where a frame goes; elsewhere it is
+/// just the block.
+macro_rules! section {
+    ($name:literal, $($body:tt)*) => {{
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let out = { $($body)* };
+        #[cfg(test)]
+        SECTION_MS.with(|m| {
+            *m.borrow_mut().entry($name).or_insert(0.0) += started.elapsed().as_secs_f64() * 1000.0
+        });
+        out
+    }};
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Milliseconds spent per `draw_plan` stage since the last reset.
+    pub(crate) static SECTION_MS: std::cell::RefCell<std::collections::BTreeMap<&'static str, f64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
 
 /// Everything under the tool overlay.
 pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
@@ -21,53 +45,86 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     painter.rect_filled(cam.rect, 0.0, pal.background);
     // Everything from here to the highlights goes through View > Color.
     let content = restyle::mark(painter);
-    draw_grid(cx, painter, cam);
-    draw_reference_floor(cx, painter, cam);
-    crate::editor::site_view::draw_site(cx, painter, cam);
-    draw_rooms(cx, painter, cam);
+    section!("grid", draw_grid(cx, painter, cam));
+    section!("reference floor", draw_reference_floor(cx, painter, cam));
+    section!(
+        "site",
+        crate::editor::site_view::draw_site(cx, painter, cam)
+    );
+    section!("rooms", draw_rooms(cx, painter, cam));
     // Slabs, pads and piers sit under the walls.
-    crate::editor::foundation_view::draw_foundation(cx, painter, cam);
+    section!(
+        "foundation",
+        crate::editor::foundation_view::draw_foundation(cx, painter, cam)
+    );
     // Floor material regions, decks and 3D solids sit under the walls too.
-    crate::editor::details_view::draw_under(cx, painter, cam);
-    crate::editor::stairs_view::draw_stairs(cx, painter, cam);
-    crate::editor::placed::draw_placed(cx, painter, cam);
-    crate::editor::roof_view::draw_roofs(cx, painter, cam);
-    draw_walls(cx, painter, cam);
+    section!(
+        "details under",
+        crate::editor::details_view::draw_under(cx, painter, cam)
+    );
+    section!(
+        "stairs",
+        crate::editor::stairs_view::draw_stairs(cx, painter, cam)
+    );
+    section!(
+        "placed",
+        crate::editor::placed::draw_placed(cx, painter, cam)
+    );
+    section!(
+        "roofs",
+        crate::editor::roof_view::draw_roofs(cx, painter, cam)
+    );
+    section!("walls", draw_walls(cx, painter, cam));
     // Wall hatching and wall regions, corner trim and moldings over the walls.
-    crate::editor::details_view::draw_over(cx, painter, cam);
+    section!(
+        "details over",
+        crate::editor::details_view::draw_over(cx, painter, cam)
+    );
     let floor = cx.floor();
-    for wall in &floor.walls {
-        for o in floor.openings_on(wall.id) {
-            if cx.layers().is_visible(opening_layer(o)) {
-                weighted(cx, painter, opening_layer(o), || {
-                    draw_opening(painter, cam, wall, o, pal, false)
+    section!(
+        "openings",
+        for wall in &floor.walls {
+            for o in floor.openings_on(wall.id) {
+                if cx.layers().is_visible(opening_layer(o)) {
+                    weighted(cx, painter, opening_layer(o), || {
+                        draw_opening(painter, cam, wall, o, pal, false)
+                    });
+                }
+            }
+        }
+    );
+    // Devices sit on the wall faces: over the wall fill and the openings.
+    section!(
+        "devices",
+        crate::editor::site_view::draw_devices(cx, painter, cam)
+    );
+    section!(
+        "framing",
+        crate::editor::framing_view::draw(cx, painter, cam)
+    );
+    let fmt = cx.dim_format();
+    section!(
+        "dimensions",
+        for d in &floor.dimensions {
+            let layer = match d.kind {
+                DimensionKind::AutoExterior => "Dimensions, Automatic",
+                _ => "Dimensions, Manual",
+            };
+            if cx.layers().is_visible(layer) {
+                weighted(cx, painter, layer, || {
+                    draw_dimension(
+                        painter,
+                        cam,
+                        d,
+                        &fmt,
+                        Stroke::new(1.0_f32, pal.dimension_text),
+                        pal,
+                    )
                 });
             }
         }
-    }
-    // Devices sit on the wall faces: over the wall fill and the openings.
-    crate::editor::site_view::draw_devices(cx, painter, cam);
-    crate::editor::framing_view::draw(cx, painter, cam);
-    let fmt = cx.dim_format();
-    for d in &floor.dimensions {
-        let layer = match d.kind {
-            DimensionKind::AutoExterior => "Dimensions, Automatic",
-            _ => "Dimensions, Manual",
-        };
-        if cx.layers().is_visible(layer) {
-            weighted(cx, painter, layer, || {
-                draw_dimension(
-                    painter,
-                    cam,
-                    d,
-                    &fmt,
-                    Stroke::new(1.0_f32, pal.dimension_text),
-                    pal,
-                )
-            });
-        }
-    }
-    let attrs = floor.cad_attr_map();
+    );
+    section!("cad", let attrs = floor.cad_attr_map();
     for c in &floor.cad {
         if !cx.layers().is_visible(&c.layer) {
             continue;
@@ -78,11 +135,20 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
             }),
         }
-    }
-    crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam);
+    });
+    section!(
+        "space boxes",
+        crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam)
+    );
     // Placed schedule tables and their callout labels.
-    crate::editor::schedule_view::draw_schedules(cx, painter, cam);
-    crate::tools::camera::draw_camera_symbols(cx, painter, cam, None);
+    section!(
+        "schedules",
+        crate::editor::schedule_view::draw_schedules(cx, painter, cam)
+    );
+    section!(
+        "camera symbols",
+        crate::tools::camera::draw_camera_symbols(cx, painter, cam, None)
+    );
     draw_sheet(cx, painter, cam);
     if !cx.view_flags.contains(&ViewFlag::Color) {
         restyle::restyle_from(painter, content, restyle::monochrome);
@@ -198,10 +264,36 @@ fn wall_polygon(cx: &EditorContext, wall: &Wall) -> Vec<Point> {
     if wall.is_curved() {
         return wall.plan_polygon();
     }
-    cx.outlines
-        .iter()
-        .find(|o| o.wall_id == wall.id)
+    outline_index(cx, wall.id)
+        .and_then(|i| cx.outlines.get(i))
         .map_or_else(|| wall.footprint().to_vec(), |o| o.polygon.clone())
+}
+
+/// The context state `((uid, rev), outline count)` an outline index was built
+/// from, and the index: wall id to position in `cx.outlines`.
+type OutlineIndex = (((u64, u64), usize), HashMap<plan_core::Id, usize>);
+
+thread_local! {
+    static OUTLINE_INDEX: std::cell::RefCell<Option<OutlineIndex>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The position of wall `id`'s outline in `cx.outlines` (a scan of the list
+/// per wall made drawing quadratic in the number of walls).
+fn outline_index(cx: &EditorContext, id: plan_core::Id) -> Option<usize> {
+    OUTLINE_INDEX.with(|c| {
+        let mut c = c.borrow_mut();
+        let key = (cx.cache_key(), cx.outlines.len());
+        if c.as_ref().is_none_or(|(k, _)| *k != key) {
+            let mut map = HashMap::with_capacity(cx.outlines.len());
+            for (i, o) in cx.outlines.iter().enumerate() {
+                // The first outline of an id wins, like the scan it replaces.
+                map.entry(o.wall_id).or_insert(i);
+            }
+            *c = Some((key, map));
+        }
+        c.as_ref().and_then(|(_, m)| m.get(&id).copied())
+    })
 }
 
 fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
@@ -1124,3 +1216,8 @@ mod tests {
         assert!((r.last().unwrap().dist(Point::new(100.0, 0.0)) - 5.0).abs() < 1e-6);
     }
 }
+
+/// Performance benchmark on the large sample (`cargo test -p plan-app perf_bench -- --ignored --nocapture`).
+#[cfg(test)]
+#[path = "perf_bench.rs"]
+mod perf_bench;

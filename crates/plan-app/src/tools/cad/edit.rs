@@ -80,6 +80,71 @@ pub fn hatch_pattern(i: usize, spacing: f64) -> Option<Pattern> {
     })
 }
 
+/// The CAD edit tools as Edit toolbar commands: `(mode, command id)`. Run a
+/// command with [`run_edit_command`]; the ids are `EditActionKind::Custom` ids.
+pub const EDIT_COMMANDS: [(CadMode, &str); 12] = [
+    (CadMode::Fillet, "cad.fillet"),
+    (CadMode::Chamfer, "cad.chamfer"),
+    (CadMode::Offset, "cad.offset"),
+    (CadMode::Trim, "cad.trim"),
+    (CadMode::Extend, "cad.extend"),
+    (CadMode::BreakLine, "cad.break"),
+    (CadMode::ReverseDirection, "cad.reverse"),
+    (CadMode::MakeParallel, "cad.parallel"),
+    (CadMode::MakePerpendicular, "cad.perpendicular"),
+    (CadMode::ConvertToPolyline, "cad.to_polyline"),
+    (CadMode::ConvertToSpline, "cad.to_spline"),
+    (CadMode::PolylineToLines, "cad.polyline_to_lines"),
+];
+
+/// The Edit toolbar buttons of the CAD edit tools (Fillet, Chamfer, Offset,
+/// Trim, Extend, Break, Reverse Direction, Make Parallel / Perpendicular and
+/// the converts) when a drawn CAD object (not a text) is selected.
+pub fn edit_actions(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
+    use crate::editor::{EditAction, EditActionKind};
+    let floor = cx.floor();
+    let drawn = cx.selection.items.iter().any(|o| match o {
+        ObjectRef::Cad(id) => floor
+            .cad
+            .iter()
+            .any(|c| c.id == *id && !matches!(c.item, plan_core::cad::CadItem::Text { .. })),
+        _ => false,
+    });
+    if !drawn {
+        return Vec::new();
+    }
+    EDIT_COMMANDS
+        .iter()
+        .map(|(mode, id)| {
+            let label = mode.name();
+            EditAction {
+                kind: EditActionKind::Custom {
+                    id,
+                    label,
+                    icon: "",
+                },
+                label,
+                icon: None,
+                enabled: true,
+            }
+        })
+        .collect()
+}
+
+/// Runs an Edit toolbar command of the CAD edit tools: switches to that mode
+/// of the CAD tool (the selection stays, the converts act on it at once).
+/// False when `id` is not one of the CAD commands.
+pub fn run_edit_command(cx: &mut EditorContext, id: &str) -> bool {
+    match EDIT_COMMANDS.iter().find(|(_, c)| *c == id) {
+        Some((mode, _)) => {
+            cx.requests
+                .push(EditorRequest::SetTool(ToolId::CadVariant(*mode)));
+            true
+        }
+        None => false,
+    }
+}
+
 /// How the Spline tool fits its curve (CAD-29).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SplineKind {

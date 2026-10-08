@@ -71,7 +71,7 @@ const BLIND_REACH: f64 = 30.0;
 
 /// The Cabinet flyout, in order; Tab cycles through it. Custom Counter Hole
 /// is a tool-only kind that cuts a hole instead of placing a cabinet.
-pub const KINDS: [CabinetKind; 16] = [
+pub const KINDS: [CabinetKind; 17] = [
     CabinetKind::Base,
     CabinetKind::Wall,
     CabinetKind::FullHeight,
@@ -88,13 +88,17 @@ pub const KINDS: [CabinetKind; 16] = [
     CabinetKind::CustomCountertop,
     CabinetKind::CustomBacksplash,
     CabinetKind::CounterHole,
+    CabinetKind::SoffitPolygon,
 ];
 
 /// Kinds drawn as a polygon or path instead of placed with one click.
 pub fn is_polygon(kind: CabinetKind) -> bool {
     matches!(
         kind,
-        CabinetKind::CustomCountertop | CabinetKind::CustomBacksplash | CabinetKind::CounterHole
+        CabinetKind::CustomCountertop
+            | CabinetKind::CustomBacksplash
+            | CabinetKind::CounterHole
+            | CabinetKind::SoffitPolygon
     )
 }
 
@@ -798,6 +802,28 @@ impl CabinetTool {
                     }
                 }
             }
+            CabinetKind::SoffitPolygon => {
+                // Same size and height as the Soffit variant's box.
+                let base = Cabinet::new(CabinetKind::Soffit, 12.0);
+                let Some(cab) = Cabinet::soffit_polygon(&pts, base.height, base.elevation) else {
+                    cx.status = "A soffit needs three corners".into();
+                    return ToolResult::consumed();
+                };
+                cx.begin_change("Place Soffit Polygon");
+                match add_cabinet(&mut cx.project, fl, cab) {
+                    Some(id) => {
+                        cx.selection.set(ObjectRef::Cabinet(id));
+                        cx.mark_dirty();
+                        cx.status.clear();
+                        ToolResult::committed("Place Soffit Polygon")
+                    }
+                    None => {
+                        cx.cancel_change();
+                        cx.status = "The plan's cabinets could not be read".into();
+                        ToolResult::consumed()
+                    }
+                }
+            }
             _ => {
                 cx.begin_change("Place Counter Hole");
                 match placed::add_counter_hole(cx, &pts) {
@@ -983,6 +1009,9 @@ impl Tool for CabinetTool {
             }
             CabinetKind::CustomBacksplash => {
                 "Custom Backsplash: click the points of its path, Enter finishes, Backspace removes a point".to_string()
+            }
+            CabinetKind::SoffitPolygon => {
+                "Soffit Polygon: click the corners of the soffit (or drag a rectangle), Enter or the first corner finishes, Backspace removes a corner".to_string()
             }
             k if k.is_filler() => {
                 "Click into a gap to fill it between the wall and a cabinet; Tab changes the cabinet type".to_string()
@@ -1799,6 +1828,33 @@ mod tests {
         bump(&load_cabinets(cx.floor()), &mut pen, 0);
         assert!((pen.position.y - 27.0).abs() < 1e-9, "{:?}", pen.position);
         assert!((pen.position.x - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_soffit_polygon_is_drawn_by_clicking_its_corners() {
+        let mut cx = setup();
+        let mut t = CabinetTool::default();
+        t.set_kind(CabinetKind::SoffitPolygon);
+        for (x, y) in [
+            (0.0, 0.0),
+            (60.0, 0.0),
+            (60.0, 12.0),
+            (12.0, 12.0),
+            (12.0, 40.0),
+        ] {
+            click_clear(&mut t, &mut cx, x, y);
+        }
+        let r = t.key(&mut cx, KeyEvent::key(Key::Enter));
+        assert_eq!(r.commit.as_deref(), Some("Place Soffit Polygon"));
+        let list = cabs(&cx);
+        assert_eq!(list.len(), 1);
+        let so = &list[0];
+        assert_eq!(so.kind, CabinetKind::Soffit, "stored as an ordinary soffit");
+        assert_eq!(so.custom.as_ref().unwrap().outline.len(), 5);
+        assert_eq!(so.elevation, 84.0);
+        assert!(!plan_cabinets::meshes(so).is_empty());
+        assert_eq!(cx.undo().as_deref(), Some("Place Soffit Polygon"));
+        assert!(cabs(&cx).is_empty());
     }
 
     #[test]

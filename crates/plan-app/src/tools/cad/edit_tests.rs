@@ -743,3 +743,66 @@ fn every_cad_text_and_dimension_flyout_entry_activates() {
     }
     assert!(total >= 40, "{total} entries");
 }
+
+#[test]
+fn the_cad_edit_tools_are_edit_toolbar_buttons_for_a_selected_drawing() {
+    use crate::editor::EditActionKind;
+    let mut cx = new_cx();
+    assert!(edit_actions(&cx).is_empty(), "nothing selected");
+    let l = line(&mut cx, pt(0.0, 0.0), pt(100.0, 0.0));
+    cx.selection.set(ObjectRef::Cad(l));
+    let t = tool(CadMode::Line);
+    let actions = t.edit_toolbar(&cx);
+    let labels: Vec<&str> = actions.iter().map(|a| a.label).collect();
+    for want in [
+        "Open Object",
+        "Fillet",
+        "Chamfer",
+        "Offset",
+        "Trim Line",
+        "Extend Line",
+    ] {
+        assert!(labels.contains(&want), "{want} in {labels:?}");
+    }
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|a| matches!(a.kind, EditActionKind::Custom { .. }))
+            .count(),
+        EDIT_COMMANDS.len()
+    );
+    // Clicking a button switches the CAD tool to that mode.
+    let fillet = actions.iter().find(|a| a.label == "Fillet").unwrap();
+    cx.apply_edit_action(fillet.kind);
+    assert_eq!(
+        cx.requests,
+        vec![EditorRequest::SetTool(ToolId::CadVariant(CadMode::Fillet))]
+    );
+    assert!(
+        !cx.selection.is_empty(),
+        "the selection stays for the converts"
+    );
+    // Every command id maps to its mode; others are not ours.
+    for (mode, id) in EDIT_COMMANDS {
+        cx.requests.clear();
+        assert!(run_edit_command(&mut cx, id));
+        assert_eq!(
+            cx.requests,
+            vec![EditorRequest::SetTool(ToolId::CadVariant(mode))]
+        );
+    }
+    assert!(!run_edit_command(&mut cx, "cad.nope"));
+    // A text object has no CAD edit buttons.
+    let txt = cx.project.add_cad(
+        0,
+        CAD_LAYER,
+        CadItem::Text {
+            pos: pt(0.0, 0.0),
+            text: "Note".into(),
+            height: 3.0,
+            angle: 0.0,
+        },
+    );
+    cx.selection.set(ObjectRef::Cad(txt));
+    assert!(edit_actions(&cx).is_empty());
+}

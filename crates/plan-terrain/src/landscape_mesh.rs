@@ -2,11 +2,15 @@
 //!
 //! Output uses plan-3d's frame (X right, Y up, Z = -plan y); UVs are in feet.
 //!
-//! Deviation: plan-3d has no grass, mulch, water or foliage materials, so beds,
-//! grass and canopies use [`Material::Floor`] (brown), trunks and bed edging use
-//! [`Material::Framing`] and [`Material::Stone`], and water is
-//! [`Material::WindowGlass`] (translucent blue). Walls pick [`Material::Concrete`],
-//! [`Material::Stone`] or [`Material::Brick`] by name.
+//! Materials: grass regions are [`Material::Grass`], garden beds
+//! [`Material::Mulch`] (or the bed's named material), canopies
+//! [`Material::Foliage`], water [`Material::Water`]; trunks use
+//! [`Material::Framing`] and edging, basins and stepping stones
+//! [`Material::Stone`]. Walls pick [`Material::Concrete`], [`Material::Stone`]
+//! or [`Material::Brick`] by name.
+//!
+//! Every mesh carries the id of its terrain object ([`crate::terrain_object_id`])
+//! so the 3D view can pick it.
 
 use std::f64::consts::PI;
 
@@ -18,7 +22,7 @@ use plan_core::Point;
 use crate::delaunay::triangulate;
 use crate::geom::{bounds, dedup_points, densify, dist_to_boundary, offset_polygon, strip_edges};
 use crate::landscape::{Landscape, LandscapeKind, TerrainWall};
-use crate::mesh::{to_scene, MeshBuilder, UP};
+use crate::mesh::{terrain_object_id, to_scene, MeshBuilder, TerrainPart, UP};
 use crate::model::{Feature, FeatureKind, Terrain, TerrainSurface};
 use crate::query::elevation_at;
 
@@ -59,11 +63,20 @@ impl<'a> Ground<'a> {
 pub fn landscape_meshes(t: &Terrain, surface: Option<&TerrainSurface>) -> Vec<Mesh> {
     let ground = Ground::new(surface);
     let mut out = wall_meshes(t, surface);
-    for f in t.features.iter().filter(|f| f.kind != FeatureKind::Hole) {
-        out.extend(feature_meshes(f, &ground));
+    for (i, f) in t
+        .features
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.kind != FeatureKind::Hole)
+    {
+        let mut ms = feature_meshes(f, &ground);
+        tag(&mut ms, TerrainPart::Feature, i);
+        out.extend(ms);
     }
-    for l in &t.landscape {
-        out.extend(object_meshes(l, &ground));
+    for (i, l) in t.landscape.iter().enumerate() {
+        let mut ms = object_meshes(l, &ground);
+        tag(&mut ms, TerrainPart::Landscape, i);
+        out.extend(ms);
     }
     out
 }
@@ -74,8 +87,20 @@ pub fn wall_meshes(t: &Terrain, surface: Option<&TerrainSurface>) -> Vec<Mesh> {
     let ground = Ground::new(surface);
     t.walls
         .iter()
-        .filter_map(|w| wall_mesh(w, &ground))
+        .enumerate()
+        .filter_map(|(i, w)| {
+            let mut m = wall_mesh(w, &ground)?;
+            m.object_id = Some(terrain_object_id(TerrainPart::Wall, i));
+            Some(m)
+        })
         .collect()
+}
+
+/// Gives every mesh the id of terrain object `index` of `part`.
+fn tag(meshes: &mut [Mesh], part: TerrainPart, index: usize) {
+    for m in meshes {
+        m.object_id = Some(terrain_object_id(part, index));
+    }
 }
 
 fn named_material(name: &str, default: Material) -> Material {
@@ -83,8 +108,11 @@ fn named_material(name: &str, default: Material) -> Material {
         "stone" | "flagstone" | "fieldstone" => Material::Stone,
         "brick" => Material::Brick,
         "concrete" | "cement" => Material::Concrete,
-        "water" => Material::WindowGlass,
-        "grass" | "mulch" | "soil" | "dirt" => Material::Floor,
+        "water" => Material::Water,
+        "grass" | "lawn" | "turf" => Material::Grass,
+        "mulch" | "soil" | "dirt" | "bark" => Material::Mulch,
+        "gravel" | "pea gravel" | "crushed stone" => Material::Gravel,
+        "asphalt" | "blacktop" => Material::Asphalt,
         _ => default,
     }
 }
@@ -352,7 +380,7 @@ fn object_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
     match l.kind {
         LandscapeKind::GardenBed => bed_meshes(l, ground),
         LandscapeKind::GrassRegion => {
-            draped_region(&l.points, ground, l.height.max(LIFT), Material::Floor)
+            draped_region(&l.points, ground, l.height.max(LIFT), Material::Grass)
                 .into_iter()
                 .collect()
         }
@@ -368,7 +396,7 @@ fn bed_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
         &l.points,
         ground,
         l.height.max(LIFT),
-        named_material(&l.material, Material::Floor),
+        named_material(&l.material, Material::Mulch),
     )
     .into_iter()
     .collect();
@@ -406,7 +434,7 @@ fn water_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
     let level = rim - l.height.max(0.0);
     let floor = level - l.depth.max(1.0);
     let mut out = Vec::new();
-    out.extend(flat_polygon(&outline, level, Material::WindowGlass));
+    out.extend(flat_polygon(&outline, level, Material::Water));
     // The basin floor looks up at the water.
     out.extend(flat_polygon(&outline, floor, Material::Stone));
     // Basin walls from grade down to the floor.
@@ -551,7 +579,7 @@ fn plant_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
     if positions.is_empty() {
         return Vec::new();
     }
-    let mut out = vec![canopy.finish(Material::Floor)];
+    let mut out = vec![canopy.finish(Material::Foliage)];
     if tree {
         out.push(trunks.finish(Material::Framing));
     }

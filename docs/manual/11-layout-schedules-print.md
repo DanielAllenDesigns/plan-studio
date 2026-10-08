@@ -44,8 +44,8 @@ Each opens a window with a scrollable table and an **Export CSV...** button that
 `Door_Schedule.csv` and so on). The tables are live: reopen the window after editing the plan. Schedule numbers follow
 creation order in these windows.
 
-Known gap (QA-03, `docs/qa-findings.md`; being fixed in Round 8): the Room Schedule's "Area sq ft" is the centerline area, while the room label on the plan shows the
-interior area, and its ceiling column reads the floor's ceiling height rather than a room's own override (QA-02).
+Since Round 8 (QA-03, `docs/qa-findings.md`) the Room Schedule's "Area sq ft" is the **Interior Area**, the same number as the room label on the plan and the Room Specification, and its
+"Ceiling height" column reads a room's own override when it has one (QA-02). Each row also carries the centerline-based **Standard Area**; its column is in the schedule's column list, hidden until you tick it.
 
 ### Placing a schedule in the plan: the Schedule flyout
 
@@ -98,7 +98,7 @@ Columns each kind can show (the first group is shown in a new schedule, the rest
 |---|---|---|
 | Door | Mark, Floor, Width, Height, Type, Wall, Swing | |
 | Window | Mark, Width, Height, Sill, Head, Type, Wall | Floor |
-| Room | Number, Name, Area sq ft, Perimeter ft, Ceiling height | Floor Finish, Ceiling Finish, Floor |
+| Room | Number, Name, Area sq ft (interior), Perimeter ft, Ceiling height | Standard Area, Floor Finish, Ceiling Finish, Floor |
 | Wall | Number, Type, Length, Thickness, Height, Area sq ft, Openings | Floor |
 | Cabinet | Mark, Label, Type, Width, Depth, Height | Elevation, Countertop, Floor |
 | Electrical | Mark, Type, Label, Mount Height, Circuit | Wall, Floor |
@@ -106,8 +106,11 @@ Columns each kind can show (the first group is shown in a new schedule, the rest
 | Fixture, Furniture, Plant | Mark, Name, Category, Width, Depth, Height | Elevation, Floor |
 | General (Create Schedule) | Mark, Category, Name, Size, Floor | |
 
-Limits (`docs/integration-queue.md`): a placed schedule is picked, moved, deleted and opened by the Schedule tool; Select Objects does not pick it yet (Round 8).
-There is no grouping or totals row, no click-a-row-selects-the-object, and Room Finish and Note schedules are not separate kinds. The tables are drawn in the plan only: they are not in the DXF export or the
+**Selecting a schedule.** A placed schedule is a normal selectable object (Round 8, `ObjectRef::Schedule`): Select Objects picks it by clicking its table or by a marquee,
+it moves when you drag it or move a selection that includes it, `Delete` removes it (one undo step, "Delete Schedule"), and a double-click, `Enter` or
+Open Object opens the Schedule Specification. Its layer is the schedule's own layer. The Schedule tool shares the same selection.
+
+Limits (`docs/integration-queue.md`): there is no grouping or totals row, no click-a-row-selects-the-object, and Room Finish and Note schedules are not separate kinds. The tables are drawn in the plan only: they are not in the DXF export or the
 construction set PDF, and a layout box cannot show one yet. Cabinets and fixtures are listed from the plan's placed objects; the Cabinet Schedule columns come from the cabinet specification.
 
 ## 11.3 The layout view
@@ -122,8 +125,9 @@ view is `shell/layout_window.rs` with the dialogs in `dialogs/layout.rs`.
   title block are drawn on every page) and an empty **Page 1**. The sheet comes from your layout template (1.7.1), else ARCH C (18 x 24). "New layout: page template and page 1" appears in the
   status bar. **A plan has one layout**: if it already has one, File > New Layout opens it ("This plan already has a layout; opened it").
 - **File > Open Layout...**, **Window > Layout** and the Project Browser's **Open Layout** button show the layout (making it from the template if the plan has none). **Window > Floor Plan View** returns to the plan.
-- The layout is stored in the plan file (`layout`, chapter 12.2), so it is saved and opened with the `.psplan`. Layout edits have their own undo history of 100 steps, used while the layout view shows (Edit > Undo, `Cmd+Z`, the Undo button);
-  the plan's own undo snapshots the whole project, layout included, so undoing a plan edit also restores the layout it held then.
+- The layout is stored in the plan file (`layout`, chapter 12.2), so it is saved and opened with the `.psplan`. Plan and layout share **one undo stack** (Round 8): Edit > Undo, `Cmd+Z` and the layout toolbar's Undo step back through plan and layout edits in the order you made them,
+  whichever view is showing. Each step keeps its name ("Move Layout Box", "Send to Layout", "Insert Page", "New Layout" ...). A single stack was chosen over Chief's one per view so that undoing in the plan can never silently roll back
+  a layout edit, or the other way round. The history holds 100 steps.
 
 ### The window
 
@@ -196,7 +200,7 @@ the dialog refuses a range outside the layout). Then a file dialog asks where to
 
 ## 11.4 Project Information and the title block
 
-**Tools > Project Information...** (also Layout > Project Information... and the layout toolbar's Project Info) edits the plan's `Project.info`, the values the layout's title block prints. OK stores them as one undo step ("Project Information").
+**Tools > Project Information...** (also Layout > Project Information... and the layout toolbar's Project Info) is its own action (`Action::ProjectInfo`; it used to be a tool) and edits the plan's `Project.info`, the values the layout's title block prints. OK stores them as one undo step ("Project Information").
 
 | Tab | Fields |
 |---|---|

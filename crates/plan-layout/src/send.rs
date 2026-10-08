@@ -129,6 +129,7 @@ fn default_label(source: &BoxSource, project: &Project) -> Option<String> {
         ),
         BoxSource::CadDetail { name, .. } => Some(name.to_uppercase()),
         BoxSource::Schedule { .. }
+        | BoxSource::PlacedSchedule { .. }
         | BoxSource::Image { .. }
         | BoxSource::ImageData { .. }
         | BoxSource::Text { .. } => None,

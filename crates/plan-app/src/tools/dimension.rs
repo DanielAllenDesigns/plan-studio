@@ -839,6 +839,8 @@ impl DimensionTool {
         let mut last = 0;
         for d in dims {
             last = cx.project.add_dimension(fl, d);
+            // An end on a wall stays tied to it (it follows the wall).
+            cx.project.floors[fl].attach_dimension(last);
         }
         cx.selection.set(ObjectRef::Dimension(last));
         cx.mark_dirty();

@@ -2,7 +2,7 @@
 
 Two site-and-systems families share this chapter: the electrical plan (outlets,
 switches, lights, connections) and the terrain (lot, elevations, hills, roads,
-driveways). Both store their data in typed fields of the plan (a floor's `electrical`
+driveways, walls, garden beds, plants). Both store their data in typed fields of the plan (a floor's `electrical`
 slot and the project's `terrain` slot), so they save and undo with the plan like any other
 object. Older files kept them as hidden records on data layers; the program moves those into the
 typed fields once, when it opens such a file.
@@ -99,13 +99,15 @@ are (planned; engine in `plan-electrical`). The **Electrical Schedule** from the
 Light fixtures also emit light in the ray tracer (chapter 10.13).
 Electrical devices are also not drawn in the 3D view yet (planned).
 
-# Part B: Terrain
+# Part B: Terrain and landscaping
 
 ## 9.5 How terrain works
 
-A terrain is one object per plan: a **perimeter** (the lot), **elevation data** (points, lines,
-regions), **modifiers** (hills, valleys, raised and lowered and flat regions), **features**
-(terrain holes under buildings) and **road strips** (roads, driveways, sidewalks).
+A terrain is one object per plan: a **perimeter** (the lot), **elevation data** (points, lines, splines,
+regions and break lines), **modifiers** (hills, valleys, raised and lowered and flat regions), **features**
+(terrain holes under buildings, and slab-like rectangular, kidney-shaped and spline features), **road strips**
+(roads, driveways, sidewalks, straight or spline), **terrain walls and curbs**, and the **landscape objects**
+(garden beds, grass regions, water features, stepping stones, plant runs and sprinkler runs).
 
 **Build Terrain** (Chief's command of the same name):
 
@@ -113,7 +115,8 @@ regions), **modifiers** (hills, valleys, raised and lowered and flat regions), *
    (inverse-distance weighting).
 2. Applies the modifiers.
 3. Triangulates the grid with a Delaunay triangulation, clips to the perimeter and the holes.
-4. Smooths the result (Laplacian passes).
+4. Smooths the result (Laplacian passes). The vertices of a **Terrain Break** are held fixed, so the
+   crease survives the smoothing.
 5. Extracts **contours** by marching triangles. Every fifth is drawn heavier.
 
 ```
@@ -128,13 +131,18 @@ regions), **modifiers** (hills, valleys, raised and lowered and flat regions), *
 A new project has no terrain. The default terrain is a flat 100' by 80' lot. The record (the terrain,
 its contour interval and whether it has been built) is stored in the project's typed `terrain` slot.
 Older files kept it on the first floor that held one, on a hidden `Terrain, Data` layer; opening such a file
-moves it into the slot and removes the layer.
+moves it into the slot and removes the layer. Files from before the landscape objects load unchanged (every
+new list defaults to empty).
 
 ## 9.6 Terrain tools
 
-All terrain tools are on the Terrain menu (Elevation Data, Modifier, Feature, Road, Driveway,
-Sidewalk submenus). Daniel's Terrain Configuration toolbar is (planned). Every working entry starts the one Terrain tool and the choice is
-passed through to it.
+All terrain tools are on the Terrain menu (Elevation Data, Modifier, Feature, Terrain Wall and Curb, Garden Bed,
+Grass Region, Water Feature, Stepping Stone, Road, Driveway, Sidewalk, Plant and Sprinkler submenus) and in the
+same flyouts of the toolbars. Every entry starts the one Terrain tool and the choice is passed through to it.
+Daniel's Terrain Configuration toolbar is (planned).
+
+Typed values go through an inline field: `Enter` accepts, an empty field takes the default shown, `Esc` cancels.
+In every polyline gesture `Enter` or a double-click ends the line; in every polygon gesture `Enter` closes it.
 
 ### Elevation Data
 
@@ -144,7 +152,8 @@ passed through to it.
 | Elevation Point | Click, then type the elevation in the inline field and press `Enter`. |
 | Elevation Line | Click a polyline; `Enter` or double-click ends it; then type the elevation. |
 | Elevation Region | Click a polygon; `Enter` closes it; type the elevation. |
-| Elevation Spline, Terrain Break | (planned) |
+| Elevation Spline | Like Elevation Line, with the clicks as control points of a smooth curve. |
+| Terrain Break | A polyline, then the elevation it is held at. The surface keeps a crease along it. |
 | Build Terrain | One click builds the surface and shows the contours. |
 
 ### Modifier
@@ -162,7 +171,38 @@ passed through to it.
 | Variant | Gesture |
 |---|---|
 | Terrain Hole | Click a polygon, `Enter`. Cuts the surface (for a basement or building footprint). |
-| Rectangular Feature, Kidney Shaped Feature, Spline Feature | (planned) |
+| Rectangular Feature | Drag a rectangle, or click two corners. |
+| Kidney Shaped Feature | Click both ends of the long axis, then a third click sets the width. |
+| Spline Feature | Click control points of a closed spline; `Enter` closes it. |
+
+The three shaped features are slabs 4" thick over the surface (set the height in the dialog). They are
+not cut or fill: the ground under them does not change. Only Terrain Hole features cut the surface.
+
+### Terrain Wall and Curb
+
+| Variant | Gesture |
+|---|---|
+| Straight Terrain Wall, Straight Terrain Curb | Click a polyline. |
+| Curved Terrain Wall, Curved Terrain Curb | Click the start and end, then a third click sets the bulge of the arc. |
+
+A terrain wall follows the ground: its top is a set height above the terrain along the whole path (3'-0" for a
+wall, 6" for a curb) and its bottom a footing depth below it (1'-0" and 4"). Thickness defaults to 8" and 6".
+
+### Landscaping
+
+| Variant | Gesture |
+|---|---|
+| Polyline Garden Bed, Polyline Grass Region, Polyline Water Feature | Click the corners of a polygon; `Enter` closes it. |
+| Kidney Garden Bed, Kidney Grass Region | Click both ends of the long axis, then a third click sets the width. |
+| Spline Garden Bed, Spline Grass Region, Spline Water Feature | Click control points of a closed spline. |
+| Polyline Stepping Stone, Spline Stepping Stone | Click a path (control points for the spline); stones are laid along it. |
+| Polyline Plant, Spline Plant | Click a path; plants of the chosen kind are laid along it at one canopy width apart. |
+| Polyline Sprinkler, Spline Sprinkler | Click a path; sprinkler heads are laid along it. |
+
+Objects take their sizes from defaults, and the specification (below) edits them. A **plant run** stores a catalog
+plant (the built-in Plants catalog of the Library Browser, boxwood by default), its canopy width and its height;
+the plan draws the canopies and 3D draws a shrub or, for a plant 8' tall or more, a tree on a trunk. Splines and
+kidney shapes are stored flattened as polylines.
 
 ### Roads, driveways, sidewalks
 
@@ -171,9 +211,9 @@ passed through to it.
 | Polyline Road | Click a polyline, `Enter` or double-click, type the width (default 20'-0"). |
 | Polyline Driveway | Same, default width 12'-0". |
 | Polyline Sidewalk | Same, default width 4'-0". |
-| Spline Road/Driveway/Sidewalk | (planned) |
+| Spline Road, Spline Driveway, Spline Sidewalk | The same, with the clicks as control points of a curve. |
 
-Roads drape 0.5" above the terrain surface in the engine.
+Roads drape 0.5" above the terrain surface.
 
 ### Terrain menu commands
 
@@ -187,25 +227,36 @@ At the top of the Terrain menu:
 | Clear Terrain | Resets the terrain record (one undo step). "There is no terrain to clear" if none. |
 | Make Terrain Hole Around Building | Cuts a hole in the surface 12" outside the building footprint. |
 
-### Planned terrain groups
-
-Garden Bed, Grass Region, Water Feature, Stepping Stone, Plant, Sprinkler, Terrain Wall and Curb
-(Terrain menu items) are listed with Chief's names and dimmed (planned).
-
 ### Editing
 
-With the Terrain tool active: `Delete` removes the element under the pointer. A double-click
-outside a drawing opens the Terrain Specification, which Select Objects can also open. Typed values go through the inline field: `Enter`
-accepts, an empty field takes the default shown, `Esc` cancels.
+With a Terrain tool active: `Delete` removes the element under the pointer (one undo step), the arrow keys
+nudge it, and a double-click on an element that has a specification opens it; a double-click outside any
+element opens the Terrain Specification, which Select Objects can also open (there is one terrain, so Select
+Objects picks the whole terrain). **Select Objects cannot pick or move one terrain object yet**, and the 3D
+view cannot pick them either; both are planned (Round 9).
 
 ## 9.7 What the plan shows
 
 The perimeter, elevation points and lines with their elevations, region and feature outlines,
-road edges and, after Build Terrain, labeled contours. The surface is cached and rebuilt when the
-record changes; the layer it draws on is set in the Terrain Specification.
+road edges and, after Build Terrain, labeled contours. The landscape objects draw on layers of their own, which
+the program adds to the plan when you draw the first object:
 
-The engine builds terrain and road meshes (`terrain_mesh`, `road_meshes`) with grass and
-pavement stand-in materials, but the 3D view does not draw them yet (planned).
+| Layer | Holds |
+|---|---|
+| `Terrain, Features` | Rectangular, kidney and spline features |
+| `Terrain, Walls` | Terrain walls and curbs |
+| `Terrain, Breaks` | Terrain breaks |
+| `Landscaping, Garden Beds`, `Landscaping, Grass Regions`, `Landscaping, Water Features`, `Landscaping, Stepping Stones` | The matching regions and stones |
+| `Plants`, `Sprinklers` | Plant runs and sprinkler runs |
+
+Each object can name another layer in its specification. The surface is cached and rebuilt when the record
+changes; the layer the terrain itself draws on is set in the Terrain Specification.
+
+**In 3D** (Round 8): the terrain surface, the roads draped on it and the landscape objects are in the 3D
+scene, and the scene rebuilds when the terrain changes. plan-3d has no grass, mulch or foliage material, so the
+stand-ins are: grass, mulch and canopies the brown Floor material; trunks Framing; bed edging, stepping stones and
+water basins Stone; water translucent window glass; walls Concrete, Stone or Brick by the object's material. A
+green material is (planned; Round 9 landscape materials).
 
 ## 9.8 Dialog: Terrain Specification
 
@@ -215,8 +266,28 @@ pavement stand-in materials, but the 3D view does not draw them yet (planned).
 | Materials | Ground (Grass), Bare ground (Dirt): disabled. |
 | Layer | The layer the terrain is drawn on. |
 
+### Dialog: terrain object specifications
+
+Double-click a feature, break, wall, curb, landscape object, road or elevation line with a Terrain tool. The title
+names the object (Terrain Feature, Terrain Break, Terrain Wall, Terrain Curb, Garden Bed, Grass Region, Water Feature,
+Stepping Stone, Plant, Sprinkler, Road or Elevation Line Specification). OK is one undo step.
+
+| Tab | Fields |
+|---|---|
+| General | Feature: Material, Height above ground. Break and elevation line: Elevation. Wall or curb: Type, Material (Concrete, Stone, Brick, Grass), Top above terrain, Bottom below terrain, Thickness. Road: Type, Width, Curbs. Garden bed: Material (Mulch, Soil, Stone), Mulch depth, Edging and Edging height. Grass region: Height above ground. Water feature: Water level below grade, Depth of water, Stone edge and Edge width. Stepping stones: Stone size, Spacing, Thickness. Plant: the plant, Canopy width, Height, Spacing. Sprinkler: Spray radius, Head spacing, Spray angle, Riser height |
+| Line Style | A color of its own, line weight, dashed (everything but roads and elevation lines) |
+| Fill Style | A fill color of its own (regions, features and walls) |
+| Layer | The layer name |
+
+Roads and elevation lines show General only; a path object (break, stepping stones, plants, sprinklers) has General,
+Line Style and Layer.
+
 ## 9.9 Differences from Chief
 
-- Only Hole features change the surface; other features are listed in the engine but not placed.
-- No Terrain Break lines, splines, or elevation reference points on the building.
+- Terrain walls and curbs do not cut the surface or stop contours; features are slabs over the surface, not cut and fill.
+- Water has no ripple fill, sprinkler heads are not connected to a supply, and a kidney shape is one fixed blob
+  (axis, width, notch) rather than a freely edited curve.
+- Plants are terrain-owned runs, not placed library symbols: the Plant Schedule (chapter 11.2) does not list them and Replace
+  From Library does not see them.
+- No elevation reference points on the building.
 - No site plan layout box for a plot plan yet (chapter 11).

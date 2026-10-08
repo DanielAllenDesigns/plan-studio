@@ -663,6 +663,31 @@ mod tests {
     }
 
     #[test]
+    fn the_treads_beyond_the_break_line_are_drawn_hidden_on_the_stairs_own_floor() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let mut o = only_stair(&cx);
+        let hidden = view::hidden_strokes(&o);
+        assert!(!hidden.is_empty());
+        // Lines only, all past the break, none of them in the solid symbol.
+        let solid = view::symbol_strokes(&o);
+        for s in &hidden {
+            let PlanStroke::Line(a, b) = s else {
+                panic!("only treads: {s:?}");
+            };
+            assert!(a.x.min(b.x) >= 100.0 - 1e-9);
+            assert!(!solid.contains(s));
+        }
+        // They are what the floor above shows of the same run.
+        let up = view::upper_strokes(&o);
+        assert!(hidden.iter().all(|s| up.contains(s)));
+        // No break line, no hidden part; a landing never has one.
+        o.x.break_line = false;
+        assert!(view::hidden_strokes(&o).is_empty());
+    }
+
+    #[test]
     fn auto_stairwell_adds_four_invisible_divider_walls_forming_the_footprint_room() {
         let mut cx = new_cx();
         add_floor_above(&mut cx);
@@ -695,6 +720,57 @@ mod tests {
         assert!(!view::run_command(&mut cx, StairCommand::AutoStairwell));
         assert_eq!(cx.project.floors[1].walls.len(), 4);
         assert_eq!(cx.undo().as_deref(), Some("Auto Stairwell"));
+        assert!(cx.project.floors[1].walls.is_empty());
+    }
+
+    #[test]
+    fn a_guard_railing_runs_around_the_opening_except_where_the_stair_arrives() {
+        let mut cx = new_cx();
+        add_floor_above(&mut cx);
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let id = only_stair(&cx).id();
+        assert!(view::run_command(&mut cx, StairCommand::AutoStairwell));
+        let rails = |cx: &EditorContext| {
+            cx.project.floors[1]
+                .walls
+                .iter()
+                .filter(|w| w.flags.railing)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert!(rails(&cx).is_empty(), "off until asked for");
+        // Switching the guard on (the dialog's checkbox) adds three railings:
+        // both long sides and the foot of the stair, not the arrival end.
+        let mut o = only_stair(&cx);
+        o.x.stairwell_guard = true;
+        assert!(view::apply_edit(&mut cx, &o));
+        let r = rails(&cx);
+        assert_eq!(r.len(), 3, "{r:?}");
+        assert!(r.iter().all(|w| w.height == view::GUARD_HEIGHT));
+        // The stair runs along +x and arrives at x = 150: no railing there.
+        assert!(r.iter().all(|w| !(w.start.x > 149.0 && w.end.x > 149.0)));
+        // The rails are remembered with the stair and follow it when it moves.
+        let o = only_stair(&cx);
+        assert_eq!(o.x.guard_walls.len(), 3);
+        view::update(&mut cx.project, 0, id, |o| {
+            o.stair.origin = o.stair.origin + Point::new(0.0, 60.0);
+        });
+        let moved = rails(&cx);
+        assert_eq!(moved.len(), 3, "rebuilt, not piled up");
+        assert!(moved.iter().all(|w| w.start.y > 30.0));
+        // Off again removes them; so does deleting the stair.
+        let mut o = only_stair(&cx);
+        o.x.stairwell_guard = false;
+        view::apply_edit(&mut cx, &o);
+        assert!(rails(&cx).is_empty());
+        let mut o = only_stair(&cx);
+        o.x.stairwell_guard = true;
+        view::apply_edit(&mut cx, &o);
+        assert_eq!(rails(&cx).len(), 3);
+        cx.selection.set(ObjectRef::Stair(id));
+        view::delete_selected(&mut cx);
+        assert!(rails(&cx).is_empty());
         assert!(cx.project.floors[1].walls.is_empty());
     }
 
@@ -1423,7 +1499,7 @@ mod tests {
     }
 
     #[test]
-    fn a_polygon_landing_only_has_a_move_handle_and_its_outline_moves_with_it() {
+    fn a_polygon_landing_has_a_move_handle_and_a_handle_per_corner() {
         let mut cx = new_cx();
         let mut t = StairsTool::new(StairKind::Landing);
         for (x, y) in [(0.0, 0.0), (120.0, 0.0), (120.0, 80.0)] {
@@ -1433,8 +1509,14 @@ mod tests {
         t.double_click(&mut cx, p);
         let o = only_stair(&cx);
         let hs = view::handles(&o, cx.px_per_in);
-        assert_eq!(hs.len(), 1);
+        // The body moves it; each corner of the outline reshapes it.
+        assert_eq!(hs.len(), 4);
         assert_eq!(hs[0].kind, StairHandleKind::Move);
+        assert_eq!(
+            hs[1..].iter().map(|h| h.kind).collect::<Vec<_>>(),
+            (0..3).map(StairHandleKind::Corner).collect::<Vec<_>>()
+        );
+        assert!(hs[3].pos.dist(Point::new(120.0, 80.0)) < 1e-9);
         let a = pe(&cx, hs[0].pos.x, hs[0].pos.y);
         let b = pe(&cx, hs[0].pos.x + 48.0, hs[0].pos.y + 24.0);
         t.pointer_down(&mut cx, a.with_down(true));
@@ -1444,6 +1526,41 @@ mod tests {
         assert!(m.stair.params.outline[0].dist(Point::new(48.0, 24.0)) < 1e-6);
         assert!((view::footprint_area(&m) - view::footprint_area(&o)).abs() < 1e-6);
         assert_eq!(cx.undo().as_deref(), Some("Move Stairs"));
+    }
+
+    #[test]
+    fn dragging_a_landing_corner_reshapes_the_polygon_in_one_undo_step() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::new(StairKind::Landing);
+        for (x, y) in [(0.0, 0.0), (120.0, 0.0), (120.0, 80.0)] {
+            click(&mut t, &mut cx, x, y);
+        }
+        let p = pe(&cx, 120.0, 80.0);
+        t.double_click(&mut cx, p);
+        let before = only_stair(&cx);
+        let area = view::footprint_area(&before);
+        let hs = view::handles(&before, cx.px_per_in);
+        let corner = hs
+            .iter()
+            .find(|h| h.kind == StairHandleKind::Corner(2))
+            .unwrap();
+        let a = pe(&cx, corner.pos.x, corner.pos.y);
+        let b = pe(&cx, 120.0, 160.0);
+        t.pointer_down(&mut cx, a.with_down(true));
+        t.pointer_move(&mut cx, b.with_down(true));
+        t.pointer_up(&mut cx, b);
+        let after = only_stair(&cx);
+        assert!(after.stair.params.outline[2].dist(Point::new(120.0, 160.0)) < 1e-6);
+        assert_eq!(
+            after.stair.params.outline[0],
+            before.stair.params.outline[0]
+        );
+        assert!(view::footprint_area(&after) > area + 1.0);
+        // Depth and width follow the outline's extents.
+        assert!((after.stair.params.width - 160.0).abs() < 1e-6);
+        assert_eq!(after.landing_depth(), Some(120.0));
+        assert_eq!(cx.undo().as_deref(), Some("Reshape Landing"));
+        assert!(only_stair(&cx).stair.params.outline[2].dist(Point::new(120.0, 80.0)) < 1e-6);
     }
 
     #[test]

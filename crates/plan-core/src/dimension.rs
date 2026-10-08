@@ -25,6 +25,10 @@ pub struct Dimension {
     pub offset: f64,
     #[serde(default)]
     pub text_override: Option<String>,
+    /// What the start and end are tied to: a dimension tied to a wall point
+    /// follows the wall when it moves or stretches (see [`crate::dim_assoc`]).
+    #[serde(default)]
+    pub anchors: [Option<crate::dim_assoc::DimAnchor>; 2],
 }
 
 /// How dimension text is formatted.
@@ -83,6 +87,7 @@ impl Dimension {
             end,
             offset,
             text_override: None,
+            anchors: [None, None],
         }
     }
 

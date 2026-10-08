@@ -33,7 +33,9 @@ use plan_terrain::{
 mod landscape;
 #[allow(unused_imports)] // `terrain_feature_meshes` is for the 3D scene
 pub use landscape::{
-    draw_landscape, ensure_landscape_layers, move_terrain_element, object_at, replace_object,
+    all_hits, draw_landscape, ensure_landscape_layers, hit_exists, hit_for_mesh_id, hit_is_closed,
+    hit_layer, hit_mesh_id, hit_points, hit_type_name, move_terrain_element, move_terrain_elements,
+    move_terrain_vertex, object_at, remove_terrain_elements, replace_object,
     terrain_feature_meshes, TerrainObject,
 };
 use serde_json::{json, Value};
@@ -409,7 +411,7 @@ pub fn auto_building_hole(cx: &mut EditorContext) -> bool {
 // ----- terrain hit-testing -----
 
 /// A terrain element under the pointer.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum TerrainHit {
     Perimeter,
     Point(usize),

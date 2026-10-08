@@ -248,9 +248,28 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 .map(|(i, p)| h(HandleKind::Reshape(i), p, CursorIcon::Crosshair))
                 .collect()
         }
+        // A vertex handle per point of a terrain element; the elements that
+        // were stored flattened from a spline (hundreds of points) move by
+        // their body only.
+        ObjectRef::TerrainObject(hit) => {
+            let Some(view) = site_view::terrain_view(&cx.project) else {
+                return Vec::new();
+            };
+            let pts = site_view::hit_points(&view.record.terrain, hit);
+            if pts.len() > MAX_TERRAIN_HANDLES {
+                return Vec::new();
+            }
+            pts.into_iter()
+                .enumerate()
+                .map(|(i, p)| h(HandleKind::Reshape(i), p, CursorIcon::Crosshair))
+                .collect()
+        }
         ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::Schedule(_) => Vec::new(),
     }
 }
+
+/// Terrain elements with more points than this get no vertex handles.
+pub const MAX_TERRAIN_HANDLES: usize = 40;
 
 fn resize_cursor(v: Point) -> CursorIcon {
     let (ax, ay) = (v.x.abs(), v.y.abs());

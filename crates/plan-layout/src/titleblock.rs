@@ -39,6 +39,12 @@ pub struct MacroContext {
     /// Revision table rows `(number, date, description)`, oldest first.
     #[serde(default)]
     pub revisions: Vec<(String, String, String)>,
+    /// More macros as `("%company%", value)`: Project Information's
+    /// `%company%`, `%client.phone%`, `%client.email%`, `%drawn.by%`,
+    /// `%checked.by%`, `%project.address%`, `%client.address%` and
+    /// `%custom.<key>%`.
+    #[serde(default)]
+    pub extra: Vec<(String, String)>,
 }
 
 /// `2026-10-07` (or `10/7/2026`) as `October 7, 2026`; other text is returned as is.
@@ -77,14 +83,35 @@ pub fn long_date(date: &str) -> String {
 }
 
 impl MacroContext {
+    /// Is `key` (`"%client%"`) one of the macros with a field of its own?
+    pub fn is_builtin(key: &str) -> bool {
+        matches!(
+            key,
+            "%project.name%"
+                | "%project.number%"
+                | "%client%"
+                | "%address%"
+                | "%designer%"
+                | "%date.long%"
+                | "%date%"
+                | "%revision%"
+                | "%sheet.number%"
+                | "%sheet.title%"
+                | "%scale%"
+                | "%page.count%"
+        )
+    }
+
     /// Replace every known macro in `text`:
     /// `%project.name%`, `%project.number%`, `%client%`, `%address%`,
     /// `%designer%`, `%date%`, `%date.long%`, `%revision%`, `%sheet.number%`,
-    /// `%sheet.title%`, `%scale%`, `%page.count%`. Unknown `%...%` stay as written.
+    /// `%sheet.title%`, `%scale%`, `%page.count%`, then those of
+    /// [`MacroContext::extra`] (`%company%`, `%client.phone%`...). Unknown
+    /// `%...%` stay as written.
     pub fn expand(&self, text: &str) -> String {
         let page_count = self.page_count.to_string();
         let date_long = long_date(&self.date);
-        [
+        let builtin = [
             ("%project.name%", &self.project_name),
             ("%project.number%", &self.project_number),
             ("%client%", &self.client),
@@ -99,7 +126,10 @@ impl MacroContext {
             ("%page.count%", &page_count),
         ]
         .into_iter()
-        .fold(text.to_string(), |acc, (k, v)| acc.replace(k, v))
+        .fold(text.to_string(), |acc, (k, v)| acc.replace(k, v));
+        self.extra
+            .iter()
+            .fold(builtin, |acc, (k, v)| acc.replace(k.as_str(), v))
     }
 }
 
@@ -203,6 +233,25 @@ mod tests {
         assert_eq!(long_date("10/7/2026"), "October 7, 2026");
         assert_eq!(long_date("sometime"), "sometime");
         assert_eq!(long_date("2026-13-40"), "2026-13-40");
+    }
+
+    #[test]
+    fn project_information_macros_expand() {
+        let ctx = MacroContext {
+            client: "J. Smith".into(),
+            extra: vec![
+                ("%company%".into(), "Daniel Allen Designs".into()),
+                ("%client.phone%".into(), "404-555-0100".into()),
+                ("%custom.permit%".into(), "BP-22".into()),
+            ],
+            ..MacroContext::default()
+        };
+        assert_eq!(
+            ctx.expand("%company%|%client%|%client.phone%|%custom.permit%|%custom.nope%"),
+            "Daniel Allen Designs|J. Smith|404-555-0100|BP-22|%custom.nope%"
+        );
+        assert!(MacroContext::is_builtin("%client%"));
+        assert!(!MacroContext::is_builtin("%company%"));
     }
 
     #[test]

@@ -25,8 +25,12 @@ floor of kind Attic sits above the top floor.
 
 ## B
 
+**Baluster.** One of the small upright posts between a railing's newels that fills the guard. A stair's balusters stand on the treads, close enough that no opening is wider than 4" (IRC). See 7.5.
+
 **Backsplash.** The strip of material behind a countertop, protecting the wall from splashes. Default
 height in the cabinet dialog is 0 until you set one.
+
+**Billboard.** A picture that stands upright and, in a full 3D renderer, turns to face the camera, used for trees and people. Plan Studio keeps its stored angle in the cached 3D scene. See 6.7.
 
 **Baseline.** In roof work, the line along the top outer edge of a wall where a roof plane begins (the eave
 line). In dimensioning, the line all measurements are taken from.
@@ -94,6 +98,8 @@ unconditioned.
 **Dimension.** A measurement drawn on the plan with extension lines, a dimension line and a value. **Temporary
 dimension**: a measurement that appears while you draw or select something and is never saved.
 
+**Distribution (path or region).** One record that places many copies of a library item along a line or over an area, with spacing, offset, scatter and seeded random rotation and size. Move the record and its copies move. See 6.7.
+
 **Doll house view.** A 3D view with the ceilings and roof hidden so you can look into the rooms from above.
 
 **Door types.** Hinged (swings on hinges), doorway (a cased opening with no door), sliding, pocket (slides into the wall),
@@ -149,6 +155,8 @@ with a gable at each end.
 
 **Gambrel.** A roof with two slopes on each side, the lower steeper (a barn roof). (Planned.)
 
+**Garden bed.** A landscape region of mulch or soil, optionally edged, drawn with the Terrain tools. See 9.6.
+
 **GFCI.** Ground-fault circuit interrupter: an outlet that cuts power fast to prevent shock. Required near water.
 
 **Glass wall.** A wall that is a glass pane in a frame; a **glass pony wall** has a solid lower part under the glass. See 2.2.
@@ -169,6 +177,8 @@ template). The snap grid is the invisible spacing the cursor jumps to (1").
 **Hinged door.** The ordinary door that swings open on hinges. `D, H`.
 
 ## I
+
+**Image library.** Your own pictures saved as reusable library items in `~/.plan-studio/user-library.json` by Create Image Library. See 6.7.
 
 **Interior wall.** A wall inside the building, usually a partition that does not carry the roof.
 
@@ -193,7 +203,7 @@ the header.
 
 ## L
 
-**Landing.** A flat platform in a stair where it turns or rests.
+**Landing.** A flat platform in a stair where it turns or rests. In Plan Studio a rectangle or a polygon that takes the height of the stair section arriving on it. See 7.2.
 
 **Layer.** A named group of objects with shared display settings: on or off, locked, color, line weight. Walls, Doors
 and Dimensions each have their own. See 5.5.
@@ -235,6 +245,8 @@ and Dimensions each have their own. See 5.5.
 ## N
 
 **Niche (wall niche).** A recess in a wall that does not go all the way through. (Planned.)
+
+**Newel.** The post at the end or corner of a railing that holds the rails. A stair's newels sit at the foot, the head and at least every maximum spacing along the flight. See 7.5.
 
 **Nosing.** The part of a stair tread that sticks out past the riser below it. 1" by default.
 
@@ -306,7 +318,7 @@ and Dimensions each have their own. See 5.5.
 
 ## S
 
-**Schedule.** A table that lists objects of one kind with their sizes: door schedule, window schedule, room schedule. It can be a window, or a live table placed in the plan with callout labels on the objects. See 11.2.
+**Schedule.** A table that lists objects of one kind with their sizes: door schedule, window schedule, room schedule. It can be a window, or a live table placed in the plan with callout labels on the objects; a placed schedule is selected, moved and deleted like any other object. See 11.2.
 
 **Section.** See **cross section**.
 
@@ -328,9 +340,13 @@ and Dimensions each have their own. See 5.5.
 
 **Stem wall.** A short foundation wall that rises from the footing to the floor.
 
+**Stairwell.** The opening in the floor above where a stair passes through. Auto Stairwell cuts it as a platform hole and adds an invisible ring of room dividers, so a "Stairwell" room forms. See 7.4.
+
+**Stepping stone.** A flat stone laid along a path in a garden, drawn as a run of stones. See 9.6.
+
 **Story pole.** A vertical string of level heights (floor platforms and ceiling heights) used to check heights against the floors. See 5.2.
 
-**Stringer.** The sloped board under a stair that carries the treads.
+**Stringer.** The sloped board under a stair that carries the treads. Closed (a full board), open (notched) or none in the Staircase Specification. See 7.5.
 
 **Stud.** One of the vertical boards in a framed wall, usually at 16" on center.
 
@@ -342,6 +358,10 @@ and Dimensions each have their own. See 5.5.
 
 **Template seeding.** Plan Studio reading your Chief default plan and layout templates and laying their wall types, text styles, dimension sets and default height over its own defaults. See 1.7.1.
 
+**Terrain break.** A line held at one elevation that keeps a crease in the terrain surface when it is smoothed, such as the top of a bank. See 9.6.
+
+**Terrain wall, terrain curb.** A retaining wall or low curb that follows the ground, with its top a set height above the terrain and its footing below it. See 9.6.
+
 **Tread.** The flat part of a stair step you stand on. 10" deep or more by the code.
 
 **Toe kick.** The recessed strip at the bottom of a base cabinet so you can stand close. 4" high, 3" deep by default.
@@ -350,7 +370,7 @@ and Dimensions each have their own. See 5.5.
 
 **Truss base.** The closed outline you draw on a plan that Build Framing fills with roof trusses. See 11.11.
 
-**Typed slot.** A field of the plan file that holds one kind of object as JSON owned by a view module (roofs, details, schedules, the layout ...), saved and undone with the plan. See 12.2 and 14.3.
+**Typed slot.** A field of the plan file that holds one kind of object, as JSON owned by a view module (roofs, details, schedules, stairs, the layout ...) or as a typed list (CAD styles and blocks, text macros, note types), saved and undone with the plan. See 12.2 and 14.3.
 
 ## V
 

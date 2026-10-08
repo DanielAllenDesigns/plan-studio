@@ -21,6 +21,7 @@ use crate::tools::ToolId;
 use chief_ui::{ChiefAction, ChiefBrowser};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use plan_library::{CatalogItem, CategoryNode, Library, Stroke as SymStroke, Symbol2d};
+use std::sync::Arc;
 
 /// Edge of the square each result's preview is drawn in.
 pub const PREVIEW_PX: f32 = 48.0;
@@ -39,7 +40,12 @@ pub enum LibraryEvent {
 }
 
 pub struct LibraryBrowserState {
+    /// The built-in library, without the user's items.
+    base: Library,
+    /// `base` plus the user library (User > Images).
     library: Library,
+    /// The user items `library` was built with.
+    user_items: Vec<Arc<CatalogItem>>,
     tree: CategoryNode,
     /// The search field.
     pub query: String,
@@ -63,15 +69,41 @@ impl Default for LibraryBrowserState {
 impl LibraryBrowserState {
     pub fn new(library: Library) -> Self {
         let tree = library.tree();
-        LibraryBrowserState {
+        let mut st = LibraryBrowserState {
+            base: library.clone(),
             library,
+            user_items: Vec::new(),
             tree,
             query: String::new(),
             category: Vec::new(),
             active_item: None,
             // Off until the saved preference is loaded (see `Default`).
             chief: ChiefBrowser::new(ChiefSettings::off()),
+        };
+        st.sync_user_items();
+        st
+    }
+
+    /// Lists the user library (`tools::images::user_items`, category
+    /// User > Images) next to the built-in items; rebuilt when it changes.
+    pub fn sync_user_items(&mut self) {
+        let items = crate::tools::images::user_items();
+        let same = items.len() == self.user_items.len()
+            && items
+                .iter()
+                .zip(&self.user_items)
+                .all(|(a, b)| Arc::ptr_eq(a, b));
+        if same {
+            return;
         }
+        let mut library = self.base.clone();
+        if !items.is_empty() {
+            let owned: Vec<CatalogItem> = items.iter().map(|i| (**i).clone()).collect();
+            library.add(plan_library::user::user_catalog(&owned));
+        }
+        self.tree = library.tree();
+        self.library = library;
+        self.user_items = items;
     }
 
     /// Items matching the search field inside the selected category: ranked
@@ -204,6 +236,7 @@ pub fn preview_shapes(symbol: &Symbol2d, rect: Rect, stroke: Stroke) -> Vec<Shap
 
 /// Draws the whole panel body (below the dock heading).
 pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEvent> {
+    st.sync_user_items();
     let mut event = None;
     let chief_action = |a: ChiefAction, event: &mut Option<LibraryEvent>| {
         *event = Some(match a {
@@ -471,6 +504,31 @@ mod tests {
             .results()
             .iter()
             .all(|i| i.category.first() == Some(&top.name)));
+    }
+
+    #[test]
+    fn saved_pictures_are_listed_under_user_images() {
+        use crate::tools::images;
+        images::set_user_library_path(Some(None));
+        let mut st = LibraryBrowserState::new(Library::with_core());
+        st.category = vec!["User".into(), "Images".into()];
+        assert!(st.results().is_empty());
+        images::register_user_item(plan_library::user::image_item(
+            "user.image.t1",
+            "Front Rug",
+            "/pics/rug.png",
+            96.0,
+            60.0,
+        ))
+        .unwrap();
+        st.sync_user_items();
+        let hits = st.results();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "user.image.t1");
+        assert!(st.tree.child("User").is_some());
+        assert!(st.activate("user.image.t1"));
+        assert_eq!(st.active_name().as_deref(), Some("Front Rug"));
+        images::set_user_library_path(None);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::dialogs::framing::FramingMemberDialog;
 use crate::dialogs::roof::{CeilingDialog, DormerDialog, RoofPlaneDialog};
 use crate::dialogs::stairs::StairDialog;
 use crate::dialogs::symbol::SymbolDialog;
-use crate::dialogs::terrain::TerrainDialog;
+use crate::dialogs::terrain::{ObjectDialog, TerrainDialog};
 use crate::dialogs::text::TextDialog;
 use crate::dialogs::{cad, text, Outcome};
 use crate::editor::{
@@ -40,6 +40,9 @@ enum Active {
     Framing(Box<FramingMemberDialog>),
     Device(Id, Box<ElectricalDialog>),
     Terrain(Box<TerrainDialog>),
+    /// The specification of one terrain element (wall, curb, break, feature,
+    /// road, landscape object, elevation line).
+    TerrainObject(site_view::TerrainHit, Box<ObjectDialog>),
     Dimension(Box<DimensionDialog>),
     Text(Box<TextDialog>),
     Cad(Box<CadDialog>),
@@ -152,6 +155,20 @@ impl SpecDialogs {
                 let rec = site_view::load_terrain(&cx.project).unwrap_or_default();
                 Some(Active::Terrain(Box::new(TerrainDialog::new(&rec))))
             }
+            ObjectRef::TerrainObject(hit) => {
+                let Some(rec) = site_view::load_terrain(&cx.project) else {
+                    return false;
+                };
+                if !site_view::hit_exists(&rec.terrain, hit) {
+                    return false;
+                }
+                // Points, regions and modifiers have no dialog of their own:
+                // they open the Terrain Specification.
+                match site_view::object_at(&rec.terrain, hit) {
+                    Some(obj) => Some(Active::TerrainObject(hit, Box::new(ObjectDialog::new(obj)))),
+                    None => Some(Active::Terrain(Box::new(TerrainDialog::new(&rec)))),
+                }
+            }
             ObjectRef::Dimension(_) => {
                 dimension::open_for(cx, o).map(|d| Active::Dimension(Box::new(d)))
             }
@@ -197,6 +214,7 @@ impl SpecDialogs {
             Active::Framing(d) => d.show(ctx),
             Active::Device(_, d) => d.show(ctx),
             Active::Terrain(d) => d.show(ctx),
+            Active::TerrainObject(_, d) => d.show(ctx),
             Active::Dimension(d) => d.show(ctx),
             Active::Text(d) => d.show(ctx),
             Active::Cad(d) => d.show(ctx),
@@ -288,6 +306,17 @@ fn apply(cx: &mut EditorContext, a: &Active) {
                 t.grid_spacing = draft.terrain.grid_spacing;
             });
         }
+        Active::TerrainObject(hit, d) => {
+            let draft = d.draft().clone();
+            let mut found = false;
+            site_view::edit_terrain(cx, draft.title(), |rec| {
+                found = site_view::replace_object(&mut rec.terrain, *hit, draft.clone());
+            });
+            if !found {
+                cx.cancel_change();
+                cx.status = "The object is gone".into();
+            }
+        }
         Active::Dimension(d) => {
             d.apply(cx);
         }
@@ -306,6 +335,66 @@ mod tests {
     use crate::plan_defaults;
     use plan_core::foundation::{rect_outline, DATA_LAYER};
     use plan_core::geometry::Point;
+
+    #[test]
+    fn a_terrain_element_opens_its_own_dialog_and_ok_is_one_undo_step() {
+        use crate::editor::site_view::TerrainHit;
+        use plan_terrain::{ElevationPoint, Landscape, LandscapeKind, ShapeKind};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        site_view::edit_terrain(&mut cx, "Draw", |r| {
+            r.terrain.landscape.push(Landscape::new(
+                LandscapeKind::GardenBed,
+                ShapeKind::Polyline,
+                vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(120.0, 0.0),
+                    Point::new(120.0, 120.0),
+                ],
+            ));
+            r.terrain.elevation_points.push(ElevationPoint {
+                pos: Point::new(300.0, 300.0),
+                z: 12.0,
+            });
+        });
+        let mut dialogs = SpecDialogs::default();
+        let bed = ObjectRef::TerrainObject(TerrainHit::Landscape(0));
+        assert!(dialogs.open(&mut cx, bed));
+        assert!(matches!(
+            dialogs.active,
+            Some(Active::TerrainObject(TerrainHit::Landscape(0), _))
+        ));
+        if let Some(Active::TerrainObject(_, d)) = dialogs.active.as_mut() {
+            match d.draft_mut() {
+                site_view::TerrainObject::Landscape(l) => l.height = 7.0,
+                other => panic!("{other:?}"),
+            }
+        }
+        let a = dialogs.active.take().unwrap();
+        let depth = cx.undo_label().map(str::to_string);
+        apply(&mut cx, &a);
+        assert_eq!(cx.undo_label(), Some("Garden Bed Specification"));
+        let stored = site_view::load_terrain(&cx.project).unwrap();
+        assert_eq!(stored.terrain.landscape[0].height, 7.0);
+        cx.undo();
+        assert_ne!(
+            site_view::load_terrain(&cx.project)
+                .unwrap()
+                .terrain
+                .landscape[0]
+                .height,
+            7.0
+        );
+        assert_eq!(cx.undo_label().map(str::to_string), depth);
+
+        // An elevation point has no dialog of its own: the Terrain
+        // Specification opens. A vanished element opens nothing.
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::TerrainObject(TerrainHit::Point(0))));
+        assert!(matches!(dialogs.active, Some(Active::Terrain(_))));
+        let mut dialogs = SpecDialogs::default();
+        assert!(!dialogs.open(&mut cx, ObjectRef::TerrainObject(TerrainHit::Wall(4))));
+        assert!(!dialogs.is_open());
+    }
 
     #[test]
     fn foundation_objects_and_dormers_open_their_dialogs() {

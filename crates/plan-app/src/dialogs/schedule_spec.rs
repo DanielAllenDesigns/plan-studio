@@ -20,6 +20,8 @@ const TABS: &[Tab] = &[on("General"), on("Labels"), on("Text Style"), on("Layer"
 pub struct SpecActions {
     pub export_csv: bool,
     pub open_window: bool,
+    /// Put the schedule on a layout page as a box.
+    pub send_to_layout: bool,
 }
 
 pub struct ScheduleSpecDialog {
@@ -208,6 +210,32 @@ impl Form {
                 });
             ui.checkbox(&mut self.def.sort.descending, "Descending");
         });
+        row(ui, "Group by", |ui| {
+            let current = self
+                .def
+                .columns
+                .iter()
+                .find(|c| c.field == self.def.group_by)
+                .map_or("(none: one line per object)".to_string(), |c| {
+                    c.title.clone()
+                });
+            egui::ComboBox::from_id_salt("schedule_group")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.def.group_by,
+                        String::new(),
+                        "(none: one line per object)",
+                    );
+                    for c in &self.def.columns {
+                        ui.selectable_value(&mut self.def.group_by, c.field.clone(), &c.title);
+                    }
+                });
+        });
+        ui.checkbox(
+            &mut self.def.totals,
+            "Totals line (count, and sums of areas)",
+        );
 
         section(ui, "Output");
         ui.horizontal(|ui| {
@@ -216,6 +244,9 @@ impl Form {
             }
             if ui.button("Open in Window").clicked() {
                 self.actions.open_window = true;
+            }
+            if ui.button("Send to Layout").clicked() {
+                self.actions.send_to_layout = true;
             }
         });
     }

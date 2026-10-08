@@ -15,7 +15,7 @@ use crate::editor::roof_view::{
 };
 use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::LineStyle;
-use plan_roof::{DormerKind, DormerSpec};
+use plan_roof::{DormerKind, DormerSpec, ReturnKind, ReturnSpec};
 
 const MIN_PITCH: f64 = 0.5;
 const MAX_PITCH: f64 = 24.0;
@@ -769,6 +769,101 @@ impl DormerDialog {
     }
 }
 
+// ----- Roof Return (RF-27) -----
+
+const RETURN_TABS: &[Tab] = &[on("General")];
+/// The shortest return the dialog accepts, inches.
+pub const MIN_RETURN_LENGTH: f64 = 2.0;
+
+struct ReturnPages {
+    spec: ReturnSpec,
+    fields: Fields,
+}
+
+fn return_kind_name(k: ReturnKind) -> &'static str {
+    match k {
+        ReturnKind::Full => "Full",
+        ReturnKind::Half => "Half",
+        ReturnKind::Boxed => "Boxed",
+    }
+}
+
+impl SpecPages for ReturnPages {
+    fn tabs(&self) -> &'static [Tab] {
+        RETURN_TABS
+    }
+
+    fn error(&self) -> Option<String> {
+        if self.fields.any_invalid() {
+            Some("Enter a valid length".into())
+        } else if self.spec.length < MIN_RETURN_LENGTH {
+            Some("The return must be at least 2 inches long".into())
+        } else {
+            None
+        }
+    }
+
+    fn page(&mut self, ui: &mut Ui, _tab: usize) {
+        section(ui, "Roof Return");
+        row(ui, "Type", |ui| {
+            for k in [ReturnKind::Full, ReturnKind::Half, ReturnKind::Boxed] {
+                ui.radio_value(&mut self.spec.kind, k, return_kind_name(k));
+            }
+        });
+        self.fields
+            .length_row(ui, "Length", "return_length", &mut self.spec.length);
+        ui.weak("Used by the next clicks of the Roof Return tool. Shift makes a half return, Alt a boxed one.");
+    }
+
+    fn preview(&self, p: &Painter, area: Rect) {
+        // Plan sketch: the eave, and the return wrapping the corner.
+        let w = area.width() * 0.6;
+        let corner = Pos2::new(area.center().x + w * 0.25, area.center().y);
+        let len = (self.spec.length as f32 / 48.0).clamp(0.1, 1.0) * w * 0.4;
+        let stroke = Stroke::new(1.5_f32, PV_INK);
+        p.line_segment([Pos2::new(corner.x - w * 0.5, corner.y), corner], stroke);
+        let tip = Pos2::new(corner.x + len, corner.y);
+        let dash = Stroke::new(1.5_f32, PV_ACCENT);
+        p.line_segment([corner, tip], dash);
+        if self.spec.kind == ReturnKind::Boxed {
+            p.line_segment([tip, Pos2::new(tip.x, tip.y + 14.0)], dash);
+        }
+        p.text(
+            Pos2::new(area.center().x, area.min.y + 12.0),
+            Align2::CENTER_CENTER,
+            return_kind_name(self.spec.kind),
+            FontId::proportional(11.0),
+            PV_INK,
+        );
+    }
+}
+
+/// The Roof Return settings: type and length of the returns the tool makes.
+pub struct ReturnDialog {
+    frame: SpecDialog,
+    pages: ReturnPages,
+}
+
+impl ReturnDialog {
+    pub fn new(spec: ReturnSpec) -> Self {
+        Self {
+            frame: SpecDialog::new("Roof Return", "roof_return"),
+            pages: ReturnPages {
+                spec,
+                fields: Fields::default(),
+            },
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        self.frame.show(ctx, &mut self.pages)
+    }
+
+    pub fn spec(&self) -> ReturnSpec {
+        self.pages.spec
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,6 +890,19 @@ mod tests {
         d.pages.spec.width = 2.0;
         assert!(d.pages.error().is_some());
         assert_eq!(DORMER_TABS.len(), 3);
+    }
+
+    #[test]
+    fn return_dialog_round_trips_its_spec_and_validates() {
+        let spec = ReturnSpec {
+            kind: ReturnKind::Boxed,
+            length: 36.0,
+        };
+        let mut d = ReturnDialog::new(spec);
+        assert_eq!(d.spec(), spec);
+        assert!(d.pages.error().is_none());
+        d.pages.spec.length = 0.5;
+        assert!(d.pages.error().is_some());
     }
 
     #[test]

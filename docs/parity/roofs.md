@@ -1,5 +1,7 @@
 # Parity spec: Roofs (Chief Architect X18)
 
+> Status (2026-10-08): 60 ids: 28 Works, 19 Partial, 13 Missing, 0 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+
 Scope: Build Roof dialog, auto roof generation rules, per-wall roof directives,
 manual roof planes and their edit handles, Join Roof Planes, Roof Hole, Skylight,
 Gable/Roof Line, dormers, roof returns, ceiling planes, attic walls, and roof

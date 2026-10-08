@@ -399,7 +399,7 @@ fn layer_names_map_to_materials() {
         Some(Material::Concrete)
     );
     assert_eq!(Material::from_layer_name("Fir Framing"), None);
-    assert_eq!(Material::ALL.len(), 17);
+    assert_eq!(Material::ALL.len(), 24);
     for (i, m) in Material::ALL.iter().enumerate() {
         assert_eq!(m.index(), i);
     }

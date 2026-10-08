@@ -2,7 +2,9 @@
 
 This chapter covers the parametric cabinet tools and the Library Browser that
 places symbols (fixtures, appliances, furniture, plants, lighting) into the
-plan, including the Chief Architect catalogs it reads from your own Chief install.
+plan, including the Chief Architect catalogs it reads from your own Chief install,
+and the Image and Distributed Objects tools (pictures, billboards, the image library,
+objects spread along a path or over a region, and the 3D Solid Feature).
 
 ## 6.1 How cabinets work
 
@@ -110,7 +112,7 @@ A base cabinet can hold an **open bay for an appliance** (General tab, *Applianc
 
 A **Cabinet Schedule** from the Schedule flyout lists the plan's cabinets as a live table and, with *Show schedule number labels*, labels each cabinet `C-01`, `C-02` ... in the plan (chapter 11.2).
 
-Not built: cabinet depth and corner resize handles, elevation views of a cabinet run. Cabinets are not in the 3D view at the Round 7 commit (QA-05 in `docs/qa-findings.md`; Round 8 is fixing it).
+Not built: cabinet depth and corner resize handles, elevation views of a cabinet run. Cabinets are in the 3D view (QA-05, fixed in Round 8; chapter 10.1): every kind is meshed at its stored position, with countertops in the Stone material and handles in Metal.
 
 ## 6.3 Dialog: Cabinet Specification
 
@@ -301,11 +303,71 @@ What is not decoded yet (partial or missing meshes, placeholder plan symbols, ze
 chapter 12.7. Library > Import Library (.calib, .calibz)... in the menu is still dimmed (planned), as are Add to
 User Library and the other Library menu items.
 
-## 6.7 Differences from Chief
+## 6.7 Images, billboards and distributed objects
+
+Three flyouts on the Build bar and menu hold these tools: **Image** (Create Image, Create Billboard Image, Create
+Image Library), **Distributed Objects** (Polyline and Spline Distribution Path, Polyline and Spline Distribution
+Region) and, at the foot of the 3D Solid flyout, **3D Solid Feature**. They are one tool with a flavor per entry
+(`tools/images.rs`). None has a hotkey. A picture or a distribution record is a placed symbol (`image`,
+`distribution`, `owner` and `solid` fields of `PlacedSymbol`), so it saves, undoes, copies and moves like any other.
+
+### Pictures
+
+| Tool | Gesture |
+|---|---|
+| Create Image | The first click opens a file picker (PNG or JPEG) and places the picture at the click, 36" on its long side. Later clicks place the same picture again until `Esc`. |
+| Create Billboard Image | The same, but the picture stands upright (72" high by default) and faces the camera in 3D. |
+| Create Image Library | Click a picture already in the plan to save it in the user library, or click empty space to pick a file to save. The picture becomes the **active library item**, ready for a distribution or the Library tool. |
+
+- **PNG** pictures are decoded and drawn as a textured quad in the plan. **JPEG** pictures have no decoder in
+  the program: they are drawn as a framed placeholder in the plan with the note "JPEG preview is not available
+  yet; drawn as a frame". The file is kept by path, so nothing is lost, and a JPEG's 3D quad is a neutral gray. Transparency applies to PNG only.
+- **In 3D** the GL view has no textures yet, so a picture is a flat-colored quad: the picture's average color
+  mapped to the nearest material. A flat picture lies on its footprint 1/10" above the surface; a billboard stands upright.
+  The 3D scene is cached, so a billboard keeps its **stored angle** in the scene; turning to face the camera each
+  frame is (planned; Round 9 billboards).
+- **Image Specification** (double-click a picture): General (File with Browse, Picture size in pixels, Width, Height (billboard) or Depth (flat picture), Elevation
+  from floor, Position X and Y at the back center, Rotation, Flip), Image (Make one colour transparent with a
+  Tolerance, and the Billboard switch), Layer, Label. A **Match picture proportions** button restores the picture's aspect ratio; **Browse...** swaps the file.
+- The **user library** is saved in `~/.plan-studio/user-library.json` (the settings folder of chapter 1) and
+  read back when the program starts. The Library Browser does not list the user library yet: a saved picture is used through the
+  active item, and a plan finds it again by its id (`user.image....`). Listing it in the browser is (planned).
+
+### Distributed objects
+
+Pick a library item first (a Library Browser click, or Create Image Library); then:
+
+| Tool | Gesture |
+|---|---|
+| Polyline Distribution Path, Spline Distribution Path | Click the points of a path; `Enter` or a double-click finishes (at least 2 points). Copies of the item are placed along it. |
+| Polyline Distribution Region, Spline Distribution Region | Click the corners of an outline; `Enter` or a double-click finishes (at least 3 points). Copies fill the region. |
+| `Backspace`, `Delete` | Drop the last point. |
+| `Esc` | Clears the points; a second `Esc` leaves the tool. |
+
+The result is one **distribution record** (drawn as a dashed path or outline) that owns its copies. Open its
+**Distribution Specification** by double-click:
+
+| Tab | Fields |
+|---|---|
+| General | The object (and **Use Active Library Item**); Object width, depth, height and elevation. Path: Spacing, Offset (start of path), Side offset (left), Turn objects to follow the path. Region: Grid spacing, Offset (inset from edge), Pattern Grid or Random. A line counts the objects. |
+| Random | Scatter (radius), Random rotation (+/- degrees), Random size (+/- percent), Random seed with a **New pattern** button |
+| Layer, Label | The layer the copies are placed on; label text |
+
+OK rebuilds the copies in the same undo step. Spacing is at least 1" and one record makes at most 5,000 copies. The same
+seed gives the same random pattern. A record that is **moved** (drag, arrow keys, paste in Select Objects) moves its copies with
+it; deleting the record deletes its copies.
+
+### 3D Solid Feature
+
+With a library item active, a click places it as a **solid**: in 3D the item is drawn in the Concrete material
+(its decoded mesh for a Chief catalog object, otherwise a box of its width, depth and height) instead of its usual look. The plan
+shows the usual symbol. This is Chief's way of making a library object read as a mass in a study model.
+
+## 6.8 Differences from Chief
 
 - Built-in symbols are 2D drawings with a box in 3D. Chief catalog objects show their decoded 3D meshes, but a
   fraction of them decode only partially and fall back to a box (6.6).
-- Chief catalogs are read, never written: no Add to User Library, no Import Library, no editing of a catalog.
+- Chief catalogs are read, never written: no Add to User Library, no Import Library, no editing of a catalog. Create Image Library does save your own pictures in `~/.plan-studio/user-library.json`, but the Library Browser does not list them yet (6.7).
 - Search filters are name and keyword only.
-- Cabinets are not in the 3D view at the Round 7 commit (QA-05; Round 8 is wiring them in). Only the Front face of a cabinet can be edited; its Sides and Back cannot. Library door and drawer styles, countertop corner treatments and
+- Only the Front face of a cabinet can be edited; its Sides and Back cannot. Library door and drawer styles, countertop corner treatments and
   accessories are (planned).

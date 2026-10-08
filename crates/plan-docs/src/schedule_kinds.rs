@@ -36,7 +36,7 @@ use plan_core::schedules::{
     FloorScope, Numbering, Schedule, ScheduleKind, ScheduleLayer, SortSpec,
 };
 use plan_core::units::fmt_ft_in;
-use plan_core::{detect_rooms, Id, OpeningKind, PlacedSymbol, Point, Project, Room};
+use plan_core::{detect_rooms, Id, MoldingKind, OpeningKind, PlacedSymbol, Point, Project, Room};
 use plan_electrical::ElectricalLayer;
 use plan_framing::{FramingMember, ManualMemberKind, Member};
 use plan_library::Library;
@@ -248,12 +248,152 @@ fn rooms(project: &Project, active: ActiveRooms) -> Vec<Entry> {
                         .unwrap_or_default(),
                 ),
                 ("floor", f.name.clone()),
+                // The Room Finish schedule's columns.
+                (
+                    "base",
+                    spec.map(|n| molding_profile(n, MoldingKind::Base))
+                        .unwrap_or_default(),
+                ),
+                (
+                    "crown",
+                    spec.map(|n| molding_profile(n, MoldingKind::Crown))
+                        .unwrap_or_default(),
+                ),
+                (
+                    "wall_finish",
+                    spec.and_then(|n| n.misc.as_ref())
+                        .map(|m| m.wall_covering.clone())
+                        .unwrap_or_default(),
+                ),
             ];
             out.push(e);
         }
     }
     // Rooms keep the order the caller (or room detection) gave them.
     out
+}
+
+/// The profile name of the room's `kind` molding ("" = none).
+fn molding_profile(n: &plan_core::RoomName, kind: MoldingKind) -> String {
+    n.moldings
+        .iter()
+        .find(|m| m.kind == kind)
+        .map(|m| m.profile.clone())
+        .unwrap_or_default()
+}
+
+/// The Room Finish schedule: the rooms again, with the finish columns.
+fn room_finishes(project: &Project, active: ActiveRooms) -> Vec<Entry> {
+    let mut out = rooms(project, active);
+    for e in &mut out {
+        e.kind = ScheduleKind::RoomFinish;
+    }
+    out
+}
+
+/// The stairs and ramps of every floor (landings are not listed): the
+/// solved riser and tread of each, from `plan_stairs::solve`.
+fn stairs(project: &Project) -> Vec<Entry> {
+    use plan_stairs::{solve, Stair, StairShape};
+    let mut out = Vec::new();
+    for (fi, f) in project.floors.iter().enumerate() {
+        for v in &f.stairs {
+            let Ok(s) = serde_json::from_value::<Stair>(v.clone()) else {
+                continue;
+            };
+            let p = &s.params;
+            let kind = match p.shape {
+                StairShape::Landing { .. } => continue,
+                StairShape::Straight => "Straight",
+                StairShape::LShaped { .. } => "L-Shaped",
+                StairShape::UShaped { .. } => "U-Shaped",
+                StairShape::Winder { .. } => "Winder",
+                StairShape::Ramp { .. } => "Ramp",
+                StairShape::Curved { .. } => "Curved",
+            };
+            let sol = solve(p);
+            let ramp = matches!(p.shape, StairShape::Ramp { .. });
+            let mut e = new_entry(fi, s.id, s.origin, ScheduleKind::Stair);
+            e.name = kind.to_string();
+            e.size = size_text(p.width, p.total_rise);
+            e.cells = vec![
+                ("mark", String::new()),
+                ("type", kind.to_string()),
+                ("width", fmt_ft_in(p.width)),
+                ("rise", fmt_ft_in(p.total_rise)),
+                (
+                    "risers",
+                    if ramp {
+                        String::new()
+                    } else {
+                        sol.risers.to_string()
+                    },
+                ),
+                (
+                    "riser",
+                    if ramp {
+                        String::new()
+                    } else {
+                        format!("{:.3}\"", sol.riser_height)
+                    },
+                ),
+                (
+                    "tread",
+                    if ramp {
+                        String::new()
+                    } else {
+                        format!("{:.2}\"", sol.tread_depth)
+                    },
+                ),
+                ("run", fmt_ft_in(sol.total_run)),
+                ("floor", f.name.clone()),
+            ];
+            out.push(e);
+        }
+    }
+    by_position(&mut out);
+    out
+}
+
+/// The numbered notes of the plan: text objects reading `Note 3: ...` (or
+/// the prefix of another note type), ordered by note type, then number.
+fn notes(project: &Project) -> Vec<Entry> {
+    let types = project.note_types();
+    let mut keyed: Vec<((usize, u32, usize), Entry)> = Vec::new();
+    for (fi, f) in project.floors.iter().enumerate() {
+        for c in &f.cad {
+            let plan_core::CadItem::Text { pos, text, .. } = &c.item else {
+                continue;
+            };
+            let Some((type_name, n)) = types.parse(text) else {
+                continue;
+            };
+            let prefix = types.get(type_name).map_or("Note", |t| t.prefix.as_str());
+            let body = text
+                .split_once(':')
+                .map_or(text.as_str(), |(_, b)| b)
+                .trim()
+                .to_string();
+            let mut e = new_entry(fi, c.id, *pos, ScheduleKind::Note);
+            e.mark_override = Some(format!("{prefix} {n}"));
+            e.name = body.clone();
+            e.size = String::new();
+            e.cells = vec![
+                ("mark", String::new()),
+                ("type", type_name.to_string()),
+                ("note", body),
+                ("floor", f.name.clone()),
+            ];
+            let type_order = types
+                .types
+                .iter()
+                .position(|t| t.name == type_name)
+                .unwrap_or(0);
+            keyed.push(((type_order, n, fi), e));
+        }
+    }
+    keyed.sort_by_key(|(k, e)| (*k, e.id));
+    keyed.into_iter().map(|(_, e)| e).collect()
 }
 
 /// `FullHeight` as "Full Height": the cabinet kinds spelled out, whatever
@@ -465,7 +605,92 @@ fn symbols(project: &Project, kind: Option<ScheduleKind>) -> Vec<Entry> {
             out.push(e);
         }
     }
+    if kind == Some(ScheduleKind::Plant) {
+        out.extend(terrain_plants(project));
+    }
     by_position(&mut out);
+    out
+}
+
+/// The plants of the terrain's landscaping runs (Plant tool), one row per
+/// plant. They belong to the site, so they sit on the first floor's list.
+fn terrain_plants(project: &Project) -> Vec<Entry> {
+    let Some(runs) = project
+        .terrain
+        .as_ref()
+        .and_then(|t| t.get("terrain"))
+        .and_then(|t| t.get("landscape"))
+        .and_then(|l| l.as_array())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for run in runs {
+        if run.get("kind").and_then(|k| k.as_str()) != Some("Plants") {
+            continue;
+        }
+        let num = |k: &str| {
+            run.get(k)
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0)
+        };
+        let points: Vec<Point> = run
+            .get("points")
+            .and_then(|p| p.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| Some(Point::new(p.get("x")?.as_f64()?, p.get("y")?.as_f64()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(first) = points.first().copied() else {
+            continue;
+        };
+        let (spacing, canopy, height) = (num("spacing"), num("size"), num("height"));
+        let length: f64 = points.windows(2).map(|w| w[0].dist(w[1])).sum();
+        let count = if spacing > 0.0 && length > 0.0 {
+            (length / spacing + 1e-9).floor() as usize + 1
+        } else {
+            1
+        };
+        let id = run.get("plant").and_then(|p| p.as_str()).unwrap_or("");
+        let item = library().get(id);
+        let name = item.map_or_else(
+            || {
+                if id.is_empty() {
+                    "Plant".to_string()
+                } else {
+                    id.to_string()
+                }
+            },
+            |i| i.name.clone(),
+        );
+        let floor_name = project
+            .floors
+            .first()
+            .map(|f| f.name.clone())
+            .unwrap_or_default();
+        for _ in 0..count {
+            let mut e = new_entry(0, 0, first, ScheduleKind::Plant);
+            e.name = name.clone();
+            e.size = size_text(canopy, canopy);
+            e.cells = vec![
+                ("mark", String::new()),
+                ("name", name.clone()),
+                (
+                    "category",
+                    item.map(|i| i.category.join(" > "))
+                        .unwrap_or_else(|| "Plants".to_string()),
+                ),
+                ("width", fmt_ft_in(canopy)),
+                ("depth", fmt_ft_in(canopy)),
+                ("height", fmt_ft_in(height)),
+                ("elevation", fmt_ft_in(0.0)),
+                ("floor", floor_name.clone()),
+            ];
+            out.push(e);
+        }
+    }
     out
 }
 
@@ -522,6 +747,9 @@ pub fn entries(project: &Project, kind: ScheduleKind, active: ActiveRooms) -> Ve
         ScheduleKind::Fixture | ScheduleKind::Furniture | ScheduleKind::Plant => {
             symbols(project, Some(kind))
         }
+        ScheduleKind::Stair => stairs(project),
+        ScheduleKind::RoomFinish => room_finishes(project, active),
+        ScheduleKind::Note => notes(project),
         ScheduleKind::General => general(project),
     }
 }
@@ -673,14 +901,125 @@ pub fn rows(
     shown
 }
 
-/// The schedule as a table: title, the visible columns in their order, and
-/// one row per object.
-pub fn table(project: &Project, def: &Schedule, home_floor: usize, active: ActiveRooms) -> Table {
-    let shown = rows(project, def, home_floor, active);
-    let columns: Vec<_> = def
-        .visible_columns()
+/// The object behind a table row (a grouped row has several).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowTarget {
+    pub kind: ScheduleKind,
+    pub floor: usize,
+    /// The object's id; `0` for a room (find it by `position`) or a plant
+    /// of the terrain.
+    pub id: Id,
+    pub position: Point,
+}
+
+/// Fields whose cells are numbers a Totals line adds up.
+const SUMMED: [&str; 4] = ["area", "standard_area", "perimeter", "qty"];
+
+fn visible_columns(def: &Schedule) -> Vec<&plan_core::schedules::ColumnSpec> {
+    def.visible_columns()
         .filter(|c| def.kind.fields().iter().any(|f| f.id == c.field))
-        .collect();
+        .collect()
+}
+
+/// The rows as listed (one per object) or grouped by `def.group_by`, and a
+/// Totals line when `def.totals` is on, with the objects behind each row.
+/// The totals row has no targets.
+fn display_rows(
+    project: &Project,
+    def: &Schedule,
+    home_floor: usize,
+    active: ActiveRooms,
+) -> Vec<(Vec<String>, Vec<RowTarget>)> {
+    let shown = rows(project, def, home_floor, active);
+    let columns = visible_columns(def);
+    let target = |e: &Entry| RowTarget {
+        kind: e.kind,
+        floor: e.floor,
+        id: e.id,
+        position: e.position,
+    };
+    let grouping = def
+        .kind
+        .fields()
+        .iter()
+        .any(|f| f.id == def.group_by && !def.group_by.is_empty());
+    let mut out: Vec<(Vec<String>, Vec<RowTarget>)> = Vec::new();
+    if grouping {
+        // Groups keep the order of their first member.
+        let mut groups: Vec<(String, Vec<&Entry>)> = Vec::new();
+        for e in &shown {
+            let key = e.cell(&def.group_by).to_string();
+            match groups.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, v)) => v.push(e),
+                None => groups.push((key, vec![e])),
+            }
+        }
+        for (_, members) in groups {
+            let cells = columns
+                .iter()
+                .map(|c| {
+                    let first = members[0].cell(&c.field);
+                    let same = members.iter().all(|m| m.cell(&c.field) == first);
+                    if c.field == "mark" && members.len() > 1 {
+                        let last = members[members.len() - 1].cell("mark");
+                        format!("{first}-{last} ({})", members.len())
+                    } else if same || c.field == def.group_by {
+                        first.to_string()
+                    } else {
+                        "*".to_string()
+                    }
+                })
+                .collect();
+            out.push((cells, members.iter().map(|m| target(m)).collect()));
+        }
+    } else {
+        for e in &shown {
+            let cells = columns
+                .iter()
+                .map(|c| e.cell(&c.field).to_string())
+                .collect();
+            out.push((cells, vec![target(e)]));
+        }
+    }
+    if def.totals && !columns.is_empty() {
+        let mut cells = vec![String::new(); columns.len()];
+        cells[0] = "Total".to_string();
+        if columns.len() > 1 {
+            cells[1] = shown.len().to_string();
+        }
+        for (i, c) in columns.iter().enumerate() {
+            if i < 2 || !SUMMED.contains(&c.field.as_str()) {
+                continue;
+            }
+            let sum: f64 = shown
+                .iter()
+                .filter_map(|e| e.cell(&c.field).trim().parse::<f64>().ok())
+                .sum();
+            cells[i] = format!("{sum:.1}");
+        }
+        out.push((cells, Vec::new()));
+    }
+    out
+}
+
+/// What each row of [`table`] stands for, in the same order.
+pub fn row_targets(
+    project: &Project,
+    def: &Schedule,
+    home_floor: usize,
+    active: ActiveRooms,
+) -> Vec<Vec<RowTarget>> {
+    display_rows(project, def, home_floor, active)
+        .into_iter()
+        .map(|(_, t)| t)
+        .collect()
+}
+
+/// The schedule as a table: title, the visible columns in their order, and
+/// one row per object (or per group, with a Totals line, when the schedule
+/// asks for them).
+pub fn table(project: &Project, def: &Schedule, home_floor: usize, active: ActiveRooms) -> Table {
+    let columns = visible_columns(def);
     Table {
         title: def.display_title(),
         columns: columns
@@ -697,14 +1036,9 @@ pub fn table(project: &Project, def: &Schedule, home_floor: usize, active: Activ
                 }
             })
             .collect(),
-        rows: shown
-            .iter()
-            .map(|e| {
-                columns
-                    .iter()
-                    .map(|c| e.cell(&c.field).to_string())
-                    .collect()
-            })
+        rows: display_rows(project, def, home_floor, active)
+            .into_iter()
+            .map(|(cells, _)| cells)
             .collect(),
     }
 }
@@ -765,6 +1099,29 @@ mod tests {
         p.floors[0]
             .framing
             .push(serde_json::json!({ "Manual": member }));
+        let stair = plan_stairs::Stair::new(
+            p.alloc_id(),
+            Point::new(30.0, 40.0),
+            0.0,
+            plan_stairs::StairParams::default(),
+        );
+        p.floors[0].set_stairs(&[stair]).unwrap();
+        for text in [
+            "Note 2: Verify at site",
+            "E 1: Outlet at 16\" AFF",
+            "Plain text",
+        ] {
+            p.add_cad(
+                0,
+                "CAD, Default",
+                plan_core::CadItem::Text {
+                    pos: Point::new(10.0, 10.0),
+                    text: text.into(),
+                    height: 3.0,
+                    angle: 0.0,
+                },
+            );
+        }
         p
     }
 
@@ -1050,5 +1407,193 @@ mod tests {
         let p = house();
         assert!(table(&p, &def(ScheduleKind::Door), 7, None).rows.is_empty());
         assert!(floor_callouts(&p, 7).is_empty());
+    }
+
+    #[test]
+    fn room_finish_rows_read_the_room_specification() {
+        let mut p = house();
+        let rooms = detect_rooms(&p.floors[0].walls, 1.0);
+        assert!(!rooms.is_empty());
+        let anchor = rooms[0].centroid;
+        let mut name = plan_core::RoomName::new(anchor, "Kitchen", "Kitchen");
+        name.floor_finish = Some("Oak".into());
+        name.ceiling_finish = Some("Paint".into());
+        name.moldings = vec![
+            plan_core::MoldingRef {
+                kind: MoldingKind::Base,
+                profile: "Colonial".into(),
+                height: 5.25,
+            },
+            plan_core::MoldingRef {
+                kind: MoldingKind::Crown,
+                profile: "Cove".into(),
+                height: 3.5,
+            },
+        ];
+        name.misc = Some(plan_core::extras::RoomMisc {
+            wall_covering: "Wainscot".into(),
+            ..plan_core::extras::RoomMisc::default()
+        });
+        p.floors[0].room_names.push(name);
+        let t = table(&p, &def(ScheduleKind::RoomFinish), 0, None);
+        assert_eq!(
+            t.columns,
+            vec![
+                "Number",
+                "Name",
+                "Floor Finish",
+                "Base",
+                "Wall Finish",
+                "Ceiling Finish"
+            ]
+        );
+        let row = t
+            .rows
+            .iter()
+            .find(|r| r[1] == "Kitchen")
+            .expect("Kitchen row");
+        assert_eq!(row[0], "RF01");
+        assert_eq!(&row[2..], ["Oak", "Colonial", "Wainscot", "Paint"]);
+        // Rows come from the rooms, so the Room schedule still has its own kind.
+        assert!(entries(&p, ScheduleKind::Room, None)
+            .iter()
+            .all(|e| e.kind == ScheduleKind::Room));
+    }
+
+    #[test]
+    fn note_rows_list_the_numbered_notes_by_type_and_number() {
+        let p = rich();
+        let t = table(&p, &def(ScheduleKind::Note), 0, None);
+        assert_eq!(t.columns, vec!["No.", "Type", "Note"]);
+        assert_eq!(
+            t.rows,
+            vec![
+                vec!["Note 2", "General Note", "Verify at site"],
+                vec!["E 1", "Electrical Note", "Outlet at 16\" AFF"],
+            ]
+        );
+        let targets = row_targets(&p, &def(ScheduleKind::Note), 0, None);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0][0].kind, ScheduleKind::Note);
+        assert_ne!(targets[0][0].id, 0);
+    }
+
+    #[test]
+    fn terrain_plants_are_plant_schedule_rows() {
+        let mut p = house();
+        p.terrain = Some(serde_json::json!({
+            "terrain": {
+                "landscape": [
+                    {
+                        "kind": "Plants",
+                        "points": [{"x": 0.0, "y": 0.0}, {"x": 120.0, "y": 0.0}],
+                        "plant": "plants.boxwood",
+                        "size": 30.0,
+                        "height": 36.0,
+                        "spacing": 30.0
+                    },
+                    { "kind": "GardenBed", "points": [] }
+                ]
+            }
+        }));
+        let es = entries(&p, ScheduleKind::Plant, None);
+        // 120" at 30" spacing: five plants, both ends included.
+        assert_eq!(es.len(), 5);
+        assert!(es.iter().all(|e| e.id == 0 && e.cell("height") == "3'-0\""));
+        let mut d = def(ScheduleKind::Plant);
+        d.group_by = "name".into();
+        d.totals = true;
+        let t = table(&p, &d, 0, None);
+        // One group line and the totals line.
+        assert_eq!(t.rows.len(), 2);
+        assert_eq!(t.rows[1][0], "Total");
+        assert_eq!(t.rows[1][1], "5");
+    }
+
+    #[test]
+    fn grouping_counts_equal_rows_and_totals_add_up() {
+        let p = rich();
+        let mut d = def(ScheduleKind::Cabinet);
+        let plain = table(&p, &d, 0, None);
+        assert_eq!(plain.rows.len(), 2);
+        // Group the two base cabinets by their type.
+        d.group_by = "type".into();
+        let grouped = table(&p, &d, 0, None);
+        assert_eq!(grouped.rows.len(), 1);
+        assert_eq!(grouped.rows[0][0], "C-01-C-02 (2)");
+        // Different widths show as "*".
+        let width = grouped.columns.iter().position(|c| c == "Width").unwrap();
+        assert_eq!(grouped.rows[0][width], "*");
+        let targets = row_targets(&p, &d, 0, None);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].len(), 2, "both cabinets are behind the line");
+        // Totals add a last line with the count of objects, none behind it.
+        d.totals = true;
+        let t = table(&p, &d, 0, None);
+        assert_eq!(t.rows.len(), 2);
+        assert_eq!(t.rows[1][0], "Total");
+        assert_eq!(t.rows[1][1], "2");
+        assert!(row_targets(&p, &d, 0, None)[1].is_empty());
+        // Rooms: the area column is summed.
+        let mut r = def(ScheduleKind::Room);
+        r.totals = true;
+        let t = table(&p, &r, 0, None);
+        let area = t.columns.iter().position(|c| c == "Area sq ft").unwrap();
+        let sum: f64 = t.rows[..t.rows.len() - 1]
+            .iter()
+            .filter_map(|row| row[area].parse::<f64>().ok())
+            .sum();
+        let shown: f64 = t.rows.last().unwrap()[area].parse().unwrap();
+        assert!(
+            (sum - shown).abs() < 0.11 * t.rows.len() as f64,
+            "{sum} vs {shown}"
+        );
+        // A group field the kind does not have is ignored.
+        let mut bad = def(ScheduleKind::Cabinet);
+        bad.group_by = "nope".into();
+        assert_eq!(table(&p, &bad, 0, None).rows.len(), 2);
+    }
+
+    #[test]
+    fn the_stair_schedule_lists_stairs_but_not_landings() {
+        use plan_stairs::{Stair, StairParams, StairShape};
+        let mut p = rich();
+        let landing = Stair::new(
+            p.alloc_id(),
+            Point::new(200.0, 40.0),
+            0.0,
+            StairParams {
+                shape: StairShape::Landing { depth: 36.0 },
+                ..StairParams::default()
+            },
+        );
+        let mut stairs = p.floors[0].stairs_as::<Stair>().unwrap();
+        stairs.push(landing);
+        p.floors[0].set_stairs(&stairs).unwrap();
+        let t = table(&p, &def(ScheduleKind::Stair), 0, None);
+        assert_eq!(
+            t.columns,
+            vec![
+                "Mark",
+                "Type",
+                "Width",
+                "Total rise",
+                "Risers",
+                "Riser height",
+                "Tread depth",
+                "Total run"
+            ]
+        );
+        assert_eq!(t.rows.len(), 1, "{:?}", t.rows);
+        let row = &t.rows[0];
+        assert_eq!(row[0], "S01");
+        assert_eq!(row[1], "Straight");
+        let params = StairParams::default();
+        let sol = plan_stairs::solve(&params);
+        assert_eq!(row[4], sol.risers.to_string());
+        assert_eq!(row[5], format!("{:.3}\"", sol.riser_height));
+        let targets = row_targets(&p, &def(ScheduleKind::Stair), 0, None);
+        assert_eq!(targets[0][0].kind, ScheduleKind::Stair);
+        assert_ne!(targets[0][0].id, 0);
     }
 }

@@ -73,6 +73,8 @@ enum Op {
     /// molding line's two ends are corners 0 and 1).
     DetailVertex(Id, usize),
     Camera(Id, CamHandle),
+    /// Vertex `n` of a terrain element.
+    TerrainVertex(site_view::TerrainHit, usize),
 }
 
 impl Op {
@@ -96,6 +98,7 @@ impl Op {
             Op::FramingVertex(..) => "Reshape Truss Base",
             Op::DetailVertex(..) => "Reshape Detail",
             Op::Camera(..) => "Edit Camera",
+            Op::TerrainVertex(..) => "Reshape Terrain Element",
         }
     }
 }
@@ -255,6 +258,34 @@ fn select_hit(cx: &mut EditorContext, o: ObjectRef) {
     }
 }
 
+/// Outlines the selected terrain elements in the selection colour (the plan
+/// renderer draws the terrain itself, without a selection state).
+fn draw_terrain_selection(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let Some(view) = site_view::terrain_view(&cx.project) else {
+        return;
+    };
+    let stroke = Stroke::new(2.5_f32, cx.palette.selection);
+    for o in &cx.selection.items {
+        let ObjectRef::TerrainObject(hit) = *o else {
+            continue;
+        };
+        let t = &view.record.terrain;
+        let pts = site_view::hit_points(t, hit);
+        if let [only] = pts.as_slice() {
+            painter.circle_stroke(cam.world_to_screen(*only), 7.0, stroke);
+        } else {
+            site_view::draw_polyline(
+                painter,
+                cam,
+                &pts,
+                site_view::hit_is_closed(t, hit),
+                stroke,
+                false,
+            );
+        }
+    }
+}
+
 // ----- marquee -----
 
 fn rect_corners(lo: Point, hi: Point) -> [Point; 4] {
@@ -389,6 +420,7 @@ impl SelectTool {
             (ObjectRef::Framing(id), HandleKind::ResizeEnd) => Op::FramingEnd(id, true),
             (ObjectRef::Framing(id), HandleKind::Reshape(i)) => Op::FramingVertex(id, i),
             (ObjectRef::Detail(id), HandleKind::Reshape(i)) => Op::DetailVertex(id, i),
+            (ObjectRef::TerrainObject(hit), HandleKind::Reshape(i)) => Op::TerrainVertex(hit, i),
             // Only a two-point molding line has end handles.
             (ObjectRef::Detail(id), HandleKind::ResizeStart) => Op::DetailVertex(id, 0),
             (ObjectRef::Detail(id), HandleKind::ResizeEnd) => Op::DetailVertex(id, 1),
@@ -613,6 +645,14 @@ impl SelectTool {
                     }
                 }
             }
+            Op::TerrainVertex(hit, i) => {
+                let to = cx.snap_at(p.world, None, alt, &[]).point;
+                if let Some(mut rec) = site_view::load_terrain(&a.original) {
+                    if site_view::move_terrain_vertex(&mut rec.terrain, hit, i, to) {
+                        site_view::save_terrain(&mut cx.project, &rec);
+                    }
+                }
+            }
             Op::Camera(id, h) => {
                 if let Some(orig) = a.original.camera(id).cloned() {
                     let unit = cx.snap_unit();
@@ -642,7 +682,7 @@ impl SelectTool {
             details_view::follow_walls(&mut cx.project, fl, &a.original.floors[fl].walls);
         }
         // A moved distribution record carries its copies along.
-        if matches!(a.op, Op::Group) {
+        if matches!(a.op, Op::Group | Op::Symbol(..)) {
             crate::editor::placed::sync_distributions(cx);
         }
         cx.mark_dirty();
@@ -701,7 +741,7 @@ impl SelectTool {
             details_view::follow_walls(&mut cx.project, fl, &a.original.floors[fl].walls);
         }
         // A moved distribution record carries its copies along.
-        if matches!(a.op, Op::Group) {
+        if matches!(a.op, Op::Group | Op::Symbol(..)) {
             crate::editor::placed::sync_distributions(cx);
         }
         cx.last_snap = None;
@@ -770,6 +810,8 @@ impl SelectTool {
         }
         let fl = cx.floor;
         details_view::follow_walls(&mut cx.project, fl, &before);
+        // A nudged distribution record carries its copies along.
+        crate::editor::placed::sync_distributions(cx);
         cx.mark_dirty();
         ToolResult::committed("Nudge")
     }
@@ -1055,6 +1097,7 @@ impl Tool for SelectTool {
         if cx.view_flags.contains(&ViewFlag::TemporaryDimensions) {
             tempdim::draw(&cx.temp, painter, cam, pal, &cx.dim_format());
         }
+        draw_terrain_selection(cx, painter, cam);
         let hs = handles::handles_for(cx, cam.px_per_in);
         handles::draw(&hs, painter, cam, pal);
         if let (Drag::Active(_), Some(s)) = (&self.drag, cx.last_snap) {
@@ -1445,6 +1488,230 @@ mod tests {
         assert!(foundation_view::load(&cx).pad(id).is_some());
         let boxed = objects_in_rect(&cx, Point::new(0.0, 0.0), Point::new(300.0, 300.0));
         assert!(boxed.contains(&ObjectRef::Foundation(id)));
+    }
+
+    fn terrain_with_a_wall_and_a_bed() -> EditorContext {
+        use plan_terrain::{
+            Landscape, LandscapeKind, ShapeKind, TerrainWall, WallKind as TerrainWallKind,
+        };
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        site_view::edit_terrain(&mut cx, "Draw", |r| {
+            r.terrain.walls.push(TerrainWall::new(
+                TerrainWallKind::Wall,
+                vec![Point::new(0.0, 0.0), Point::new(240.0, 0.0)],
+                false,
+            ));
+            r.terrain.landscape.push(Landscape::new(
+                LandscapeKind::GardenBed,
+                ShapeKind::Polyline,
+                vec![
+                    Point::new(300.0, 300.0),
+                    Point::new(500.0, 300.0),
+                    Point::new(500.0, 500.0),
+                    Point::new(300.0, 500.0),
+                ],
+            ));
+        });
+        site_view::ensure_landscape_layers(&mut cx.project);
+        cx.refresh();
+        cx
+    }
+
+    fn terrain_of(cx: &EditorContext) -> plan_terrain::Terrain {
+        site_view::load_terrain(&cx.project).unwrap().terrain
+    }
+
+    #[test]
+    fn select_picks_moves_reshapes_opens_and_deletes_terrain_objects_with_undo() {
+        use site_view::TerrainHit;
+        let mut cx = terrain_with_a_wall_and_a_bed();
+        let mut t = SelectTool::default();
+        // A click selects the terrain wall, not the whole terrain.
+        let p = ev(&cx, 100.0, 1.0);
+        t.pointer_down(&mut cx, p.with_down(true));
+        t.pointer_up(&mut cx, p);
+        let wall = ObjectRef::TerrainObject(TerrainHit::Wall(0));
+        assert_eq!(cx.selection.single(), Some(wall));
+        assert_eq!(wall.type_name(), "Terrain Wall");
+        assert!(wall.exists_in(&cx.project, 0));
+        assert!(!ObjectRef::TerrainObject(TerrainHit::Wall(3)).exists_in(&cx.project, 0));
+
+        // Dragging the body moves it as one undo step.
+        let steps = cx.undo_label().map(str::to_string);
+        drag(&mut t, &mut cx, (100.0, 1.0), (100.0, 49.0));
+        let moved = terrain_of(&cx).walls[0].points.clone();
+        assert!(
+            (moved[0].y - 48.0).abs() < 1e-6 && (moved[1].y - 48.0).abs() < 1e-6,
+            "{moved:?}"
+        );
+        assert_eq!(cx.undo_label(), Some("Move Objects"));
+        cx.undo();
+        assert_eq!(terrain_of(&cx).walls[0].points[0].y, 0.0);
+        assert_eq!(cx.undo_label().map(str::to_string), steps);
+
+        // A vertex handle per point; dragging one reshapes the wall.
+        let hs = handles::handles_for(&cx, 2.0);
+        assert_eq!(hs.len(), 2);
+        assert!(hs.iter().all(|h| matches!(h.kind, HandleKind::Reshape(_))));
+        drag(&mut t, &mut cx, (240.0, 0.0), (300.0, 0.0));
+        assert_eq!(cx.undo_label(), Some("Reshape Terrain Element"));
+        let pts = terrain_of(&cx).walls[0].points.clone();
+        assert_eq!(
+            (pts[0], pts[1]),
+            (Point::new(0.0, 0.0), Point::new(300.0, 0.0))
+        );
+        cx.undo();
+
+        // Arrow keys nudge it.
+        assert!(t.key(&mut cx, KeyEvent::key(Key::ArrowUp)).commit.is_some());
+        assert!(terrain_of(&cx).walls[0].points[0].y > 0.0);
+        cx.undo();
+
+        // Double-click asks for the specification.
+        cx.requests.clear();
+        let at = ev(&cx, 100.0, 1.0);
+        assert!(t.double_click(&mut cx, at).consumed);
+        assert!(cx
+            .requests
+            .iter()
+            .any(|r| matches!(r, EditorRequest::OpenSpec(o) if *o == wall)));
+
+        // Delete removes it; undo brings it back.
+        assert!(t.key(&mut cx, KeyEvent::key(Key::Delete)).consumed);
+        assert!(terrain_of(&cx).walls.is_empty());
+        assert_eq!(terrain_of(&cx).landscape.len(), 1, "the bed stays");
+        assert!(cx.selection.is_empty());
+        assert_eq!(cx.undo_label(), Some("Delete Terrain Element"));
+        cx.undo();
+        assert_eq!(terrain_of(&cx).walls.len(), 1);
+    }
+
+    #[test]
+    fn a_marquee_selects_terrain_objects_and_delete_takes_them_all() {
+        use site_view::TerrainHit;
+        let mut cx = terrain_with_a_wall_and_a_bed();
+        let mut t = SelectTool::default();
+        // Window: only what it encloses; crossing: what it touches.
+        let inside = objects_in_rect(&cx, Point::new(-10.0, -10.0), Point::new(260.0, 20.0));
+        assert!(inside.contains(&ObjectRef::TerrainObject(TerrainHit::Wall(0))));
+        assert!(!inside.contains(&ObjectRef::TerrainObject(TerrainHit::Landscape(0))));
+        let touching = objects_in_rect(&cx, Point::new(400.0, 400.0), Point::new(350.0, 350.0));
+        assert!(touching.contains(&ObjectRef::TerrainObject(TerrainHit::Landscape(0))));
+        // A box over both, then Delete: the indices of the second one must not
+        // be disturbed by removing the first.
+        drag(&mut t, &mut cx, (-20.0, -20.0), (600.0, 600.0));
+        assert_eq!(cx.selection.len(), 2, "{:?}", cx.selection.items);
+        assert!(t.key(&mut cx, KeyEvent::key(Key::Delete)).consumed);
+        let rec = terrain_of(&cx);
+        assert!(rec.walls.is_empty() && rec.landscape.is_empty());
+        cx.undo();
+        let rec = terrain_of(&cx);
+        assert_eq!((rec.walls.len(), rec.landscape.len()), (1, 1));
+    }
+
+    #[test]
+    fn a_group_move_carries_terrain_objects_with_plan_objects() {
+        use site_view::TerrainHit;
+        let mut cx = terrain_with_a_wall_and_a_bed();
+        let w = cx.project.add_wall(
+            0,
+            Point::new(0.0, 200.0),
+            Point::new(200.0, 200.0),
+            6.0,
+            100.0,
+            plan_core::WallKind::Exterior,
+        );
+        cx.refresh();
+        cx.selection.items = vec![
+            ObjectRef::Wall(w),
+            ObjectRef::TerrainObject(TerrainHit::Landscape(0)),
+        ];
+        let mut t = SelectTool::default();
+        assert_eq!(
+            t.key(&mut cx, KeyEvent::key(Key::ArrowRight))
+                .commit
+                .as_deref(),
+            Some("Nudge")
+        );
+        let bed = terrain_of(&cx).landscape[0].points[0];
+        assert!(bed.x > 300.0, "{bed:?}");
+        assert!(cx.floor().wall(w).unwrap().start.x > 0.0);
+        cx.undo();
+        assert_eq!(
+            terrain_of(&cx).landscape[0].points[0],
+            Point::new(300.0, 300.0)
+        );
+        assert_eq!(cx.floor().wall(w).unwrap().start.x, 0.0);
+    }
+
+    #[test]
+    fn the_perimeter_is_still_the_whole_terrain() {
+        let mut cx = terrain_with_a_wall_and_a_bed();
+        site_view::edit_terrain(&mut cx, "Perimeter", |r| {
+            r.terrain.perimeter = vec![
+                Point::new(-600.0, -600.0),
+                Point::new(1200.0, -600.0),
+                Point::new(1200.0, 1200.0),
+                Point::new(-600.0, 1200.0),
+            ];
+        });
+        let hits = hit_test_cx(&cx, Point::new(0.0, -600.0), 4.0);
+        assert!(hits.contains(&ObjectRef::Terrain), "{hits:?}");
+        let on_wall = hit_test_cx(&cx, Point::new(100.0, 1.0), 4.0);
+        assert_eq!(
+            on_wall.first(),
+            Some(&ObjectRef::TerrainObject(site_view::TerrainHit::Wall(0)))
+        );
+    }
+
+    #[test]
+    fn moving_a_distribution_record_takes_its_copies_along() {
+        use plan_core::images::{DistKind, Distribution};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let dist = Distribution::new(
+            DistKind::Path,
+            false,
+            vec![Point::new(0.0, 0.0), Point::new(240.0, 0.0)],
+            "shrub",
+            [24.0, 24.0, 30.0],
+        );
+        let id = cx.project.add_distribution(0, dist);
+        cx.refresh();
+        let copies = |cx: &EditorContext| -> Vec<Point> {
+            cx.floor()
+                .symbols
+                .iter()
+                .filter(|s| s.owner == Some(id))
+                .map(|s| s.position)
+                .collect()
+        };
+        let before = copies(&cx);
+        assert!(before.len() >= 3);
+        let mut t = SelectTool::default();
+        cx.selection.set(ObjectRef::Symbol(id));
+        // An arrow-key nudge moves the record and rebuilds the copies there.
+        assert!(t.key(&mut cx, KeyEvent::key(Key::ArrowUp)).commit.is_some());
+        let nudged = copies(&cx);
+        assert_eq!(nudged.len(), before.len());
+        assert!(nudged[0].y > before[0].y, "{:?} {:?}", before[0], nudged[0]);
+        cx.undo();
+        assert_eq!(copies(&cx)[0], before[0]);
+        // So does dragging the selected record by its move handle.
+        cx.selection.set(ObjectRef::Symbol(id));
+        let handle = handles::handles_for(&cx, 2.0)
+            .into_iter()
+            .find(|h| h.kind == HandleKind::Move)
+            .expect("a move handle")
+            .pos;
+        drag(
+            &mut t,
+            &mut cx,
+            (handle.x, handle.y),
+            (handle.x, handle.y + 48.0),
+        );
+        let dragged = copies(&cx);
+        assert_eq!(dragged.len(), before.len());
+        assert!(dragged[0].y > before[0].y + 40.0, "{:?}", dragged[0]);
     }
 
     #[test]

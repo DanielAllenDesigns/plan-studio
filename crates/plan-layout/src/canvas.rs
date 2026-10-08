@@ -125,6 +125,79 @@ pub(crate) enum Prim {
     ClipEnd,
 }
 
+/// `p` turned `turns` quarter turns counter-clockwise about `c`.
+fn turn_point(p: Pt, c: Pt, turns: u8) -> Pt {
+    let (dx, dy) = (p.0 - c.0, p.1 - c.1);
+    match turns % 4 {
+        0 => p,
+        1 => (c.0 - dy, c.1 + dx),
+        2 => (c.0 - dx, c.1 - dy),
+        _ => (c.0 + dy, c.1 - dx),
+    }
+}
+
+/// RGBA pixels (`w * h * 4`, rows top to bottom) turned counter-clockwise.
+fn turn_pixels(rgba: &[u8], (w, h): (u32, u32), turns: u8) -> (Vec<u8>, (u32, u32)) {
+    let (wu, hu) = (w as usize, h as usize);
+    if rgba.len() != wu * hu * 4 {
+        return (rgba.to_vec(), (w, h));
+    }
+    let (nw, nh) = if turns % 2 == 1 { (hu, wu) } else { (wu, hu) };
+    let mut out = vec![0u8; rgba.len()];
+    for y in 0..hu {
+        for x in 0..wu {
+            let (nx, ny) = match turns % 4 {
+                0 => (x, y),
+                1 => (y, wu - 1 - x),
+                2 => (wu - 1 - x, hu - 1 - y),
+                _ => (hu - 1 - y, x),
+            };
+            let (from, to) = ((y * wu + x) * 4, (ny * nw + nx) * 4);
+            out[to..to + 4].copy_from_slice(&rgba[from..from + 4]);
+        }
+    }
+    (out, (nw as u32, nh as u32))
+}
+
+/// Turns `prims` `turns` quarter turns counter-clockwise about `c` (text
+/// turns with its position, images keep their pixels upright in the turned
+/// frame). Used for a box whose content is rotated.
+pub(crate) fn rotate_prims(prims: &mut [Prim], c: Pt, turns: u8) {
+    if turns.is_multiple_of(4) {
+        return;
+    }
+    let angle = f64::from(turns % 4) * std::f64::consts::FRAC_PI_2;
+    for p in prims {
+        match p {
+            Prim::Stroke { pts, .. } | Prim::Fill { pts, .. } => {
+                for q in pts.iter_mut() {
+                    *q = turn_point(*q, c, turns);
+                }
+            }
+            Prim::Text { x, y, angle: a, .. } => {
+                let (nx, ny) = turn_point((*x, *y), c, turns);
+                *x = nx;
+                *y = ny;
+                *a += angle;
+            }
+            Prim::Image { rect, px, rgba } => {
+                let (turned, size) = turn_pixels(rgba, *px, turns);
+                *rgba = turned;
+                *px = size;
+                *rect = turn_rect(*rect, c, turns);
+            }
+            Prim::ClipBegin(rect) => *rect = turn_rect(*rect, c, turns),
+            Prim::ClipEnd => {}
+        }
+    }
+}
+
+fn turn_rect(r: Rect, c: Pt, turns: u8) -> Rect {
+    let a = turn_point((r[0], r[1]), c, turns);
+    let b = turn_point((r[2], r[3]), c, turns);
+    [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
+}
+
 /// Collects primitives.
 #[derive(Default)]
 pub(crate) struct Canvas {

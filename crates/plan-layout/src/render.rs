@@ -6,11 +6,11 @@
 //! become a PDF clip rectangle; the same list, soft-clipped, backs
 //! [`render_box_lines`], which lets tests inspect exactly what a box draws.
 
-use crate::canvas::{emit, gray, soft_clip, text_w, Canvas, Dash, Pen, Prim, BLACK};
+use crate::canvas::{emit, gray, rotate_prims, soft_clip, text_w, Canvas, Dash, Pen, Prim, BLACK};
 use crate::clip::{Pt, Rect};
 use crate::extent::{
-    frame_for, schedule_for, table_metrics, Frame, SceneSource, LINE_SPACING, ROW_H_PT,
-    TABLE_TEXT_PT, TABLE_TITLE_H_PT,
+    frame_for, placed_schedule_table, schedule_for, table_metrics, Frame, SceneSource,
+    LINE_SPACING, ROW_H_PT, TABLE_TEXT_PT, TABLE_TITLE_H_PT,
 };
 use crate::hatch::wall_face_hatch;
 use crate::model::{BoxSource, Layout, LayoutBox, LayoutPage, BOTTOM_STRIP_IN};
@@ -69,6 +69,14 @@ pub fn macros_for(project: &Project) -> MacroContext {
         project_number: get("project.number"),
         revision: get("revision"),
         revisions: info.revisions.clone(),
+        // The rest of Project Information: %company%, %client.phone%,
+        // %client.email%, %drawn.by%, %checked.by%, %project.address%,
+        // %client.address% and %custom.<key>%.
+        extra: pairs
+            .iter()
+            .filter(|(k, _)| !MacroContext::is_builtin(k))
+            .cloned()
+            .collect(),
         ..MacroContext::default()
     }
 }
@@ -524,11 +532,18 @@ fn box_rect_pt(b: &LayoutBox) -> Rect {
 /// The prims for a box: its content, bracketed by clip markers when `clip` is
 /// set (the PDF clip rectangle), then its border.
 fn box_prims(b: &LayoutBox, cx: &LayoutRenderContext, scenes: &SceneSource) -> Vec<Prim> {
-    let rect = box_rect_pt(b);
+    let real = box_rect_pt(b);
+    // A box with turned content lays it out in the box turned back: the
+    // same centre, width and height swapped for a quarter turn.
+    let turns = b.quarter_turns();
+    let centre = ((real[0] + real[2]) * 0.5, (real[1] + real[3]) * 0.5);
+    let rect = if turns % 2 == 1 {
+        let (hw, hh) = ((real[3] - real[1]) * 0.5, (real[2] - real[0]) * 0.5);
+        [centre.0 - hw, centre.1 - hh, centre.0 + hw, centre.1 + hh]
+    } else {
+        real
+    };
     let mut cv = Canvas::new();
-    if b.clip {
-        cv.prims.push(Prim::ClipBegin(rect));
-    }
     let (bw, bh) = (rect[2] - rect[0], rect[3] - rect[1]);
     let k = b.scale.points_per_inch();
     let lws = b.line_weight_scale;
@@ -582,6 +597,12 @@ fn box_prims(b: &LayoutBox, cx: &LayoutRenderContext, scenes: &SceneSource) -> V
             BoxSource::Schedule { kind } => {
                 draw_table(&mut cv, &schedule_for(*kind, cx), rect[0], rect[3]);
             }
+            BoxSource::PlacedSchedule { floor, id } => {
+                match placed_schedule_table(cx, *floor, *id) {
+                    Some(t) => draw_table(&mut cv, &t, rect[0], rect[3]),
+                    None => placeholder(&mut cv, rect, lws, "SCHEDULE: not found"),
+                }
+            }
             BoxSource::Text { text, height_pt } => {
                 for (i, line) in text.lines().enumerate() {
                     let y = rect[3] - height_pt * LINE_SPACING * (i as f64 + 0.8);
@@ -615,13 +636,22 @@ fn box_prims(b: &LayoutBox, cx: &LayoutRenderContext, scenes: &SceneSource) -> V
         },
     }
 
+    // Turn the content, then clip it to the box and frame it.
+    rotate_prims(&mut cv.prims, centre, turns);
+    let mut out = Vec::with_capacity(cv.prims.len() + 8);
     if b.clip {
-        cv.prims.push(Prim::ClipEnd);
+        out.push(Prim::ClipBegin(real));
+    }
+    out.append(&mut cv.prims);
+    if b.clip {
+        out.push(Prim::ClipEnd);
     }
     if b.border {
-        cv.rect(rect[0], rect[1], rect[2], rect[3], Pen::new(0.75 * lws));
+        let mut frame = Canvas::new();
+        frame.rect(real[0], real[1], real[2], real[3], Pen::new(0.75 * lws));
+        out.append(&mut frame.prims);
     }
-    cv.prims
+    out
 }
 
 /// A crossed frame with a caption, for images that cannot be drawn.
@@ -788,7 +818,7 @@ fn draw_revision_table(
 }
 
 fn draw_title_block(cv: &mut Canvas, layout: &Layout, ctx: &MacroContext) {
-    let (w_in, h_in) = layout.sheet.inches();
+    let (w_in, h_in) = layout.sheet_inches();
     let (sw, sh, m) = (w_in * 72.0, h_in * 72.0, layout.margins_in * 72.0);
     // Layout Edge: the page border at its own (thin) line weight.
     let edge = hundredths_mm_to_pt(f64::from(layout.edge_line_weight)).max(0.1);
@@ -940,7 +970,7 @@ fn draw_page(
     draw_page_content(cv, page, &ctx, cx, scenes);
     draw_title_block(cv, layout, &ctx);
 
-    let (w_in, _) = layout.sheet.inches();
+    let (w_in, _) = layout.sheet_inches();
     let m = layout.margins_in * 72.0;
     let text = format!("SHEET {} OF {}", index + 1, pages.len());
     cv.text_right(w_in * 72.0 - m, m * 0.4, 8.0, BLACK, &text);
@@ -961,7 +991,7 @@ fn draw_page(
 /// blank page. Elevations and sections use `cx.scene`, or a scene built from
 /// the project (once) when it is `None`.
 pub fn render_pdf(layout: &Layout, cx: &LayoutRenderContext) -> Vec<u8> {
-    let (w_in, h_in) = layout.sheet.inches();
+    let (w_in, h_in) = layout.sheet_inches();
     let mut doc = PdfDoc::new(w_in * 72.0, h_in * 72.0);
     let scenes = SceneSource::new(cx.scene);
     let bg = layout.page_background.then_some(PdfColor::Rgb(

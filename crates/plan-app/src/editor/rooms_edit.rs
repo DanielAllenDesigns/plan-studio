@@ -10,8 +10,9 @@
 //!
 //! What a Room Specification sets and the file keeps lives in the room's
 //! [`RoomName`] (conditioned, stem wall height, fill style, label options,
-//! moldings); [`RoomExtras`] is the dialog's view of those plus the few
-//! settings that are still per session.
+//! moldings); [`RoomExtras`] is the dialog's view of those plus the
+//! misc settings (roof over, absolute heights, finish thicknesses, wall
+//! covering), which `RoomName::misc` stores too.
 
 use super::{Camera, EditorContext};
 use crate::dialogs::room::RoomInit;
@@ -163,6 +164,14 @@ impl RoomExtras {
         self.crown_molding = molding_profile(name, MoldingKind::Crown);
         self.fill = FillStyle::from_room(name.fill_style.as_ref());
         self.label = name.label.clone();
+        if let Some(m) = &name.misc {
+            self.roof_over = m.roof_over;
+            self.floor_height_absolute = m.floor_height_absolute;
+            self.ceiling_height_absolute = m.ceiling_height_absolute;
+            self.floor_finish_thickness = m.floor_finish_thickness;
+            self.ceiling_finish_thickness = m.ceiling_finish_thickness;
+            self.wall_covering = m.wall_covering.clone();
+        }
         self
     }
 
@@ -184,6 +193,14 @@ impl RoomExtras {
         );
         name.fill_style = self.fill.to_room();
         name.label = self.label.clone();
+        name.misc = Some(plan_core::extras::RoomMisc {
+            roof_over: self.roof_over,
+            floor_height_absolute: self.floor_height_absolute,
+            ceiling_height_absolute: self.ceiling_height_absolute,
+            floor_finish_thickness: self.floor_finish_thickness,
+            ceiling_finish_thickness: self.ceiling_finish_thickness,
+            wall_covering: self.wall_covering.clone(),
+        });
     }
 }
 
@@ -1153,6 +1170,10 @@ mod tests {
         };
         extras.label.show_dimensions = true;
         extras.label.area_kind = AreaKind::Centerline;
+        extras.roof_over = false;
+        extras.ceiling_height_absolute = true;
+        extras.floor_finish_thickness = 0.75;
+        extras.wall_covering = "Wainscot".into();
         let draft = RoomName::new(room_anchor(&room), "Den", "Den");
         assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
 
@@ -1180,6 +1201,9 @@ mod tests {
         assert_eq!(back.crown_molding, "Cove");
         assert_eq!(back.fill, extras.fill);
         assert_eq!(back.label, extras.label);
+        assert!(!back.roof_over && back.ceiling_height_absolute);
+        assert_eq!(back.floor_finish_thickness, 0.75);
+        assert_eq!(back.wall_covering, "Wainscot");
         assert_eq!(fill_style(&cx2, &room2).pattern, FillPattern::Hatch);
         assert!(room_label_text(&cx2, &room2).contains(" x "));
 

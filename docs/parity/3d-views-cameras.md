@@ -1,5 +1,7 @@
 # Parity spec: 3D Views and Cameras (Chief Architect X18)
 
+> Status (2026-10-08): 71 ids: 31 Works, 25 Partial, 15 Missing, 0 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+
 Scope: every camera tool, camera objects in plan and their edit handles, camera
 options, 3D navigation, rendering techniques, material tools, lighting and 3D
 defaults. Geometry generation for walls/floors (what is in the 3D model) is in
@@ -344,7 +346,7 @@ camera positions), Walkthrough Preview plays it; an exported movie is Phase 5.
 
 ## 11. Plan Studio today
 
-Plan Studio has camera objects (Full Camera, the cross-section cameras) placed from the plan with a Camera Specification dialog, and an orbitable 3D panel (`shell/view3d_panel.rs`) over `plan-view3d`: Perspective Full and Floor Overview, Doll House, Full Camera, four orthographic elevations, plan overhead, back-clipped sections and a section slider. Navigation is mouse-orbit, pan and dolly; 3D View Defaults (`Cmd+1`) sets new-camera defaults. Nine rendering techniques, the Sun Angle window and a CPU ray tracer with PNG output (`plan-render`) are in; glTF export too. The scene shows walls with openings, doors, windows, floors, ceilings and roof planes; stairs, cabinets, library 3D models, electrical devices, terrain and framing are not drawn in 3D yet. Missing: walkthroughs, Add Lights, the material painter and textures in the viewport, 3D picking, Create Auto Elevations and Wall Elevation cameras. Elevations can be exported as DXF (File > Export > Elevation DXF). (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
+Plan Studio has camera objects (Full Camera, the cross-section cameras) placed from the plan with a Camera Specification dialog, and an orbitable 3D panel (`shell/view3d_panel.rs`) over `plan-view3d`: Perspective Full and Floor Overview, Doll House, Full Camera, four orthographic elevations, plan overhead, back-clipped sections and a section slider. Navigation is mouse-orbit, pan and dolly; 3D View Defaults (`Cmd+1`) sets new-camera defaults. Nine rendering techniques, the Sun Angle window and a CPU ray tracer with PNG output (`plan-render`) are in; glTF export too. The scene shows walls with openings, doors, windows, floors, ceilings and roof planes; stairs, cabinets, library 3D models, electrical devices, terrain and framing are not drawn in 3D yet. Missing: walkthroughs, Add Lights, the material painter and textures in the viewport, moving objects with the mouse in 3D, Create Auto Elevations and Wall Elevation cameras. Elevations can be exported as DXF (File > Export > Elevation DXF). Clicking an object in the 3D view selects it in the plan's own selection (C-43: Shift adds, a double-click opens its specification, Delete deletes it) and tints it in the view. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## 12. Gap table
 

@@ -31,3 +31,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Draw/refresh/export timings on the large sample (not a gate)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: cargo test -p plan-app perf_bench -- --ignored --nocapture

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::face::FaceLayout;
 use crate::geom;
-use crate::top::{CustomTop, Cutout, CutoutKind, EdgeProfile};
+use crate::top::{treat_corners, CornerTreatment, CustomTop, Cutout, CutoutKind, EdgeProfile};
 
 /// What kind of cabinet this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,11 +35,15 @@ pub enum CabinetKind {
     /// countertop they cut ([`Cabinet::cutouts`]); no cabinet of this kind is
     /// ever stored.
     CounterHole,
+    /// The Soffit Polygon tool. A tool-only kind: the soffit it draws is a
+    /// [`CabinetKind::Soffit`] with a polygon outline ([`Cabinet::custom`]);
+    /// no cabinet of this kind is ever stored.
+    SoffitPolygon,
 }
 
 impl CabinetKind {
     /// Every kind, in flyout order.
-    pub const ALL: [CabinetKind; 16] = [
+    pub const ALL: [CabinetKind; 17] = [
         CabinetKind::Base,
         CabinetKind::Wall,
         CabinetKind::FullHeight,
@@ -56,6 +60,7 @@ impl CabinetKind {
         CabinetKind::CustomCountertop,
         CabinetKind::CustomBacksplash,
         CabinetKind::CounterHole,
+        CabinetKind::SoffitPolygon,
     ];
 
     pub fn is_filler(self) -> bool {
@@ -120,6 +125,7 @@ impl CabinetKind {
             CabinetKind::CustomCountertop => "Custom Countertop",
             CabinetKind::CustomBacksplash => "Custom Backsplash",
             CabinetKind::CounterHole => "Custom Counter Hole",
+            CabinetKind::SoffitPolygon => "Soffit Polygon",
         }
     }
 }
@@ -131,6 +137,21 @@ pub struct Countertop {
     pub overhang_front: f64,
     pub overhang_sides: f64,
     pub overhang_back: f64,
+    /// Treatment of the front corners (the back is against the wall).
+    #[serde(default)]
+    pub corner: CornerTreatment,
+    #[serde(default = "crate::top::default_corner_size")]
+    pub corner_size: f64,
+    /// Shape of the exposed top edge.
+    #[serde(default)]
+    pub edge: EdgeProfile,
+    /// Size of that edge shape, inches.
+    #[serde(default = "default_edge_size")]
+    pub edge_size: f64,
+}
+
+fn default_edge_size() -> f64 {
+    0.75
 }
 
 impl Default for Countertop {
@@ -142,6 +163,10 @@ impl Default for Countertop {
             overhang_front: 1.0,
             overhang_sides: 0.0,
             overhang_back: 0.0,
+            corner: CornerTreatment::None,
+            corner_size: crate::top::default_corner_size(),
+            edge: EdgeProfile::Square,
+            edge_size: default_edge_size(),
         }
     }
 }
@@ -488,6 +513,77 @@ pub struct PartMaterials {
     pub molding: MaterialChoice,
 }
 
+/// One of the four vertical faces of a cabinet box (Chief's Front/Sides/Back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FaceSide {
+    #[default]
+    Front,
+    Left,
+    Right,
+    Back,
+}
+
+impl FaceSide {
+    pub const ALL: [FaceSide; 4] = [
+        FaceSide::Front,
+        FaceSide::Left,
+        FaceSide::Right,
+        FaceSide::Back,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FaceSide::Front => "Front",
+            FaceSide::Left => "Left",
+            FaceSide::Right => "Right",
+            FaceSide::Back => "Back",
+        }
+    }
+}
+
+/// What a side or the back of a cabinet is made of (Chief's Side Type).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SideKind {
+    /// The plain carcass panel.
+    #[default]
+    Plain,
+    /// A finished slab panel in the door material.
+    Finished,
+    /// No panel: the box is open on this side.
+    Open,
+    /// Face items (doors, drawers, panels) laid out like the front.
+    CustomFace,
+}
+
+impl SideKind {
+    pub const ALL: [SideKind; 4] = [
+        SideKind::Plain,
+        SideKind::Finished,
+        SideKind::Open,
+        SideKind::CustomFace,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SideKind::Plain => "Plain Panel",
+            SideKind::Finished => "Finished Panel",
+            SideKind::Open => "Open",
+            SideKind::CustomFace => "Custom Face",
+        }
+    }
+}
+
+/// The Left, Right or Back face of a cabinet when it is not the plain panel.
+/// Its layout is used when `kind` is [`SideKind::CustomFace`]; the face is
+/// `depth` wide (Left, Right) or `width` wide (Back), and runs left to right
+/// as seen from outside.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SideFace {
+    pub side: FaceSide,
+    pub kind: SideKind,
+    pub layout: FaceLayout,
+}
+
 /// A parametric cabinet. See the crate docs for the local frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cabinet {
@@ -539,6 +635,10 @@ pub struct Cabinet {
     /// Draw door swings and open drawers in plan (Chief's Opening Indicators).
     #[serde(default)]
     pub indicators: bool,
+    /// Left, Right and Back faces that are not the plain carcass panel
+    /// (rectangular cabinets).
+    #[serde(default)]
+    pub sides: Vec<SideFace>,
 }
 
 impl Cabinet {
@@ -569,6 +669,36 @@ impl Cabinet {
             moldings: Vec::new(),
             materials: PartMaterials::default(),
             indicators: false,
+            sides: Vec::new(),
+        }
+    }
+
+    /// The Left, Right or Back face `side` when it is not the plain panel.
+    pub fn side_face(&self, side: FaceSide) -> Option<&SideFace> {
+        self.sides.iter().find(|s| s.side == side)
+    }
+
+    /// What `side` is made of.
+    pub fn side_kind(&self, side: FaceSide) -> SideKind {
+        self.side_face(side).map_or(SideKind::Plain, |s| s.kind)
+    }
+
+    /// Sets what Left, Right or Back is made of (a plain panel is stored as
+    /// nothing). The front is [`Cabinet::face`], not a side face.
+    pub fn set_side_face(&mut self, side: FaceSide, kind: SideKind, layout: FaceLayout) {
+        self.sides.retain(|s| s.side != side);
+        if side != FaceSide::Front && kind != SideKind::Plain {
+            self.sides.push(SideFace { side, kind, layout });
+        }
+    }
+
+    /// The width of `side` as seen from outside: the width for the Front and
+    /// Back, the depth for the Left and Right.
+    pub fn side_width(&self, side: FaceSide) -> f64 {
+        match side {
+            FaceSide::Front => self.face_width(),
+            FaceSide::Back => self.width,
+            FaceSide::Left | FaceSide::Right => self.depth,
         }
     }
 
@@ -739,6 +869,8 @@ impl Cabinet {
             edge: EdgeProfile::Square,
             edge_size: 0.75,
             closed: true,
+            corner: CornerTreatment::None,
+            corner_size: crate::top::default_corner_size(),
         });
         Some(c)
     }
@@ -771,6 +903,38 @@ impl Cabinet {
             edge: EdgeProfile::Square,
             edge_size: 0.0,
             closed: false,
+            corner: CornerTreatment::None,
+            corner_size: crate::top::default_corner_size(),
+        });
+        Some(c)
+    }
+
+    /// A soffit over the polygon `ring` (plan coordinates): `height` thick,
+    /// its bottom `elevation` above the floor. `None` for fewer than three
+    /// distinct corners.
+    pub fn soffit_polygon(ring: &[Point], height: f64, elevation: f64) -> Option<Self> {
+        let ring = geom::ccw(ring);
+        if ring.len() < 3 || geom::area(&ring) < 1e-6 {
+            return None;
+        }
+        let (lo, hi) = geom::bbox(&ring)?;
+        let mut c = Self::blank(
+            CabinetKind::Soffit,
+            hi.x - lo.x,
+            hi.y - lo.y,
+            height,
+            elevation,
+        );
+        c.position = lo;
+        c.framed = false;
+        c.custom = Some(CustomTop {
+            outline: ring.iter().map(|p| p.sub(lo)).collect(),
+            thickness: height,
+            edge: EdgeProfile::Square,
+            edge_size: 0.0,
+            closed: true,
+            corner: CornerTreatment::None,
+            corner_size: crate::top::default_corner_size(),
         });
         Some(c)
     }
@@ -809,6 +973,8 @@ impl Cabinet {
             }
             // Never stored: an inert shelf-thin placeholder.
             CabinetKind::CounterHole => Self::blank(kind, width, width, 0.75, 36.0),
+            // Never stored: an inert soffit-sized placeholder.
+            CabinetKind::SoffitPolygon => Self::blank(kind, width, 12.0, 12.0, 84.0),
         }
     }
 
@@ -899,8 +1065,24 @@ impl Cabinet {
     /// The countertop outline in the local frame (overhangs included), or
     /// `None` when the cabinet has no countertop.
     pub fn top_local(&self) -> Option<Vec<Point>> {
+        self.top_ring(true)
+    }
+
+    /// [`Cabinet::top_local`] without the corner treatment: the ring joined
+    /// tops are made from.
+    pub fn top_local_square(&self) -> Option<Vec<Point>> {
+        self.top_ring(false)
+    }
+
+    fn top_ring(&self, treated: bool) -> Option<Vec<Point>> {
         if let Some(custom) = &self.custom {
-            return (self.kind == CabinetKind::CustomCountertop).then(|| custom.footprint());
+            return (self.kind == CabinetKind::CustomCountertop).then(|| {
+                if treated {
+                    custom.treated()
+                } else {
+                    custom.footprint()
+                }
+            });
         }
         let t = self.countertop?;
         let (w, d) = (self.width, self.depth);
@@ -934,17 +1116,31 @@ impl Cabinet {
         }
         let (x0, x1) = (-t.overhang_sides, w + t.overhang_sides);
         let (y0, y1) = (-t.overhang_back, d + t.overhang_front);
-        Some(vec![
+        let ring = vec![
             Point::new(x0, y0),
             Point::new(x1, y0),
             Point::new(x1, y1),
             Point::new(x0, y1),
-        ])
+        ];
+        if treated {
+            // Only the front corners are exposed.
+            Some(treat_corners(&ring, t.corner, t.corner_size, |p| {
+                p.y > d * 0.5
+            }))
+        } else {
+            Some(ring)
+        }
     }
 
     /// [`Cabinet::top_local`] in plan coordinates.
     pub fn top_polygon(&self) -> Option<Vec<Point>> {
         self.top_local()
+            .map(|r| r.into_iter().map(|p| self.to_plan(p)).collect())
+    }
+
+    /// [`Cabinet::top_local_square`] in plan coordinates.
+    pub fn top_polygon_square(&self) -> Option<Vec<Point>> {
+        self.top_local_square()
             .map(|r| r.into_iter().map(|p| self.to_plan(p)).collect())
     }
 
@@ -1047,7 +1243,7 @@ pub fn type_code(cabinet: &Cabinet) -> String {
             .map_or_else(|| "B".to_string(), appliance_code),
         CabinetKind::Wall => "W".to_string(),
         CabinetKind::FullHeight => "FH".to_string(),
-        CabinetKind::Soffit => "SO".to_string(),
+        CabinetKind::Soffit | CabinetKind::SoffitPolygon => "SO".to_string(),
         CabinetKind::Shelf => "SH".to_string(),
         CabinetKind::Partition => "PT".to_string(),
         CabinetKind::BaseFiller => "BF".to_string(),

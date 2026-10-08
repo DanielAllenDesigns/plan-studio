@@ -1,5 +1,7 @@
 # Parity spec: walls
 
+> Status (2026-10-08): 105 ids: 64 Works, 25 Partial, 14 Missing, 2 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+
 Reference: Chief Architect X18 straight/curved wall tools, wall connections and wall specification. Source: Chief's
 Reference Manual and documented behavior, plus `docs/chief-x18-subtools.md` and `docs/chief-x18-dialogs.md`.
 **(verify in Chief)** marks recalled-but-unconfirmed detail. Ids (`W-n`) are stable.

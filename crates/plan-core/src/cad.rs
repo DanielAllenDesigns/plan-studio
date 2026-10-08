@@ -1005,6 +1005,7 @@ impl Project {
     /// Removes attribute and block entries whose object (or block group) no
     /// longer exists. Returns how many were removed.
     pub fn prune_cad_data(&mut self, floor: usize) -> usize {
+        let cameras: std::collections::HashSet<Id> = self.cameras.iter().map(|c| c.id).collect();
         let Some(f) = self.floors.get_mut(floor) else {
             return 0;
         };
@@ -1025,7 +1026,25 @@ impl Project {
                     .find(|(g, _)| *g == b.group)
                     .is_some_and(|(_, m)| m.iter().any(|id| live.contains(id)))
         });
-        before - f.cad_attrs.len() - f.cad_blocks.len()
+        let removed = before - f.cad_attrs.len() - f.cad_blocks.len();
+        // A group none of whose objects is left (every member deleted) goes.
+        use crate::groups::ObjectRef as R;
+        let alive = |m: &R| match *m {
+            R::Wall(id) => f.walls.iter().any(|w| w.id == id),
+            R::Opening(id) => f.openings.iter().any(|o| o.id == id),
+            R::Dimension(id) => f.dimensions.iter().any(|d| d.id == id),
+            R::Cad(id) => live.contains(&id),
+            R::Symbol(id) => f.symbols.iter().any(|s| s.id == id),
+            R::Camera(id) => cameras.contains(&id),
+        };
+        let keep: Vec<bool> = f
+            .groups
+            .iter()
+            .map(|g| g.members.iter().any(&alive))
+            .collect();
+        let mut it = keep.into_iter();
+        f.groups.retain(|_| it.next().unwrap_or(true));
+        removed
     }
 
     // ----- CAD blocks -----
@@ -1759,6 +1778,29 @@ mod tests {
         pr.edit_cad_attrs(0, ids[1], |a| a.weight = Some(5));
         pr.remove_cad(0, ids[1]);
         assert_eq!(pr.prune_cad_data(0), 1);
+    }
+
+    #[test]
+    fn deleting_every_member_of_a_group_drops_the_group() {
+        let (mut pr, ids) = project_with_lines(3);
+        let g = pr
+            .make_group(
+                0,
+                &[
+                    crate::groups::ObjectRef::Cad(ids[0]),
+                    crate::groups::ObjectRef::Cad(ids[1]),
+                ],
+            )
+            .unwrap();
+        assert!(pr.floors[0].groups.iter().any(|x| x.id == g));
+        // One member left: the group stays.
+        pr.remove_cad(0, ids[0]);
+        pr.prune_cad_data(0);
+        assert!(pr.floors[0].groups.iter().any(|x| x.id == g));
+        // None left: it goes.
+        pr.remove_cad(0, ids[1]);
+        pr.prune_cad_data(0);
+        assert!(pr.floors[0].groups.is_empty());
     }
 
     #[test]

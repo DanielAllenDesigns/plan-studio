@@ -175,6 +175,11 @@ pub struct StairExtras {
     pub stairwell_walls: Vec<Id>,
     /// Id of the platform hole Auto Stairwell cut in the floor above (CB-29).
     pub stairwell_hole: Option<Id>,
+    /// Guard railing around the stairwell opening on the floor above
+    /// (CB-29): every side of the hole but the one the stair arrives at.
+    pub stairwell_guard: bool,
+    /// Ids of the railing walls that guard made on the floor above.
+    pub guard_walls: Vec<Id>,
 }
 
 impl Default for StairExtras {
@@ -203,6 +208,8 @@ impl Default for StairExtras {
             ],
             stairwell_walls: Vec::new(),
             stairwell_hole: None,
+            stairwell_guard: false,
+            guard_walls: Vec::new(),
         }
     }
 }
@@ -226,6 +233,8 @@ impl StairExtras {
             "materials": self.materials.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
             "stairwell_walls": self.stairwell_walls,
             "stairwell_hole": self.stairwell_hole,
+            "stairwell_guard": self.stairwell_guard,
+            "guard_walls": self.guard_walls,
         })
     }
 
@@ -276,6 +285,12 @@ impl StairExtras {
                 .map(|a| a.iter().filter_map(Value::as_u64).collect())
                 .unwrap_or_default(),
             stairwell_hole: v.get("stairwell_hole").and_then(Value::as_u64),
+            stairwell_guard: b("stairwell_guard", false),
+            guard_walls: v
+                .get("guard_walls")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_u64).collect())
+                .unwrap_or_default(),
         }
     }
 }
@@ -834,6 +849,8 @@ pub enum StairHandleKind {
     WidthLeft,
     /// Resize the width from the right side.
     WidthRight,
+    /// Move corner `i` of a polygon landing's outline.
+    Corner(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -883,9 +900,16 @@ pub fn handles(obj: &StairObj, px_per_in: f64) -> Vec<StairHandle> {
         pos: obj.bottom_center() - along * rotate_off,
         cursor: CursorIcon::Grab,
     });
-    // A polygon landing only moves (its corners are its outline).
+    // A polygon landing moves, and each corner of its outline reshapes it.
     if obj.is_polygon_landing() {
         out.retain(|h| h.kind == StairHandleKind::Move);
+        for (i, p) in obj.stair.params.outline.iter().enumerate() {
+            out.push(StairHandle {
+                kind: StairHandleKind::Corner(i),
+                pos: *p,
+                cursor: CursorIcon::Crosshair,
+            });
+        }
     }
     out
 }
@@ -908,6 +932,7 @@ pub fn editor_handles(obj: &StairObj, px_per_in: f64) -> Vec<Handle> {
                 StairHandleKind::Rotate => HandleKind::Rotate,
                 StairHandleKind::Run | StairHandleKind::WidthRight => HandleKind::ResizeEnd,
                 StairHandleKind::WidthLeft => HandleKind::ResizeStart,
+                StairHandleKind::Corner(i) => HandleKind::Reshape(i),
             },
             pos: h.pos,
             cursor: h.cursor,
@@ -923,6 +948,7 @@ pub fn drag_label(kind: StairHandleKind) -> &'static str {
         StairHandleKind::Rotate => "Rotate Stairs",
         StairHandleKind::Run => "Resize Stair Run",
         StairHandleKind::WidthLeft | StairHandleKind::WidthRight => "Resize Stair Width",
+        StairHandleKind::Corner(_) => "Reshape Landing",
     }
 }
 
@@ -977,8 +1003,41 @@ pub fn drag_handle(orig: &StairObj, kind: StairHandleKind, start: Point, to: Poi
             o.stair.origin = orig.stair.origin + right * off;
             o.stair.params.width = w - off;
         }
+        StairHandleKind::Corner(i) => {
+            if i < o.stair.params.outline.len() {
+                o.stair.params.outline[i] = to;
+                reshape_polygon_landing(&mut o);
+            }
+        }
     }
     o
+}
+
+/// Brings a polygon landing's width, depth and origin back in line with its
+/// outline after a corner moved: the origin stays the first corner, the
+/// depth and width are the outline's extents (as when it was drawn).
+fn reshape_polygon_landing(o: &mut StairObj) {
+    let pts = &o.stair.params.outline;
+    if pts.len() < 3 {
+        return;
+    }
+    let (lo, hi) = pts.iter().fold(
+        (
+            Point::new(f64::MAX, f64::MAX),
+            Point::new(f64::MIN, f64::MIN),
+        ),
+        |(lo, hi), p| {
+            (
+                Point::new(lo.x.min(p.x), lo.y.min(p.y)),
+                Point::new(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        },
+    );
+    o.stair.origin = pts[0];
+    o.stair.params.width = (hi.y - lo.y).max(MIN_SIZE);
+    let depth = (hi.x - lo.x).max(MIN_SIZE);
+    o.stair.params.shape = StairShape::Landing { depth };
+    o.x.landing_depth = Some(depth);
 }
 
 /// Sets the length of the first flight: the tread depth follows (the number
@@ -1418,6 +1477,7 @@ fn remove_stairwell(project: &mut Project, fl: usize, o: &StairObj) {
         return;
     };
     above.walls.retain(|w| !o.x.stairwell_walls.contains(&w.id));
+    above.walls.retain(|w| !o.x.guard_walls.contains(&w.id));
     let mut layer = FoundationLayer::load(above);
     if layer.remove_owned(o.id()) > 0 {
         layer.store(above);
@@ -1432,6 +1492,67 @@ fn resync_stairwell(project: &mut Project, fl: usize, o: &mut StairObj) {
     if (o.x.stairwell_hole.is_none() && !has_walls) || fl + 1 >= project.floors.len() {
         return;
     }
+    resync_stairwell_parts(project, fl, o);
+    sync_guard(project, fl, o);
+}
+
+/// Thickness and height of the guard railing around a stairwell, inches.
+pub const GUARD_THICKNESS: f64 = 4.0;
+pub const GUARD_HEIGHT: f64 = 36.0;
+
+/// The sides of the stairwell opening a guard railing runs along: the hole's
+/// outline without the side the stair arrives at.
+pub fn guard_edges(o: &StairObj) -> Vec<(Point, Point)> {
+    let ring = hole_outline(o);
+    let n = ring.len();
+    let edges: Vec<(Point, Point)> = (0..n)
+        .map(|i| (ring[i], ring[(i + 1) % n]))
+        .filter(|(a, b)| a.dist(*b) >= 1.0)
+        .collect();
+    let (top, _) = top_point(&o.stair);
+    let arrival = edges
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            let da = plan_core::geometry::dist_to_segment(top, a.1 .0, a.1 .1);
+            let db = plan_core::geometry::dist_to_segment(top, b.1 .0, b.1 .1);
+            da.total_cmp(&db)
+        })
+        .map(|(i, _)| i);
+    edges
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != arrival)
+        .map(|(_, e)| e)
+        .collect()
+}
+
+/// Makes the railing walls of the stair's guard on the floor above `fl`
+/// match its settings: none when the guard is off or there is no opening,
+/// else one railing wall per side of the opening but the arrival side.
+fn sync_guard(project: &mut Project, fl: usize, o: &mut StairObj) {
+    if fl + 1 >= project.floors.len() {
+        return;
+    }
+    let old = std::mem::take(&mut o.x.guard_walls);
+    project.floors[fl + 1]
+        .walls
+        .retain(|w| !old.contains(&w.id));
+    if !o.x.stairwell_guard || o.x.stairwell_hole.is_none() || o.is_landing() {
+        return;
+    }
+    for (a, b) in guard_edges(o) {
+        let mut w = Wall::new(a, b, GUARD_THICKNESS, GUARD_HEIGHT, WallKind::Interior);
+        w.id = project.alloc_id();
+        w.wall_type = Some("Railing-4".to_string());
+        w.set_class(plan_core::WallClass::Railing);
+        o.x.guard_walls.push(w.id);
+        project.floors[fl + 1].walls.push(w);
+    }
+}
+
+fn resync_stairwell_parts(project: &mut Project, fl: usize, o: &mut StairObj) {
+    let has_walls = !o.x.stairwell_walls.is_empty();
     let poly = o.footprint();
     if o.x.stairwell_hole.is_some() {
         let hole = hole_outline(o);
@@ -1495,6 +1616,7 @@ pub fn auto_stairwell(cx: &mut EditorContext, id: Id) -> Result<usize, String> {
     name_stairwell(&mut cx.project, fl + 1, &obj, &poly);
     let hole = put_hole(&mut cx.project, fl + 1, id, &hole_outline(&obj));
     let n = ids.len();
+    // `update` brings the guard railing (when the stair asks for one) with it.
     update(&mut cx.project, fl, id, |o| {
         o.x.stairwell_walls = ids;
         o.x.stairwell_hole = Some(hole);
@@ -1533,6 +1655,25 @@ pub fn symbol_strokes(o: &StairObj) -> Vec<PlanStroke> {
         });
     }
     out
+}
+
+/// The treads beyond the break line, which the stair's own floor leaves out
+/// of its symbol: drawn dashed so the whole run is still readable (CB-33).
+/// Empty for landings, ramps and stairs without a break line.
+pub fn hidden_strokes(o: &StairObj) -> Vec<PlanStroke> {
+    if o.is_landing() || o.is_ramp() || !o.x.break_line {
+        return Vec::new();
+    }
+    let full = plan_symbol(&o.stair, None);
+    let lower = plan_symbol(&o.stair, Some(BREAK_AT));
+    full.into_iter()
+        .filter(|s| match s {
+            PlanStroke::Line(a, b) => !lower
+                .iter()
+                .any(|l| matches!(l, PlanStroke::Line(c, d) if c == a && d == b)),
+            _ => false,
+        })
+        .collect()
 }
 
 /// What a stair of the floor below shows on this floor: the part beyond
@@ -1768,6 +1909,14 @@ pub fn draw_object(painter: &egui::Painter, cam: &Camera, pal: &Palette, o: &Sta
         pal.text,
         o.x.line_weight.max(0.25),
         o.x.dashed,
+    );
+    draw_strokes(
+        painter,
+        cam,
+        &hidden_strokes(o),
+        pal.text.gamma_multiply(0.5),
+        o.x.line_weight.max(0.25),
+        true,
     );
     if o.x.show_label && !o.x.label.is_empty() {
         draw_text(

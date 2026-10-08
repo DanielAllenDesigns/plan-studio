@@ -95,11 +95,48 @@ impl MeshBuilder {
     }
 }
 
-/// The terrain surface as a mesh.
-///
-/// Deviation: plan-3d has no grass material yet, so this uses [`Material::Floor`]
-/// as a stand-in. Normals are the triangle normals averaged (area-weighted) at the
-/// vertices; UVs are plan x/y in feet.
+/// Base of the mesh `object_id`s of terrain objects. They have no ids
+/// of their own (they are addressed by index), so their meshes carry
+/// `TERRAIN_ID_BASE + part * 2^32 + index`, far above any plan id.
+pub const TERRAIN_ID_BASE: u64 = 1 << 56;
+
+/// Which list of the [`Terrain`] a mesh `object_id` indexes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerrainPart {
+    Feature,
+    Wall,
+    Landscape,
+    Road,
+}
+
+/// The `object_id` of terrain object `index` of `part`.
+pub fn terrain_object_id(part: TerrainPart, index: usize) -> u64 {
+    let p = match part {
+        TerrainPart::Feature => 0_u64,
+        TerrainPart::Wall => 1,
+        TerrainPart::Landscape => 2,
+        TerrainPart::Road => 3,
+    };
+    TERRAIN_ID_BASE + (p << 32) + index as u64
+}
+
+/// The terrain object a mesh `object_id` stands for, if it is one of
+/// [`terrain_object_id`]'s.
+pub fn terrain_object_of(id: u64) -> Option<(TerrainPart, usize)> {
+    let rest = id.checked_sub(TERRAIN_ID_BASE)?;
+    let part = match rest >> 32 {
+        0 => TerrainPart::Feature,
+        1 => TerrainPart::Wall,
+        2 => TerrainPart::Landscape,
+        3 => TerrainPart::Road,
+        _ => return None,
+    };
+    Some((part, (rest & 0xFFFF_FFFF) as usize))
+}
+
+/// The terrain surface as a mesh in [`Material::Grass`]. Normals are the
+/// triangle normals averaged (area-weighted) at the vertices; UVs are plan x/y
+/// in feet.
 pub fn terrain_mesh(surface: &TerrainSurface) -> Mesh {
     let mut b = MeshBuilder::default();
     for v in &surface.vertices {
@@ -110,7 +147,7 @@ pub fn terrain_mesh(surface: &TerrainSurface) -> Mesh {
     }
     // Plan-CCW triangles face up in the scene frame, so indices copy straight across.
     b.triangles = surface.triangles.clone();
-    b.finish(Material::Floor)
+    b.finish(Material::Grass)
 }
 
 /// One mesh per road strip (plus a curb mesh when `curb` is set), draped on `surface`.
@@ -120,9 +157,8 @@ pub fn terrain_mesh(surface: &TerrainSurface) -> Mesh {
 /// the surface plus 0.5". Samples off the surface (holes, outside the perimeter) take
 /// the nearest elevation along the strip.
 ///
-/// Deviation: plan-3d has no pavement materials, so roads and driveways use
-/// [`Material::Roof`] (charcoal, asphalt stand-in) and sidewalks and curbs use
-/// [`Material::WallExterior`] (light, concrete stand-in).
+/// Roads and driveways are [`Material::Asphalt`]; sidewalks and curbs are
+/// [`Material::Concrete`]. Each carries its road's [`terrain_object_id`].
 pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
     let step = (t.grid_spacing / 2.0).max(6.0);
     let default_z = if surface.vertices.is_empty() {
@@ -131,17 +167,22 @@ pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
         surface.vertices.iter().map(|v| v[1]).sum::<f64>() / surface.vertices.len() as f64
     };
     let mut meshes = Vec::new();
-    for road in &t.roads {
+    for (index, road) in t.roads.iter().enumerate() {
         let Some(rows) = draped_rows(road, surface, step, default_z) else {
             continue;
         };
         let material = match road.kind {
-            RoadKind::Road | RoadKind::Driveway => Material::Roof,
-            RoadKind::Sidewalk => Material::WallExterior,
+            RoadKind::Road | RoadKind::Driveway => Material::Asphalt,
+            RoadKind::Sidewalk => Material::Concrete,
         };
-        meshes.push(strip_mesh(&rows, material));
+        let id = Some(terrain_object_id(TerrainPart::Road, index));
+        let mut strip = strip_mesh(&rows, material);
+        strip.object_id = id;
+        meshes.push(strip);
         if road.curb {
-            meshes.push(curb_mesh(&rows));
+            let mut curb = curb_mesh(&rows);
+            curb.object_id = id;
+            meshes.push(curb);
         }
     }
     meshes
@@ -289,5 +330,5 @@ fn curb_mesh(rows: &[Row]) -> Mesh {
             }
         }
     }
-    b.finish(Material::WallExterior)
+    b.finish(Material::Concrete)
 }

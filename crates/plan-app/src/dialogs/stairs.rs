@@ -520,6 +520,15 @@ impl StairForm {
         if !self.draft.is_landing() {
             ui.checkbox(&mut self.draft.x.break_line, "Break line");
             ui.checkbox(&mut self.draft.x.show_risers, "Show number of risers");
+            let has_well = self.draft.x.stairwell_hole.is_some();
+            ui.add_enabled(
+                has_well,
+                egui::Checkbox::new(
+                    &mut self.draft.x.stairwell_guard,
+                    "Guard railing around the stairwell opening",
+                ),
+            )
+            .on_disabled_hover_text("Make a stairwell first (Auto Stairwell)");
         }
     }
 

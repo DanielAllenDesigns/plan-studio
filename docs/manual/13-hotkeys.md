@@ -118,7 +118,7 @@ Two details worth knowing:
 Status: **Works** (the command runs today), **(planned)** (the command is on a dimmed button; the key is kept and reports
 "Not yet implemented"), **No matching command yet** (Chief has the command; Plan Studio has no equivalent
 and shows the key under "Chief bindings with no action in Plan Studio yet" in the dialog), or a flag toggle.
-Of the 143 named bindings, 100 work or toggle a flag, 21 are planned and 22 have no matching command (as of the Round 7 commit; Round 6 and 7 made 12 of them live).
+Of the 143 named bindings, 100 work or toggle a flag, 21 are planned and 22 have no matching command (counted at the Round 7 commit; Round 6 and 7 made 12 of them live. Round 8 added no named bindings, but off macOS Down One Floor loses its key, 13.6).
 
 | Command | Daniel's key | Status |
 |---|---|---|
@@ -173,7 +173,7 @@ Of the 143 named bindings, 100 work or toggle a flag, 21 are planned and 22 have
 | Delete Roof Planes | `Ctrl+Alt+Shift+Cmd+W` | Works |
 | Display Options | ``` | (planned) |
 | Doorway | `D, W` | (planned) |
-| Down One Floor | `Ctrl+Z` | Works |
+| Down One Floor | `Ctrl+Z` | Works on macOS. Off macOS it is not bound: see 13.6 (Undo keeps the key) |
 | Draw Ramp | `Ctrl+Alt+Shift+Cmd+H` | Works |
 | Draw Stairs | `Shift+Y` | Works |
 | Drawing Sheet | `Alt+F3` | Toggles a flag: outlines the active layout's sheet |
@@ -290,6 +290,10 @@ Key (Chief command id): `Shift+F4` (106); `W` (202); `2` (231); `Cmd+D` (237); `
 - **Adjust Lights** is `Ctrl+Alt+Cmd+L` on a Mac. Off macOS the Control and Command flags fold into one key, so the chord is `Ctrl+Alt+L` (the program binds it as a Chief default that needs Option, which the base table cannot express).
 - **Revision Cloud** (`Ctrl+Alt+Shift+Cmd+!`) is still on a dimmed toolbar toggle; the CAD menu runs the tool without a key. `Cmd+Q` is shown beside Straight Railing but not bound, because it is the macOS Quit shortcut; the tool itself works from the
   toolbar and the Build menu.
+- **Control+Z and Command+Z off macOS (Round 8).** Daniel binds Control+Z to Down One Floor and Command+Z to Undo. A Mac keeps the two keys apart. On Windows and Linux there is one Ctrl key, so both
+  chords become `Ctrl+Z` and the program must pick one. **The Command chord wins: `Ctrl+Z` is Undo**, as in Chief's own Windows defaults, and **Down One Floor is reported as unmapped there**
+  (Customize Hotkeys lists it under "Chief bindings with no action in Plan Studio yet" with the note "shared off macOS"). Up One Floor (`Ctrl+A`) is not affected. You can give Down One Floor another key in
+  Customize Hotkeys; the open question is `DECISIONS.md` item 4. The rule is general: whenever two of Daniel's chords fold onto one sequence, a chord that used Command beats one that used Control.
 - Four-modifier chords work on every platform; off macOS they are the `Ctrl+Alt+...` chords of 13.2.
 - Older notes say the four-modifier chords are "not bound on purpose". That predates the runtime hotkey map;
   today they are bound whenever Daniel's file names them.
@@ -361,7 +365,7 @@ These go to the active tool, not the hotkey map.
 | `Esc` | Any tool | Cancels the operation in progress; otherwise returns to Select Objects. Clears a pending hotkey prefix. In a 3D view, returns to the plan. |
 | `Enter` | Select, polyline and text tools | Opens the specification of the selection; finishes a polyline, text or typed value. |
 | `Tab` | Select Objects | Cycles objects under the pointer. |
-| `Tab` | Cabinet, Stairs, Electrical tools | Next cabinet kind; flips a stair turn; flips a wall device to the other side of the wall. |
+| `Tab` | Cabinet, Stairs, Electrical tools | Next cabinet kind; flips the turn of an L, U, winder or curved stair; flips a wall device to the other side of the wall. |
 | `Tab` | 3D view | Next camera. |
 | `Delete`, `Backspace` | Select and most tools | Delete the selection (Terrain: the element under the pointer). |
 | `Alt` | Wall tool | Suspends the angle snap. |
@@ -381,4 +385,10 @@ These go to the active tool, not the hotkey map.
 | `Delete`, `Backspace`, `Esc` | Layout view | Delete the selected box; `Esc` clears the selection or a placement. `Alt` while dragging a box turns off the 1/16" snap (chapter 11.3). |
 | `Enter` | Walkthrough path, Fillet, Chamfer, Offset | Finishes the path; starts a typed radius, distances or offset distance (chapters 10.12, 5.4). |
 | `Delete` | Add Lights | Removes the selected light (chapter 10.13). |
-| `Cmd+Z`, `Cmd+Y` | Layout view | Undo and redo the layout's own history while the layout shows (chapter 11.3). |
+| `Enter`, `Backspace`, `Esc` | Stairs tool (Landing) | Finish the polygon landing, drop its last corner, cancel it (chapter 7.2). A double-click also finishes it, or alone places a 3' square. |
+| `Delete`, `Backspace` | Stairs tool | Removes the selected stair, its stairwell walls and its stairwell hole (one undo step). |
+| `Enter`, double-click, `Esc` | Terrain tools | `Enter` or a double-click ends a polyline and `Enter` closes a polygon; `Esc` cancels the drawing or the typed value; an empty typed field takes the default shown (chapter 9.6). |
+| `Delete`, arrow keys | Terrain tools | Remove, or nudge, the terrain element under the pointer (chapter 9.6). |
+| `Enter`, double-click, `Backspace`, `Delete`, `Esc` | Distribution Path and Region tools | Finish the path or region (2 points, or 3 for a region); drop the last point; `Esc` clears the points, then leaves the tool (chapter 6.7). |
+| `Esc` | Create Image, Create Billboard Image | Forgets the chosen picture file, so the next click asks for another (chapter 6.7). |
+| `Cmd+Z`, `Cmd+Y` | Layout view | Undo and redo through **one history shared by the plan and the layout** (chapter 11.3). |

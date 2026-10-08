@@ -34,11 +34,26 @@ pub enum Material {
     Metal,
     /// Dimensional lumber: framing members and the structure above ceilings.
     Framing,
+    /// Lawn, grass regions and the terrain surface.
+    Grass,
+    /// Mulch and soil of garden beds.
+    Mulch,
+    /// Plant canopies.
+    Foliage,
+    /// Water features (translucent).
+    Water,
+    /// Roads and driveways.
+    Asphalt,
+    /// Gravel paths and drives.
+    Gravel,
+    /// The tint drawn over a selected object in the 3D view. Never part of a
+    /// model scene or an export: the viewport adds it on top.
+    Selection,
 }
 
 impl Material {
     /// Every material, in the order used for glTF material indices.
-    pub const ALL: [Material; 17] = [
+    pub const ALL: [Material; 24] = [
         Material::WallExterior,
         Material::WallInterior,
         Material::Floor,
@@ -56,6 +71,13 @@ impl Material {
         Material::Glass,
         Material::Metal,
         Material::Framing,
+        Material::Grass,
+        Material::Mulch,
+        Material::Foliage,
+        Material::Water,
+        Material::Asphalt,
+        Material::Gravel,
+        Material::Selection,
     ];
 
     /// Index of this material within [`Material::ALL`].
@@ -86,6 +108,13 @@ impl Material {
             Material::Glass => [0.70, 0.85, 0.92, 0.30],       // translucent glass
             Material::Metal => [0.55, 0.57, 0.60, 1.0],        // painted steel
             Material::Framing => [0.76, 0.60, 0.38, 1.0],      // raw lumber
+            Material::Grass => [0.30, 0.52, 0.22, 1.0],        // lawn
+            Material::Mulch => [0.33, 0.22, 0.14, 1.0],        // dark mulch
+            Material::Foliage => [0.18, 0.40, 0.17, 1.0],      // leaf canopy
+            Material::Water => [0.20, 0.45, 0.65, 0.55],       // blue, translucent
+            Material::Asphalt => [0.20, 0.20, 0.21, 1.0],      // paving
+            Material::Gravel => [0.62, 0.58, 0.50, 1.0],       // crushed stone
+            Material::Selection => [0.98, 0.62, 0.10, 0.45],   // orange tint
         }
     }
 
@@ -109,6 +138,13 @@ impl Material {
             Material::Glass => "Glass",
             Material::Metal => "Metal",
             Material::Framing => "Framing",
+            Material::Grass => "Grass",
+            Material::Mulch => "Mulch",
+            Material::Foliage => "Foliage",
+            Material::Water => "Water",
+            Material::Asphalt => "Asphalt",
+            Material::Gravel => "Gravel",
+            Material::Selection => "Selection",
         }
     }
 

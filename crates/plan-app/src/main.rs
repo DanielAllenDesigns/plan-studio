@@ -301,6 +301,7 @@ impl PlanApp {
             | Action::WallSchedule
             | Action::CreateConstructionSet
             | Action::FileNewLayout
+            | Action::FindReplaceText
             | Action::ProjectInfo => dialogs::build_tools::dispatch(&mut self.cx, action),
             Action::OpenHotkeyDialog => self.docks.open_hotkey_dialog(&self.hotkeys),
             Action::OpenLayerDisplay => self.docks.open_layer_dialog(),
@@ -1079,7 +1080,7 @@ impl PlanApp {
                                         .fit_to_exact_size(Vec2::splat(18.0))
                                         .tint(Color32::WHITE),
                                 ),
-                                None => egui::Button::new("Copy"),
+                                None => egui::Button::new(a.label),
                             };
                             let r = ui.add_enabled(a.enabled, btn).on_hover_text(a.label);
                             if r.clicked() {

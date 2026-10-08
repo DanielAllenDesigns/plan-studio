@@ -34,20 +34,28 @@
 //!   tracer's light list; the Sun Angle dialog drives the ray tracer, the GL
 //!   key light and the vector elevations' shadows.
 //!
+//! * **Picking** (C-43, [`pick`]): a click ray-casts the scene and selects the
+//!   object under the pointer in the editor's own selection (Shift adds), a
+//!   double-click asks for its specification and Delete deletes it. The
+//!   selection is tinted in the view. Pictures stay out of the cached scene:
+//!   they are added per frame, billboards turned to face the camera.
+//!
 //! Roof planes come from `crate::editor::roof_view::roof_meshes`.
+
+mod pick;
 
 use crate::dialogs::camera::{
     elevation_options_with_sun, is_elevation_camera, render_elevation_with, render_lights, sun_dir,
     AdjustLightsDialog, CameraDialog, CameraExtras, RayTraceDialog,
 };
 use crate::dialogs::Outcome;
+use crate::editor::selection::Selection;
 use crate::editor::EditorContext;
 use crate::toolbar::ViewFlag;
 use crate::tools::camera::{self as camera_tool, CameraVariant};
 use crate::tools::{ToolId, ToolSet};
 use eframe::egui;
 use plan_3d::{build_scene, Material, Mesh, Scene, Vertex};
-use plan_core::camera::LIGHTS_LAYER;
 use plan_core::camera::{DEFAULT_EYE_HEIGHT, DEFAULT_FOV_DEG};
 use plan_core::geometry::Point;
 use plan_core::{CameraKind, CameraObject, Id, PlacedSymbol, Project};
@@ -436,6 +444,9 @@ pub struct ViewScope {
     pub section: Option<SectionCut>,
     /// Draw everything in one material (technique override).
     pub fill: Option<Material>,
+    /// Leave the pictures out: the interactive view adds them every frame so
+    /// billboards can turn with the camera ([`pick::picture_meshes`]).
+    pub no_images: bool,
 }
 
 /// The scene a view shows: the scoped floors, any section cut, and the
@@ -467,11 +478,13 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
         .meshes
         .extend(crate::editor::details_view::detail_meshes(proj));
     scene.meshes.extend(symbol_meshes(proj));
-    // Pictures, 3D solid features and library solids (billboards keep their
-    // stored angle in the cached scene).
-    scene
-        .meshes
-        .extend(crate::editor::placed::image_meshes(proj));
+    // Pictures (billboards keep their stored angle here; the interactive view
+    // adds them per frame instead), 3D solid features and library solids.
+    if !scope.no_images {
+        scene
+            .meshes
+            .extend(crate::editor::placed::image_meshes(proj));
+    }
     scene
         .meshes
         .extend(crate::editor::placed::solid_meshes(proj));
@@ -643,6 +656,14 @@ pub fn stair_meshes(project: &Project) -> Vec<Mesh> {
     out
 }
 
+/// Does the project have a picture (Create Image / Billboard)?
+fn has_pictures(project: &Project) -> bool {
+    project
+        .floors
+        .iter()
+        .any(|f| f.symbols.iter().any(|s| s.image.is_some()))
+}
+
 /// Raise a mesh by `dy` inches (cabinets are authored relative to the floor).
 fn lift(mesh: &mut Mesh, dy: f64) {
     if dy != 0.0 {
@@ -695,7 +716,7 @@ pub fn project_hash(p: &Project) -> u64 {
             let _ = write!(HashFmt(&mut h), "{st}");
         }
         // Roof planes are stored as tagged CAD records (`editor::roof_view`).
-        for c in f.cad.iter().filter(|c| c.layer != LIGHTS_LAYER) {
+        for c in &f.cad {
             let _ = write!(HashFmt(&mut h), "{c:?}");
         }
         // Roofs live in the floor's typed `roofs` slot (`editor::roof_view`).
@@ -1328,6 +1349,12 @@ pub struct View3dState {
     pub walk: Option<WalkPlay>,
     recording: Option<Recording>,
     adjust_lights: Option<AdjustLightsDialog>,
+    /// The cached scene as built (no pictures, no selection tint): what clicks
+    /// ray-cast and what the overlay is added to.
+    base_scene: Scene,
+    /// The overlay (pictures, selection tint) the viewport holds, by
+    /// [`pick::overlay_key`].
+    overlay_key: u64,
 }
 
 impl Default for View3dState {
@@ -1363,6 +1390,8 @@ impl View3dState {
             walk: None,
             recording: None,
             adjust_lights: None,
+            base_scene: Scene::default(),
+            overlay_key: pick::empty_overlay_key(),
         }
     }
 
@@ -1748,6 +1777,7 @@ impl View3dState {
             floor: self.scope_floor,
             section: self.section,
             fill: technique_view(self.technique).fill,
+            no_images: true,
         }
     }
 
@@ -1788,16 +1818,72 @@ impl View3dState {
             )
         });
         let scene = build_view_scene(project, &self.scope());
-        self.scene_empty = scene.meshes.is_empty();
-        let vp = self.viewport.get_or_insert_with(Viewport3d::new);
+        self.scene_empty = scene.meshes.is_empty() && !has_pictures(project);
         // Keep the user's view across rebuilds, except when about to be re-aimed.
-        let keep = (self.setup.is_none() && vp.bounds().is_some()).then(|| vp.camera.clone());
-        vp.queue_scene(&scene);
+        let keep_view = self.setup.is_none();
+        self.queue(&scene, keep_view);
+        self.base_scene = scene;
+        // The viewport holds the bare model: the overlay is added by
+        // `refresh_overlay`.
+        self.overlay_key = pick::empty_overlay_key();
+        self.last_project_hash = sig;
+        self.scene_dirty = false;
+    }
+
+    /// Hands `scene` to the viewport; `keep_view` leaves the camera where the
+    /// user put it (queueing re-frames it on the scene).
+    fn queue(&mut self, scene: &Scene, keep_view: bool) {
+        let vp = self.viewport.get_or_insert_with(Viewport3d::new);
+        let keep = (keep_view && vp.bounds().is_some()).then(|| vp.camera.clone());
+        vp.queue_scene(scene);
         if let Some(cam) = keep {
             vp.camera = cam;
         }
-        self.last_project_hash = sig;
-        self.scene_dirty = false;
+    }
+
+    /// The pictures facing the camera and the tint over the selection, added to
+    /// the cached scene. Called every frame; the scene is only re-queued when
+    /// the overlay changed (a billboard turned by half an inch at its edge, the
+    /// selection changed), never for a plain redraw.
+    pub fn refresh_overlay(&mut self, project: &Project, selection: &Selection) {
+        let Some(vp) = &self.viewport else {
+            return;
+        };
+        let (eye, hide) = (vp.camera.eye(), vp.camera.mode.hides_ceiling_and_roof());
+        let pictures = pick::picture_meshes(project, &self.scope(), eye);
+        // The key covers everything the overlay is made of, so an unchanged
+        // view costs a hash of the pictures, not a rebuild of the tint.
+        let key = pick::overlay_key(selection, &pictures, hide);
+        if key == self.overlay_key {
+            return;
+        }
+        self.overlay_key = key;
+        let overlay = pick::overlay_meshes(&self.base_scene, pictures, selection, hide);
+        let mut scene = self.base_scene.clone();
+        scene.meshes.extend(overlay);
+        self.queue(&scene, true);
+    }
+
+    /// The object under the screen point `pos` of the viewport `rect`, with its
+    /// floor (see [`pick::object_under`]).
+    pub fn object_at(
+        &self,
+        project: &Project,
+        floor: usize,
+        rect: egui::Rect,
+        pos: egui::Pos2,
+    ) -> Option<(usize, crate::editor::ObjectRef)> {
+        let vp = self.viewport.as_ref()?;
+        let pictures = pick::picture_meshes(project, &self.scope(), vp.camera.eye());
+        pick::object_under(
+            project,
+            floor,
+            &vp.camera,
+            rect,
+            pos,
+            &self.base_scene,
+            &pictures,
+        )
     }
 
     /// Aims the viewport after a request (call after [`ensure_scene`](Self::ensure_scene)).
@@ -1873,6 +1959,7 @@ impl View3dState {
             self.raytrace.lights = render_lights(&cx.project);
             let scope = ViewScope {
                 fill: None,
+                no_images: false,
                 ..self.scope()
             };
             let cam = self.viewport.as_ref().map(|v| v.camera.clone());
@@ -2196,7 +2283,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
             ctx.request_repaint();
         }
     }
-    if let Some(e) = vp.gl_error() {
+    let gl_error = vp.gl_error();
+    handle_pointer_and_keys(&ctx, cx, st, &resp);
+    st.refresh_overlay(&cx.project, &cx.selection);
+    if let Some(e) = gl_error {
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -2290,6 +2380,43 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
             });
         });
     apply_bar(&ctx, cx, st, out, Some(&resp));
+}
+
+/// Selection in the 3D view (C-43): a click selects the object under the
+/// pointer (Shift adds), a double-click also asks for its specification, and
+/// Delete deletes the selection.
+fn handle_pointer_and_keys(
+    ctx: &egui::Context,
+    cx: &mut EditorContext,
+    st: &mut View3dState,
+    resp: &egui::Response,
+) {
+    let clicked = resp.double_clicked() || resp.clicked();
+    if clicked {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let add = ctx.input(|i| i.modifiers.shift);
+            let hit = st.object_at(&cx.project, cx.floor, resp.rect, pos);
+            if resp.double_clicked() {
+                pick::apply_open(cx, hit);
+            } else {
+                pick::apply_pick(cx, hit, add);
+            }
+            // The request is run, and the selection shown, next frame.
+            ctx.request_repaint();
+        }
+    }
+    // The view itself holds the keyboard focus after a click (for the walking
+    // keys); a text field somewhere else keeps its Delete.
+    let other_has_focus = ctx
+        .memory(|m| m.focused())
+        .is_some_and(|focused| focused != resp.id);
+    let wants_delete = (resp.hovered() || resp.has_focus())
+        && !other_has_focus
+        && ctx.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
+    if wants_delete && !cx.selection.is_empty() {
+        cx.delete_selection();
+        ctx.request_repaint();
+    }
 }
 
 /// Applies a toolbar's output to the state (both views).
@@ -3448,5 +3575,282 @@ mod tests {
         run_frames(&mut cx, &mut st, 2);
         let w = st.walk.expect("still a walkthrough");
         assert!(w.t_s > 0.0 || !w.playing);
+    }
+
+    // ----- clicking in the 3D view -----
+
+    /// Runs one frame of the 3D view on an 800x600 screen with `events`.
+    fn frame_with(
+        ctx: &egui::Context,
+        cx: &mut EditorContext,
+        st: &mut View3dState,
+        events: Vec<egui::Event>,
+        time: f64,
+    ) {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            time: Some(time),
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            if st.frame(ctx, cx) {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| show(ui, cx, st));
+            }
+        });
+    }
+
+    fn press(pos: egui::Pos2, down: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: down,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// The pixel of a scene point in the 800x600 view of `st`.
+    fn pixel(st: &View3dState, p: [f32; 3]) -> egui::Pos2 {
+        let cam = &st.viewport.as_ref().unwrap().camera;
+        let ndc = plan_view3d::math::transform_point(&cam.view_projection(800.0 / 600.0), p);
+        egui::pos2((ndc[0] + 1.0) * 400.0, (1.0 - ndc[1]) * 300.0)
+    }
+
+    /// A click (move, press, release on separate frames); `t` is the time.
+    fn click(
+        ctx: &egui::Context,
+        cx: &mut EditorContext,
+        st: &mut View3dState,
+        at: egui::Pos2,
+        t: f64,
+    ) {
+        frame_with(ctx, cx, st, vec![egui::Event::PointerMoved(at)], t);
+        frame_with(ctx, cx, st, vec![press(at, true)], t + 0.01);
+        frame_with(ctx, cx, st, vec![press(at, false)], t + 0.02);
+    }
+
+    fn view_of_a_wall() -> (EditorContext, View3dState, egui::Context, Id, egui::Pos2) {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = project_with_wall();
+        let wall = cx.project.floors[0].walls[0].id;
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.active = true;
+        let ctx = egui::Context::default();
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 0.0);
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 0.1);
+        // The wall's top face is up in the overview.
+        let on_wall = pixel(&st, [120.0, 96.0, 0.0]);
+        (cx, st, ctx, wall, on_wall)
+    }
+
+    #[test]
+    fn a_click_in_the_3d_view_selects_the_object_and_tints_it() {
+        let (mut cx, mut st, ctx, wall, on_wall) = view_of_a_wall();
+        assert!(cx.selection.is_empty());
+        click(&ctx, &mut cx, &mut st, on_wall, 1.0);
+        assert_eq!(
+            cx.selection.single(),
+            Some(crate::editor::ObjectRef::Wall(wall))
+        );
+        // The next frames show the selection tint with the model.
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 1.2);
+        assert_ne!(st.overlay_key, pick::empty_overlay_key());
+        // A click on empty space clears the selection and the tint.
+        click(&ctx, &mut cx, &mut st, egui::pos2(5.0, 5.0), 2.0);
+        assert!(cx.selection.is_empty());
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 2.2);
+        assert_eq!(st.overlay_key, pick::empty_overlay_key());
+    }
+
+    #[test]
+    fn a_double_click_in_the_3d_view_asks_for_the_specification() {
+        let (mut cx, mut st, ctx, wall, on_wall) = view_of_a_wall();
+        cx.requests.clear();
+        click(&ctx, &mut cx, &mut st, on_wall, 1.0);
+        click(&ctx, &mut cx, &mut st, on_wall, 1.1);
+        assert!(
+            cx.requests.iter().any(|r| matches!(
+                r,
+                crate::editor::EditorRequest::OpenSpec(crate::editor::ObjectRef::Wall(i)) if *i == wall
+            )),
+            "{:?}",
+            cx.requests
+        );
+        assert_eq!(
+            cx.selection.single(),
+            Some(crate::editor::ObjectRef::Wall(wall))
+        );
+    }
+
+    #[test]
+    fn delete_in_the_3d_view_deletes_the_selection_and_undo_restores_it() {
+        let (mut cx, mut st, ctx, wall, on_wall) = view_of_a_wall();
+        click(&ctx, &mut cx, &mut st, on_wall, 1.0);
+        assert_eq!(cx.selection.len(), 1);
+        let key = |k| egui::Event::Key {
+            key: k,
+            physical_key: Some(k),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // The pointer is over the view; Delete removes the wall.
+        frame_with(&ctx, &mut cx, &mut st, vec![key(egui::Key::Delete)], 3.0);
+        assert!(cx.project.floors[0].wall(wall).is_none());
+        assert!(cx.selection.is_empty());
+        // The view rebuilds without it.
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 3.1);
+        assert!(st
+            .base_scene
+            .meshes
+            .iter()
+            .all(|m| m.object_id != Some(wall)));
+        cx.undo();
+        assert!(cx.project.floors[0].wall(wall).is_some());
+    }
+
+    // ----- pictures and billboards in the view -----
+
+    fn house_with_a_billboard() -> (Project, Id) {
+        let mut p = house();
+        let mut spec = plan_core::ImageSpec::new("tree.png", 10, 10);
+        spec.color = [100, 120, 90];
+        let id = p.add_symbol(
+            0,
+            PlacedSymbol::billboard(spec, Point::new(400.0, 100.0), 40.0, 72.0),
+        );
+        (p, id)
+    }
+
+    #[test]
+    fn pictures_stay_out_of_the_cached_scene_and_are_added_per_view() {
+        let (p, pic) = house_with_a_billboard();
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.ensure_scene(&p);
+        assert!(
+            st.base_scene
+                .meshes
+                .iter()
+                .all(|m| m.object_id != Some(pic)),
+            "the cached scene holds solids only"
+        );
+        assert!(!st.base_scene.meshes.is_empty());
+        // Exports and the ray tracer still get them (stored angle).
+        let full = build_view_scene(&p, &ViewScope::default());
+        assert!(full.meshes.iter().any(|m| m.object_id == Some(pic)));
+        // The panel adds them next, and the bare model is not what it holds.
+        assert_eq!(st.overlay_key, pick::empty_overlay_key());
+        st.refresh_overlay(&p, &Selection::default());
+        assert_ne!(st.overlay_key, pick::empty_overlay_key());
+    }
+
+    #[test]
+    fn the_billboard_follows_the_orbiting_camera_without_rebuilding_the_model() {
+        let (p, _) = house_with_a_billboard();
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.ensure_scene(&p);
+        st.refresh_overlay(&p, &Selection::default());
+        let hash = st.last_project_hash;
+        let first = st.overlay_key;
+        // The same view again: nothing to upload.
+        st.refresh_overlay(&p, &Selection::default());
+        assert_eq!(st.overlay_key, first);
+        // Orbit a quarter turn: the billboard turns, the model is untouched.
+        st.viewport.as_mut().unwrap().camera.yaw += FRAC_PI_2;
+        st.refresh_overlay(&p, &Selection::default());
+        assert_ne!(st.overlay_key, first);
+        st.ensure_scene(&p);
+        assert_eq!(st.last_project_hash, hash);
+        assert!(!st.scene_dirty);
+        // The user's view survives the re-queue.
+        let yaw = st.viewport.as_ref().unwrap().camera.yaw;
+        st.viewport.as_mut().unwrap().camera.yaw += 0.3;
+        st.refresh_overlay(&p, &Selection::default());
+        assert!((st.viewport.as_ref().unwrap().camera.yaw - yaw - 0.3).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_vector_elevation_ignores_billboards() {
+        let mut p = house();
+        let (with, _) = vector_state(&mut p, middle_section());
+        let without = vector_drawing(
+            &p,
+            with.vector_camera(&p).unwrap(),
+            RenderingTechnique::VectorView,
+            None,
+            256,
+        );
+        let mut spec = plan_core::ImageSpec::new("tree.png", 10, 10);
+        spec.color = [100, 120, 90];
+        p.add_symbol(
+            0,
+            PlacedSymbol::billboard(spec, Point::new(100.0, 100.0), 80.0, 90.0),
+        );
+        let cam = with.vector_camera(&p).unwrap().clone();
+        let with_billboard = vector_drawing(&p, &cam, RenderingTechnique::VectorView, None, 256);
+        assert_eq!(without, with_billboard);
+    }
+
+    #[test]
+    fn a_click_on_a_terrain_wall_in_the_3d_view_selects_the_terrain_element() {
+        use crate::editor::site_view::{self, TerrainHit};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = project_with_wall();
+        let mut rec = site_view::TerrainRecord::new();
+        rec.terrain.walls.push(plan_terrain::TerrainWall::new(
+            plan_terrain::WallKind::Wall,
+            vec![Point::new(0.0, -300.0), Point::new(300.0, -300.0)],
+            false,
+        ));
+        site_view::save_terrain(&mut cx.project, &rec);
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.active = true;
+        let ctx = egui::Context::default();
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 0.0);
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 0.1);
+        let id = site_view::hit_mesh_id(TerrainHit::Wall(0));
+        let mesh = st
+            .base_scene
+            .meshes
+            .iter()
+            .find(|m| m.object_id == Some(id))
+            .expect("the terrain wall is in the scene");
+        let (lo, hi) = mesh.bounds().unwrap();
+        let top = pixel(&st, [(lo[0] + hi[0]) / 2.0, hi[1], (lo[2] + hi[2]) / 2.0]);
+        click(&ctx, &mut cx, &mut st, top, 1.0);
+        assert_eq!(
+            cx.selection.single(),
+            Some(crate::editor::ObjectRef::TerrainObject(TerrainHit::Wall(0)))
+        );
+        // It is tinted, and Delete removes it as a terrain edit.
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 1.2);
+        assert_ne!(st.overlay_key, pick::empty_overlay_key());
+        let delete = egui::Event::Key {
+            key: egui::Key::Delete,
+            physical_key: Some(egui::Key::Delete),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_with(&ctx, &mut cx, &mut st, vec![delete], 2.0);
+        assert!(site_view::load_terrain(&cx.project)
+            .unwrap()
+            .terrain
+            .walls
+            .is_empty());
+        cx.undo();
+        assert_eq!(
+            site_view::load_terrain(&cx.project)
+                .unwrap()
+                .terrain
+                .walls
+                .len(),
+            1
+        );
     }
 }

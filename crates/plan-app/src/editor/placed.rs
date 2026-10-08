@@ -917,7 +917,8 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             generate_countertops(cx);
             true
         }
-        _ => false,
+        // The CAD edit tools (Fillet, Trim, ...) are Edit toolbar commands too.
+        _ => crate::tools::cad::run_edit_command(cx, id),
     }
 }
 

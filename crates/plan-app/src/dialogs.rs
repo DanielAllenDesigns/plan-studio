@@ -20,6 +20,7 @@ pub mod details;
 pub mod dimension;
 pub mod electrical;
 pub mod exchange;
+pub mod find_replace;
 pub mod floor;
 pub mod foundation;
 pub mod framing;

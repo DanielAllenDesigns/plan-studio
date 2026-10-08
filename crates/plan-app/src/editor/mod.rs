@@ -48,6 +48,19 @@ use plan_core::{
 use snap::SnapQuery;
 use std::collections::{HashMap, HashSet};
 
+/// Hands every [`EditorContext`] its own `uid`.
+static NEXT_CONTEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The inputs the rooms and wall outlines were last computed from.
+struct DerivedFrom {
+    floor: usize,
+    walls: Vec<plan_core::Wall>,
+    types: Vec<WallTypeDef>,
+    /// The `Floor.framing` values `framing` was parsed from (`None`: nothing
+    /// parsed yet).
+    framing_values: Option<Vec<serde_json::Value>>,
+}
+
 /// Pick distance in screen pixels (also the snap distance).
 pub const PICK_RADIUS_PX: f64 = 10.0;
 
@@ -110,6 +123,12 @@ pub struct EditorContext {
     view_layers: Option<LayerSet>,
     history: ChangeHistory,
     dirty: bool,
+    /// Names this context in draw caches (see [`cache_key`](Self::cache_key)).
+    uid: u64,
+    /// Counts the change signals (`begin_change`, `mark_dirty`, undo, ...).
+    rev: u64,
+    /// What the derived data was last computed from (see `refresh`).
+    derived_from: Option<DerivedFrom>,
 }
 
 impl EditorContext {
@@ -150,6 +169,9 @@ impl EditorContext {
             view_layers: None,
             history: ChangeHistory::new(),
             dirty: true,
+            uid: NEXT_CONTEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            rev: 0,
+            derived_from: None,
         }
     }
 
@@ -184,7 +206,7 @@ impl EditorContext {
         self.temp.clear();
         self.hover = None;
         self.readout = None;
-        self.dirty = true;
+        self.touch();
     }
 
     // ----- undo -----
@@ -193,7 +215,7 @@ impl EditorContext {
     /// `label` (an imperative name such as "Move Wall").
     pub fn begin_change(&mut self, label: &str) {
         self.history.begin(&self.project, label);
-        self.dirty = true;
+        self.touch();
     }
 
     /// Like [`begin_change`](Self::begin_change) but consecutive calls with
@@ -201,7 +223,7 @@ impl EditorContext {
     /// [`end_merge`](Self::end_merge).
     pub fn begin_change_merged(&mut self, label: &str) {
         self.history.begin_merged(&self.project, label);
-        self.dirty = true;
+        self.touch();
     }
 
     pub fn end_merge(&mut self) {
@@ -213,7 +235,7 @@ impl EditorContext {
     /// `label` of the one shared history.
     pub fn record_undo_step(&mut self, before: &Project, label: &str) {
         self.history.begin(before, label);
-        self.dirty = true;
+        self.touch();
     }
 
     /// The change begun last turned out to be a no-op; drop its undo step.
@@ -239,34 +261,72 @@ impl EditorContext {
 
     /// Steps back; returns the undone step's label.
     pub fn undo(&mut self) -> Option<String> {
+        let keep = self.active_floor_key();
         let label = self.history.undo(&mut self.project);
         if label.is_some() {
-            self.after_restore();
+            self.after_restore(keep);
         }
         label
     }
 
     pub fn redo(&mut self) -> Option<String> {
+        let keep = self.active_floor_key();
         let label = self.history.redo(&mut self.project);
         if label.is_some() {
-            self.after_restore();
+            self.after_restore(keep);
         }
         label
     }
 
-    fn after_restore(&mut self) {
+    /// Name and elevation of the active floor: floors have no ids, and
+    /// undoing the addition of a floor below the active one shifts its index.
+    fn active_floor_key(&self) -> Option<(String, f64)> {
+        self.project
+            .floors
+            .get(self.floor)
+            .map(|f| (f.name.clone(), f.elevation))
+    }
+
+    fn after_restore(&mut self, keep: Option<(String, f64)>) {
+        if let Some((name, elevation)) = keep {
+            let same = |f: &Floor| f.name == name && (f.elevation - elevation).abs() < 1e-6;
+            let still_there = self.project.floors.get(self.floor).is_some_and(same);
+            if !still_there {
+                let hits: Vec<usize> = (0..self.project.floors.len())
+                    .filter(|&i| same(&self.project.floors[i]))
+                    .collect();
+                if let [only] = hits[..] {
+                    self.floor = only;
+                }
+            }
+        }
         self.floor = self.floor.min(self.project.floors.len() - 1);
         self.temp.clear();
         self.hover = None;
-        self.dirty = true;
+        self.touch();
         self.refresh();
     }
 
     // ----- derived data -----
 
+    /// A change signal: derived data is stale and draw caches must not trust
+    /// what they hold.
+    fn touch(&mut self) {
+        self.dirty = true;
+        self.rev = self.rev.wrapping_add(1);
+    }
+
+    /// Names this context and its state of change for caches of drawn data
+    /// (schedule tables, labels): the key differs after every change signal
+    /// (`begin_change`, `mark_dirty`, undo, redo, a new project) and between
+    /// two contexts.
+    pub fn cache_key(&self) -> (u64, u64) {
+        (self.uid, self.rev)
+    }
+
     /// Rooms and outlines are recomputed lazily after `mark_dirty`.
     pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+        self.touch();
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -283,16 +343,53 @@ impl EditorContext {
         self.view_layers = custom_view.then(|| self.project.view_layers());
 
         if self.dirty {
+            self.rev = self.rev.wrapping_add(1);
+            // Dimensions tied to walls follow them.
+            for f in &mut self.project.floors {
+                f.sync_dimension_anchors();
+            }
             let walls = &self.project.floors[self.floor].walls;
-            self.rooms = detect_rooms(walls, 0.5);
-            self.outlines = wall_outlines(walls, ops::JOIN_TOL);
             let types = if self.project.wall_types.is_empty() {
                 &self.defaults.wall_types
             } else {
                 &self.project.wall_types
             };
-            self.layer_outlines = wall_layer_outlines(walls, types, ops::JOIN_TOL);
-            self.framing = framing_view::load(&self.project.floors[self.floor]);
+            // Rooms and outlines depend on the walls and wall types alone, so
+            // an edit of anything else (a CAD line, a dimension, a schedule)
+            // keeps them.
+            let same = self.derived_from.as_ref().is_some_and(|d| {
+                d.floor == self.floor
+                    && d.types.as_slice() == types.as_slice()
+                    && plan_core::walls_equal(&d.walls, walls)
+            });
+            if !same {
+                self.rooms = detect_rooms(walls, 0.5);
+                self.outlines = wall_outlines(walls, ops::JOIN_TOL);
+                self.layer_outlines = wall_layer_outlines(walls, types, ops::JOIN_TOL);
+                // The framing values carry over: whether the parsed members
+                // still match is a question about the values alone.
+                let framing_values = self.derived_from.take().and_then(|d| d.framing_values);
+                self.derived_from = Some(DerivedFrom {
+                    floor: self.floor,
+                    walls: walls.clone(),
+                    types: types.to_vec(),
+                    framing_values,
+                });
+            }
+            // Parsing the framing of a built house takes milliseconds; do it
+            // only when the stored values changed.
+            let values = &self.project.floors[self.floor].framing;
+            let same_framing = self
+                .derived_from
+                .as_ref()
+                .and_then(|d| d.framing_values.as_deref())
+                .is_some_and(|v| v == values.as_slice());
+            if !same_framing {
+                self.framing = framing_view::load(&self.project.floors[self.floor]);
+                if let Some(d) = self.derived_from.as_mut() {
+                    d.framing_values = Some(values.clone());
+                }
+            }
             self.dirty = false;
         }
         self.selection.retain_existing(&self.project, self.floor);
@@ -476,6 +573,60 @@ mod tests {
         assert_eq!(cx.redo_label(), Some("Draw Wall"));
         cx.redo();
         assert_eq!(cx.floor().walls.len(), 1);
+    }
+
+    #[test]
+    fn undoing_a_floor_below_keeps_the_active_floor() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.begin_change("Build Foundation");
+        let idx = cx
+            .project
+            .build_foundation(plan_core::floors::FoundationKind::StemWall { height: 36.0 });
+        assert_eq!(idx, 0);
+        cx.floor = 1;
+        let name = cx.floor().name.clone();
+        cx.undo();
+        // The foundation floor is gone and the view stays on the same floor.
+        assert_eq!(cx.floor, 0);
+        assert_eq!(cx.floor().name, name);
+        cx.redo();
+        assert_eq!(cx.floor, 1);
+        assert_eq!(cx.floor().name, name);
+    }
+
+    #[test]
+    fn a_dimension_tied_to_a_wall_follows_it_and_undo_restores_both() {
+        use plan_core::{Dimension, DimensionKind};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(120.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        let dim = cx.project.add_dimension(
+            0,
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::ZERO,
+                Point::new(120.0, 0.0),
+                24.0,
+            ),
+        );
+        assert_eq!(cx.project.floors[0].attach_dimension(dim), 2);
+        cx.begin_change("Stretch Wall");
+        cx.project.floors[0].wall_mut(id).unwrap().end = Point::new(180.0, 0.0);
+        cx.mark_dirty();
+        cx.refresh();
+        let d = cx.project.floors[0].dimensions[0].clone();
+        assert_eq!(d.end, Point::new(180.0, 0.0));
+        cx.undo();
+        let d = &cx.project.floors[0].dimensions[0];
+        assert_eq!(d.end, Point::new(120.0, 0.0));
+        assert_eq!(cx.floor().walls[0].end, Point::new(120.0, 0.0));
     }
 
     #[test]

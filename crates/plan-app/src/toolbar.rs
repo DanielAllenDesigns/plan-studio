@@ -92,6 +92,10 @@ pub enum FileCommand {
     ImportDxf,
     /// CAD > CAD to Walls...
     CadToWalls,
+    /// File > Import > Layout (JSON)...: a saved layout replaces the plan's.
+    ImportLayout,
+    /// File > Export > Layout (JSON)...
+    ExportLayout,
 }
 
 /// Build > Framing commands.
@@ -145,6 +149,8 @@ pub enum Action {
     DefaultSettings,
     /// Tools > Project Information... (`build_tools::open_project_info`).
     ProjectInfo,
+    /// Edit > Find/Replace Text...
+    FindReplaceText,
     /// Tools > Toolbars and Hotkeys > Customize Hotkeys...
     OpenHotkeyDialog,
     /// Tools > Layer Settings > Display Options...
@@ -796,6 +802,7 @@ pub fn cabinet() -> Flyout {
                 Some("\u{2303}\u{2325}\u{2318}5"),
                 K::CounterHole,
             ),
+            cab("soffit", "Soffit Polygon", None, K::SoffitPolygon),
             // Corner and blind cabinets have no Chief hotkey of their own.
             sep(cab(
                 "cabinet_base",

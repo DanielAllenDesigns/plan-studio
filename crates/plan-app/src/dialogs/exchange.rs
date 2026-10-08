@@ -92,6 +92,38 @@ pub fn elevations_dxf(project: &plan_core::Project) -> Option<String> {
     any.then(|| plan_core::write_dxf(&sheet, 0, &[]))
 }
 
+/// The plan's layout as JSON (pretty), or `None` when it has none.
+pub fn export_layout_json(cx: &EditorContext) -> Option<String> {
+    let layout = crate::shell::layout_window::load(&cx.project)?;
+    serde_json::to_string_pretty(&layout).ok()
+}
+
+/// Opens a saved layout: `text` is a layout's JSON (or a whole plan's JSON,
+/// whose layout is taken). It replaces the plan's layout as one undo step.
+/// Returns the status message.
+pub fn import_layout_json(cx: &mut EditorContext, text: &str) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    // A whole plan file keeps its layout in "layout".
+    let layout_value = match value.get("pages") {
+        Some(_) => value,
+        None => value
+            .get("layout")
+            .cloned()
+            .ok_or("this file holds no layout")?,
+    };
+    let layout: plan_layout::Layout =
+        serde_json::from_value(layout_value).map_err(|e| format!("not a layout: {e}"))?;
+    let pages = layout.pages.len();
+    let name = layout.name.clone();
+    cx.begin_change("Import Layout");
+    crate::shell::layout_window::store(&mut cx.project, &layout);
+    cx.mark_dirty();
+    Ok(format!(
+        "Opened layout {name} ({pages} page{})",
+        if pages == 1 { "" } else { "s" }
+    ))
+}
+
 fn save_text(default_name: &str, ext: &str, text: &str) -> String {
     let Some(path) = rfd::FileDialog::new()
         .set_file_name(default_name)
@@ -405,6 +437,28 @@ pub fn dispatch_file(cx: &mut EditorContext, c: FileCommand) {
             None => cx.status = "There is nothing to draw an elevation of".into(),
         },
         FileCommand::ImportDxf => start_import(cx),
+        FileCommand::ImportLayout => {
+            let Some(path) = rfd::FileDialog::new()
+                .add_filter("Layout (JSON)", &["json", "layout"])
+                .pick_file()
+            else {
+                return;
+            };
+            cx.status = match std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|t| import_layout_json(cx, &t))
+            {
+                Ok(msg) => msg,
+                Err(e) => format!("Import failed: {e}"),
+            };
+        }
+        FileCommand::ExportLayout => match export_layout_json(cx) {
+            Some(text) => {
+                let name = format!("{} Layout.json", cx.project.name);
+                cx.status = save_text(&name, "json", &text);
+            }
+            None => cx.status = "The plan has no layout to export".into(),
+        },
         FileCommand::CadToWalls => {
             cx.refresh();
             let w = CadWallsWindow::new(cx);
@@ -855,6 +909,39 @@ mod tests {
                 .add_wall(0, c[i], c[(i + 1) % 4], 6.5, 109.125, WallKind::Exterior);
         }
         cx.refresh();
+    }
+
+    #[test]
+    fn a_layout_exports_and_imports_as_json_in_one_undo_step() {
+        let mut cx = cx();
+        assert!(export_layout_json(&cx).is_none());
+        let mut layout = plan_layout::Layout::new("Smith Set", plan_docs::SheetSize::ArchC);
+        layout.add_page(1, "Plan");
+        layout.add_page(2, "Elevations");
+        layout.portrait = true;
+        crate::shell::layout_window::store(&mut cx.project, &layout);
+        let text = export_layout_json(&cx).expect("a layout");
+
+        let mut other = EditorContext::new(crate::plan_defaults::embedded());
+        let msg = import_layout_json(&mut other, &text).unwrap();
+        assert_eq!(msg, "Opened layout Smith Set (2 pages)");
+        let back = crate::shell::layout_window::load(&other.project).unwrap();
+        assert_eq!(back, layout);
+        assert_eq!(other.undo_label(), Some("Import Layout"));
+        other.undo();
+        assert!(crate::shell::layout_window::load(&other.project).is_none());
+
+        // A whole plan file works too: its layout is taken.
+        let plan_json = cx.project.to_json().unwrap();
+        let mut third = EditorContext::new(crate::plan_defaults::embedded());
+        assert!(import_layout_json(&mut third, &plan_json).is_ok());
+        assert!(crate::shell::layout_window::load(&third.project).is_some());
+        // Garbage and plans without a layout are refused without a step.
+        let mut fourth = EditorContext::new(crate::plan_defaults::embedded());
+        assert!(import_layout_json(&mut fourth, "not json").is_err());
+        assert!(import_layout_json(&mut fourth, "{\"name\":\"x\"}").is_err());
+        assert!(import_layout_json(&mut fourth, "{\"pages\": 5}").is_err());
+        assert!(!fourth.can_undo());
     }
 
     #[test]

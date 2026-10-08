@@ -1,5 +1,7 @@
 # Parity spec: Rooms and Floors (Chief Architect X18)
 
+> Status (2026-10-08): 71 ids: 37 Works, 28 Partial, 6 Missing, 0 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+
 Scope: automatic room detection, Room Specification, room types, room labels,
 living area, floors (Build New Floor, Foundation, Reference Display, Exchange,
 Floor Defaults, Attic). Walls, doors and windows are specified elsewhere

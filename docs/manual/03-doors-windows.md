@@ -77,11 +77,12 @@ a door on an **exterior** wall uses the Exterior Door defaults (36" x 96"), a do
 on an interior wall the Interior Door defaults (30" x 96"), and a window the Window
 defaults (32" x 72", 24" sill). Each placement is one undo step.
 
-Hinge and swing: a placed hinged door hinges at the wall-start jamb and swings to
-the left side of the wall (looking from start to end). Use Reverse Swing or the
-swing handle (below) to flip the swing to the other side, and the Door Specification's
-Swing side and Hinge side to set both. Choosing the swing side and hinge jamb from the
-pointer position while placing (Chief's behavior) is (planned); the scenario tests record it as QA-01 in `docs/qa-findings.md`, fixed in Round 8.
+Hinge and swing: a placed hinged door **follows the pointer** (DW-8, DW-76; QA-01, fixed in Round 8). It swings toward
+the side of the wall the pointer is on (to the wall's left side, looking from start to end, when the pointer is on that side
+or on the centerline; to the right side when it is on the other), and its hinge goes on the jamb nearer the wall end
+that the click is closer to (the start jamb when the click is in the first half of the wall, the end jamb in the second).
+The ghost follows the same rule, so what you see is what is placed. A window has no swing and is unaffected. Use Reverse Swing or the
+swing handle (below) to flip the swing afterwards, and the Door Specification's Swing side and Hinge side to set both.
 
 ### Editing with Select Objects
 
@@ -221,7 +222,7 @@ active floor with its size, style and position, and export CSV (chapter 11).
 ## 3.8 Differences from Chief
 
 - Hinge side and Swing side are separate settings (four combinations, as in Chief), both in the Door
-  Specification. Choosing them from the pointer position while placing is (planned).
+  Specification. A new door also takes both from the pointer position while placing (3.2).
 - A placed opening stores its library style or window type, a door's thickness and swing angle,
   the jamb or frame width and Show Open in 2D (its `extras`, saved with the plan and loaded with
   defaults from older files). The other Opening Specification choices (casing, lites' muntin width,

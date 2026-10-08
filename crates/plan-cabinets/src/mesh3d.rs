@@ -12,9 +12,11 @@ use plan_core::geometry::Point;
 use plan_core::Id;
 
 use crate::cabinet::{
-    BlindSide, Cabinet, CabinetKind, DoorProfile, HandleStyle, HingeStyle, MaterialChoice, Overlay,
+    BlindSide, Cabinet, CabinetKind, DoorProfile, FaceSide, HandleStyle, HingeStyle,
+    MaterialChoice, Overlay, SideKind,
 };
-use crate::face::FaceItem;
+use crate::face::{FaceItem, FaceLayout};
+use crate::top::{CornerTreatment, EdgeProfile};
 
 /// Side, back, top and bottom panel thickness, inches.
 pub(crate) const PANEL: f64 = 0.75;
@@ -222,6 +224,8 @@ pub(crate) enum Hinge {
 /// Everything the front builders share about the cabinet being meshed.
 pub(crate) struct FrontCtx<'a> {
     pub(crate) cab: &'a Cabinet,
+    /// The face items to build (the front's, or a side's).
+    pub(crate) layout: &'a FaceLayout,
     pub(crate) frame: Frame,
     /// Y of the carcass front relative to the front line (`cf - depth`).
     pub(crate) carcass_y: f64,
@@ -235,7 +239,7 @@ pub(crate) struct FrontCtx<'a> {
 pub(crate) fn build_fronts(b: &mut Builder, ctx: &FrontCtx, x_off: f64, face_w: f64) {
     let cab = ctx.cab;
     let wi = pick(cab.materials.carcass, Material::WallInterior);
-    let Ok(items) = cab.face.resolve(ctx.z1 - ctx.z0, face_w) else {
+    let Ok(items) = ctx.layout.resolve(ctx.z1 - ctx.z0, face_w) else {
         return;
     };
     for r in items {
@@ -352,6 +356,18 @@ pub fn meshes(cabinet: &Cabinet) -> Vec<Mesh> {
             );
             return b.meshes;
         }
+        CabinetKind::Soffit if cabinet.custom.is_some() => {
+            if let Some(c) = &cabinet.custom {
+                b.add_prism(
+                    &c.outline,
+                    &[],
+                    0.0,
+                    h,
+                    pick(cabinet.materials.carcass, Material::WallInterior),
+                );
+            }
+            return b.meshes;
+        }
         CabinetKind::Soffit => {
             b.add_box(
                 [0.0, 0.0, 0.0],
@@ -406,9 +422,16 @@ impl Builder {
             self.add_box([0.0, 0.0, z0], [PANEL, d, z1], wi);
             self.add_box([w - PANEL, 0.0, z0], [w, d, z1], wi);
         } else if !filler {
-            self.add_box([0.0, 0.0, z0], [PANEL, cf, z1], wi);
-            self.add_box([w - PANEL, 0.0, z0], [w, cf, z1], wi);
-            self.add_box([PANEL, 0.0, z0], [w - PANEL, PANEL, z1], wi);
+            let plain = |side| cabinet.side_kind(side) == SideKind::Plain;
+            if plain(FaceSide::Left) {
+                self.add_box([0.0, 0.0, z0], [PANEL, cf, z1], wi);
+            }
+            if plain(FaceSide::Right) {
+                self.add_box([w - PANEL, 0.0, z0], [w, cf, z1], wi);
+            }
+            if plain(FaceSide::Back) {
+                self.add_box([PANEL, 0.0, z0], [w - PANEL, PANEL, z1], wi);
+            }
             self.add_box([PANEL, PANEL, z0], [w - PANEL, cf, z0 + PANEL], wi);
             if !cabinet.kind.is_base_like() {
                 self.add_box([PANEL, PANEL, z1 - PANEL], [w - PANEL, cf, z1], wi);
@@ -476,6 +499,7 @@ impl Builder {
             };
             let ctx = FrontCtx {
                 cab: cabinet,
+                layout: &cabinet.face,
                 frame: Frame::front(w, d),
                 carcass_y: cf - d,
                 z0,
@@ -497,12 +521,69 @@ impl Builder {
         }
         let ctx = FrontCtx {
             cab: cabinet,
+            layout: &cabinet.face,
             frame: Frame::front(w, d),
             carcass_y: cf - d,
             z0,
             z1,
         };
         build_fronts(self, &ctx, x_lo + fw, face_w);
+        self.side_faces(cabinet, z0, z1);
+    }
+
+    /// The Left, Right and Back faces that are not the plain carcass panel:
+    /// a finished slab, an open side or doors and drawers (`SideFace`). The
+    /// panel of the carcass is left out where one is built.
+    fn side_faces(&mut self, cabinet: &Cabinet, z0: f64, z1: f64) {
+        let (w, d) = (cabinet.width, cabinet.depth);
+        for side in [FaceSide::Left, FaceSide::Right, FaceSide::Back] {
+            let Some(sf) = cabinet.side_face(side) else {
+                continue;
+            };
+            let frame = match side {
+                FaceSide::Left => Frame {
+                    origin: Point::new(0.0, 0.0),
+                    dir: Point::new(0.0, 1.0),
+                    nrm: Point::new(-1.0, 0.0),
+                    len: d,
+                },
+                FaceSide::Right => Frame {
+                    origin: Point::new(w, d),
+                    dir: Point::new(0.0, -1.0),
+                    nrm: Point::new(1.0, 0.0),
+                    len: d,
+                },
+                _ => Frame {
+                    origin: Point::new(w, 0.0),
+                    dir: Point::new(-1.0, 0.0),
+                    nrm: Point::new(0.0, -1.0),
+                    len: w,
+                },
+            };
+            let t = cabinet.door_style.thickness;
+            match sf.kind {
+                SideKind::Plain | SideKind::Open => {}
+                SideKind::Finished => frame_box(
+                    self,
+                    frame,
+                    (0.0, frame.len),
+                    (z0, z1),
+                    (-t, 0.0),
+                    pick(cabinet.materials.door, Material::WallInterior),
+                ),
+                SideKind::CustomFace => {
+                    let ctx = FrontCtx {
+                        cab: cabinet,
+                        layout: &sf.layout,
+                        frame,
+                        carcass_y: -t,
+                        z0,
+                        z1,
+                    };
+                    build_fronts(self, &ctx, 0.0, frame.len);
+                }
+            }
+        }
     }
 
     /// The countertop slab of a cabinet's own top, with holes and fixtures.
@@ -510,9 +591,10 @@ impl Builder {
         let material = pick(cabinet.materials.countertop, Material::Floor);
         if cabinet.cutouts.is_empty() {
             if let Some(t) = cabinet.countertop {
-                if cabinet.kind.is_corner() {
+                let shaped = t.corner != CornerTreatment::None || t.edge != EdgeProfile::Square;
+                if cabinet.kind.is_corner() || shaped {
                     if let Some(ring) = cabinet.top_local() {
-                        self.add_prism(&ring, &[], z1, h, material);
+                        self.add_slab(&ring, &[], (z1, h), t.edge, t.edge_size, material);
                     }
                 } else {
                     self.add_box(
@@ -527,7 +609,10 @@ impl Builder {
                 }
             }
         } else if let Some(ring) = cabinet.top_local() {
-            self.add_prism(&ring, &cabinet.holes_local(), z1, h, material);
+            let (edge, size) = cabinet
+                .countertop
+                .map_or((EdgeProfile::Square, 0.0), |t| (t.edge, t.edge_size));
+            self.add_slab(&ring, &cabinet.holes_local(), (z1, h), edge, size, material);
             self.fixtures(cabinet, h);
         }
     }
@@ -752,6 +837,122 @@ mod tests {
         assert!(carcass_only
             .iter()
             .all(|m| m.material != Material::WindowFrame));
+    }
+
+    /// Bounds of every mesh with the given material.
+    fn bounds_of(ms: &[Mesh], material: Material) -> Vec<([f32; 3], [f32; 3])> {
+        ms.iter()
+            .filter(|m| m.material == material)
+            .filter_map(Mesh::bounds)
+            .collect()
+    }
+
+    #[test]
+    fn a_soffit_polygon_is_an_extruded_outline() {
+        let l = [
+            Point::new(0.0, 0.0),
+            Point::new(60.0, 0.0),
+            Point::new(60.0, 12.0),
+            Point::new(12.0, 12.0),
+            Point::new(12.0, 40.0),
+            Point::new(0.0, 40.0),
+        ];
+        let c = Cabinet::soffit_polygon(&l, 14.0, 84.0).unwrap();
+        assert_eq!(c.kind, CabinetKind::Soffit);
+        assert_eq!(
+            (c.width, c.depth, c.height, c.elevation),
+            (60.0, 40.0, 14.0, 84.0)
+        );
+        let ms = meshes(&c);
+        assert_eq!(ms.len(), 1);
+        let (lo, hi) = ms[0].bounds().unwrap();
+        assert!((lo[1] - 84.0).abs() < 1e-4 && (hi[1] - 98.0).abs() < 1e-4);
+        // The L is 60*12 + 12*28 = 1056 sq in of footprint.
+        assert!((crate::ring_area(&c.footprint_local()) - 1056.0).abs() < 1e-9);
+        assert!(Cabinet::soffit_polygon(&l[..2], 14.0, 84.0).is_none());
+        assert_eq!(auto_label_code(&c), "SO");
+    }
+
+    fn auto_label_code(c: &Cabinet) -> String {
+        crate::type_code(c)
+    }
+
+    #[test]
+    fn side_faces_replace_the_carcass_panel() {
+        use crate::cabinet::{FaceSide, SideKind};
+        let mut c = Cabinet::base(24.0);
+        let plain = meshes(&c);
+        // Left end: a finished slab in the door material. The plain panel
+        // (x = 0..0.75) is gone and the slab stands in the left side plane.
+        c.set_side_face(
+            FaceSide::Left,
+            SideKind::Finished,
+            crate::FaceLayout::single_door(),
+        );
+        let finished = meshes(&c);
+        assert_eq!(
+            finished.len(),
+            plain.len(),
+            "one panel swapped for one slab"
+        );
+        // Open right end: its panel is not built.
+        c.set_side_face(
+            FaceSide::Right,
+            SideKind::Open,
+            crate::FaceLayout::single_door(),
+        );
+        assert_eq!(meshes(&c).len(), plain.len() - 1);
+        // Doors on the back add front items (and a handle) behind the cabinet.
+        c.set_side_face(
+            FaceSide::Back,
+            SideKind::CustomFace,
+            crate::FaceLayout::single_door(),
+        );
+        let ms = meshes(&c);
+        let handles = bounds_of(&ms, Material::WindowFrame);
+        assert!(
+            handles.iter().any(|(lo, _)| lo[2] > -1.0),
+            "a back handle sits at plan y = 0: {handles:?}"
+        );
+        // Everything still faces outward.
+        for m in &ms {
+            assert!(!m.indices.is_empty());
+        }
+    }
+
+    #[test]
+    fn side_faces_survive_the_json_and_plain_is_stored_as_nothing() {
+        use crate::cabinet::{FaceSide, SideKind};
+        let mut c = Cabinet::wall(30.0);
+        assert_eq!(c.side_kind(FaceSide::Left), SideKind::Plain);
+        c.set_side_face(
+            FaceSide::Left,
+            SideKind::CustomFace,
+            crate::FaceLayout::drawer_bank(2),
+        );
+        assert_eq!(c.sides.len(), 1);
+        let back: Cabinet = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(back.side_kind(FaceSide::Left), SideKind::CustomFace);
+        // An older cabinet without the field loads.
+        let mut v = serde_json::to_value(&c).unwrap();
+        v.as_object_mut().unwrap().remove("sides");
+        let old: Cabinet = serde_json::from_value(v).unwrap();
+        assert!(old.sides.is_empty());
+        c.set_side_face(
+            FaceSide::Left,
+            SideKind::Plain,
+            crate::FaceLayout::single_door(),
+        );
+        assert!(c.sides.is_empty());
+        // The front is never a side face.
+        c.set_side_face(
+            FaceSide::Front,
+            SideKind::Open,
+            crate::FaceLayout::single_door(),
+        );
+        assert!(c.sides.is_empty());
+        assert_eq!(c.side_width(FaceSide::Left), c.depth);
     }
 
     #[test]

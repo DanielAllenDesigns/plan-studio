@@ -81,3 +81,18 @@ default room types have no Studio.
   documents. The 2D plan drawing currently derives the hinge side from
   `swing_flipped` alone, so a few doors may show the hinge on the opposite jamb
   from the one stored. The swing side is always right.
+
+## large-house.psplan
+
+Not a design: a deterministic benchmark house for `docs/performance.md`.
+Three floors of a 14 x 7 grid of 10' cells (about 590 walls, 153 openings),
+with 78 named rooms per floor, 60 cabinets, 20 roof planes, 40 dimensions,
+200 CAD items, 10 schedules, material regions and wall hatches, and a built
+terrain with 50 elevation lines. Rebuild only this file with
+
+```text
+cargo run -p plan-core --example make_samples -- --large-only
+```
+
+(delete the old file first if the write is refused). The benchmark is
+`cargo test -p plan-app perf_bench -- --ignored --nocapture`.

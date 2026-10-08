@@ -190,27 +190,76 @@ pub fn quoin_mesh(q: &Quoin, floor_elev: f64) -> Option<Mesh> {
 // Moldings
 // ===================================================================
 
-/// A molding: the cross section swept along each segment of the line (the
-/// molding projects to the left of the drawing direction).
+/// A molding: the cross section swept along the line (the molding projects
+/// to the left of the drawing direction). Segments meet at mitered joints:
+/// the section is offset along the bisector of the two segments' normals, so
+/// the faces of neighbouring segments meet exactly at each corner. A closed
+/// line (last point on the first) miters at its start too; an open one is
+/// capped at its two ends.
 pub fn molding_mesh(m: &MoldingLine, floor_elev: f64) -> Option<Mesh> {
     let section = m.section();
     if m.polyline.len() < 2 || section.len() < 3 || m.height <= 0.0 || m.width <= 0.0 {
         return None;
     }
+    // The line without repeated points.
+    let mut pts: Vec<Point> = Vec::with_capacity(m.polyline.len());
+    for p in &m.polyline {
+        if pts.last().is_none_or(|q| q.dist(*p) > 1e-9) {
+            pts.push(*p);
+        }
+    }
+    if pts.len() < 2 {
+        return None;
+    }
+    let n = pts.len();
+    let closed = n > 2 && pts[0].dist(pts[n - 1]) < 1e-6;
+    let seg_normal = |i: usize| (pts[i + 1] - pts[i]).normalized().perp();
+    // Where the section's offset goes at vertex `j`: the direction to offset
+    // along and the factor that keeps the faces of both segments in line.
+    let lateral = |j: usize| -> (Point, f64) {
+        let prev = if j > 0 {
+            Some(seg_normal(j - 1))
+        } else if closed {
+            Some(seg_normal(n - 2))
+        } else {
+            None
+        };
+        let next = if j + 1 < n {
+            Some(seg_normal(j))
+        } else if closed {
+            Some(seg_normal(0))
+        } else {
+            None
+        };
+        match (prev, next) {
+            (Some(p), Some(q)) => {
+                let sum = p + q;
+                if sum.length() < 1e-9 {
+                    (q, 1.0)
+                } else {
+                    let bisector = sum.normalized();
+                    (bisector, 1.0 / bisector.dot(q).max(MITER_LIMIT))
+                }
+            }
+            (Some(p), None) => (p, 1.0),
+            (None, Some(q)) => (q, 1.0),
+            (None, None) => (Point::ZERO, 1.0),
+        }
+    };
     let mut mesh = MeshBuilder::new(material_of(&m.material, Material::Trim));
     let base = floor_elev + m.elevation;
     let centre = polygon_centroid(&section);
-    for seg in m.polyline.windows(2) {
-        let (a, b) = (seg[0], seg[1]);
+    for i in 0..n - 1 {
+        let (a, b) = (pts[i], pts[i + 1]);
         let len = a.dist(b);
-        if len <= 1e-9 {
-            continue;
-        }
         let d = (b - a).normalized();
-        let n = d.perp();
-        let at = |p: Point, s: Point| to_scene(p + n * s.x, base + s.y);
-        for i in 0..section.len() {
-            let (s0, s1) = (section[i], section[(i + 1) % section.len()]);
+        let nrm = d.perp();
+        let (la, ka) = lateral(i);
+        let (lb, kb) = lateral(i + 1);
+        let at_a = |s: Point| to_scene(a + la * (s.x * ka), base + s.y);
+        let at_b = |s: Point| to_scene(b + lb * (s.x * kb), base + s.y);
+        for j in 0..section.len() {
+            let (s0, s1) = (section[j], section[(j + 1) % section.len()]);
             let e = s1 - s0;
             if e.length() <= 1e-9 {
                 continue;
@@ -219,30 +268,35 @@ pub fn molding_mesh(m: &MoldingLine, floor_elev: f64) -> Option<Mesh> {
             let (nu, nv) = (e.y, -e.x);
             let l = nu.hypot(nv);
             let (nu, nv) = (nu / l, nv / l);
-            let normal = [(n.x * nu) as f32, nv as f32, (-(n.y * nu)) as f32];
+            let normal = [(nrm.x * nu) as f32, nv as f32, (-(nrm.y * nu)) as f32];
             let u = (len / IN_PER_FT) as f32;
             let (v0, v1) = ((s0.y / IN_PER_FT) as f32, (s1.y / IN_PER_FT) as f32);
             mesh.quad(
-                [at(a, s0), at(b, s0), at(b, s1), at(a, s1)],
+                [at_a(s0), at_b(s0), at_b(s1), at_a(s1)],
                 [[0.0, v0], [u, v0], [u, v1], [0.0, v1]],
                 normal,
             );
         }
-        // End caps: a fan from the section's centre.
-        for (p, sign) in [(a, -1.0_f64), (b, 1.0)] {
+        // End caps: a fan from the section's centre, at the free ends of an
+        // open line only (the joints are closed by the neighbour).
+        for (end, sign) in [(0, -1.0_f64), (1, 1.0)] {
+            if closed || (end == 0 && i > 0) || (end == 1 && i + 2 < n) {
+                continue;
+            }
             let normal = [(d.x * sign) as f32, 0.0, (-(d.y * sign)) as f32];
-            for i in 0..section.len() {
-                let (s0, s1) = (section[i], section[(i + 1) % section.len()]);
-                mesh.tri(
-                    [at(p, centre), at(p, s0), at(p, s1)],
-                    [[0.0, 0.0]; 3],
-                    normal,
-                );
+            let at = |s: Point| if end == 0 { at_a(s) } else { at_b(s) };
+            for j in 0..section.len() {
+                let (s0, s1) = (section[j], section[(j + 1) % section.len()]);
+                mesh.tri([at(centre), at(s0), at(s1)], [[0.0, 0.0]; 3], normal);
             }
         }
     }
     finished(mesh, m.id)
 }
+
+/// The least cosine between a joint's bisector and a segment normal the miter
+/// follows; sharper corners are cut off at 4 times the section's projection.
+const MITER_LIMIT: f64 = 0.25;
 
 // ===================================================================
 // Material regions
@@ -614,6 +668,76 @@ mod tests {
         assert_eq!(flat.courses(), 1);
     }
 
+    /// Scene vertices of `mesh` that lie at plan point `p` (scene z = -y).
+    fn vertices_at(mesh: &Mesh, p: Point, y: f32) -> usize {
+        mesh.vertices
+            .iter()
+            .filter(|v| {
+                (v.position[0] as f64 - p.x).abs() < 1e-3
+                    && (v.position[2] as f64 + p.y).abs() < 1e-3
+                    && (v.position[1] - y).abs() < 1e-3
+            })
+            .count()
+    }
+
+    #[test]
+    fn moldings_miter_at_polyline_corners() {
+        let mut m = MoldingLine::new(
+            1,
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(100.0, 0.0),
+                Point::new(100.0, 100.0),
+            ],
+            MoldingProfile::Base,
+            109.125,
+        );
+        m.width = 4.0;
+        m.height = 6.0;
+        let mesh = molding_mesh(&m, 0.0).unwrap();
+        // The wall edge of the section stays on the path at the corner; the
+        // far edge meets at the mitre point (96, 4), not at (100, 4) / (96, 0).
+        assert!(vertices_at(&mesh, Point::new(100.0, 0.0), 0.0) > 0);
+        assert!(vertices_at(&mesh, Point::new(96.0, 4.0), 0.0) > 0);
+        assert_eq!(vertices_at(&mesh, Point::new(100.0, 4.0), 0.0), 0);
+        assert_eq!(vertices_at(&mesh, Point::new(96.0, 0.0), 0.0), 0);
+
+        // Turning the other way puts the molding on the outside of the corner:
+        // the mitre point is outside the path.
+        let mut out = m.clone();
+        out.polyline.reverse();
+        out.polyline = vec![
+            Point::new(100.0, 100.0),
+            Point::new(100.0, 0.0),
+            Point::new(0.0, 0.0),
+        ];
+        let mesh = molding_mesh(&out, 0.0).unwrap();
+        assert!(
+            vertices_at(&mesh, Point::new(104.0, -4.0), 0.0) > 0,
+            "outer mitre point"
+        );
+
+        // A closed line has no end caps at all and one mitre per corner.
+        let mut closed = m.clone();
+        closed.polyline = vec![
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            Point::new(100.0, 100.0),
+            Point::new(0.0, 100.0),
+            Point::new(0.0, 0.0),
+        ];
+        let mesh = molding_mesh(&closed, 0.0).unwrap();
+        assert_eq!(mesh.triangle_count(), 4 * 8, "four segments, no caps");
+        assert!(vertices_at(&mesh, Point::new(4.0, 4.0), 0.0) > 0);
+        assert!(vertices_at(&mesh, Point::new(96.0, 4.0), 0.0) > 0);
+        let want = 6.0 * (4.0 * 400.0 - 4.0 * 16.0);
+        assert!(
+            (volume(&mesh).abs() - want).abs() / want < 1e-3,
+            "{}",
+            volume(&mesh)
+        );
+    }
+
     #[test]
     fn a_molding_line_extrudes_a_closed_profile() {
         let m = MoldingLine::new(
@@ -628,14 +752,16 @@ mod tests {
         );
         let mesh = molding_mesh(&m, 0.0).expect("a molding mesh");
         assert_eq!(mesh.material, Material::Trim);
-        // 4 section edges x 2 triangles per segment + 2 fans of 4 per segment.
-        assert_eq!(mesh.triangle_count(), 2 * (8 + 8));
+        // 4 section edges x 2 triangles per segment, and a fan of 4 at each
+        // of the two free ends (the joint in the middle is mitred, not capped).
+        assert_eq!(mesh.triangle_count(), 2 * 8 + 2 * 4);
         let (lo, hi) = mesh.bounds().unwrap();
         assert!((lo[1] - (109.125 - 4.5) as f32).abs() < 1e-3);
         assert!((hi[1] - 109.125).abs() < 1e-3);
-        // Volume matches section area times length (the corner overlaps are
-        // not merged, so it is exactly per segment).
-        let want = 4.5 * 3.5 * 144.0;
+        // The molding turns left, so it lies on the inside of the corner:
+        // the two 3.5"-wide strips of 144" overlap in a 3.5" square, and the
+        // mitre shares it between them (4.5" high).
+        let want = 4.5 * (3.5 * 144.0 - 3.5 * 3.5);
         assert!(
             (volume(&mesh).abs() - want).abs() / want < 1e-3,
             "{}",

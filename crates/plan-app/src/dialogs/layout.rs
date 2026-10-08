@@ -373,8 +373,16 @@ impl BoxSpecDialog {
             inches(ui, &mut self.h);
         });
         row(ui, "Rotation", |ui| {
-            ui.add_enabled(false, egui::DragValue::new(&mut 0.0_f64).suffix("\u{b0}"))
-                .on_disabled_hover_text("The layout model has no box rotation yet");
+            // The content turns counter-clockwise in quarter turns.
+            let mut turns = b.quarter_turns();
+            egui::ComboBox::from_id_salt("box_rotation")
+                .selected_text(format!("{}\u{b0}", u32::from(turns) * 90))
+                .show_ui(ui, |ui| {
+                    for t in 0..4u8 {
+                        ui.selectable_value(&mut turns, t, format!("{}\u{b0}", u32::from(t) * 90));
+                    }
+                });
+            b.rotation_deg = f64::from(turns) * 90.0;
         });
         ui.checkbox(&mut b.border, "Draw border");
         ui.checkbox(&mut b.clip, "Clip content to the box");
@@ -423,6 +431,11 @@ impl BoxSpecDialog {
             BoxSource::Camera { camera_id } => {
                 ui.label(format!("Camera view {camera_id}"));
             }
+            BoxSource::PlacedSchedule { floor, id } => {
+                let name = self.floors.get(*floor).cloned().unwrap_or_default();
+                ui.label(format!("Schedule {id} placed on {name}"));
+                ui.weak("The table follows the plan: columns, sort, grouping and totals come from the schedule.");
+            }
             other => {
                 ui.label(source_name(other));
             }
@@ -453,6 +466,7 @@ pub fn source_name(s: &BoxSource) -> String {
         BoxSource::Section { .. } => "Section".into(),
         BoxSource::Camera { .. } => "Camera view".into(),
         BoxSource::Schedule { kind } => format!("{kind:?} schedule"),
+        BoxSource::PlacedSchedule { .. } => "Placed schedule".into(),
         BoxSource::CadDetail { name, .. } => format!("CAD detail: {name}"),
         BoxSource::Image { path } => format!("Image: {path}"),
         BoxSource::ImageData { width, height, .. } => format!("Image {width} x {height}"),
@@ -470,6 +484,8 @@ pub struct PageSetup {
     pub page_background: bool,
     pub edge_line_weight: u32,
     pub sheet_index: bool,
+    /// Portrait orientation (the sheet turned upright).
+    pub portrait: bool,
 }
 
 /// Page Setup (sheet size, margins, background, edge weight).
@@ -506,9 +522,8 @@ impl PageSetupDialog {
                     });
             });
             row(ui, "Orientation", |ui| {
-                ui.add_enabled(false, egui::RadioButton::new(true, "Landscape"));
-                ui.add_enabled(false, egui::RadioButton::new(false, "Portrait"))
-                    .on_disabled_hover_text("Sheets are landscape in the layout model");
+                ui.radio_value(&mut s.portrait, false, "Landscape");
+                ui.radio_value(&mut s.portrait, true, "Portrait");
             });
             row(ui, "Margins", |ui| inches(ui, &mut s.margins_in));
             section(ui, "Page");
@@ -713,6 +728,7 @@ mod tests {
             page_background: true,
             edge_line_weight: 18,
             sheet_index: false,
+            portrait: false,
         });
         assert!(d.error().is_none());
         d.setup.margins_in = 5.0;
@@ -747,6 +763,7 @@ mod tests {
             page_background: true,
             edge_line_weight: 18,
             sheet_index: true,
+            portrait: true,
         });
         dialogs.push(Box::new(move |c| {
             ps.show(c);

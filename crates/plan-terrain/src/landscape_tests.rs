@@ -310,7 +310,7 @@ fn grass_and_beds_lie_on_the_ground_and_water_sits_below_grade() {
     let rim = elevation_at(&surface, pt(200.0, 200.0)).unwrap();
     let water = landscape_meshes(&t, Some(&surface))
         .into_iter()
-        .find(|m| m.material == plan_3d::Material::WindowGlass)
+        .find(|m| m.material == plan_3d::Material::Water)
         .unwrap();
     let level = f64::from(water.vertices[0].position[1]);
     assert!(
@@ -443,4 +443,144 @@ fn old_files_without_the_new_fields_still_load() {
     ));
     let back: Terrain = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
     assert_eq!(back, t);
+}
+
+fn ring_200() -> Vec<Point> {
+    vec![
+        pt(200.0, 200.0),
+        pt(500.0, 200.0),
+        pt(500.0, 400.0),
+        pt(200.0, 400.0),
+    ]
+}
+
+#[test]
+fn landscape_objects_use_the_landscape_materials() {
+    use plan_3d::Material;
+    let surface = build_terrain(&sloped());
+    let mut t = Terrain::default();
+    for kind in [
+        LandscapeKind::GardenBed,
+        LandscapeKind::GrassRegion,
+        LandscapeKind::WaterFeature,
+    ] {
+        let mut l = Landscape::new(kind, ShapeKind::Polyline, ring_200());
+        l.edging = false;
+        t.landscape.push(l);
+    }
+    let mut plants = Landscape::new(
+        LandscapeKind::Plants,
+        ShapeKind::Polyline,
+        vec![pt(100.0, 100.0), pt(400.0, 100.0)],
+    );
+    plants.height = 40.0;
+    plants.size = 30.0;
+    t.landscape.push(plants);
+    let of = |t: &Terrain, i: usize| -> Vec<Material> {
+        landscape_meshes(t, Some(&surface))
+            .iter()
+            .filter(|m| m.object_id == Some(terrain_object_id(TerrainPart::Landscape, i)))
+            .map(|m| m.material)
+            .collect()
+    };
+    assert!(
+        of(&t, 0).iter().all(|m| *m == Material::Mulch),
+        "{:?}",
+        of(&t, 0)
+    );
+    assert_eq!(of(&t, 1), vec![Material::Grass]);
+    assert!(of(&t, 2).contains(&Material::Water), "{:?}", of(&t, 2));
+    assert_eq!(of(&t, 3), vec![Material::Foliage]);
+    // The ground itself is grass; named materials follow the name.
+    assert_eq!(terrain_mesh(&surface).material, Material::Grass);
+    t.landscape[0].material = "Gravel".into();
+    assert_eq!(of(&t, 0), vec![Material::Gravel]);
+    t.landscape[0].material = "Water".into();
+    assert_eq!(of(&t, 0), vec![Material::Water]);
+}
+
+#[test]
+fn roads_are_asphalt_and_sidewalks_concrete() {
+    use plan_3d::Material;
+    let surface = build_terrain(&sloped());
+    let mut t = Terrain::default();
+    for kind in [RoadKind::Road, RoadKind::Driveway, RoadKind::Sidewalk] {
+        t.roads.push(RoadStrip {
+            kind,
+            centerline: vec![pt(100.0, 100.0), pt(900.0, 100.0)],
+            width: 96.0,
+            curb: kind == RoadKind::Road,
+        });
+    }
+    let meshes = road_meshes(&t, &surface);
+    let of = |i: usize| -> Vec<Material> {
+        meshes
+            .iter()
+            .filter(|m| m.object_id == Some(terrain_object_id(TerrainPart::Road, i)))
+            .map(|m| m.material)
+            .collect()
+    };
+    assert_eq!(
+        of(0),
+        vec![Material::Asphalt, Material::Concrete],
+        "road + curb"
+    );
+    assert_eq!(of(1), vec![Material::Asphalt]);
+    assert_eq!(of(2), vec![Material::Concrete]);
+}
+
+#[test]
+fn terrain_meshes_carry_decodable_object_ids() {
+    let id = terrain_object_id(TerrainPart::Wall, 7);
+    assert_eq!(terrain_object_of(id), Some((TerrainPart::Wall, 7)));
+    for part in [
+        TerrainPart::Feature,
+        TerrainPart::Wall,
+        TerrainPart::Landscape,
+        TerrainPart::Road,
+    ] {
+        assert_eq!(
+            terrain_object_of(terrain_object_id(part, 12345)),
+            Some((part, 12345))
+        );
+    }
+    assert_eq!(terrain_object_of(42), None, "plan ids are not terrain ids");
+
+    let mut t = Terrain::default();
+    t.walls.push(TerrainWall::new(
+        WallKind::Wall,
+        vec![pt(0.0, 0.0), pt(100.0, 0.0)],
+        false,
+    ));
+    t.walls.push(TerrainWall::new(
+        WallKind::Curb,
+        vec![pt(0.0, 50.0), pt(100.0, 50.0)],
+        false,
+    ));
+    let ids: Vec<_> = wall_meshes(&t, None)
+        .iter()
+        .map(|m| m.object_id.and_then(terrain_object_of))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![Some((TerrainPart::Wall, 0)), Some((TerrainPart::Wall, 1))]
+    );
+    // A hole before a feature does not shift the feature's index.
+    t.features.push(Feature {
+        kind: FeatureKind::Hole,
+        polygon: ring_200(),
+        ..Feature::default()
+    });
+    t.features.push(Feature {
+        kind: FeatureKind::Rectangular,
+        polygon: ring_200(),
+        ..Feature::default()
+    });
+    let feature_ids: Vec<_> = landscape_meshes(&t, None)
+        .iter()
+        .filter_map(|m| m.object_id.and_then(terrain_object_of))
+        .filter(|(p, _)| *p == TerrainPart::Feature)
+        .collect();
+    assert!(!feature_ids.is_empty());
+    assert!(feature_ids.iter().all(|(_, i)| *i == 1), "{feature_ids:?}");
 }

@@ -60,7 +60,8 @@ or a hip next to a gable, on either side of a short jog) also falls back to the 
 
 Each flyout entry starts the Roof tool in its mode. The tool also draws a small **palette** of mode
 buttons in the top-left corner of the canvas (including Delete Roof Planes and Rebuild Roofs), so you
-can change mode without going back to the flyout.
+can change mode without going back to the flyout. Since Round 8 (QA-07) the active tool names itself after the mode ("Roof Plane",
+"Build Roof", "Auto Dormer" ... as the flyout entry reads), so anything that shows the tool's name says which mode you are in; before that all twelve answered "Roof".
 
 | Flyout entry | Hotkey | Mode | Today |
 |---|---|---|---|

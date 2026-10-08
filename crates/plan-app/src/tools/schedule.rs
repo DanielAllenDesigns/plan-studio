@@ -21,7 +21,7 @@ use plan_core::schedules::{Schedule, ScheduleKind};
 use plan_core::Id;
 
 /// The kinds the Schedule flyout lists, in order, then the General one.
-pub const FLYOUT_KINDS: [ScheduleKind; 10] = [
+pub const FLYOUT_KINDS: [ScheduleKind; 13] = [
     ScheduleKind::Door,
     ScheduleKind::Window,
     ScheduleKind::Room,
@@ -31,6 +31,9 @@ pub const FLYOUT_KINDS: [ScheduleKind; 10] = [
     ScheduleKind::Plant,
     ScheduleKind::Fixture,
     ScheduleKind::Furniture,
+    ScheduleKind::Stair,
+    ScheduleKind::RoomFinish,
+    ScheduleKind::Note,
     ScheduleKind::General,
 ];
 
@@ -354,6 +357,6 @@ mod tests {
         for k in FLYOUT_KINDS {
             assert!(!entry_name(k).is_empty());
         }
-        assert_eq!(FLYOUT_KINDS.len(), 10);
+        assert_eq!(FLYOUT_KINDS.len(), 13);
     }
 }

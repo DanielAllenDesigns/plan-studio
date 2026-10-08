@@ -10,11 +10,11 @@
 use crate::defaults::RoomTypeDef;
 use crate::geometry::{
     dist_to_segment, point_in_polygon, polygon_area, polygon_centroid, project_on_segment,
-    segment_intersection, Point,
+    segment_intersection, BoxGrid, Point,
 };
 use crate::model::{Project, Wall, WallKind};
 use crate::units::sq_in_to_sq_ft;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A detected room (R-1..R-18).
 ///
@@ -76,16 +76,25 @@ pub fn detect_rooms(walls: &[Wall], tol: f64) -> Vec<Room> {
 /// Detect rooms and compute their interior-surface polygons (R-2): each
 /// centerline polygon edge is offset inward by half the thickness of the wall
 /// that owns it and adjacent offset edges are intersected. Walls whose flags
-/// say they do not define rooms are skipped ([`crate::walls::WallFlags::defines_rooms`],
+/// say they do not define rooms, or that stand raised above the floor, are skipped ([`crate::walls::Wall::defines_rooms`],
 /// R-3..R-5). Curved walls bound rooms as faceted arcs (R-12).
 pub fn detect_rooms_inner(walls: &[Wall], tol: f64) -> Vec<Room> {
+    detect_rooms_with(walls, tol, true)
+}
+
+/// [`detect_rooms_inner`], with the position index switched on or off (off is
+/// the plain scan the index must agree with).
+fn detect_rooms_with(walls: &[Wall], tol: f64, indexed: bool) -> Vec<Room> {
     let defining: Vec<Wall> = expand_curves(walls)
         .into_iter()
-        .filter(|w| w.flags.defines_rooms())
+        .filter(|w| w.defines_rooms())
         .collect();
-    let mut rooms = detect_centerline_rooms(&defining, tol);
+    let mut rooms = detect_centerline_rooms(&defining, tol, indexed);
+    // Each room edge looks for its owning wall among the walls near it.
+    let reach = tol.max(0.5);
+    let near = WallsNear::new(&defining, reach, indexed);
     for r in rooms.iter_mut() {
-        fill_surface_areas(r, &defining, tol);
+        fill_surface_areas(r, &defining, &near, tol);
     }
     rooms
 }
@@ -145,13 +154,74 @@ fn offset_polygon(poly: &[Point], d: &[f64]) -> Option<Vec<Point>> {
     (area.is_finite() && area > 0.0).then_some(out)
 }
 
+/// Walls found by position: a broad-phase over the walls' bounding boxes
+/// (small lists are scanned instead). Candidates come back in wall order.
+struct WallsNear {
+    grid: Option<BoxGrid>,
+    len: usize,
+    reach: f64,
+}
+
+/// Below this many walls a scan beats building a grid.
+const GRID_MIN_WALLS: usize = 24;
+
+impl WallsNear {
+    /// `reach` is how far from a wall's own box a query point still counts.
+    fn new(walls: &[Wall], reach: f64, indexed: bool) -> Self {
+        let grid = (indexed && walls.len() >= GRID_MIN_WALLS).then(|| {
+            let boxes: Vec<(Point, Point)> = walls
+                .iter()
+                .map(|w| {
+                    (
+                        Point::new(
+                            w.start.x.min(w.end.x) - reach,
+                            w.start.y.min(w.end.y) - reach,
+                        ),
+                        Point::new(
+                            w.start.x.max(w.end.x) + reach,
+                            w.start.y.max(w.end.y) + reach,
+                        ),
+                    )
+                })
+                .collect();
+            BoxGrid::new(&boxes)
+        });
+        WallsNear {
+            grid,
+            len: walls.len(),
+            reach,
+        }
+    }
+
+    /// The walls that may lie within `reach` of `p`, ascending.
+    fn around(&self, p: Point, out: &mut Vec<usize>) {
+        match &self.grid {
+            Some(g) => g.query(p, p, out),
+            None => {
+                out.clear();
+                out.extend(0..self.len);
+            }
+        }
+    }
+}
+
 /// The wall that owns the polygon edge `a -> b`: nearest parallel wall to the
 /// edge midpoint (the thicker one on ties).
-fn edge_owner(walls: &[Wall], a: Point, b: Point, tol: f64) -> Option<&Wall> {
+fn edge_owner<'a>(
+    walls: &'a [Wall],
+    near: &WallsNear,
+    a: Point,
+    b: Point,
+    tol: f64,
+) -> Option<&'a Wall> {
     let mid = Point::lerp(a, b, 0.5);
     let dir = b.sub(a).normalized();
     let mut best: Option<(f64, &Wall)> = None;
-    for w in walls {
+    let mut candidates = Vec::new();
+    near.around(mid, &mut candidates);
+    debug_assert!(near.reach >= tol.max(0.5));
+    for &i in &candidates {
+        let w = &walls[i];
         if w.length() <= tol || w.direction().cross(dir).abs() > 1e-3 {
             continue;
         }
@@ -172,10 +242,10 @@ fn edge_owner(walls: &[Wall], a: Point, b: Point, tol: f64) -> Option<&Wall> {
     best.map(|(_, w)| w)
 }
 
-fn fill_surface_areas(room: &mut Room, walls: &[Wall], tol: f64) {
+fn fill_surface_areas(room: &mut Room, walls: &[Wall], near: &WallsNear, tol: f64) {
     let n = room.polygon.len();
     let owners: Vec<Option<&Wall>> = (0..n)
-        .map(|i| edge_owner(walls, room.polygon[i], room.polygon[(i + 1) % n], tol))
+        .map(|i| edge_owner(walls, near, room.polygon[i], room.polygon[(i + 1) % n], tol))
         .collect();
     let inner_d: Vec<f64> = owners
         .iter()
@@ -237,22 +307,24 @@ impl Project {
     }
 }
 
-fn detect_centerline_rooms(walls: &[Wall], tol: f64) -> Vec<Room> {
-    let segs = split_segments(walls, tol);
+fn detect_centerline_rooms(walls: &[Wall], tol: f64, indexed: bool) -> Vec<Room> {
+    let segs = split_segments(walls, tol, indexed);
 
-    let mut nodes: Vec<Point> = Vec::new();
+    let mut nodes = NodeIndex::new(tol, indexed);
     let mut edges: Vec<(usize, usize)> = Vec::new();
+    let mut seen_edges: HashSet<(usize, usize)> = HashSet::new();
     for (a, b) in segs {
-        let ia = node_index(&mut nodes, a, tol);
-        let ib = node_index(&mut nodes, b, tol);
+        let ia = nodes.index(a);
+        let ib = nodes.index(b);
         if ia == ib {
             continue;
         }
         let key = (ia.min(ib), ia.max(ib));
-        if !edges.contains(&key) {
+        if seen_edges.insert(key) {
             edges.push(key);
         }
     }
+    let nodes = nodes.points;
 
     // Adjacency sorted by outgoing angle, ascending (counter-clockwise order).
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
@@ -324,17 +396,71 @@ fn detect_centerline_rooms(walls: &[Wall], tol: f64) -> Vec<Room> {
     rooms
 }
 
-fn node_index(nodes: &mut Vec<Point>, p: Point, tol: f64) -> usize {
-    if let Some(i) = nodes.iter().position(|n| n.dist(p) <= tol) {
-        return i;
+/// The graph's nodes: points merged within `tol`, found through a hash of
+/// `tol`-sized cells instead of a scan. `index` answers with the lowest node
+/// index within `tol`, the same as scanning the list from the start.
+struct NodeIndex {
+    points: Vec<Point>,
+    tol: f64,
+    /// Off: every lookup scans the list (what the hash must agree with).
+    hashed: bool,
+    cells: HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl NodeIndex {
+    fn new(tol: f64, hashed: bool) -> Self {
+        NodeIndex {
+            points: Vec::new(),
+            tol,
+            hashed,
+            cells: HashMap::new(),
+        }
     }
-    nodes.push(p);
-    nodes.len() - 1
+
+    fn cell(&self, p: Point) -> (i64, i64) {
+        (
+            (p.x / self.tol).floor() as i64,
+            (p.y / self.tol).floor() as i64,
+        )
+    }
+
+    fn index(&mut self, p: Point) -> usize {
+        if self.hashed && self.tol > 0.0 && self.tol.is_finite() {
+            let (cx, cy) = self.cell(p);
+            let mut best: Option<usize> = None;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    if let Some(list) = self.cells.get(&(cx + dx, cy + dy)) {
+                        for &i in list {
+                            if best.is_none_or(|b| i < b) && self.points[i].dist(p) <= self.tol {
+                                best = Some(i);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(i) = best {
+                return i;
+            }
+            self.points.push(p);
+            let i = self.points.len() - 1;
+            self.cells.entry((cx, cy)).or_default().push(i);
+            return i;
+        }
+        // A zero or odd tolerance: the plain scan.
+        if let Some(i) = self.points.iter().position(|n| n.dist(p) <= self.tol) {
+            return i;
+        }
+        self.points.push(p);
+        self.points.len() - 1
+    }
 }
 
 /// Break every wall centerline at the points where other walls end on it
 /// (T-junctions) or cross it, so the graph is planar.
-fn split_segments(walls: &[Wall], tol: f64) -> Vec<(Point, Point)> {
+fn split_segments(walls: &[Wall], tol: f64, indexed: bool) -> Vec<(Point, Point)> {
+    let near = WallsNear::new(walls, tol, indexed);
+    let mut candidates = Vec::new();
     let mut out = Vec::new();
     for (i, w) in walls.iter().enumerate() {
         let (a, b) = (w.start, w.end);
@@ -343,10 +469,24 @@ fn split_segments(walls: &[Wall], tol: f64) -> Vec<(Point, Point)> {
             continue;
         }
         let mut ts = vec![0.0, 1.0];
-        for (j, o) in walls.iter().enumerate() {
+        // Only walls whose box meets this wall's box (grown by `tol`) can end
+        // on it or cross it.
+        match &near.grid {
+            Some(g) => g.query(
+                Point::new(a.x.min(b.x) - tol, a.y.min(b.y) - tol),
+                Point::new(a.x.max(b.x) + tol, a.y.max(b.y) + tol),
+                &mut candidates,
+            ),
+            None => {
+                candidates.clear();
+                candidates.extend(0..walls.len());
+            }
+        }
+        for &j in &candidates {
             if i == j {
                 continue;
             }
+            let o = &walls[j];
             for p in [o.start, o.end] {
                 let (t, q) = project_on_segment(p, a, b);
                 if q.dist(p) <= tol && t > 0.0 && t < 1.0 {
@@ -558,5 +698,101 @@ mod tests {
         p.floors[0].room_names[0].include_in_living_area = Some(true);
         let over = p.living_area_sq_ft(0, &rooms, &d.rooms.room_types);
         assert!((over - 2.0 * one).abs() < 1e-6);
+    }
+
+    /// A messy grid: gaps, short walls, diagonals, Ts, mixed thickness.
+    fn messy_plan(n: usize, seed: u64) -> Vec<Wall> {
+        let mut s = seed;
+        let mut rnd = move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) as f64) / ((1u64 << 31) as f64)
+        };
+        let mut walls = Vec::new();
+        let mut id = 0;
+        let mut add = |walls: &mut Vec<Wall>, a: (f64, f64), b: (f64, f64), t: f64, k| {
+            id += 1;
+            walls.push(wall_t(id, a.0, a.1, b.0, b.1, t, k));
+        };
+        for r in 0..=n {
+            for c in 0..n {
+                if rnd() < 0.15 {
+                    continue;
+                }
+                let (x, y) = (c as f64 * 120.0, r as f64 * 120.0);
+                let len = if rnd() < 0.1 { 60.0 } else { 120.0 };
+                let k = if r == 0 || r == n {
+                    WallKind::Exterior
+                } else {
+                    WallKind::Interior
+                };
+                add(
+                    &mut walls,
+                    (x, y),
+                    (x + len, y),
+                    [4.5, 6.0, 7.625][(r + c) % 3],
+                    k,
+                );
+            }
+        }
+        for c in 0..=n {
+            for r in 0..n {
+                if rnd() < 0.15 {
+                    continue;
+                }
+                let (x, y) = (c as f64 * 120.0, r as f64 * 120.0);
+                add(&mut walls, (x, y), (x, y + 120.0), 4.5, WallKind::Interior);
+            }
+        }
+        for _ in 0..n {
+            let x = (rnd() * n as f64).floor() * 120.0;
+            let y = (rnd() * n as f64).floor() * 120.0;
+            add(
+                &mut walls,
+                (x, y),
+                (x + 120.0, y + 120.0),
+                4.5,
+                WallKind::Interior,
+            );
+            add(
+                &mut walls,
+                (x + 60.0, y),
+                (x + 60.0, y + 120.0),
+                4.5,
+                WallKind::Interior,
+            );
+        }
+        walls
+    }
+
+    #[test]
+    fn the_position_index_gives_the_rooms_a_scan_gives() {
+        for (n, seed) in [(5, 7), (9, 8), (13, 9)] {
+            let walls = messy_plan(n, seed);
+            assert!(walls.len() > GRID_MIN_WALLS, "{} walls", walls.len());
+            let fast = format!("{:?}", detect_rooms_with(&walls, 0.5, true));
+            let scan = format!("{:?}", detect_rooms_with(&walls, 0.5, false));
+            assert_eq!(fast, scan, "plan {n}");
+            assert!(fast.len() > 100);
+        }
+    }
+
+    #[test]
+    fn node_index_returns_the_first_node_within_tolerance() {
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(0.3, 0.0),
+            Point::new(0.6, 0.0),
+            Point::new(-0.4, 0.4),
+            Point::new(10.0, 10.0),
+            Point::new(10.2, 10.1),
+            Point::new(0.5, 0.0),
+        ];
+        let (mut a, mut b) = (NodeIndex::new(0.5, true), NodeIndex::new(0.5, false));
+        for p in pts {
+            assert_eq!(a.index(p), b.index(p), "{p:?}");
+        }
+        assert_eq!(a.points, b.points);
     }
 }

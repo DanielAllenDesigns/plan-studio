@@ -46,6 +46,12 @@ pub enum ScheduleKind {
     Fixture,
     Furniture,
     Plant,
+    /// Stairs and ramps (landings are not listed).
+    Stair,
+    /// Rooms with their floor, wall, base, crown and ceiling finishes.
+    RoomFinish,
+    /// The numbered notes of the plan (`Note 3: ...`, `E 1: ...`).
+    Note,
     /// A custom schedule: every placed object, narrowed by the filter text.
     General,
 }
@@ -143,6 +149,35 @@ const SYMBOL_FIELDS: &[Field] = &[
     f("elevation", "Elevation", false),
     f("floor", "Floor", false),
 ];
+const STAIR_FIELDS: &[Field] = &[
+    f("mark", "Mark", true),
+    f("type", "Type", true),
+    f("width", "Width", true),
+    f("rise", "Total rise", true),
+    f("risers", "Risers", true),
+    f("riser", "Riser height", true),
+    f("tread", "Tread depth", true),
+    f("run", "Total run", true),
+    f("floor", "Floor", false),
+];
+const ROOM_FINISH_FIELDS: &[Field] = &[
+    f("mark", "Number", true),
+    f("name", "Name", true),
+    f("floor_finish", "Floor Finish", true),
+    f("base", "Base", true),
+    f("wall_finish", "Wall Finish", true),
+    f("crown", "Crown", false),
+    f("ceiling_finish", "Ceiling Finish", true),
+    f("area", "Area sq ft", false),
+    f("ceiling_height", "Ceiling height", false),
+    f("floor", "Floor", false),
+];
+const NOTE_FIELDS: &[Field] = &[
+    f("mark", "No.", true),
+    f("type", "Type", true),
+    f("note", "Note", true),
+    f("floor", "Floor", false),
+];
 const GENERAL_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
     f("category", "Category", true),
@@ -152,7 +187,7 @@ const GENERAL_FIELDS: &[Field] = &[
 ];
 
 impl ScheduleKind {
-    pub const ALL: [ScheduleKind; 11] = [
+    pub const ALL: [ScheduleKind; 14] = [
         ScheduleKind::Door,
         ScheduleKind::Window,
         ScheduleKind::Room,
@@ -163,6 +198,9 @@ impl ScheduleKind {
         ScheduleKind::Fixture,
         ScheduleKind::Furniture,
         ScheduleKind::Plant,
+        ScheduleKind::Stair,
+        ScheduleKind::RoomFinish,
+        ScheduleKind::Note,
         ScheduleKind::General,
     ];
 
@@ -179,6 +217,9 @@ impl ScheduleKind {
             ScheduleKind::Fixture => "Fixture Schedule",
             ScheduleKind::Furniture => "Furniture Schedule",
             ScheduleKind::Plant => "Plant Schedule",
+            ScheduleKind::Stair => "Stair Schedule",
+            ScheduleKind::RoomFinish => "Room Finish Schedule",
+            ScheduleKind::Note => "Note Schedule",
             ScheduleKind::General => "Schedule",
         }
     }
@@ -204,6 +245,9 @@ impl ScheduleKind {
             ScheduleKind::Fixture => "F-",
             ScheduleKind::Furniture => "FU-",
             ScheduleKind::Plant => "P-",
+            ScheduleKind::Stair => "S",
+            ScheduleKind::RoomFinish => "RF",
+            ScheduleKind::Note => "N",
             ScheduleKind::General => "G-",
         }
     }
@@ -219,6 +263,9 @@ impl ScheduleKind {
             ScheduleKind::Electrical => ELECTRICAL_FIELDS,
             ScheduleKind::Framing => FRAMING_FIELDS,
             ScheduleKind::Fixture | ScheduleKind::Furniture | ScheduleKind::Plant => SYMBOL_FIELDS,
+            ScheduleKind::Stair => STAIR_FIELDS,
+            ScheduleKind::RoomFinish => ROOM_FINISH_FIELDS,
+            ScheduleKind::Note => NOTE_FIELDS,
             ScheduleKind::General => GENERAL_FIELDS,
         }
     }
@@ -323,6 +370,12 @@ pub struct Schedule {
     /// Keeps only rows with a cell containing this text (any case). A
     /// `General` schedule lists everything, so this is what narrows it.
     pub filter: String,
+    /// Field id rows are grouped by: rows with the same value (and the same
+    /// values in the other visible columns) are counted together in one
+    /// line. Empty lists every object on its own line.
+    pub group_by: String,
+    /// Adds a last line with the number of objects listed.
+    pub totals: bool,
 }
 
 impl Default for Schedule {
@@ -349,6 +402,8 @@ impl Schedule {
             label_prefix: kind.default_prefix().to_string(),
             layer: SCHEDULE_LAYER.to_string(),
             filter: String::new(),
+            group_by: String::new(),
+            totals: false,
         }
     }
 
@@ -411,6 +466,7 @@ impl Schedule {
         self.kind = kind;
         self.columns = kind.default_columns();
         self.sort = SortSpec::default();
+        self.group_by.clear();
         if was_default_prefix {
             self.label_prefix = kind.default_prefix().to_string();
         }

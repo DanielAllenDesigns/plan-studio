@@ -1002,13 +1002,26 @@ pub fn wall_signature(floor: &Floor) -> u64 {
     h
 }
 
+/// The exterior walls that shape the roof: knee walls (RF-23) stand under a
+/// roof plane and make none of their own, unless leaving them out would
+/// leave nothing to build on.
 fn exterior_walls(floor: &Floor) -> Vec<Wall> {
-    floor
+    let all: Vec<Wall> = floor
         .walls
         .iter()
         .filter(|w| w.kind == WallKind::Exterior)
         .cloned()
-        .collect()
+        .collect();
+    let roofing: Vec<Wall> = all
+        .iter()
+        .filter(|w| w.roof.kind != RoofWallKind::KneeWall)
+        .cloned()
+        .collect();
+    if roofing.len() >= 3 && footprint_from_walls(&roofing, TOL).is_some() {
+        roofing
+    } else {
+        all
+    }
 }
 
 /// The floor a roof is built over: the highest with exterior walls, or the one
@@ -1035,6 +1048,8 @@ struct EdgePlan {
     face_overhang: f64,
     /// A wall on the edge has Auto Roof Return on (RF-27).
     auto_return: bool,
+    /// Length of those returns, inches.
+    return_length: f64,
 }
 
 /// Indices of the walls lying along the footprint edge `a -> b`.
@@ -1052,7 +1067,9 @@ fn walls_on_edge(walls: &[Wall], a: Point, b: Point) -> Vec<usize> {
         .collect()
 }
 
-fn edge_plans(walls: &[Wall], fp: &[Point], s: &RoofSettings) -> Vec<EdgePlan> {
+/// `eave_height` is the eave's height above the floor, which turns a wall's
+/// "Starts at Height" (above the floor) into a rise over the eave.
+fn edge_plans(walls: &[Wall], fp: &[Point], s: &RoofSettings, eave_height: f64) -> Vec<EdgePlan> {
     let n = fp.len();
     (0..n)
         .map(|i| {
@@ -1080,11 +1097,32 @@ fn edge_plans(walls: &[Wall], fp: &[Point], s: &RoofSettings) -> Vec<EdgePlan> {
                 full_gable_wall: kind == RoofWallKind::FullGable,
                 high_shed_gable: kind == RoofWallKind::HighShedGable,
                 // The plane keeps sloping below its eave (RF-24).
-                extend_slope_downward: (kind == RoofWallKind::ExtendSlopeDownward)
-                    .then_some(EXTEND_SLOPE_DROP),
+                extend_slope_downward: (kind == RoofWallKind::ExtendSlopeDownward).then_some(
+                    primary
+                        .and_then(|w| w.roof.extend_drop)
+                        .filter(|d| *d > 0.0)
+                        .unwrap_or(EXTEND_SLOPE_DROP),
+                ),
+                dutch_gable: kind == RoofWallKind::DutchGable,
                 ..EdgeRoofSpec::default()
             };
+            // The second pitch and the height it starts at (RF-25); a
+            // Dutch gable starts at the same height when one is given.
+            if let Some((rise, start)) = primary.and_then(|w| w.roof.upper_pitch) {
+                let over_eave = start - eave_height;
+                if over_eave > 0.0 {
+                    spec.break_rise = Some(over_eave);
+                    if kind != RoofWallKind::DutchGable && rise > 0.0 {
+                        spec.upper_pitch = Some(rise);
+                    }
+                }
+            }
             let auto_return = on.iter().any(|&k| walls[k].roof.auto_roof_return);
+            let return_length = on
+                .iter()
+                .filter_map(|&k| walls[k].roof.return_length)
+                .find(|l| *l > 0.0)
+                .unwrap_or(AUTO_RETURN_LENGTH);
             let mut face_overhang = over;
             // The Roof Plane Specification's overrides win over the wall.
             if let Some(o) = s.override_of((a, b)) {
@@ -1104,6 +1142,7 @@ fn edge_plans(walls: &[Wall], fp: &[Point], s: &RoofSettings) -> Vec<EdgePlan> {
                 spec,
                 face_overhang,
                 auto_return,
+                return_length,
             }
         })
         .collect()
@@ -1185,9 +1224,9 @@ fn make_auto_planes(
     let walls = exterior_walls(floor);
     let fp = footprint_from_walls(&walls, TOL)
         .ok_or_else(|| "The exterior walls do not enclose an area".to_string())?;
-    let plans = edge_plans(&walls, &fp, s);
-    let specs: Vec<EdgeRoofSpec> = plans.iter().map(|e| e.spec).collect();
     let top = walls.iter().map(|w| w.height).fold(0.0, f64::max);
+    let plans = edge_plans(&walls, &fp, s, top + s.raise_off_plate);
+    let specs: Vec<EdgeRoofSpec> = plans.iter().map(|e| e.spec).collect();
     let baseline = floor.elevation + top + s.raise_off_plate;
     let roof = build_roof_with_specs(&fp, &specs, baseline);
     let n = fp.len();
@@ -1218,21 +1257,22 @@ fn make_auto_planes(
 
 /// The roof returns of walls with Auto Roof Return (RF-27): at each gable end
 /// the planes of the two neighbouring edges wrap the corner with a full
-/// return of [`AUTO_RETURN_LENGTH`]. Returns `(source edge, return plane)`.
+/// return of the wall's Auto Roof Return length ([`AUTO_RETURN_LENGTH`] unless
+/// the wall gives one). Returns `(source edge, return plane)`.
 /// A return belongs to the roof it was made with: it is an automatic plane
 /// without a `source` edge.
 fn auto_returns(planes: &[RoofPlane], plans: &[EdgePlan]) -> Vec<(usize, RoofPlane)> {
     let n = plans.len();
-    let spec = ReturnSpec {
-        kind: ReturnKind::Full,
-        length: AUTO_RETURN_LENGTH,
-    };
     let mut out = Vec::new();
     for (i, plan) in plans.iter().enumerate() {
         let gable = plan.spec.gable || plan.spec.full_gable_wall;
         if !plan.auto_return || !gable {
             continue;
         }
+        let spec = ReturnSpec {
+            kind: ReturnKind::Full,
+            length: plan.return_length,
+        };
         // The plane before the gable edge ends at its corner, the plane
         // after it starts there.
         for (src, at_start) in [((i + n - 1) % n, false), ((i + 1) % n, true)] {
@@ -2904,5 +2944,135 @@ mod tests {
         p.floors[0].walls[1].roof.auto_roof_return = false;
         rebuild(&mut p, 0, s, false).unwrap();
         assert_eq!(load(&p.floors[0]).planes.len(), 2);
+    }
+
+    /// Highest roof vertex of floor 0, inches.
+    fn roof_peak(p: &Project) -> f64 {
+        load(&p.floors[0])
+            .planes
+            .iter()
+            .flat_map(|r| r.polygon3d.iter().map(|v| v[1]))
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    fn gable_house() -> Project {
+        let mut p = rect_project(480.0, 288.0);
+        // Walls 1 and 3 (east and west) are the gable ends.
+        for i in [1, 3] {
+            p.floors[0].walls[i].roof.kind = RoofWallKind::FullGable;
+        }
+        p
+    }
+
+    #[test]
+    fn upper_pitch_directives_make_a_gambrel() {
+        let d = plan_defaults::embedded();
+        let mut s = RoofSettings::from_defaults(&d);
+        s.overhang = 0.0;
+        let mut p = gable_house();
+        for i in [0, 2] {
+            let w = &mut p.floors[0].walls[i];
+            w.roof.overhang = Some(0.0);
+            w.roof.pitch_in_12 = Some(6.0);
+        }
+        rebuild(&mut p, 0, s.clone(), false).unwrap();
+        let plain = roof_peak(&p);
+        assert_eq!(load(&p.floors[0]).planes.len(), 2);
+        // Steeper above 36" over the eave (the wall is 109" high).
+        for i in [0, 2] {
+            p.floors[0].walls[i].roof.upper_pitch = Some((24.0, 109.0 + 36.0));
+        }
+        rebuild(&mut p, 0, s, false).unwrap();
+        let set = load(&p.floors[0]);
+        assert_eq!(set.planes.len(), 4, "a lower and an upper plane per side");
+        assert!(roof_peak(&p) > plain + 50.0, "{} vs {plain}", roof_peak(&p));
+        assert_eq!(set.planes.iter().filter(|r| r.pitch == 24.0).count(), 2);
+    }
+
+    #[test]
+    fn dutch_gable_walls_cut_the_end_hips_short() {
+        let d = plan_defaults::embedded();
+        let mut s = RoofSettings::from_defaults(&d);
+        s.overhang = 0.0;
+        let mut p = rect_project(480.0, 288.0);
+        for w in &mut p.floors[0].walls {
+            w.roof.overhang = Some(0.0);
+        }
+        rebuild(&mut p, 0, s.clone(), false).unwrap();
+        let hip_peak = roof_peak(&p);
+        let ridge_x = |p: &Project| {
+            let hi = roof_peak(p);
+            let xs: Vec<f64> = load(&p.floors[0])
+                .planes
+                .iter()
+                .flat_map(|r| r.polygon3d.iter())
+                .filter(|v| (v[1] - hi).abs() < 1e-6)
+                .map(|v| v[0])
+                .collect();
+            xs.iter().cloned().fold(f64::MIN, f64::max)
+                - xs.iter().cloned().fold(f64::MAX, f64::min)
+        };
+        let hip_ridge = ridge_x(&p);
+        for i in [1, 3] {
+            p.floors[0].walls[i].roof.kind = RoofWallKind::DutchGable;
+        }
+        rebuild(&mut p, 0, s, false).unwrap();
+        assert!((roof_peak(&p) - hip_peak).abs() < 1e-6);
+        assert!(
+            ridge_x(&p) > hip_ridge + 100.0,
+            "{} vs {hip_ridge}",
+            ridge_x(&p)
+        );
+    }
+
+    #[test]
+    fn a_walls_return_length_and_extend_drop_are_used() {
+        let d = plan_defaults::embedded();
+        let s = RoofSettings::from_defaults(&d);
+        let mut p = gable_house();
+        p.floors[0].walls[1].roof.auto_roof_return = true;
+        rebuild(&mut p, 0, s.clone(), false).unwrap();
+        let max_x = |p: &Project| {
+            load(&p.floors[0])
+                .planes
+                .iter()
+                .flat_map(|r| r.polygon3d.iter().map(|v| v[0]))
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let short = max_x(&p);
+        p.floors[0].walls[1].roof.return_length = Some(48.0);
+        rebuild(&mut p, 0, s.clone(), false).unwrap();
+        assert!((max_x(&p) - short - (48.0 - AUTO_RETURN_LENGTH)).abs() < 1e-6);
+
+        let mut p = rect_project(480.0, 288.0);
+        p.floors[0].walls[0].roof.kind = RoofWallKind::ExtendSlopeDownward;
+        p.floors[0].walls[0].roof.extend_drop = Some(40.0);
+        rebuild(&mut p, 0, s, false).unwrap();
+        let lowest = load(&p.floors[0])
+            .planes
+            .iter()
+            .flat_map(|r| r.polygon3d.iter().map(|v| v[1]))
+            .fold(f64::INFINITY, f64::min);
+        assert!((lowest - (109.0 - 40.0)).abs() < 1e-6, "{lowest}");
+    }
+
+    #[test]
+    fn knee_walls_make_no_roof_plane_of_their_own() {
+        let mut p = rect_project(480.0, 288.0);
+        // A knee wall crossing the house is not part of the outline anyway;
+        // a wall that would be part of it is.
+        let id = p.add_wall(
+            0,
+            Point::new(0.0, 100.0),
+            Point::new(480.0, 100.0),
+            6.0,
+            48.0,
+            WallKind::Exterior,
+        );
+        p.floors[0].wall_mut(id).unwrap().roof.kind = RoofWallKind::KneeWall;
+        assert_eq!(exterior_walls(&p.floors[0]).len(), 4);
+        // Without it the other walls would not close: keep every wall.
+        p.floors[0].walls[0].roof.kind = RoofWallKind::KneeWall;
+        assert_eq!(exterior_walls(&p.floors[0]).len(), 5);
     }
 }

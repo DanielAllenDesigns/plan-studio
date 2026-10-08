@@ -2305,6 +2305,7 @@ dependencies = [
  "plan-electrical",
  "plan-framing",
  "plan-library",
+ "plan-stairs",
  "serde",
  "serde_json",
 ]

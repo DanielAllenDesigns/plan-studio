@@ -7,6 +7,7 @@
 //! threaded), so the shell needs no fields for them. Everything that changes
 //! the plan goes through `cx.begin_change`, so each command is one undo step.
 
+use super::find_replace::FindReplaceDialog;
 use super::floor::FloorDialog;
 use super::project_info::{self, ProjectInfoDialog};
 use super::room::RoomDialog;
@@ -468,6 +469,18 @@ fn write_file(path: &Path, bytes: &[u8]) -> String {
 }
 
 fn table(ui: &mut egui::Ui, id: &str, columns: &[String], rows: &[Vec<String>]) {
+    let _ = clickable_table(ui, id, columns, rows, false);
+}
+
+/// The schedule table; when `clickable`, returns the row that was clicked.
+fn clickable_table(
+    ui: &mut egui::Ui,
+    id: &str,
+    columns: &[String],
+    rows: &[Vec<String>],
+    clickable: bool,
+) -> Option<usize> {
+    let mut clicked = None;
     egui::ScrollArea::both()
         .max_height(320.0)
         .auto_shrink([true, true])
@@ -477,26 +490,92 @@ fn table(ui: &mut egui::Ui, id: &str, columns: &[String], rows: &[Vec<String>]) 
                     ui.strong(c);
                 }
                 ui.end_row();
-                for r in rows {
+                for (i, r) in rows.iter().enumerate() {
                     for c in r {
-                        ui.label(c);
+                        if clickable {
+                            let resp = ui
+                                .add(egui::Label::new(c).sense(egui::Sense::click()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if resp.clicked() {
+                                clicked = Some(i);
+                            }
+                        } else {
+                            ui.label(c);
+                        }
                     }
                     ui.end_row();
                 }
             });
         });
+    clicked
+}
+
+/// Edit from schedule (L-27): selects the object a schedule row stands for
+/// and centres the plan on it, going to its floor first. Rows of several
+/// objects (grouped) select the first one. False when the row has no
+/// selectable object (a totals line, a plant of the terrain).
+pub fn select_row_target(
+    cx: &mut EditorContext,
+    cam: &mut Camera,
+    targets: &[plan_docs::schedule_kinds::RowTarget],
+) -> bool {
+    use plan_core::schedules::ScheduleKind as K;
+    let Some(t) = targets.first() else {
+        return false;
+    };
+    if t.floor >= cx.project.floors.len() {
+        return false;
+    }
+    if t.floor != cx.floor {
+        cx.floor = t.floor;
+        cx.reset_view_state();
+    }
+    cx.refresh();
+    cam.center = t.position;
+    let object = match t.kind {
+        K::Door | K::Window => Some(ObjectRef::Opening(t.id)),
+        K::Wall => Some(ObjectRef::Wall(t.id)),
+        K::Cabinet => Some(ObjectRef::Cabinet(t.id)),
+        K::Electrical => Some(ObjectRef::Device(t.id)),
+        K::Fixture | K::Furniture | K::Plant => Some(ObjectRef::Symbol(t.id)),
+        K::Note => Some(ObjectRef::Cad(t.id)),
+        K::Stair => Some(ObjectRef::Stair(t.id)),
+        K::Framing => Some(ObjectRef::Framing(t.id)),
+        K::Room | K::RoomFinish => match rooms_edit::room_index_at(cx, t.position) {
+            Some(i) => {
+                rooms_edit::select_room(cx, i);
+                cx.status = "Room selected".into();
+                return true;
+            }
+            None => None,
+        },
+        K::General => None,
+    };
+    match object {
+        Some(o) if t.id != 0 && o.exists_in(&cx.project, cx.floor) => {
+            rooms_edit::clear_room_selection();
+            cx.selection.set(o);
+            cx.status = "Selected from the schedule".into();
+            true
+        }
+        _ => {
+            cx.status = "That row has no object to select in the plan".into();
+            false
+        }
+    }
 }
 
 fn schedule_window(
     ctx: &egui::Context,
     cx: &mut EditorContext,
-    cam: &Camera,
+    cam: &mut Camera,
     kind: SchedKind,
 ) -> bool {
     let sched = schedule_for(cx, kind);
     let mut open = true;
     let mut export = false;
     let mut place = false;
+    let mut clicked = None;
     egui::Window::new(sched.title.clone())
         .id(egui::Id::new(("schedule", kind as u8)))
         .open(&mut open)
@@ -505,11 +584,12 @@ fn schedule_window(
                 + egui::vec2(30.0 * kind as u8 as f32, 20.0 * kind as u8 as f32),
         )
         .show(ctx, |ui| {
-            table(
+            clicked = clickable_table(
                 ui,
                 &format!("sched_{}", kind as u8),
                 &sched.columns,
                 &sched.rows,
+                true,
             );
             ui.separator();
             ui.horizontal(|ui| {
@@ -522,6 +602,18 @@ fn schedule_window(
                 export = ui.button("Export CSV\u{2026}").clicked();
             });
         });
+    if let Some(row) = clicked {
+        // The rows are the objects of the live schedule of the same kind, in
+        // the same order; select the one clicked.
+        let def = plan_core::schedules::Schedule::new(kind.plan_kind(), Point::ZERO);
+        let rooms = Some((cx.floor, cx.rooms.as_slice()));
+        let targets = plan_docs::schedule_kinds::row_targets(&cx.project, &def, cx.floor, rooms);
+        if targets.len() == sched.rows.len() {
+            if let Some(t) = targets.get(row) {
+                select_row_target(cx, cam, t);
+            }
+        }
+    }
     if place {
         let id = schedule_view::add(cx, kind.plan_kind(), cam.center);
         schedule_view::select(cx, id);
@@ -538,6 +630,7 @@ fn schedule_window(
 fn placed_window(
     ctx: &egui::Context,
     cx: &mut EditorContext,
+    cam: &mut Camera,
     floor: usize,
     id: plan_core::Id,
 ) -> bool {
@@ -548,20 +641,30 @@ fn placed_window(
     let sched = schedule_view::table_for(cx, def, floor);
     let mut open = true;
     let mut export = false;
+    let mut clicked = None;
     egui::Window::new(sched.title.clone())
         .id(egui::Id::new(("placed_schedule", id)))
         .open(&mut open)
         .default_pos(ctx.screen_rect().center())
         .show(ctx, |ui| {
-            table(
+            clicked = clickable_table(
                 ui,
                 &format!("placed_sched_{id}"),
                 &sched.columns,
                 &sched.rows,
+                true,
             );
+            ui.weak("Click a row to select the object in the plan.");
             ui.separator();
             export = ui.button("Export CSV\u{2026}").clicked();
         });
+    if let Some(row) = clicked {
+        let rooms = (floor == cx.floor).then_some((floor, cx.rooms.as_slice()));
+        let targets = plan_docs::schedule_kinds::row_targets(&cx.project, def, floor, rooms);
+        if let Some(t) = targets.get(row) {
+            select_row_target(cx, cam, t);
+        }
+    }
     if export {
         let name = format!("{}.csv", sched.title.replace(' ', "_"));
         cx.status = save_text(&name, "csv", &sched.to_csv());
@@ -643,6 +746,8 @@ struct Windows {
     schedules: Vec<SchedKind>,
     /// Tools > Project Information.
     project_info: Option<ProjectInfoDialog>,
+    /// Edit > Find/Replace Text.
+    find_replace: Option<FindReplaceDialog>,
     /// Schedule Specification of a placed schedule.
     sched_spec: Option<ScheduleSpecDialog>,
     /// A double-click asked for this schedule's specification `(floor, id)`.
@@ -719,6 +824,11 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
         Action::CreateConstructionSet => create_construction_set(cx),
         Action::FileNewLayout => new_layout_from_template(cx),
         Action::ProjectInfo => open_project_info(cx),
+        Action::FindReplaceText => with_windows(|w| {
+            if w.find_replace.is_none() {
+                w.find_replace = Some(FindReplaceDialog::new());
+            }
+        }),
         _ => {}
     }
 }
@@ -729,6 +839,43 @@ fn open_schedule(kind: SchedKind) {
             w.schedules.push(kind);
         }
     });
+}
+
+/// Send to Layout for a placed schedule: a box that shows its table, put on
+/// the last page of the plan's layout (one undo step). False, with a status
+/// message, when there is no layout or no such schedule.
+pub fn send_schedule_to_layout(cx: &mut EditorContext, floor: usize, id: plan_core::Id) -> bool {
+    use crate::shell::layout_window as lw;
+    let found = cx.project.floors.get(floor).is_some_and(|f| {
+        plan_core::schedules::ScheduleLayer::load(f)
+            .find(id)
+            .is_some()
+    });
+    if !found {
+        cx.status = "That schedule is no longer in the plan".into();
+        return false;
+    }
+    let Some(mut layout) = lw::load(&cx.project) else {
+        cx.status = "Start a layout first (File > New Layout), then send the schedule".into();
+        return false;
+    };
+    let page = layout.content_pages().last().map_or(1, |p| p.number);
+    cx.refresh();
+    let ctx = plan_layout::LayoutRenderContext::new(&cx.project);
+    plan_layout::send_to_layout(
+        &mut layout,
+        &ctx,
+        page,
+        plan_layout::BoxSource::PlacedSchedule { floor, id },
+        plan_docs::Scale::QuarterInch,
+        None,
+    );
+    drop(ctx);
+    cx.begin_change("Send to Layout");
+    lw::store(&mut cx.project, &layout);
+    cx.mark_dirty();
+    cx.status = format!("Schedule sent to layout page A-{page}");
+    true
 }
 
 /// Opens the Project Information dialog on the plan's current values.
@@ -849,8 +996,13 @@ impl Windows {
             .into_iter()
             .filter(|k| schedule_window(ctx, cx, cam, *k))
             .collect();
-        self.show_placed_schedules(ctx, cx);
+        self.show_placed_schedules(ctx, cx, cam);
         self.show_project_info(ctx, cx);
+        if let Some(mut d) = self.find_replace.take() {
+            if d.show(ctx, cx) {
+                self.find_replace = Some(d);
+            }
+        }
     }
 
     /// Project Information: OK stores the values as one undo step.
@@ -868,7 +1020,12 @@ impl Windows {
     }
 
     /// The Schedule Specification dialog and the placed-schedule windows.
-    fn show_placed_schedules(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+    fn show_placed_schedules(
+        &mut self,
+        ctx: &egui::Context,
+        cx: &mut EditorContext,
+        cam: &mut Camera,
+    ) {
         if let Some((floor, id)) = self.sched_spec_request.take() {
             if self.sched_spec.is_none() {
                 self.sched_spec = schedule_spec_dialog(cx, floor, id);
@@ -877,6 +1034,11 @@ impl Windows {
         if let Some(mut d) = self.sched_spec.take() {
             let outcome = d.show(ctx);
             let actions = d.take_actions();
+            if actions.send_to_layout {
+                // The box shows the stored schedule, so store the edits first.
+                schedule_view::replace(cx, d.floor(), d.draft().clone());
+                send_schedule_to_layout(cx, d.floor(), d.id());
+            }
             if actions.export_csv || actions.open_window {
                 // Preview the unsaved edits in the table that is exported.
                 let table = schedule_view::table_for(cx, d.draft(), d.floor());
@@ -901,7 +1063,7 @@ impl Windows {
         let placed = std::mem::take(&mut self.placed);
         self.placed = placed
             .into_iter()
-            .filter(|(f, id)| placed_window(ctx, cx, *f, *id))
+            .filter(|(f, id)| placed_window(ctx, cx, cam, *f, *id))
             .collect();
     }
 
@@ -942,6 +1104,98 @@ mod tests {
         cx.mark_dirty();
         cx.refresh();
         cx
+    }
+
+    #[test]
+    fn a_placed_schedule_can_be_sent_to_the_layout() {
+        use plan_core::schedules::{Schedule, ScheduleKind};
+        let mut cx = house();
+        let id = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(10.0, 10.0));
+        // No layout yet.
+        assert!(!send_schedule_to_layout(&mut cx, 0, id));
+        assert!(cx.status.contains("layout"), "{}", cx.status);
+        let mut layout = plan_layout::Layout::new("t", plan_docs::SheetSize::ArchC);
+        layout.add_page(1, "Schedules");
+        crate::shell::layout_window::store(&mut cx.project, &layout);
+        assert!(send_schedule_to_layout(&mut cx, 0, id));
+        let back = crate::shell::layout_window::load(&cx.project).unwrap();
+        let boxes = &back.page(1).unwrap().boxes;
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(
+            boxes[0].source,
+            plan_layout::BoxSource::PlacedSchedule { floor: 0, id }
+        );
+        assert_eq!(cx.undo_label(), Some("Send to Layout"));
+        cx.undo();
+        let back = crate::shell::layout_window::load(&cx.project).unwrap();
+        assert!(back.page(1).unwrap().boxes.is_empty());
+        // A schedule that does not exist is refused.
+        let _ = Schedule::new(ScheduleKind::Door, Point::ZERO);
+        assert!(!send_schedule_to_layout(&mut cx, 0, 999));
+    }
+
+    #[test]
+    fn clicking_a_schedule_row_selects_the_object() {
+        use plan_core::schedules::{Schedule, ScheduleKind};
+        let mut cx = house();
+        let mut cam = Camera::default_view();
+        for (kind, want) in [
+            (ScheduleKind::Door, "opening"),
+            (ScheduleKind::Window, "opening"),
+            (ScheduleKind::Wall, "wall"),
+            (ScheduleKind::Room, "room"),
+        ] {
+            let def = Schedule::new(kind, Point::ZERO);
+            let rooms = Some((0, cx.rooms.as_slice()));
+            let targets = plan_docs::schedule_kinds::row_targets(&cx.project, &def, 0, rooms);
+            assert!(!targets.is_empty(), "{kind:?}");
+            cx.selection.clear();
+            assert!(
+                select_row_target(&mut cx, &mut cam, &targets[0]),
+                "{kind:?}"
+            );
+            match (want, cx.selection.single()) {
+                ("opening", Some(ObjectRef::Opening(_))) | ("wall", Some(ObjectRef::Wall(_))) => {}
+                ("room", None) => {
+                    assert!(rooms_edit::selected_room(&cx).is_some());
+                }
+                (w, got) => panic!("{kind:?}: wanted {w}, got {got:?}"),
+            }
+            assert_eq!(cam.center, targets[0][0].position);
+        }
+        // A totals line has nothing behind it.
+        assert!(!select_row_target(&mut cx, &mut cam, &[]));
+    }
+
+    #[test]
+    fn a_row_on_another_floor_switches_to_that_floor() {
+        use plan_core::schedules::{FloorScope, Schedule, ScheduleKind};
+        let mut cx = house();
+        let mut cam = Camera::default_view();
+        cx.project
+            .floors
+            .push(plan_core::Floor::new("2nd Floor", 109.0));
+        let w = cx.project.add_wall(
+            1,
+            Point::ZERO,
+            Point::new(120.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        cx.project
+            .add_opening(1, w, 60.0, OpeningKind::Window)
+            .unwrap();
+        let mut def = Schedule::new(ScheduleKind::Window, Point::ZERO);
+        def.floor_scope = FloorScope::All;
+        let targets = plan_docs::schedule_kinds::row_targets(&cx.project, &def, 0, None);
+        let upstairs = targets
+            .iter()
+            .find(|t| t[0].floor == 1)
+            .expect("a row on floor 2");
+        assert!(select_row_target(&mut cx, &mut cam, upstairs));
+        assert_eq!(cx.floor, 1);
+        assert!(matches!(cx.selection.single(), Some(ObjectRef::Opening(_))));
     }
 
     fn finding(n: usize) -> Finding {

@@ -27,7 +27,7 @@ and Wall Elevation cameras, walkthroughs, lights and glTF export.
   sills and exterior thresholds. The editor's 3D view calls the builder with the defaults (doors closed, no
   casing), and the editor only places hinged doors and plain windows, so today you see
   closed hinged doors and plain windows (planned: View options for open doors and casing).
-- Floor and ceiling platforms for every detected room, with any **Hole in Floor Platform** and **Hole in Ceiling Platform**
+- Floor and ceiling platforms for every detected room, at the room's own Floor Height offset and Ceiling Height when its Room Specification sets them (chapter 4.4), with any **Hole in Floor Platform** and **Hole in Ceiling Platform**
   cut out (chapter 16).
 - Slabs, slab holes, footings, square pads and round piers (chapter 16).
 - Wall **bottom heights**: a wall that starts above the floor (chapter 2.9) is built from its bottom to its top, for standard walls and every straight wall class;
@@ -43,12 +43,21 @@ The editor appends:
 - **Placed library symbols**: a box of the symbol's width, depth and height for a built-in symbol, and the decoded meshes
   for a Chief catalog object (a box when the geometry is partial, nothing when the catalog is unavailable; chapter 6.6).
 - **Exterior details** (chapter 17): corner boards, quoins, moldings, floor and wall material regions, polygon decks and the 3D solids.
+- **Cabinets** (QA-05, fixed in Round 8): every placed cabinet kind (base, wall, corner, fillers, custom countertops and backsplashes ...)
+  is meshed at its stored position, rotation and floor elevation. Countertops are drawn in the Stone material and handles in Metal.
+- **Stairs** (QA-06, fixed in Round 8): treads, risers, stringers, winder and landing slabs, ramps, and the walls, half-walls and railings
+  (newels, balusters, rails) on each side. Treads, landings and ramps use the Framing material; risers, stringers, walls and railings the
+  Trim material, so the Floor material stays the room slabs. The stairwell hole Auto Stairwell cuts in the floor above is cut out of that floor's
+  platform (QA-04; chapter 7.4).
+- **Terrain** (chapter 9): the surface after Build Terrain, the roads draped on it, and the landscape objects (walls and curbs, features, garden
+  beds, grass, water, stepping stones, plants, sprinklers). The landscape uses stand-in materials because the material list has no grass or foliage: grass,
+  mulch and canopies are the brown Floor material, trunks Framing, edging and stones Stone, water translucent glass.
+- **Pictures, billboards and 3D solid features** (chapter 6.7): a picture is a flat-colored quad (no textures in the GL view); billboards keep their
+  stored angle in the cached scene; a 3D Solid Feature draws its library item in Concrete.
 
-Stairs, cabinets, electrical devices and terrain have 3D builders in their own crates but the 3D view does not draw
-them at the Round 7 commit (planned). The scenario tests record this as QA-05 (cabinets) and QA-06 (stairs) in `docs/qa-findings.md`;
-the scene's change hash does not see them either, so the view would not even rebuild. Both are being fixed in Round 8. Coordinates: X is plan x, Y is up, Z is
+Electrical devices have a 3D builder in their crate that the view does not draw (planned). Coordinates: X is plan x, Y is up, Z is
 negative plan y, all in inches. The scene is rebuilt automatically when the plan changes (it
-watches a hash of the floors, walls, openings, placed symbols, roofs, foundation objects and details), and **3D > Rebuild 3D** forces it.
+watches a hash of the floors, walls, openings, placed symbols, room names, cabinets, stairs, roofs, foundation objects, details and the terrain), and **3D > Rebuild 3D** forces it.
 
 ## 10.2 Tools and commands
 
@@ -240,7 +249,7 @@ does not follow an angled cut. Everything in "What the engine draws" below appli
   only drawn (and shadowed) in the plan overhead view. It is an approximation.
 - **Depth weights** and **labels** as in the table. **Sections**: the cut line is Heavy and the cut faces are filled.
 - **Limits**: accuracy is about one pixel of the depth buffer, so fine detail is dropped; glass occludes like a solid; sections assume
-  closed meshes; there are no curves (a curved wall is its facets); the 3D scene it reads has no stairs, cabinets, electrical or terrain.
+  closed meshes; there are no curves (a curved wall is its facets); the 3D scene it reads includes cabinets, stairs and terrain but not electrical devices.
 
 ## 10.8 Materials
 
@@ -262,7 +271,7 @@ material tabs on objects, textures in the viewport) is (planned).
 - No textures or material assignment in the view; surfaces use flat material colors.
 - Many Chief techniques are approximations of the real look.
 - Cameras do not yet carry shadows (perspective), lock, or per-camera lighting. Elevation hatch is fixed at a 1/4" scale, and a vector elevation is cut square to the nearest axis.
-- No terrain or electrical devices in 3D, no stairs or cabinets at the Round 7 commit (QA-05, QA-06; Round 8), and Build Framing's wall, floor and roof members are not drawn in 3D.
+- No electrical devices in 3D, and Build Framing's wall, floor and roof members are not drawn in 3D. Landscape materials are stand-ins (no green grass). Clicking an object in 3D does not select it in the plan yet (3D picking is planned; Round 9).
 - Curved walls have no door or window cuts in 3D.
 - Walkthrough recording uses the path tracer at low quality (640 x 480, 8 samples per pixel, denoised, 12 frames a second) and writes a PNG sequence, not a video file (10.12).
 - The Lighting submenu, per-light color temperature and the other lighting tools of Chief are not built; lights are simple point lights (10.13).

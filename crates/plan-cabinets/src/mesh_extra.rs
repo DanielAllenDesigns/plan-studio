@@ -125,6 +125,18 @@ impl Builder {
                         std::f64::consts::PI - std::f64::consts::FRAC_PI_2 * k as f64 / n as f64;
                     (s + s * th.cos(), z1 - s + s * th.sin())
                 }
+                EdgeProfile::Ogee => {
+                    // A cove (concave quarter circle) under a bead (convex one).
+                    let h = s / 2.0;
+                    let half = (n / 2).max(1);
+                    if k <= half {
+                        let th = std::f64::consts::FRAC_PI_2 * k as f64 / half as f64;
+                        (h * th.sin(), h * (1.0 - th.cos()) + (z1 - s))
+                    } else {
+                        let ph = std::f64::consts::FRAC_PI_2 * (k - half) as f64 / half as f64;
+                        (s - h * ph.cos(), h * ph.sin() + (z1 - s + h))
+                    }
+                }
                 _ => (s * k as f64 / n as f64, z1 - s + s * k as f64 / n as f64),
             })
             .collect();
@@ -208,7 +220,7 @@ impl Builder {
     pub(crate) fn custom_countertop(&mut self, cab: &Cabinet) {
         let Some(c) = &cab.custom else { return };
         self.add_slab(
-            &c.outline,
+            &c.treated(),
             &cab.holes_local(),
             (0.0, cab.height),
             c.edge,
@@ -325,6 +337,7 @@ impl Builder {
             }
             let ctx = FrontCtx {
                 cab,
+                layout: &cab.face,
                 frame,
                 carcass_y: -front_t,
                 z0,

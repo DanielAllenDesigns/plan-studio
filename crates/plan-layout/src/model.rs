@@ -67,6 +67,10 @@ pub enum BoxSource {
     Camera { camera_id: Id },
     /// A table of the project's doors, windows, rooms or walls.
     Schedule { kind: ScheduleKind },
+    /// A schedule placed in the plan (`floor`, `id` of its
+    /// `plan_core::schedules::Schedule`): the same table, with its columns,
+    /// sort, filter, grouping and totals, kept up to date.
+    PlacedSchedule { floor: usize, id: Id },
     /// Loose CAD in detail space (inches of the detail, drawn at the box scale).
     CadDetail { name: String, items: Vec<CadObject> },
     /// A raster image by file name. The layout does not read files, so the box
@@ -121,6 +125,11 @@ pub struct LayoutBox {
     /// pattern (see [`crate::wall_face_hatch`]).
     #[serde(default = "yes")]
     pub hatch_materials: bool,
+    /// Turns the box's content, counter-clockwise, in degrees. Only
+    /// multiples of 90 are used (see [`LayoutBox::quarter_turns`]); the box
+    /// itself, its frame and its caption stay where they are.
+    #[serde(default)]
+    pub rotation_deg: f64,
 }
 
 impl LayoutBox {
@@ -136,7 +145,14 @@ impl LayoutBox {
             line_weight_scale: 1.0,
             clip: true,
             hatch_materials: true,
+            rotation_deg: 0.0,
         }
+    }
+
+    /// The content rotation as 0..=3 quarter turns counter-clockwise
+    /// (other angles round to the nearest quarter).
+    pub fn quarter_turns(&self) -> u8 {
+        (((self.rotation_deg / 90.0).round() as i64).rem_euclid(4)) as u8
     }
 
     /// Width and height of the box, paper inches.
@@ -192,6 +208,9 @@ pub struct Layout {
     /// Line weight of the page border ("Layout Edge"), 1/100 mm.
     #[serde(default = "edge_weight")]
     pub edge_line_weight: u32,
+    /// Portrait orientation: the sheet is as tall as `sheet` is wide.
+    #[serde(default)]
+    pub portrait: bool,
 }
 
 impl Layout {
@@ -206,6 +225,18 @@ impl Layout {
             sheet_index: false,
             page_background: true,
             edge_line_weight: LAYOUT_EDGE_WEIGHT,
+            portrait: false,
+        }
+    }
+
+    /// Width and height of the sheet in paper inches, turned upright when
+    /// the layout is portrait.
+    pub fn sheet_inches(&self) -> (f64, f64) {
+        let (w, h) = self.sheet.inches();
+        if self.portrait {
+            (w.min(h), w.max(h))
+        } else {
+            (w, h)
         }
     }
 
@@ -260,13 +291,13 @@ impl Layout {
 
     /// Width of the right title strip for this sheet, paper inches.
     pub(crate) fn right_strip_in(&self) -> f64 {
-        RIGHT_STRIP_IN.min(self.sheet.inches().0 * 0.22)
+        RIGHT_STRIP_IN.min(self.sheet_inches().0 * 0.22)
     }
 
     /// The area boxes are packed into (inside the border, beside the title
     /// block): `(lower-left, upper-right)` in paper inches.
     pub fn drawing_area(&self) -> (Point, Point) {
-        let (w, h) = self.sheet.inches();
+        let (w, h) = self.sheet_inches();
         let m = self.margins_in;
         let (mut right, mut bottom) = (w - m, m);
         match self.title_block.style {

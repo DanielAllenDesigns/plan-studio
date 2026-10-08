@@ -184,6 +184,132 @@ pub fn point_in_polygon(p: Point, pts: &[Point]) -> bool {
     inside
 }
 
+/// A uniform grid over axis-aligned boxes: a broad-phase for "which of these
+/// boxes can touch this one?" in near-linear time instead of scanning them
+/// all. [`BoxGrid::query`] returns a superset of the boxes that overlap the
+/// query box (callers run their exact test on the candidates), always in
+/// ascending index order, so a loop over the candidates sees them in the same
+/// order as a loop over all boxes would.
+#[derive(Debug, Clone)]
+pub struct BoxGrid {
+    origin: Point,
+    cell: f64,
+    nx: usize,
+    ny: usize,
+    cells: Vec<Vec<u32>>,
+    /// Boxes too large to store per cell; every query returns them.
+    oversize: Vec<u32>,
+}
+
+/// A box covering more cells than this is kept in the oversize list.
+const MAX_CELLS_PER_BOX: usize = 256;
+
+impl BoxGrid {
+    /// A grid over `boxes` (`(lower-left, upper-right)` per box, indexed in
+    /// iteration order). Boxes with a NaN coordinate are never returned.
+    pub fn new(boxes: &[(Point, Point)]) -> BoxGrid {
+        let n = boxes.len();
+        let (mut lo, mut hi) = (
+            Point::new(f64::MAX, f64::MAX),
+            Point::new(f64::MIN, f64::MIN),
+        );
+        let mut extent = 0.0;
+        let mut counted = 0usize;
+        for (a, b) in boxes {
+            if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) {
+                continue;
+            }
+            lo = Point::new(lo.x.min(a.x), lo.y.min(a.y));
+            hi = Point::new(hi.x.max(b.x), hi.y.max(b.y));
+            extent += (b.x - a.x).max(b.y - a.y);
+            counted += 1;
+        }
+        if counted == 0 {
+            return BoxGrid {
+                origin: Point::ZERO,
+                cell: 1.0,
+                nx: 0,
+                ny: 0,
+                cells: Vec::new(),
+                oversize: Vec::new(),
+            };
+        }
+        let (w, h) = (hi.x - lo.x, hi.y - lo.y);
+        let mut cell = (extent / counted as f64).max(1e-3);
+        let budget = 8 * n + 64;
+        while ((w / cell).floor() as usize + 1).saturating_mul((h / cell).floor() as usize + 1)
+            > budget
+        {
+            cell *= 1.5;
+        }
+        let nx = (w / cell).floor() as usize + 1;
+        let ny = (h / cell).floor() as usize + 1;
+        let mut g = BoxGrid {
+            origin: lo,
+            cell,
+            nx,
+            ny,
+            cells: vec![Vec::new(); nx * ny],
+            oversize: Vec::new(),
+        };
+        for (i, (a, b)) in boxes.iter().enumerate() {
+            if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) {
+                continue;
+            }
+            let (x0, x1, y0, y1) = g.range(*a, *b);
+            if (x1 - x0 + 1) * (y1 - y0 + 1) > MAX_CELLS_PER_BOX {
+                g.oversize.push(i as u32);
+                continue;
+            }
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    g.cells[y * g.nx + x].push(i as u32);
+                }
+            }
+        }
+        g
+    }
+
+    /// The inclusive cell ranges `(x0, x1, y0, y1)` a box touches, clamped to
+    /// the grid.
+    fn range(&self, a: Point, b: Point) -> (usize, usize, usize, usize) {
+        let ix = |v: f64, n: usize| -> usize {
+            let c = ((v - self.origin.x.min(v)) / self.cell).floor();
+            (c.max(0.0) as usize).min(n - 1)
+        };
+        let iy = |v: f64, n: usize| -> usize {
+            let c = ((v - self.origin.y.min(v)) / self.cell).floor();
+            (c.max(0.0) as usize).min(n - 1)
+        };
+        (
+            ix(a.x, self.nx),
+            ix(b.x, self.nx),
+            iy(a.y, self.ny),
+            iy(b.y, self.ny),
+        )
+    }
+
+    /// Indices of every box that may overlap the box `lo..hi`, ascending and
+    /// without duplicates, appended to `out` (cleared first).
+    pub fn query(&self, lo: Point, hi: Point, out: &mut Vec<usize>) {
+        out.clear();
+        if self.nx == 0 {
+            return;
+        }
+        // A query box fully off the grid still clamps to the border cells,
+        // which only adds candidates.
+        let (x0, x1, y0, y1) = self.range(lo, hi);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                out.extend(self.cells[y * self.nx + x].iter().map(|&i| i as usize));
+            }
+        }
+        out.extend(self.oversize.iter().map(|&i| i as usize));
+        out.sort_unstable();
+        out.dedup();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +337,44 @@ mod tests {
         )
         .unwrap();
         assert!((r.0 - 0.5).abs() < 1e-12 && (r.1 - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn box_grid_returns_every_overlapping_box_in_order() {
+        let mut seed = 99u64;
+        let mut rnd = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as f64) / ((1u64 << 31) as f64)
+        };
+        let mut boxes = Vec::new();
+        for _ in 0..300 {
+            let (x, y) = (rnd() * 5000.0 - 1000.0, rnd() * 5000.0);
+            let (w, h) = (rnd() * 150.0, rnd() * 150.0);
+            boxes.push((Point::new(x, y), Point::new(x + w, y + h)));
+        }
+        // One box that spans the plan, and a NaN one that is never returned.
+        boxes.push((Point::new(-1000.0, 10.0), Point::new(4000.0, 12.0)));
+        boxes.push((Point::new(f64::NAN, 0.0), Point::new(1.0, 1.0)));
+        let grid = BoxGrid::new(&boxes);
+        let mut out = Vec::new();
+        for _ in 0..200 {
+            let (x, y) = (rnd() * 6000.0 - 1500.0, rnd() * 6000.0 - 500.0);
+            let (lo, hi) = (
+                Point::new(x, y),
+                Point::new(x + rnd() * 200.0, y + rnd() * 200.0),
+            );
+            grid.query(lo, hi, &mut out);
+            assert!(out.windows(2).all(|w| w[0] < w[1]), "ascending, unique");
+            for (i, (a, b)) in boxes.iter().enumerate() {
+                let overlaps = a.x <= hi.x && b.x >= lo.x && a.y <= hi.y && b.y >= lo.y;
+                if overlaps {
+                    assert!(out.contains(&i), "box {i} overlaps {lo:?}..{hi:?}");
+                }
+            }
+        }
+        assert!(BoxGrid::new(&[]).nx == 0);
+        grid.query(Point::ZERO, Point::ZERO, &mut out);
     }
 }

@@ -96,7 +96,8 @@ pub fn plan_symbol(cabinet: &Cabinet) -> Vec<Stroke> {
         | CabinetKind::Shelf
         | CabinetKind::Partition
         | CabinetKind::CustomBacksplash
-        | CabinetKind::CounterHole => {}
+        | CabinetKind::CounterHole
+        | CabinetKind::SoffitPolygon => {}
     }
 
     for cut in &cabinet.cutouts {

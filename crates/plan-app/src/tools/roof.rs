@@ -40,7 +40,7 @@
 //! Hip/Gable/Shed/Extend Slope Downward (RF-21..RF-25), framing (RF-52..).
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
-use crate::dialogs::roof::{BuildRoofDialog, DormerDialog, RoofPlaneDialog};
+use crate::dialogs::roof::{BuildRoofDialog, DormerDialog, ReturnDialog, RoofPlaneDialog};
 use crate::dialogs::Outcome;
 use crate::editor::roof_view::{
     self, auto_rebuild, build_floor, delete_all, load, manual_plane_geometry, rebuild,
@@ -164,6 +164,9 @@ enum Cmd {
     /// Dormer dialog OK: the plane, the dormer being edited if any, its size,
     /// and whether a new dormer is a floating one.
     ApplyDormer(Id, Option<Id>, DormerSpec, bool),
+    /// Roof Return dialog OK: the type and length of the next returns.
+    ApplyReturn(ReturnSpec),
+    OpenReturn,
 }
 
 enum Gesture {
@@ -204,6 +207,11 @@ pub struct RoofTool {
     /// Auto Dormer: the plane, the dormer being edited if any, whether a new
     /// dormer floats, the dialog.
     dormer_dialog: RefCell<Option<DormerSlot>>,
+    /// The Roof Return settings dialog.
+    return_dialog: RefCell<Option<ReturnDialog>>,
+    /// What the Roof Return tool makes (set by that dialog); `None` is a
+    /// full return of [`RETURN_LENGTH`].
+    return_spec: Cell<Option<ReturnSpec>>,
     /// The palette changed mode: forget the gesture at the next event.
     reset: Cell<bool>,
     selected: Option<Id>,
@@ -242,6 +250,15 @@ impl RoofTool {
         self.build_dialog.borrow().is_some()
             || self.plane_dialog.borrow().is_some()
             || self.dormer_dialog.borrow().is_some()
+            || self.return_dialog.borrow().is_some()
+    }
+
+    /// The type and length the Roof Return tool makes now.
+    pub fn return_settings(&self) -> ReturnSpec {
+        self.return_spec.get().unwrap_or(ReturnSpec {
+            kind: ReturnKind::Full,
+            length: RETURN_LENGTH,
+        })
     }
 
     // ----- commands -----
@@ -272,6 +289,26 @@ impl RoofTool {
                 Cmd::DeletePlane(id) => self.delete_plane(cx, id),
                 Cmd::ApplyDormer(main, edit, spec, floating) => {
                     self.apply_dormer(cx, main, edit, spec, floating)
+                }
+                Cmd::ApplyReturn(spec) => {
+                    self.return_spec.set(Some(spec));
+                    cx.status = format!(
+                        "Roof Return: {} return, {}",
+                        match spec.kind {
+                            ReturnKind::Full => "full",
+                            ReturnKind::Half => "half",
+                            ReturnKind::Boxed => "boxed",
+                        },
+                        cx.fmt_dim(spec.length)
+                    );
+                    None
+                }
+                Cmd::OpenReturn => {
+                    if self.return_dialog.borrow().is_none() {
+                        *self.return_dialog.borrow_mut() =
+                            Some(ReturnDialog::new(self.return_settings()));
+                    }
+                    None
                 }
             };
             label = l.or(label);
@@ -735,7 +772,7 @@ impl RoofTool {
         cx.begin_change("Roof Return");
         let spec = ReturnSpec {
             kind,
-            length: RETURN_LENGTH,
+            length: self.return_settings().length,
         };
         match roof_view::add_return(&mut cx.project, fi, id, at_start, spec) {
             Ok(new) => {
@@ -877,6 +914,7 @@ impl Tool for RoofTool {
         *self.build_dialog.borrow_mut() = None;
         *self.plane_dialog.borrow_mut() = None;
         *self.dormer_dialog.borrow_mut() = None;
+        *self.return_dialog.borrow_mut() = None;
         cx.readout = None;
     }
 
@@ -955,7 +993,7 @@ impl Tool for RoofTool {
                 } else if p.modifiers.alt {
                     ReturnKind::Boxed
                 } else {
-                    ReturnKind::Full
+                    self.return_settings().kind
                 };
                 if self.roof_return(cx, p.world, kind) {
                     res = ToolResult::committed("Roof Return");
@@ -1181,6 +1219,11 @@ impl RoofTool {
                             }
                         }
                     }
+                    if self.mode.get() == RoofMode::Return
+                        && ui.button("Roof Return Settings...").clicked()
+                    {
+                        self.cmds.borrow_mut().push(Cmd::OpenReturn);
+                    }
                     ui.separator();
                     if ui.button("Rebuild Roofs").clicked() {
                         self.cmds.borrow_mut().push(Cmd::Rebuild);
@@ -1232,6 +1275,21 @@ impl RoofTool {
                 self.cmds
                     .borrow_mut()
                     .push(Cmd::ApplyDormer(main, edit, spec, floating));
+            }
+            ctx.request_repaint();
+        }
+        let mut return_done = None;
+        if let Some(d) = self.return_dialog.borrow_mut().as_mut() {
+            match d.show(ctx) {
+                Outcome::Ok => return_done = Some(Some(d.spec())),
+                Outcome::Cancel => return_done = Some(None),
+                Outcome::Open => {}
+            }
+        }
+        if let Some(done) = return_done {
+            *self.return_dialog.borrow_mut() = None;
+            if let Some(spec) = done {
+                self.cmds.borrow_mut().push(Cmd::ApplyReturn(spec));
             }
             ctx.request_repaint();
         }
@@ -2152,6 +2210,29 @@ mod tests {
         // Away from every corner: nothing.
         click(&mut t, &mut cx, 120.0, 60.0);
         assert_eq!(planes(&cx).len(), 2);
+    }
+
+    #[test]
+    fn roof_return_settings_set_the_length_and_type_of_the_next_returns() {
+        let mut cx = new_cx();
+        let mut t = RoofTool::default();
+        with_plane(&mut cx, &mut t);
+        t.set_mode(RoofMode::Return);
+        assert_eq!(t.return_settings().length, RETURN_LENGTH);
+        // The dialog's OK queues the new settings; the next event applies them.
+        t.cmds.borrow_mut().push(Cmd::OpenReturn);
+        click(&mut t, &mut cx, 240.0, 0.0);
+        assert!(t.return_dialog.borrow().is_some(), "{}", cx.status);
+        let before = planes(&cx).len();
+        *t.return_dialog.borrow_mut() = None;
+        t.cmds.borrow_mut().push(Cmd::ApplyReturn(ReturnSpec {
+            kind: ReturnKind::Boxed,
+            length: 60.0,
+        }));
+        click(&mut t, &mut cx, 240.0, 0.0);
+        assert_eq!(t.return_settings().length, 60.0);
+        assert_eq!(t.return_settings().kind, ReturnKind::Boxed);
+        assert!(planes(&cx).len() > before);
     }
 
     #[test]

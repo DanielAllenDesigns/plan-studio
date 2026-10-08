@@ -18,6 +18,8 @@ const CLAY_ALBEDO: f32 = 0.72;
 /// GGX roughness per [`Material`], in `Material::ALL` order.
 const ROUGHNESS: [f32; MATERIAL_COUNT] = [
     0.85, 0.9, 0.4, 0.95, 0.45, 0.0, 0.35, 0.75, 0.95, 0.8, 0.9, 0.85, 0.9, 0.5, 0.0, 0.35, 0.8,
+    // Grass, Mulch, Foliage, Water, Asphalt, Gravel, Selection.
+    0.95, 0.98, 0.9, 0.05, 0.92, 0.97, 1.0,
 ];
 
 /// How light interacts with a surface.
@@ -191,6 +193,35 @@ mod tests {
         let s = t[Material::Framing.index()];
         assert_eq!(s.kind, Kind::Opaque);
         assert!(s.roughness > 0.7);
+    }
+
+    #[test]
+    fn the_landscape_materials_have_surface_entries() {
+        let t = Surface::table(Technique::PhysicallyBased);
+        for m in [
+            Material::Grass,
+            Material::Mulch,
+            Material::Foliage,
+            Material::Asphalt,
+            Material::Gravel,
+        ] {
+            let s = t[m.index()];
+            assert_eq!(s.kind, Kind::Opaque, "{m:?}");
+            assert_eq!(s.roughness, ROUGHNESS[m.index()], "{m:?}");
+            assert!(s.roughness > 0.85, "{m:?} is a matte surface");
+        }
+        // Water is a translucent sheet, glossier than the lawn around it.
+        let water = t[Material::Water.index()];
+        assert_eq!(water.kind, Kind::Glass);
+        assert!(ROUGHNESS[Material::Water.index()] < ROUGHNESS[Material::Grass.index()]);
+        // Clay and ambient renders ignore the colours: every opaque entry is
+        // the same grey, water and the tint are clear.
+        let clay = Surface::table(Technique::Clay);
+        assert_eq!(
+            clay[Material::Grass.index()].albedo,
+            clay[Material::Asphalt.index()].albedo
+        );
+        assert_eq!(clay[Material::Water.index()].kind, Kind::Clear);
     }
 
     #[test]

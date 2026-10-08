@@ -39,6 +39,12 @@ pub enum ObjectRef {
     Room(usize),
     /// The project's terrain (one per plan).
     Terrain,
+    /// One element of the terrain: a break, wall, curb, feature, road,
+    /// landscape object, elevation point, line, region or modifier (the
+    /// perimeter is the whole [`ObjectRef::Terrain`]). Addressed by index
+    /// into the terrain record, so it is only valid until the next edit
+    /// that removes terrain elements.
+    TerrainObject(site_view::TerrainHit),
     /// A slab, slab hole, pad, pier or platform hole
     /// (`FoundationLayer::find(id)` tells which).
     Foundation(Id),
@@ -72,6 +78,8 @@ impl ObjectRef {
             | ObjectRef::Schedule(i) => i,
             ObjectRef::Room(i) => i as Id,
             ObjectRef::Terrain => 0,
+            // The id the object's 3D meshes carry (0: no mesh).
+            ObjectRef::TerrainObject(h) => site_view::hit_mesh_id(h),
         }
     }
 
@@ -91,6 +99,7 @@ impl ObjectRef {
             ObjectRef::Device(_) => "Electrical Device",
             ObjectRef::Room(_) => "Room",
             ObjectRef::Terrain => "Terrain",
+            ObjectRef::TerrainObject(h) => site_view::hit_type_name(None, h),
             ObjectRef::Foundation(_) => "Foundation Object",
             ObjectRef::Framing(_) => "Framing Object",
             ObjectRef::Detail(_) => "Detail Object",
@@ -116,7 +125,10 @@ impl ObjectRef {
             ObjectRef::Framing(i) => framing_view::find(floor, i).is_some(),
             ObjectRef::Detail(i) => DetailsLayer::load(floor).find(i).is_some(),
             ObjectRef::Schedule(i) => schedule_view::exists(floor, i),
-            ObjectRef::Camera(_) | ObjectRef::Room(_) | ObjectRef::Terrain => false,
+            ObjectRef::Camera(_)
+            | ObjectRef::Room(_)
+            | ObjectRef::Terrain
+            | ObjectRef::TerrainObject(_) => false,
         }
     }
 
@@ -129,6 +141,8 @@ impl ObjectRef {
         match self {
             ObjectRef::Camera(i) => project.camera(i).is_some_and(|c| c.floor == fl),
             ObjectRef::Terrain => site_view::load_terrain(project).is_some(),
+            ObjectRef::TerrainObject(h) => site_view::terrain_view(project)
+                .is_some_and(|v| site_view::hit_exists(&v.record.terrain, h)),
             ObjectRef::Device(i) => site_view::electrical_layer(fl, floor).device(i).is_some(),
             other => other.exists(floor),
         }
@@ -231,7 +245,11 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
         ObjectRef::Schedule(i) => schedule_view::layer_of(floor, i),
         ObjectRef::Device(_) => Some(site_view::ELECTRICAL_LAYER.to_string()),
         ObjectRef::Camera(_) => Some(camera_tool::CAMERA_LAYER.to_string()),
-        ObjectRef::Terrain => Some(site_view::TERRAIN_LAYER.to_string()),
+        // The terrain's own layer; an element's layer of its own is read from
+        // the terrain record by the pickers (`hit_test_cx`, `extra_in_rect`).
+        ObjectRef::Terrain | ObjectRef::TerrainObject(_) => {
+            Some(site_view::TERRAIN_LAYER.to_string())
+        }
         ObjectRef::Room(_) => None,
     }
 }
@@ -486,10 +504,15 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
     out.extend(interior);
     out.extend(tier(details_view::Tier::Below));
     out.extend(slab_interior);
-    if layers.is_visible(site_view::TERRAIN_LAYER) {
-        if let Some(view) = site_view::terrain_view(&cx.project) {
-            if site_view::hit_terrain(&view.record.terrain, p, tol).is_some() {
-                out.push(ObjectRef::Terrain);
+    if let Some(view) = site_view::terrain_view(&cx.project) {
+        let t = &view.record.terrain;
+        if let Some(hit) = site_view::hit_terrain(t, p, tol) {
+            let layer = site_view::hit_layer(t, hit).unwrap_or_else(|| view.record.layer.clone());
+            if layers.is_visible(&layer) {
+                out.push(match hit {
+                    site_view::TerrainHit::Perimeter => ObjectRef::Terrain,
+                    other => ObjectRef::TerrainObject(other),
+                });
             }
         }
     }
@@ -580,6 +603,20 @@ pub fn extra_in_rect(cx: &EditorContext, lo: Point, hi: Point, crossing: bool) -
             out.push(r);
         }
     }
+    // Terrain elements, each on its own layer.
+    if let Some(view) = site_view::terrain_view(&cx.project) {
+        let t = &view.record.terrain;
+        for h in site_view::all_hits(t) {
+            let layer = site_view::hit_layer(t, h).unwrap_or_else(|| view.record.layer.clone());
+            if !(layers.is_visible(&layer) && !layers.is_locked(&layer)) {
+                continue;
+            }
+            let pts = site_view::hit_points(t, h);
+            if !pts.is_empty() && hit(&pts) {
+                out.push(ObjectRef::TerrainObject(h));
+            }
+        }
+    }
     out
 }
 
@@ -607,6 +644,18 @@ pub fn object_for_mesh_id(project: &Project, id: Id) -> Option<(usize, ObjectRef
             .find(|r| r.exists_in(project, fl))
             .map(|r| (fl, r))
     })
+}
+
+/// What a click on mesh `id` of the 3D view selects: the floor to show and
+/// the object. Plan objects come from [`object_for_mesh_id`]; terrain
+/// elements (whose meshes carry `plan_terrain::terrain_object_id`s) belong to
+/// no floor, so `floor` is kept.
+pub fn pick_for_mesh_id(project: &Project, floor: usize, id: Id) -> Option<(usize, ObjectRef)> {
+    if let Some(hit) = site_view::hit_for_mesh_id(id) {
+        let r = ObjectRef::TerrainObject(hit);
+        return r.exists_in(project, floor).then_some((floor, r));
+    }
+    object_for_mesh_id(project, id)
 }
 
 /// A CAD object by id.
@@ -698,5 +747,64 @@ mod tests {
         );
         assert_eq!(object_for_mesh_id(&p, w2), Some((1, ObjectRef::Wall(w2))));
         assert_eq!(object_for_mesh_id(&p, 9999), None);
+    }
+
+    #[test]
+    fn terrain_meshes_resolve_to_terrain_objects_without_changing_the_floor() {
+        use plan_terrain::{Landscape, LandscapeKind, ShapeKind, TerrainWall};
+        let (mut p, wall) = plan();
+        p.build_new_floor(false);
+        let mut rec = site_view::TerrainRecord::new();
+        rec.terrain.walls.push(TerrainWall::new(
+            plan_terrain::WallKind::Wall,
+            vec![Point::new(0.0, 500.0), Point::new(300.0, 500.0)],
+            false,
+        ));
+        rec.terrain.landscape.push(Landscape::new(
+            LandscapeKind::GardenBed,
+            ShapeKind::Polyline,
+            vec![
+                Point::new(0.0, 700.0),
+                Point::new(200.0, 700.0),
+                Point::new(200.0, 900.0),
+                Point::new(0.0, 900.0),
+            ],
+        ));
+        site_view::save_terrain(&mut p, &rec);
+        let meshes = site_view::terrain_feature_meshes(&p);
+        let id_of = |hit: site_view::TerrainHit| {
+            meshes
+                .iter()
+                .find(|m| m.object_id == Some(site_view::hit_mesh_id(hit)))
+                .and_then(|m| m.object_id)
+                .unwrap_or_else(|| panic!("no mesh for {hit:?}"))
+        };
+        let wall_hit = site_view::TerrainHit::Wall(0);
+        let bed_hit = site_view::TerrainHit::Landscape(0);
+        // Whatever floor is showing stays showing.
+        for floor in [0, 1] {
+            assert_eq!(
+                pick_for_mesh_id(&p, floor, id_of(wall_hit)),
+                Some((floor, ObjectRef::TerrainObject(wall_hit)))
+            );
+            assert_eq!(
+                pick_for_mesh_id(&p, floor, id_of(bed_hit)),
+                Some((floor, ObjectRef::TerrainObject(bed_hit)))
+            );
+        }
+        // The object's id is its meshes' id (the 3D view tints by it).
+        assert_eq!(ObjectRef::TerrainObject(wall_hit).id(), id_of(wall_hit));
+        // A mesh of an element that is gone selects nothing; plan ids still resolve.
+        let gone = site_view::hit_mesh_id(site_view::TerrainHit::Wall(5));
+        assert_eq!(pick_for_mesh_id(&p, 0, gone), None);
+        assert_eq!(
+            pick_for_mesh_id(&p, 1, wall),
+            Some((0, ObjectRef::Wall(wall)))
+        );
+        // Elements without a mesh (points, lines, regions) have no id.
+        assert_eq!(
+            ObjectRef::TerrainObject(site_view::TerrainHit::Point(0)).id(),
+            0
+        );
     }
 }

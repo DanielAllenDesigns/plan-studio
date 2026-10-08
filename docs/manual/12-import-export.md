@@ -70,14 +70,16 @@ layout and the wall types stored in the plan. Lengths are inches.
 
   | Slot | Holds |
   |---|---|
-  | `Floor.cabinets`, `Floor.stairs` | Cabinets and stairs (as before) |
+  | `Floor.cabinets`, `Floor.stairs` | Cabinets, and stairs, ramps and landings with their plan-only settings (chapter 7) |
   | `Floor.roofs` | Roof planes, the Build Roof settings, ceiling planes and dormers (chapter 8) |
   | `Floor.electrical` | The floor's electrical devices and connections (chapter 9) |
   | `Floor.framing` | Built framing members, manual members and the framing layout lines (chapter 11.11) |
   | `Floor.foundation` | Slabs, slab holes, pads, piers and platform holes (chapter 16) |
   | `Floor.details` | Corner boards, quoins, moldings, floor and wall material regions, wall hatches, polygon decks and 3D solids (chapter 17) |
   | `Floor.schedules` | The schedules placed in the plan: kind, columns, sort, filter, labels, style, position (chapter 11.2) |
-  | `Project.terrain` | The terrain, its contour interval and whether it is built (chapter 9) |
+  | `Floor.cad_attrs`, `Floor.cad_blocks` | Own style (color, weight, dash, fill, arrows, rich text) of CAD objects, and the names and insertion points of CAD blocks (chapter 5.5). Typed lists, not JSON |
+  | `Project.text_macros`, `Project.note_types` | The plan's user text macros and note types (chapter 5.3). Typed values |
+  | `Project.terrain` | The terrain, its contour interval, whether it is built, and the terrain walls, breaks and landscape objects (chapter 9) |
   | `Project.layout` | The plan's one layout: pages, boxes, title block and page setup (chapter 11.3) |
   | `Project.info` | Project Information: client, designer, job number, date, revisions, custom fields (chapter 11.4) |
   | `Project.lights`, `Project.light_options` | The lights Add Lights places, and whether electrical light fixtures emit light (chapter 10.13) |
@@ -87,7 +89,7 @@ layout and the wall types stored in the plan. Lengths are inches.
   conditioned setting, stem wall height, base and crown moldings, fill and label options. A wall also stores its class and
   curve, a camera object its section line (with the back clip) and its elevation rendering options (hatch, shadows, sun, line weight by distance, labels).
 - **Migration.** Files from before these slots kept the roofs, electrical devices, terrain and slabs as hidden, locked text records on
-  reserved layers (`Roof Planes, Data`, `Electrical, Data`, `Terrain, Data`, `Foundation, Data`, and `Lights, Data` for lights). When you open such a file the editor moves each
+  reserved layers (`Roof Planes, Data`, `Electrical, Data`, `Terrain, Data`, `Foundation, Data`, `Lights, Data` for lights, and, until Round 8, `CAD, Data` for CAD styles, CAD blocks, text macros and note types). When you open such a file the editor moves each
   record into its slot and deletes the legacy items and the hidden layers; it happens as the file loads, so it is not an undo step. A slot that is already filled
   is left alone, every new field has a default, and old files otherwise load unchanged.
 - Per-session settings (the "session only" fields that remain in the dialogs) are not in the file.

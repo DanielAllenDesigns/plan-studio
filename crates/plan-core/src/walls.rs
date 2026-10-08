@@ -218,6 +218,11 @@ impl WallFlags {
     }
 }
 
+/// A wall whose bottom is this far above the floor (or more) stands over
+/// open floor space (a dormer wall on the roof deck, a clerestory wall) and
+/// does not close a room at floor level.
+pub const ROOM_BOUNDARY_MAX_BOTTOM: f64 = 48.0;
+
 /// A curved wall stored as a true arc through `start`, the apex and `end`
 /// (W-64..W-67). `bulge` is the signed sagitta: the distance from the chord
 /// midpoint to the arc apex. Positive bulges toward the left (+normal) of
@@ -318,6 +323,12 @@ pub struct WallRoofDirective {
     pub upper_pitch: Option<(f64, f64)>,
     pub overhang: Option<f64>,
     pub auto_roof_return: bool,
+    /// Length of the roof returns of Auto Roof Return, inches; `None` is the
+    /// app default.
+    pub return_length: Option<f64>,
+    /// How far Extend Slope Downward continues below the eave, inches;
+    /// `None` is the app default.
+    pub extend_drop: Option<f64>,
 }
 
 impl Default for WallRoofDirective {
@@ -328,6 +339,8 @@ impl Default for WallRoofDirective {
             upper_pitch: None,
             overhang: None,
             auto_roof_return: false,
+            return_length: None,
+            extend_drop: None,
         }
     }
 }
@@ -407,6 +420,13 @@ impl Wall {
             _ => {}
         }
         self.class = class;
+    }
+
+    /// Does the wall close rooms on its floor? Its flags allow it (see
+    /// [`WallFlags::defines_rooms`]) and it stands on the floor: a wall raised
+    /// [`ROOM_BOUNDARY_MAX_BOTTOM`] or more by its `bottom_offset` does not.
+    pub fn defines_rooms(&self) -> bool {
+        self.flags.defines_rooms() && self.bottom_offset < ROOM_BOUNDARY_MAX_BOTTOM
     }
 
     /// A foundation wall by class or by the legacy flag.
@@ -1080,6 +1100,35 @@ mod tests {
         assert!(!f.defines_rooms());
         f.room_divider = true;
         assert!(f.defines_rooms());
+    }
+
+    #[test]
+    fn a_wall_raised_off_the_floor_closes_no_room() {
+        use crate::model::{Project, WallKind};
+        let mut p = Project::new("t");
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(144.0, 0.0),
+            Point::new(144.0, 120.0),
+            Point::new(0.0, 120.0),
+        ];
+        for i in 0..4 {
+            p.add_wall(0, c[i], c[(i + 1) % 4], 6.0, 96.0, WallKind::Interior);
+        }
+        assert_eq!(crate::detect_rooms(&p.floors[0].walls, 0.5).len(), 1);
+        // Low raise (a sill-high wall): still closes the room.
+        p.floors[0].walls[0].bottom_offset = 30.0;
+        assert!(p.floors[0].walls[0].defines_rooms());
+        assert_eq!(crate::detect_rooms(&p.floors[0].walls, 0.5).len(), 1);
+        // Raised well above the floor (a dormer wall on the roof deck): no room.
+        p.floors[0].walls[0].bottom_offset = ROOM_BOUNDARY_MAX_BOTTOM;
+        assert!(!p.floors[0].walls[0].defines_rooms());
+        assert!(crate::detect_rooms(&p.floors[0].walls, 0.5).is_empty());
+        // A room divider that is raised is still a divider of the flags, but
+        // not of the floor.
+        p.floors[0].walls[0].bottom_offset = 0.0;
+        p.floors[0].walls[0].flags.invisible = true;
+        assert!(!p.floors[0].walls[0].defines_rooms());
     }
 
     #[test]

@@ -250,6 +250,9 @@ pub struct RoomName {
     /// Moldings applied around the room.
     #[serde(default)]
     pub moldings: Vec<crate::extras::MoldingRef>,
+    /// Roof-over, absolute heights, finish thicknesses and wall covering.
+    #[serde(default)]
+    pub misc: Option<crate::extras::RoomMisc>,
 }
 
 fn default_true() -> bool {
@@ -275,6 +278,7 @@ impl RoomName {
             fill_style: None,
             label: crate::extras::RoomLabelOptions::default(),
             moldings: Vec::new(),
+            misc: None,
         }
     }
 }

@@ -157,6 +157,22 @@ pub(crate) fn schedule_for(kind: ScheduleKind, cx: &LayoutRenderContext) -> Sche
     })
 }
 
+/// The table of the placed schedule `id` on `floor`, as the plan shows it;
+/// `None` when the plan has no such schedule.
+pub(crate) fn placed_schedule_table(
+    cx: &LayoutRenderContext,
+    floor: usize,
+    id: plan_core::Id,
+) -> Option<Schedule> {
+    let f = cx.project.floors.get(floor)?;
+    let layer = plan_core::schedules::ScheduleLayer::load(f);
+    let def = layer.find(id)?;
+    let rooms = cx.rooms_by_floor.get(floor).map(|r| (floor, r.as_slice()));
+    Some(plan_docs::schedule_kinds::table(
+        cx.project, def, floor, rooms,
+    ))
+}
+
 /// Lines of a text source and the paper size they need, inches.
 pub(crate) fn text_size_in(text: &str, height_pt: f64) -> (f64, f64) {
     let lines: Vec<&str> = text.lines().collect();
@@ -196,6 +212,19 @@ pub(crate) fn frame_for(
                 h_in: m.height / 72.0,
             }
         }
+        BoxSource::PlacedSchedule { floor, id } => match placed_schedule_table(cx, *floor, *id) {
+            Some(t) => {
+                let m = table_metrics(&t);
+                Frame::Paper {
+                    w_in: m.width / 72.0,
+                    h_in: m.height / 72.0,
+                }
+            }
+            None => Frame::Paper {
+                w_in: IMAGE_SIZE_IN.0,
+                h_in: 1.0,
+            },
+        },
         BoxSource::CadDetail { items, .. } => {
             let mut it = items.iter().map(|o| o.bounds());
             match it.next() {

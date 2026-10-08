@@ -221,6 +221,14 @@ fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
             Action::View3d(View3dCommand::ExportGltf),
             out,
         );
+        live(
+            ui,
+            "Layout (JSON)\u{2026}",
+            "",
+            false,
+            Action::File(FileCommand::ExportLayout),
+            out,
+        );
     });
     ui.menu_button("Import", |ui| {
         live(
@@ -229,6 +237,14 @@ fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
             "",
             false,
             Action::File(FileCommand::ImportDxf),
+            out,
+        );
+        live(
+            ui,
+            "Layout (JSON)\u{2026}",
+            "",
+            false,
+            Action::File(FileCommand::ImportLayout),
             out,
         );
     });
@@ -300,11 +316,17 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "Edit Area>",
             "Stretch CAD",
             "-",
-            "Find/Replace Text\u{2026}",
-            "Replace Fonts\u{2026}",
-            "-",
         ],
     );
+    live(
+        ui,
+        "Find/Replace Text\u{2026}",
+        "",
+        false,
+        Action::FindReplaceText,
+        out,
+    );
+    inert(ui, &["Replace Fonts\u{2026}", "-"]);
     live(
         ui,
         "Default Settings\u{2026}",

@@ -226,6 +226,14 @@ impl FaceLayout {
         }
     }
 
+    /// One auto door: the default of a custom side or back face.
+    pub fn single_door() -> Self {
+        Self {
+            items: vec![FaceItem::DoorAuto { height: 0.0 }],
+            frame_width: SEPARATION,
+        }
+    }
+
     /// A single open bay: an appliance opening.
     pub fn opening() -> Self {
         Self {

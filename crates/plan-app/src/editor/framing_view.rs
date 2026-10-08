@@ -53,6 +53,8 @@ use plan_framing::{
 use plan_roof::{Roof, RoofPlane, DEFAULT_FASCIA_HEIGHT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// The layer framing is drawn on.
 pub const LAYER: &str = "Framing";
@@ -488,6 +490,80 @@ pub fn draw(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     draw_manual(cx, painter, cam);
 }
 
+/// A built member's plan outline and its extent.
+struct Hull {
+    pts: Vec<Point>,
+    lo: Point,
+    hi: Point,
+}
+
+/// What drawing the framing of the active floor derives from the stored data:
+/// the outline of every built member and the manual records. Kept until the
+/// editor context signals a change (`EditorContext::cache_key`) or the floor
+/// switches; a frame that changed nothing only draws.
+struct DrawCache {
+    key: (u64, u64),
+    floor: usize,
+    hulls: Option<Rc<Vec<Hull>>>,
+    records: Option<Rc<Vec<Record>>>,
+}
+
+thread_local! {
+    static DRAW_CACHE: RefCell<Option<DrawCache>> = const { RefCell::new(None) };
+}
+
+fn with_draw_cache<R>(cx: &EditorContext, f: impl FnOnce(&mut DrawCache) -> R) -> R {
+    DRAW_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let key = cx.cache_key();
+        if c.as_ref()
+            .is_none_or(|x| x.key != key || x.floor != cx.floor)
+        {
+            *c = Some(DrawCache {
+                key,
+                floor: cx.floor,
+                hulls: None,
+                records: None,
+            });
+        }
+        f(c.as_mut().expect("just filled"))
+    })
+}
+
+fn built_hulls(cx: &EditorContext) -> Rc<Vec<Hull>> {
+    if let Some(h) = with_draw_cache(cx, |c| c.hulls.clone()) {
+        return h;
+    }
+    let hulls: Rc<Vec<Hull>> = Rc::new(
+        cx.framing
+            .iter()
+            .map(|m| {
+                let pts = plan_outline(m);
+                let (mut lo, mut hi) = (
+                    Point::new(f64::MAX, f64::MAX),
+                    Point::new(f64::MIN, f64::MIN),
+                );
+                for p in &pts {
+                    lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+                    hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+                }
+                Hull { pts, lo, hi }
+            })
+            .collect(),
+    );
+    with_draw_cache(cx, |c| c.hulls = Some(hulls.clone()));
+    hulls
+}
+
+fn manual_records(cx: &EditorContext) -> Rc<Vec<Record>> {
+    if let Some(r) = with_draw_cache(cx, |c| c.records.clone()) {
+        return r;
+    }
+    let records = Rc::new(load_records(cx.floor()));
+    with_draw_cache(cx, |c| c.records = Some(records.clone()));
+    records
+}
+
 fn draw_built(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     if cx.framing.is_empty() || !cx.layers().is_visible(LAYER) {
         return;
@@ -495,9 +571,14 @@ fn draw_built(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     let [r, g, b] = cx.layers().get(LAYER).map_or([180, 140, 60], |l| l.color);
     let fill = Color32::from_rgba_unmultiplied(r, g, b, 70);
     let edge = Stroke::new(0.75_f32, Color32::from_rgb(r, g, b));
-    for m in &cx.framing {
-        let hull = plan_outline(m);
-        let pts: Vec<Pos2> = hull.iter().map(|p| cam.world_to_screen(*p)).collect();
+    let view = cam.rect.expand(2.0);
+    for h in built_hulls(cx).iter() {
+        // Members outside the canvas draw nothing visible.
+        let (a, c) = (cam.world_to_screen(h.lo), cam.world_to_screen(h.hi));
+        if !view.intersects(egui::Rect::from_two_pos(a, c)) {
+            continue;
+        }
+        let pts: Vec<Pos2> = h.pts.iter().map(|p| cam.world_to_screen(*p)).collect();
         match pts.len() {
             0 | 1 => {}
             2 => {
@@ -1260,12 +1341,12 @@ fn layer_rgb(cx: &EditorContext, name: &str) -> [u8; 3] {
 
 /// Draws the manual members and layout lines of the active floor.
 pub fn draw_manual(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    let records = load_records(cx.floor());
+    let records = manual_records(cx);
     if records.is_empty() {
         return;
     }
     let picked = selected(cx);
-    for r in &records {
+    for r in records.iter() {
         if !cx.layers().is_visible(r.layer()) {
             continue;
         }

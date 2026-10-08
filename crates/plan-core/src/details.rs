@@ -82,6 +82,24 @@ fn default_corner_layer() -> String {
 // Corners
 // ===================================================================
 
+/// The plan line of a detail when it differs from its layer's (the Line Style
+/// page of the detail dialogs): color, plotted weight in hundredths of a
+/// millimetre, and dash. Every field `None` means "as the layer says".
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DetailStyle {
+    pub color: Option<[u8; 3]>,
+    pub weight: Option<u32>,
+    pub dash: Option<crate::layers::LineStyle>,
+}
+
+impl DetailStyle {
+    /// Nothing differs from the layer.
+    pub fn is_default(&self) -> bool {
+        *self == DetailStyle::default()
+    }
+}
+
 /// The two wall faces meeting at a trim corner. All vectors are unit length.
 /// `dir_a` / `dir_b` run along the outer faces away from the apex; `out_a` /
 /// `out_b` are the outward normals of those faces (away from the building at
@@ -270,6 +288,8 @@ pub struct CornerBoard {
     pub height: f64,
     pub material: String,
     pub layer: String,
+    /// Own line look (color, weight, dash) when it differs from the layer's.
+    pub style: DetailStyle,
 }
 
 impl Default for CornerBoard {
@@ -284,6 +304,7 @@ impl Default for CornerBoard {
             height: 96.0,
             material: default_trim_material(),
             layer: default_corner_layer(),
+            style: DetailStyle::default(),
         }
     }
 }
@@ -338,6 +359,8 @@ pub struct Quoin {
     pub total_height: f64,
     pub material: String,
     pub layer: String,
+    /// Own line look (color, weight, dash) when it differs from the layer's.
+    pub style: DetailStyle,
 }
 
 impl Default for Quoin {
@@ -354,6 +377,7 @@ impl Default for Quoin {
             total_height: 96.0,
             material: DEFAULT_QUOIN_MATERIAL.to_string(),
             layer: default_corner_layer(),
+            style: DetailStyle::default(),
         }
     }
 }
@@ -469,6 +493,8 @@ pub struct MoldingLine {
     pub elevation: f64,
     pub material: String,
     pub layer: String,
+    /// Own line look (color, weight, dash) when it differs from the layer's.
+    pub style: DetailStyle,
 }
 
 impl Default for MoldingLine {
@@ -484,6 +510,7 @@ impl Default for MoldingLine {
             elevation: 0.0,
             material: default_trim_material(),
             layer: MOLDING_LAYER.to_string(),
+            style: DetailStyle::default(),
         }
     }
 }
@@ -574,6 +601,8 @@ pub struct MaterialRegion {
     /// Which face of the wall (wall regions only).
     pub side: Side,
     pub layer: String,
+    /// Own line look (color, weight, dash) when it differs from the layer's.
+    pub style: DetailStyle,
 }
 
 impl Default for MaterialRegion {
@@ -587,6 +616,7 @@ impl Default for MaterialRegion {
             cut_finish_layers: false,
             side: Side::Left,
             layer: REGION_LAYER.to_string(),
+            style: DetailStyle::default(),
         }
     }
 }
@@ -692,6 +722,8 @@ pub struct WallHatch {
     /// Angle of line patterns, degrees.
     pub angle: f64,
     pub layer: String,
+    /// Own line look (color, weight, dash) when it differs from the layer's.
+    pub style: DetailStyle,
 }
 
 impl Default for WallHatch {
@@ -703,6 +735,7 @@ impl Default for WallHatch {
             scale: DEFAULT_HATCH_SCALE,
             angle: DEFAULT_HATCH_ANGLE,
             layer: REGION_LAYER.to_string(),
+            style: DetailStyle::default(),
         }
     }
 }
@@ -725,6 +758,8 @@ pub struct DeckPolygon {
     pub board_thickness: f64,
     pub material: String,
     pub layer: String,
+    /// Own line look (color, weight, dash) when it differs from the layer's.
+    pub style: DetailStyle,
 }
 
 impl Default for DeckPolygon {
@@ -737,6 +772,7 @@ impl Default for DeckPolygon {
             board_thickness: DEFAULT_DECK_BOARD_THICKNESS,
             material: DEFAULT_DECK_MATERIAL.to_string(),
             layer: DECK_LAYER.to_string(),
+            style: DetailStyle::default(),
         }
     }
 }
@@ -852,6 +888,8 @@ pub struct Solid3d {
     pub rotation: f64,
     pub material: String,
     pub layer: String,
+    /// Own line look (color, weight, dash) when it differs from the layer's.
+    pub style: DetailStyle,
 }
 
 impl Default for Solid3d {
@@ -864,6 +902,7 @@ impl Default for Solid3d {
             rotation: 0.0,
             material: DEFAULT_SOLID_MATERIAL.to_string(),
             layer: SOLID_LAYER.to_string(),
+            style: DetailStyle::default(),
         }
     }
 }

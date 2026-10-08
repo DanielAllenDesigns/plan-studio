@@ -22,6 +22,7 @@ mod hole;
 mod join;
 mod skeleton;
 mod spec;
+mod staged;
 
 pub use ceiling::{ceiling_planes_for_vaulted_room, CeilingPlane};
 pub use dormer::{
@@ -37,6 +38,7 @@ pub use hole::{
 };
 pub use join::join_planes;
 pub use spec::{build_roof_with_specs, EdgeRoofSpec};
+pub use staged::DEFAULT_BREAK_FRACTION;
 
 use plan_core::geometry::polygon_area;
 use plan_core::Point;

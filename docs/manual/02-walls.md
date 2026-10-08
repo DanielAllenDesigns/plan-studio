@@ -125,9 +125,9 @@ Limits of curved walls today:
 | Curved Railing | Works. |
 | Straight Deck Railing, Curved Deck Railing | Work. |
 | Straight Deck Edge, Curved Deck Edge | Work. |
-| Polygon Shaped Deck | (planned) |
+| Polygon Shaped Deck | Works: a polygon of decking (chapter 17). |
 | Straight Fencing, Curved Fencing | Work. |
-| Straight and Curved Terrain Wall and Curb | (planned) |
+| Straight and Curved Terrain Wall and Curb | Work, from the Terrain menu: walls and curbs that follow the ground (chapter 9.6). |
 
 | Variant | Kind | Wall type and height | Layer |
 |---|---|---|---|
@@ -425,7 +425,7 @@ edits the same values.
 - Curved walls have no mitered joins, no 3D opening cuts, no bulge handle and no editable Curved Wall
   section; a curved wall is a run of 7.5 degree facets in 3D.
 - Pony, glass, half-wall, railing, deck and fencing default types and heights are typical values, not
-  Chief's, and are not editable from Default Settings. Terrain walls and curbs are (planned); Wall Hatching, Wall Material
+  Chief's, and are not editable from Default Settings. Terrain walls and curbs are terrain objects, not wall classes (chapter 9.6); Wall Hatching, Wall Material
   Region and the Polygon Shaped Deck are in chapter 17.
 - The Roof, Foundation, Wall Cap, Wall Covering, Newels/Balusters and Rails tabs of the Wall
   Specification are still (disabled).

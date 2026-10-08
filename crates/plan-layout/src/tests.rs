@@ -473,6 +473,7 @@ fn vertical_dim_house() -> Project {
             end: Point::new(0.0, 360.0),
             offset: 36.0,
             text_override: None,
+            anchors: [None, None],
         },
     );
     p
@@ -910,4 +911,162 @@ fn camera_boxes_draw_what_the_hook_returns() {
         back.page(1).unwrap().boxes[0].source,
         BoxSource::Camera { camera_id: 7 }
     ));
+}
+
+fn stroke_bounds(prims: &[Prim]) -> [f64; 4] {
+    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    for p in prims {
+        if let Prim::Stroke { pts, .. } = p {
+            for q in pts {
+                b = [b[0].min(q.0), b[1].min(q.1), b[2].max(q.0), b[3].max(q.1)];
+            }
+        }
+    }
+    b
+}
+
+#[test]
+fn a_placed_schedule_box_shows_the_table_of_the_plan() {
+    use plan_core::schedules::{Schedule, ScheduleKind as K, ScheduleLayer};
+    let mut p = two_room_house();
+    let mut def = Schedule::new(K::Door, Point::ZERO);
+    def.totals = true;
+    let mut layer = ScheduleLayer::default();
+    let id = layer.add(def);
+    layer.store(&mut p.floors[0]);
+    let cx = LayoutRenderContext::new(&p);
+    let src = BoxSource::PlacedSchedule { floor: 0, id };
+    let (w, h) = source_size_in(&src, Scale::QuarterInch, &cx);
+    assert!(w > 1.0 && h > 0.5, "{w} x {h}");
+    let mut l = Layout::new("t", SheetSize::ArchC);
+    l.add_page(1, "Schedules");
+    send_to_layout(&mut l, &cx, 1, src.clone(), Scale::QuarterInch, None);
+    let pdf = render_pdf(&l, &cx);
+    // The table title and the totals line are printed.
+    let text = text_of(&pdf);
+    assert!(text.contains("Door Schedule"), "title in the PDF");
+    assert!(text.contains("Total"), "totals line in the PDF");
+    // A schedule that is gone leaves a labelled placeholder and still prints.
+    let mut gone = l.clone();
+    gone.pages[0].boxes[0].source = BoxSource::PlacedSchedule { floor: 0, id: 999 };
+    let pdf = render_pdf(&gone, &cx);
+    check_xref(&pdf);
+    assert!(text_of(&pdf).contains("not found"));
+    // The source survives the JSON.
+    let back: Layout = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+    assert_eq!(back, l);
+}
+
+#[test]
+fn a_rotated_box_turns_its_content_about_its_centre() {
+    let p = two_room_house();
+    let cx = LayoutRenderContext::new(&p);
+    let scenes = crate::extent::SceneSource::new(None);
+    // A wide text box: 4" x 1".
+    let mut b = LayoutBox::new(
+        1,
+        (Point::new(1.0, 1.0), Point::new(5.0, 2.0)),
+        BoxSource::Text {
+            text: "ROTATE ME".into(),
+            height_pt: 10.0,
+        },
+        Scale::QuarterInch,
+    );
+    b.border = true;
+    b.clip = false;
+    let flat = crate::render::box_prims_for_test(&b, &cx, &scenes);
+    assert_eq!(b.quarter_turns(), 0);
+    let text_angle = |prims: &[Prim]| {
+        prims.iter().find_map(|p| match p {
+            Prim::Text { angle, text, .. } if text == "ROTATE ME" => Some(*angle),
+            _ => None,
+        })
+    };
+    assert_eq!(text_angle(&flat), Some(0.0));
+    b.rotation_deg = 90.0;
+    assert_eq!(b.quarter_turns(), 1);
+    let turned = crate::render::box_prims_for_test(&b, &cx, &scenes);
+    let a = text_angle(&turned).unwrap();
+    assert!((a - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+    // The frame (the border) stays where the box is.
+    let frame = |prims: &[Prim]| {
+        let borders: Vec<Prim> = prims
+            .iter()
+            .filter(|p| matches!(p, Prim::Stroke { closed: true, .. }))
+            .cloned()
+            .collect();
+        stroke_bounds(&borders)
+    };
+    assert_eq!(frame(&flat), frame(&turned));
+    // 270 and -90 are the same turn; 360 is none.
+    b.rotation_deg = -90.0;
+    assert_eq!(b.quarter_turns(), 3);
+    b.rotation_deg = 360.0;
+    assert_eq!(b.quarter_turns(), 0);
+    // The turned plan content stays inside the box's centre line extent:
+    // a 90 degree turn of a plan lays it out in the swapped box.
+    let mut plan = LayoutBox::new(
+        2,
+        (Point::new(1.0, 1.0), Point::new(9.0, 5.0)),
+        plan_source(),
+        Scale::EighthInch,
+    );
+    plan.border = false;
+    plan.clip = false;
+    plan.rotation_deg = 90.0;
+    let turned = stroke_bounds(&crate::render::box_prims_for_test(&plan, &cx, &scenes));
+    let (cx_pt, cy_pt) = (5.0 * 72.0, 3.0 * 72.0);
+    assert!(
+        turned[0] <= cx_pt && turned[2] >= cx_pt && turned[1] <= cy_pt && turned[3] >= cy_pt,
+        "{turned:?} around the centre"
+    );
+    // Old files without the field load as unrotated.
+    let mut v = serde_json::to_value(&b).unwrap();
+    v.as_object_mut().unwrap().remove("rotation_deg");
+    let old: LayoutBox = serde_json::from_value(v).unwrap();
+    assert_eq!(old.quarter_turns(), 0);
+}
+
+#[test]
+fn a_portrait_layout_swaps_the_sheet_and_prints_upright() {
+    let p = two_room_house();
+    let cx = LayoutRenderContext::new(&p);
+    let mut l = Layout::new("t", SheetSize::ArchC);
+    l.add_page(1, "Plan");
+    let (w, h) = l.sheet_inches();
+    assert_eq!((w, h), SheetSize::ArchC.inches());
+    l.portrait = true;
+    let (pw, ph) = l.sheet_inches();
+    assert_eq!((pw, ph), (h.min(w), h.max(w)));
+    // The drawing area follows the sheet.
+    let (lo, hi) = l.drawing_area();
+    assert!(hi.y - lo.y > hi.x - lo.x);
+    let pdf = text_of(&render_pdf(&l, &cx));
+    let media = format!("/MediaBox [0 0 {} {}]", pw * 72.0, ph * 72.0);
+    assert!(
+        pdf.contains(&media) || pdf.contains(&format!("{} {}", pw * 72.0, ph * 72.0)),
+        "{media}"
+    );
+    let back: Layout = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+    assert!(back.portrait);
+    let mut v = serde_json::to_value(&l).unwrap();
+    v.as_object_mut().unwrap().remove("portrait");
+    let old: Layout = serde_json::from_value(v).unwrap();
+    assert!(!old.portrait);
+}
+
+#[test]
+fn project_information_macros_reach_the_title_block() {
+    let mut p = two_room_house();
+    p.info.company = "Daniel Allen Designs".into();
+    p.info.client_phone = "404-555-0100".into();
+    p.info.checked_by = "DS".into();
+    p.info.custom.push(("permit".into(), "BP-22".into()));
+    let ctx = crate::render::macros_for(&p);
+    assert_eq!(
+        ctx.expand("%company%|%client.phone%|%checked.by%|%custom.permit%"),
+        "Daniel Allen Designs|404-555-0100|DS|BP-22"
+    );
+    // The built-in macros are not duplicated into the extras.
+    assert!(ctx.extra.iter().all(|(k, _)| !MacroContext::is_builtin(k)));
 }

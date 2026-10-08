@@ -22,7 +22,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// `extend_slope_downward: Some(d)` keeps the edge's plane sloping `d` inches
 /// (vertical) below the eave line after the roof is built.
+///
+/// `upper_pitch` and `dutch_gable` put a break in the roof (see the `staged`
+/// module): above `break_rise` inches over the eave the edge climbs at
+/// `upper_pitch`, or, for a Dutch gable, the hip ends in a short gable.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EdgeRoofSpec {
     /// Rise per 12 of run.
     pub pitch: f64,
@@ -32,6 +37,15 @@ pub struct EdgeRoofSpec {
     pub full_gable_wall: bool,
     pub high_shed_gable: bool,
     pub extend_slope_downward: Option<f64>,
+    /// Second pitch (rise per 12) above the break (RF-25).
+    pub upper_pitch: Option<f64>,
+    /// Rise above the eave, inches, where the upper pitch or the Dutch
+    /// gable starts. The smallest value of all edges is the roof's break;
+    /// without one it is [`DEFAULT_BREAK_FRACTION`](crate::staged::DEFAULT_BREAK_FRACTION)
+    /// of the roof's height.
+    pub break_rise: Option<f64>,
+    /// Dutch gable (RF-21): a hip below the break, a short gable above it.
+    pub dutch_gable: bool,
 }
 
 impl Default for EdgeRoofSpec {
@@ -44,6 +58,9 @@ impl Default for EdgeRoofSpec {
             full_gable_wall: false,
             high_shed_gable: false,
             extend_slope_downward: None,
+            upper_pitch: None,
+            break_rise: None,
+            dutch_gable: false,
         }
     }
 }
@@ -106,6 +123,9 @@ pub(crate) fn extend_downward(plane: &RoofPlane, drop: f64) -> RoofPlane {
 /// parallel-wall jog cases the exact skeleton is not available and the roof is
 /// approximated ([`Roof::approximate`] is set).
 ///
+/// An edge with `upper_pitch` or `dutch_gable` makes a two-stage roof (see the
+/// `staged` module); if that cannot be built the plain roof is returned.
+///
 /// `extend_slope_downward` is applied afterwards: the
 /// plane keeps its slope and gains a strip below its eave; the hips it shares
 /// with neighbouring planes are not continued below the old eave.
@@ -118,7 +138,10 @@ pub fn build_roof_with_specs(
     let edges: Vec<EdgeRoof> = (0..footprint.len())
         .map(|i| spec_of(i).to_edge_roof())
         .collect();
-    let mut roof = build_roof(footprint, &edges, baseline_elevation);
+    let staged = crate::staged::needs_break(specs)
+        .then(|| crate::staged::build_staged(footprint, specs, baseline_elevation))
+        .flatten();
+    let mut roof = staged.unwrap_or_else(|| build_roof(footprint, &edges, baseline_elevation));
     for plane in &mut roof.planes {
         if let Some(d) = spec_of(plane.source_edge).extend_slope_downward {
             *plane = extend_downward(plane, d);

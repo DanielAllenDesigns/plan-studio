@@ -47,7 +47,9 @@ pub use landscape_mesh::{landscape_meshes, wall_meshes};
 pub use landscape_plan::{
     circle_points, hatch_segments, landscape_plan, wall_outline, PlanItem, PlanShape,
 };
-pub use mesh::{road_meshes, terrain_mesh};
+pub use mesh::{
+    road_meshes, terrain_mesh, terrain_object_id, terrain_object_of, TerrainPart, TERRAIN_ID_BASE,
+};
 pub use model::{
     ElevationLine, ElevationPoint, ElevationRegion, Feature, FeatureKind, HeightGrid, Modifier,
     ModifierKind, RoadKind, RoadStrip, Terrain, TerrainSurface,

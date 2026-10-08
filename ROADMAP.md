@@ -55,15 +55,32 @@ what the latest rounds finished and what is in flight.
       `Ctrl+Alt+Cmd+L` for Adjust Lights
 - [x] Scenario tests (twelve files driving the tools headlessly) and `docs/qa-findings.md` (seven findings); the test count is 1,728
 
-### Round 8 (in flight)
+### Round 8 (done, commit `6f6a7b9`)
 
-- [ ] QA fixes: QA-01 door swing and hinge from the click, QA-02 a room's ceiling height in 3D, QA-03 the Room Schedule's interior area, QA-05 cabinets in the 3D scene,
-      QA-06 stairs in the 3D scene, QA-07 the roof tool's names
-- [ ] Stairs and railings (stair railings, the stairwell cut in the floor: QA-04, by the stairs builder)
-- [ ] Typed CAD slots (own styles, blocks, text macros and note types leave the hidden `CAD, Data` layer), a schedule as a selectable object in Select Objects,
-      and one undo model for the layout and the plan
-- [ ] The manual brought up to Round 7 (this edit)
-- [ ] The remaining stubs: the dimmed buttons still in the flyouts and bars (for example other door and window styles, terrain walls and curbs, the Revision Cloud and Print buttons, Floor Defaults)
+- [x] QA fixes: QA-01 door swing and hinge follow the pointer, QA-02 a room's floor and ceiling heights in 3D, QA-03 the Room Schedule's interior area (with a hidden Standard
+      Area column), QA-04 Auto Stairwell cuts the opening in the upper floor, QA-05 cabinets and QA-06 stairs in the 3D scene, QA-07 the roof tool's names. No scenario is ignored any more
+- [x] Stairs: rectangle and polygon landings joined to stair sections, curved stairs and winders, ramps with landings, Click Stairs, a wall, railing (newels, balusters, rails) or half wall on each side,
+      open and closed risers, stringer styles, lock settings, Bottom and Top Height with fit to floor-to-floor, the Staircase and Landing Specifications
+- [x] Typed CAD slots (own styles, blocks, text macros and note types leave the hidden `CAD, Data` layer, with migration), schedules in the normal selection, Project Information as its own action,
+      and one undo stack for the layout and the plan
+- [x] Terrain and landscaping: terrain walls and curbs (straight and curved), Elevation Spline, Terrain Break, rectangular, kidney and spline features, garden beds, grass, water features, stepping stones,
+      spline roads, driveways and sidewalks, plant and sprinkler runs, an object dialog, layers, and the terrain surface, roads and landscape in the 3D scene
+- [x] Images: Create Image, Create Billboard Image, Create Image Library (`~/.plan-studio/user-library.json`), polyline and spline distribution paths and regions, 3D Solid Feature
+- [x] Off macOS, Control+Z and Command+Z fold into one `Ctrl+Z`: Undo wins and Down One Floor is reported unmapped
+- [x] No flyout entry of the built tool groups is a stub (`ALLOWED_NOT_IMPLEMENTED` is empty); 1,852 tests
+- [x] The manual brought up to Round 7, with an exterior-details chapter (and, after the commit, to Round 8; the README, this file, the changelog and the release checklist)
+
+### Round 9 (in flight)
+
+- [ ] 3D picking: click an object in the 3D view to select it in the plan (the plan-side lookup `object_for_mesh_id` exists; the panel hook does not)
+- [ ] Terrain selection: pick, move and delete single terrain objects with Select Objects (an `ObjectRef` for terrain objects)
+- [ ] Landscape materials: a green grass, mulch and foliage material in place of the brown stand-ins
+- [ ] Billboards that turn to face the camera (they keep their stored angle in the cached 3D scene today)
+- [ ] An integration-queue sweep: the open items of `docs/integration-queue.md` (for example the Library Browser listing your saved pictures, guard rails around a stairwell, Plan Check skipping landings)
+- [ ] A performance pass
+- [ ] A parity audit against Chief Architect X18
+- [ ] Documentation: the manual and this file brought up to the Round 9 commit
+- [ ] The live manual QA pass on macOS, Windows and Linux ([docs/release-checklist.md](docs/release-checklist.md)), then the first tagged release
 
 ## Phase 0 — Foundation (done)
 
@@ -124,17 +141,18 @@ what the latest rounds finished and what is in flight.
       glTF export, camera objects with a Camera Specification
 - [x] Cabinets (six kinds, Cabinet Specification, face trees), library symbols
       (about 145 built-in 2D symbols)
-- [x] Stairs (straight, L, U, winder, ramp, landing; IRC solver; Auto Stairwell)
+- [x] Stairs (straight, L, U, winder, curved, ramp, landing; IRC solver; Auto Stairwell; railings; Round 8)
 - [x] Multiple floors, foundations, Build New Floor, Insert/Delete/Exchange
 - [x] Walls of every class, slabs, pads and piers, roof holes, skylights and dormers,
       manual framing, and placed library symbols (Chief objects with decoded meshes) in the 3D view
-- [ ] Stairs, cabinets (QA-05, QA-06: Round 8), electrical devices and terrain in the 3D view (the builders
-      exist in their crates); Build Framing's own members in 3D
+- [x] Stairs, cabinets, terrain, roads and landscape, pictures and 3D solids in the 3D view (Round 8)
+- [ ] Electrical devices in the 3D view (the builder exists in its crate); Build Framing's own members in 3D
 - [x] Walkthroughs (play and record), Add Lights and Adjust Lights, Create Auto Elevations and Wall Elevation cameras, vector elevations (Round 6)
-- [ ] Material Painter and textures in the viewport, 3D picking
+- [ ] Material Painter and textures in the viewport, 3D picking (Round 9)
 - [ ] Walkthrough recording at better than 8 samples per pixel (it uses the path tracer today, 640 x 480, as a PNG sequence)
 - [ ] glTF/OBJ import for symbols
-- [ ] Stair railings, stairwell cut in the floor, Stair Schedule
+- [x] Stair railings, walls and half-walls on a stair, the stairwell cut in the floor (Round 8)
+- [ ] Stair Schedule, guard rails around the stairwell opening, a railing across a landing in the plan symbol
 
 ## Phase 3 — Roofs and structure (done, with gaps below)
 
@@ -154,7 +172,8 @@ what the latest rounds finished and what is in flight.
       with manual framing in the 3D view and the DXF
 - [x] Picking placed framing with Select Objects, with handles (Round 6)
 - [ ] A framing defaults dialog, corner and T backing
-- [ ] Terrain in 3D, spline terrain tools, Terrain Break
+- [x] Terrain in 3D, spline terrain tools, Terrain Break, terrain walls and curbs, landscaping objects (Round 8)
+- [ ] Terrain walls that cut the surface and cut-and-fill features; selecting single terrain objects with Select Objects (Round 9)
 - [ ] Circuits UI and the electrical schedule
 
 ## Phase 4 — Documentation (partly done)
@@ -170,6 +189,7 @@ what the latest rounds finished and what is in flight.
 - [x] Print Layout and Export Layout PDF (a PDF of the printed pages; Round 7)
 - [ ] Print to a printer, and the row 1 Print button
 - [x] Place a schedule on the plan (door, window, room, cabinet, electrical, framing, plant, fixture, furniture, general) with callout labels (Round 7)
+- [x] Placed schedules are normal selectable objects, and the layout and the plan share one undo stack (Round 8)
 - [ ] Room-finish and note schedules, grouping and totals, click-a-row-selects-the-object, schedules in the DXF and the construction set, a schedule layout box
 - [ ] Plan notes, callouts and markers tied to elevation and section cameras
 - [x] Line weights, colors and dashes in PDF output from the layer pens
@@ -188,8 +208,8 @@ what the latest rounds finished and what is in flight.
 - [x] Automatic seeding from your Chief default plan and layout templates (Round 6)
 - [ ] `capture_typing` for tools that take typed input
 - [x] Replace From Library (Symbol Specification)
-- [ ] Symbol import (OBJ, glTF, SKP via converter); user library and Add to
-      User Library
+- [x] Create Image Library: your own pictures saved to a user library file, pictures, billboards and distributions (Round 8)
+- [ ] Symbol import (OBJ, glTF, SKP via converter); Add to User Library for symbols, the Library Browser listing the user library
 - [ ] Plugin or scripting layer for custom tools
 - [ ] Windows and Linux are built by CI but not yet tried by hand; the hotkey
       and settings paths are written for them

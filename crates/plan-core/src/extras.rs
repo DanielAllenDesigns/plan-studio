@@ -53,6 +53,35 @@ impl Default for RoomLabelOptions {
     }
 }
 
+/// Room Specification values that used to live only for the session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoomMisc {
+    /// A roof is built over the room.
+    pub roof_over: bool,
+    /// The floor height offset is measured from the datum, not the floor.
+    pub floor_height_absolute: bool,
+    /// The ceiling height is measured from the datum, not the floor.
+    pub ceiling_height_absolute: bool,
+    pub floor_finish_thickness: f64,
+    pub ceiling_finish_thickness: f64,
+    /// Wall covering name ("" = none).
+    pub wall_covering: String,
+}
+
+impl Default for RoomMisc {
+    fn default() -> Self {
+        Self {
+            roof_over: true,
+            floor_height_absolute: false,
+            ceiling_height_absolute: false,
+            floor_finish_thickness: 0.0,
+            ceiling_finish_thickness: 0.0,
+            wall_covering: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MoldingKind {
     Base,

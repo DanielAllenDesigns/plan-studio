@@ -370,6 +370,10 @@ pub(crate) fn stairs(ctx: &Ctx, out: &mut Vec<Finding>) {
     let o = ctx.opts;
     for s in ctx.stairs {
         let p = &s.params;
+        // A landing is a platform: no risers or treads to check.
+        if matches!(p.shape, StairShape::Landing { .. }) {
+            continue;
+        }
         let sol = solve(p);
         let on = |f: Finding| f.at(s.origin).on(Target::Stair(s.id));
         if let StairShape::Ramp { .. } = p.shape {

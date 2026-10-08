@@ -265,7 +265,10 @@ impl EditorContext {
             }
         }
         for d in &clip.dimensions {
-            let id = self.project.add_dimension(fl, d.clone());
+            // The copy is not tied to the walls the original was.
+            let mut copy = d.clone();
+            copy.anchors = [None, None];
+            let id = self.project.add_dimension(fl, copy);
             sel.push(ObjectRef::Dimension(id));
         }
         let mut cad_map: HashMap<Id, Id> = HashMap::new();
@@ -299,6 +302,8 @@ impl EditorContext {
             let mut all = core_sel;
             all.extend(self.selection.items.iter().copied());
             self.selection.items = all;
+            // Pasted distribution records rebuild their copies.
+            placed::sync_distributions(self);
         }
         self.mark_dirty();
         self.status = "Pasted in place".into();

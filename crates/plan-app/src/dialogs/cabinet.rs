@@ -22,9 +22,10 @@ use super::{
 use crate::editor::placed::{cabinet_label, cabinet_layer};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use plan_cabinets::{
-    plan_symbol, Backsplash, BlindSide, Cabinet, CabinetKind, CornerSpec, CornerStyle, Countertop,
-    CutoutKind, Divider, DoorProfile, DoorStyle, DrawerStyle, EdgeProfile, FaceCell, FaceItem,
-    FaceLayout, HandleStyle, HingeStyle, MaterialChoice, Molding, Overlay, ToeKick,
+    plan_symbol, Backsplash, BlindSide, Cabinet, CabinetKind, CornerSpec, CornerStyle,
+    CornerTreatment, Countertop, CutoutKind, Divider, DoorProfile, DoorStyle, DrawerStyle,
+    EdgeProfile, FaceCell, FaceItem, FaceLayout, FaceSide, HandleStyle, HingeStyle, MaterialChoice,
+    Molding, Overlay, SideKind, ToeKick,
 };
 use plan_core::geometry::Point;
 
@@ -411,6 +412,8 @@ struct CabinetForm {
     fields: Fields,
     sel: Path,
     new_type: ItemType,
+    /// The face the Front/Sides/Back tab edits.
+    side: FaceSide,
 }
 
 impl CabinetDialog {
@@ -422,6 +425,7 @@ impl CabinetDialog {
                 fields: Fields::default(),
                 sel: Vec::new(),
                 new_type: ItemType::Drawer,
+                side: FaceSide::Front,
             },
         }
     }
@@ -533,6 +537,14 @@ impl CabinetForm {
                 if c.edge != EdgeProfile::Square {
                     f.length_row(ui, "Edge Size", "cust_edge_size", &mut c.edge_size);
                 }
+                row(ui, "Corner Treatment", |ui| {
+                    for k in CornerTreatment::ALL {
+                        ui.radio_value(&mut c.corner, k, k.name());
+                    }
+                });
+                if c.corner != CornerTreatment::None {
+                    f.length_row(ui, "Corner Size", "cust_corner", &mut c.corner_size);
+                }
             } else {
                 // A backsplash is `height` high; the strip thickness is the custom one.
                 f.length_row(ui, "Height", "cust_bs_height", &mut d.height);
@@ -614,10 +626,25 @@ impl CabinetForm {
                 f.length_row(ui, "Overhang Back", "ct_back", &mut t.overhang_back);
                 f.length_row(ui, "Overhang Sides", "ct_sides", &mut t.overhang_sides);
                 row(ui, "Corner Treatment", |ui| {
-                    dis_radio(ui, "None", true);
-                    dis_radio(ui, "Clipped", false);
-                    dis_radio(ui, "Rounded", false);
+                    for c in CornerTreatment::ALL {
+                        ui.radio_value(&mut t.corner, c, c.name());
+                    }
                 });
+                if t.corner != CornerTreatment::None {
+                    f.length_row(ui, "Corner Size", "ct_corner", &mut t.corner_size);
+                }
+                row(ui, "Edge Profile", |ui| {
+                    egui::ComboBox::from_id_salt("ct_edge")
+                        .selected_text(t.edge.name())
+                        .show_ui(ui, |ui| {
+                            for e in EdgeProfile::ALL {
+                                ui.selectable_value(&mut t.edge, e, e.name());
+                            }
+                        });
+                });
+                if t.edge != EdgeProfile::Square {
+                    f.length_row(ui, "Edge Size", "ct_edge_size", &mut t.edge_size);
+                }
             }
         }
         if d.top_local().is_none() {
@@ -724,15 +751,91 @@ impl CabinetForm {
         }
     }
 
+    /// The Front/Sides/Back tab: pick the face, its Side Type, and (for the
+    /// front and Custom Face sides) edit its face items.
     fn front(&mut self, ui: &mut Ui) {
         section(ui, "Cabinet Side");
-        row(ui, "Side", |ui| dis_combo(ui, "cab_side", "Front"));
-        row(ui, "Side Type", |ui| {
-            dis_combo(ui, "cab_side_type", "Custom Face")
+        let mut side = self.side;
+        row(ui, "Side", |ui| {
+            egui::ComboBox::from_id_salt("cab_side")
+                .selected_text(side.name())
+                .show_ui(ui, |ui| {
+                    for s in FaceSide::ALL {
+                        ui.selectable_value(&mut side, s, s.name());
+                    }
+                });
         });
-        section(ui, "Front Elevation (drag a divider to resize)");
+        if side != self.side {
+            self.side = side;
+            self.sel.clear();
+        }
+        let rectangular = !self.draft.kind.is_corner() && !self.draft.kind.is_custom();
+        if side == FaceSide::Front {
+            row(ui, "Side Type", |ui| {
+                dis_combo(ui, "cab_side_type", "Custom Face")
+            });
+            self.face_editor(ui, side);
+            return;
+        }
+        let mut kind = self.draft.side_kind(side);
+        let before = kind;
+        ui.add_enabled_ui(rectangular, |ui| {
+            row(ui, "Side Type", |ui| {
+                egui::ComboBox::from_id_salt("cab_side_type")
+                    .selected_text(kind.name())
+                    .show_ui(ui, |ui| {
+                        for k in SideKind::ALL {
+                            ui.selectable_value(&mut kind, k, k.name());
+                        }
+                    });
+            });
+        });
+        if !rectangular {
+            ui.weak("Only rectangular cabinets have editable sides.");
+            return;
+        }
+        if kind != before {
+            let layout = self
+                .draft
+                .side_face(side)
+                .map(|s| s.layout.clone())
+                .unwrap_or_else(FaceLayout::single_door);
+            self.draft.set_side_face(side, kind, layout);
+            self.sel.clear();
+        }
+        match kind {
+            SideKind::CustomFace => {
+                // The editor below works on `draft.face`: lend it the side's
+                // layout for the length of the call.
+                let layout = self
+                    .draft
+                    .side_face(side)
+                    .map(|s| s.layout.clone())
+                    .unwrap_or_else(FaceLayout::single_door);
+                let front = std::mem::replace(&mut self.draft.face, layout);
+                self.face_editor(ui, side);
+                let edited = std::mem::replace(&mut self.draft.face, front);
+                self.draft.set_side_face(side, SideKind::CustomFace, edited);
+            }
+            SideKind::Plain => {
+                ui.weak("The plain 3/4\" carcass panel.");
+            }
+            SideKind::Finished => {
+                ui.weak("A finished slab panel in the door material.");
+            }
+            SideKind::Open => {
+                ui.weak("No panel: the box is open on this side.");
+            }
+        }
+    }
+
+    /// The face canvas and the face-item tree of `draft.face`, which is the
+    /// front's layout or (while a side is edited) that side's.
+    fn face_editor(&mut self, ui: &mut Ui, side: FaceSide) {
+        section(ui, "Elevation (drag a divider to resize)");
         let mut sel = std::mem::take(&mut self.sel);
-        face_canvas(ui, &mut self.draft, &mut sel);
+        let (fh, fw) = (self.draft.face_height(), self.draft.side_width(side));
+        face_canvas(ui, &mut self.draft, fh, fw, &mut sel);
         section(ui, "Face Items");
         let layout = &mut self.draft.face;
         egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -800,14 +903,18 @@ impl CabinetForm {
         ui.horizontal(|ui| {
             let face_h = self.draft.face_height();
             if ui.button("Reset to Default Face").clicked() {
-                self.draft.face = match self.draft.kind {
-                    CabinetKind::Wall => FaceLayout::wall_default(face_h),
-                    CabinetKind::FullHeight => FaceLayout::full_height_default(face_h),
-                    _ => FaceLayout::base_default(face_h),
+                self.draft.face = if side != FaceSide::Front {
+                    FaceLayout::single_door()
+                } else {
+                    match self.draft.kind {
+                        CabinetKind::Wall => FaceLayout::wall_default(face_h),
+                        CabinetKind::FullHeight => FaceLayout::full_height_default(face_h),
+                        _ => FaceLayout::base_default(face_h),
+                    }
                 };
                 sel.clear();
             }
-            if ui.button("Sink Base Face").clicked() {
+            if side == FaceSide::Front && ui.button("Sink Base Face").clicked() {
                 self.draft.face = FaceLayout::sink_base();
                 sel.clear();
             }
@@ -1159,8 +1266,7 @@ const DRAG_STEP: f64 = 0.125;
 
 /// The front elevation of the face: items fill their rectangles, a click
 /// selects one and dragging a divider between two items resizes them.
-fn face_canvas(ui: &mut Ui, cab: &mut Cabinet, sel: &mut Path) {
-    let (fh, fw) = (cab.face_height(), cab.face_width());
+fn face_canvas(ui: &mut Ui, cab: &mut Cabinet, fh: f64, fw: f64, sel: &mut Path) {
     if fh <= 0.0 || fw <= 0.0 {
         ui.weak("This cabinet has no face.");
         return;
@@ -1316,6 +1422,13 @@ impl SpecPages for CabinetForm {
         let d = &self.draft;
         if d.width < 1.0 || d.depth <= 0.0 || d.height <= 0.0 {
             return Some("Width, depth and height must be positive".into());
+        }
+        for sf in &d.sides {
+            if sf.kind == SideKind::CustomFace {
+                if let Err(e) = sf.layout.resolve(d.face_height(), d.side_width(sf.side)) {
+                    return Some(format!("{} face items: {e}", sf.side.name()));
+                }
+            }
         }
         d.face
             .resolve(d.face_height(), self.face_width())
@@ -1794,6 +1907,94 @@ mod tests {
         assert!(set_item_type(&mut l, &p, ItemType::Panel));
         assert_eq!(describe(item_at(&l, &p).unwrap()), "Panel");
         assert!(l.resolve(fh, fw).is_ok());
+    }
+
+    /// Every text a page draws.
+    fn cabinet_page_texts(dlg: &mut CabinetDialog, tab: usize) -> Vec<String> {
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|x| texts(x, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| dlg.form.page(ui, tab));
+        });
+        let mut all = Vec::new();
+        for c in &out.shapes {
+            texts(&c.shape, &mut all);
+        }
+        all
+    }
+
+    #[test]
+    fn the_sides_and_back_tab_edits_the_other_faces() {
+        let mut dlg = CabinetDialog::new(Cabinet::base(24.0));
+        let tab = TABS
+            .iter()
+            .position(|t| t.name == "Front/Sides/Back")
+            .unwrap();
+        // The side list is live and starts on the front.
+        let drawn = cabinet_page_texts(&mut dlg, tab);
+        assert!(drawn.iter().any(|t| t == "Front"), "{drawn:?}");
+        // Switch to the back, make it a custom face: one door by default.
+        dlg.form.side = FaceSide::Back;
+        dlg.form.draft.set_side_face(
+            FaceSide::Back,
+            SideKind::CustomFace,
+            FaceLayout::single_door(),
+        );
+        let front_items = dlg.form.draft.face.items.len();
+        let drawn = cabinet_page_texts(&mut dlg, tab);
+        assert!(drawn.iter().any(|t| t == "Custom Face"), "{drawn:?}");
+        // The front layout was handed back untouched.
+        assert_eq!(dlg.form.draft.face.items.len(), front_items);
+        let back = dlg.form.draft.side_face(FaceSide::Back).unwrap();
+        assert_eq!(back.layout.items.len(), 1);
+        // Edit the back's layout the way the buttons do (through `draft.face`).
+        let mut layout = back.layout.clone();
+        assert!(add_item(&mut layout, &[0], FaceItem::Drawer { height: 6.0 }).is_some());
+        dlg.form
+            .draft
+            .set_side_face(FaceSide::Back, SideKind::CustomFace, layout);
+        assert_eq!(
+            dlg.form
+                .draft
+                .side_face(FaceSide::Back)
+                .unwrap()
+                .layout
+                .items
+                .len(),
+            2
+        );
+        assert!(dlg.form.error().is_none());
+        // A layout that cannot resolve is reported against its face.
+        dlg.form.draft.set_side_face(
+            FaceSide::Left,
+            SideKind::CustomFace,
+            FaceLayout {
+                items: vec![FaceItem::Drawer { height: 99.0 }],
+                frame_width: 1.5,
+            },
+        );
+        assert!(dlg.form.error().unwrap().starts_with("Left face items"));
+    }
+
+    #[test]
+    fn countertop_corner_treatment_and_edge_are_live_on_the_general_tab() {
+        let mut dlg = CabinetDialog::new(Cabinet::base(36.0));
+        let drawn = cabinet_page_texts(&mut dlg, 0);
+        for want in ["Corner Treatment", "Clipped", "Rounded", "Edge Profile"] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        let t = dlg.form.draft.countertop.as_mut().unwrap();
+        t.corner = CornerTreatment::Rounded;
+        t.edge = EdgeProfile::Ogee;
+        let drawn = cabinet_page_texts(&mut dlg, 0);
+        assert!(drawn.iter().any(|t| t == "Corner Size"), "{drawn:?}");
+        assert!(drawn.iter().any(|t| t == "Edge Size"), "{drawn:?}");
     }
 
     #[test]

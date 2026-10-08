@@ -1,20 +1,20 @@
 //! Specification dialogs of the Trim tools, Material Region, Wall Hatching,
 //! Polygon Shaped Deck and the 3D Solid tools: Corner Board, Quoin, Molding,
 //! Material Region, Wall Hatching, Deck and 3D Solid Specification. Every
-//! dialog has General, Materials, Line Style (shown, not stored yet) and
-//! Layer pages. Opened by a double-click on the object (or right after a
+//! dialog has General, Materials, Line Style and Layer pages; the Molding
+//! dialog also edits a custom cross section point by point. Opened by a double-click on the object (or right after a
 //! solid, wall region or hatch is drawn); the dialog edits a [`Draft`] clone
 //! that the tool stores on OK as one undo step.
 
 use super::{
-    dis_combo, off, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab,
-    PV_ACCENT, PV_FAINT, PV_INK, PV_WALL,
+    on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_FAINT,
+    PV_INK, PV_WALL,
 };
 use crate::editor::details_view::{material_names, PATTERN_NAMES};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::details::{
-    bounds, wall_rect, CornerBoard, DeckPolygon, DetailRef, DetailsLayer, MaterialRegion,
-    MoldingLine, MoldingProfile, Quoin, RegionKind, Solid3d, SolidKind, WallHatch,
+    bounds, wall_rect, CornerBoard, DeckPolygon, DetailRef, DetailStyle, DetailsLayer,
+    MaterialRegion, MoldingLine, MoldingProfile, Quoin, RegionKind, Solid3d, SolidKind, WallHatch,
 };
 use plan_core::geometry::Point;
 use plan_core::units::fmt_ft_in;
@@ -24,10 +24,10 @@ use plan_core::Id;
 const FULL_TABS: &[Tab] = &[
     on("General"),
     on("Materials"),
-    off("Line Style"),
+    on("Line Style"),
     on("Layer"),
 ];
-const HATCH_TABS: &[Tab] = &[on("General"), off("Line Style"), on("Layer")];
+const HATCH_TABS: &[Tab] = &[on("General"), on("Line Style"), on("Layer")];
 
 /// Material names offered before the library's own.
 pub const BASE_MATERIALS: [&str; 8] = [
@@ -115,6 +115,18 @@ impl Draft {
             Draft::Hatch(d) => &mut d.layer,
             Draft::Deck(d) => &mut d.layer,
             Draft::Solid(d) => &mut d.layer,
+        }
+    }
+
+    fn style_mut(&mut self) -> &mut DetailStyle {
+        match self {
+            Draft::CornerBoard(d) => &mut d.style,
+            Draft::Quoin(d) => &mut d.style,
+            Draft::Molding(d) => &mut d.style,
+            Draft::Region(d) => &mut d.style,
+            Draft::Hatch(d) => &mut d.style,
+            Draft::Deck(d) => &mut d.style,
+            Draft::Solid(d) => &mut d.style,
         }
     }
 
@@ -248,6 +260,7 @@ impl Form {
                     "Length {}, projects to the left of the drawing direction",
                     fmt_ft_in(m.length())
                 ));
+                self.profile_editor(ui);
             }
             Draft::Region(r) => {
                 match r.kind {
@@ -334,6 +347,136 @@ impl Form {
                     s.volume() / 1728.0
                 ));
             }
+        }
+    }
+
+    /// Line Style page: the detail's own color, weight and dash in the plan.
+    fn line_style_page(&mut self, ui: &mut Ui) {
+        use plan_core::layers::LineStyle;
+        section(ui, "Line Style");
+        let st = self.draft.style_mut();
+        let mut own = st.color.is_some();
+        if ui.checkbox(&mut own, "Own color").changed() {
+            st.color = own.then_some([60, 60, 60]);
+        }
+        if let Some(c) = &mut st.color {
+            row(ui, "Color", |ui| ui.color_edit_button_srgb(c));
+        }
+        let mut own = st.weight.is_some();
+        if ui.checkbox(&mut own, "Own line weight").changed() {
+            st.weight = own.then_some(25);
+        }
+        if let Some(w) = &mut st.weight {
+            row(ui, "Weight", |ui| {
+                ui.add(egui::DragValue::new(w).range(5..=200).suffix(" /100 mm"))
+            });
+        }
+        row(ui, "Line style", |ui| {
+            let names = [
+                (None, "As the layer"),
+                (Some(LineStyle::Solid), "Solid"),
+                (Some(LineStyle::Dashed), "Dashed"),
+                (Some(LineStyle::Dotted), "Dotted"),
+                (Some(LineStyle::DashDot), "Dash-dot"),
+            ];
+            let current = names
+                .iter()
+                .find(|(v, _)| *v == st.dash)
+                .map_or("As the layer", |(_, n)| *n);
+            egui::ComboBox::from_id_salt("details_line_style")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for (v, n) in names {
+                        ui.selectable_value(&mut st.dash, v, n);
+                    }
+                });
+        });
+        if st.is_default() {
+            ui.weak("Drawn with the color, weight and dash of its layer.");
+        }
+    }
+
+    /// Custom molding cross section: the points `(projection, height)`
+    /// measured from the bottom edge at the wall, edited one by one.
+    fn profile_editor(&mut self, ui: &mut Ui) {
+        let Draft::Molding(m) = &mut self.draft else {
+            return;
+        };
+        section(ui, "Cross section");
+        let is_custom = matches!(m.profile, MoldingProfile::Custom(_));
+        ui.horizontal(|ui| {
+            if ui
+                .button(if is_custom {
+                    "Reset to the box"
+                } else {
+                    "Edit as custom profile"
+                })
+                .clicked()
+            {
+                // Start the custom profile from the current section, or go
+                // back to a plain box of the same size.
+                m.profile = if is_custom {
+                    MoldingProfile::Base
+                } else {
+                    MoldingProfile::Custom(m.section())
+                };
+            }
+        });
+        let MoldingProfile::Custom(pts) = &mut m.profile else {
+            ui.weak("A preset profile is a plain box; edit it as a custom profile to shape it.");
+            return;
+        };
+        let mut remove = None;
+        let mut insert = None;
+        egui::Grid::new("profile_points")
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong("#");
+                ui.strong("Projection");
+                ui.strong("Height");
+                ui.label("");
+                ui.end_row();
+                let n = pts.len();
+                for (i, p) in pts.iter_mut().enumerate() {
+                    ui.label((i + 1).to_string());
+                    ui.add(egui::DragValue::new(&mut p.x).speed(0.05).range(0.0..=48.0));
+                    ui.add(egui::DragValue::new(&mut p.y).speed(0.05).range(0.0..=96.0));
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("+")
+                            .on_hover_text("Add a point after this one")
+                            .clicked()
+                        {
+                            insert = Some(i);
+                        }
+                        if ui
+                            .add_enabled(n > 3, egui::Button::new("\u{2212}").small())
+                            .on_hover_text("Remove this point")
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        if let Some(i) = insert {
+            let a = pts[i];
+            let b = pts[(i + 1) % pts.len()];
+            pts.insert(i + 1, Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5));
+        }
+        if let Some(i) = remove {
+            pts.remove(i);
+        }
+        // The stated height and projection are the profile's extents; they
+        // follow the points as they are edited.
+        let (_, hi) = bounds(pts);
+        if hi.x > 0.0 && hi.y > 0.0 {
+            m.width = hi.x;
+            m.height = hi.y;
+        }
+        if plan_core::geometry::polygon_area(pts).abs() < 1e-6 {
+            ui.colored_label(super::ERROR_RED, "The points enclose no area");
         }
     }
 
@@ -440,13 +583,7 @@ impl SpecPages for Form {
         match name {
             "General" => self.general(ui),
             "Materials" => self.materials_page(ui),
-            "Line Style" => {
-                section(ui, "Line Style");
-                row(ui, "Line style", |ui| {
-                    dis_combo(ui, "details_line_style", "Solid");
-                });
-                ui.weak("Not stored yet");
-            }
+            "Line Style" => self.line_style_page(ui),
             "Layer" => self.layer_page(ui),
             _ => {}
         }
@@ -604,7 +741,7 @@ mod tests {
             tabs(DetailRef::Hatch(6)),
             ["General", "Line Style", "Layer"]
         );
-        // Line Style is shown but disabled.
+        // Line Style is live.
         let d = DetailsDialog::new(&l, DetailRef::Deck(7), names()).unwrap();
         let line = d
             .form
@@ -613,8 +750,119 @@ mod tests {
             .iter()
             .find(|t| t.name == "Line Style")
             .unwrap();
-        assert!(!line.enabled);
+        assert!(line.enabled);
         assert!(DetailsDialog::new(&l, DetailRef::Deck(99), names()).is_none());
+    }
+
+    /// Every text a page draws.
+    fn page_texts(d: &mut DetailsDialog, page: &str) -> Vec<String> {
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|x| texts(x, out)),
+                _ => {}
+            }
+        }
+        let tab = d.form.tabs().iter().position(|t| t.name == page).unwrap();
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
+        });
+        let mut all = Vec::new();
+        for c in &out.shapes {
+            texts(&c.shape, &mut all);
+        }
+        all
+    }
+
+    #[test]
+    fn the_line_style_page_is_stored_with_the_detail() {
+        use plan_core::layers::LineStyle;
+        let mut l = layer();
+        for r in [
+            DetailRef::CornerBoard(1),
+            DetailRef::Quoin(2),
+            DetailRef::Molding(3),
+            DetailRef::Region(4),
+            DetailRef::Hatch(6),
+            DetailRef::Deck(7),
+            DetailRef::Solid(8),
+        ] {
+            let mut d = DetailsDialog::new(&l, r, names()).unwrap();
+            let drawn = page_texts(&mut d, "Line Style");
+            assert!(drawn.iter().any(|t| t == "Own color"), "{r:?} {drawn:?}");
+            let st = d.form.draft.style_mut();
+            assert!(st.is_default());
+            st.color = Some([200, 30, 30]);
+            st.weight = Some(50);
+            st.dash = Some(LineStyle::Dashed);
+            assert!(d.draft().apply(&mut l), "{r:?}");
+            let back = DetailsDialog::new(&l, r, names()).unwrap();
+            let mut probe = back.draft().clone();
+            assert_eq!(probe.style_mut().color, Some([200, 30, 30]), "{r:?}");
+            assert_eq!(probe.style_mut().weight, Some(50));
+            assert_eq!(probe.style_mut().dash, Some(LineStyle::Dashed));
+        }
+        // It survives the JSON, and a detail from an older file has none.
+        let json = serde_json::to_string(&l).unwrap();
+        let back: DetailsLayer = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, l);
+        let mut v: serde_json::Value = serde_json::to_value(l.deck(7).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("style");
+        let old: plan_core::details::DeckPolygon = serde_json::from_value(v).unwrap();
+        assert!(old.style.is_default());
+    }
+
+    #[test]
+    fn a_molding_profile_can_be_edited_point_by_point() {
+        let mut l = layer();
+        let mut d = DetailsDialog::new(&l, DetailRef::Molding(3), names()).unwrap();
+        let drawn = page_texts(&mut d, "General");
+        assert!(
+            drawn.iter().any(|t| t == "Edit as custom profile"),
+            "{drawn:?}"
+        );
+        // The button turns the preset into a custom profile of the same box.
+        let Draft::Molding(m) = d.draft_mut() else {
+            panic!("a molding")
+        };
+        let (w, h) = (m.width, m.height);
+        m.profile = MoldingProfile::Custom(m.section());
+        let drawn = page_texts(&mut d, "General");
+        assert!(drawn.iter().any(|t| t == "Reset to the box"), "{drawn:?}");
+        // Shape it into a bevelled profile: move one corner in and add a point.
+        let Draft::Molding(m) = d.draft_mut() else {
+            panic!()
+        };
+        let MoldingProfile::Custom(pts) = &mut m.profile else {
+            panic!("custom")
+        };
+        assert_eq!(pts.len(), 4);
+        pts[2] = Point::new(w * 0.5, h);
+        pts.insert(2, Point::new(w, h * 0.5));
+        let before = m.section().len();
+        assert_eq!(before, 5);
+        assert!(d.form.error().is_none());
+        assert!(d.draft().apply(&mut l));
+        let stored = l.moldings.iter().find(|m| m.id == 3).unwrap();
+        assert!(matches!(&stored.profile, MoldingProfile::Custom(p) if p.len() == 5));
+        // The section follows the points: smaller than the plain box.
+        let area = plan_core::geometry::polygon_area(&stored.section()).abs();
+        assert!(area < w * h - 0.1 && area > 0.0, "{area} vs {}", w * h);
+        // Degenerate points enclose no area; the page says so.
+        let Draft::Molding(m) = d.draft_mut() else {
+            panic!()
+        };
+        m.profile = MoldingProfile::Custom(vec![
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(2.0, 2.0),
+        ]);
+        let drawn = page_texts(&mut d, "General");
+        assert!(
+            drawn.iter().any(|t| t == "The points enclose no area"),
+            "{drawn:?}"
+        );
     }
 
     #[test]

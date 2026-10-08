@@ -146,6 +146,25 @@ fn stair_limits_and_comfort() {
 }
 
 #[test]
+fn a_landing_gets_no_stair_findings() {
+    let p = Project::new("t");
+    let landing = plan_stairs::Stair::new(
+        3,
+        Point::ZERO,
+        0.0,
+        StairParams {
+            shape: StairShape::Landing { depth: 48.0 },
+            ..StairParams::default()
+        },
+    );
+    let f = plan_check(&p, 0, &[], &[], &[landing], &CheckOptions::default());
+    assert!(
+        f.iter().all(|x| x.object != Some(Target::Stair(3))),
+        "{f:?}"
+    );
+}
+
+#[test]
 fn enclosed_room_without_door_is_unreachable() {
     let mut p = Project::new("t");
     rect(&mut p, 0.0, 0.0, 144.0, 144.0, WallKind::Exterior);

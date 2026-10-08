@@ -46,7 +46,7 @@ Straight Wall flyout, Floor Material Region on the Floor flyout, Polygon Shaped 
 | Face | 3D Solid | A polygon makes a flat, two-sided face. |
 | Pyramid | 3D Solid | A polygon makes a pyramid. |
 | Cone, Cylinder, Sphere | 3D Solid | Click the center, then the radius (a second click, or drag out from the center). |
-| 3D Solid Feature | 3D Solid | (planned) |
+| 3D Solid Feature | 3D Solid | Places the active library item as a solid (chapter 6.7). |
 
 **Polygons** work like the slab tools (chapter 16.2): click the corners; a double-click, `Enter` or a click on the first corner closes the shape; press at the first point and drag to draw a rectangle; `Backspace` drops the last corner;
 `Esc` cancels. The area must be at least 1 sq in. A new solid, wall region or hatch opens its dialog at once so the height, the range or the pattern can be set right away.
@@ -107,6 +107,6 @@ OK is refused with a reason for a size of zero or less.
 - No mini elevation window for a Wall Material Region: you drag along the wall and set the heights in the dialog.
 - Moldings do not miter at polyline corners (each segment is swept separately), and a Custom profile has no editor.
 - Wall material regions are not drawn on curved walls.
-- Pyramid is an extra solid beyond Chief's list; **3D Solid Feature** is (planned).
+- Pyramid is an extra solid beyond Chief's list; **3D Solid Feature** (chapter 6.7) places a library item as a solid rather than drawing a primitive.
 - The Line Style page of every dialog is disabled.
 - Trim follows a wall only when Select Objects moves it (17.3).

@@ -1,5 +1,7 @@
 # Parity spec: Cabinets, Stairs, Framing, Terrain, Library, Electrical (Chief X18)
 
+> Status (2026-10-08): 68 ids: 38 Works, 27 Partial, 2 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+
 Scope: the six "object families" that share the Library Browser and the
 Default Settings tree. Cabinet fields are quoted from `docs/chief-x18-dialogs.md`
 (Cabinet Specification, captured 2026-10-07). Stairs, framing, terrain, library

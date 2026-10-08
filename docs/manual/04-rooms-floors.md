@@ -37,8 +37,8 @@ Every room carries three areas:
 | Area | Measured to | Used for |
 |---|---|---|
 | Centerline area | Wall centerlines | The outline drawn on the Rooms layer, and the number in the Properties panel's room list. |
-| Interior Area | The interior wall surfaces (the inner polygon) | The plan label, the Room Specification, schedules and Total Living Area. |
-| Standard Area | Outside of exterior walls, center of shared walls | The optional second readout. |
+| Interior Area | The interior wall surfaces (the inner polygon) | The plan label, the Room Specification, the Room Schedule's Area column (QA-03, fixed in Round 8) and Total Living Area. |
+| Standard Area | Outside of exterior walls, center of shared walls | The optional second readout; a hidden Standard Area column of the Room Schedule. |
 
 Interior dimensions in a label are the width and length of the interior bounding
 rectangle, in the plan's dimension format, for example `12'-4" x 14'-0"`.
@@ -143,7 +143,7 @@ below, and old files load with the defaults for every field they lack. The rest 
 ### Structure
 
 - **Floor Height** and **Ceiling Height**, each Absolute or Relative (the absolute/
-  relative toggle is session only; the offset values are stored). A room's own Ceiling Height does not yet reach the 3D ceiling (QA-02 in `docs/qa-findings.md`; Round 8 is fixing it).
+  relative toggle is session only; the offset values are stored). Both reach the 3D view (QA-02, fixed in Round 8; R-23, R-24, R-33): the 3D floor platform of a room is raised by its Floor Height offset, and its ceiling platform sits at its own Ceiling Height measured from that raised floor. A room with no named entry, or with no override, keeps the floor's ceiling height. Rooms that share the same levels share one platform; the 3D view rebuilds when you change them.
 - **Rough Ceiling Height** for dropped ceilings (stored).
 - **Finish** thicknesses for floor and ceiling (stored finish names; thickness session only).
 - **Platforms**: Floor Under This Room, Ceiling Over This Room (stored; turning it off makes Build Roof add a vaulted ceiling plane over the room, chapter 8.2), Roof Over This Room (session only).

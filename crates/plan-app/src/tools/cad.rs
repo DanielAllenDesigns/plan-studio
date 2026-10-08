@@ -46,8 +46,8 @@ mod edit_tests;
 mod style;
 #[allow(unused_imports)]
 pub use edit::{
-    apply_hatch, closed_outline, hatch_lines, hatch_pattern, item_segments, offset_item,
-    plan_hatch, trim_polyline, HatchJob, HATCHES,
+    apply_hatch, closed_outline, edit_actions, hatch_lines, hatch_pattern, item_segments,
+    offset_item, plan_hatch, run_edit_command, trim_polyline, HatchJob, EDIT_COMMANDS, HATCHES,
 };
 use edit::{ensure_layer, TEMP_POINT_LAYER};
 #[allow(unused_imports)]
@@ -2204,7 +2204,9 @@ impl Tool for CadTool {
     }
 
     fn edit_toolbar(&self, cx: &EditorContext) -> Vec<crate::editor::EditAction> {
-        cx.common_edit_actions()
+        let mut v = cx.common_edit_actions();
+        v.extend(edit_actions(cx));
+        v
     }
 }
 

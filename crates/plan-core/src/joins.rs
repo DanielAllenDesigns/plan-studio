@@ -14,7 +14,7 @@
 //!   meets the neighbour's boundary nearest to `r` outside its own main layer.
 
 use crate::defaults::WallTypeDef;
-use crate::geometry::{project_on_segment, Point};
+use crate::geometry::{project_on_segment, BoxGrid, Point};
 use crate::model::{Id, Wall, WallEnd};
 
 /// Maximum miter length as a multiple of the thicker wall.
@@ -65,15 +65,121 @@ fn left_sign(e: End) -> f64 {
     }
 }
 
+/// Are the two wall lists the same in every field? [`Wall`] has no
+/// `PartialEq`; callers that cache what they derived from walls (rooms,
+/// outlines) compare with this. The destructuring is exhaustive on purpose: a
+/// field added to `Wall` stops this from compiling until it is compared.
+pub fn walls_equal(a: &[Wall], b: &[Wall]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| wall_eq(x, y))
+}
+
+fn wall_eq(a: &Wall, b: &Wall) -> bool {
+    let Wall {
+        id,
+        start,
+        end,
+        thickness,
+        height,
+        kind,
+        layer,
+        flags,
+        wall_type,
+        resize_about,
+        curve,
+        roof,
+        exterior_side,
+        extras,
+        class,
+        foundation_height,
+        is_deck_edge,
+        bottom_offset,
+    } = a;
+    *id == b.id
+        && *start == b.start
+        && *end == b.end
+        && *thickness == b.thickness
+        && *height == b.height
+        && *kind == b.kind
+        && *layer == b.layer
+        && *flags == b.flags
+        && *wall_type == b.wall_type
+        && *resize_about == b.resize_about
+        && *curve == b.curve
+        && *roof == b.roof
+        && *exterior_side == b.exterior_side
+        && *extras == b.extras
+        && *class == b.class
+        && *foundation_height == b.foundation_height
+        && *is_deck_edge == b.is_deck_edge
+        && *bottom_offset == b.bottom_offset
+}
+
+/// Walls found by position, for the join queries that look for neighbours of
+/// one wall end: a grid over the walls' boxes (a scan for short lists).
+/// Candidates come back in wall order, so a loop over them behaves like a
+/// loop over all walls.
+struct Near {
+    grid: Option<BoxGrid>,
+    len: usize,
+}
+
+/// Below this many walls a scan beats building a grid.
+const GRID_MIN_WALLS: usize = 24;
+
+impl Near {
+    fn new(walls: &[Wall], tol: f64) -> Near {
+        let grid = (walls.len() >= GRID_MIN_WALLS).then(|| {
+            let boxes: Vec<(Point, Point)> = walls
+                .iter()
+                .map(|w| {
+                    (
+                        Point::new(w.start.x.min(w.end.x) - tol, w.start.y.min(w.end.y) - tol),
+                        Point::new(w.start.x.max(w.end.x) + tol, w.start.y.max(w.end.y) + tol),
+                    )
+                })
+                .collect();
+            BoxGrid::new(&boxes)
+        });
+        Near {
+            grid,
+            len: walls.len(),
+        }
+    }
+
+    /// No index: every wall is a candidate.
+    fn all(walls: &[Wall]) -> Near {
+        Near {
+            grid: None,
+            len: walls.len(),
+        }
+    }
+
+    /// The walls whose box (grown by the `tol` given to [`Near::new`]) may
+    /// contain `p`.
+    fn around(&self, p: Point, out: &mut Vec<usize>) {
+        match &self.grid {
+            Some(g) => g.query(p, p, out),
+            None => {
+                out.clear();
+                out.extend(0..self.len);
+            }
+        }
+    }
+}
+
 /// Outlines for every wall, in input order.
 pub fn wall_outlines(walls: &[Wall], tol: f64) -> Vec<WallOutline> {
+    outlines_with(walls, tol, &Near::new(walls, tol))
+}
+
+fn outlines_with(walls: &[Wall], tol: f64, near: &Near) -> Vec<WallOutline> {
     walls
         .iter()
         .enumerate()
         .map(|(i, w)| {
             let (sl, el, er, sr) = wall_faces(w);
-            let (sl, sr) = end_faces(walls, i, End::Start, tol).unwrap_or((sl, sr));
-            let (el, er) = end_faces(walls, i, End::End, tol).unwrap_or((el, er));
+            let (sl, sr) = end_faces(walls, near, i, End::Start, tol).unwrap_or((sl, sr));
+            let (el, er) = end_faces(walls, near, i, End::End, tol).unwrap_or((el, er));
             WallOutline {
                 wall_id: w.id,
                 polygon: vec![sl, el, er, sr],
@@ -83,14 +189,17 @@ pub fn wall_outlines(walls: &[Wall], tol: f64) -> Vec<WallOutline> {
 }
 
 /// Joined `(left, right)` face points at one end, or `None` for a square end.
-fn end_faces(walls: &[Wall], i: usize, e: End, tol: f64) -> Option<(Point, Point)> {
+fn end_faces(walls: &[Wall], near: &Near, i: usize, e: End, tol: f64) -> Option<(Point, Point)> {
     let w = &walls[i];
     if w.length() <= tol {
         return None;
     }
     let p = end_point(w, e);
     let mut touching = Vec::new();
-    for (j, o) in walls.iter().enumerate() {
+    let mut candidates = Vec::new();
+    near.around(p, &mut candidates);
+    for &j in &candidates {
+        let o = &walls[j];
         if j == i || o.length() <= tol {
             continue;
         }
@@ -102,7 +211,7 @@ fn end_faces(walls: &[Wall], i: usize, e: End, tol: f64) -> Option<(Point, Point
     }
     match touching.len() {
         1 => miter_faces(walls, i, e, touching[0].0, touching[0].1),
-        0 => t_faces(walls, i, e, p, tol),
+        0 => t_faces(walls, near, i, e, p, tol),
         _ => None,
     }
 }
@@ -149,9 +258,12 @@ fn miter_faces(walls: &[Wall], i: usize, e: End, j: usize, oe: End) -> Option<(P
 
 /// The nearest wall (other than `i`) whose interior, not its ends, contains
 /// `p`, with the closest point on it: the host of a T-junction at `p`.
-fn tee_host(walls: &[Wall], i: usize, p: Point, tol: f64) -> Option<(usize, Point)> {
+fn tee_host(walls: &[Wall], near: &Near, i: usize, p: Point, tol: f64) -> Option<(usize, Point)> {
     let mut best: Option<(f64, usize, Point)> = None;
-    for (j, t) in walls.iter().enumerate() {
+    let mut candidates = Vec::new();
+    near.around(p, &mut candidates);
+    for &j in &candidates {
+        let t = &walls[j];
         if j == i || t.length() <= tol {
             continue;
         }
@@ -168,10 +280,17 @@ fn tee_host(walls: &[Wall], i: usize, p: Point, tol: f64) -> Option<(usize, Poin
     best.map(|(_, j, q)| (j, q))
 }
 
-fn t_faces(walls: &[Wall], i: usize, e: End, p: Point, tol: f64) -> Option<(Point, Point)> {
+fn t_faces(
+    walls: &[Wall],
+    near: &Near,
+    i: usize,
+    e: End,
+    p: Point,
+    tol: f64,
+) -> Option<(Point, Point)> {
     let w = &walls[i];
     let dw = away_dir(w, e);
-    let (tj, q) = tee_host(walls, i, p, tol)?;
+    let (tj, q) = tee_host(walls, near, i, p, tol)?;
     let t = &walls[tj];
 
     let dt = t.direction();
@@ -253,7 +372,7 @@ pub fn wall_end_joins(
         }
     }
     if out.is_empty() {
-        if let Some((j, _)) = tee_host(walls, i, p, tol) {
+        if let Some((j, _)) = tee_host(walls, &Near::all(walls), i, p, tol) {
             out.push((j, ConnectionKind::Tee));
         }
     }
@@ -383,6 +502,7 @@ fn end_sign(e: End) -> f64 {
 /// list of its stack (exterior first). Square ends where no join applies.
 fn layer_end_points(
     walls: &[Wall],
+    near: &Near,
     stacks: &[Vec<LayerBand>],
     i: usize,
     e: End,
@@ -397,7 +517,10 @@ fn layer_end_points(
         return square();
     }
     let mut touching = Vec::new();
-    for (j, o) in walls.iter().enumerate() {
+    let mut candidates = Vec::new();
+    near.around(p, &mut candidates);
+    for &j in &candidates {
+        let o = &walls[j];
         if j == i || o.length() <= tol {
             continue;
         }
@@ -465,7 +588,7 @@ fn layer_end_points(
             pts
         }
         0 => {
-            let Some((tj, q)) = tee_host(walls, i, p, tol) else {
+            let Some((tj, q)) = tee_host(walls, near, i, p, tol) else {
                 return square();
             };
             let t = &walls[tj];
@@ -503,6 +626,15 @@ pub fn wall_layer_outlines(
     types: &[WallTypeDef],
     tol: f64,
 ) -> Vec<WallLayerOutline> {
+    layer_outlines_with(walls, types, tol, &Near::new(walls, tol))
+}
+
+fn layer_outlines_with(
+    walls: &[Wall],
+    types: &[WallTypeDef],
+    tol: f64,
+    near: &Near,
+) -> Vec<WallLayerOutline> {
     let stacks: Vec<Vec<LayerBand>> = walls
         .iter()
         .map(|w| {
@@ -515,8 +647,8 @@ pub fn wall_layer_outlines(
         .collect();
     let mut out = Vec::new();
     for (i, w) in walls.iter().enumerate() {
-        let starts = layer_end_points(walls, &stacks, i, End::Start, tol);
-        let ends = layer_end_points(walls, &stacks, i, End::End, tol);
+        let starts = layer_end_points(walls, near, &stacks, i, End::Start, tol);
+        let ends = layer_end_points(walls, near, &stacks, i, End::End, tol);
         let (b, _, _) = boundaries(&stacks[i], 1.0);
         for (k, band) in stacks[i].iter().enumerate() {
             let (hi, lo) = if b[k] >= b[k + 1] {
@@ -849,5 +981,99 @@ mod tests {
             vec![(0, ConnectionKind::Tee)]
         );
         assert!(wall_end_joins(&walls, 3, WallEnd::Start, 0.5).is_empty());
+    }
+
+    // ----- the grid broad-phase changes nothing -----
+
+    /// A grid of walls with gaps, jitter, Ts, diagonals and mixed thickness.
+    fn messy_plan(n: usize, seed: u64) -> Vec<Wall> {
+        let mut s = seed;
+        let mut rnd = move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) as f64) / ((1u64 << 31) as f64)
+        };
+        let mut walls = Vec::new();
+        let mut id = 0;
+        let mut add = |walls: &mut Vec<Wall>, a: (f64, f64), b: (f64, f64), t: f64| {
+            id += 1;
+            walls.push(wall(id, a.0, a.1, b.0, b.1, t));
+        };
+        for r in 0..=n {
+            for c in 0..n {
+                if rnd() < 0.15 {
+                    continue;
+                }
+                let (x, y) = (c as f64 * 120.0, r as f64 * 120.0);
+                let len = if rnd() < 0.1 { 60.0 } else { 120.0 };
+                add(
+                    &mut walls,
+                    (x, y),
+                    (x + len, y),
+                    [4.5, 6.0, 7.625][(r + c) % 3],
+                );
+            }
+        }
+        for c in 0..=n {
+            for r in 0..n {
+                if rnd() < 0.15 {
+                    continue;
+                }
+                let (x, y) = (c as f64 * 120.0, r as f64 * 120.0);
+                add(&mut walls, (x, y), (x, y + 120.0), 4.5);
+            }
+        }
+        for _ in 0..n {
+            let x = (rnd() * n as f64).floor() * 120.0;
+            let y = (rnd() * n as f64).floor() * 120.0;
+            add(&mut walls, (x, y), (x + 120.0, y + 120.0), 4.5);
+            add(&mut walls, (x + 60.0, y), (x + 60.0, y + 120.0), 4.5);
+        }
+        walls
+    }
+
+    #[test]
+    fn outlines_with_the_grid_equal_outlines_from_a_scan() {
+        for (n, seed) in [(6, 1), (9, 2), (14, 3)] {
+            let walls = messy_plan(n, seed);
+            assert!(walls.len() > GRID_MIN_WALLS, "{} walls", walls.len());
+            let scan = Near::all(&walls);
+            let a = format!("{:?}", outlines_with(&walls, 0.5, &Near::new(&walls, 0.5)));
+            let b = format!("{:?}", outlines_with(&walls, 0.5, &scan));
+            assert_eq!(a, b, "plan {n}");
+            let types = crate::defaults::PlanDefaults::chief_x18_daniel().wall_types;
+            let mut typed = walls.clone();
+            for (i, w) in typed.iter_mut().enumerate() {
+                if i % 2 == 0 {
+                    w.wall_type = Some(types[i % types.len()].name.clone());
+                }
+            }
+            let a = format!(
+                "{:?}",
+                layer_outlines_with(&typed, &types, 0.5, &Near::new(&typed, 0.5))
+            );
+            let b = format!("{:?}", layer_outlines_with(&typed, &types, 0.5, &scan));
+            assert_eq!(a, b, "layers of plan {n}");
+        }
+    }
+
+    #[test]
+    fn walls_equal_sees_every_difference() {
+        let a = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 0.0, 0.0, 0.0, 90.0, 4.5),
+        ];
+        assert!(walls_equal(&a, &a.clone()));
+        let mut b = a.clone();
+        b[1].thickness = 4.6;
+        assert!(!walls_equal(&a, &b));
+        let mut b = a.clone();
+        b[0].flags.invisible = true;
+        assert!(!walls_equal(&a, &b));
+        let mut b = a.clone();
+        b[0].wall_type = Some("x".into());
+        assert!(!walls_equal(&a, &b));
+        assert!(!walls_equal(&a, &a[..1]));
     }
 }

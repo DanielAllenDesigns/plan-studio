@@ -5,7 +5,12 @@
 //!
 //! ```text
 //! cargo run -p plan-core --example make_samples
+//! cargo run -p plan-core --example make_samples -- --large-only
 //! ```
+//!
+//! A fourth file, `large-house.psplan`, is the performance benchmark house
+//! (about 600 walls on three floors; see `docs/performance.md`). It is only
+//! checked for loading and round-tripping.
 //!
 //! Every file is read back with `Project::from_json`, re-serialized (must be
 //! byte-identical) and checked: room counts, every room named, wall endpoints
@@ -947,9 +952,455 @@ fn adu() -> Project {
     s.p
 }
 
+// ------------------------------------------------------------ large house
+
+/// Grid of the large benchmark house: 14 x 7 cells of 10', three floors.
+const LARGE_COLS: usize = 14;
+const LARGE_ROWS: usize = 7;
+const LARGE_CELL: f64 = 10.0;
+
+/// A deterministic estate-sized plan for performance work
+/// (`docs/performance.md`): about 600 walls, 150 openings, 60 cabinets, 20
+/// roof planes, 40 dimensions, 200 CAD items, 10 schedules, material regions
+/// and hatches, and a terrain with 50 elevation lines, over three floors.
+/// There is no randomness: every value comes from loop indices.
+fn large_house() -> Project {
+    use plan_core::cad::{CadAttrs, FillAttr};
+    use plan_core::details::{DetailsLayer, MaterialRegion, WallHatch};
+    use plan_core::schedules::{ensure_layer, FloorScope, Schedule, ScheduleKind, ScheduleLayer};
+    use plan_core::{CadItem, Dimension, DimensionKind};
+    use serde_json::json;
+
+    let mut s = S::new("Large House (benchmark sample)", "Siding-6");
+    s.p.build_new_floor(false);
+    s.p.build_new_floor(false);
+    assert_eq!(s.p.floors.len(), 3);
+    let (cols, rows) = (LARGE_COLS, LARGE_ROWS);
+    let c = LARGE_CELL;
+
+    // ---- walls and openings: every grid edge is one wall of 10'.
+    for fl in 0..3 {
+        let mut interior_idx = 0usize;
+        let mut ext_idx = 0usize;
+        // Horizontal edges, west to east. The north edge runs west to east,
+        // the south edge east to west (clockwise, so left of travel faces out).
+        for r in 0..=rows {
+            for k in 0..cols {
+                let (x0, x1, y) = (k as f64 * c, (k + 1) as f64 * c, r as f64 * c);
+                let exterior = r == 0 || r == rows;
+                if exterior {
+                    let (a, b) = if r == rows {
+                        ((x0, y), (x1, y))
+                    } else {
+                        ((x1, y), (x0, y))
+                    };
+                    let id = s.wall(fl, a, b, WallKind::Exterior);
+                    ext_idx += 1;
+                    let kind = if r == 0 && k == 3 && fl == 0 {
+                        OpeningKind::Door
+                    } else {
+                        OpeningKind::Window
+                    };
+                    if !ext_idx.is_multiple_of(3) || kind == OpeningKind::Door {
+                        s.p.add_opening(fl, id, 60.0, kind);
+                    }
+                } else if (r * 7 + k * 3) % 9 != 0 {
+                    let id = s.wall(fl, (x0, y), (x1, y), WallKind::Interior);
+                    interior_idx += 1;
+                    if interior_idx % 7 == 1 {
+                        s.p.add_opening(fl, id, 60.0, OpeningKind::Door);
+                    }
+                }
+            }
+        }
+        // Vertical edges: the west edge runs south to north, the east edge
+        // north to south.
+        for k in 0..=cols {
+            for r in 0..rows {
+                let (y0, y1, x) = (r as f64 * c, (r + 1) as f64 * c, k as f64 * c);
+                let exterior = k == 0 || k == cols;
+                if exterior {
+                    let (a, b) = if k == 0 {
+                        ((x, y0), (x, y1))
+                    } else {
+                        ((x, y1), (x, y0))
+                    };
+                    let id = s.wall(fl, a, b, WallKind::Exterior);
+                    ext_idx += 1;
+                    if !ext_idx.is_multiple_of(3) {
+                        s.p.add_opening(fl, id, 60.0, OpeningKind::Window);
+                    }
+                } else if (r * 5 + k * 2) % 9 != 0 {
+                    let id = s.wall(fl, (x, y0), (x, y1), WallKind::Interior);
+                    interior_idx += 1;
+                    if interior_idx % 7 == 1 {
+                        s.p.add_opening(fl, id, 60.0, OpeningKind::Door);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- room names: every detected room, so room schedules have rows.
+    for fl in 0..3 {
+        let rooms = s.rooms(fl);
+        for (i, r) in rooms.iter().enumerate() {
+            let (name, ty) = if i % 5 == 0 {
+                (format!("Bedroom {}", i + 1), "Bedroom")
+            } else {
+                (format!("Room {}", i + 1), "Great Room")
+            };
+            assert!(s.d.room_type(ty).is_some(), "room type {ty}");
+            s.p.set_room_name(fl, r.centroid, name, ty, &rooms);
+        }
+    }
+
+    // ---- dimensions: 40 manual strings on the ground floor.
+    let w_in = cols as f64 * c * 12.0;
+    let h_in = rows as f64 * c * 12.0;
+    for k in 0..cols {
+        let x = k as f64 * c * 12.0;
+        let d = |y: f64, off: f64| {
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::new(x, y),
+                Point::new(x + c * 12.0, y),
+                off,
+            )
+        };
+        s.p.add_dimension(0, d(0.0, -48.0));
+        s.p.add_dimension(0, d(h_in, 48.0));
+    }
+    for k in 0..rows {
+        let y = k as f64 * c * 12.0;
+        let west = Dimension::new(
+            0,
+            DimensionKind::Manual,
+            Point::new(0.0, y),
+            Point::new(0.0, y + c * 12.0),
+            48.0,
+        );
+        s.p.add_dimension(0, west);
+    }
+    for k in 0..5 {
+        let y = k as f64 * c * 12.0;
+        let east = Dimension::new(
+            0,
+            DimensionKind::Manual,
+            Point::new(w_in, y),
+            Point::new(w_in, y + c * 12.0),
+            -48.0,
+        );
+        s.p.add_dimension(0, east);
+    }
+
+    // ---- CAD: 120 items on floor 0, 50 on floor 1, 30 on floor 2.
+    for (fl, n) in [(0usize, 120usize), (1, 50), (2, 30)] {
+        for i in 0..n {
+            let x = (i % 20) as f64 * 84.0 + 12.0;
+            let y = (i / 20) as f64 * 96.0 + 12.0;
+            let item = match i % 5 {
+                0 => CadItem::Line {
+                    a: Point::new(x, y),
+                    b: Point::new(x + 60.0, y + 30.0),
+                },
+                1 => CadItem::Circle {
+                    center: Point::new(x + 20.0, y + 20.0),
+                    radius: 14.0,
+                },
+                2 => CadItem::Arc {
+                    center: Point::new(x + 20.0, y + 20.0),
+                    radius: 22.0,
+                    start_angle: 0.0,
+                    end_angle: 2.2,
+                },
+                3 => CadItem::Polyline {
+                    points: vec![
+                        Point::new(x, y),
+                        Point::new(x + 40.0, y),
+                        Point::new(x + 40.0, y + 30.0),
+                        Point::new(x, y + 30.0),
+                    ],
+                    closed: true,
+                },
+                _ => CadItem::Text {
+                    pos: Point::new(x, y),
+                    text: format!("Note {fl}-{i}"),
+                    height: 4.0,
+                    angle: 0.0,
+                },
+            };
+            let id = s.p.add_cad(fl, "CAD, Default", item);
+            // Every third closed shape carries a fill or hatch attribute.
+            if i % 5 == 3 && i % 3 == 0 {
+                let mut a = CadAttrs::new(id);
+                a.fill = Some(FillAttr {
+                    pattern: if i % 2 == 0 {
+                        String::new()
+                    } else {
+                        "Lines".into()
+                    },
+                    ..FillAttr::default()
+                });
+                s.p.floors[fl].cad_attrs.push(a);
+            }
+        }
+    }
+
+    // ---- material regions on floor 0, wall hatches on floors 0 and 1.
+    for fl in 0..2 {
+        let mut layer = DetailsLayer::default();
+        for k in 0..8usize {
+            let x0 = (k % 4) as f64 * 360.0 + 12.0;
+            let y0 = (k / 4) as f64 * 360.0 + 12.0;
+            let id = s.p.alloc_id();
+            layer.regions.push(MaterialRegion {
+                id,
+                outline: vec![
+                    Point::new(x0, y0),
+                    Point::new(x0 + 336.0, y0),
+                    Point::new(x0 + 336.0, y0 + 336.0),
+                    Point::new(x0, y0 + 336.0),
+                ],
+                material: [
+                    "Ceramic Tile 12x12",
+                    "Porcelain Tile 24x24",
+                    "Walnut Flooring",
+                ][k % 3]
+                    .to_string(),
+                ..MaterialRegion::default()
+            });
+        }
+        let ext: Vec<Id> = s.p.floors[fl]
+            .walls
+            .iter()
+            .filter(|w| w.kind == WallKind::Exterior)
+            .map(|w| w.id)
+            .step_by(2)
+            .take(24)
+            .collect();
+        for wid in ext {
+            let id = s.p.alloc_id();
+            layer.hatches.push(WallHatch {
+                id,
+                wall_id: wid,
+                ..WallHatch::default()
+            });
+        }
+        layer.store(&mut s.p.floors[fl]);
+    }
+
+    // ---- cabinets: 30 + 20 + 10 base cabinets in runs of 10.
+    for (fl, n) in [(0usize, 30usize), (1, 20), (2, 10)] {
+        for i in 0..n {
+            let id = s.p.alloc_id();
+            let x = 12.0 + (i % 10) as f64 * 26.0 + (i / 10) as f64 * 300.0;
+            let y = 12.0 + (i / 10) as f64 * 150.0;
+            s.p.floors[fl].cabinets.push(cabinet_json(id, x, y, 24.0));
+        }
+    }
+
+    // ---- roof: 20 planes (two slopes, ten bays) on the top floor.
+    {
+        let top = &s.p.floors[2];
+        let e = top.elevation + top.ceiling_height;
+        let half = h_in * 0.5;
+        let rise = half * 6.0 / 12.0;
+        let bay = w_in / 10.0;
+        let mut items = Vec::new();
+        for k in 0..10usize {
+            let (x0, x1) = (k as f64 * bay, (k + 1) as f64 * bay);
+            for north in [false, true] {
+                let id = s.p.alloc_id();
+                let (ye, ym) = if north { (h_in, half) } else { (0.0, half) };
+                let (a, b) = if north { (x1, x0) } else { (x0, x1) };
+                items.push(json!({
+                    "kind": "plane",
+                    "id": id,
+                    "polygon3d": [
+                        [a, e, -ye], [b, e, -ye], [b, e + rise, -ym], [a, e + rise, -ym]
+                    ],
+                    "pitch": 6.0,
+                    "baseline": [{"x": a, "y": ye}, {"x": b, "y": ye}],
+                    "auto": false,
+                    "holes": [],
+                    "source": null,
+                    "overhang": 0.0,
+                    "label": "",
+                    "material": "Asphalt Shingles",
+                    "layer": "Roof Planes",
+                    "ridge_caps": true,
+                    "gutters": false,
+                }));
+            }
+        }
+        s.p.floors[2].roofs = items;
+    }
+
+    // ---- schedules: 10 tables outside the house.
+    {
+        let plan: [(usize, &[ScheduleKind]); 3] = [
+            (
+                0,
+                &[
+                    ScheduleKind::Door,
+                    ScheduleKind::Window,
+                    ScheduleKind::Room,
+                    ScheduleKind::Wall,
+                    ScheduleKind::Cabinet,
+                    ScheduleKind::General,
+                ],
+            ),
+            (1, &[ScheduleKind::Door, ScheduleKind::Window]),
+            (2, &[ScheduleKind::Room, ScheduleKind::Door]),
+        ];
+        let mut n = 0usize;
+        for (fl, kinds) in plan {
+            let mut layer = ScheduleLayer::default();
+            for kind in kinds {
+                let at = Point::new(
+                    -1400.0 + (n % 5) as f64 * 300.0,
+                    -120.0 - (n / 5) as f64 * 1800.0,
+                );
+                let mut sch = Schedule::new(*kind, at);
+                sch.id = s.p.alloc_id();
+                // The ground-floor door and window schedules list every floor.
+                if fl == 0 && matches!(kind, ScheduleKind::Door | ScheduleKind::Window) {
+                    sch.floor_scope = FloorScope::All;
+                }
+                layer.add(sch);
+                n += 1;
+            }
+            layer.store(&mut s.p.floors[fl]);
+        }
+        assert_eq!(n, 10);
+        ensure_layer(&mut s.p.layers);
+    }
+
+    // ---- terrain: 50 elevation lines across a 240' x 160' lot.
+    {
+        let lines: Vec<_> = (0..50usize)
+            .map(|i| {
+                let y = -1100.0 + i as f64 * 70.0;
+                let z = (-60.0 + (i as f64 * 0.7).sin() * 40.0 + i as f64 * 2.0).round();
+                let pts: Vec<_> = (0..8usize)
+                    .map(|j| {
+                        let x = -900.0 + j as f64 * 380.0;
+                        json!({"x": x, "y": (y + (j as f64 * 0.9).sin() * 30.0).round()})
+                    })
+                    .collect();
+                json!({"points": pts, "z": z})
+            })
+            .collect();
+        s.p.terrain = Some(json!({
+            "terrain": {
+                "perimeter": [
+                    {"x": -1000.0, "y": -1200.0}, {"x": 2700.0, "y": -1200.0},
+                    {"x": 2700.0, "y": 2300.0}, {"x": -1000.0, "y": 2300.0}
+                ],
+                "elevation_lines": lines,
+                "building_pad_elevation": 0.0,
+                "grid_spacing": 120.0,
+            },
+            "contour_interval": 24.0,
+            "built": true,
+            "layer": "Terrain",
+        }));
+    }
+    s.p
+}
+
+/// A base cabinet as the `plan-cabinets` JSON (kept in the typed slot
+/// `Floor.cabinets`; `plan-app` has a test that parses it).
+fn cabinet_json(id: Id, x: f64, y: f64, width: f64) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "kind": "Base",
+        "position": {"x": x, "y": y}, "angle": 0.0,
+        "width": width, "depth": 24.0, "height": 36.0, "elevation": 0.0,
+        "countertop": {"thickness": 1.5, "overhang_front": 1.0, "overhang_sides": 0.0, "overhang_back": 0.0},
+        "backsplash": null,
+        "toe_kick": {"height": 4.0, "depth": 3.0},
+        "face": {
+            "items": [
+                {"Separation": {"height": 1.5}}, {"Drawer": {"height": 6.0}},
+                {"Separation": {"height": 1.5}}, {"DoorAuto": {"height": 0.0}},
+                {"Separation": {"height": 1.5}}
+            ],
+            "frame_width": 1.5
+        },
+        "door_style": {
+            "name": "Lincoln Door", "thickness": 0.75, "glass": false, "handle": "Knob",
+            "handle_from_top": 1.375, "handle_from_edge": 1.375, "profile": "Slab",
+            "frame_width": 2.25, "handle_centered": false, "hinge": "Hidden", "hinge_from_edge": 3.0
+        },
+        "drawer_style": {
+            "name": "Lincoln Flat Panel Drawer", "thickness": 0.75, "handle": "Knob",
+            "profile": "Slab", "handle_centered": true
+        },
+        "overlay": {"Full": {"reveal": 0.0625}},
+        "framed": true, "label": "",
+        "corner": null, "blind": null, "custom": null, "cutouts": [], "appliance": null,
+        "moldings": [],
+        "materials": {
+            "carcass": "Default", "door": "Default", "drawer": "Default", "countertop": "Default",
+            "backsplash": "Default", "toe_kick": "Default", "molding": "Default"
+        },
+        "indicators": false
+    })
+}
+
+/// Write the large sample; it only has to load and round-trip (the strict
+/// `check` above is for the hand-laid houses).
+fn save_plain(dir: &std::path::Path, file: &str, p: &Project) -> usize {
+    let json = p.to_json().expect("serialize");
+    let path = dir.join(file);
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, &json).expect("write sample");
+    let text = std::fs::read_to_string(&path).expect("read sample");
+    let back = Project::from_json(&text).expect("sample loads with Project::from_json");
+    let again = back.to_json().expect("re-serialize");
+    if again != json {
+        let at = again
+            .bytes()
+            .zip(json.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let ctx = |t: &str| t[at.saturating_sub(120)..(at + 120).min(t.len())].to_string();
+        panic!(
+            "{file} does not round-trip at byte {at}:\n{}\n---\n{}",
+            ctx(&json),
+            ctx(&again)
+        );
+    }
+    text.len()
+}
+
+/// Builds `large-house.psplan` and prints its object counts.
+fn write_large(dir: &std::path::Path) {
+    let big = large_house();
+    let bytes = save_plain(dir, "large-house.psplan", &big);
+    let count = |f: &dyn Fn(&plan_core::Floor) -> usize| big.floors.iter().map(f).sum::<usize>();
+    println!(
+        "\nlarge-house.psplan: {} bytes, {} walls, {} openings, {} cabinets, {} dimensions, {} CAD items",
+        bytes,
+        count(&|f| f.walls.len()),
+        count(&|f| f.openings.len()),
+        count(&|f| f.cabinets.len()),
+        count(&|f| f.dimensions.len()),
+        count(&|f| f.cad.len()),
+    );
+}
+
 fn main() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples");
     std::fs::create_dir_all(&dir).expect("create samples/");
+    let dir = dir.canonicalize().unwrap_or(dir);
+    // `--large-only` regenerates just the benchmark house.
+    if std::env::args().any(|a| a == "--large-only") {
+        write_large(&dir);
+        return;
+    }
 
     // (file, project, expected rooms per floor bottom to top)
     let jobs: Vec<(&str, Project, Vec<usize>)> = vec![
@@ -1004,5 +1455,6 @@ fn main() {
             }
         }
     }
-    println!("\nwrote {} files to {}", jobs.len(), dir.display());
+    write_large(&dir);
+    println!("\nwrote {} files to {}", jobs.len() + 1, dir.display());
 }

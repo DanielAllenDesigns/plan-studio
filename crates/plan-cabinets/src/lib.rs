@@ -26,7 +26,8 @@ mod top;
 pub use cabinet::{
     auto_label, expand_label, run_along_wall, type_code, Backsplash, BlindSide, BlindSpec, Cabinet,
     CabinetKind, CornerSpec, CornerStyle, Countertop, DoorProfile, DoorStyle, DrawerStyle,
-    HandleStyle, HingeStyle, MaterialChoice, Molding, MoldingKind, Overlay, PartMaterials, ToeKick,
+    FaceSide, HandleStyle, HingeStyle, MaterialChoice, Molding, MoldingKind, Overlay,
+    PartMaterials, SideFace, SideKind, ToeKick,
 };
 pub use face::{Divider, DividerHandle, FaceCell, FaceItem, FaceLayout, ResolvedFace, MIN_ITEM};
 pub use filler::{fit_between, wall_polygon, MAX_FILLER_GAP};
@@ -36,4 +37,7 @@ pub use geom::{
 };
 pub use mesh3d::meshes;
 pub use symbol::{plan_symbol, Stroke};
-pub use top::{generate_countertops, CustomTop, Cutout, CutoutKind, EdgeProfile, GeneratedTop};
+pub use top::{
+    generate_countertops, treat_corners, CornerTreatment, CustomTop, Cutout, CutoutKind,
+    EdgeProfile, GeneratedTop,
+};

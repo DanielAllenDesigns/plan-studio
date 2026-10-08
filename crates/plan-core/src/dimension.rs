@@ -272,12 +272,7 @@ mod tests {
     fn wall(id: u64, x0: f64, y0: f64, x1: f64, y1: f64, kind: WallKind) -> Wall {
         Wall {
             id,
-            start: Point::new(x0, y0),
-            end: Point::new(x1, y1),
-            thickness: 6.0,
-            height: 109.125,
-            kind,
-            layer: "Walls, Normal".into(),
+            ..Wall::new(Point::new(x0, y0), Point::new(x1, y1), 6.0, 109.125, kind)
         }
     }
 

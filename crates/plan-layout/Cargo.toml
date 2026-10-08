@@ -1,0 +1,14 @@
+[package]
+name = "plan-layout"
+description = "Plan Studio: plan-layout (see README)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+plan-core = { path = "../plan-core" }
+plan-3d = { path = "../plan-3d" }
+plan-docs = { path = "../plan-docs" }
+plan-elevation = { path = "../plan-elevation" }
+serde = { workspace = true }
+serde_json = { workspace = true }

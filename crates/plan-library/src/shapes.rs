@@ -5,6 +5,7 @@
 
 use crate::symbol::Stroke;
 use plan_core::geometry::Point;
+use std::f64::consts::{PI, TAU};
 
 fn pt((x, y): (f64, f64)) -> Point {
     Point::new(x, y)
@@ -95,4 +96,106 @@ pub(crate) fn three_glyph(cx: f64, cy: f64, r: f64) -> Vec<Stroke> {
         arc(cx, cy + r, r, -90.0, 90.0),
         arc(cx, cy - r, r, -90.0, 90.0),
     ]
+}
+
+/// The point at `deg` degrees (counter-clockwise from +X) on the circle of
+/// radius `r` about `(cx, cy)`.
+pub(crate) fn polar(cx: f64, cy: f64, r: f64, deg: f64) -> (f64, f64) {
+    let a = deg.to_radians();
+    (cx + r * a.cos(), cy + r * a.sin())
+}
+
+/// A closed polyline approximating an ellipse with `n` vertices. When `n` is
+/// a multiple of four the axis extremes are hit exactly.
+pub(crate) fn ellipse(cx: f64, cy: f64, rx: f64, ry: f64, n: u32) -> Stroke {
+    let pts: Vec<(f64, f64)> = (0..n)
+        .map(|k| {
+            let a = TAU * f64::from(k) / f64::from(n);
+            (cx + rx * a.cos(), cy + ry * a.sin())
+        })
+        .collect();
+    polyline(&pts, true)
+}
+
+/// A circle with `lobes` rounded bumps (a tree-canopy outline). The bump
+/// tips lie on radius `r`; the notches between them are `depth` inside it.
+/// A multiple of four lobes puts tips exactly on the axes.
+pub(crate) fn scalloped_circle(cx: f64, cy: f64, r: f64, lobes: u32, depth: f64) -> Stroke {
+    let n = lobes * 6;
+    let pts: Vec<(f64, f64)> = (0..n)
+        .map(|k| {
+            let a = TAU * f64::from(k) / f64::from(n);
+            let rad = r - depth + depth * (a * f64::from(lobes) / 2.0).cos().abs();
+            (cx + rad * a.cos(), cy + rad * a.sin())
+        })
+        .collect();
+    polyline(&pts, true)
+}
+
+/// A spiky star outline with `tips` points reaching `r_out`, notches at
+/// `r_in`. The first tip points along +X.
+pub(crate) fn star(cx: f64, cy: f64, r_out: f64, r_in: f64, tips: u32) -> Stroke {
+    let n = tips * 2;
+    let pts: Vec<(f64, f64)> = (0..n)
+        .map(|k| {
+            let a = TAU * f64::from(k) / f64::from(n);
+            let rad = if k % 2 == 0 { r_out } else { r_in };
+            (cx + rad * a.cos(), cy + rad * a.sin())
+        })
+        .collect();
+    polyline(&pts, true)
+}
+
+/// A `w` by `h` rectangle centered on `(cx, cy)` whose two long edges bulge
+/// in `bumps` scallops of height `amp` (a clipped-hedge outline).
+pub(crate) fn wavy_rect(cx: f64, cy: f64, w: f64, h: f64, bumps: u32, amp: f64) -> Stroke {
+    let steps = bumps * 4;
+    let offset = |i: u32| amp * (1.0 - (PI * f64::from(i % 4) / 4.0).sin());
+    let x_at = |i: u32| cx - w / 2.0 + w * f64::from(i) / f64::from(steps);
+    let mut pts: Vec<(f64, f64)> = (0..=steps)
+        .map(|i| (x_at(i), cy - h / 2.0 + offset(i)))
+        .collect();
+    pts.extend(
+        (0..=steps)
+            .rev()
+            .map(|i| (x_at(i), cy + h / 2.0 - offset(i))),
+    );
+    polyline(&pts, true)
+}
+
+/// Rescales `pts` so their bounding box is exactly `w` by `h` centered on
+/// `(cx, cy)`, then returns them as a polyline. Lets free-form outlines
+/// (boulders, pools, pianos) match their declared size.
+pub(crate) fn fitted(pts: &[(f64, f64)], cx: f64, cy: f64, w: f64, h: f64, closed: bool) -> Stroke {
+    let (mut x0, mut x1, mut y0, mut y1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for &(x, y) in pts {
+        x0 = x0.min(x);
+        x1 = x1.max(x);
+        y0 = y0.min(y);
+        y1 = y1.max(y);
+    }
+    let mapped: Vec<(f64, f64)> = pts
+        .iter()
+        .map(|&(x, y)| {
+            (
+                cx + (x - x0) / (x1 - x0) * w - w / 2.0,
+                cy + (y - y0) / (y1 - y0) * h - h / 2.0,
+            )
+        })
+        .collect();
+    polyline(&mapped, closed)
+}
+
+/// An irregular rounded blob (planting patch) with `k` wobbles, fitted to
+/// exactly `2*rx` by `2*ry` about `(cx, cy)`.
+pub(crate) fn blob(cx: f64, cy: f64, rx: f64, ry: f64, k: f64, phase: f64) -> Stroke {
+    let pts: Vec<(f64, f64)> = (0..36)
+        .map(|i| {
+            let a = TAU * f64::from(i) / 36.0;
+            let rad =
+                1.0 + 0.16 * (k * a + phase).sin() + 0.07 * ((k + 2.0) * a + 2.1 * phase).sin();
+            (rad * a.cos(), rad * a.sin())
+        })
+        .collect();
+    fitted(&pts, cx, cy, 2.0 * rx, 2.0 * ry, true)
 }

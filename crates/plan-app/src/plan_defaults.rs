@@ -4,7 +4,7 @@
 //! turn [`PlanDefaults`] into the objects the editor places.
 
 use plan_core::defaults::{WallLayer, WallTypeDef};
-use plan_core::{Opening, OpeningKind, PlanDefaults, WallKind};
+use plan_core::{Opening, PlanDefaults, WallKind};
 use std::path::PathBuf;
 
 /// Daniel's Chief X18 template (`assets/templates/chief-x18-daniel.json`).
@@ -74,31 +74,21 @@ pub fn door_template(d: &PlanDefaults, exterior: bool) -> Opening {
     } else {
         &d.interior_door
     };
-    Opening {
-        id: 0,
-        wall_id: 0,
-        center_offset: 0.0,
-        width: o.width,
-        height: o.height,
-        sill_height: o.sill_height,
-        kind: OpeningKind::Door,
-        swing_flipped: false,
-    }
+    let mut t = Opening::default_door(0, 0, 0.0);
+    t.width = o.width;
+    t.height = o.height;
+    t.sill_height = o.sill_height;
+    t
 }
 
 /// The opening new windows are placed from.
 pub fn window_template(d: &PlanDefaults) -> Opening {
     let w = &d.window;
-    Opening {
-        id: 0,
-        wall_id: 0,
-        center_offset: 0.0,
-        width: w.width,
-        height: w.height,
-        sill_height: w.sill_height,
-        kind: OpeningKind::Window,
-        swing_flipped: false,
-    }
+    let mut t = Opening::default_window(0, 0, 0.0);
+    t.width = w.width;
+    t.height = w.height;
+    t.sill_height = w.sill_height;
+    t
 }
 
 /// Picks the wall type name for a wall whose thickness was edited: the
@@ -147,6 +137,7 @@ pub fn resolve_wall_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plan_core::OpeningKind;
 
     #[test]
     fn embedded_template_matches_chief_x18_daniel() {

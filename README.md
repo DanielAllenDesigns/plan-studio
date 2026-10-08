@@ -28,6 +28,13 @@ crates/
   plan-app    desktop editor built on egui/eframe
 ```
 
+Inside `plan-app`, every Chief tool is one module behind a shared `Tool`
+trait (`tools/`), and the services they share (selection, snapping, handles,
+temporary dimensions, undo, rendering) live in `editor/`. `main.rs` only owns
+the window, panels and dialogs. See
+[docs/architecture-tools.md](docs/architecture-tools.md) for the layout, the
+trait and the rules for adding a tool.
+
 - **The plan is the model.** `plan-core` holds walls, openings, floors and
   (soon) cabinets, roofs and stairs. Every view is derived from it.
 - Lengths are stored in inches as `f64`; `plan_core::units` formats and parses
@@ -49,10 +56,12 @@ cargo run -p plan-app        # launch the editor
 | Action | Input |
 |---|---|
 | Tools | `1` Select, `2` Wall, `3` Door, `4` Window |
-| Draw walls | click start, click end, keep clicking to chain; `Esc` to stop |
+| Draw walls | click start, click end, keep clicking to chain, or press-drag-release for one wall; `Esc` to stop |
+| Select / move | click, `Tab` to cycle, drag a wall to move it perpendicular, drag handles to stretch, drag empty space to marquee |
+| Undo / redo | `Cmd+Z`, `Shift+Cmd+Z` or `Cmd+Y` |
 | Angle snap | automatic at 15°; hold `Alt` for free angle |
 | Zoom / pan | scroll wheel or pinch / middle- or right-drag |
-| Delete | select a wall, press `Delete` |
+| Delete | select, press `Delete` |
 
 ## Contributing
 

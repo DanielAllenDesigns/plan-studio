@@ -2,3 +2,8 @@
 *.psplan.bak
 .DS_Store
 /.claude/
+
+# Chief Architect licensed library content is never committed
+*.calib
+*.calibz
+*.calib_error

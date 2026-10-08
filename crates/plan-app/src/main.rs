@@ -1,84 +1,39 @@
 //! Plan Studio: a 2D floor-plan editor on top of `plan-core`.
 //!
 //! World units are inches with Y up; the camera flips Y when mapping to screen.
+//!
+//! `main.rs` owns the window, the panels, the menu/toolbar wiring and the
+//! specification dialogs. Everything that edits the plan lives in `editor/`
+//! (shared services, [`EditorContext`]) and `tools/` (one module per Chief
+//! tool behind the [`Tool`] trait); see `docs/architecture-tools.md`.
 
 mod dialogs;
+mod editor;
 mod icons;
 mod menus;
 mod plan_defaults;
 mod theme;
 mod toolbar;
+mod tools;
 
 use dialogs::{
-    DefaultsDialog, DefaultsEntry, DefaultsOutcome, OpeningDialog, OpeningExtras, OpeningTarget,
-    Outcome, WallDialog, WallExtras, WallTarget,
+    DefaultsDialog, DefaultsEntry, DefaultsOutcome, OpeningDialog, OpeningTarget, Outcome,
+    WallDialog, WallTarget,
 };
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
-use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
-use plan_core::{
-    detect_rooms, Floor, Id, Opening, OpeningKind, PlanDefaults, Project, Room, Wall, WallKind,
-    DEFAULT_WALL_LAYER,
-};
-use std::collections::{HashMap, HashSet};
+use editor::{render, Camera, EditorContext, EditorRequest, ObjectRef};
+use eframe::egui::{self, Color32, Pos2, Vec2};
+use plan_core::geometry::Point;
+use plan_core::{Id, Opening, OpeningKind, PlanDefaults, Project, WallKind};
 use std::path::PathBuf;
-use theme::{AppSettings, CanvasTheme, Palette};
-use toolbar::{Action, BarState, Dock, Hotkeys, Tool, Toolbars, ViewFlag};
+use theme::{AppSettings, CanvasTheme};
+use toolbar::{Action, BarState, Dock, Hotkeys, Toolbars};
+use tools::{KeyEvent, PointerEvent, ToolId, ToolResult, ToolSet};
 
-const PICK_RADIUS_PX: f64 = 10.0;
 const STATUS_GRAY: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
 const ZOOM_STEP: f64 = 1.25;
 const ZOOM_HISTORY_CAP: usize = 50;
 const VIEW_BAR_WIDTH: f32 = 36.0;
 const DOCK_WIDTH: f32 = 300.0;
-
-/// Maps between world inches (Y up) and screen pixels (Y down).
-#[derive(Clone, Copy)]
-struct Camera {
-    /// World point shown at the viewport center.
-    center: Point,
-    px_per_in: f64,
-}
-
-impl Camera {
-    fn default_view() -> Self {
-        Self {
-            center: Point::new(240.0, 150.0),
-            px_per_in: 2.0,
-        }
-    }
-
-    fn world_to_screen(&self, rect: Rect, p: Point) -> Pos2 {
-        let c = rect.center();
-        Pos2::new(
-            c.x + ((p.x - self.center.x) * self.px_per_in) as f32,
-            c.y - ((p.y - self.center.y) * self.px_per_in) as f32,
-        )
-    }
-
-    fn screen_to_world(&self, rect: Rect, s: Pos2) -> Point {
-        let c = rect.center();
-        Point::new(
-            self.center.x + (s.x - c.x) as f64 / self.px_per_in,
-            self.center.y - (s.y - c.y) as f64 / self.px_per_in,
-        )
-    }
-
-    /// Zoom by `factor` keeping the world point under screen position `at` fixed.
-    fn zoom_about(&mut self, rect: Rect, at: Pos2, factor: f64) {
-        let anchor = self.screen_to_world(rect, at);
-        self.px_per_in = (self.px_per_in * factor).clamp(0.05, 50.0);
-        let c = rect.center();
-        self.center = Point::new(
-            anchor.x - (at.x - c.x) as f64 / self.px_per_in,
-            anchor.y + (at.y - c.y) as f64 / self.px_per_in,
-        );
-    }
-
-    fn pan_by_pixels(&mut self, d: Vec2) {
-        self.center.x -= d.x as f64 / self.px_per_in;
-        self.center.y += d.y as f64 / self.px_per_in;
-    }
-}
 
 /// The specification dialog that is open, if any (one at a time).
 enum ActiveDialog {
@@ -86,23 +41,13 @@ enum ActiveDialog {
     Opening(Box<OpeningDialog>),
 }
 
-/// Settings the model has no fields for yet, kept for the session only.
-#[derive(Default)]
-struct SessionExtras {
-    walls: HashMap<Id, WallExtras>,
-    openings: HashMap<Id, OpeningExtras>,
-}
-
 struct PlanApp {
-    project: Project,
-    floor: usize,
+    cx: EditorContext,
+    tools: ToolSet,
     path: Option<PathBuf>,
     camera: Camera,
     zoom_history: Vec<Camera>,
-    canvas_rect: Rect,
-    tool: Tool,
     toolbars: Toolbars,
-    flags: HashSet<ViewFlag>,
     dock: Option<Dock>,
     hotkeys: Hotkeys,
     settings: AppSettings,
@@ -111,76 +56,61 @@ struct PlanApp {
     /// The brightness the egui visuals were last built for.
     applied_brightness: f32,
     show_about: bool,
-    /// Wall types, wall/door/window defaults, grid, dimension format, ...
-    /// (see `plan_defaults.rs` for where they are loaded from).
-    defaults: PlanDefaults,
-    selected: Option<Id>,
-    pending_start: Option<Point>,
-    rooms: Vec<Room>,
-    rooms_dirty: bool,
-    cursor_world: Option<Point>,
-    snapped: Option<Point>,
-    hover_wall: Option<Id>,
-    message: String,
+    /// A primary press started on the canvas and has not been released.
+    pressed_in_canvas: bool,
+    /// The press was a double-click the tool took; skip its release.
+    suppress_release: bool,
     dialog: Option<ActiveDialog>,
     defaults_dialog: Option<DefaultsDialog>,
-    extras: SessionExtras,
+}
+
+/// The state the toolbars and menus draw themselves from.
+fn bar_state<'a>(
+    cx: &'a EditorContext,
+    tool: ToolId,
+    dock: Option<Dock>,
+    brightness: f32,
+) -> BarState<'a> {
+    BarState {
+        tool,
+        flags: &cx.view_flags,
+        dock,
+        floor: cx.floor,
+        floor_count: cx.project.floors.len(),
+        view_name: "Floor Plan View",
+        brightness,
+        undo_label: cx.undo_label(),
+        redo_label: cx.redo_label(),
+    }
 }
 
 impl PlanApp {
     fn new(settings: AppSettings, defaults: PlanDefaults, note: Option<String>) -> Self {
+        let mut cx = EditorContext::new(defaults);
+        cx.status = note.unwrap_or_default();
+        cx.palette = settings.theme.palette();
         Self {
-            project: Project::from_defaults("Untitled", &defaults),
-            floor: 0,
+            cx,
+            tools: ToolSet::new(),
             path: None,
             camera: Camera::default_view(),
             zoom_history: Vec::new(),
-            canvas_rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
-            tool: Tool::Select,
             toolbars: Toolbars::new(),
-            flags: HashSet::from([ViewFlag::TemporaryDimensions, ViewFlag::ReferenceGrid]),
             dock: None,
             hotkeys: Hotkeys::default(),
             settings,
             saved_settings: settings,
             applied_brightness: settings.brightness,
             show_about: false,
-            defaults,
-            selected: None,
-            pending_start: None,
-            rooms: Vec::new(),
-            rooms_dirty: true,
-            cursor_world: None,
-            snapped: None,
-            hover_wall: None,
-            message: note.unwrap_or_default(),
+            pressed_in_canvas: false,
+            suppress_release: false,
             dialog: None,
             defaults_dialog: None,
-            extras: SessionExtras::default(),
         }
     }
 
-    fn floor(&self) -> &Floor {
-        &self.project.floors[self.floor]
-    }
-
-    fn set_tool(&mut self, tool: Tool) {
-        if self.tool != tool {
-            // Switching wall flavors keeps a chain in progress.
-            let keep_chain = matches!((self.tool, tool), (Tool::Wall { .. }, Tool::Wall { .. }));
-            self.tool = tool;
-            if !keep_chain {
-                self.pending_start = None;
-            }
-            self.hover_wall = None;
-        }
-    }
-
-    fn wall_kind(&self) -> WallKind {
-        match self.tool {
-            Tool::Wall { kind } => kind,
-            _ => WallKind::Exterior,
-        }
+    fn set_tool(&mut self, tool: ToolId) {
+        self.tools.set_active(&mut self.cx, tool);
     }
 
     fn push_zoom_history(&mut self) {
@@ -198,13 +128,16 @@ impl PlanApp {
     fn fill_window(&mut self) {
         self.push_zoom_history();
         let points: Vec<Point> = self
+            .cx
             .floor()
             .walls
             .iter()
             .flat_map(|w| w.footprint())
             .collect();
         if points.is_empty() {
+            let rect = self.camera.rect;
             self.camera = Camera::default_view();
+            self.camera.rect = rect;
             return;
         }
         let (mut lo, mut hi) = (points[0], points[0]);
@@ -215,24 +148,31 @@ impl PlanApp {
         // 10% margin on every side.
         let w = ((hi.x - lo.x) * 1.2).max(1.0);
         let h = ((hi.y - lo.y) * 1.2).max(1.0);
-        let r = self.canvas_rect;
+        let r = self.camera.rect;
         let scale = (r.width() as f64 / w).min(r.height() as f64 / h);
         self.camera = Camera {
             center: Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5),
             px_per_in: scale.clamp(0.05, 50.0),
+            rect: r,
         };
     }
 
     fn change_floor(&mut self, up: bool) {
         let next = if up {
-            (self.floor + 1 < self.project.floors.len()).then_some(self.floor + 1)
+            (self.cx.floor + 1 < self.cx.project.floors.len()).then_some(self.cx.floor + 1)
         } else {
-            self.floor.checked_sub(1)
+            self.cx.floor.checked_sub(1)
         };
         if let Some(n) = next {
-            self.floor = n;
+            self.cx.floor = n;
             self.reset_view_state();
         }
+    }
+
+    /// Drops the selection and any tool in progress (floor change, new file).
+    fn reset_view_state(&mut self) {
+        self.cx.reset_view_state();
+        self.tools.restart(&mut self.cx);
     }
 
     fn apply(&mut self, action: Action) {
@@ -249,23 +189,37 @@ impl PlanApp {
             Action::ZoomOut => self.zoom_about_center(1.0 / ZOOM_STEP),
             Action::UndoZoom => {
                 if let Some(cam) = self.zoom_history.pop() {
+                    let rect = self.camera.rect;
                     self.camera = cam;
+                    self.camera.rect = rect;
                 }
+            }
+            Action::Undo => {
+                self.cx.status = match self.cx.undo() {
+                    Some(l) => format!("Undid {l}"),
+                    None => "Nothing to undo".into(),
+                };
+            }
+            Action::Redo => {
+                self.cx.status = match self.cx.redo() {
+                    Some(l) => format!("Redid {l}"),
+                    None => "Nothing to redo".into(),
+                };
             }
             Action::FillWindow => self.fill_window(),
             Action::FloorUp => self.change_floor(true),
             Action::FloorDown => self.change_floor(false),
             Action::TogglePan => {
-                let next = if self.tool == Tool::Pan {
-                    Tool::Select
+                let next = if self.tools.active_id() == ToolId::Pan {
+                    ToolId::Select
                 } else {
-                    Tool::Pan
+                    ToolId::Pan
                 };
                 self.set_tool(next);
             }
             Action::ToggleFlag(f) => {
-                if !self.flags.remove(&f) {
-                    self.flags.insert(f);
+                if !self.cx.view_flags.remove(&f) {
+                    self.cx.view_flags.insert(f);
                 }
             }
             Action::ToggleDock(d) => {
@@ -281,38 +235,19 @@ impl PlanApp {
                 }
             }
             Action::NotImplemented(name) => {
-                self.message = format!("Not yet implemented: {name}");
+                self.cx.status = format!("Not yet implemented: {name}");
             }
         }
-    }
-
-    fn tool_hint(&self) -> String {
-        match self.tool {
-            Tool::Select => "Select: click a wall to select it; Delete removes it".into(),
-            Tool::Wall { .. } => {
-                "Wall: click to place points; Alt disables angle snap; Esc/right-click ends".into()
-            }
-            Tool::Door => "Door: click on a wall to place a door".into(),
-            Tool::Window => "Window: click on a wall to place a window".into(),
-            Tool::Pan => "Pan: drag to move the view; Esc or Select returns".into(),
-            Tool::Unimplemented(name) => format!("{name}: not yet implemented"),
-        }
-    }
-
-    fn reset_view_state(&mut self) {
-        self.selected = None;
-        self.pending_start = None;
-        self.hover_wall = None;
-        self.rooms_dirty = true;
     }
 
     // ----- file operations -----
 
     fn new_project(&mut self) {
-        self.project = Project::from_defaults("Untitled", &self.defaults);
+        let project = Project::from_defaults("Untitled", &self.cx.defaults);
+        self.cx.set_project(project);
         self.path = None;
-        self.reset_view_state();
-        self.message = "New project".into();
+        self.tools.restart(&mut self.cx);
+        self.cx.status = "New project".into();
     }
 
     fn open_project(&mut self) {
@@ -327,14 +262,13 @@ impl PlanApp {
             .and_then(|s| Project::from_json(&s).map_err(|e| e.to_string()))
         {
             Ok(p) if !p.floors.is_empty() => {
-                self.project = p;
-                self.floor = 0;
-                self.message = format!("Opened {}", path.display());
+                self.cx.set_project(p);
+                self.cx.status = format!("Opened {}", path.display());
                 self.path = Some(path);
-                self.reset_view_state();
+                self.tools.restart(&mut self.cx);
             }
-            Ok(_) => self.message = "File contains no floors".into(),
-            Err(e) => self.message = format!("Open failed: {e}"),
+            Ok(_) => self.cx.status = "File contains no floors".into(),
+            Err(e) => self.cx.status = format!("Open failed: {e}"),
         }
     }
 
@@ -361,22 +295,23 @@ impl PlanApp {
 
     fn write_to(&mut self, path: PathBuf) {
         let result = self
+            .cx
             .project
             .to_json()
             .map_err(|e| e.to_string())
             .and_then(|s| std::fs::write(&path, s).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
-                self.message = format!("Saved {}", path.display());
+                self.cx.status = format!("Saved {}", path.display());
                 self.path = Some(path);
             }
-            Err(e) => self.message = format!("Save failed: {e}"),
+            Err(e) => self.cx.status = format!("Save failed: {e}"),
         }
     }
 
     /// File > Templates > Save Current Defaults as My Template.
     fn save_template(&mut self) {
-        self.message = match plan_defaults::save_user(&self.defaults) {
+        self.cx.status = match plan_defaults::save_user(&self.cx.defaults) {
             Ok(path) => format!("Saved your template to {}", path.display()),
             Err(e) => format!("Could not save the template: {e}"),
         };
@@ -384,7 +319,7 @@ impl PlanApp {
 
     /// File > Templates > Reset to Chief X18 Template.
     fn reset_template(&mut self) {
-        self.defaults = plan_defaults::embedded();
+        self.cx.defaults = plan_defaults::embedded();
         // Forget the per-session edits of the default dialogs so they show
         // the template's values again.
         for key in [
@@ -392,107 +327,179 @@ impl PlanApp {
             WallTarget::DefaultInterior.key(),
             WallTarget::DefaultFoundation.key(),
         ] {
-            self.extras.walls.remove(&key);
+            self.cx.extras.walls.remove(&key);
         }
         for target in [
             OpeningTarget::DefaultDoor,
             OpeningTarget::DefaultExteriorDoor,
             OpeningTarget::DefaultWindow,
         ] {
-            self.extras.openings.remove(&target.key());
+            self.cx.extras.openings.remove(&target.key());
         }
-        self.message = match plan_defaults::clear_user() {
+        self.cx.status = match plan_defaults::clear_user() {
             Ok(()) => "Reset to the Chief X18 template".into(),
             Err(e) => format!("Reset, but could not remove your saved template: {e}"),
         };
     }
 
-    // ----- model edits -----
+    // ----- input -----
 
-    fn delete_selected(&mut self) {
-        if let Some(id) = self.selected.take() {
-            self.project.remove_wall(self.floor, id);
-            self.rooms_dirty = true;
+    /// Runs what a tool asked for: dialogs, panning, tool switches.
+    fn finish_tool_call(&mut self, ctx: &egui::Context, res: &ToolResult) {
+        if res.repaint || res.commit.is_some() {
+            ctx.request_repaint();
         }
-    }
-
-    fn current_thickness(&self) -> f64 {
-        match self.wall_kind() {
-            WallKind::Exterior => self.defaults.exterior_thickness(),
-            WallKind::Interior => self.defaults.interior_thickness(),
+        if let Some(t) = res.switch_to {
+            self.set_tool(t);
         }
-    }
-
-    fn default_height(&self, kind: WallKind) -> f64 {
-        self.defaults.walls_for(kind).height
-    }
-
-    /// Dimension text in the active dimension defaults' format.
-    fn fmt_dim(&self, inches: f64) -> String {
-        self.defaults.dim_format().fmt_len(inches)
-    }
-
-    /// Nearest wall whose centerline is within the pick radius of `p`.
-    fn nearest_wall(&self, p: Point) -> Option<Id> {
-        let max = PICK_RADIUS_PX / self.camera.px_per_in;
-        self.floor()
-            .walls
-            .iter()
-            .map(|w| (w.id, dist_to_segment(p, w.start, w.end)))
-            .filter(|(_, d)| *d <= max)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(id, _)| id)
-    }
-
-    /// Wall-tool snapping: existing endpoints first, then the grid, then 15 degree angles.
-    fn snap_wall_point(&self, raw: Point, alt: bool) -> Point {
-        let max = PICK_RADIUS_PX / self.camera.px_per_in;
-        let endpoint = self
-            .floor()
-            .walls
-            .iter()
-            .flat_map(|w| [w.start, w.end])
-            .map(|e| (e, e.dist(raw)))
-            .filter(|(_, d)| *d <= max)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(e, _)| e);
-        if let Some(e) = endpoint {
-            return e;
-        }
-        let snap = self.defaults.grid.snap;
-        let grid = snap_to_grid(raw, snap);
-        match self.pending_start {
-            Some(start) if !alt => {
-                angle_snap(start, raw, snap, self.defaults.grid.angle_snap_deg).unwrap_or(grid)
+        for req in std::mem::take(&mut self.cx.requests) {
+            match req {
+                EditorRequest::OpenSpec(o) => self.open_spec(o),
+                EditorRequest::PanPixels(d) => self.camera.pan_by_pixels(d),
             }
-            _ => grid,
         }
     }
 
-    /// Applies hotkeys (see `toolbar::BINDINGS`) plus Esc and Delete.
+    fn open_spec(&mut self, o: ObjectRef) {
+        match o {
+            ObjectRef::Wall(id) => self.open_wall_dialog(id),
+            ObjectRef::Opening(id) => self.open_opening_dialog(id),
+            other => {
+                self.cx.status =
+                    format!("{} specification: not yet implemented", other.type_name());
+            }
+        }
+    }
+
+    fn send_key(&mut self, ctx: &egui::Context, k: KeyEvent) {
+        let is_esc = k.is(egui::Key::Escape);
+        let is_del = k.is(egui::Key::Delete) || k.is(egui::Key::Backspace);
+        let res = self.tools.active_mut().key(&mut self.cx, k);
+        self.finish_tool_call(ctx, &res);
+        if !res.consumed {
+            if is_esc && self.tools.active_id() != ToolId::Select {
+                self.set_tool(ToolId::Select);
+            } else if is_del {
+                self.cx.delete_selection();
+            }
+        }
+    }
+
+    /// Applies hotkeys (see `toolbar::BINDINGS`) and forwards editing keys to
+    /// the active tool.
     fn handle_keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         if self.dialog.is_some() || self.defaults_dialog.is_some() {
             return;
         }
-        actions.extend(self.hotkeys.poll(ctx));
+        let editing = self.cx.temp.editing.is_some();
+        if !editing {
+            actions.extend(self.hotkeys.poll(ctx));
+        }
         if ctx.wants_keyboard_input() {
             return;
         }
-        let (esc, del) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
-            )
-        });
-        if esc {
-            if self.pending_start.is_some() {
-                self.pending_start = None;
-            } else {
-                self.set_tool(Tool::Select);
+        let events = ctx.input(|i| i.events.clone());
+        for e in events {
+            match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                    ..
+                } => {
+                    use egui::Key::*;
+                    let arrow = matches!(key, ArrowLeft | ArrowRight | ArrowUp | ArrowDown);
+                    let wanted = matches!(key, Escape | Delete | Backspace | Tab | Enter) || arrow;
+                    // Cmd/Ctrl chords belong to the hotkey table.
+                    if wanted && (!repeat || arrow || key == Backspace) && !modifiers.command {
+                        self.send_key(
+                            ctx,
+                            KeyEvent {
+                                key: Some(key),
+                                text: None,
+                                modifiers,
+                            },
+                        );
+                    }
+                }
+                egui::Event::Text(t) if editing => {
+                    self.send_key(ctx, KeyEvent::text(&t));
+                }
+                _ => {}
             }
         }
-        if del {
-            self.delete_selected();
+    }
+
+    fn canvas_event(&self, ctx: &egui::Context, pos: Pos2, down: bool) -> PointerEvent {
+        let (mods, delta) = ctx.input(|i| (i.modifiers, i.pointer.delta()));
+        let world = self.camera.screen_to_world(pos);
+        let snap = self.cx.snap_at(world, None, mods.alt, &[]);
+        PointerEvent {
+            world,
+            snapped: snap.point,
+            snap,
+            screen: pos,
+            modifiers: mods,
+            button: egui::PointerButton::Primary,
+            down,
+            drag_delta: delta,
+        }
+    }
+
+    /// Feeds the pointer to the active tool.
+    fn dispatch_pointer(&mut self, ctx: &egui::Context, resp: &egui::Response) {
+        let (pressed, released, down, double, latest) = ctx.input(|i| {
+            let p = &i.pointer;
+            (
+                p.button_pressed(egui::PointerButton::Primary),
+                p.button_released(egui::PointerButton::Primary),
+                p.button_down(egui::PointerButton::Primary),
+                p.button_double_clicked(egui::PointerButton::Primary),
+                p.latest_pos(),
+            )
+        });
+        if self.dialog.is_some() {
+            self.pressed_in_canvas = false;
+            return;
+        }
+        let Some(pos) = latest else { return };
+        if pressed && resp.hovered() {
+            self.pressed_in_canvas = true;
+            self.suppress_release = false;
+            let ev = self.canvas_event(ctx, pos, true);
+            if double {
+                let res = self.tools.active_mut().double_click(&mut self.cx, ev);
+                self.finish_tool_call(ctx, &res);
+                if res.consumed {
+                    self.suppress_release = true;
+                    return;
+                }
+            }
+            let res = self.tools.active_mut().pointer_down(&mut self.cx, ev);
+            self.finish_tool_call(ctx, &res);
+        } else if self.pressed_in_canvas && released {
+            self.pressed_in_canvas = false;
+            if !self.suppress_release {
+                let ev = self.canvas_event(ctx, pos, false);
+                let res = self.tools.active_mut().pointer_up(&mut self.cx, ev);
+                self.finish_tool_call(ctx, &res);
+            }
+            self.suppress_release = false;
+        } else if (resp.hovered() || self.pressed_in_canvas)
+            && (down || ctx.input(|i| i.pointer.delta() != Vec2::ZERO))
+        {
+            let ev = self.canvas_event(ctx, pos, down && self.pressed_in_canvas);
+            let res = self.tools.active_mut().pointer_move(&mut self.cx, ev);
+            self.finish_tool_call(ctx, &res);
+        }
+        if resp.clicked_by(egui::PointerButton::Secondary) {
+            // Right-click ends a wall chain (the tool's Esc), without leaving the tool.
+            let res = self
+                .tools
+                .active_mut()
+                .key(&mut self.cx, KeyEvent::escape());
+            self.finish_tool_call(ctx, &res);
         }
     }
 
@@ -501,15 +508,12 @@ impl PlanApp {
     fn menu_bar(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                let state = BarState {
-                    tool: self.tool,
-                    flags: &self.flags,
-                    dock: self.dock,
-                    floor: self.floor,
-                    floor_count: self.project.floors.len(),
-                    view_name: "Floor Plan View",
-                    brightness: self.settings.brightness,
-                };
+                let state = bar_state(
+                    &self.cx,
+                    self.tools.active_id(),
+                    self.dock,
+                    self.settings.brightness,
+                );
                 menus::bar(
                     ui,
                     &state,
@@ -534,15 +538,12 @@ impl PlanApp {
                     .id_salt(id)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        let state = BarState {
-                            tool: self.tool,
-                            flags: &self.flags,
-                            dock: self.dock,
-                            floor: self.floor,
-                            floor_count: self.project.floors.len(),
-                            view_name: "Floor Plan View",
-                            brightness: self.settings.brightness,
-                        };
+                        let state = bar_state(
+                            &self.cx,
+                            self.tools.active_id(),
+                            self.dock,
+                            self.settings.brightness,
+                        );
                         let slots = if second {
                             &mut self.toolbars.row2
                         } else {
@@ -565,15 +566,12 @@ impl PlanApp {
                     .id_salt("view_bar_scroll")
                     .auto_shrink([true, false])
                     .show(ui, |ui| {
-                        let state = BarState {
-                            tool: self.tool,
-                            flags: &self.flags,
-                            dock: self.dock,
-                            floor: self.floor,
-                            floor_count: self.project.floors.len(),
-                            view_name: "Floor Plan View",
-                            brightness: self.settings.brightness,
-                        };
+                        let state = bar_state(
+                            &self.cx,
+                            self.tools.active_id(),
+                            self.dock,
+                            self.settings.brightness,
+                        );
                         actions.extend(toolbar::column(ui, &mut self.toolbars.view, &state));
                     });
             });
@@ -598,7 +596,7 @@ impl PlanApp {
                 ui.heading("Properties");
                 ui.separator();
                 ui.label("Default walls");
-                let d = &mut self.defaults;
+                let d = &mut self.cx.defaults;
                 wall_type_combo(
                     ui,
                     "Exterior wall",
@@ -643,13 +641,13 @@ impl PlanApp {
                 });
                 ui.separator();
                 ui.label("Rooms");
-                if self.rooms.is_empty() {
+                if self.cx.rooms.is_empty() {
                     ui.weak("None detected (close a loop of walls)");
                 }
-                for room in &self.rooms {
+                for room in &self.cx.rooms {
                     ui.label(format!(
                         "{}  -  {} sq ft",
-                        room.label,
+                        self.cx.room_name(room),
                         room.area_sq_ft().round()
                     ));
                 }
@@ -658,18 +656,33 @@ impl PlanApp {
             });
     }
 
+    /// The wall the selection stands for: the wall itself, or an opening's host.
+    fn selected_wall_id(&self) -> Option<Id> {
+        match self.cx.selection.single()? {
+            ObjectRef::Wall(id) => Some(id),
+            ObjectRef::Opening(id) => self
+                .cx
+                .floor()
+                .openings
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| o.wall_id),
+            _ => None,
+        }
+    }
+
     fn selected_wall_section(&mut self, ui: &mut egui::Ui) {
-        let Some(id) = self.selected else {
+        let Some(id) = self.selected_wall_id() else {
             ui.weak("No wall selected");
             return;
         };
-        let Some(wall) = self.floor().wall(id) else {
-            self.selected = None;
+        let Some(wall) = self.cx.floor().wall(id) else {
             return;
         };
         let (len, kind, mut thickness) = (wall.length(), wall.kind, wall.thickness);
-        let fmt = self.defaults.dim_format();
+        let fmt = self.cx.defaults.dim_format();
         let openings: Vec<(Id, OpeningKind, f64, f64)> = self
+            .cx
             .floor()
             .openings_on(id)
             .map(|o| (o.id, o.kind, o.center_offset, o.width))
@@ -686,25 +699,27 @@ impl PlanApp {
             }
         ));
         if inch_drag(ui, "Thickness", &mut thickness, 1.0..=24.0) {
-            let floor = self.floor;
-            if let Some(w) = self.project.floors[floor].wall_mut(id) {
+            self.cx.begin_change_merged("Change Wall Thickness");
+            let floor = self.cx.floor;
+            if let Some(w) = self.cx.project.floors[floor].wall_mut(id) {
                 w.thickness = thickness;
             }
-            self.rooms_dirty = true;
+            self.cx.mark_dirty();
         }
         let mut open_wall_spec = false;
         let mut open_opening_spec = None;
+        let mut delete_wall = false;
         ui.horizontal(|ui| {
             open_wall_spec = ui.button("Open Specification\u{2026}").clicked();
-            if ui.button("Delete wall").clicked() {
-                self.delete_selected();
-            }
+            delete_wall = ui.button("Delete wall").clicked();
         });
+        if delete_wall {
+            self.cx.selection.set(ObjectRef::Wall(id));
+            self.cx.delete_selection();
+            return;
+        }
         if open_wall_spec {
             self.open_wall_dialog(id);
-        }
-        if self.selected != Some(id) {
-            return;
         }
         ui.label("Openings");
         if openings.is_empty() {
@@ -736,7 +751,10 @@ impl PlanApp {
             });
         }
         if let Some(oid) = remove {
-            self.project.remove_opening(self.floor, oid);
+            self.cx.begin_change("Delete Opening");
+            let floor = self.cx.floor;
+            self.cx.project.remove_opening(floor, oid);
+            self.cx.mark_dirty();
         }
         if let Some(oid) = open_opening_spec {
             self.open_opening_dialog(oid);
@@ -750,11 +768,11 @@ impl PlanApp {
             .frame(frame)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    match self.cursor_world {
+                    match self.cx.cursor_world {
                         Some(p) => ui.monospace(format!(
                             "X: {}  Y: {}",
-                            self.fmt_dim(p.x),
-                            self.fmt_dim(p.y)
+                            self.cx.fmt_dim(p.x),
+                            self.cx.fmt_dim(p.y)
                         )),
                         None => ui.monospace("X: --  Y: --"),
                     };
@@ -762,15 +780,19 @@ impl PlanApp {
                         ui.separator();
                         ui.strong(prefix);
                     }
-                    if let (Some(start), Some(end)) = (self.pending_start, self.snapped) {
+                    if let Some(r) = &self.cx.readout {
                         ui.separator();
-                        ui.label(format!("Length: {}", self.fmt_dim(start.dist(end))));
+                        ui.label(r);
+                    }
+                    if let Some(s) = self.cx.last_snap.filter(|s| s.kind.is_object_snap()) {
+                        ui.separator();
+                        ui.label(format!("Snap: {}", s.kind.label()));
                     }
                     ui.separator();
-                    ui.label(self.tool_hint());
-                    if !self.message.is_empty() {
+                    ui.label(self.tools.active().hint());
+                    if !self.cx.status.is_empty() {
                         ui.separator();
-                        ui.weak(&self.message);
+                        ui.weak(&self.cx.status);
                     }
                 });
             });
@@ -781,52 +803,34 @@ impl PlanApp {
     fn canvas(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let (resp, painter) =
             ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
-        let rect = resp.rect;
-        self.canvas_rect = rect;
+        self.camera.rect = resp.rect;
+        self.cx.px_per_in = self.camera.px_per_in;
+        self.cx.palette = self.settings.theme.palette();
 
-        self.handle_camera_input(ui, &resp, rect);
+        self.handle_camera_input(ui, &resp);
 
-        let alt = ctx.input(|i| i.modifiers.alt);
-        let new_cursor = resp
-            .hover_pos()
-            .map(|p| self.camera.screen_to_world(rect, p));
-        if new_cursor.map(|p| (p.x, p.y)) != self.cursor_world.map(|p| (p.x, p.y)) {
+        let new_cursor = resp.hover_pos().map(|p| self.camera.screen_to_world(p));
+        if new_cursor.map(|p| (p.x, p.y)) != self.cx.cursor_world.map(|p| (p.x, p.y)) {
             ctx.request_repaint();
         }
-        self.cursor_world = new_cursor;
-        self.snapped = None;
-        self.hover_wall = None;
-        if let Some(raw) = new_cursor {
-            match self.tool {
-                Tool::Wall { .. } => self.snapped = Some(self.snap_wall_point(raw, alt)),
-                Tool::Door | Tool::Window => self.hover_wall = self.nearest_wall(raw),
-                Tool::Select | Tool::Pan | Tool::Unimplemented(_) => {}
-            }
+        self.cx.cursor_world = new_cursor;
+        self.cx.px_per_in = self.camera.px_per_in;
+        self.dispatch_pointer(ctx, &resp);
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(self.tools.active().cursor());
         }
 
-        // Clicks are ignored while a specification dialog is open.
-        if self.dialog.is_none() {
-            if resp.double_clicked_by(egui::PointerButton::Primary) && self.tool == Tool::Select {
-                if let Some(raw) = new_cursor {
-                    self.handle_double_click(raw);
-                }
-            } else if resp.clicked_by(egui::PointerButton::Primary) {
-                if let Some(raw) = new_cursor {
-                    self.handle_click(raw);
-                }
-            }
-            if resp.clicked_by(egui::PointerButton::Secondary) {
-                self.pending_start = None;
-            }
-        }
-
-        self.draw(&painter, rect);
+        self.cx.refresh();
+        render::draw_plan(&self.cx, &painter, &self.camera);
+        self.tools
+            .active()
+            .draw_overlay(&self.cx, &painter, &self.camera);
+        render::draw_crosshairs(&self.cx, &painter, &self.camera);
     }
 
-    fn handle_camera_input(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect) {
+    fn handle_camera_input(&mut self, ui: &egui::Ui, resp: &egui::Response) {
         if resp.dragged_by(egui::PointerButton::Middle)
             || resp.dragged_by(egui::PointerButton::Secondary)
-            || (self.tool == Tool::Pan && resp.dragged_by(egui::PointerButton::Primary))
         {
             self.camera.pan_by_pixels(resp.drag_delta());
         }
@@ -834,63 +838,77 @@ impl PlanApp {
             let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
             let factor = (scroll as f64 * 0.005).exp() * zoom as f64;
             if (factor - 1.0).abs() > 1e-9 {
-                self.camera.zoom_about(rect, pos, factor);
+                self.camera.zoom_about(pos, factor);
+            }
+        }
+    }
+
+    /// The floating Edit toolbar at the bottom left of the canvas, built from
+    /// the active tool's `edit_toolbar`.
+    fn edit_toolbar(&mut self, ctx: &egui::Context) {
+        if self.dialog.is_some() {
+            return;
+        }
+        let actions = self.tools.active().edit_toolbar(&self.cx);
+        if actions.is_empty() {
+            return;
+        }
+        let rect = self.camera.rect;
+        let mut clicked = None;
+        egui::Area::new(egui::Id::new("edit_toolbar"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(rect.left() + 10.0, rect.bottom() - 44.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for a in &actions {
+                            let btn = match a.icon {
+                                Some(id) => egui::Button::image(
+                                    egui::Image::new(icons::icon(id))
+                                        .fit_to_exact_size(Vec2::splat(18.0))
+                                        .tint(Color32::WHITE),
+                                ),
+                                None => egui::Button::new("Copy"),
+                            };
+                            let r = ui.add_enabled(a.enabled, btn).on_hover_text(a.label);
+                            if r.clicked() {
+                                clicked = Some(a.kind);
+                            }
+                        }
+                    });
+                });
+            });
+        if let Some(kind) = clicked {
+            self.cx.apply_edit_action(kind);
+            for req in std::mem::take(&mut self.cx.requests) {
+                if let EditorRequest::OpenSpec(o) = req {
+                    self.open_spec(o);
+                }
             }
         }
     }
 
     // ----- specification dialogs -----
 
-    /// The opening under `p`: inside its extent along the wall and the wall
-    /// thickness (plus a couple of pixels of slop).
-    fn hit_opening(&self, p: Point) -> Option<Id> {
-        let slop = PICK_RADIUS_PX * 0.5 / self.camera.px_per_in;
-        let floor = self.floor();
-        for w in &floor.walls {
-            let perp = p.sub(w.start).dot(w.normal()).abs();
-            if perp > w.thickness * 0.5 + slop {
-                continue;
-            }
-            let (t, _) = project_on_segment(p, w.start, w.end);
-            let along = t * w.length();
-            if let Some(o) = floor
-                .openings_on(w.id)
-                .find(|o| along >= o.start_offset() && along <= o.end_offset())
-            {
-                return Some(o.id);
-            }
-        }
-        None
-    }
-
-    fn handle_double_click(&mut self, raw: Point) {
-        if let Some(oid) = self.hit_opening(raw) {
-            self.open_opening_dialog(oid);
-        } else if let Some(wid) = self.nearest_wall(raw) {
-            self.selected = Some(wid);
-            self.open_wall_dialog(wid);
-        }
-    }
-
     fn open_wall_dialog(&mut self, id: Id) {
-        let Some(wall) = self.floor().wall(id).cloned() else {
+        let Some(wall) = self.cx.floor().wall(id).cloned() else {
             return;
         };
-        let openings: Vec<Opening> = self.floor().openings_on(id).cloned().collect();
-        let extras = self.extras.walls.get(&id).cloned().unwrap_or_default();
-        let default_height = self.default_height(wall.kind);
+        let openings: Vec<Opening> = self.cx.floor().openings_on(id).cloned().collect();
+        let extras = self.cx.extras.walls.get(&id).cloned().unwrap_or_default();
+        let default_height = self.cx.wall_height(wall.kind);
         self.dialog = Some(ActiveDialog::Wall(Box::new(WallDialog::new(
             WallTarget::Wall(id),
             wall,
             openings,
             extras,
             default_height,
-            self.defaults.wall_types.clone(),
+            self.cx.wall_types().to_vec(),
         ))));
     }
 
     fn open_opening_dialog(&mut self, id: Id) {
-        let floor = self.floor();
+        let floor = self.cx.floor();
         let Some(opening) = floor.openings.iter().find(|o| o.id == id).cloned() else {
             return;
         };
@@ -902,49 +920,38 @@ impl PlanApp {
             .filter(|o| o.id != id)
             .cloned()
             .collect();
-        self.selected = Some(wall.id);
-        let extras = self.extras.openings.get(&id).cloned().unwrap_or_default();
+        let extras = self
+            .cx
+            .extras
+            .openings
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
         self.dialog = Some(ActiveDialog::Opening(Box::new(OpeningDialog::for_opening(
             opening, &wall, others, extras,
         ))));
     }
 
-    /// The extras a default door or window dialog starts from: the ones kept
-    /// this session, else the values in the plan defaults.
-    fn default_opening_extras(&self, target: OpeningTarget) -> OpeningExtras {
-        if let Some(e) = self.extras.openings.get(&target.key()) {
-            return e.clone();
-        }
-        match target {
-            OpeningTarget::DefaultWindow => {
-                OpeningExtras::from_window_defaults(&self.defaults.window)
-            }
-            OpeningTarget::DefaultExteriorDoor => {
-                OpeningExtras::from_door_defaults(&self.defaults.exterior_door, true)
-            }
-            _ => OpeningExtras::from_door_defaults(&self.defaults.interior_door, false),
-        }
-    }
-
     fn open_defaults_entry(&mut self, entry: DefaultsEntry) {
         let wall_dialog = |target: WallTarget, app: &Self| {
+            let defaults = &app.cx.defaults;
             let w = match target {
-                WallTarget::DefaultInterior => &app.defaults.interior_wall,
-                WallTarget::DefaultFoundation => &app.defaults.foundation_wall,
-                _ => &app.defaults.exterior_wall,
+                WallTarget::DefaultInterior => &defaults.interior_wall,
+                WallTarget::DefaultFoundation => &defaults.foundation_wall,
+                _ => &defaults.exterior_wall,
             };
             let thickness = match target {
-                WallTarget::DefaultInterior => app.defaults.interior_thickness(),
-                WallTarget::DefaultFoundation => app.defaults.foundation_thickness(),
-                _ => app.defaults.exterior_thickness(),
+                WallTarget::DefaultInterior => defaults.interior_thickness(),
+                WallTarget::DefaultFoundation => defaults.foundation_thickness(),
+                _ => defaults.exterior_thickness(),
             };
-            let extras = app.extras.walls.get(&target.key()).cloned();
+            let extras = app.cx.extras.walls.get(&target.key()).cloned();
             ActiveDialog::Wall(Box::new(WallDialog::for_default(
                 target,
                 thickness,
                 w.height,
                 extras.unwrap_or_default(),
-                app.defaults.wall_types.clone(),
+                defaults.wall_types.clone(),
                 &w.wall_type,
             )))
         };
@@ -952,7 +959,7 @@ impl PlanApp {
             ActiveDialog::Opening(Box::new(OpeningDialog::for_default(
                 target,
                 template,
-                app.default_opening_extras(target),
+                app.cx.default_opening_extras(target),
             )))
         };
         self.dialog = match entry {
@@ -961,21 +968,21 @@ impl PlanApp {
             DefaultsEntry::FoundationWall => Some(wall_dialog(WallTarget::DefaultFoundation, self)),
             DefaultsEntry::InteriorDoor => Some(opening_dialog(
                 OpeningTarget::DefaultDoor,
-                plan_defaults::door_template(&self.defaults, false),
+                plan_defaults::door_template(&self.cx.defaults, false),
                 self,
             )),
             DefaultsEntry::ExteriorDoor => Some(opening_dialog(
                 OpeningTarget::DefaultExteriorDoor,
-                plan_defaults::door_template(&self.defaults, true),
+                plan_defaults::door_template(&self.cx.defaults, true),
                 self,
             )),
             DefaultsEntry::Window => Some(opening_dialog(
                 OpeningTarget::DefaultWindow,
-                plan_defaults::window_template(&self.defaults),
+                plan_defaults::window_template(&self.cx.defaults),
                 self,
             )),
             DefaultsEntry::Dimensions | DefaultsEntry::RoomTypes => {
-                self.message = "Coming in a later phase".into();
+                self.cx.status = "Coming in a later phase".into();
                 None
             }
         };
@@ -996,7 +1003,7 @@ impl PlanApp {
                         ActiveDialog::Wall(d) => self.apply_wall_dialog(d),
                         ActiveDialog::Opening(d) => self.apply_opening_dialog(d),
                     }
-                    self.rooms_dirty = true;
+                    self.cx.mark_dirty();
                 }
             }
         }
@@ -1012,15 +1019,49 @@ impl PlanApp {
 
     fn apply_wall_dialog(&mut self, d: &WallDialog) {
         let draft = d.draft();
+        // Wall types edited through "Define..." go to the defaults (and so to
+        // the saved template) and to the plan's registry.
+        for t in d.edited_types() {
+            match self
+                .cx
+                .defaults
+                .wall_types
+                .iter_mut()
+                .find(|x| x.name == t.name)
+            {
+                Some(slot) => *slot = t.clone(),
+                None => self.cx.defaults.wall_types.push(t.clone()),
+            }
+            if matches!(d.target(), WallTarget::Wall(_)) || !self.cx.project.wall_types.is_empty() {
+                self.cx.project.register_wall_type(t.clone());
+            }
+        }
         match d.target() {
             WallTarget::Wall(id) => {
-                let floor = &mut self.project.floors[self.floor];
+                self.cx.begin_change("Wall Specification");
+                let fl = self.cx.floor;
+                let orig = self.cx.floor().wall(id).cloned();
+                let floor = &mut self.cx.project.floors[fl];
                 if let Some(w) = floor.wall_mut(id) {
                     *w = draft.clone();
                 }
                 for adjusted in d.adjusted_openings() {
                     if let Some(o) = floor.openings.iter_mut().find(|o| o.id == adjusted.id) {
                         o.center_offset = adjusted.center_offset;
+                    }
+                }
+                // A new wall type keeps the reference line fixed (W-27).
+                if let (Some(orig), Some(name)) = (orig, draft.wall_type.clone()) {
+                    let changed = orig.wall_type.as_deref() != Some(name.as_str())
+                        || d.edited_types().iter().any(|t| t.name == name);
+                    let def = self.cx.project.wall_type_def(&name).cloned();
+                    if let (true, Some(def)) = (changed, def) {
+                        if let Some(w) = self.cx.project.floors[fl].wall_mut(id) {
+                            w.thickness = orig.thickness;
+                            w.wall_type = orig.wall_type.clone();
+                        }
+                        let about = draft.resize_about;
+                        self.cx.project.set_wall_type(fl, id, &def, about);
                     }
                 }
             }
@@ -1033,21 +1074,22 @@ impl PlanApp {
                     WallKind::Exterior
                 };
                 let name = plan_defaults::resolve_wall_type(
-                    &mut self.defaults,
+                    &mut self.cx.defaults,
                     kind,
                     d.picked_type(),
                     draft.thickness,
                 );
                 let w = match d.target() {
-                    WallTarget::DefaultInterior => &mut self.defaults.interior_wall,
-                    WallTarget::DefaultFoundation => &mut self.defaults.foundation_wall,
-                    _ => &mut self.defaults.exterior_wall,
+                    WallTarget::DefaultInterior => &mut self.cx.defaults.interior_wall,
+                    WallTarget::DefaultFoundation => &mut self.cx.defaults.foundation_wall,
+                    _ => &mut self.cx.defaults.exterior_wall,
                 };
                 w.wall_type = name;
                 w.height = draft.height;
             }
         }
-        self.extras
+        self.cx
+            .extras
             .walls
             .insert(d.target().key(), d.extras().clone());
     }
@@ -1056,343 +1098,29 @@ impl PlanApp {
         let draft = d.draft().clone();
         match d.target() {
             OpeningTarget::Placed(id) => {
-                let floor = &mut self.project.floors[self.floor];
+                self.cx.begin_change("Opening Specification");
+                let floor = &mut self.cx.project.floors[self.cx.floor];
                 if let Some(o) = floor.openings.iter_mut().find(|o| o.id == id) {
                     *o = draft;
                 }
             }
             OpeningTarget::DefaultDoor => {
-                let base = &self.defaults.interior_door;
-                self.defaults.interior_door = d.extras().to_door_defaults(&draft, base, false);
+                let base = &self.cx.defaults.interior_door;
+                self.cx.defaults.interior_door = d.extras().to_door_defaults(&draft, base, false);
             }
             OpeningTarget::DefaultExteriorDoor => {
-                let base = &self.defaults.exterior_door;
-                self.defaults.exterior_door = d.extras().to_door_defaults(&draft, base, true);
+                let base = &self.cx.defaults.exterior_door;
+                self.cx.defaults.exterior_door = d.extras().to_door_defaults(&draft, base, true);
             }
             OpeningTarget::DefaultWindow => {
-                let base = &self.defaults.window;
-                self.defaults.window = d.extras().to_window_defaults(&draft, base);
+                let base = &self.cx.defaults.window;
+                self.cx.defaults.window = d.extras().to_window_defaults(&draft, base);
             }
         }
-        self.extras
+        self.cx
+            .extras
             .openings
             .insert(d.target().key(), d.extras().clone());
-    }
-
-    fn handle_click(&mut self, raw: Point) {
-        match self.tool {
-            Tool::Select => self.selected = self.nearest_wall(raw),
-            Tool::Pan | Tool::Unimplemented(_) => {}
-            Tool::Wall { kind } => {
-                let Some(p) = self.snapped else { return };
-                match self.pending_start {
-                    None => self.pending_start = Some(p),
-                    Some(start) if start.dist(p) >= 1.0 => {
-                        let id = self.project.add_wall(
-                            self.floor,
-                            start,
-                            p,
-                            self.current_thickness(),
-                            self.default_height(kind),
-                            kind,
-                        );
-                        self.selected = Some(id);
-                        self.pending_start = Some(p);
-                        self.rooms_dirty = true;
-                    }
-                    Some(_) => {}
-                }
-            }
-            Tool::Door | Tool::Window => {
-                let Some(wid) = self.nearest_wall(raw) else {
-                    return;
-                };
-                let Some(wall) = self.floor().wall(wid) else {
-                    return;
-                };
-                let (t, _) = project_on_segment(raw, wall.start, wall.end);
-                let offset = t * wall.length();
-                let kind = if self.tool == Tool::Door {
-                    OpeningKind::Door
-                } else {
-                    OpeningKind::Window
-                };
-                // Doors in exterior walls use the exterior door defaults.
-                let (target, template) = if kind == OpeningKind::Window {
-                    (
-                        OpeningTarget::DefaultWindow,
-                        plan_defaults::window_template(&self.defaults),
-                    )
-                } else if wall.kind == WallKind::Exterior {
-                    (
-                        OpeningTarget::DefaultExteriorDoor,
-                        plan_defaults::door_template(&self.defaults, true),
-                    )
-                } else {
-                    (
-                        OpeningTarget::DefaultDoor,
-                        plan_defaults::door_template(&self.defaults, false),
-                    )
-                };
-                let extras = self.default_opening_extras(target);
-                match dialogs::place_from_template(
-                    &mut self.project,
-                    self.floor,
-                    wid,
-                    offset,
-                    &template,
-                ) {
-                    Some(id) => {
-                        self.extras.openings.insert(id, extras);
-                        self.selected = Some(wid);
-                        self.message.clear();
-                    }
-                    None => {
-                        self.message =
-                            "Opening does not fit there (wall too short or overlap)".into()
-                    }
-                }
-            }
-        }
-    }
-
-    fn draw(&self, painter: &egui::Painter, rect: Rect) {
-        let pal = self.settings.theme.palette();
-        painter.rect_filled(rect, 0.0, pal.background);
-        self.draw_grid(painter, rect, &pal);
-        self.draw_rooms(painter, rect, &pal);
-        let floor = self.floor();
-        for wall in &floor.walls {
-            self.draw_wall(painter, rect, wall, &pal);
-        }
-        for wall in &floor.walls {
-            for o in floor.openings_on(wall.id) {
-                self.draw_opening(painter, rect, wall, o, &pal);
-            }
-        }
-        if let Some(w) = self.selected.and_then(|id| floor.wall(id)) {
-            self.draw_wall_outline(painter, rect, w, Stroke::new(3.0_f32, pal.selection));
-        }
-        if let Some(w) = self.hover_wall.and_then(|id| floor.wall(id)) {
-            self.draw_wall_outline(painter, rect, w, Stroke::new(3.0_f32, pal.hover));
-        }
-        self.draw_rubber_band(painter, rect, &pal);
-        self.draw_crosshairs(painter, rect, &pal);
-    }
-
-    fn draw_crosshairs(&self, painter: &egui::Painter, rect: Rect, pal: &Palette) {
-        if !self.flags.contains(&ViewFlag::Crosshairs) {
-            return;
-        }
-        let Some(p) = self.cursor_world else { return };
-        let at = self.camera.world_to_screen(rect, p);
-        let stroke = Stroke::new(1.0_f32, pal.text.gamma_multiply(0.45));
-        painter.line_segment(
-            [Pos2::new(rect.left(), at.y), Pos2::new(rect.right(), at.y)],
-            stroke,
-        );
-        painter.line_segment(
-            [Pos2::new(at.x, rect.top()), Pos2::new(at.x, rect.bottom())],
-            stroke,
-        );
-    }
-
-    fn draw_grid(&self, painter: &egui::Painter, rect: Rect, pal: &Palette) {
-        let cam = self.camera;
-        let mut spacing = self.defaults.grid.spacing.max(0.25);
-        while spacing * cam.px_per_in < 8.0 {
-            spacing *= 5.0;
-        }
-        if self.flags.contains(&ViewFlag::ReferenceGrid) {
-            self.draw_grid_lines(painter, rect, spacing, pal);
-        }
-        let o = cam.world_to_screen(rect, Point::ZERO);
-        let red = Stroke::new(1.5_f32, pal.origin_marker);
-        painter.line_segment([o - Vec2::new(6.0, 0.0), o + Vec2::new(6.0, 0.0)], red);
-        painter.line_segment([o - Vec2::new(0.0, 6.0), o + Vec2::new(0.0, 6.0)], red);
-    }
-
-    fn draw_grid_lines(&self, painter: &egui::Painter, rect: Rect, spacing: f64, pal: &Palette) {
-        let cam = self.camera;
-        let tl = cam.screen_to_world(rect, rect.left_top());
-        let br = cam.screen_to_world(rect, rect.right_bottom());
-        let minor = Stroke::new(1.0_f32, pal.grid_minor);
-        let major = Stroke::new(1.0_f32, pal.grid_major);
-        let x0 = (tl.x / spacing).floor() as i64;
-        let x1 = (br.x / spacing).ceil() as i64;
-        for k in x0..=x1 {
-            let x = cam
-                .world_to_screen(rect, Point::new(k as f64 * spacing, 0.0))
-                .x;
-            let stroke = if k % 5 == 0 { major } else { minor };
-            painter.line_segment(
-                [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-                stroke,
-            );
-        }
-        let y0 = (br.y / spacing).floor() as i64;
-        let y1 = (tl.y / spacing).ceil() as i64;
-        for k in y0..=y1 {
-            let y = cam
-                .world_to_screen(rect, Point::new(0.0, k as f64 * spacing))
-                .y;
-            let stroke = if k % 5 == 0 { major } else { minor };
-            painter.line_segment(
-                [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-                stroke,
-            );
-        }
-    }
-
-    fn draw_rooms(&self, painter: &egui::Painter, rect: Rect, pal: &Palette) {
-        let outline = Stroke::new(1.5_f32, pal.room_outline);
-        for room in &self.rooms {
-            let pts: Vec<Pos2> = room
-                .polygon
-                .iter()
-                .map(|p| self.camera.world_to_screen(rect, *p))
-                .collect();
-            painter.add(Shape::closed_line(pts, outline));
-            painter.text(
-                self.camera.world_to_screen(rect, room.centroid),
-                Align2::CENTER_CENTER,
-                format!("{}\n{} sq ft", room.label, room.area_sq_ft().round()),
-                FontId::proportional(13.0),
-                pal.room_label,
-            );
-        }
-    }
-
-    fn quad(&self, rect: Rect, pts: [Point; 4]) -> Vec<Pos2> {
-        pts.iter()
-            .map(|p| self.camera.world_to_screen(rect, *p))
-            .collect()
-    }
-
-    fn draw_wall(&self, painter: &egui::Painter, rect: Rect, wall: &Wall, pal: &Palette) {
-        let fill = match wall.kind {
-            WallKind::Exterior => pal.wall_fill_exterior,
-            WallKind::Interior => pal.wall_fill_interior,
-        };
-        let pts = self.quad(rect, wall.footprint());
-        painter.add(Shape::convex_polygon(
-            pts,
-            fill,
-            Stroke::new(1.0_f32, pal.wall_stroke),
-        ));
-    }
-
-    fn draw_wall_outline(&self, painter: &egui::Painter, rect: Rect, wall: &Wall, stroke: Stroke) {
-        painter.add(Shape::closed_line(
-            self.quad(rect, wall.footprint()),
-            stroke,
-        ));
-    }
-
-    fn draw_opening(
-        &self,
-        painter: &egui::Painter,
-        rect: Rect,
-        wall: &Wall,
-        o: &plan_core::Opening,
-        pal: &Palette,
-    ) {
-        let cam = self.camera;
-        let sc = |p: Point| cam.world_to_screen(rect, p);
-        let line = Stroke::new(1.0_f32, pal.opening_line);
-        let d = wall.direction();
-        let n = wall.normal();
-        let half = wall.thickness * 0.5;
-        let over = half + 1.0 + 1.0 / cam.px_per_in;
-        let pa = wall.point_at(o.start_offset());
-        let pb = wall.point_at(o.end_offset());
-
-        // A canvas-colored quad hides the wall fill and its stroke across the opening.
-        let gap = [
-            pa.add(n.scale(over)),
-            pb.add(n.scale(over)),
-            pb.sub(n.scale(over)),
-            pa.sub(n.scale(over)),
-        ];
-        painter.add(Shape::convex_polygon(
-            self.quad(rect, gap),
-            pal.background,
-            Stroke::NONE,
-        ));
-        for j in [pa, pb] {
-            painter.line_segment([sc(j.add(n.scale(half))), sc(j.sub(n.scale(half)))], line);
-        }
-
-        match o.kind {
-            OpeningKind::Door => {
-                let (hinge, toward_other, side) = if o.swing_flipped {
-                    (pb, d.scale(-1.0), n.scale(-1.0))
-                } else {
-                    (pa, d, n)
-                };
-                painter.line_segment([sc(hinge), sc(hinge.add(side.scale(o.width)))], line);
-                let arc: Vec<Pos2> = (0..=16)
-                    .map(|i| {
-                        let a = i as f64 / 16.0 * std::f64::consts::FRAC_PI_2;
-                        let v = toward_other.scale(a.cos()).add(side.scale(a.sin()));
-                        sc(hinge.add(v.scale(o.width)))
-                    })
-                    .collect();
-                painter.add(Shape::line(arc, Stroke::new(1.0_f32, pal.door_arc)));
-            }
-            OpeningKind::Window => {
-                for off in [half, 0.0, -half] {
-                    let s = n.scale(off);
-                    painter.line_segment(
-                        [sc(pa.add(s)), sc(pb.add(s))],
-                        Stroke::new(0.8_f32, pal.opening_line),
-                    );
-                }
-            }
-        }
-    }
-
-    fn draw_rubber_band(&self, painter: &egui::Painter, rect: Rect, pal: &Palette) {
-        if !matches!(self.tool, Tool::Wall { .. }) {
-            return;
-        }
-        let Some(snapped) = self.snapped else { return };
-        if let Some(start) = self.pending_start {
-            let len = start.dist(snapped);
-            if len > 0.01 {
-                let ghost = Wall {
-                    id: 0,
-                    start,
-                    end: snapped,
-                    thickness: self.current_thickness(),
-                    height: self.default_height(self.wall_kind()),
-                    kind: self.wall_kind(),
-                    layer: DEFAULT_WALL_LAYER.to_string(),
-                };
-                painter.add(Shape::convex_polygon(
-                    self.quad(rect, ghost.footprint()),
-                    pal.ghost_fill,
-                    Stroke::new(1.0_f32, pal.ghost_stroke),
-                ));
-                if self.flags.contains(&ViewFlag::TemporaryDimensions) {
-                    let mid = Point::lerp(start, snapped, 0.5)
-                        .add(ghost.normal().scale(ghost.thickness * 0.5));
-                    painter.text(
-                        self.camera.world_to_screen(rect, mid)
-                            + Vec2::new(0.0, -8.0) * ghost.normal().y.signum() as f32,
-                        Align2::CENTER_CENTER,
-                        self.fmt_dim(len),
-                        FontId::proportional(13.0),
-                        pal.dimension_text,
-                    );
-                }
-            }
-        }
-        painter.circle_stroke(
-            self.camera.world_to_screen(rect, snapped),
-            5.0,
-            Stroke::new(1.5_f32, pal.ghost_stroke),
-        );
     }
 }
 
@@ -1407,7 +1135,7 @@ impl PlanApp {
         if self.settings != self.saved_settings && !ctx.input(|i| i.pointer.any_down()) {
             match self.settings.save() {
                 Ok(()) => {}
-                Err(e) => self.message = format!("Could not save settings: {e}"),
+                Err(e) => self.cx.status = format!("Could not save settings: {e}"),
             }
             self.saved_settings = self.settings;
         }
@@ -1432,9 +1160,9 @@ impl PlanApp {
 
 impl eframe::App for PlanApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.rooms_dirty {
-            self.rooms = detect_rooms(&self.floor().walls, 0.5);
-            self.rooms_dirty = false;
+        self.cx.refresh();
+        if !ctx.input(|i| i.pointer.any_down()) {
+            self.cx.end_merge();
         }
         let mut actions = Vec::new();
         self.handle_keys(ctx, &mut actions);
@@ -1456,10 +1184,11 @@ impl eframe::App for PlanApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| self.canvas(ctx, ui));
+        self.edit_toolbar(ctx);
         self.about_window(ctx);
         self.dialogs(ctx);
         self.sync_settings(ctx);
-        if self.rooms_dirty {
+        if self.cx.is_dirty() {
             ctx.request_repaint();
         }
     }
@@ -1513,30 +1242,6 @@ fn inch_drag(
     .inner
 }
 
-fn snap_to_grid(p: Point, step: f64) -> Point {
-    if step <= 0.0 {
-        return p;
-    }
-    Point::new((p.x / step).round() * step, (p.y / step).round() * step)
-}
-
-/// Snap `p` to a multiple of `increment_deg` from `start`, then re-snap the length to `step`.
-fn angle_snap(start: Point, p: Point, step: f64, increment_deg: f64) -> Option<Point> {
-    let v = p.sub(start);
-    let len = v.length();
-    if len < 1e-6 {
-        return None;
-    }
-    let inc = increment_deg.max(1.0).to_radians();
-    let a = (v.angle() / inc).round() * inc;
-    let len = if step > 0.0 {
-        (len / step).round() * step
-    } else {
-        len
-    };
-    Some(start.add(Point::new(a.cos(), a.sin()).scale(len)))
-}
-
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1567,55 +1272,59 @@ mod tests {
 
     #[test]
     fn app_starts_from_the_chief_template() {
-        let mut a = app();
-        assert_eq!(a.project.floors[0].ceiling_height, 109.125);
-        a.tool = Tool::Wall {
-            kind: WallKind::Exterior,
-        };
-        assert_eq!(a.current_thickness(), 7.625);
-        a.tool = Tool::Wall {
-            kind: WallKind::Interior,
-        };
-        assert_eq!(a.current_thickness(), 4.5);
-        assert_eq!(a.default_height(WallKind::Exterior), 109.125);
-        assert_eq!(a.defaults.grid.snap, 1.0);
+        let a = app();
+        assert_eq!(a.cx.project.floors[0].ceiling_height, 109.125);
+        assert_eq!(a.cx.wall_thickness(WallKind::Exterior), 7.625);
+        assert_eq!(a.cx.wall_thickness(WallKind::Interior), 4.5);
+        assert_eq!(a.cx.wall_height(WallKind::Exterior), 109.125);
+        assert_eq!(a.cx.defaults.grid.snap, 1.0);
         // Dimension text uses the 1/8" smallest fraction from the defaults.
-        assert_eq!(a.fmt_dim(10.1875), "0'-10 1/4\"");
+        assert_eq!(a.cx.fmt_dim(10.1875), "0'-10 1/4\"");
     }
 
     #[test]
     fn new_project_uses_the_defaults() {
         let mut a = app();
-        a.defaults.rooms.ceiling_height = 120.0;
+        a.cx.defaults.rooms.ceiling_height = 120.0;
         a.new_project();
-        assert_eq!(a.project.floors[0].ceiling_height, 120.0);
+        assert_eq!(a.cx.project.floors[0].ceiling_height, 120.0);
     }
 
     #[test]
-    fn doors_in_exterior_walls_use_the_exterior_door_defaults() {
+    fn undo_and_redo_actions_use_step_labels() {
         let mut a = app();
-        let w = a.project.add_wall(
-            0,
-            Point::new(0.0, 0.0),
-            Point::new(240.0, 0.0),
-            7.625,
-            109.125,
-            WallKind::Exterior,
+        a.cx.begin_change("Move Wall");
+        a.cx.project.floors[0].name = "Changed".into();
+        a.apply(Action::Undo);
+        assert_eq!(a.cx.status, "Undid Move Wall");
+        assert_eq!(a.cx.project.floors[0].name, "1st Floor");
+        a.apply(Action::Redo);
+        assert_eq!(a.cx.status, "Redid Move Wall");
+        a.apply(Action::Redo);
+        assert_eq!(a.cx.status, "Nothing to redo");
+    }
+
+    #[test]
+    fn switching_tools_keeps_a_wall_chain_between_flavors() {
+        let mut a = app();
+        a.set_tool(ToolId::Wall {
+            kind: WallKind::Exterior,
+        });
+        let p = PointerEvent::at(&a.cx, Point::new(0.0, 0.0));
+        a.tools.active_mut().pointer_down(&mut a.cx, p);
+        a.set_tool(ToolId::Wall {
+            kind: WallKind::Interior,
+        });
+        assert_eq!(
+            a.tools.active_id(),
+            ToolId::Wall {
+                kind: WallKind::Interior
+            }
         );
-        a.tool = Tool::Door;
-        a.cursor_world = Some(Point::new(120.0, 0.0));
-        a.handle_click(Point::new(120.0, 0.0));
-        let o = a.project.floors[0].openings_on(w).next().unwrap();
-        assert_eq!((o.width, o.height), (36.0, 96.0));
-        // Windows come from the window defaults, with their extras recorded.
-        a.tool = Tool::Window;
-        a.handle_click(Point::new(40.0, 0.0));
-        let win = a.project.floors[0]
-            .openings
-            .iter()
-            .find(|o| o.kind == OpeningKind::Window)
-            .unwrap();
-        assert_eq!((win.width, win.height, win.sill_height), (32.0, 72.0, 24.0));
-        assert!(a.extras.openings.contains_key(&win.id));
+        let q = PointerEvent::at(&a.cx, Point::new(120.0, 0.0));
+        a.tools.active_mut().pointer_down(&mut a.cx, q);
+        a.tools.active_mut().pointer_up(&mut a.cx, q);
+        assert_eq!(a.cx.project.floors[0].walls.len(), 1);
+        assert_eq!(a.cx.project.floors[0].walls[0].kind, WallKind::Interior);
     }
 }

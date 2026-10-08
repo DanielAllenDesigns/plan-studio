@@ -238,6 +238,7 @@ mod tests {
             centroid: Point::ZERO,
             polygon,
             label: String::new(),
+            ..Room::default()
         }
     }
 

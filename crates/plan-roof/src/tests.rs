@@ -66,6 +66,7 @@ fn wall(id: u64, a: (f64, f64), b: (f64, f64)) -> Wall {
         height: 108.0,
         kind: WallKind::Exterior,
         layer: "Walls, Normal".to_string(),
+        ..Default::default()
     }
 }
 

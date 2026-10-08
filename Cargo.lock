@@ -2227,6 +2227,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "plan-calib"
+version = "0.1.0"
+dependencies = [
+ "plan-core",
+ "plan-library",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-check"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "plan-stairs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plan-config"
 version = "0.1.0"
 dependencies = [
@@ -2247,6 +2268,16 @@ dependencies = [
 name = "plan-docs"
 version = "0.1.0"
 dependencies = [
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-electrical"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
  "plan-core",
  "serde",
  "serde_json",
@@ -2282,9 +2313,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "plan-layout"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "plan-docs",
+ "plan-elevation",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plan-library"
 version = "0.1.0"
 dependencies = [
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-materials"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-render"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
  "plan-core",
  "serde",
  "serde_json",
@@ -2300,7 +2363,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "plan-spaceplan"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "plan-stairs"
+version = "0.1.0"
+dependencies = [
+ "plan-3d",
+ "plan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-terrain"
 version = "0.1.0"
 dependencies = [
  "plan-3d",

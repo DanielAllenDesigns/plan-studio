@@ -13,10 +13,12 @@
 mod defaults;
 mod opening;
 mod wall;
+mod wall_types;
 
 pub use defaults::{DefaultsDialog, DefaultsEntry, DefaultsOutcome};
 pub use opening::{place_from_template, OpeningDialog, OpeningExtras, OpeningTarget};
 pub use wall::{WallDialog, WallExtras, WallTarget};
+pub use wall_types::WallTypeDialog;
 
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Key, Layout, Modifiers, Painter, Pos2, Rect, RichText,

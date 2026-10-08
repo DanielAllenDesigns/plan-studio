@@ -9,8 +9,11 @@ Controls:
 - Toolbars (Chief Architect style, dark theme): row 1 (file, view, floors, 3D and material tools), row 2 (Build tools) and a vertical view bar on the right edge. Hover any button for its name and hotkey. Flyout buttons (small arrow on the right) open a variant list; clicking the icon half activates the variant shown. Dimmed buttons are not implemented yet. The Library, Project and Layer Display buttons open a placeholder dock panel.
 - Tools: see Hotkeys below. Esc cancels a wall in progress, otherwise returns to Select.
 - View bar: Zoom In/Out, Undo Zoom, Fill Window, Pan Window (left-drag pans; Esc or Select returns), and display toggles. Crosshairs draws cursor crosshairs; Temporary Dimensions (on by default) shows the live length while drawing walls. The floor arrows in row 1 switch floors.
-- Wall tool: click to place points (continuous chain). Snaps to endpoints, the snap grid and 15 degree angles; hold Alt to skip angle snap. Esc or right-click ends the chain.
-- Door/Window: click on a wall. New openings take their size from the Default Settings door/window templates. Select: click a wall; Delete/Backspace removes it.
+- Wall tool: click to place points (continuous chain), or press-drag-release to draw a single wall. Snaps to endpoints, midpoints, intersections, wall centerlines, the snap grid and 15 degree angles (marker and name in the status bar); hold Alt to skip angle snap. A wall started or ended on another wall splits it there (T-junction). Esc or right-click ends the chain.
+- Door/Window: hover a wall to see the opening and its distances to both wall ends; click to place it centered on the pointer (snapped to 1"). New openings take their size from the Default Settings door/window templates.
+- Select: click an object (Shift adds), Tab cycles objects under the pointer, drag empty space for a marquee (left-to-right encloses, right-to-left touches). Dragging a wall moves it perpendicular with its connected walls stretching (Alt: free move); the end handles stretch it and dropping an end on another wall splits that wall; dragging an opening slides it along the wall. Click a temporary dimension value, type a length and press Enter to move the object. Delete/Backspace removes the selection, Esc cancels a drag.
+- Edit toolbar (bottom left of the canvas, when something is selected): Open Object, Delete, Copy, Paste in Place, Reverse Swing (doors), Fix Wall Connections (not built yet).
+- Undo/Redo: Edit menu, the row-1 buttons, `Cmd+Z`, `Shift+Cmd+Z`, `Cmd+Y`; the menu names the step ("Undo Move Wall").
 - Specification dialogs: double-click a wall (Wall Specification) or an opening (Door/Window Specification) with the Select tool, or use "Open Specification..." / the "..." button in the Properties panel. Canvas clicks and hotkeys are ignored while a dialog is open.
 - View: scroll or pinch to zoom at the cursor; middle- or right-drag to pan.
 - Files are `.psplan` JSON.
@@ -35,6 +38,7 @@ Active whenever no text field has focus. The whole table lives in `toolbar::BIND
 | `Shift+F9` | Reference Grid flag |
 | `Cmd+L` | Library Browser dock |
 | `Cmd+N`, `Cmd+O`, `Cmd+S` | New, Open, Save |
+| `Cmd+Z`, `Shift+Cmd+Z`, `Cmd+Y` | Undo, Redo, Redo |
 | `Shift+Y`, `Shift+T`, `Shift+A`, `Q`, `Y`, `K`, `Shift+P` | Draw Stairs, Base Cabinet, Auto Exterior Dimensions, Roof Plane, Text, Circle, Rectangular Polyline (not built yet: show a status message) |
 
 `D, H` is a two-key sequence: after `D` the status bar shows `D, ...` for 1.5 seconds. Four-modifier Chief chords (such as Straight Interior Wall, Ctrl+Alt+Cmd+6) appear in tooltips and menus but are not bound.
@@ -65,3 +69,9 @@ Plan Studio starts the way Chief Architect starts from a template plan. The defa
 
 Not stored in the defaults yet: muntin width, label options and the door's second casing (an exterior door keeps the exterior casing values, an interior door the interior ones); the sash width is kept as read from the template.
 
+
+## Architecture
+
+Tools live in `src/tools/` (one file each, behind the `Tool` trait) and share
+the services in `src/editor/` through an `EditorContext`; `main.rs` is the
+window, panels and dialogs. See `../../docs/architecture-tools.md`.

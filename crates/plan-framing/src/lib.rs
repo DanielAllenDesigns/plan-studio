@@ -43,6 +43,7 @@ mod tests {
             height: 109.125,
             kind: WallKind::Exterior,
             layer: "Walls, Normal".into(),
+            ..Default::default()
         };
         let door = plan_core::Opening::default_door(1, wall.id, 72.0);
         let members = frame_wall(&wall, &[&door], 0.0, &FramingDefaults::default());

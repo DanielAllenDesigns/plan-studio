@@ -3,7 +3,8 @@
 use super::opening::OPENING_MARGIN;
 use super::{
     dis_check, dis_combo, dis_radio, layer_stack, off, on, pv_text, row, section, session_check,
-    wall_plan_sketch, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT, SESSION_NOTE,
+    wall_plan_sketch, Fields, Outcome, SpecDialog, SpecPages, Tab, WallTypeDialog, PV_FAINT,
+    SESSION_NOTE,
 };
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::geometry::Point;
@@ -123,6 +124,11 @@ struct WallForm {
     fields: Fields,
     /// The wall types offered in the Wall Types tab (`PlanDefaults::wall_types`).
     types: Vec<WallTypeDef>,
+    /// The Wall Type Definitions dialog, while open.
+    define: Option<WallTypeDialog>,
+    /// Wall types edited or created in that dialog (to store with the plan
+    /// and the defaults on OK).
+    edited_types: Vec<WallTypeDef>,
 }
 
 impl WallDialog {
@@ -156,6 +162,8 @@ impl WallDialog {
                 default_top,
                 fields: Fields::default(),
                 types,
+                define: None,
+                edited_types: Vec::new(),
             },
         }
     }
@@ -177,20 +185,32 @@ impl WallDialog {
             WallKind::Exterior
         };
         // A sample wall for the preview; length and angle are not editable.
-        let wall = Wall {
-            id: 0,
-            start: Point::ZERO,
-            end: Point::new(144.0, 0.0),
+        let wall = crate::editor::ops::make_wall(
+            0,
+            Point::ZERO,
+            Point::new(144.0, 0.0),
             thickness,
             height,
             kind,
-            layer: plan_core::DEFAULT_WALL_LAYER.to_string(),
-        };
+        );
         Self::new(target, wall, Vec::new(), extras, height, types)
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        // The definitions dialog is drawn first so it takes Esc and Enter.
+        if let Some(mut d) = self.form.define.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.form.define = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => self.form.apply_defined(&mut d),
+            }
+        }
         self.frame.show(ctx, &mut self.form)
+    }
+
+    /// Wall types edited or created through "Define...".
+    pub fn edited_types(&self) -> &[WallTypeDef] {
+        &self.form.edited_types
     }
 
     pub fn target(&self) -> WallTarget {
@@ -218,6 +238,32 @@ impl WallDialog {
 }
 
 impl WallForm {
+    /// Takes the result of the Wall Type Definitions dialog.
+    fn apply_defined(&mut self, d: &mut WallTypeDialog) {
+        for t in d.changed_types() {
+            match self.types.iter_mut().find(|x| x.name == t.name) {
+                Some(slot) => *slot = t.clone(),
+                None => self.types.push(t.clone()),
+            }
+            match self.edited_types.iter_mut().find(|x| x.name == t.name) {
+                Some(slot) => *slot = t,
+                None => self.edited_types.push(t),
+            }
+        }
+        self.draft.resize_about = d.resize_about();
+        if let Some(def) = d
+            .selected_name()
+            .and_then(|n| self.types.iter().find(|t| t.name == n))
+        {
+            self.draft.thickness = def.thickness();
+            if !self.target.is_default() {
+                self.draft.kind = def.kind;
+            }
+            self.draft.wall_type = Some(def.name.clone());
+            self.extras.wall_type = Some(def.name.clone());
+        }
+    }
+
     fn adjusted_openings(&self) -> Vec<Opening> {
         let dir = self.draft.direction();
         let shift = self.orig_start.sub(self.draft.start).dot(dir);
@@ -467,11 +513,22 @@ impl WallForm {
                         if ui.selectable_label(current == Some(i), label).clicked() {
                             self.draft.thickness = t.thickness();
                             self.draft.kind = t.kind;
+                            self.draft.wall_type = Some(t.name.clone());
                             self.extras.wall_type = Some(t.name.clone());
                         }
                     }
                 });
-            ui.add_enabled(false, egui::Button::new("Define\u{2026}"));
+            if ui.button("Define\u{2026}").clicked() && self.define.is_none() {
+                let current = self
+                    .current_type()
+                    .and_then(|i| self.types.get(i))
+                    .map(|t| t.name.clone());
+                self.define = Some(WallTypeDialog::new(
+                    self.types.clone(),
+                    current.as_deref(),
+                    self.draft.resize_about,
+                ));
+            }
             ui.add_enabled(false, egui::Button::new("Library\u{2026}"));
         });
         if let Some(t) = current.map(|i| &self.types[i]) {
@@ -634,15 +691,14 @@ mod tests {
     use super::*;
 
     fn form(lock: WallLock) -> WallForm {
-        let wall = Wall {
-            id: 1,
-            start: Point::new(10.0, 10.0),
-            end: Point::new(110.0, 10.0),
-            thickness: 4.5,
-            height: 109.125,
-            kind: WallKind::Interior,
-            layer: plan_core::DEFAULT_WALL_LAYER.to_string(),
-        };
+        let wall = crate::editor::ops::make_wall(
+            1,
+            Point::new(10.0, 10.0),
+            Point::new(110.0, 10.0),
+            4.5,
+            109.125,
+            WallKind::Interior,
+        );
         let mut opening = Opening::default_door(2, 1, 50.0);
         opening.width = 30.0;
         WallForm {
@@ -656,6 +712,8 @@ mod tests {
             default_top: true,
             fields: Fields::default(),
             types: plan_core::PlanDefaults::chief_x18_daniel().wall_types,
+            define: None,
+            edited_types: Vec::new(),
         }
     }
 

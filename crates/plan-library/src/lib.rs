@@ -7,7 +7,9 @@
 //! * an in-memory **index** ([`Library`]) with ranked text search and a
 //!   nested category tree ([`CategoryNode`]);
 //! * a built-in **starter catalog** ([`core_catalog`]) of parametric 2D plan
-//!   symbols drawn from polylines, arcs and circles.
+//!   symbols drawn from polylines, arcs and circles;
+//! * four larger catalogs ([`all_core_catalogs`]): plants, bath & kitchen,
+//!   lighting & electrical, and furniture & exterior.
 //!
 //! # Conventions
 //!
@@ -31,6 +33,10 @@
 //! ```
 
 mod catalog;
+pub mod catalog_bath_kitchen;
+pub mod catalog_furniture_exterior;
+pub mod catalog_lighting_electrical;
+pub mod catalog_plants;
 mod library;
 mod shapes;
 mod starter;
@@ -40,3 +46,15 @@ pub use catalog::{Catalog, CatalogItem, Placement};
 pub use library::{CategoryNode, Library};
 pub use starter::core_catalog;
 pub use symbol::{Bounds, Stroke, Symbol2d};
+
+/// Every built-in catalog: the starter [`core_catalog`] followed by Plants,
+/// Bath & Kitchen, Lighting & Electrical and Furniture & Exterior.
+pub fn all_core_catalogs() -> Vec<Catalog> {
+    vec![
+        core_catalog(),
+        catalog_plants::catalog(),
+        catalog_bath_kitchen::catalog(),
+        catalog_lighting_electrical::catalog(),
+        catalog_furniture_exterior::catalog(),
+    ]
+}

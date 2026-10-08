@@ -9,6 +9,7 @@
 
 use crate::icons;
 use crate::theme::{scale, CanvasTheme};
+use crate::tools::ToolId;
 use eframe::egui::{
     self, Align, Color32, Image, Key, Layout, Modifiers, PopupCloseBehavior, Rect, Sense, Shape,
     Stroke, Vec2,
@@ -29,22 +30,6 @@ const HOVER_FILL: Color32 = Color32::from_rgb(0x4A, 0x4A, 0x4A);
 const SEPARATOR_COLOR: Color32 = Color32::from_rgb(0x70, 0x70, 0x70);
 /// How long a multi-key hotkey prefix (like the `D` of `D, H`) stays pending.
 pub const SEQUENCE_TIMEOUT: Duration = Duration::from_millis(1500);
-
-/// The active tool on the canvas.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tool {
-    Select,
-    Wall {
-        kind: WallKind,
-    },
-    Door,
-    Window,
-    Pan,
-    /// A tool that is on the toolbar but not built yet. The toolbar tables
-    /// currently emit `Action::NotImplemented` for these instead.
-    #[allow(dead_code)]
-    Unimplemented(&'static str),
-}
 
 /// Independent view toggles stored on the app.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -83,7 +68,7 @@ impl Dock {
 /// Everything the UI can ask the app to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
-    SetTool(Tool),
+    SetTool(ToolId),
     /// The wall flyout's currently selected variant (hotkey alias `2`).
     CurrentWall,
     FileNew,
@@ -98,6 +83,9 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     UndoZoom,
+    /// Edit > Undo (the label lives in `BarState`).
+    Undo,
+    Redo,
     FillWindow,
     FloorUp,
     FloorDown,
@@ -147,7 +135,7 @@ pub enum Slot {
 
 /// App state the bars and menus need to draw themselves.
 pub struct BarState<'a> {
-    pub tool: Tool,
+    pub tool: ToolId,
     pub flags: &'a HashSet<ViewFlag>,
     pub dock: Option<Dock>,
     pub floor: usize,
@@ -155,6 +143,9 @@ pub struct BarState<'a> {
     pub view_name: &'a str,
     /// Global UI brightness (0.6..=1.0), applied to icon tints and fills.
     pub brightness: f32,
+    /// Label of the step Undo would revert ("Move Wall"); `None` when there is none.
+    pub undo_label: Option<&'a str>,
+    pub redo_label: Option<&'a str>,
 }
 
 /// The three bars, with their flyout selections.
@@ -189,15 +180,15 @@ impl Toolbars {
 
 // ----- hotkeys -----
 
-const SELECT: Action = Action::SetTool(Tool::Select);
-const EXTERIOR_WALL: Action = Action::SetTool(Tool::Wall {
+const SELECT: Action = Action::SetTool(ToolId::Select);
+const EXTERIOR_WALL: Action = Action::SetTool(ToolId::Wall {
     kind: WallKind::Exterior,
 });
-const INTERIOR_WALL: Action = Action::SetTool(Tool::Wall {
+const INTERIOR_WALL: Action = Action::SetTool(ToolId::Wall {
     kind: WallKind::Interior,
 });
-const DOOR: Action = Action::SetTool(Tool::Door);
-const WINDOW: Action = Action::SetTool(Tool::Window);
+const DOOR: Action = Action::SetTool(ToolId::Door);
+const WINDOW: Action = Action::SetTool(ToolId::Window);
 
 /// One keyboard binding: a key (or key sequence) plus its modifiers.
 #[derive(Clone, Copy, Debug)]
@@ -288,6 +279,15 @@ pub const BINDINGS: &[Binding] = &[
         CMD,
         Action::ToggleDock(Dock::Library),
     ),
+    // Undo and redo.
+    bind("\u{2318}Z", &[Key::Z], CMD, Action::Undo),
+    bind(
+        "\u{21E7}\u{2318}Z",
+        &[Key::Z],
+        (true, false, true),
+        Action::Redo,
+    ),
+    bind("\u{2318}Y", &[Key::Y], CMD, Action::Redo),
     // File.
     bind("\u{2318}N", &[Key::N], CMD, Action::FileNew),
     bind("\u{2318}O", &[Key::O], CMD, Action::FileOpen),
@@ -1240,8 +1240,8 @@ fn row1_slots() -> Vec<Slot> {
         button("file_print", "Print"),
         button("send_to_layout", "Send to Layout"),
         Sep,
-        button("undo", "Undo"),
-        button("redo", "Redo"),
+        Slot::Button(with_hotkey(item("undo", "Undo", Action::Undo), "\u{2318}Z")),
+        Slot::Button(with_hotkey(item("redo", "Redo", Action::Redo), "\u{2318}Y")),
         Sep,
         button("preferences", "Preferences"),
         button("help", "Launch Help"),
@@ -1506,7 +1506,7 @@ fn separator(ui: &mut egui::Ui) {
 fn is_active(action: &Action, state: &BarState) -> bool {
     match action {
         Action::SetTool(t) => *t == state.tool,
-        Action::TogglePan => state.tool == Tool::Pan,
+        Action::TogglePan => state.tool == ToolId::Pan,
         Action::ToggleFlag(f) => state.flags.contains(f),
         Action::ToggleDock(d) => state.dock == Some(*d),
         _ => false,
@@ -1517,6 +1517,8 @@ fn is_enabled(it: &Item, state: &BarState) -> bool {
     match it.action {
         Action::FloorDown => it.enabled && state.floor > 0,
         Action::FloorUp => it.enabled && state.floor + 1 < state.floor_count,
+        Action::Undo => state.undo_label.is_some(),
+        Action::Redo => state.redo_label.is_some(),
         _ => it.enabled,
     }
 }

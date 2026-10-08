@@ -3,10 +3,17 @@
 //! the 2D plan, 3D view, elevations and schedules are all generated from it.
 
 use crate::cad::{CadItem, CadObject};
+use crate::camera::CameraObject;
+use crate::defaults::WallTypeDef;
 use crate::dimension::Dimension;
+use crate::floors::FloorKind;
 use crate::geometry::{point_in_polygon, Point};
+use crate::groups::ObjectGroup;
 use crate::layers::LayerSet;
+use crate::openings::{Casing, OpeningStyle};
 use crate::rooms::Room;
+use crate::symbols::PlacedSymbol;
+use crate::walls::{ResizeAbout, Side, WallCurve, WallFlags, WallRoofDirective};
 use serde::{Deserialize, Serialize};
 
 pub type Id = u64;
@@ -51,6 +58,26 @@ pub struct Wall {
     /// Layer name; see [`LayerSet`]. Defaults to "Walls, Normal".
     #[serde(default = "default_wall_layer")]
     pub layer: String,
+    /// Wall options and variants (W-24, W-52..W-58).
+    #[serde(default)]
+    pub flags: WallFlags,
+    /// Name of an entry of `PlanDefaults::wall_types` / `Project::wall_types` (W-47).
+    #[serde(default)]
+    pub wall_type: Option<String>,
+    /// Reference line a thickness change keeps fixed (W-26, W-27). Walls from
+    /// old files load as `WallCenter`; [`Wall::new`] picks Chief's default per kind.
+    #[serde(default)]
+    pub resize_about: ResizeAbout,
+    /// Curved wall (W-64..W-68); `None` for a straight wall.
+    #[serde(default)]
+    pub curve: Option<WallCurve>,
+    /// Roof directive of this wall (RF-18..RF-25).
+    #[serde(default)]
+    pub roof: WallRoofDirective,
+    /// Which side of start-to-end is the exterior (W-21); layers are laid out
+    /// from that side. Defaults to the left (+normal) side.
+    #[serde(default)]
+    pub exterior_side: Side,
 }
 
 impl Wall {
@@ -88,7 +115,11 @@ pub enum OpeningKind {
 
 /// A door or window hosted in a wall. Position is measured along the wall
 /// centerline from `start`, like Chief's "distance from wall end" fields.
+///
+/// Deserialization goes through [`crate::openings`] so files without the
+/// newer fields load with sensible values (e.g. `Window` style for windows).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "crate::openings::OpeningDe")]
 pub struct Opening {
     pub id: Id,
     pub wall_id: Id,
@@ -99,33 +130,42 @@ pub struct Opening {
     /// Bottom of the opening above the floor (0 for doors).
     pub sill_height: f64,
     pub kind: OpeningKind,
-    /// Doors only: hinge on the far jamb and swing to the other side.
+    /// Doors only: the leaf swings to the other side of the wall (DW-31, DW-32).
     pub swing_flipped: bool,
+    /// Doors only: the hinge is on the wall-end jamb instead of the
+    /// wall-start jamb (DW-31, DW-32).
+    pub hinge_at_end: bool,
+    /// Drawing style (DW-38..DW-58); defaults by kind.
+    pub style: OpeningStyle,
+    /// Replaces the automatic plan label (DW-62).
+    pub label_override: Option<String>,
+    /// Door/window schedule number (DW-60, DW-61).
+    pub schedule_number: Option<String>,
+    pub casing: Option<Casing>,
+    /// Window lites `(across, vertical)`.
+    pub lites: (u32, u32),
+    pub egress: bool,
+    pub tempered: bool,
 }
 
 impl Opening {
     pub fn default_door(id: Id, wall_id: Id, center_offset: f64) -> Self {
         Self {
             id,
-            wall_id,
-            center_offset,
-            width: 36.0,
-            height: 80.0,
-            sill_height: 0.0,
-            kind: OpeningKind::Door,
-            swing_flipped: false,
+            ..Opening::new(wall_id, center_offset, OpeningKind::Door, 36.0, 80.0, 0.0)
         }
     }
     pub fn default_window(id: Id, wall_id: Id, center_offset: f64) -> Self {
         Self {
             id,
-            wall_id,
-            center_offset,
-            width: 36.0,
-            height: 60.0,
-            sill_height: 24.0,
-            kind: OpeningKind::Window,
-            swing_flipped: false,
+            ..Opening::new(
+                wall_id,
+                center_offset,
+                OpeningKind::Window,
+                36.0,
+                60.0,
+                24.0,
+            )
         }
     }
     pub fn start_offset(&self) -> f64 {
@@ -143,6 +183,58 @@ pub struct RoomName {
     pub anchor: Point,
     pub name: String,
     pub room_type: String,
+    /// Floor height offset on top of the floor datum, inches (R-23).
+    #[serde(default)]
+    pub floor_height_offset: f64,
+    /// Ceiling height override from the room's own floor, inches (R-24).
+    #[serde(default)]
+    pub ceiling_height: Option<f64>,
+    /// Floor finish name (R-27, R-36).
+    #[serde(default)]
+    pub floor_finish: Option<String>,
+    /// Ceiling finish name (R-27, R-36).
+    #[serde(default)]
+    pub ceiling_finish: Option<String>,
+    /// Include in living area; `None` follows the room type (R-42).
+    #[serde(default)]
+    pub include_in_living_area: Option<bool>,
+    /// Build a ceiling over this room (R-30).
+    #[serde(default = "default_true")]
+    pub has_ceiling: bool,
+    /// Build a floor under this room (R-30).
+    #[serde(default = "default_true")]
+    pub has_floor: bool,
+    /// Rough (framed) ceiling height, inches (R-25).
+    #[serde(default)]
+    pub rough_ceiling: Option<f64>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl RoomName {
+    pub fn new(anchor: Point, name: impl Into<String>, room_type: impl Into<String>) -> Self {
+        Self {
+            anchor,
+            name: name.into(),
+            room_type: room_type.into(),
+            floor_height_offset: 0.0,
+            ceiling_height: None,
+            floor_finish: None,
+            ceiling_finish: None,
+            include_in_living_area: None,
+            has_ceiling: true,
+            has_floor: true,
+            rough_ceiling: None,
+        }
+    }
+}
+
+impl Default for RoomName {
+    fn default() -> Self {
+        RoomName::new(Point::ZERO, "", "")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +251,21 @@ pub struct Floor {
     pub cad: Vec<CadObject>,
     #[serde(default)]
     pub room_names: Vec<RoomName>,
+    /// Foundation, normal or attic floor (R-55).
+    #[serde(default)]
+    pub kind: FloorKind,
+    /// Placed library symbols (CB-55, CB-56).
+    #[serde(default)]
+    pub symbols: Vec<PlacedSymbol>,
+    /// Opaque cabinet objects owned by `plan-cabinets`; see [`Floor::cabinets_as`].
+    #[serde(default)]
+    pub cabinets: Vec<serde_json::Value>,
+    /// Opaque stair objects owned by `plan-stairs`; see [`Floor::stairs_as`].
+    #[serde(default)]
+    pub stairs: Vec<serde_json::Value>,
+    /// Object groups (S-35..S-38).
+    #[serde(default)]
+    pub groups: Vec<ObjectGroup>,
 }
 
 impl Floor {
@@ -172,6 +279,11 @@ impl Floor {
             dimensions: Vec::new(),
             cad: Vec::new(),
             room_names: Vec::new(),
+            kind: FloorKind::default(),
+            symbols: Vec::new(),
+            cabinets: Vec::new(),
+            stairs: Vec::new(),
+            groups: Vec::new(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -192,6 +304,12 @@ pub struct Project {
     next_id: Id,
     #[serde(default = "LayerSet::default_floor_plan")]
     pub layers: LayerSet,
+    /// Camera objects shown in the plan (C-4..C-30).
+    #[serde(default)]
+    pub cameras: Vec<CameraObject>,
+    /// Wall type definitions stored in the plan (W-47).
+    #[serde(default)]
+    pub wall_types: Vec<WallTypeDef>,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -204,6 +322,8 @@ impl Project {
             floors: vec![Floor::new("1st Floor", 0.0)],
             next_id: 1,
             layers: LayerSet::default_floor_plan(),
+            cameras: Vec::new(),
+            wall_types: Vec::new(),
         }
     }
 
@@ -225,12 +345,7 @@ impl Project {
         let id = self.alloc_id();
         self.floors[floor].walls.push(Wall {
             id,
-            start,
-            end,
-            thickness,
-            height,
-            kind,
-            layer: default_wall_layer(),
+            ..Wall::new(start, end, thickness, height, kind)
         });
         id
     }
@@ -308,15 +423,19 @@ impl Project {
         rooms: &[Room],
     ) {
         let names = &mut self.floors[floor].room_names;
-        match rooms.iter().find(|r| point_in_polygon(anchor, &r.polygon)) {
-            Some(room) => names.retain(|n| !point_in_polygon(n.anchor, &room.polygon)),
-            None => names.retain(|n| n.anchor.dist(anchor) > 1.0),
-        }
-        names.push(RoomName {
-            anchor,
-            name: name.into(),
-            room_type: room_type.into(),
-        });
+        let in_replaced =
+            |n: &RoomName| match rooms.iter().find(|r| point_in_polygon(anchor, &r.polygon)) {
+                Some(room) => point_in_polygon(n.anchor, &room.polygon),
+                None => n.anchor.dist(anchor) <= 1.0,
+            };
+        // Renaming keeps the room's other properties (R-14, R-21).
+        let previous = names.iter().find(|n| in_replaced(n)).cloned();
+        names.retain(|n| !in_replaced(n));
+        let mut entry = previous.unwrap_or_default();
+        entry.anchor = anchor;
+        entry.name = name.into();
+        entry.room_type = room_type.into();
+        names.push(entry);
     }
 
     /// Remove a wall and every opening hosted in it.
@@ -515,6 +634,7 @@ mod tests {
             area_sq_in: 10_000.0,
             centroid: Point::new(50.0, 50.0),
             label: "Room 1".into(),
+            ..Room::default()
         };
         let rooms = [room];
         let mut p = Project::new("r");

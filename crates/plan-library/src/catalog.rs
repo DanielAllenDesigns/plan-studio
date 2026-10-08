@@ -1,6 +1,6 @@
 //! The on-disk catalog format: items grouped into a named [`Catalog`].
 
-use crate::symbol::Symbol2d;
+use crate::symbol::{Stroke, Symbol2d};
 use serde::{Deserialize, Serialize};
 
 /// How an item attaches to the building, which also fixes its symbol origin.
@@ -109,6 +109,24 @@ impl CatalogItem {
     pub fn category_label(&self) -> String {
         self.category.join(" > ")
     }
+}
+
+/// Builds an item from the pieces every catalog entry needs. `size` is
+/// `(width, depth, height, elevation)` in inches.
+pub(crate) fn entry(
+    id: &str,
+    name: &str,
+    placement: Placement,
+    category: &[&str],
+    size: (f64, f64, f64, f64),
+    tags: &[&str],
+    strokes: Vec<Stroke>,
+) -> CatalogItem {
+    CatalogItem::new(id, name, placement, Symbol2d::new(strokes))
+        .with_category(category)
+        .with_size(size.0, size.1, size.2)
+        .with_elevation(size.3)
+        .with_tags(tags)
 }
 
 /// A named collection of items, stored as one JSON file.

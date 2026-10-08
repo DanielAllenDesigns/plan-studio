@@ -1,5 +1,6 @@
 //! The in-memory index over one or more catalogs.
 
+use crate::all_core_catalogs;
 use crate::catalog::{Catalog, CatalogItem};
 use crate::starter::core_catalog;
 
@@ -67,6 +68,14 @@ impl Library {
         let mut lib = Library::default();
         lib.add(core_catalog());
         lib
+    }
+
+    /// A library preloaded with every built-in catalog
+    /// ([`all_core_catalogs`]).
+    pub fn with_all_core() -> Self {
+        Library {
+            catalogs: all_core_catalogs(),
+        }
     }
 
     /// Adds a catalog. Later catalogs never replace earlier ones; if two

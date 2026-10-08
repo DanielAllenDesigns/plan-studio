@@ -1,0 +1,13 @@
+[package]
+name = "plan-check"
+description = "Plan Studio: plan-check (see README)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+plan-core = { path = "../plan-core" }
+plan-3d = { path = "../plan-3d" }
+plan-stairs = { path = "../plan-stairs" }
+serde = { workspace = true }
+serde_json = { workspace = true }

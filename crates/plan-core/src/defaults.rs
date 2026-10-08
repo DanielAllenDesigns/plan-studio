@@ -613,6 +613,7 @@ impl Project {
         let mut p = Project::new(name);
         p.floors[0].ceiling_height = d.rooms.ceiling_height;
         p.layers = d.layers.clone();
+        p.wall_types = d.wall_types.clone();
         p
     }
 }
@@ -723,6 +724,7 @@ mod tests {
         let p = Project::from_defaults("Mine", &d);
         assert_eq!(p.name, "Mine");
         assert_eq!(p.floors[0].ceiling_height, 120.0);
+        assert_eq!(p.wall_types.len(), d.wall_types.len());
         assert!(!p.layers.is_visible("Doors"));
     }
 

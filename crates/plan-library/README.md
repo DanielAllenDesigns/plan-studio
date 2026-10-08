@@ -2,8 +2,8 @@
 
 The catalog system for Plan Studio, the counterpart of Chief Architect's
 Library Browser. It provides a JSON catalog format, an in-memory index with
-ranked search and a category tree, and a built-in starter catalog of 2D plan
-symbols.
+ranked search and a category tree, and built-in catalogs of 2D plan symbols
+(a starter set plus four larger catalogs, listed below).
 
 All lengths are **inches**.
 
@@ -13,7 +13,8 @@ All lengths are **inches**.
 use plan_library::{core_catalog, Catalog, Library};
 
 let mut lib = Library::default();
-lib.add(core_catalog());                       // built-in symbols
+lib.add(core_catalog());                       // built-in starter symbols
+// or: let lib = Library::with_all_core();     // starter + all four catalogs below
 // lib.add(Catalog::from_json(&std::fs::read_to_string("mine.json")?)?);
 
 let hits = lib.search("sink");                 // ranked, case-insensitive
@@ -96,6 +97,35 @@ To place an item in a plan, map it with
 counter-clockwise about the origin, then translate. `symbol.bounds()` gives the
 exact bounding box (arcs included).
 
+## Built-in catalogs
+
+`all_core_catalogs()` returns the starter `core_catalog()` plus the four
+catalogs below, and `Library::with_all_core()` loads them all (`Library::with_core()`
+still loads only the starter set). Each catalog module exposes
+`pub fn catalog() -> Catalog`.
+
+| Catalog (module) | Items | Top-level categories and contents |
+| --- | --- | --- |
+| Core Catalog (`starter`, `core_catalog()`) | 40+ | `Architectural`: plumbing, appliances, cabinets, furniture, electrical, exterior |
+| Plants (`catalog_plants`) | 21 | `Plants`: deciduous trees (10/20/30 ft canopy), evergreens, palm, ornamental trees (Japanese maple, magnolia), round shrubs (2/3/4 ft), hedges (4/8 ft), ground cover, flower bed, perennials, grasses, boulder, planters |
+| Bath & Kitchen (`catalog_bath_kitchen`) | 35 | `Bath & Kitchen`: toilets, bidet, urinal, 8 sinks, 5 tubs, 4 showers, water heater, stacked washer/dryer, range hoods, cooktops, wall and double ovens, refrigerators, wine fridge, compactor, ice maker |
+| Lighting & Electrical (`catalog_lighting_electrical`) | 22 | `Lighting`: chandelier, pendant, track, recessed 4/6 in, drum, sconce, under-cabinet, vanity bar, step, exterior lantern, post and flood lights, ceiling and exhaust fans, heat lamp. `Electrical`: 240V dryer, USB and floor outlets, data and TV jacks, 200A panel |
+| Furniture & Exterior (`catalog_furniture_exterior`) | 27 | `Furniture`: sectional, chaise, recliner, ottoman, bookcase, media console, TV, pianos, crib and beds, bench, island with seating, bar stools. `Exterior`: outdoor dining, lounge, grill, fire pit, hot tub, kidney pool, mailbox, bicycle, SUV, pickup |
+
+Conventions in the extended catalogs, in addition to the origin convention above:
+
+* Ids are `core.<group>.<name>` (`core.plants.oak_20ft`, `core.bathkitchen.sink_bar_15`,
+  `core.lighting.recessed_6in`, `core.furniture.bed_twin_39x75`).
+* Items that back onto a wall (toilets, tubs, showers, hoods, ovens, refrigerators,
+  beds, case goods, sconces, vanity bars, outlets, the TV) are `wall_mounted`;
+  cooktops and drop-in sinks are `countertop`; fixtures that attach to the
+  ceiling are `ceiling` with `elevation` 0; everything else is `free_standing`.
+* `elevation` is set where it matters: sconce 66, vanity bar 78, range hood 66,
+  wall oven 30, TV 48.
+* A symbol has at most 40 strokes. Its bounds match `width` and `depth` within
+  1 inch, except `core.exterior.outdoor_dining_72x36`, whose six chairs overhang
+  the 72x36 table (see `tests/catalogs.rs`).
+
 ## Adding a catalog
 
 **From a JSON file** (no code): write a file in the format above and load it.
@@ -129,11 +159,13 @@ let mut catalog = Catalog::new("My Catalog");
 catalog.items.push(stool);
 ```
 
-**Extending the built-in catalog**: add the symbol builder and the
-`CatalogItem` entry to the matching section of `src/starter.rs`. Stroke
-helpers (`rect`, `rounded_rect`, `circle`, `arc`, `line`, ...) live in
-`src/shapes.rs`. The tests require unique ids, non-empty symbols, and symbol
-bounds that match the declared width and depth.
+**Extending the built-in catalogs**: add the symbol builder and the item to the
+matching catalog module (`src/starter.rs` for the starter set, or one of the
+`src/catalog_*.rs` files). Stroke helpers (`rect`, `rounded_rect`, `circle`,
+`arc`, `line`, plus `ellipse`, `scalloped_circle`, `star`, `wavy_rect`, `fitted`,
+`blob`) live in `src/shapes.rs`, and the extended catalogs build items with
+`catalog::entry`. The tests require unique ids across all catalogs, non-empty
+symbols, and symbol bounds that match the declared width and depth.
 
 ## Search and the category tree
 
@@ -155,3 +187,8 @@ the top-level categories. Every node carries `count` (items in its subtree),
 | `src/library.rs` | `Library`, search, `CategoryNode` |
 | `src/shapes.rs` | stroke constructors for the starter symbols |
 | `src/starter.rs` | `core_catalog()` and its symbols |
+| `src/catalog_plants.rs` | `catalog_plants::catalog()` |
+| `src/catalog_bath_kitchen.rs` | `catalog_bath_kitchen::catalog()` |
+| `src/catalog_lighting_electrical.rs` | `catalog_lighting_electrical::catalog()` |
+| `src/catalog_furniture_exterior.rs` | `catalog_furniture_exterior::catalog()` |
+| `tests/catalogs.rs` | checks for the four extended catalogs and `with_all_core()` |

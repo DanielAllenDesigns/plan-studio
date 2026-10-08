@@ -18,26 +18,50 @@
 //!   door/window/cabinet/dimension defaults, room types, grid).
 //! * [`history`]: snapshot undo/redo.
 //! * [`export`]: file exporters (ASCII DXF today).
+//! * [`walls`]: wall flags, curves, roof directives, reference lines and wall
+//!   editing (split/join/connections).
+//! * [`openings`]: opening styles, labels and swing/hinge editing.
+//! * [`floors`]: build/insert/delete/exchange floors and foundations.
+//! * [`camera`]: camera objects placed in the plan.
+//! * [`symbols`]: placed library symbols and opaque cabinet/stair slots.
+//! * [`groups`]: object groups and the clipboard.
 
 pub mod cad;
+pub mod camera;
 pub mod defaults;
 pub mod dimension;
 pub mod export;
+pub mod floors;
 pub mod geometry;
+pub mod groups;
 pub mod history;
 pub mod joins;
 pub mod layers;
 pub mod model;
+pub mod openings;
 pub mod rooms;
+pub mod symbols;
 pub mod units;
+pub mod walls;
 
 pub use cad::{CadItem, CadObject};
+pub use camera::{CameraKind, CameraObject};
 pub use defaults::{PlanDefaults, WallLayer, WallTypeDef};
 pub use dimension::{auto_exterior_dimensions, DimFormat, Dimension, DimensionKind};
 pub use export::dxf::write_dxf;
+pub use floors::{FloorKind, FoundationKind};
 pub use geometry::Point;
+pub use groups::{Clipboard, ObjectGroup, ObjectRef};
 pub use history::History;
-pub use joins::{wall_faces, wall_outlines, WallOutline};
-pub use layers::{Layer, LayerSet};
+pub use joins::{
+    main_layer_lines, wall_end_joins, wall_faces, wall_layer_bands, wall_layer_outlines,
+    wall_outlines, ConnectionKind, LayerBand, WallLayerOutline, WallOutline,
+};
+pub use layers::{Layer, LayerSet, LineStyle};
 pub use model::*;
-pub use rooms::{detect_rooms, Room};
+pub use openings::{Casing, OpeningStyle};
+pub use rooms::{detect_rooms, detect_rooms_inner, Room};
+pub use symbols::PlacedSymbol;
+pub use walls::{
+    PonyWall, ResizeAbout, Side, WallConnection, WallCurve, WallFlags, WallRoofDirective,
+};

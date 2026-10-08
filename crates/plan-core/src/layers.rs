@@ -3,6 +3,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Line style of a layer (LAY ids).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+    DashDot,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
     pub name: String,
@@ -12,6 +22,12 @@ pub struct Layer {
     pub color: [u8; 3],
     /// Plotted line weight in hundredths of a millimetre (DXF convention).
     pub line_weight: u32,
+    /// Name of the text style objects on this layer use; empty = default.
+    #[serde(default)]
+    pub text_style: String,
+    /// Line style of the layer.
+    #[serde(default)]
+    pub line_style: LineStyle,
 }
 
 impl Layer {
@@ -22,6 +38,8 @@ impl Layer {
             locked: false,
             color,
             line_weight,
+            text_style: String::new(),
+            line_style: LineStyle::Solid,
         }
     }
 }
@@ -152,5 +170,12 @@ mod tests {
         assert!(set.set_locked("Text", true) && set.is_locked("Text"));
         assert!(!set.add(Layer::new("Text", [0, 0, 0], 1)));
         assert!(set.add(Layer::new("Extra", [1, 2, 3], 1)));
+        // Old layer JSON without the newer fields still loads.
+        let old: Layer = serde_json::from_str(
+            r#"{"name":"A","display":true,"locked":false,"color":[1,2,3],"line_weight":18}"#,
+        )
+        .unwrap();
+        assert_eq!(old.line_style, LineStyle::Solid);
+        assert!(old.text_style.is_empty());
     }
 }

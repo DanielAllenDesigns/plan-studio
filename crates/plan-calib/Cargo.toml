@@ -1,0 +1,12 @@
+[package]
+name = "plan-calib"
+description = "Plan Studio: read-only reader for Chief Architect .calib (SQLite) and .calibz (zip) library catalogs, used at runtime against the user's own licensed Chief installation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+plan-core = { path = "../plan-core" }
+plan-library = { path = "../plan-library" }
+serde = { workspace = true }
+serde_json = { workspace = true }

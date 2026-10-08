@@ -6,7 +6,8 @@
 //! shown disabled so the target shape of the product is visible.
 
 use crate::theme::{CanvasTheme, BRIGHTNESS_MAX, BRIGHTNESS_MIN};
-use crate::toolbar::{self, Action, BarState, Dock, Tool, ViewFlag};
+use crate::toolbar::{self, Action, BarState, Dock, ViewFlag};
+use crate::tools::ToolId;
 use eframe::egui;
 
 /// Draws the menu bar contents; actions are appended to `out`.
@@ -89,6 +90,27 @@ fn live(
     }
 }
 
+/// Edit > Undo / Redo: named after the step (`Undo Move Wall`), disabled when
+/// there is none.
+fn undo_row(
+    ui: &mut egui::Ui,
+    verb: &str,
+    label: Option<&str>,
+    shortcut: &str,
+    action: Action,
+    out: &mut Vec<Action>,
+) {
+    let text = match label {
+        Some(l) => format!("{verb} {l}"),
+        None => verb.to_string(),
+    };
+    let btn = egui::Button::new(text).shortcut_text(toolbar::pretty_hotkey(shortcut));
+    if ui.add_enabled(label.is_some(), btn).clicked() {
+        out.push(action);
+        ui.close_menu();
+    }
+}
+
 fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     live(ui, "New Plan", "\u{2318}N", false, Action::FileNew, out);
     inert(ui, &["New Layout"]);
@@ -157,11 +179,11 @@ fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
 }
 
 fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
+    undo_row(ui, "Undo", state.undo_label, "\u{2318}Z", Action::Undo, out);
+    undo_row(ui, "Redo", state.redo_label, "\u{2318}Y", Action::Redo, out);
     inert(
         ui,
         &[
-            "Undo\t\u{2318}Z",
-            "Redo\t\u{2318}Y",
             "-",
             "Cut\t\u{2318}X",
             "Copy\t\u{2318}C",
@@ -177,8 +199,8 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         ui,
         "Select Objects",
         "Space",
-        state.tool == Tool::Select,
-        Action::SetTool(Tool::Select),
+        state.tool == ToolId::Select,
+        Action::SetTool(ToolId::Select),
         out,
     );
     inert(
@@ -513,7 +535,7 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         ui,
         "Pan Window",
         "H",
-        state.tool == Tool::Pan,
+        state.tool == ToolId::Pan,
         Action::TogglePan,
         out,
     );

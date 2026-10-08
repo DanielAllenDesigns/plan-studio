@@ -62,6 +62,7 @@ mod tests {
             height: 109.125,
             kind: WallKind::Exterior,
             layer: "Walls, Normal".into(),
+            ..Default::default()
         };
         let m = frame_wall(&wall, &[], 0.0, &FramingDefaults::default());
         let t = takeoff(&m);

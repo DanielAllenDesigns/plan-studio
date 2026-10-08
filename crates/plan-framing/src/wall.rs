@@ -257,6 +257,7 @@ mod tests {
             height: 109.125,
             kind: WallKind::Exterior,
             layer: "Walls, Normal".into(),
+            ..Default::default()
         }
     }
 

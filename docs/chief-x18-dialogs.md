@@ -552,3 +552,33 @@ every dimension string is drawn and are needed in Phase 1 with the first
 dimension tool. Setup Automatic (reach, offsets, what to locate) → Phase 1
 auto exterior dimensions. Temporary dimensions already exist and will take
 the Setup Temporary options.
+
+## Still to capture
+
+Text, Rich Text, Stairs, Roof Plane, Framing, Electrical, Slab, Terrain and
+Camera dialogs were not captured in this pass (the Default Settings dialog
+and its child dialogs open on different monitors, which made the walk slow).
+Their tab lists follow the same pattern: General → object-specific tabs →
+Layer · Materials · Label · Components · Object Information · Schedule.
+
+## Shared dialog frame for Plan Studio
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ <Object> Specification                                          │
+├───────────────┬──────────────────────────────────┬──────────────┤
+│ General       │  Section heading ─────────────── │ ┌──────────┐ │
+│ Structure     │   Label:        [ value ]        │ │ live     │ │
+│ …             │   ☑ Checkbox   ○ radio ◉ radio   │ │ preview  │ │
+│ Layer         │  Next heading ────────────────── │ │ (2D/3D)  │ │
+│ Materials     │   …                              │ └──────────┘ │
+│ Label         │                                  │ view buttons │
+├───────────────┴──────────────────────────────────┴──────────────┤
+│ [Help]  [Number Style…]                       [Cancel]   [ OK ] │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Rules copied from Chief: tabs are a vertical list, not horizontal; disabled
+controls stay visible; lengths are edited as feet-inches strings and
+re-formatted on commit; a "use default" wrench button sits next to values
+that can inherit from defaults; OK applies all tabs at once; Escape cancels.

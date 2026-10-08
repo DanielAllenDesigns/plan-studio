@@ -1,0 +1,101 @@
+//! The active layout's sheet: its paper size and drawing scale, and where it
+//! sits on the plan (View > Drawing Sheet, View > Print Preview).
+
+use plan_core::geometry::Point;
+use plan_core::Floor;
+use plan_docs::{Scale, SheetSize};
+
+/// The sheet size and scale the plan is drawn for. The project stores no
+/// layouts yet, so the app keeps this one "active layout" per session; the
+/// Project Browser's Layout section edits it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SheetSetup {
+    pub size: SheetSize,
+    pub scale: Scale,
+}
+
+impl Default for SheetSetup {
+    /// Architectural D at 1/4" = 1'-0", the construction set default.
+    fn default() -> Self {
+        Self {
+            size: SheetSize::ArchD,
+            scale: Scale::QuarterInch,
+        }
+    }
+}
+
+impl SheetSetup {
+    /// The sheet on the ground, `(width, height)` in plan inches: paper
+    /// inches divided by the scale (1/4" = 1' puts 48 plan inches on each
+    /// paper inch).
+    pub fn world_size(&self) -> (f64, f64) {
+        let (w, h) = self.size.inches();
+        let plan_in_per_paper_in = 12.0 / self.scale.inches_per_foot();
+        (w * plan_in_per_paper_in, h * plan_in_per_paper_in)
+    }
+
+    /// The sheet centered on `center`: `(min, max)` corners.
+    pub fn rect_around(&self, center: Point) -> (Point, Point) {
+        let (w, h) = self.world_size();
+        (
+            Point::new(center.x - w * 0.5, center.y - h * 0.5),
+            Point::new(center.x + w * 0.5, center.y + h * 0.5),
+        )
+    }
+
+    /// `ARCH D (24 x 36)  1/4" = 1'-0"`.
+    pub fn caption(&self) -> String {
+        format!("{}  {}", self.size.label(), self.scale.label())
+    }
+}
+
+/// The center of the floor's walls (the middle of their bounding box), or
+/// the origin when there are none.
+pub fn plan_center(floor: &Floor) -> Point {
+    let mut pts = floor.walls.iter().flat_map(|w| w.footprint());
+    let Some(first) = pts.next() else {
+        return Point::ZERO;
+    };
+    let (mut lo, mut hi) = (first, first);
+    for p in pts {
+        lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plan_core::WallKind;
+
+    #[test]
+    fn arch_d_at_quarter_inch_is_144_by_96_feet() {
+        let (w, h) = SheetSetup::default().world_size();
+        assert_eq!((w, h), (36.0 * 48.0, 24.0 * 48.0));
+        let s = SheetSetup {
+            size: SheetSize::Letter,
+            scale: Scale::EighthInch,
+        };
+        assert_eq!(s.world_size(), (11.0 * 96.0, 8.5 * 96.0));
+    }
+
+    #[test]
+    fn the_sheet_is_centered_on_the_walls() {
+        let mut p = plan_core::Project::new("t");
+        assert_eq!(plan_center(&p.floors[0]), Point::ZERO);
+        p.add_wall(
+            0,
+            Point::new(100.0, 100.0),
+            Point::new(300.0, 100.0),
+            0.0001,
+            100.0,
+            WallKind::Exterior,
+        );
+        let c = plan_center(&p.floors[0]);
+        assert!((c.x - 200.0).abs() < 1e-3 && (c.y - 100.0).abs() < 1e-3);
+        let (lo, hi) = SheetSetup::default().rect_around(c);
+        assert!(((lo.x + hi.x) * 0.5 - c.x).abs() < 1e-9);
+        assert!((hi.x - lo.x - 1728.0).abs() < 1e-9);
+    }
+}

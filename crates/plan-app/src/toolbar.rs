@@ -76,6 +76,32 @@ pub enum TerrainCommand {
     HoleAroundBuilding,
 }
 
+/// File > Export / Import and CAD > CAD to Walls.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FileCommand {
+    /// File > Export > DXF...: the active floor.
+    ExportDxf,
+    /// File > Export > Elevation DXF...: Front, Back, Left and Right.
+    ExportElevationsDxf,
+    /// File > Import > Import Drawing (DXF)...
+    ImportDxf,
+    /// CAD > CAD to Walls...
+    CadToWalls,
+}
+
+/// Build > Framing commands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FramingCommand {
+    /// Frame the active floor (walls, floor platforms, roof).
+    Build,
+    /// Frame every floor.
+    BuildAll,
+    /// Delete the active floor's framing.
+    Delete,
+    /// Tools > Schedules > Framing Takeoff...
+    Takeoff,
+}
+
 /// Everything the UI can ask the app to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -139,6 +165,10 @@ pub enum Action {
     Custom(&'static str),
     /// Terrain menu commands.
     Terrain(TerrainCommand),
+    /// File exchange and CAD to Walls (`dialogs::exchange`).
+    File(FileCommand),
+    /// Framing (`dialogs::exchange`).
+    Framing(FramingCommand),
     /// Row-1 view selector: activate the saved plan view with this index.
     PlanView(usize),
 
@@ -195,6 +225,20 @@ pub struct BarState<'a> {
     /// Label of the step Undo would revert ("Move Wall"); `None` when there is none.
     pub undo_label: Option<&'a str>,
     pub redo_label: Option<&'a str>,
+    /// The live hotkey map, so menu rows show the keys that really trigger
+    /// them (Daniel's customized ones, then the user's edits).
+    pub hotkeys: Option<&'a crate::shell::hotkeys::HotkeyMap>,
+}
+
+impl BarState<'_> {
+    /// The hotkey text for the command `name`: the live map's keys, or
+    /// `fallback` when no map is attached.
+    pub fn hotkey(&self, name: &str, fallback: &str) -> String {
+        match self.hotkeys {
+            Some(map) => map.hotkey_text(name),
+            None => fallback.to_string(),
+        }
+    }
 }
 
 /// The three bars, with their flyout selections.
@@ -371,6 +415,13 @@ pub const BINDINGS: &[Binding] = &[
     // File.
     bind("\u{2318}N", &[Key::N], CMD, Action::FileNew),
     bind("\u{2318}O", &[Key::O], CMD, Action::FileOpen),
+    // 3D > 3D View Defaults.
+    bind(
+        "\u{2318}1",
+        &[Key::Num1],
+        CMD,
+        Action::View3d(View3dCommand::Defaults),
+    ),
     bind("\u{2318}S", &[Key::S], CMD, Action::FileSave),
     // Plan Studio's original number-key aliases.
     bind("1", &[Key::Num1], NONE, SELECT),
@@ -975,8 +1026,24 @@ pub fn general_framing() -> Flyout {
             todo("post", "Post"),
             todo("post", "Post with Footing"),
             todo("framing_general", "Blocking"),
-            todo_k("framing_general", "Build Framing", "\u{21E7}\u{2318}S"),
-            todo("framing_general", "Build All Framing"),
+            with_hotkey(
+                item(
+                    "framing_general",
+                    "Build Framing",
+                    Action::Framing(FramingCommand::Build),
+                ),
+                "\u{21E7}\u{2318}S",
+            ),
+            item(
+                "framing_general",
+                "Build All Framing",
+                Action::Framing(FramingCommand::BuildAll),
+            ),
+            item(
+                "framing_general",
+                "Delete Framing",
+                Action::Framing(FramingCommand::Delete),
+            ),
             todo("marker", "Framing Reference Marker"),
         ],
     )
@@ -1898,13 +1965,22 @@ fn is_dimmed(it: &Item, enabled: bool) -> bool {
 /// macOS modifier glyphs (shift, control, option, delete, tab), so those are
 /// spelled out; the tables keep Chief's symbols.
 pub fn pretty_hotkey(k: &str) -> String {
+    pretty_hotkey_for(k, cfg!(target_os = "macos"))
+}
+
+/// [`pretty_hotkey`] for either platform family. Without a Command key
+/// (Windows, Linux) Chief's Command and Control both read `Ctrl+`.
+pub fn pretty_hotkey_for(k: &str, mac: bool) -> String {
     let mut out = String::new();
     for c in k.chars() {
         match c {
             '\u{21E7}' => out.push_str("Shift+"),
-            '\u{2303}' => out.push_str("Ctrl+"),
+            // Control and Command are one key off the Mac.
+            '\u{2303}' if mac || !k.contains('\u{2318}') => out.push_str("Ctrl+"),
+            '\u{2303}' => {}
             '\u{2325}' => out.push_str("Alt+"),
-            '\u{2318}' => out.push_str("Cmd+"),
+            '\u{2318}' if mac => out.push_str("Cmd+"),
+            '\u{2318}' => out.push_str("Ctrl+"),
             '\u{2326}' => out.push_str("Del"),
             '\u{21E5}' => out.push_str("Tab"),
             c => out.push(c),
@@ -2112,6 +2188,13 @@ mod tests {
         }
         assert_eq!(pretty_hotkey("\u{2303}\u{2325}\u{2318}6"), "Ctrl+Alt+Cmd+6");
         assert_eq!(pretty_hotkey("D, H"), "D, H");
+        // No Command key off the Mac: Command (and Control) read as Ctrl.
+        assert_eq!(pretty_hotkey_for("\u{2318}S", false), "Ctrl+S");
+        assert_eq!(
+            pretty_hotkey_for("\u{2303}\u{2325}\u{2318}6", false),
+            "Alt+Ctrl+6"
+        );
+        assert_eq!(pretty_hotkey_for("\u{2318}S", true), "Cmd+S");
     }
 
     fn press_seq(h: &mut Hotkeys, keys: &[Key], at: Instant) -> Vec<Action> {

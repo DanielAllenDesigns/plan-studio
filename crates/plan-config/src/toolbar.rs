@@ -26,6 +26,7 @@
 //! [`ToolbarItemDef::separator_before`] is always `false` when parsed.
 
 use crate::error::ConfigError;
+use crate::normalize_newlines;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -163,6 +164,7 @@ fn infer_set_name(set: &ToolbarSet) -> &'static str {
 
 /// Parses a `.toolbar` file and gives the set an explicit name.
 pub fn parse_toolbar_named(name: &str, text: &str) -> Result<ToolbarSet, ConfigError> {
+    let text = normalize_newlines(text);
     let lines: Vec<&str> = text.lines().collect();
     let magic = lines.first().copied().unwrap_or("");
     if !magic.starts_with("Chief Toolbar File:") {

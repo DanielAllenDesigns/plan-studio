@@ -69,12 +69,10 @@ const WALL_TABS: &[Tab] = &[
 ];
 
 /// Wall settings the model has no fields for yet. The app keeps one per wall
-/// id for the session only.
+/// id for the session only. (Invisible, No Room Definition and No Locate live
+/// in `Wall.flags`.)
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallExtras {
-    pub invisible: bool,
-    pub no_room_definition: bool,
-    pub no_locate: bool,
     /// Name of the wall type last picked in the Wall Types tab.
     wall_type: Option<String>,
     suppress_label: bool,
@@ -86,9 +84,6 @@ pub struct WallExtras {
 impl Default for WallExtras {
     fn default() -> Self {
         Self {
-            invisible: false,
-            no_room_definition: false,
-            no_locate: false,
             wall_type: None,
             suppress_label: false,
             display_in_plan: true,
@@ -219,6 +214,12 @@ impl WallDialog {
 
     pub fn draft(&self) -> &Wall {
         &self.form.draft
+    }
+
+    /// Tests edit the draft as the form's controls would.
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut Wall {
+        &mut self.form.draft
     }
 
     pub fn extras(&self) -> &WallExtras {
@@ -403,10 +404,16 @@ impl WallForm {
         }
 
         section(ui, "Options");
-        let e = &mut self.extras;
-        session_check(ui, &mut e.invisible, "Invisible");
-        session_check(ui, &mut e.no_room_definition, "No Room Definition");
-        session_check(ui, &mut e.no_locate, "No Locate");
+        if is_default {
+            for l in ["Invisible", "No Room Definition", "No Locate"] {
+                dis_check(ui, l, false);
+            }
+        } else {
+            let f = &mut self.draft.flags;
+            ui.checkbox(&mut f.invisible, "Invisible");
+            ui.checkbox(&mut f.no_room_definition, "No Room Definition");
+            ui.checkbox(&mut f.no_locate, "No Locate");
+        }
         for l in [
             "Lock Center",
             "No Room Moldings Exterior",

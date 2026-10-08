@@ -297,7 +297,7 @@ R-60. **Insert New Floor**: inserts an empty floor between existing floors and
 renumbers everything above it. **Delete Current Floor**: removes the floor and
 renumbers; confirmation required; Undo restores it.
 
-R-61. **Build Foundation** (Ctrl+F; the Build New Floor sibling): creates floor 0
+R-61. **Build Foundation** (Cmd+F; the Build New Floor sibling): creates floor 0
 with foundation walls under the exterior walls of floor 1 using the Foundation
 dialog defaults. Foundation type options: Slab on grade (monolithic), Stem wall
 slab/crawl space, Pier and beam, Basement (full height walls with footings)
@@ -346,25 +346,7 @@ Floor Height (R-23) is an offset on top of that.
 
 ## 7. Plan Studio today (summary, details in gap table)
 
-- `plan_core::rooms::detect_rooms` builds a planar graph from **wall centerlines**
-  and returns faces as `Room { polygon, area_sq_in, centroid, label }`. Minimum
-  face area is 1 sq ft; labels are "Room N" sorted top-left first. Walls have
-  no Invisible / No Room Definition / Room Divider kinds (`WallKind` has only
-  Exterior and Interior), so every wall closes rooms.
-- Room naming is `Floor.room_names: Vec<RoomName { anchor, name, room_type }>`
-  keyed to a point; a rename inside the same room replaces the older name. There
-  is no Room Specification dialog and the Room Types defaults entry is a stub.
-- Heights: `Floor { elevation, ceiling_height }` only; `Wall.height` is a single
-  number. No per-room floor/ceiling heights, no rough ceiling, no stem wall,
-  no finish thickness, no structure definition.
-- 3D: `plan_3d` builds a 1" floor slab (0.75" finish) and a 1" ceiling slab at
-  `elevation + ceiling_height` straight from the **centerline** room polygons
-  (`slab.rs`), so floors extend under half of each wall.
-- Floors: `Project.floors: Vec<Floor>`, index 0 is "1st Floor". `change_floor`
-  only moves between existing floors; there is no Build New Floor, Foundation,
-  Insert/Delete/Exchange, Reference Display (the toolbar entry is a stub) or Attic.
-- Schedules: `room_schedule` lists Number, Name, Area, Perimeter, Ceiling height;
-  no Function, living-area flag or finishes.
+Rooms are detected from wall centerlines with interior, standard and centerline areas; walls carry Invisible, No Room Definition and Room Divider flags in the model (the first two are checkboxes in the Wall Specification) that the detection honors. A Room Specification dialog names rooms and sets their type, finishes, heights, living area, conditioned flag and label options; Default Settings > Room Types edits the types (name, function, living area, conditioned). Floors: Build New Floor, Insert Floor, Delete Floor, Exchange Floors, Build Foundation (slab, stem wall, pier, basement; hotkey `Cmd+F`) and Delete Foundation work, and the Space Planning Assistant and Plan Check are in. Reference Display draws the walls of the floor below in gray. Room and floor 3D slabs come from the room polygons. Missing: Floor Defaults, function-driven room behavior, nested-room holes, Floor Material Region, holes in floor and ceiling platforms, Attic floors as a tool. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## 8. Gap table
 

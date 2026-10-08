@@ -9,14 +9,17 @@ pub mod actions;
 pub mod camera;
 pub mod connect;
 pub mod dispatch;
+pub mod framing_view;
 pub mod handles;
 pub mod history;
 pub mod ops;
 pub mod placed;
 pub mod render;
+pub mod restyle;
 pub mod roof_view;
 pub mod rooms_edit;
 pub mod selection;
+pub mod sheet;
 pub mod site_view;
 pub mod snap;
 pub mod stairs_view;
@@ -72,6 +75,8 @@ pub struct EditorContext {
     /// Wall types, wall/door/window defaults, grid, dimension format, ...
     pub defaults: PlanDefaults,
     pub view_flags: HashSet<ViewFlag>,
+    /// The active layout's sheet size and scale (Drawing Sheet, Print Preview).
+    pub sheet: sheet::SheetSetup,
     /// The status-bar message (persists until replaced).
     pub status: String,
     /// A live value for the status bar while a tool works ("Length: ...").
@@ -95,6 +100,8 @@ pub struct EditorContext {
     pub outlines: Vec<WallOutline>,
     /// One polygon per wall layer (valid after [`refresh`](Self::refresh)).
     pub layer_outlines: Vec<WallLayerOutline>,
+    /// The active floor's built framing (valid after [`refresh`](Self::refresh)).
+    pub framing: Vec<plan_framing::Member>,
     /// The layers as the active plan view shows them, when that differs from
     /// `project.layers` (a non-default layer set or plan view is active).
     view_layers: Option<LayerSet>,
@@ -115,7 +122,13 @@ impl EditorContext {
             selection: Selection::default(),
             snap: SnapSettings::default(),
             defaults,
-            view_flags: HashSet::from([ViewFlag::TemporaryDimensions, ViewFlag::ReferenceGrid]),
+            // Color is on until the F8 toggle turns it off.
+            view_flags: HashSet::from([
+                ViewFlag::Color,
+                ViewFlag::TemporaryDimensions,
+                ViewFlag::ReferenceGrid,
+            ]),
+            sheet: sheet::SheetSetup::default(),
             status: String::new(),
             readout: None,
             extras: SessionExtras::default(),
@@ -130,6 +143,7 @@ impl EditorContext {
             rooms: Vec::new(),
             outlines: Vec::new(),
             layer_outlines: Vec::new(),
+            framing: Vec::new(),
             view_layers: None,
             history: ChangeHistory::new(),
             dirty: true,
@@ -266,6 +280,7 @@ impl EditorContext {
                 &self.project.wall_types
             };
             self.layer_outlines = wall_layer_outlines(walls, types, ops::JOIN_TOL);
+            self.framing = framing_view::load(&self.project.floors[self.floor]);
             self.dirty = false;
         }
         self.selection.retain_existing(&self.project, self.floor);
@@ -338,7 +353,25 @@ impl EditorContext {
 
     /// Dimension text in the active dimension defaults' format.
     pub fn fmt_dim(&self, inches: f64) -> String {
-        self.defaults.dim_format().fmt_len(inches)
+        self.dim_format().fmt_len(inches)
+    }
+
+    /// The dimension text format in force: the defaults' fraction and unit
+    /// indicators, and the active set's own units (inches, metric, ...) when
+    /// it picked others than feet and inches.
+    pub fn dim_format(&self) -> plan_core::DimFormat {
+        let base = self.defaults.dim_format();
+        match self
+            .defaults
+            .active_dimension()
+            .and_then(|s| s.format.length)
+        {
+            Some(l) if l.unit != plan_core::units::LengthUnit::FeetInches => plan_core::DimFormat {
+                length: Some(l),
+                ..base
+            },
+            _ => base,
+        }
     }
 
     pub fn wall_thickness(&self, kind: WallKind) -> f64 {

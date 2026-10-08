@@ -14,25 +14,8 @@ pub(crate) const RIGHT_STRIP_IN: f64 = 2.5;
 /// Height of the bottom title strip, paper inches.
 pub(crate) const BOTTOM_STRIP_IN: f64 = 1.25;
 
-// `plan-docs` and `plan-elevation` types have no serde impls, so mirror them.
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "SheetSize")]
-enum SheetSizeDef {
-    ArchD,
-    ArchC,
-    Letter,
-    Tabloid,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "Scale")]
-enum ScaleDef {
-    HalfInch,
-    QuarterInch,
-    ThreeSixteenths,
-    EighthInch,
-}
-
+// `plan-elevation` types have no serde impls, so mirror them. (`plan-docs`
+// `Scale` and `SheetSize` derive serde themselves.)
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "SectionCut")]
 struct SectionCutDef {
@@ -47,39 +30,10 @@ pub trait ScaleExt: Sized {
     fn from_label(label: &str) -> Option<Self>;
 }
 
-fn parse_inches(s: &str) -> Option<f64> {
-    let s = s
-        .trim()
-        .trim_end_matches(['"', '\u{201d}'])
-        .trim_end_matches("inches")
-        .trim_end_matches("inch")
-        .trim_end_matches("in")
-        .trim();
-    match s.split_once('/') {
-        Some((n, d)) => {
-            let (n, d) = (n.trim().parse::<f64>().ok()?, d.trim().parse::<f64>().ok()?);
-            (d != 0.0).then_some(n / d)
-        }
-        None => s.parse().ok(),
-    }
-}
-
 impl ScaleExt for Scale {
     fn from_label(label: &str) -> Option<Scale> {
-        let (lhs, rhs) = label.split_once('=')?;
-        let rhs = rhs.trim();
-        let one_foot = rhs.starts_with("1'")
-            || rhs.starts_with("1 '")
-            || rhs.starts_with("1ft")
-            || rhs.starts_with("1 ft")
-            || rhs.starts_with("1\u{2019}");
-        if !one_foot {
-            return None;
-        }
-        let v = parse_inches(lhs)?;
-        Scale::DESCENDING
-            .into_iter()
-            .find(|s| (s.inches_per_foot() - v).abs() < 1e-9)
+        // The inherent `Scale::from_label` lives in plan-docs and wins here.
+        Scale::from_label(label)
     }
 }
 
@@ -128,7 +82,6 @@ pub struct LayoutBox {
     /// `(lower-left, upper-right)` in paper inches, origin at the sheet's bottom-left.
     pub rect_in: (Point, Point),
     pub source: BoxSource,
-    #[serde(with = "ScaleDef")]
     pub scale: Scale,
     /// Caption drawn under the box, with the scale note.
     pub label: Option<String>,
@@ -191,7 +144,6 @@ impl LayoutPage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     pub name: String,
-    #[serde(with = "SheetSizeDef")]
     pub sheet: SheetSize,
     pub pages: Vec<LayoutPage>,
     pub title_block: TitleBlockTemplate,
@@ -278,7 +230,9 @@ mod tests {
             Some(Scale::ThreeSixteenths)
         );
         assert_eq!(Scale::from_label("0.5\" = 1'"), Some(Scale::HalfInch));
-        assert_eq!(Scale::from_label("1\" = 10'"), None);
+        // plan-docs now also knows the 1" = 10' / 1" = 20' and metric scales.
+        assert_eq!(Scale::from_label("1\" = 10'"), Some(Scale::OneInchEq10Ft));
+        assert_eq!(Scale::from_label("1\" = 7'"), None);
         assert_eq!(Scale::from_label("1/4"), None);
         for s in Scale::DESCENDING {
             assert_eq!(Scale::from_label(s.label()), Some(s));

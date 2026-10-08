@@ -2249,6 +2249,7 @@ dependencies = [
 name = "plan-calib"
 version = "0.1.0"
 dependencies = [
+ "plan-3d",
  "plan-core",
  "plan-library",
  "serde",

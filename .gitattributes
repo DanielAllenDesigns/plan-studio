@@ -1,0 +1,12 @@
+* text=auto eol=lf
+*.svg text eol=lf
+*.toolbar text eol=lf
+*.xml text eol=lf
+*.xsd text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.psplan text eol=lf
+*.png binary
+*.jpg binary
+*.calib binary
+*.calibz binary

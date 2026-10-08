@@ -156,7 +156,7 @@ impl Tool for OpeningTool {
                 dims: jamb_dims(wall, &ghost, ObjectRef::Wall(wid)).to_vec(),
                 editing: None,
             };
-            tempdim::draw(&dims, painter, cam, pal, &cx.defaults.dim_format());
+            tempdim::draw(&dims, painter, cam, pal, &cx.dim_format());
         }
     }
 }

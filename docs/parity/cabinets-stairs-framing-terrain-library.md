@@ -331,20 +331,7 @@ objects).
 
 ## G. Plan Studio today
 
-- Cabinets, stairs, framing: empty crates. The layer set has "Cabinets, Base",
-  "Cabinets, Wall", "Stairs", "Framing", "Electrical" names only.
-- `plan-library`: `Catalog` JSON format, `CatalogItem` (id, name, category path,
-  width/depth/height/elevation, `Placement` {WallMounted, FreeStanding, Ceiling,
-  Countertop}, tags, `Symbol2d` stroke list, optional `model3d` path,
-  manufacturer), `Library::search` (multi-term, ranked: name over tag over
-  category, whole word over prefix over substring) and `tree()` with counts. A
-  1,057-line starter catalog covers plumbing, appliances, cabinets (base, wall,
-  islands), furniture, etc.
-- Not present: any UI use of the library, placing items, auto-rotation, replace,
-  user library, `.calib` import, filters, 3D models.
-- Terrain, plants, sprinklers, electrical: nothing. `materials_list` takes off
-  studs, plates, drywall, sheathing, siding, flooring, ceiling drywall, doors and
-  windows only.
+All five areas now exist as engine crates with editor tools. Cabinets (`plan-cabinets`): six kinds with a Cabinet Specification and face tree; fillers, custom countertops and 3D library models are open. Stairs (`plan-stairs`): straight, L, U, winder, curved, landing and ramp tools, an IRC solver, a Stair Specification and Auto Stairwell; railings in the editor, the 3D view and the stairwell cut are open. Framing (`plan-framing`): Build > Framing builds wall, floor and roof framing for the active floor or all floors, draws it on the Framing layer and offers a Framing Takeoff with CSV export; the manual framing tools and framing in 3D are open. Terrain (`plan-terrain`): perimeter, elevation data, modifiers, features, roads and Build Terrain with contours; terrain in 3D is open. Library: the Library Browser searches the built-in catalog (about 145 2D symbols) and places symbols; `plan-calib` reads Chief `.calib` catalogs but the browser does not show them yet, and there is no user library, Replace From Library or 3D symbol model. Electrical (`plan-electrical`) has devices and Auto Place Outlets; the circuits UI is open. `materials_list` still takes off studs, plates, drywall, sheathing, siding, flooring, ceiling drywall, doors and windows. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## H. Gap table
 

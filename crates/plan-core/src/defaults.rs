@@ -325,6 +325,51 @@ pub struct PlanDefaults {
     pub text: TextDefaults,
     pub grid: GridDefaults,
     pub units: UnitDefaults,
+    /// Wall connection behaviour.
+    pub walls_connect: WallConnectDefaults,
+    /// Editing behaviour (snapping, bumping).
+    pub editing: EditingDefaults,
+}
+
+/// How walls connect when drawn or edited.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WallConnectDefaults {
+    /// Split a wall where another wall meets it in a tee.
+    pub split_on_tee: bool,
+    /// Minimum connect distance, inches.
+    pub connect_distance_min: f64,
+}
+
+impl Default for WallConnectDefaults {
+    fn default() -> Self {
+        Self {
+            split_on_tee: true,
+            connect_distance_min: 6.0,
+        }
+    }
+}
+
+/// Editing preferences (Daniel's Chief setup: Bumping on at distance 5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditingDefaults {
+    pub angle_snap_deg: f64,
+    pub snap_distance_px: f64,
+    pub bumping: bool,
+    /// Bumping distance, inches.
+    pub bumping_distance: f64,
+}
+
+impl Default for EditingDefaults {
+    fn default() -> Self {
+        Self {
+            angle_snap_deg: 15.0,
+            snap_distance_px: 10.0,
+            bumping: true,
+            bumping_distance: 5.0,
+        }
+    }
 }
 
 impl Default for PlanDefaults {
@@ -540,6 +585,8 @@ impl PlanDefaults {
                 angle_snap_deg: 15.0,
             },
             units: UnitDefaults { imperial: true },
+            walls_connect: WallConnectDefaults::default(),
+            editing: EditingDefaults::default(),
         }
     }
 }
@@ -914,5 +961,30 @@ mod tests {
         assert!(PlanDefaults::load(&path).is_err());
         assert_eq!(PlanDefaults::load_or_default(&path).window.width, 32.0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn connect_and_editing_defaults() {
+        let d = PlanDefaults::chief_x18_daniel();
+        assert!(d.walls_connect.split_on_tee);
+        assert_eq!(d.walls_connect.connect_distance_min, 6.0);
+        assert_eq!(d.editing.angle_snap_deg, 15.0);
+        assert_eq!(d.editing.snap_distance_px, 10.0);
+        assert!(d.editing.bumping);
+        assert_eq!(d.editing.bumping_distance, 5.0);
+        // Round trip, and an old file without the keys still loads.
+        let back: PlanDefaults = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(back, d);
+        let mut v = serde_json::to_value(&d).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("walls_connect");
+        o.remove("editing");
+        let old: PlanDefaults = serde_json::from_value(v).unwrap();
+        assert_eq!(old.walls_connect, WallConnectDefaults::default());
+        assert_eq!(old.editing, EditingDefaults::default());
+        let partial: PlanDefaults =
+            serde_json::from_str(r#"{"editing":{"bumping_distance":8.0}}"#).unwrap();
+        assert_eq!(partial.editing.bumping_distance, 8.0);
+        assert!(partial.editing.bumping);
     }
 }

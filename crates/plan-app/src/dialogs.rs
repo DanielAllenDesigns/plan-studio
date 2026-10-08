@@ -14,9 +14,11 @@ pub mod build_tools;
 pub mod cabinet;
 pub mod cad;
 pub mod camera;
+mod default_lists;
 mod defaults;
 pub mod dimension;
 pub mod electrical;
+pub mod exchange;
 pub mod floor;
 pub mod hotkeys;
 pub mod layer_display;
@@ -30,6 +32,7 @@ pub mod text;
 mod wall;
 mod wall_types;
 
+pub use default_lists::DefaultsList;
 pub use defaults::{DefaultsDialog, DefaultsEntry, DefaultsOutcome};
 pub use opening::{place_from_template, OpeningDialog, OpeningExtras, OpeningTarget};
 pub use wall::{WallDialog, WallExtras, WallTarget};
@@ -532,16 +535,23 @@ pub fn wall_plan_sketch(
         }
         match o.kind {
             OpeningKind::Door => {
-                let (hinge_x, dir) = if o.swing_flipped { (b, -1.0) } else { (a, 1.0) };
+                // The hinge jamb comes from `hinge_at_end`, the swing side
+                // (above or below the wall line) from `swing_flipped`.
+                let (hinge_x, dir) = if o.hinge_at_end { (b, -1.0) } else { (a, 1.0) };
+                let (edge_y, up) = if o.swing_flipped {
+                    (yc + th * 0.5, -1.0)
+                } else {
+                    (yc - th * 0.5, 1.0)
+                };
                 let r = o.width as f32 * s;
                 let ang = swing_deg.clamp(0.0, 180.0).to_radians() as f32;
-                let tip = Pos2::new(hinge_x + dir * r * ang.cos(), yc - th * 0.5 - r * ang.sin());
-                let hinge = Pos2::new(hinge_x, yc - th * 0.5);
+                let tip = Pos2::new(hinge_x + dir * r * ang.cos(), edge_y - up * r * ang.sin());
+                let hinge = Pos2::new(hinge_x, edge_y);
                 p.line_segment([hinge, tip], ink);
                 let arc: Vec<Pos2> = (0..=16)
                     .map(|i| {
                         let a = ang * i as f32 / 16.0;
-                        Pos2::new(hinge.x + dir * r * a.cos(), hinge.y - r * a.sin())
+                        Pos2::new(hinge.x + dir * r * a.cos(), hinge.y - up * r * a.sin())
                     })
                     .collect();
                 p.add(Shape::line(arc, Stroke::new(0.8_f32, PV_FAINT)));

@@ -3,6 +3,7 @@
 use crate::catalog::CommandCatalog;
 use crate::chord::{format_sequence, KeyChord};
 use crate::error::ConfigError;
+use crate::normalize_newlines;
 use crate::xml;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -87,7 +88,7 @@ impl HotkeyFile {
 /// Parses `UserHotkeys.xml`. A command with an empty `<keyCodes/>` is counted
 /// in `total_commands` but does not become a binding.
 pub fn parse_hotkeys_xml(text: &str) -> Result<HotkeyFile, ConfigError> {
-    let root = xml::parse(text)?;
+    let root = xml::parse(&normalize_newlines(text))?;
     if !root.name.eq_ignore_ascii_case("UserHotkeys") && root.child("command").is_none() {
         return Err(ConfigError::Format(format!(
             "root element is <{}>, expected <UserHotkeys>",

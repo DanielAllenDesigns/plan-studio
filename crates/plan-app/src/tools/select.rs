@@ -965,7 +965,7 @@ impl Tool for SelectTool {
             painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, col), egui::StrokeKind::Inside);
         }
         if cx.view_flags.contains(&ViewFlag::TemporaryDimensions) {
-            tempdim::draw(&cx.temp, painter, cam, pal, &cx.defaults.dim_format());
+            tempdim::draw(&cx.temp, painter, cam, pal, &cx.dim_format());
         }
         let hs = handles::handles_for(cx, cam.px_per_in);
         handles::draw(&hs, painter, cam, pal);

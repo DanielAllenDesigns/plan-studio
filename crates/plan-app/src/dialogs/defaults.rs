@@ -14,6 +14,7 @@ pub enum DefaultsEntry {
     Window,
     Dimensions,
     RoomTypes,
+    TextStyles,
 }
 
 const TREE: &[(&str, &[(&str, DefaultsEntry)])] = &[
@@ -34,6 +35,7 @@ const TREE: &[(&str, &[(&str, DefaultsEntry)])] = &[
     ),
     ("Windows", &[("Window", DefaultsEntry::Window)]),
     ("Dimension", &[("Dimensions", DefaultsEntry::Dimensions)]),
+    ("Text", &[("Text Styles", DefaultsEntry::TextStyles)]),
     (
         "Floors and Rooms",
         &[("Room Types", DefaultsEntry::RoomTypes)],

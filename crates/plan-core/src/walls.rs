@@ -255,6 +255,7 @@ impl Wall {
             curve: None,
             roof: WallRoofDirective::default(),
             exterior_side: Side::Left,
+            extras: crate::extras::WallExtras::default(),
         }
     }
 

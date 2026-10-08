@@ -80,6 +80,9 @@ pub struct Wall {
     /// from that side. Defaults to the left (+normal) side.
     #[serde(default)]
     pub exterior_side: Side,
+    /// Wall dialog values that persist with the wall.
+    #[serde(default)]
+    pub extras: crate::extras::WallExtras,
 }
 
 impl Wall {
@@ -148,6 +151,8 @@ pub struct Opening {
     pub lites: (u32, u32),
     pub egress: bool,
     pub tempered: bool,
+    /// Dialog values that persist with the opening.
+    pub extras: crate::extras::OpeningExtras,
 }
 
 impl Opening {
@@ -209,6 +214,21 @@ pub struct RoomName {
     /// Rough (framed) ceiling height, inches (R-25).
     #[serde(default)]
     pub rough_ceiling: Option<f64>,
+    /// Room is heated/cooled; `None` follows the room type.
+    #[serde(default)]
+    pub conditioned: Option<bool>,
+    /// Stem wall height under the room, inches.
+    #[serde(default)]
+    pub stem_wall_height: Option<f64>,
+    /// Plan fill of the room.
+    #[serde(default)]
+    pub fill_style: Option<crate::extras::RoomFill>,
+    /// What the room's plan label shows.
+    #[serde(default)]
+    pub label: crate::extras::RoomLabelOptions,
+    /// Moldings applied around the room.
+    #[serde(default)]
+    pub moldings: Vec<crate::extras::MoldingRef>,
 }
 
 fn default_true() -> bool {
@@ -229,6 +249,11 @@ impl RoomName {
             has_ceiling: true,
             has_floor: true,
             rough_ceiling: None,
+            conditioned: None,
+            stem_wall_height: None,
+            fill_style: None,
+            label: crate::extras::RoomLabelOptions::default(),
+            moldings: Vec::new(),
         }
     }
 }
@@ -268,6 +293,15 @@ pub struct Floor {
     /// Object groups (S-35..S-38).
     #[serde(default)]
     pub groups: Vec<ObjectGroup>,
+    /// Opaque roof objects; see [`Floor::roofs_as`].
+    #[serde(default)]
+    pub roofs: Vec<serde_json::Value>,
+    /// Opaque electrical data; see [`Floor::electrical_as`].
+    #[serde(default)]
+    pub electrical: Option<serde_json::Value>,
+    /// Opaque framing objects; see [`Floor::framing_as`].
+    #[serde(default)]
+    pub framing: Vec<serde_json::Value>,
 }
 
 impl Floor {
@@ -286,6 +320,9 @@ impl Floor {
             cabinets: Vec::new(),
             stairs: Vec::new(),
             groups: Vec::new(),
+            roofs: Vec::new(),
+            electrical: None,
+            framing: Vec::new(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -324,6 +361,9 @@ pub struct Project {
     /// Text styles that `Layer::text_style` names resolve through.
     #[serde(default)]
     pub text_styles: TextStyles,
+    /// Opaque terrain data; see [`Project::terrain_as`].
+    #[serde(default)]
+    pub terrain: Option<serde_json::Value>,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -342,6 +382,7 @@ impl Project {
             plan_views: SavedPlanView::defaults(),
             active_plan_view: crate::layer_sets::default_active_plan_view(),
             text_styles: TextStyles::default(),
+            terrain: None,
         }
     }
 

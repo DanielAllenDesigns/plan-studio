@@ -7,13 +7,7 @@ Statement ids (`S-n`) are stable; cite them in commits and tests.
 
 ## 0. Plan Studio today (code snapshot)
 
-- Selection state is a single `Option<Id>` holding a **wall id only** (`PlanApp::selected`, `main.rs`). Openings, dimensions and CAD objects cannot be selected by click.
-- Click picks the nearest wall centerline within `PICK_RADIUS_PX = 10` screen px (`nearest_wall`). No handles, no drag-move, no marquee, no Tab, no Shift.
-- A selected wall is drawn as a 3 px outline (`draw_wall_outline`). The left Properties panel shows length, kind, thickness, Open Specification, Delete.
-- Double-click opens the wall or opening specification dialog (`handle_double_click`). Delete/Backspace removes the wall and its openings.
-- `plan_core::history::History` (snapshot undo, cap 100) exists but is **not wired** to the app; Undo/Redo menu items are inert. Cut/Copy/Paste, Select All, Snap Settings, Edit Behaviors, Edit Area, Delete Objects are inert menu items.
-- Snapping exists only inside the wall tool: endpoint snap within 10 px, else 1" grid (`snap_in`), else 15 degree angle from the chain start; Alt disables the angle snap only.
-- `plan_core::model::Floor` holds `walls`, `openings`, `dimensions`, `cad`, `room_names`; only walls and openings are drawn or edited in the UI.
+Select Objects (`Space`) picks every object kind (walls, openings, dimensions, CAD and text, cabinets, symbols, stairs, roof planes, electrical devices, cameras, rooms, terrain) by its drawn geometry, with hover highlight, Shift add, Tab cycling, marquee (enclose or touch), handles, drag-to-move, temporary dimensions with type-to-move, layer display and lock rules, and the contextual Edit toolbar (Open Object, Delete, Copy, Paste in Place, Reverse Swing and per-kind commands). Undo and redo are whole-plan snapshots and the menus name the step. The snap engine (endpoint, midpoint, intersection, centerline, grid, angle, perpendicular) serves every tool, with Alt suspending the angle snap. Missing from the menus: Cut, Select All, Delete Objects, Snap Settings, Edit Behaviors, Edit Area, Stretch CAD, and the context menu on right-click. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## 1. Click selection
 

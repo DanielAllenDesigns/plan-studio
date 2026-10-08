@@ -11,6 +11,7 @@ mod dialogs;
 mod editor;
 mod icons;
 mod menus;
+mod paths;
 mod plan_defaults;
 mod shell;
 mod theme;
@@ -66,6 +67,9 @@ struct PlanApp {
     /// Specification dialogs of every other object kind.
     spec: shell::spec_dialogs::SpecDialogs,
     defaults_dialog: Option<DefaultsDialog>,
+    /// The Default Settings list dialog open on top of it (dimension sets,
+    /// room types, text styles).
+    lists: Option<dialogs::DefaultsList>,
     view3d: shell::view3d_panel::View3dState,
 }
 
@@ -75,6 +79,7 @@ fn bar_state<'a>(
     tool: ToolId,
     dock: Option<Dock>,
     brightness: f32,
+    hotkeys: &'a shell::hotkeys::HotkeyMap,
 ) -> BarState<'a> {
     BarState {
         tool,
@@ -87,6 +92,7 @@ fn bar_state<'a>(
         brightness,
         undo_label: cx.undo_label(),
         redo_label: cx.redo_label(),
+        hotkeys: Some(hotkeys),
     }
 }
 
@@ -114,6 +120,7 @@ impl PlanApp {
             dialog: None,
             spec: Default::default(),
             defaults_dialog: None,
+            lists: None,
             view3d: Default::default(),
         }
     }
@@ -124,7 +131,7 @@ impl PlanApp {
 
     /// Is a specification dialog open (any kind)?
     fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.spec.is_open()
+        self.dialog.is_some() || self.spec.is_open() || self.lists.is_some()
     }
 
     fn push_zoom_history(&mut self) {
@@ -199,6 +206,8 @@ impl PlanApp {
             Action::Custom(id) => self.cx.run_custom(id),
             Action::PlanView(i) => self.activate_plan_view(i),
             Action::Terrain(c) => self.terrain_command(c),
+            Action::File(c) => dialogs::exchange::dispatch_file(&mut self.cx, c),
+            Action::Framing(c) => dialogs::exchange::dispatch_framing(&mut self.cx, c),
             Action::CurrentWall => self.apply(self.toolbars.wall_action()),
             Action::FileNew => self.new_project(),
             Action::FileOpen => self.open_project(),
@@ -293,6 +302,15 @@ impl PlanApp {
         };
         self.cx.begin_change("Plan View");
         self.cx.project.activate_plan_view(&view.name);
+        if view.reference_display {
+            self.cx
+                .view_flags
+                .insert(toolbar::ViewFlag::ReferenceDisplay);
+        } else {
+            self.cx
+                .view_flags
+                .remove(&toolbar::ViewFlag::ReferenceDisplay);
+        }
         if let Some(f) = view.floor.filter(|f| *f < self.cx.project.floors.len()) {
             self.cx.floor = f;
         }
@@ -302,6 +320,27 @@ impl PlanApp {
         }
         self.cx.mark_dirty();
         self.cx.status = format!("Plan view: {}", view.name);
+    }
+
+    /// Project Browser: selects the camera, shows its floor and pans the plan
+    /// to it.
+    fn select_camera(&mut self, id: Id) {
+        let Some((floor, pos)) = self
+            .cx
+            .project
+            .camera(id)
+            .map(|c| (c.floor.min(self.cx.project.floors.len() - 1), c.position))
+        else {
+            return;
+        };
+        self.view3d.active = false;
+        if floor != self.cx.floor {
+            self.cx.floor = floor;
+            self.reset_view_state();
+        }
+        self.camera.center = pos;
+        self.cx.selection.set(ObjectRef::Camera(id));
+        self.cx.status = "Selected the camera".into();
     }
 
     /// Terrain menu commands.
@@ -649,6 +688,7 @@ impl PlanApp {
                     self.tools.active_id(),
                     self.dock,
                     self.settings.brightness,
+                    &self.hotkeys.map,
                 );
                 menus::bar(
                     ui,
@@ -679,6 +719,7 @@ impl PlanApp {
                             self.tools.active_id(),
                             self.dock,
                             self.settings.brightness,
+                            &self.hotkeys.map,
                         );
                         let slots = if second {
                             &mut self.toolbars.row2
@@ -707,6 +748,7 @@ impl PlanApp {
                             self.tools.active_id(),
                             self.dock,
                             self.settings.brightness,
+                            &self.hotkeys.map,
                         );
                         actions.extend(toolbar::column(ui, &mut self.toolbars.view, &state));
                     });
@@ -732,6 +774,9 @@ impl PlanApp {
                     self.reset_view_state();
                 }
                 shell::docks::DockRequest::SwitchFloor(_) => {}
+                shell::docks::DockRequest::SelectCamera(id) => self.select_camera(id),
+                shell::docks::DockRequest::ActivatePlanView(i) => self.activate_plan_view(i),
+                shell::docks::DockRequest::Run(a) => self.apply(a),
             }
         }
     }
@@ -792,11 +837,7 @@ impl PlanApp {
                     ui.weak("None detected (close a loop of walls)");
                 }
                 for room in &self.cx.rooms {
-                    ui.label(format!(
-                        "{}  -  {} sq ft",
-                        self.cx.room_name(room),
-                        room.area_sq_ft().round()
-                    ));
+                    ui.label(room_line(&self.cx.room_name(room), room));
                 }
                 ui.separator();
                 self.selected_wall_section(ui);
@@ -827,7 +868,8 @@ impl PlanApp {
             return;
         };
         let (len, kind, mut thickness) = (wall.length(), wall.kind, wall.thickness);
-        let fmt = self.cx.defaults.dim_format();
+        let type_line = wall_type_line(wall, self.cx.wall_types());
+        let fmt = self.cx.dim_format();
         let openings: Vec<(Id, OpeningKind, f64, f64)> = self
             .cx
             .floor()
@@ -845,6 +887,7 @@ impl PlanApp {
                 "Interior"
             }
         ));
+        ui.label(type_line);
         if inch_drag(ui, "Thickness", &mut thickness, 1.0..=24.0) {
             self.cx.begin_change_merged("Change Wall Thickness");
             let floor = self.cx.floor;
@@ -1124,8 +1167,16 @@ impl PlanApp {
                 plan_defaults::window_template(&self.cx.defaults),
                 self,
             )),
-            DefaultsEntry::Dimensions | DefaultsEntry::RoomTypes => {
-                self.cx.status = "Coming in a later phase".into();
+            DefaultsEntry::Dimensions => {
+                self.lists = Some(dialogs::DefaultsList::dimensions(&self.cx));
+                None
+            }
+            DefaultsEntry::RoomTypes => {
+                self.lists = Some(dialogs::DefaultsList::room_types(&self.cx));
+                None
+            }
+            DefaultsEntry::TextStyles => {
+                self.lists = Some(dialogs::DefaultsList::text_styles(&self.cx));
                 None
             }
         };
@@ -1151,8 +1202,13 @@ impl PlanApp {
             }
         }
         self.spec.show(ctx, &mut self.cx);
+        if let Some(mut list) = self.lists.take() {
+            if list.show(ctx, &mut self.cx) {
+                self.lists = Some(list);
+            }
+        }
         if let Some(mut defaults) = self.defaults_dialog.take() {
-            match defaults.show(ctx, self.dialog.is_none()) {
+            match defaults.show(ctx, self.dialog.is_none() && self.lists.is_none()) {
                 DefaultsOutcome::Open => {}
                 DefaultsOutcome::Edit(entry) => self.open_defaults_entry(entry),
                 DefaultsOutcome::Close => return,
@@ -1350,6 +1406,7 @@ impl eframe::App for PlanApp {
         self.dialogs(ctx);
         shell::docks::show_dialogs(ctx, &mut self.cx, &mut self.docks, &mut self.hotkeys);
         dialogs::build_tools::show_all(ctx, &mut self.cx, &mut self.camera);
+        dialogs::exchange::show_all(ctx, &mut self.cx);
         self.sync_settings(ctx);
         if self.cx.is_dirty() {
             ctx.request_repaint();
@@ -1379,6 +1436,33 @@ fn wall_type_combo(
                 }
             });
     });
+}
+
+/// One Rooms-list row: the name and the interior area (what the plan label
+/// shows), not the area to the wall centerlines.
+fn room_line(name: &str, room: &plan_core::Room) -> String {
+    format!("{name}  -  {} sq ft", room.interior_area_sq_ft().round())
+}
+
+/// The Properties line for a wall's type: its name and the thickness the
+/// type defines, noting when the wall has been resized away from it.
+fn wall_type_line(wall: &plan_core::Wall, types: &[plan_core::WallTypeDef]) -> String {
+    let def = wall
+        .wall_type
+        .as_deref()
+        .and_then(|n| types.iter().find(|t| t.name == n));
+    match (wall.wall_type.as_deref(), def) {
+        (Some(name), Some(t)) if (t.thickness() - wall.thickness).abs() < 1e-6 => {
+            format!("Type: {name} ({})", dialogs::fmt_short(t.thickness()))
+        }
+        (Some(name), Some(t)) => format!(
+            "Type: {name} ({}; this wall {})",
+            dialogs::fmt_short(t.thickness()),
+            dialogs::fmt_short(wall.thickness)
+        ),
+        (Some(name), None) => format!("Type: {name}"),
+        (None, _) => format!("Type: none ({})", dialogs::fmt_short(wall.thickness)),
+    }
 }
 
 fn type_label(t: &plan_core::WallTypeDef) -> String {
@@ -1648,5 +1732,170 @@ mod tests {
             a.cx.delete_selection();
             assert!(!o.exists_in(&a.cx.project, 0), "{o:?} not deleted");
         }
+    }
+
+    #[test]
+    fn wall_specification_checkboxes_write_the_wall_flags() {
+        let mut a = app();
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        let ids: Vec<Id> = (0..4)
+            .map(|i| {
+                a.cx.project
+                    .add_wall(0, c[i], c[(i + 1) % 4], 6.0, 109.0, WallKind::Exterior)
+            })
+            .collect();
+        a.cx.refresh();
+        assert_eq!(a.cx.rooms.len(), 1);
+        a.open_wall_dialog(ids[0]);
+        let Some(ActiveDialog::Wall(mut d)) = a.dialog.take() else {
+            panic!("no wall dialog");
+        };
+        {
+            let f = &mut d.draft_mut().flags;
+            f.invisible = true;
+            f.no_room_definition = true;
+            f.no_locate = true;
+        }
+        a.apply_wall_dialog(&d);
+        let flags = &a.cx.floor().wall(ids[0]).unwrap().flags;
+        assert!(flags.invisible && flags.no_room_definition && flags.no_locate);
+        // The model honors them: the room is no longer closed, and the wall
+        // is not drawn.
+        a.cx.refresh();
+        assert!(a.cx.rooms.is_empty());
+        // Nothing is kept in the session extras for them any more.
+        assert!(
+            a.cx.extras.walls[&WallTarget::Wall(ids[0]).key()].eq(&dialogs::WallExtras::default())
+        );
+    }
+
+    #[test]
+    fn door_dialog_hinge_side_is_independent_of_swing_side() {
+        let mut a = app();
+        let w = a.cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            6.0,
+            109.0,
+            WallKind::Exterior,
+        );
+        let door =
+            a.cx.project
+                .add_opening(0, w, 100.0, OpeningKind::Door)
+                .unwrap();
+        a.open_opening_dialog(door);
+        let Some(ActiveDialog::Opening(mut d)) = a.dialog.take() else {
+            panic!("no door dialog");
+        };
+        d.draft_mut().hinge_at_end = true;
+        a.apply_opening_dialog(&d);
+        let o = a.cx.floor().openings.iter().find(|o| o.id == door).unwrap();
+        assert!(o.hinge_at_end && !o.swing_flipped);
+    }
+
+    #[test]
+    fn properties_rooms_list_shows_interior_area_like_the_label() {
+        let mut a = app();
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        for i in 0..4 {
+            a.cx.project
+                .add_wall(0, c[i], c[(i + 1) % 4], 7.625, 109.0, WallKind::Exterior);
+        }
+        a.cx.refresh();
+        let room = &a.cx.rooms[0];
+        let line = room_line("Great Room", room);
+        assert!(line.contains(&format!("{} sq ft", room.interior_area_sq_ft().round())));
+        assert_ne!(
+            room.interior_area_sq_ft().round(),
+            room.area_sq_ft().round()
+        );
+        assert!(editor::rooms_edit::room_label_text(&a.cx, room)
+            .contains(&format!("{} sq ft", room.interior_area_sq_ft().round())));
+    }
+
+    #[test]
+    fn properties_shows_the_wall_type_thickness() {
+        let a = app();
+        let mut wall = plan_core::Wall {
+            wall_type: Some("Siding-6".into()),
+            thickness: 7.625,
+            ..Default::default()
+        };
+        let types = a.cx.wall_types().to_vec();
+        let def = types.iter().find(|t| t.name == "Siding-6").unwrap();
+        wall.thickness = def.thickness();
+        let line = wall_type_line(&wall, &types);
+        assert!(line.starts_with("Type: Siding-6 ("), "{line}");
+        wall.thickness = 12.0;
+        assert!(wall_type_line(&wall, &types).contains("this wall"));
+        wall.wall_type = None;
+        assert!(wall_type_line(&wall, &types).starts_with("Type: none"));
+    }
+
+    #[test]
+    fn menus_show_the_live_hotkeys() {
+        let a = app();
+        let st = bar_state(&a.cx, ToolId::Select, None, 1.0, &a.hotkeys.map);
+        // Daniel's customized "-" is Zoom In (his file), and 3D View Defaults
+        // is bound (Cmd+1).
+        assert_eq!(
+            st.hotkey("Zoom In", "?"),
+            a.hotkeys.map.hotkey_text("Zoom In")
+        );
+        assert!(st.hotkey("3D View Defaults", "").ends_with('1'));
+        assert_eq!(
+            a.hotkeys.map.lookup(&[shell::hotkeys::Chord::from_config(
+                &plan_config::KeyChord::parse_file("Ctrl+1").unwrap()
+            )
+            .unwrap()]),
+            Some(Action::View3d(shell::view3d_panel::View3dCommand::Defaults))
+        );
+    }
+
+    #[test]
+    fn color_is_on_by_default_and_saved_views_set_reference_display() {
+        let mut a = app();
+        assert!(a.cx.view_flags.contains(&toolbar::ViewFlag::Color));
+        a.cx.project.plan_views[0].reference_display = true;
+        a.activate_plan_view(0);
+        assert!(a
+            .cx
+            .view_flags
+            .contains(&toolbar::ViewFlag::ReferenceDisplay));
+    }
+
+    #[test]
+    fn project_browser_requests_select_cameras_and_activate_views() {
+        let mut a = app();
+        a.cx.project.build_new_floor(false);
+        let id = a.cx.project.add_camera(plan_core::CameraObject::new(
+            plan_core::CameraKind::FullCamera,
+            Point::new(300.0, 120.0),
+            45.0,
+            "Camera 1",
+            1,
+        ));
+        a.docks
+            .requests
+            .push(shell::docks::DockRequest::SelectCamera(id));
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| a.dock_panel(ctx));
+        // dock_panel only drains when a dock is open; drain explicitly.
+        a.dock = Some(Dock::Project);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| a.dock_panel(ctx));
+        assert_eq!(a.cx.floor, 1, "the camera's floor is shown");
+        assert_eq!(a.camera.center, Point::new(300.0, 120.0));
+        assert!(a.cx.selection.contains(ObjectRef::Camera(id)));
     }
 }

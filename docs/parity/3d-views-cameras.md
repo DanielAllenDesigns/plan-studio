@@ -344,21 +344,7 @@ camera positions), Walkthrough Preview plays it; an exported movie is Phase 5.
 
 ## 11. Plan Studio today
 
-- `plan-view3d::Camera` modes: Orbit (like Perspective Full Overview), DollHouse
-  (pitch 55 degrees, ceiling and roof hidden), FullCamera (eye height 66",
-  FOV 60), four orthographic elevations (Front/Back/Left/Right) and PlanOverhead.
-  The camera is a singleton owned by the widget; there are no camera objects, no
-  saved views and no camera dialog.
-- Navigation: left-drag orbits (or turns in Full Camera), right/middle-drag or
-  Shift+left pans, scroll dollies, W/A/S/D/arrows walk in Full Camera with Shift
-  to run. No Tilt tool, no keyboard orbit, no orbit-centre picking, no Undo Zoom.
-- Rendering: Lambert + ambient with key and opposite fill light, optional
-  feature-edge overlay (30 degree crease angle). One technique only.
-- Materials: eight fixed `Material` variants with fixed colours; no textures,
-  no painter, no material definitions.
-- Scene: walls with holes, door panels, window frame and glass, floor and
-  ceiling slabs. Roof planes from `plan-roof` are not yet meshed; terrain,
-  cabinets, stairs and library 3D models are absent. glTF export exists.
+Plan Studio has camera objects (Full Camera, the cross-section cameras) placed from the plan with a Camera Specification dialog, and an orbitable 3D panel (`shell/view3d_panel.rs`) over `plan-view3d`: Perspective Full and Floor Overview, Doll House, Full Camera, four orthographic elevations, plan overhead, back-clipped sections and a section slider. Navigation is mouse-orbit, pan and dolly; 3D View Defaults (`Cmd+1`) sets new-camera defaults. Nine rendering techniques, the Sun Angle window and a CPU ray tracer with PNG output (`plan-render`) are in; glTF export too. The scene shows walls with openings, doors, windows, floors, ceilings and roof planes; stairs, cabinets, library 3D models, electrical devices, terrain and framing are not drawn in 3D yet. Missing: walkthroughs, Add Lights, the material painter and textures in the viewport, 3D picking, Create Auto Elevations and Wall Elevation cameras. Elevations can be exported as DXF (File > Export > Elevation DXF). (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## 12. Gap table
 

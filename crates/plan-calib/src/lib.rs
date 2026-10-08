@@ -31,6 +31,7 @@ pub mod catalog;
 pub mod decode;
 pub mod error;
 pub mod inflate;
+pub mod mesh3d;
 pub mod registry;
 pub mod sqlite;
 pub mod zip;

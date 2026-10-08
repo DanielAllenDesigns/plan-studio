@@ -55,20 +55,6 @@ const CLOUD_SAMPLES: usize = 6;
 /// Half length of a point's cross.
 const POINT_SIZE: f64 = 2.0;
 
-thread_local! {
-    static REQUESTED: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Asks for a variant (by Chief's name, e.g. "Circle") the next time the CAD
-/// tool is activated or re-picked.
-pub fn request_variant(name: &str) {
-    REQUESTED.with(|r| *r.borrow_mut() = Some(name.to_string()));
-}
-
-fn take_requested() -> Option<String> {
-    REQUESTED.with(|r| r.borrow_mut().take())
-}
-
 // ----- shared helpers (also used by the dimension and text tools) -----
 
 /// `EditField::index` of the placeholder that makes the shell forward typed
@@ -1615,9 +1601,9 @@ impl Tool for CadTool {
         egui::CursorIcon::Crosshair
     }
 
-    fn set_variant(&mut self, _id: ToolId) {
-        if let Some(name) = take_requested() {
-            self.set_mode_by_name(&name);
+    fn set_variant(&mut self, id: ToolId) {
+        if let ToolId::CadVariant(m) = id {
+            self.set_mode(m);
         }
     }
 
@@ -2291,14 +2277,13 @@ mod tests {
     #[test]
     fn variant_requests_pick_the_mode() {
         let mut t = CadTool::default();
-        request_variant("Circle About Center");
-        t.set_variant(ToolId::Cad);
+        t.set_variant(ToolId::CadVariant(CadMode::CircleAboutCenter));
         assert_eq!(t.mode(), CadMode::CircleAboutCenter);
         t.set_variant(ToolId::Cad);
         assert_eq!(
             t.mode(),
             CadMode::CircleAboutCenter,
-            "a request is used once"
+            "a plain re-pick keeps the mode"
         );
     }
 

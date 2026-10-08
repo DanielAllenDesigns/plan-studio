@@ -40,5 +40,12 @@ pub use toolbar::{
     ToolbarSet,
 };
 
+/// The text with every line ending as `\n`. A checkout that converts line
+/// endings (Windows, `core.autocrlf`) hands the parsers `\r\n`, and they split
+/// on `\n`; every parser runs its input through this first.
+pub(crate) fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 #[cfg(test)]
 mod tests;

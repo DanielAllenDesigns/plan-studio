@@ -176,14 +176,10 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    /// `~/.plan-studio/settings.json`, or `None` when `HOME` is unset.
+    /// `~/.plan-studio/settings.json`, or `None` when no home directory is
+    /// known (`HOME`, else `USERPROFILE` on Windows).
     fn path() -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(
-            PathBuf::from(home)
-                .join(".plan-studio")
-                .join("settings.json"),
-        )
+        crate::paths::user_file("settings.json")
     }
 
     /// Loads the saved settings; any problem falls back to the defaults.
@@ -210,7 +206,7 @@ impl AppSettings {
 
     /// Writes the settings; failures are returned so the caller can show them.
     pub fn save(&self) -> Result<(), String> {
-        let path = Self::path().ok_or("HOME is not set")?;
+        let path = Self::path().ok_or(crate::paths::NO_HOME)?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }

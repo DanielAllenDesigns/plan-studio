@@ -193,7 +193,7 @@ pub fn window_schedule(project: &Project, floor: usize) -> Schedule {
 }
 
 /// The user-assigned name of `room` on `floor`, else the detected label.
-pub(crate) fn room_name(f: &Floor, room: &Room) -> String {
+pub fn room_name(f: &Floor, room: &Room) -> String {
     f.room_names
         .iter()
         .find(|n| point_in_polygon(n.anchor, &room.polygon))

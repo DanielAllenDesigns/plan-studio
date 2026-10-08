@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+plan-3d = { path = "../plan-3d" }
 plan-core = { path = "../plan-core" }
 plan-library = { path = "../plan-library" }
 serde = { workspace = true }

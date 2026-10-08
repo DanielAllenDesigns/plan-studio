@@ -5,8 +5,10 @@
 //! * [`schedule`]: door, window, room and wall schedules with CSV and
 //!   Markdown export.
 //! * [`materials`]: a framing / finish quantity take-off and its CSV export.
-//! * [`pdf`]: a minimal PDF 1.4 writer plus [`pdf::plan_sheet`], a scaled
-//!   floor-plan sheet with a Chief-style title block.
+//! * [`pdf`]: a PDF 1.4 writer (RGB colour, dashes, clipping, rotated and
+//!   bold text, Bezier curves, hatches, embedded RGB images, mixed page
+//!   sizes) plus [`pdf::plan_sheet`], a scaled floor-plan sheet with a
+//!   Chief-style title block, walls, openings, dimensions and CAD items.
 //!
 //! Units follow `plan-core`: lengths are inches. Floors are addressed by
 //! index into `Project::floors`, as in `Project::add_wall`.
@@ -16,8 +18,13 @@ pub mod pdf;
 pub mod schedule;
 
 pub use materials::{materials_list, to_csv as materials_to_csv, MaterialLine};
-pub use pdf::{plan_sheet, PdfDoc, PlanSheetResult, Scale, SheetSize, TitleBlock};
-pub use schedule::{door_schedule, room_schedule, wall_schedule, window_schedule, Schedule};
+pub use pdf::{
+    plan_sheet, plan_sheet_with, LineCap, LineJoin, PdfColor, PdfDoc, PlanSheetOptions,
+    PlanSheetResult, RoomAreaBasis, Scale, SheetSize, TitleBlock, CHIEF_SHEET_BACKGROUND,
+};
+pub use schedule::{
+    door_schedule, room_name, room_schedule, wall_schedule, window_schedule, Schedule,
+};
 
 #[cfg(test)]
 pub(crate) mod test_support {

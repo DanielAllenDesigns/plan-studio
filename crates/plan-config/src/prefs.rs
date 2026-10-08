@@ -1,6 +1,7 @@
 //! Chief preferences: a minimal INI reader and the drawing-related values
 //! Plan Studio cares about.
 
+use crate::normalize_newlines;
 use serde::{Deserialize, Serialize};
 
 /// Object-snap switches and bumping, as in Chief's Preferences > Snaps.
@@ -142,7 +143,8 @@ impl IniFile {
 /// `\r\n` line endings are tolerated; surrounding double quotes on a value are
 /// removed. Keys before the first `[section]` go into a section named `""`.
 pub fn parse_ini(text: &str) -> IniFile {
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let text = normalize_newlines(text);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let mut ini = IniFile::default();
     let mut current: Option<usize> = None;
     for raw in text.lines() {

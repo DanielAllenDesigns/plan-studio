@@ -6,7 +6,7 @@
 //! shown disabled so the target shape of the product is visible.
 
 use crate::theme::{CanvasTheme, BRIGHTNESS_MAX, BRIGHTNESS_MIN};
-use crate::toolbar::{self, Action, BarState, Dock, ViewFlag};
+use crate::toolbar::{self, Action, BarState, Dock, FileCommand, FramingCommand, ViewFlag};
 use crate::tools::ToolId;
 use eframe::egui;
 
@@ -175,14 +175,54 @@ fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
             "View File Information\u{2026}",
             "Manage Auto Archives\u{2026}",
             "-",
-            "Export>",
-            "Import>",
-            "Print>",
-            "-",
-            "Send to Layout\u{2026}\tS, L",
-            "-",
         ],
     );
+    ui.menu_button("Export", |ui| {
+        use crate::shell::view3d_panel::View3dCommand;
+        live(
+            ui,
+            "DXF\u{2026}",
+            "",
+            false,
+            Action::File(FileCommand::ExportDxf),
+            out,
+        );
+        live(
+            ui,
+            "Elevation DXF\u{2026}",
+            "",
+            false,
+            Action::File(FileCommand::ExportElevationsDxf),
+            out,
+        );
+        live(
+            ui,
+            "Construction Set PDF\u{2026}",
+            "",
+            false,
+            Action::CreateConstructionSet,
+            out,
+        );
+        live(
+            ui,
+            "glTF\u{2026}",
+            "",
+            false,
+            Action::View3d(View3dCommand::ExportGltf),
+            out,
+        );
+    });
+    ui.menu_button("Import", |ui| {
+        live(
+            ui,
+            "Import Drawing (DXF)\u{2026}",
+            "",
+            false,
+            Action::File(FileCommand::ImportDxf),
+            out,
+        );
+    });
+    inert(ui, &["Print>", "-", "Send to Layout\u{2026}\tS, L", "-"]);
     live(ui, "Quit", "", false, Action::Quit, out);
 }
 
@@ -349,6 +389,15 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             cmd(C::Tool(V::BackClippedSection)),
             out,
         );
+        ui.separator();
+        live(
+            ui,
+            "Export Elevations (DXF)\u{2026}",
+            "",
+            false,
+            Action::File(FileCommand::ExportElevationsDxf),
+            out,
+        );
     });
     ui.menu_button("Create Perspective View", |ui| {
         live(
@@ -420,7 +469,7 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     live(
         ui,
         "3D View Defaults\u{2026}",
-        "\u{2318}1",
+        &state.hotkey("3D View Defaults", "\u{2318}1"),
         false,
         cmd(C::Defaults),
         out,
@@ -459,8 +508,15 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "CAD Detail Management\u{2026}",
             "CAD Detail From View",
             "-",
-            "CAD to Walls\u{2026}",
         ],
+    );
+    live(
+        ui,
+        "CAD to Walls\u{2026}",
+        "",
+        false,
+        Action::File(FileCommand::CadToWalls),
+        out,
     );
 }
 
@@ -537,6 +593,15 @@ fn tools_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
             "",
             false,
             Action::CreateConstructionSet,
+            out,
+        );
+        ui.separator();
+        live(
+            ui,
+            "Framing Takeoff\u{2026}",
+            "",
+            false,
+            Action::Framing(FramingCommand::Takeoff),
             out,
         );
     });
@@ -701,9 +766,25 @@ fn view_menu(
 
 fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     inert(ui, &["Zoom\t\u{21E7}Z"]);
-    live(ui, "Zoom Out", "-", false, Action::ZoomOut, out);
-    live(ui, "Zoom In", "+", false, Action::ZoomIn, out);
-    live(ui, "Undo Zoom", "", false, Action::UndoZoom, out);
+    // Daniel's "-" is Zoom In; the labels follow the live hotkey map.
+    let key = |name: &str| state.hotkey(name, "");
+    live(
+        ui,
+        "Zoom Out",
+        &key("Zoom Out"),
+        false,
+        Action::ZoomOut,
+        out,
+    );
+    live(ui, "Zoom In", &key("Zoom In"), false, Action::ZoomIn, out);
+    live(
+        ui,
+        "Undo Zoom",
+        &key("Undo Zoom"),
+        false,
+        Action::UndoZoom,
+        out,
+    );
     inert(
         ui,
         &["Fill Window Building Only", "Fill Window Selected Objects"],
@@ -711,7 +792,7 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     live(
         ui,
         "Fill Window",
-        "\u{2303}F",
+        &state.hotkey("Fill Window", "\u{2303}F"),
         false,
         Action::FillWindow,
         out,
@@ -719,7 +800,7 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     live(
         ui,
         "Pan Window",
-        "H",
+        &state.hotkey("Pan Window", "H"),
         state.tool == ToolId::Pan,
         Action::TogglePan,
         out,

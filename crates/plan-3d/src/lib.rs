@@ -10,6 +10,7 @@ mod casing;
 mod doors;
 mod frame;
 pub mod gltf;
+pub mod import;
 mod leaf;
 mod mesh;
 mod opening;

@@ -12,12 +12,16 @@
 //! * A **sequence** is one to four [`Chord`]s (`D, H`). A command may have
 //!   several sequences.
 //! * Qt-to-Mac modifier swap: `plan-config` already stores the physical Mac
-//!   meaning (`ctrl` = Control, `meta` = Command); [`Chord`] keeps it.
+//!   meaning (`ctrl` = Control, `meta` = Command); [`Chord`] keeps it. Where
+//!   there is no Command key (Windows, Linux) Chief's "Ctrl" (= Command)
+//!   becomes the Control key and the Mac Control modifier folds into it
+//!   ([`platform_modifiers`]), so `meta` then stands for the Control key.
 //!
 //! [`handle`] is the per-frame entry point used by `main.rs`; it keeps the
 //! 1.5 s multi-key buffer.
 
 use crate::editor::EditorContext;
+use crate::shell::view3d_panel::View3dCommand;
 use crate::toolbar::{self, Action, Binding, Slot, Toolbars, ViewFlag, BINDINGS, SEQUENCE_TIMEOUT};
 use eframe::egui::{self, Key, Modifiers};
 use plan_config::KeyChord;
@@ -28,6 +32,28 @@ use std::time::Instant;
 
 /// The longest key sequence Chief (and the dialog) allows.
 pub const MAX_SEQUENCE: usize = 4;
+
+/// The modifiers a chord keeps on a platform. macOS has both Control and
+/// Command, so they stay as they are. Elsewhere there is no Command key:
+/// Chief's "Ctrl" (the `meta` flag) is the Control key and the Mac Control
+/// flag has no key of its own, so both fold into `meta` and `ctrl` is never
+/// set. Returns `(ctrl, meta)`.
+pub fn platform_modifiers(ctrl: bool, meta: bool, mac: bool) -> (bool, bool) {
+    if mac {
+        (ctrl, meta)
+    } else {
+        (false, ctrl || meta)
+    }
+}
+
+/// `Cmd+` in a chord label is `Ctrl+` where there is no Command key.
+pub fn label_for_platform(text: &str, mac: bool) -> String {
+    if mac {
+        text.to_string()
+    } else {
+        text.replace("Cmd+", "Ctrl+")
+    }
+}
 
 /// One key press with modifiers: `ctrl` is the Control key, `meta` the
 /// Command key (the Control key stands in for it on other platforms).
@@ -43,10 +69,12 @@ pub struct Chord {
 impl Chord {
     /// The chord an egui key press stands for.
     pub fn from_event(key: Key, m: &Modifiers) -> Chord {
-        #[cfg(target_os = "macos")]
-        let (ctrl, meta) = (m.ctrl, m.mac_cmd);
-        #[cfg(not(target_os = "macos"))]
-        let (ctrl, meta) = (false, m.command);
+        // egui's `command` is the Command key on macOS and Control elsewhere.
+        let (ctrl, meta) = if cfg!(target_os = "macos") {
+            (m.ctrl, m.mac_cmd)
+        } else {
+            platform_modifiers(m.ctrl, m.command, false)
+        };
         Chord {
             ctrl,
             alt: m.alt,
@@ -59,11 +87,12 @@ impl Chord {
     /// From `plan-config`'s chord; `None` when the key has no egui key.
     pub fn from_config(c: &KeyChord) -> Option<Chord> {
         let (key, implied_shift) = key_from_name(&c.key)?;
+        let (ctrl, meta) = platform_modifiers(c.ctrl, c.meta, cfg!(target_os = "macos"));
         Some(Chord {
-            ctrl: c.ctrl,
+            ctrl,
             alt: c.alt,
             shift: c.shift || implied_shift,
-            meta: c.meta,
+            meta,
             key,
         })
     }
@@ -82,7 +111,7 @@ impl Chord {
 /// `D, H` style text for a sequence.
 pub fn sequence_label(seq: &[Chord]) -> String {
     let keys: Vec<KeyChord> = seq.iter().copied().map(Chord::to_config).collect();
-    format_sequence(&keys)
+    label_for_platform(&format_sequence(&keys), cfg!(target_os = "macos"))
 }
 
 fn key_name(k: Key) -> String {
@@ -165,6 +194,11 @@ fn extra_commands() -> Vec<Command> {
             "View",
             "Reference Grid",
             Action::ToggleFlag(ViewFlag::ReferenceGrid),
+        ),
+        c(
+            "3D",
+            "3D View Defaults",
+            Action::View3d(View3dCommand::Defaults),
         ),
         c("Tools", "Current Wall Tool", Action::CurrentWall),
         c("Tools", "Customize Hotkeys", Action::OpenHotkeyDialog),
@@ -280,13 +314,14 @@ pub struct HotkeyMap {
 
 /// The chord sequence a `toolbar::Binding` stands for.
 fn binding_sequence(b: &Binding) -> Vec<Chord> {
+    let (ctrl, meta) = platform_modifiers(b.ctrl, b.command, cfg!(target_os = "macos"));
     b.keys
         .iter()
         .map(|k| Chord {
-            ctrl: b.ctrl,
+            ctrl,
             alt: false,
             shift: b.shift,
-            meta: b.command,
+            meta,
             key: *k,
         })
         .collect()
@@ -478,7 +513,7 @@ impl HotkeyMap {
 
     /// Writes `~/.plan-studio/hotkeys.json`.
     pub fn save(&self) -> Result<(), String> {
-        let path = user_path().ok_or("HOME is not set")?;
+        let path = user_path().ok_or(crate::paths::NO_HOME)?;
         self.save_to(&path)
     }
 
@@ -607,14 +642,9 @@ fn push_unique(list: &mut Vec<Vec<Chord>>, seq: Vec<Chord>) {
     }
 }
 
-/// `~/.plan-studio/hotkeys.json`, or `None` when `HOME` is unset.
+/// `~/.plan-studio/hotkeys.json`, or `None` when no home directory is known.
 pub fn user_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join(".plan-studio")
-            .join("hotkeys.json"),
-    )
+    crate::paths::user_file("hotkeys.json")
 }
 
 // ----- the per-frame state machine -----
@@ -743,6 +773,24 @@ mod tests {
     use super::*;
     use crate::tools::ToolId;
     use std::time::Duration;
+
+    #[test]
+    fn modifiers_fold_without_a_command_key() {
+        // macOS keeps both.
+        assert_eq!(platform_modifiers(true, true, true), (true, true));
+        assert_eq!(platform_modifiers(false, true, true), (false, true));
+        // Elsewhere Chief's Ctrl (= Command) is the Control key, and the Mac
+        // Control flag folds into it.
+        assert_eq!(platform_modifiers(false, true, false), (false, true));
+        assert_eq!(platform_modifiers(true, false, false), (false, true));
+        assert_eq!(platform_modifiers(true, true, false), (false, true));
+        assert_eq!(platform_modifiers(false, false, false), (false, false));
+        assert_eq!(
+            label_for_platform("Cmd+S, Shift+Cmd+Z", false),
+            "Ctrl+S, Shift+Ctrl+Z"
+        );
+        assert_eq!(label_for_platform("Cmd+S", true), "Cmd+S");
+    }
 
     fn plain(key: Key) -> Chord {
         Chord {

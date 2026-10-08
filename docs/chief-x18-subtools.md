@@ -3,8 +3,11 @@
 Captured 2026-10-07 from Chief Architect Premier X18's *Customize Hotkeys*
 dialog (Tools ▸ Toolbars and Hotkeys), which names every command as
 `<Group> Tools – <Variant>`. Each group below is one toolbar flyout and one
-Build/CAD menu submenu. Hotkeys are Chief's macOS defaults (⌃ control,
-⌥ option, ⇧ shift, ⌘ command; `D, H` means press D then H). Lists are
+Build/CAD menu submenu. The hotkeys shown are **Daniel's customized
+bindings**, as the dialog showed them on his machine (⌃ control, ⌥ option,
+⇧ shift, ⌘ command; `D, H` means press D then H). They are not Chief's factory
+defaults: for example the factory Hinged Door is ⇧E and the factory Straight
+Exterior Wall is `W`, where Daniel's file has `D, H` and ⇧Q. Lists are
 alphabetical as the dialog shows them; the Build menu orders them by
 workflow instead. Groups marked † were cut off by the dialog's visible rows
 and may have a few more entries.
@@ -172,7 +175,8 @@ Tile Vertically ⇧F6. **Snap Tools:** Endpoint · Midpoint · Points/Markers ·
 
 - Every group above becomes one `Flyout` in `crates/plan-app/src/toolbar.rs`
   with the entries in Build-menu order and the hotkeys shown in tooltips.
-- Hotkeys that are single letters or ⇧+letter (⇧Q, ⌃⌥⌘6, ⇧W, `D, H`, ⇧T,
-  `T`, ⌘T, ⇧Y, ⇧X, `Q`, `Y`, `K`, ⇧P, ⇧A, `H`, ⌃F) are honored first; the
-  four-modifier chords are documented but not bound.
+- Daniel's hotkeys are the ones bound (`shell/hotkeys.rs` loads his Chief file on
+  top of the base table; see `chief-hotkeys-resolved.md`): single letters,
+  ⇧+letter and the multi-modifier chords alike. Off macOS, Chief's Ctrl/Command
+  becomes Control and the chords read `Ctrl+Alt+...`.
 - The Build and CAD menus are generated from the same tables.

@@ -33,27 +33,12 @@ use eframe::egui::{self, Rect, Stroke};
 use plan_core::cad::{CadItem, TEXT_WIDTH_FACTOR};
 use plan_core::geometry::Point;
 use plan_core::Id;
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// Layer of text and annotations (TXT-11).
 pub const TEXT_LAYER: &str = "Text";
 /// Prefix of note texts; see [`note_text`].
 pub const NOTE_PREFIX: &str = "Note ";
-
-thread_local! {
-    static REQUESTED: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Asks for a variant (by Chief's name, e.g. "Leader Line") the next time the
-/// Text tool is activated or re-picked.
-pub fn request_variant(name: &str) {
-    REQUESTED.with(|r| *r.borrow_mut() = Some(name.to_string()));
-}
-
-fn take_requested() -> Option<String> {
-    REQUESTED.with(|r| r.borrow_mut().take())
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TextMode {
@@ -668,9 +653,9 @@ impl Tool for TextTool {
         egui::CursorIcon::Text
     }
 
-    fn set_variant(&mut self, _id: ToolId) {
-        if let Some(name) = take_requested() {
-            self.set_mode_by_name(&name);
+    fn set_variant(&mut self, id: ToolId) {
+        if let ToolId::TextVariant(m) = id {
+            self.set_mode(m);
         }
     }
 
@@ -1203,8 +1188,7 @@ mod tests {
         let mut t = TextTool::default();
         assert!(t.set_mode_by_name("leader line"));
         assert_eq!(t.mode(), TextMode::LeaderLine);
-        request_variant("Callout");
-        t.set_variant(ToolId::Text);
+        t.set_variant(ToolId::TextVariant(TextMode::Callout));
         assert_eq!(t.mode(), TextMode::Callout);
         for m in TextMode::ALL {
             assert_eq!(TextMode::from_name(m.name()), Some(m));

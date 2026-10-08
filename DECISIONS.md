@@ -12,7 +12,10 @@ answers; each item notes the assumption currently built into the code.
 
 ## Queued work (not decisions, just the running order)
 
-1. Hotkeys: bind Chief's full hotkey table (all chords) plus Daniel's custom
-   hotkeys from his Chief data folder; add Tools ▸ Customize Hotkeys dialog.
+1. ~~Hotkeys: bind Chief's full hotkey table (all chords) plus Daniel's custom
+   hotkeys from his Chief data folder; add Tools ▸ Customize Hotkeys dialog.~~
+   **Done** (2026-10-08): the base table, Daniel's Chief hotkeys (embedded) and
+   the Customize Hotkeys dialog with `~/.plan-studio/hotkeys.json`; chords fold
+   to Ctrl where there is no Command key.
 2. Round 2 editing engine from docs/parity/select-and-edit.md and walls.md.
 3. 3D view integration (plan-view3d) with Chief's camera tools.

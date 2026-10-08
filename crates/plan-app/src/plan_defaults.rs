@@ -16,14 +16,9 @@ pub fn embedded() -> PlanDefaults {
     PlanDefaults::from_json(EMBEDDED_TEMPLATE).unwrap_or_else(|_| PlanDefaults::chief_x18_daniel())
 }
 
-/// `~/.plan-studio/defaults.json`, or `None` when `HOME` is unset.
+/// `~/.plan-studio/defaults.json`, or `None` when no home directory is known.
 pub fn user_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join(".plan-studio")
-            .join("defaults.json"),
-    )
+    crate::paths::user_file("defaults.json")
 }
 
 /// The user's saved defaults if present, else the embedded template. The
@@ -46,7 +41,7 @@ pub fn load() -> (PlanDefaults, Option<String>) {
 
 /// Writes `d` as the user's template.
 pub fn save_user(d: &PlanDefaults) -> Result<PathBuf, String> {
-    let path = user_path().ok_or("HOME is not set")?;
+    let path = user_path().ok_or(crate::paths::NO_HOME)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }

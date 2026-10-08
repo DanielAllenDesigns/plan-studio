@@ -3,7 +3,9 @@
 //! highlights. Layer visibility comes from `project.layers`. Tools draw their
 //! own overlays on top (`Tool::draw_overlay`).
 
+use super::restyle;
 use super::selection::ObjectRef;
+use super::sheet;
 use super::snap::{SnapKind, SnapResult};
 use super::{Camera, EditorContext};
 use crate::theme::Palette;
@@ -17,7 +19,10 @@ use plan_core::{Dimension, DimensionKind, Opening, OpeningKind, Wall, WallKind};
 pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     let pal = &cx.palette;
     painter.rect_filled(cam.rect, 0.0, pal.background);
+    // Everything from here to the highlights goes through View > Color.
+    let content = restyle::mark(painter);
     draw_grid(cx, painter, cam);
+    draw_reference_floor(cx, painter, cam);
     crate::editor::site_view::draw_site(cx, painter, cam);
     draw_rooms(cx, painter, cam);
     crate::editor::stairs_view::draw_stairs(cx, painter, cam);
@@ -28,36 +33,47 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     for wall in &floor.walls {
         for o in floor.openings_on(wall.id) {
             if cx.layers().is_visible(opening_layer(o)) {
-                draw_opening(painter, cam, wall, o, pal, false);
+                weighted(cx, painter, opening_layer(o), || {
+                    draw_opening(painter, cam, wall, o, pal, false)
+                });
             }
         }
     }
     // Devices sit on the wall faces: over the wall fill and the openings.
     crate::editor::site_view::draw_devices(cx, painter, cam);
-    let fmt = cx.defaults.dim_format();
+    crate::editor::framing_view::draw(cx, painter, cam);
+    let fmt = cx.dim_format();
     for d in &floor.dimensions {
         let layer = match d.kind {
             DimensionKind::AutoExterior => "Dimensions, Automatic",
             _ => "Dimensions, Manual",
         };
         if cx.layers().is_visible(layer) {
-            draw_dimension(
-                painter,
-                cam,
-                d,
-                &fmt,
-                Stroke::new(1.0_f32, pal.dimension_text),
-                pal,
-            );
+            weighted(cx, painter, layer, || {
+                draw_dimension(
+                    painter,
+                    cam,
+                    d,
+                    &fmt,
+                    Stroke::new(1.0_f32, pal.dimension_text),
+                    pal,
+                )
+            });
         }
     }
     for c in &floor.cad {
         if cx.layers().is_visible(&c.layer) {
-            draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal);
+            weighted(cx, painter, &c.layer, || {
+                draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
+            });
         }
     }
     crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam);
     crate::tools::camera::draw_camera_symbols(cx, painter, cam, None);
+    draw_sheet(cx, painter, cam);
+    if !cx.view_flags.contains(&ViewFlag::Color) {
+        restyle::restyle_from(painter, content, restyle::monochrome);
+    }
     if let Some(h) = cx.hover.filter(|h| !cx.selection.contains(*h)) {
         highlight(cx, painter, cam, h, Stroke::new(2.0_f32, pal.hover));
     }
@@ -146,7 +162,9 @@ fn draw_rooms(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     let show_label = cx.layers().is_visible("Room Labels");
     for room in &cx.rooms {
         if show_outline {
-            painter.add(Shape::closed_line(quad(cam, &room.polygon), outline));
+            weighted(cx, painter, "Rooms", || {
+                painter.add(Shape::closed_line(quad(cam, &room.polygon), outline));
+            });
         }
         if show_label {
             painter.text(
@@ -170,45 +188,138 @@ fn wall_polygon(cx: &EditorContext, wall: &Wall) -> Vec<Point> {
 }
 
 fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    let pal = &cx.palette;
-    // Below this zoom the layer lines would just turn into a smear.
-    let show_layers = cam.px_per_in >= 1.0;
     for wall in &cx.floor().walls {
         // Invisible walls (stairwell dividers) are room boundaries only.
         if wall.flags.invisible || !cx.layers().is_visible(&wall.layer) {
             continue;
         }
-        let fill = match wall.kind {
-            WallKind::Exterior => pal.wall_fill_exterior,
-            WallKind::Interior => pal.wall_fill_interior,
-        };
-        // The mitered outline: fill and heavy edge of the whole wall.
-        painter.add(Shape::convex_polygon(
-            quad(cam, &wall_polygon(cx, wall)),
-            fill,
-            Stroke::new(1.0_f32, pal.wall_stroke),
-        ));
-        if !show_layers {
-            continue;
+        weighted(cx, painter, &wall.layer, || {
+            draw_one_wall(cx, painter, cam, wall)
+        });
+    }
+}
+
+fn draw_one_wall(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall: &Wall) {
+    let pal = &cx.palette;
+    // Below this zoom the layer lines would just turn into a smear.
+    let show_layers = cam.px_per_in >= 1.0;
+    let fill = match wall.kind {
+        WallKind::Exterior => pal.wall_fill_exterior,
+        WallKind::Interior => pal.wall_fill_interior,
+    };
+    // The mitered outline: fill and heavy edge of the whole wall.
+    painter.add(Shape::convex_polygon(
+        quad(cam, &wall_polygon(cx, wall)),
+        fill,
+        Stroke::new(1.0_f32, pal.wall_stroke),
+    ));
+    if !show_layers {
+        return;
+    }
+    // Chief's plan view of a wall type: every layer boundary as a thin
+    // line, the main layer filled darker with heavier faces.
+    let thin = Stroke::new(0.75_f32, pal.wall_stroke);
+    let heavy = Stroke::new(1.5_f32, pal.wall_stroke);
+    let main_fill = crate::theme::scale(fill, 0.78);
+    for l in cx.layer_outlines.iter().filter(|l| l.wall_id == wall.id) {
+        let pts = quad(cam, &l.polygon);
+        if l.is_main {
+            painter.add(Shape::convex_polygon(pts.clone(), main_fill, Stroke::NONE));
         }
-        // Chief's plan view of a wall type: every layer boundary as a thin
-        // line, the main layer filled darker with heavier faces.
-        let thin = Stroke::new(0.75_f32, pal.wall_stroke);
-        let heavy = Stroke::new(1.5_f32, pal.wall_stroke);
-        let main_fill = crate::theme::scale(fill, 0.78);
-        for l in cx.layer_outlines.iter().filter(|l| l.wall_id == wall.id) {
-            let pts = quad(cam, &l.polygon);
-            if l.is_main {
-                painter.add(Shape::convex_polygon(pts.clone(), main_fill, Stroke::NONE));
-            }
-            painter.add(Shape::closed_line(pts.clone(), thin));
-            if l.is_main && pts.len() == 4 {
-                // Start-left to end-left and end-right to start-right.
-                painter.line_segment([pts[0], pts[1]], heavy);
-                painter.line_segment([pts[2], pts[3]], heavy);
-            }
+        painter.add(Shape::closed_line(pts.clone(), thin));
+        if l.is_main && pts.len() == 4 {
+            // Start-left to end-left and end-right to start-right.
+            painter.line_segment([pts[0], pts[1]], heavy);
+            painter.line_segment([pts[2], pts[3]], heavy);
         }
     }
+}
+
+/// Runs `draw` and, with View > Line Weights on, scales the stroke widths it
+/// produced by the line weight of `layer` (0.25 mm is the base width).
+fn weighted(cx: &EditorContext, painter: &egui::Painter, layer: &str, draw: impl FnOnce()) {
+    if !cx.view_flags.contains(&ViewFlag::LineWeights) {
+        draw();
+        return;
+    }
+    let start = restyle::mark(painter);
+    draw();
+    if let Some(l) = cx.layers().get(layer) {
+        let k = restyle::weight_factor(l.line_weight);
+        if (k - 1.0).abs() > 1e-3 {
+            restyle::restyle_from(painter, start, |s| restyle::scale_widths(s, k));
+        }
+    }
+}
+
+/// The walls of the floor below as plan polygons (View > Reference Display).
+/// Nothing on the lowest floor.
+pub fn reference_polygons(cx: &EditorContext) -> Vec<Vec<Point>> {
+    if !cx.view_flags.contains(&ViewFlag::ReferenceDisplay) || cx.floor == 0 {
+        return Vec::new();
+    }
+    cx.project.floors[cx.floor - 1]
+        .walls
+        .iter()
+        .filter(|w| !w.flags.invisible && cx.layers().is_visible(&w.layer))
+        .map(|w| w.footprint().to_vec())
+        .collect()
+}
+
+/// Reference Display: the floor below, walls only, in gray.
+fn draw_reference_floor(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let fill = Color32::from_rgba_unmultiplied(128, 128, 128, 70);
+    let edge = Stroke::new(
+        0.75_f32,
+        Color32::from_rgba_unmultiplied(128, 128, 128, 170),
+    );
+    for poly in reference_polygons(cx) {
+        painter.add(Shape::convex_polygon(quad(cam, &poly), fill, edge));
+    }
+}
+
+/// The parts of `clip` that lie outside `sheet` (up to four rectangles).
+pub fn outside_rects(clip: Rect, sheet: Rect) -> Vec<Rect> {
+    let s = sheet.intersect(clip);
+    if s.width() <= 0.0 || s.height() <= 0.0 {
+        return vec![clip];
+    }
+    [
+        Rect::from_min_max(clip.min, Pos2::new(clip.max.x, s.min.y)),
+        Rect::from_min_max(Pos2::new(clip.min.x, s.max.y), clip.max),
+        Rect::from_min_max(Pos2::new(clip.min.x, s.min.y), Pos2::new(s.min.x, s.max.y)),
+        Rect::from_min_max(Pos2::new(s.max.x, s.min.y), Pos2::new(clip.max.x, s.max.y)),
+    ]
+    .into_iter()
+    .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+    .collect()
+}
+
+/// View > Drawing Sheet: the active layout's sheet outline, centered on the
+/// plan. View > Print Preview additionally grays out everything outside it.
+fn draw_sheet(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let sheet_on = cx.view_flags.contains(&ViewFlag::DrawingSheet);
+    let preview = cx.view_flags.contains(&ViewFlag::PrintPreview);
+    if !sheet_on && !preview {
+        return;
+    }
+    let (lo, hi) = cx.sheet.rect_around(sheet::plan_center(cx.floor()));
+    let rect = Rect::from_two_pos(cam.world_to_screen(lo), cam.world_to_screen(hi));
+    if preview {
+        let shade = Color32::from_black_alpha(150);
+        for r in outside_rects(cam.rect, rect) {
+            painter.rect_filled(r, 0.0, shade);
+        }
+    }
+    let stroke = Stroke::new(1.5_f32, cx.palette.text.gamma_multiply(0.8));
+    painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+    painter.text(
+        rect.left_top() + Vec2::new(6.0, 4.0),
+        Align2::LEFT_TOP,
+        cx.sheet.caption(),
+        FontId::proportional(12.0),
+        cx.palette.text.gamma_multiply(0.8),
+    );
 }
 
 /// Outline of `wall` (following the mitered corners) in `stroke`.
@@ -583,5 +694,93 @@ mod tests {
                 }
             });
         });
+    }
+
+    #[test]
+    fn outside_rects_cover_the_clip_minus_the_sheet() {
+        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 80.0));
+        let sheet = Rect::from_min_max(Pos2::new(20.0, 10.0), Pos2::new(70.0, 60.0));
+        let rects = outside_rects(clip, sheet);
+        let area: f32 = rects.iter().map(|r| r.width() * r.height()).sum();
+        assert!((area - (100.0 * 80.0 - 50.0 * 50.0)).abs() < 1e-3);
+        assert!(rects.iter().all(|r| !r.intersects(sheet.shrink(0.5))));
+        // A sheet beyond the view shades nothing; one off-screen shades all.
+        assert!(outside_rects(clip, clip.expand(10.0)).is_empty());
+        assert_eq!(
+            outside_rects(clip, clip.translate(Vec2::new(500.0, 0.0))),
+            vec![clip]
+        );
+    }
+
+    #[test]
+    fn reference_display_shows_the_floor_below_only() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project.build_new_floor(false);
+        cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(120.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        cx.floor = 1;
+        assert!(reference_polygons(&cx).is_empty(), "flag off");
+        cx.view_flags.insert(ViewFlag::ReferenceDisplay);
+        assert_eq!(reference_polygons(&cx).len(), 1);
+        cx.floor = 0;
+        assert!(
+            reference_polygons(&cx).is_empty(),
+            "nothing below the first floor"
+        );
+    }
+
+    /// With the flags on the plan still draws, and Color off leaves only
+    /// gray strokes on the walls.
+    #[test]
+    fn view_toggles_restyle_the_plan() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        cx.refresh();
+        let colored = |cx: &EditorContext| {
+            let mut found = false;
+            let egui_ctx = egui::Context::default();
+            let _ = egui_ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (_, painter) =
+                        ui.allocate_painter(Vec2::new(400.0, 300.0), egui::Sense::hover());
+                    let mut cam = Camera::default_view();
+                    cam.rect = painter.clip_rect();
+                    draw_plan(cx, &painter, &cam);
+                    painter.for_each_shape(|cs| {
+                        if let Shape::LineSegment { stroke, .. } = &cs.shape {
+                            let c = stroke.color;
+                            if c.a() > 0 && !(c.r() == c.g() && c.g() == c.b()) {
+                                found = true;
+                            }
+                        }
+                    });
+                });
+            });
+            found
+        };
+        assert!(colored(&cx), "the origin marker is red in color mode");
+        cx.view_flags.remove(&ViewFlag::Color);
+        assert!(!colored(&cx), "everything is gray with Color off");
+        cx.view_flags.extend([
+            ViewFlag::Color,
+            ViewFlag::LineWeights,
+            ViewFlag::DrawingSheet,
+            ViewFlag::PrintPreview,
+            ViewFlag::ReferenceDisplay,
+        ]);
+        let _ = colored(&cx);
     }
 }

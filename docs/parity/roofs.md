@@ -310,21 +310,7 @@ underlayment, ridge cap, gutters, fascia) and the roof pitch diagram.
 
 ## 10. Plan Studio today
 
-- `plan_roof::build_roof(footprint, edges: &[EdgeRoof], baseline_elevation)`
-  computes a weighted straight skeleton of an overhang-offset footprint and
-  returns `Roof { planes: Vec<RoofPlane>, fascia_height: 6", approximate }`.
-  Edge kinds are `Hip`, `Gable` (no plane, vertical) and `Shed` (like Gable).
-  `EdgeRoof { pitch_in_12, kind, overhang }`; defaults 8:12, Hip, 16".
-- `footprint_from_walls` finds the outer boundary of **all wall centerlines**
-  (one building, dangling walls pruned); overhang and baselines are therefore
-  measured from the centerline, not the outer surface.
-- A bounding-box hip roof is the fallback when the skeleton fails.
-- Nothing connects roofs to the model: `Wall` has no roof fields, `Floor` holds
-  no roof, and `plan_3d::build_scene` never meshes `RoofPlane`s. No UI, no Build
-  Roof dialog, no auto-rebuild.
-- Not present: Dutch gable, high shed, knee wall, upper pitch/break, roof
-  returns, multiple roof levels, manual planes, join, holes, skylights,
-  gable lines, dormers, ceiling planes, attic walls, roof framing, eave cuts.
+`plan-roof` builds roofs and the editor drives it: Build Roof (with auto rebuild), Roof Plane, edit, Gable/Roof Line, Roof Hole and Skylight tools, a Roof Specification dialog, the Edit toolbar's Rebuild Roofs, and roof planes in the 3D view. Walls carry roof directives in the model; Build Roof takes its default pitch and overhang from the exterior wall defaults. Planes are stored per floor in a hidden CAD data layer (`Roof Planes, Data`) with a visible outline layer, so they save, undo and export with the plan. Roof framing is available from Build > Framing (rafters, ridge, hips, valleys, collar ties, ceiling joists or trusses). Missing: Dutch gable, high shed, knee wall, dormers (Auto Dormer, Auto Floating Dormer), Join Roof Planes, ceiling planes, gutters, fascia and soffit, roof holes cut in 3D. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## 11. Gap table
 

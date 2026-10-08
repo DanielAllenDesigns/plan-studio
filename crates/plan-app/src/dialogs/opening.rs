@@ -366,6 +366,12 @@ impl OpeningDialog {
         &self.form.draft
     }
 
+    /// Tests edit the draft as the form's controls would.
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut Opening {
+        &mut self.form.draft
+    }
+
     pub fn extras(&self) -> &OpeningExtras {
         &self.form.extras
     }
@@ -542,10 +548,16 @@ impl OpeningForm {
 
     fn door_options(&mut self, ui: &mut Ui) {
         section(ui, "Door Swing");
-        row(ui, "Hinge side", |ui| {
+        row(ui, "Swing side", |ui| {
             ui.radio_value(&mut self.draft.swing_flipped, false, "Left")
-                .on_hover_text("Hinge on the wall-start jamb");
+                .on_hover_text("Swings to the wall's normal side");
             ui.radio_value(&mut self.draft.swing_flipped, true, "Right")
+                .on_hover_text("Swings to the other side of the wall (flipped)");
+        });
+        row(ui, "Hinge side", |ui| {
+            ui.radio_value(&mut self.draft.hinge_at_end, false, "Start")
+                .on_hover_text("Hinge on the wall-start jamb");
+            ui.radio_value(&mut self.draft.hinge_at_end, true, "End")
                 .on_hover_text("Hinge on the wall-end jamb");
         });
         row(ui, "Swing Angle", |ui| {
@@ -897,7 +909,7 @@ fn door_elevation(p: &Painter, area: Rect, o: &Opening, style: usize) {
     p.hline(area.x_range(), floor_y, Stroke::new(1.0_f32, PV_INK));
     // Casing/jamb around the leaf.
     outlined(p, r.expand(3.0), PV_TRIM);
-    let hinge_left = !o.swing_flipped;
+    let hinge_left = !o.hinge_at_end;
     match style {
         // Sliding: two overlapping leaves with lites and an arrow.
         1 => {

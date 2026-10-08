@@ -16,8 +16,8 @@ use super::library_browser::{self, LibraryBrowserState, LibraryEvent};
 use crate::dialogs::hotkeys::HotkeyDialog;
 use crate::dialogs::layer_display::LayerDisplayDialog;
 use crate::dialogs::Outcome;
-use crate::editor::EditorContext;
-use crate::toolbar::Dock;
+use crate::editor::{EditorContext, ObjectRef};
+use crate::toolbar::{Action, Dock};
 use crate::tools::ToolId;
 use eframe::egui::{self, Color32, Sense, Stroke, Vec2};
 use plan_core::{DimensionKind, Layer, LineStyle, OpeningKind, Project};
@@ -28,6 +28,12 @@ use std::collections::HashMap;
 pub enum DockRequest {
     SetTool(ToolId),
     SwitchFloor(usize),
+    /// Select a camera object, show its floor and pan the plan to it.
+    SelectCamera(plan_core::Id),
+    /// Activate the saved plan view at this index of `Project::plan_views`.
+    ActivatePlanView(usize),
+    /// Run a menu action (the Layout section's Create Construction Set).
+    Run(crate::toolbar::Action),
 }
 
 /// State of the layer table (the dock and the modal share the widget).
@@ -492,6 +498,50 @@ fn selected_layer_properties(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut
 
 // ----- project browser -----
 
+/// A camera's row in the Project Browser.
+fn camera_label(cam: &plan_core::CameraObject) -> String {
+    if cam.name.is_empty() {
+        format!("Camera {}", cam.id)
+    } else {
+        cam.name.clone()
+    }
+}
+
+fn saved_view_hint(view: &plan_core::SavedPlanView) -> String {
+    format!(
+        "Layer set: {}{}",
+        view.layer_set,
+        match view.floor {
+            Some(f) => format!("; floor {}", f + 1),
+            None => String::new(),
+        }
+    )
+}
+
+/// The Layout section: the active layout's sheet (what View > Drawing Sheet
+/// and Print Preview draw) and the construction set output.
+fn layout_section(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec<DockRequest>) {
+    ui.label("Active layout sheet");
+    egui::ComboBox::from_id_salt("pb_sheet_size")
+        .selected_text(cx.sheet.size.label())
+        .show_ui(ui, |ui| {
+            for s in plan_docs::SheetSize::ALL {
+                ui.selectable_value(&mut cx.sheet.size, s, s.label());
+            }
+        });
+    egui::ComboBox::from_id_salt("pb_sheet_scale")
+        .selected_text(cx.sheet.scale.label())
+        .show_ui(ui, |ui| {
+            for s in plan_docs::Scale::ALL {
+                ui.selectable_value(&mut cx.sheet.scale, s, s.label());
+            }
+        });
+    ui.weak("Shown by View > Drawing Sheet and Print Preview.");
+    if ui.button("Create Construction Set\u{2026}").clicked() {
+        requests.push(DockRequest::Run(Action::CreateConstructionSet));
+    }
+}
+
 fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec<DockRequest>) {
     egui::ScrollArea::vertical()
         .id_salt("project_browser")
@@ -519,28 +569,36 @@ fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec
                             if cx.project.cameras.is_empty() {
                                 ui.weak("None");
                             }
+                            let selected = cx.selection.single();
                             for cam in &cx.project.cameras {
-                                let name = if cam.name.is_empty() {
-                                    format!("Camera {}", cam.id)
-                                } else {
-                                    cam.name.clone()
-                                };
-                                ui.label(name);
+                                let current = selected == Some(ObjectRef::Camera(cam.id));
+                                let r = ui
+                                    .selectable_label(current, camera_label(cam))
+                                    .on_hover_text("Select the camera and pan the plan to it");
+                                if r.clicked() {
+                                    requests.push(DockRequest::SelectCamera(cam.id));
+                                }
                             }
                         });
                     egui::CollapsingHeader::new("Saved Views")
                         .id_salt("pb_views")
                         .default_open(true)
                         .show(ui, |ui| {
-                            let _ = ui.selectable_label(true, "Floor Plan View");
+                            for (i, view) in cx.project.plan_views.iter().enumerate() {
+                                let current = view.name == cx.project.active_plan_view;
+                                let r = ui
+                                    .selectable_label(current, &view.name)
+                                    .on_hover_text(saved_view_hint(view));
+                                if r.clicked() && !current {
+                                    requests.push(DockRequest::ActivatePlanView(i));
+                                }
+                            }
                         });
                 });
             egui::CollapsingHeader::new("Layout")
                 .id_salt("pb_layout")
                 .default_open(false)
-                .show(ui, |ui| {
-                    ui.weak("Layout pages: coming");
-                });
+                .show(ui, |ui| layout_section(ui, cx, requests));
         });
 }
 

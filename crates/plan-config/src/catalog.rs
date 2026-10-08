@@ -3,6 +3,7 @@
 
 use crate::chord::KeyChord;
 use crate::hotkeys::{HotkeyFile, NameSource};
+use crate::normalize_newlines;
 use crate::toolbar::ToolbarSet;
 use std::collections::BTreeMap;
 
@@ -353,6 +354,7 @@ fn process_segment(seg: &str, group: &mut Option<String>) -> Option<DocEntry> {
 /// lists, headings and Plan Studio design notes are skipped, which also means
 /// `chief-x18-toolbars.md` (all tables, no hotkeys) yields nothing.
 pub fn parse_hotkey_doc(text: &str) -> Vec<DocEntry> {
+    let text = normalize_newlines(text);
     let mut out = Vec::new();
     for par in text.split("\n\n") {
         let p = par.trim();

@@ -6,14 +6,7 @@ Reference Manual and documented behavior, plus `docs/chief-x18-subtools.md` and 
 
 ## 0. Plan Studio today (code snapshot)
 
-- Model (`plan-core/src/model.rs`): `Wall { id, start, end, thickness, height, kind: Exterior|Interior, layer }`. A wall is a single **centerline** segment with one thickness. No layer stack, no main layer, no wall type, no curved walls, no flags (invisible, pony, foundation, railing).
-- Drawing (`main.rs::handle_click`, `snap_wall_point`): click-click chain only. Each click after the first adds a wall and starts the next at the same point (`pending_start = Some(p)`). Min length 1". No click-drag draw, no typed length, no closing-loop detection. Right-click or Esc ends the chain.
-- Snapping while drawing: endpoint within 10 px, else grid (`snap_in`, 1" default), else 15 degree angle from the chain start with length rounded to `snap_in`. Alt disables the angle snap only.
-- Readout (`draw_rubber_band`): ghost footprint plus a length label (gated by Temporary Dimensions). No angle readout.
-- Joins: `plan-core/src/joins.rs::wall_outlines` implements mitered corners (2-wall endpoint match), T-junction trim/extend to the through wall's near face, square ends for collinear and 3+ junctions, miter limit 4 x thickness. **The app does not call it**: `draw_wall` draws `Wall::footprint()` (plain rectangles), so corners overlap/gap on screen.
-- Rooms: `rooms.rs::detect_rooms` splits centerlines at intersections and traces faces; min area 1 sq ft; labels are generic.
-- Wall flavors on the toolbar: only Straight Exterior and Straight Interior are live. All other wall flyout entries and Curved walls are `NotImplemented`.
-- Edit: no endpoint/move handles; `Project::move_wall_endpoint` and `translate_wall` exist in core but are not wired to the UI.
+Walls carry thickness, height, kind, layer, a wall type with a layer stack (Wall Type Definitions edits them), flags (invisible, no room definition, no locate, room divider, railing, half, pony, foundation, attic), roof directives and curves in the model. The editor draws exterior and interior straight walls by click chains or press-drag-release, with endpoint, midpoint, intersection and angle snaps, splitting at T-junctions, mitered corner and T joins with per-layer bands, and the Wall Specification dialog (General, Structure, Wall Types, Layer, Label; Invisible, No Room Definition and No Locate are stored on the wall). Select Objects moves, stretches and edits walls with connected-wall handling. Missing: curved, foundation, pony, half and glass walls as drawing tools, railing and deck walls as tools, typed length while drawing, Break Wall, Reverse Layers and the Fix Wall Connections button. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## 1. Tool activation and drawing modes
 

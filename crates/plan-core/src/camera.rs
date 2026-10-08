@@ -49,6 +49,9 @@ pub struct CameraObject {
     pub name: String,
     /// Index of the floor the camera was placed on.
     pub floor: usize,
+    /// Cut line of a cross section; replaces overloading `fov_deg`.
+    #[serde(default)]
+    pub section: Option<crate::extras::SectionLine>,
 }
 
 impl CameraObject {
@@ -71,6 +74,7 @@ impl CameraObject {
             clip_distance: None,
             name: name.into(),
             floor,
+            section: None,
         }
     }
 

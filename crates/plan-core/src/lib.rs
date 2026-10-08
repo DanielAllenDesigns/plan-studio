@@ -27,12 +27,15 @@
 //! * [`camera`]: camera objects placed in the plan.
 //! * [`symbols`]: placed library symbols and opaque cabinet/stair slots.
 //! * [`groups`]: object groups and the clipboard.
+//! * [`extras`]: typed room/opening/wall/section extras and the roof, electrical,
+//!   framing and terrain slots.
 
 pub mod cad;
 pub mod camera;
 pub mod defaults;
 pub mod dimension;
 pub mod export;
+pub mod extras;
 pub mod floors;
 pub mod geometry;
 pub mod groups;
@@ -50,9 +53,15 @@ pub mod walls;
 
 pub use cad::{CadItem, CadObject};
 pub use camera::{CameraKind, CameraObject};
-pub use defaults::{DimensionDefaultSet, PlanDefaults, WallLayer, WallTypeDef};
+pub use defaults::{
+    DimensionDefaultSet, EditingDefaults, PlanDefaults, WallConnectDefaults, WallLayer, WallTypeDef,
+};
 pub use dimension::{auto_exterior_dimensions, DimFormat, Dimension, DimensionKind};
 pub use export::dxf::write_dxf;
+pub use extras::{
+    AreaKind, MoldingKind, MoldingRef, OpeningExtras, RoomFill, RoomLabelOptions, SectionLine,
+    WallExtras,
+};
 pub use floors::{FloorKind, FoundationKind};
 pub use geometry::Point;
 pub use groups::{Clipboard, ObjectGroup, ObjectRef};

@@ -2,8 +2,8 @@
 //!
 //! One tool object with a mode per Chief dimension tool. `ToolId` has a
 //! single `Dimension` value, so the mode is chosen with
-//! [`DimensionTool::set_mode`], [`request_variant`] (called by whatever
-//! handles the flyout click before `ToolSet::set_active`) or the option strip
+//! [`DimensionTool::set_mode`], a `ToolId::DimensionVariant(mode)` payload
+//! (handled by `Tool::set_variant`) or the option strip
 //! drawn at the top of the canvas.
 //!
 //! * Manual / Centerline / Point to Point (DIM-11, DIM-15, DIM-19): click the
@@ -41,7 +41,6 @@ use plan_core::units::parse_ft_in;
 use plan_core::{
     auto_exterior_dimensions, wall_layer_bands, Dimension, DimensionKind, Id, Wall, WallEnd,
 };
-use std::cell::RefCell;
 use std::f64::consts::{PI, TAU};
 
 pub const MANUAL_LAYER: &str = "Dimensions, Manual";
@@ -54,20 +53,6 @@ const DRAG_PX: f32 = 4.0;
 const LOCATE_TOL: f64 = 0.75;
 /// Rooms smaller than this get no automatic interior dimensions (sq ft).
 const MIN_ROOM_SQ_FT: f64 = 10.0;
-
-thread_local! {
-    static REQUESTED: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Asks for a variant (by Chief's name, e.g. "End to End Dimension") the next
-/// time the Dimension tool is activated or re-picked.
-pub fn request_variant(name: &str) {
-    REQUESTED.with(|r| *r.borrow_mut() = Some(name.to_string()));
-}
-
-fn take_requested() -> Option<String> {
-    REQUESTED.with(|r| r.borrow_mut().take())
-}
 
 // ----- modes -----
 
@@ -433,8 +418,8 @@ pub struct Located {
     pub obj: Option<ObjectRef>,
 }
 
-fn no_locate(cx: &EditorContext, w: &Wall) -> bool {
-    w.flags.no_locate || cx.extras.walls.get(&w.id).is_some_and(|e| e.no_locate)
+fn no_locate(_cx: &EditorContext, w: &Wall) -> bool {
+    w.flags.no_locate
 }
 
 /// The main layer's lateral span `(lo, hi)` across the wall's thickness.
@@ -789,7 +774,7 @@ impl DimensionTool {
                         pts.push(h.point);
                     }
                 }
-                running_dimensions(&pts, place, &cx.defaults.dim_format())
+                running_dimensions(&pts, place, &cx.dim_format())
             }
             DimMode::Baseline if !self.pts.is_empty() => {
                 let origin = self.pts[0].point;
@@ -1514,9 +1499,9 @@ impl Tool for DimensionTool {
         egui::CursorIcon::Crosshair
     }
 
-    fn set_variant(&mut self, _id: ToolId) {
-        if let Some(name) = take_requested() {
-            self.set_mode_by_name(&name);
+    fn set_variant(&mut self, id: ToolId) {
+        if let ToolId::DimensionVariant(m) = id {
+            self.set_mode(m);
         }
     }
 
@@ -1685,7 +1670,7 @@ impl Tool for DimensionTool {
         let pal = &cx.palette;
         self.strip.draw(painter, cam, pal, &self.strip_items());
         let ghost = Stroke::new(1.0_f32, pal.ghost_stroke);
-        let fmt = cx.defaults.dim_format();
+        let fmt = cx.dim_format();
         let hover = self.hover.map(|h| h.point).unwrap_or(self.cursor);
 
         // Selected dimension handles.
@@ -1795,7 +1780,7 @@ impl DimensionTool {
     /// `place` is on the measured line the string sits one standard row away.
     fn build_running_final(&self, cx: &EditorContext, place: Point) -> Vec<Dimension> {
         let pts = self.clicked();
-        let fmt = cx.defaults.dim_format();
+        let fmt = cx.dim_format();
         let first = running_dimensions(&pts, place, &fmt);
         if first.first().is_some_and(|d| d.offset.abs() < 1.0) {
             let n = match dominant_axis(pts[0], pts[1]) {
@@ -2333,8 +2318,7 @@ mod tests {
         assert!(t.set_mode_by_name("end to end dimension"));
         assert_eq!(t.mode(), DimMode::EndToEnd);
         assert!(!t.set_mode_by_name("nope"));
-        request_variant("Tape Measure");
-        t.set_variant(ToolId::Dimension);
+        t.set_variant(ToolId::DimensionVariant(DimMode::TapeMeasure));
         assert_eq!(t.mode(), DimMode::TapeMeasure);
         for m in DimMode::ALL {
             assert_eq!(DimMode::from_name(m.name()), Some(m));

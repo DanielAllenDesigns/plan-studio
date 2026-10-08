@@ -6,6 +6,26 @@ const HOTKEYS_XML: &str = include_str!("../../../docs/chief-config-raw/UserHotke
 const DEFAULT_TOOLBAR: &str =
     include_str!("../../../docs/chief-config-raw/Default Configuration.toolbar");
 const TOOLBARS_DOC: &str = include_str!("../../../docs/chief-x18-toolbars.md");
+const SUBTOOLS_DOC: &str = include_str!("../../../docs/chief-x18-subtools.md");
+const MENUS_DOC: &str = include_str!("../../../docs/chief-x18-menus.md");
+const TOOLBAR_FILES: [(&str, &str); 4] = [
+    (
+        "Default Configuration",
+        include_str!("../../../docs/chief-config-raw/Default Configuration.toolbar"),
+    ),
+    (
+        "Extended Tool Configuration",
+        include_str!("../../../docs/chief-config-raw/Extended Tool Configuration.toolbar"),
+    ),
+    (
+        "Space Planning Configuration",
+        include_str!("../../../docs/chief-config-raw/Space Planning Configuration.toolbar"),
+    ),
+    (
+        "Terrain Configuration",
+        include_str!("../../../docs/chief-config-raw/Terrain Configuration.toolbar"),
+    ),
+];
 
 fn binding<'a>(f: &'a HotkeyFile, id: &str) -> &'a HotkeyBinding {
     f.bindings
@@ -210,7 +230,8 @@ fn default_build_toolbar_matches_the_captured_order() {
     // docs/chief-x18-toolbars.md "Row 2" lists the tooltip of each button's
     // current variant in the same order. For the first ten buttons, that
     // variant must be one of the flyout's members.
-    let doc_names: Vec<String> = TOOLBARS_DOC
+    let toolbars_doc = normalize_newlines(TOOLBARS_DOC);
+    let doc_names: Vec<String> = toolbars_doc
         .lines()
         .skip_while(|l| !l.starts_with("## Row 2"))
         .skip(1)
@@ -297,7 +318,95 @@ fn resolved_markdown_file_is_current() {
     let generated = resolved_markdown(&cfg.hotkeys);
     let on_disk = include_str!("../../../docs/chief-hotkeys-resolved.md");
     assert!(
-        on_disk == generated,
+        same_text(on_disk, &generated),
         "docs/chief-hotkeys-resolved.md is stale; regenerate with: cargo run -p plan-config --example gen_hotkeys_md > docs/chief-hotkeys-resolved.md"
+    );
+    // The same file after a CRLF checkout must pass too.
+    assert!(same_text(&to_crlf(on_disk), &generated));
+}
+
+/// Equal after line endings become `\n` and trailing spaces are dropped.
+fn same_text(a: &str, b: &str) -> bool {
+    let canon = |s: &str| {
+        normalize_newlines(s)
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    canon(a) == canon(b)
+}
+
+/// What a Windows checkout with line-ending conversion does to a text file.
+fn to_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
+/// Parses and resolves from the given text, the same way
+/// `load_daniel_config_with_stats` does from the embedded copies.
+fn resolve_from_text(
+    xml: &str,
+    toolbar_files: &[(&str, &str)],
+    docs: &[&str],
+) -> (HotkeyFile, ResolveStats) {
+    let mut hotkeys = parse_hotkeys_xml(xml).unwrap();
+    let sets: Vec<ToolbarSet> = toolbar_files
+        .iter()
+        .map(|(name, text)| parse_toolbar_named(name, text).unwrap())
+        .collect();
+    let mut catalog = CommandCatalog::from_sources(&sets, docs);
+    catalog.add_xml_names(&hotkeys);
+    let stats = resolve_names(&mut hotkeys, &catalog);
+    (hotkeys, stats)
+}
+
+#[test]
+fn crlf_text_gives_the_same_bindings_and_names_as_lf() {
+    let docs_lf = [SUBTOOLS_DOC, MENUS_DOC, TOOLBARS_DOC];
+    let (lf, lf_stats) = resolve_from_text(HOTKEYS_XML, &TOOLBAR_FILES, &docs_lf);
+    assert_eq!(lf.bindings.len(), 208);
+
+    let xml_crlf = to_crlf(HOTKEYS_XML);
+    let toolbars_crlf: Vec<(&str, String)> = TOOLBAR_FILES
+        .iter()
+        .map(|(name, text)| (*name, to_crlf(text)))
+        .collect();
+    let toolbar_refs: Vec<(&str, &str)> = toolbars_crlf
+        .iter()
+        .map(|(name, text)| (*name, text.as_str()))
+        .collect();
+    let docs_crlf: Vec<String> = docs_lf.iter().map(|d| to_crlf(d)).collect();
+    let doc_refs: Vec<&str> = docs_crlf.iter().map(String::as_str).collect();
+    let (crlf, crlf_stats) = resolve_from_text(&xml_crlf, &toolbar_refs, &doc_refs);
+
+    assert_eq!(crlf.bindings.len(), 208);
+    assert_eq!(crlf.bindings.len(), lf.bindings.len());
+    assert_eq!(crlf.named_count(), lf.named_count());
+    assert_eq!(crlf_stats, lf_stats);
+    assert_eq!(crlf, lf);
+    assert_eq!(resolved_markdown(&crlf), resolved_markdown(&lf));
+}
+
+#[test]
+fn crlf_toolbar_file_parses_like_lf() {
+    let lf = parse_toolbar_named("Default Configuration", DEFAULT_TOOLBAR).unwrap();
+    let crlf = parse_toolbar_named("Default Configuration", &to_crlf(DEFAULT_TOOLBAR)).unwrap();
+    assert_eq!(crlf, lf);
+    let named = crlf
+        .toolbars
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .filter(|i| i.command_name.is_some())
+        .count();
+    assert!(named > 0);
+}
+
+#[test]
+fn crlf_ini_and_hotkey_doc_parse_like_lf() {
+    let ini = "[%General]\nCross Hair On=false\nBump Distance=5\n";
+    assert_eq!(parse_ini(&to_crlf(ini)), parse_ini(ini));
+    assert_eq!(
+        parse_hotkey_doc(&to_crlf(SUBTOOLS_DOC)),
+        parse_hotkey_doc(SUBTOOLS_DOC)
     );
 }

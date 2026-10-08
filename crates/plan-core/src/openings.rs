@@ -113,6 +113,8 @@ pub(crate) struct OpeningDe {
     egress: bool,
     #[serde(default)]
     tempered: bool,
+    #[serde(default)]
+    extras: crate::extras::OpeningExtras,
 }
 
 impl From<OpeningDe> for Opening {
@@ -134,6 +136,7 @@ impl From<OpeningDe> for Opening {
             lites: d.lites,
             egress: d.egress,
             tempered: d.tempered,
+            extras: d.extras,
         }
     }
 }
@@ -171,6 +174,7 @@ impl Opening {
             lites: default_lites(),
             egress: false,
             tempered: false,
+            extras: crate::extras::OpeningExtras::default(),
         }
     }
 

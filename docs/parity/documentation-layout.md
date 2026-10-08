@@ -225,29 +225,7 @@ for this spec.
 
 ## 7. Plan Studio today
 
-- `plan_docs::pdf::plan_sheet(project, floor, rooms, SheetSize, Scale,
-  TitleBlock)` writes a single-page PDF 1.4 (own writer, Helvetica, no fonts
-  embedded): sheet border, title block (project, sheet title/number, date,
-  designer), walls (outlined + gray fill), openings, door swings, room labels
-  centered, scale note. `SheetSize` = ArchD, ArchC, Letter, Tabloid.
-  `Scale` = 1/2", 1/4", 3/16", 1/8" per foot; if the plan does not fit it
-  steps to the largest smaller scale (`fitted` flag). Line widths are constants
-  (wall outline 1.4 pt); layer pen weights are not used.
-- No layout file, no pages, no layout boxes, no live links, no raster boxes, no
-  dimensions or CAD items in the PDF, no printing dialog, no tiling.
-- Schedules: `door_schedule`, `window_schedule`, `room_schedule`, `wall_schedule`
-  (`Schedule { title, columns, rows }`) exporting CSV and Markdown; objects
-  numbered in reading order. No cabinet, electrical, fixture, framing, plant,
-  furniture, note, room-finish or custom schedules; no callouts; no edit from
-  schedule.
-- `materials_list(project, floor, rooms)`: studs (16" o.c., kings and trimmers),
-  plates, drywall, sheathing, siding, flooring, ceiling drywall, doors and
-  windows; CSV only; no waste factor, no price, no roofing/framing members.
-- `plan_core::export::dxf::write_dxf`: ASCII R12 DXF of one floor: layer table
-  with colours and on/off, walls, openings, dimensions, CAD items, room labels.
-  No version choice, no units option, no DWG, no import.
-- `plan-import` and `plan-elevation` are empty crates; Plan Footprint, Auto
-  Detail, CAD Detail from View, CAD to Walls do not exist.
+Output works as a library with menu commands: `plan_docs::plan_sheet` and `plan-layout` write scaled sheets and the construction set PDF (Tools > Schedules > Create Construction Set, File > Export > Construction Set PDF), with title blocks, plan, elevation, section and schedule boxes; door, window, room and wall schedules and the Materials List export CSV, and the Framing Takeoff too. `plan-elevation` draws hidden-line elevations and sections, exported as DXF (File > Export > Elevation DXF). DXF export of the active floor (File > Export > DXF), DXF import with a units choice (File > Import > Import Drawing) and CAD to Walls are in the editor, as is Plan Footprint. The Drawing Sheet and Print Preview toggles outline and gray out the active layout's sheet size and scale on the plan. Still open: an interactive Layout (page tabs, box editing, Send to Layout, Open Layout, layouts stored in the plan), real Print, PDF of the active plan view from the menu, placing schedules on the plan, cabinet, electrical, fixture and room-finish schedules, Auto Detail, CAD Detail from View, DWG, and layer pen weights in the PDF. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## 8. Gap table
 

@@ -335,7 +335,6 @@ impl ToolSet {
             return;
         };
         self.picked = id;
-        bridge_variant(id);
         if next == self.active {
             self.tools[next].set_variant(id);
             return;
@@ -353,17 +352,6 @@ impl ToolSet {
     pub fn restart(&mut self, cx: &mut EditorContext) {
         self.tools[self.active].deactivate(cx);
         self.tools[self.active].activate(cx);
-    }
-}
-
-/// Tools that choose their flavor by Chief's name (`request_variant`) get
-/// it from the variant payload before `set_variant` runs.
-fn bridge_variant(id: ToolId) {
-    match id {
-        ToolId::DimensionVariant(m) => dimension::request_variant(m.name()),
-        ToolId::TextVariant(m) => text::request_variant(m.name()),
-        ToolId::CadVariant(m) => cad::request_variant(m.name()),
-        _ => {}
     }
 }
 

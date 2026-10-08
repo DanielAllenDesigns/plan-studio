@@ -9,10 +9,12 @@ use crate::dimension::Dimension;
 use crate::floors::FloorKind;
 use crate::geometry::{point_in_polygon, Point};
 use crate::groups::ObjectGroup;
+use crate::layer_sets::{LayerSets, SavedPlanView};
 use crate::layers::LayerSet;
 use crate::openings::{Casing, OpeningStyle};
 use crate::rooms::Room;
 use crate::symbols::PlacedSymbol;
+use crate::text_styles::TextStyles;
 use crate::walls::{ResizeAbout, Side, WallCurve, WallFlags, WallRoofDirective};
 use serde::{Deserialize, Serialize};
 
@@ -310,6 +312,18 @@ pub struct Project {
     /// Wall type definitions stored in the plan (W-47).
     #[serde(default)]
     pub wall_types: Vec<WallTypeDef>,
+    /// Named layer sets overlaid on `layers` (display/lock/colour/weight).
+    #[serde(default)]
+    pub layer_sets: LayerSets,
+    /// Saved plan views, each carrying a layer set.
+    #[serde(default = "SavedPlanView::defaults")]
+    pub plan_views: Vec<SavedPlanView>,
+    /// Name of the active entry of `plan_views`.
+    #[serde(default = "crate::layer_sets::default_active_plan_view")]
+    pub active_plan_view: String,
+    /// Text styles that `Layer::text_style` names resolve through.
+    #[serde(default)]
+    pub text_styles: TextStyles,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -324,6 +338,10 @@ impl Project {
             layers: LayerSet::default_floor_plan(),
             cameras: Vec::new(),
             wall_types: Vec::new(),
+            layer_sets: LayerSets::default(),
+            plan_views: SavedPlanView::defaults(),
+            active_plan_view: crate::layer_sets::default_active_plan_view(),
+            text_styles: TextStyles::default(),
         }
     }
 

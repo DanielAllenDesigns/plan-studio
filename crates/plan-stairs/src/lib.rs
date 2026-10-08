@@ -8,16 +8,23 @@
 //! All lengths are inches. The plan frame is Y-up; the 3D frame is X right,
 //! Y up, Z = -plan y (see `plan-3d`).
 
+mod deck;
 mod layout;
 mod model3d;
 mod plan;
+mod railing;
 
 use layout::Layout;
 use plan_core::{Id, Point};
 use serde::{Deserialize, Serialize};
 
+pub use deck::{deck_edge_railing, Deck};
 pub use model3d::{meshes, tagged_meshes, StairPart};
 pub use plan::{plan_symbol, Stroke};
+pub use railing::{
+    plan_symbol_railing, railing_meshes, railing_segments, stair_railing, stair_railing_geometry,
+    NewelParams, RailSide, RailStyle, RailingGeometry, RailingParams, StairRailingGeometry,
+};
 
 /// Maximum riser height, IRC R311.7.5.1.
 pub const MAX_RISER: f64 = 7.75;

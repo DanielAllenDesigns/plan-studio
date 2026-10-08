@@ -1,0 +1,3531 @@
+{
+  "name": "Two-Story Colonial (sample)",
+  "floors": [
+    {
+      "name": "Foundation",
+      "elevation": -48.0,
+      "ceiling_height": 48.0,
+      "walls": [
+        {
+          "id": 127,
+          "start": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 0.0,
+            "y": 384.0
+          },
+          "thickness": 8.0,
+          "height": 48.0,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": true,
+            "attic": false
+          },
+          "wall_type": "Foundation-8",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 128,
+          "start": {
+            "x": 0.0,
+            "y": 384.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 384.0
+          },
+          "thickness": 8.0,
+          "height": 48.0,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": true,
+            "attic": false
+          },
+          "wall_type": "Foundation-8",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 129,
+          "start": {
+            "x": 480.0,
+            "y": 384.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 0.0
+          },
+          "thickness": 8.0,
+          "height": 48.0,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": true,
+            "attic": false
+          },
+          "wall_type": "Foundation-8",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 130,
+          "start": {
+            "x": 480.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "thickness": 8.0,
+          "height": 48.0,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": true,
+            "attic": false
+          },
+          "wall_type": "Foundation-8",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        }
+      ],
+      "openings": [],
+      "dimensions": [],
+      "cad": [],
+      "room_names": [
+        {
+          "anchor": {
+            "x": 240.0,
+            "y": 192.0
+          },
+          "name": "Crawl Space",
+          "room_type": "Crawl Space",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        }
+      ],
+      "kind": "Foundation",
+      "symbols": [],
+      "cabinets": [],
+      "stairs": [],
+      "groups": []
+    },
+    {
+      "name": "1st Floor",
+      "elevation": 0.0,
+      "ceiling_height": 109.125,
+      "walls": [
+        {
+          "id": 1,
+          "start": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 0.0,
+            "y": 384.0
+          },
+          "thickness": 7.0,
+          "height": 109.125,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Siding-6",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 2,
+          "start": {
+            "x": 0.0,
+            "y": 384.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 384.0
+          },
+          "thickness": 7.0,
+          "height": 109.125,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Siding-6",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 3,
+          "start": {
+            "x": 480.0,
+            "y": 384.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 0.0
+          },
+          "thickness": 7.0,
+          "height": 109.125,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Siding-6",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 4,
+          "start": {
+            "x": 480.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "thickness": 7.0,
+          "height": 109.125,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Siding-6",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 5,
+          "start": {
+            "x": 192.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 192.0,
+            "y": 384.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 6,
+          "start": {
+            "x": 288.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 288.0,
+            "y": 384.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 7,
+          "start": {
+            "x": 0.0,
+            "y": 192.0
+          },
+          "end": {
+            "x": 192.0,
+            "y": 192.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 8,
+          "start": {
+            "x": 288.0,
+            "y": 192.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 192.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 9,
+          "start": {
+            "x": 192.0,
+            "y": 312.0
+          },
+          "end": {
+            "x": 288.0,
+            "y": 312.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        }
+      ],
+      "openings": [
+        {
+          "id": 10,
+          "wall_id": 4,
+          "center_offset": 240.0,
+          "width": 36.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": true,
+          "hinge_at_end": true,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 11,
+          "wall_id": 2,
+          "center_offset": 432.0,
+          "width": 36.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": true,
+          "hinge_at_end": true,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 12,
+          "wall_id": 9,
+          "center_offset": 48.0,
+          "width": 28.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 13,
+          "wall_id": 5,
+          "center_offset": 48.0,
+          "width": 48.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Doorway",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 14,
+          "wall_id": 5,
+          "center_offset": 276.0,
+          "width": 48.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Doorway",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 15,
+          "wall_id": 6,
+          "center_offset": 96.0,
+          "width": 72.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Doorway",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 16,
+          "wall_id": 6,
+          "center_offset": 264.0,
+          "width": 60.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Doorway",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 17,
+          "wall_id": 7,
+          "center_offset": 96.0,
+          "width": 60.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Doorway",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 18,
+          "wall_id": 8,
+          "center_offset": 96.0,
+          "width": 60.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Doorway",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 19,
+          "wall_id": 4,
+          "center_offset": 132.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 20,
+          "wall_id": 4,
+          "center_offset": 60.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 21,
+          "wall_id": 4,
+          "center_offset": 348.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 22,
+          "wall_id": 4,
+          "center_offset": 420.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 23,
+          "wall_id": 1,
+          "center_offset": 96.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 24,
+          "wall_id": 1,
+          "center_offset": 288.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 25,
+          "wall_id": 2,
+          "center_offset": 60.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 26,
+          "wall_id": 2,
+          "center_offset": 132.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 27,
+          "wall_id": 2,
+          "center_offset": 348.0,
+          "width": 36.0,
+          "height": 48.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 28,
+          "wall_id": 2,
+          "center_offset": 240.0,
+          "width": 18.0,
+          "height": 24.0,
+          "sill_height": 60.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": true
+        },
+        {
+          "id": 29,
+          "wall_id": 3,
+          "center_offset": 288.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 30,
+          "wall_id": 3,
+          "center_offset": 144.0,
+          "width": 36.0,
+          "height": 48.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        }
+      ],
+      "dimensions": [
+        {
+          "id": 37,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 480.0,
+            "y": -3.5
+          },
+          "end": {
+            "x": 0.0,
+            "y": -3.5
+          },
+          "offset": 32.0,
+          "text_override": null
+        },
+        {
+          "id": 38,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 483.5,
+            "y": 384.0
+          },
+          "end": {
+            "x": 483.5,
+            "y": 0.0
+          },
+          "offset": 32.0,
+          "text_override": null
+        },
+        {
+          "id": 39,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 0.0,
+            "y": 387.5
+          },
+          "end": {
+            "x": 480.0,
+            "y": 387.5
+          },
+          "offset": 32.0,
+          "text_override": null
+        },
+        {
+          "id": 40,
+          "kind": "AutoExterior",
+          "start": {
+            "x": -3.5,
+            "y": 0.0
+          },
+          "end": {
+            "x": -3.5,
+            "y": 384.0
+          },
+          "offset": 32.0,
+          "text_override": null
+        },
+        {
+          "id": 41,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 192.0,
+            "y": -3.5
+          },
+          "end": {
+            "x": 0.0,
+            "y": -3.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 42,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 288.0,
+            "y": -3.5
+          },
+          "end": {
+            "x": 192.0,
+            "y": -3.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 43,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 480.0,
+            "y": -3.5
+          },
+          "end": {
+            "x": 288.0,
+            "y": -3.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 44,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 483.5,
+            "y": 192.0
+          },
+          "end": {
+            "x": 483.5,
+            "y": 0.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 45,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 483.5,
+            "y": 384.0
+          },
+          "end": {
+            "x": 483.5,
+            "y": 192.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 46,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 0.0,
+            "y": 387.5
+          },
+          "end": {
+            "x": 192.0,
+            "y": 387.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 47,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 192.0,
+            "y": 387.5
+          },
+          "end": {
+            "x": 288.0,
+            "y": 387.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 48,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 288.0,
+            "y": 387.5
+          },
+          "end": {
+            "x": 480.0,
+            "y": 387.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 49,
+          "kind": "AutoExterior",
+          "start": {
+            "x": -3.5,
+            "y": 0.0
+          },
+          "end": {
+            "x": -3.5,
+            "y": 192.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 50,
+          "kind": "AutoExterior",
+          "start": {
+            "x": -3.5,
+            "y": 192.0
+          },
+          "end": {
+            "x": -3.5,
+            "y": 384.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        }
+      ],
+      "cad": [],
+      "room_names": [
+        {
+          "anchor": {
+            "x": 96.0,
+            "y": 96.0
+          },
+          "name": "Living",
+          "room_type": "Living",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 96.0,
+            "y": 288.0
+          },
+          "name": "Family Room",
+          "room_type": "Family Room",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 384.0,
+            "y": 96.0
+          },
+          "name": "Dining Room",
+          "room_type": "Dining Room",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 384.0,
+            "y": 288.0
+          },
+          "name": "Kitchen",
+          "room_type": "Kitchen",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 240.0,
+            "y": 156.0
+          },
+          "name": "Center Hall",
+          "room_type": "Hall",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 240.0,
+            "y": 348.0
+          },
+          "name": "Powder Room",
+          "room_type": "Powder Room",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        }
+      ],
+      "kind": "Normal",
+      "symbols": [
+        {
+          "id": 31,
+          "catalog_id": "core.plumbing.toilet_elongated",
+          "position": {
+            "x": 264.0,
+            "y": 380.5
+          },
+          "angle": 180.0,
+          "width": 20.0,
+          "depth": 28.0,
+          "height": 30.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Toilet",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 32,
+          "catalog_id": "core.plumbing.pedestal_sink",
+          "position": {
+            "x": 194.25,
+            "y": 348.0
+          },
+          "angle": 270.0,
+          "width": 20.0,
+          "depth": 18.0,
+          "height": 34.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Pedestal Sink",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 33,
+          "catalog_id": "core.appliances.range_30",
+          "position": {
+            "x": 384.0,
+            "y": 380.5
+          },
+          "angle": 180.0,
+          "width": 30.0,
+          "depth": 26.0,
+          "height": 36.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Range",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 34,
+          "catalog_id": "core.appliances.refrigerator_36x30",
+          "position": {
+            "x": 476.5,
+            "y": 324.0
+          },
+          "angle": 90.0,
+          "width": 36.0,
+          "depth": 30.0,
+          "height": 70.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Refrigerator",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 35,
+          "catalog_id": "core.plumbing.kitchen_sink_double",
+          "position": {
+            "x": 312.0,
+            "y": 380.5
+          },
+          "angle": 180.0,
+          "width": 33.0,
+          "depth": 22.0,
+          "height": 8.0,
+          "elevation": 28.0,
+          "flip": false,
+          "label": "Kitchen Sink",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 36,
+          "catalog_id": "core.stairs.placeholder_straight",
+          "position": {
+            "x": 215.25,
+            "y": 96.0
+          },
+          "angle": 0.0,
+          "width": 42.0,
+          "depth": 132.0,
+          "height": 109.125,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Stairs Up (placeholder)",
+          "layer": "CAD, Default"
+        }
+      ],
+      "cabinets": [],
+      "stairs": [],
+      "groups": []
+    },
+    {
+      "name": "2nd Floor",
+      "elevation": 119.375,
+      "ceiling_height": 109.125,
+      "walls": [
+        {
+          "id": 51,
+          "start": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 0.0,
+            "y": 384.0
+          },
+          "thickness": 7.0,
+          "height": 109.125,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Siding-6",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 54,
+          "start": {
+            "x": 0.0,
+            "y": 384.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 384.0
+          },
+          "thickness": 7.0,
+          "height": 109.125,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Siding-6",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 60,
+          "start": {
+            "x": 480.0,
+            "y": 384.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 0.0
+          },
+          "thickness": 7.0,
+          "height": 109.125,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Siding-6",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 63,
+          "start": {
+            "x": 480.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "thickness": 7.0,
+          "height": 109.125,
+          "kind": "Exterior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Siding-6",
+          "resize_about": "MainLayerOutside",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 69,
+          "start": {
+            "x": 192.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 192.0,
+            "y": 384.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 70,
+          "start": {
+            "x": 288.0,
+            "y": 0.0
+          },
+          "end": {
+            "x": 288.0,
+            "y": 384.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 71,
+          "start": {
+            "x": 0.0,
+            "y": 168.0
+          },
+          "end": {
+            "x": 192.0,
+            "y": 168.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 72,
+          "start": {
+            "x": 0.0,
+            "y": 264.0
+          },
+          "end": {
+            "x": 192.0,
+            "y": 264.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 73,
+          "start": {
+            "x": 108.0,
+            "y": 168.0
+          },
+          "end": {
+            "x": 108.0,
+            "y": 264.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 74,
+          "start": {
+            "x": 288.0,
+            "y": 144.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 144.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 75,
+          "start": {
+            "x": 288.0,
+            "y": 240.0
+          },
+          "end": {
+            "x": 480.0,
+            "y": 240.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        },
+        {
+          "id": 76,
+          "start": {
+            "x": 384.0,
+            "y": 144.0
+          },
+          "end": {
+            "x": 384.0,
+            "y": 240.0
+          },
+          "thickness": 4.5,
+          "height": 109.125,
+          "kind": "Interior",
+          "layer": "Walls, Normal",
+          "flags": {
+            "invisible": false,
+            "no_room_definition": false,
+            "no_locate": false,
+            "room_divider": false,
+            "railing": false,
+            "half_wall": false,
+            "pony": null,
+            "foundation": false,
+            "attic": false
+          },
+          "wall_type": "Interior-4",
+          "resize_about": "WallCenter",
+          "curve": null,
+          "roof": {
+            "kind": "Hip",
+            "pitch_in_12": null,
+            "upper_pitch": null,
+            "overhang": null,
+            "auto_roof_return": false
+          },
+          "exterior_side": "Left"
+        }
+      ],
+      "openings": [
+        {
+          "id": 77,
+          "wall_id": 69,
+          "center_offset": 48.0,
+          "width": 30.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 78,
+          "wall_id": 69,
+          "center_offset": 324.0,
+          "width": 30.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": true,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 79,
+          "wall_id": 71,
+          "center_offset": 54.0,
+          "width": 28.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 80,
+          "wall_id": 71,
+          "center_offset": 150.0,
+          "width": 60.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Bifold",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 81,
+          "wall_id": 70,
+          "center_offset": 60.0,
+          "width": 30.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": true,
+          "hinge_at_end": false,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 82,
+          "wall_id": 70,
+          "center_offset": 192.0,
+          "width": 30.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": true,
+          "hinge_at_end": false,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 83,
+          "wall_id": 70,
+          "center_offset": 312.0,
+          "width": 30.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": true,
+          "hinge_at_end": true,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 84,
+          "wall_id": 74,
+          "center_offset": 144.0,
+          "width": 28.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 85,
+          "wall_id": 75,
+          "center_offset": 144.0,
+          "width": 28.0,
+          "height": 96.0,
+          "sill_height": 0.0,
+          "kind": "Door",
+          "swing_flipped": true,
+          "hinge_at_end": false,
+          "style": "Hinged",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 86,
+          "wall_id": 63,
+          "center_offset": 420.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 87,
+          "wall_id": 63,
+          "center_offset": 348.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 88,
+          "wall_id": 63,
+          "center_offset": 240.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 24.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 89,
+          "wall_id": 63,
+          "center_offset": 132.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 90,
+          "wall_id": 63,
+          "center_offset": 60.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 91,
+          "wall_id": 51,
+          "center_offset": 96.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 92,
+          "wall_id": 51,
+          "center_offset": 216.0,
+          "width": 24.0,
+          "height": 36.0,
+          "sill_height": 60.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": true
+        },
+        {
+          "id": 93,
+          "wall_id": 51,
+          "center_offset": 324.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 94,
+          "wall_id": 54,
+          "center_offset": 60.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 95,
+          "wall_id": 54,
+          "center_offset": 132.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 96,
+          "wall_id": 54,
+          "center_offset": 240.0,
+          "width": 36.0,
+          "height": 48.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": false
+        },
+        {
+          "id": 97,
+          "wall_id": 54,
+          "center_offset": 348.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 98,
+          "wall_id": 54,
+          "center_offset": 420.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 99,
+          "wall_id": 60,
+          "center_offset": 312.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        },
+        {
+          "id": 100,
+          "wall_id": 60,
+          "center_offset": 192.0,
+          "width": 24.0,
+          "height": 36.0,
+          "sill_height": 60.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": false,
+          "tempered": true
+        },
+        {
+          "id": 101,
+          "wall_id": 60,
+          "center_offset": 72.0,
+          "width": 36.0,
+          "height": 60.0,
+          "sill_height": 36.0,
+          "kind": "Window",
+          "swing_flipped": false,
+          "hinge_at_end": false,
+          "style": "Window",
+          "label_override": null,
+          "schedule_number": null,
+          "casing": null,
+          "lites": [
+            1,
+            1
+          ],
+          "egress": true,
+          "tempered": false
+        }
+      ],
+      "dimensions": [
+        {
+          "id": 111,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 480.0,
+            "y": -3.5
+          },
+          "end": {
+            "x": 0.0,
+            "y": -3.5
+          },
+          "offset": 32.0,
+          "text_override": null
+        },
+        {
+          "id": 112,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 483.5,
+            "y": 384.0
+          },
+          "end": {
+            "x": 483.5,
+            "y": 0.0
+          },
+          "offset": 32.0,
+          "text_override": null
+        },
+        {
+          "id": 113,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 0.0,
+            "y": 387.5
+          },
+          "end": {
+            "x": 480.0,
+            "y": 387.5
+          },
+          "offset": 32.0,
+          "text_override": null
+        },
+        {
+          "id": 114,
+          "kind": "AutoExterior",
+          "start": {
+            "x": -3.5,
+            "y": 0.0
+          },
+          "end": {
+            "x": -3.5,
+            "y": 384.0
+          },
+          "offset": 32.0,
+          "text_override": null
+        },
+        {
+          "id": 115,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 192.0,
+            "y": -3.5
+          },
+          "end": {
+            "x": 0.0,
+            "y": -3.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 116,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 288.0,
+            "y": -3.5
+          },
+          "end": {
+            "x": 192.0,
+            "y": -3.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 117,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 480.0,
+            "y": -3.5
+          },
+          "end": {
+            "x": 288.0,
+            "y": -3.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 118,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 483.5,
+            "y": 144.0
+          },
+          "end": {
+            "x": 483.5,
+            "y": 0.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 119,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 483.5,
+            "y": 240.0
+          },
+          "end": {
+            "x": 483.5,
+            "y": 144.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 120,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 483.5,
+            "y": 384.0
+          },
+          "end": {
+            "x": 483.5,
+            "y": 240.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 121,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 0.0,
+            "y": 387.5
+          },
+          "end": {
+            "x": 192.0,
+            "y": 387.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 122,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 192.0,
+            "y": 387.5
+          },
+          "end": {
+            "x": 288.0,
+            "y": 387.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 123,
+          "kind": "AutoExterior",
+          "start": {
+            "x": 288.0,
+            "y": 387.5
+          },
+          "end": {
+            "x": 480.0,
+            "y": 387.5
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 124,
+          "kind": "AutoExterior",
+          "start": {
+            "x": -3.5,
+            "y": 0.0
+          },
+          "end": {
+            "x": -3.5,
+            "y": 168.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 125,
+          "kind": "AutoExterior",
+          "start": {
+            "x": -3.5,
+            "y": 168.0
+          },
+          "end": {
+            "x": -3.5,
+            "y": 264.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        },
+        {
+          "id": 126,
+          "kind": "AutoExterior",
+          "start": {
+            "x": -3.5,
+            "y": 264.0
+          },
+          "end": {
+            "x": -3.5,
+            "y": 384.0
+          },
+          "offset": 16.0,
+          "text_override": null
+        }
+      ],
+      "cad": [],
+      "room_names": [
+        {
+          "anchor": {
+            "x": 96.0,
+            "y": 84.0
+          },
+          "name": "Master Bedroom",
+          "room_type": "Master Bedroom",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 54.0,
+            "y": 216.0
+          },
+          "name": "Master Bath",
+          "room_type": "Master Bath",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 150.0,
+            "y": 216.0
+          },
+          "name": "Master Closet",
+          "room_type": "Closet",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 96.0,
+            "y": 324.0
+          },
+          "name": "Bedroom 4",
+          "room_type": "Bedroom #4",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 240.0,
+            "y": 192.0
+          },
+          "name": "Upstairs Hall",
+          "room_type": "Hall",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 384.0,
+            "y": 72.0
+          },
+          "name": "Bedroom 2",
+          "room_type": "Bedroom #2",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 336.0,
+            "y": 192.0
+          },
+          "name": "Laundry",
+          "room_type": "Laundry",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 432.0,
+            "y": 192.0
+          },
+          "name": "Jack-and-Jill Bath",
+          "room_type": "Bath",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        },
+        {
+          "anchor": {
+            "x": 384.0,
+            "y": 312.0
+          },
+          "name": "Bedroom 3",
+          "room_type": "Bedroom #3",
+          "floor_height_offset": 0.0,
+          "ceiling_height": null,
+          "floor_finish": null,
+          "ceiling_finish": null,
+          "include_in_living_area": null,
+          "has_ceiling": true,
+          "has_floor": true,
+          "rough_ceiling": null
+        }
+      ],
+      "kind": "Normal",
+      "symbols": [
+        {
+          "id": 102,
+          "catalog_id": "core.plumbing.shower_36x36",
+          "position": {
+            "x": 3.5,
+            "y": 228.0
+          },
+          "angle": 270.0,
+          "width": 36.0,
+          "depth": 36.0,
+          "height": 80.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Shower",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 103,
+          "catalog_id": "core.plumbing.toilet_elongated",
+          "position": {
+            "x": 72.0,
+            "y": 261.75
+          },
+          "angle": 180.0,
+          "width": 20.0,
+          "depth": 28.0,
+          "height": 30.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Toilet",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 104,
+          "catalog_id": "core.plumbing.vanity_sink_30",
+          "position": {
+            "x": 105.75,
+            "y": 228.0
+          },
+          "angle": 90.0,
+          "width": 30.0,
+          "depth": 21.0,
+          "height": 34.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Vanity",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 105,
+          "catalog_id": "core.appliances.washer_27",
+          "position": {
+            "x": 381.75,
+            "y": 174.0
+          },
+          "angle": 90.0,
+          "width": 27.0,
+          "depth": 28.0,
+          "height": 38.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Washer",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 106,
+          "catalog_id": "core.appliances.dryer_27",
+          "position": {
+            "x": 381.75,
+            "y": 207.0
+          },
+          "angle": 90.0,
+          "width": 27.0,
+          "depth": 28.0,
+          "height": 38.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Dryer",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 107,
+          "catalog_id": "core.plumbing.bathtub_60x30",
+          "position": {
+            "x": 476.5,
+            "y": 186.0
+          },
+          "angle": 90.0,
+          "width": 60.0,
+          "depth": 30.0,
+          "height": 20.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Tub",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 108,
+          "catalog_id": "core.plumbing.toilet_elongated",
+          "position": {
+            "x": 386.25,
+            "y": 168.0
+          },
+          "angle": 270.0,
+          "width": 20.0,
+          "depth": 28.0,
+          "height": 30.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Toilet",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 109,
+          "catalog_id": "core.plumbing.vanity_sink_30",
+          "position": {
+            "x": 386.25,
+            "y": 216.0
+          },
+          "angle": 270.0,
+          "width": 30.0,
+          "depth": 21.0,
+          "height": 34.0,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Vanity",
+          "layer": "CAD, Default"
+        },
+        {
+          "id": 110,
+          "catalog_id": "core.stairs.placeholder_straight",
+          "position": {
+            "x": 215.25,
+            "y": 96.0
+          },
+          "angle": 0.0,
+          "width": 42.0,
+          "depth": 132.0,
+          "height": 109.125,
+          "elevation": 0.0,
+          "flip": false,
+          "label": "Stairs (placeholder)",
+          "layer": "CAD, Default"
+        }
+      ],
+      "cabinets": [],
+      "stairs": [],
+      "groups": []
+    }
+  ],
+  "next_id": 131,
+  "layers": {
+    "name": "Floor Plan",
+    "layers": [
+      {
+        "name": "Walls, Normal",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "line_weight": 50,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Walls, Invisible",
+        "display": true,
+        "locked": false,
+        "color": [
+          150,
+          150,
+          150
+        ],
+        "line_weight": 13,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Doors",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          70,
+          200
+        ],
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Windows",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          130,
+          210
+        ],
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Rooms",
+        "display": true,
+        "locked": false,
+        "color": [
+          120,
+          120,
+          120
+        ],
+        "line_weight": 13,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Room Labels",
+        "display": true,
+        "locked": false,
+        "color": [
+          60,
+          60,
+          60
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Dimensions, Manual",
+        "display": true,
+        "locked": false,
+        "color": [
+          180,
+          0,
+          0
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Dimensions, Automatic",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          128,
+          0
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Text",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "CAD, Default",
+        "display": true,
+        "locked": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Cabinets, Base",
+        "display": true,
+        "locked": false,
+        "color": [
+          139,
+          90,
+          43
+        ],
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Cabinets, Wall",
+        "display": true,
+        "locked": false,
+        "color": [
+          170,
+          125,
+          75
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Electrical",
+        "display": true,
+        "locked": false,
+        "color": [
+          200,
+          120,
+          0
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Stairs",
+        "display": true,
+        "locked": false,
+        "color": [
+          90,
+          90,
+          90
+        ],
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Roof Planes",
+        "display": true,
+        "locked": false,
+        "color": [
+          128,
+          0,
+          128
+        ],
+        "line_weight": 25,
+        "text_style": "",
+        "line_style": "Solid"
+      },
+      {
+        "name": "Framing",
+        "display": true,
+        "locked": false,
+        "color": [
+          180,
+          140,
+          60
+        ],
+        "line_weight": 18,
+        "text_style": "",
+        "line_style": "Solid"
+      }
+    ]
+  },
+  "cameras": [],
+  "wall_types": [
+    {
+      "name": "Stucco-6",
+      "layers": [
+        {
+          "name": "Stucco",
+          "thickness": 1.0625,
+          "is_main": false,
+          "material": "Sand Finish - Eggshell"
+        },
+        {
+          "name": "Sheathing",
+          "thickness": 0.5625,
+          "is_main": false,
+          "material": "OSB-Hrz + Housewrap"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Siding-6",
+      "layers": [
+        {
+          "name": "Siding",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Siding"
+        },
+        {
+          "name": "Sheathing",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "OSB-Hrz"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Brick-6",
+      "layers": [
+        {
+          "name": "Brick",
+          "thickness": 3.625,
+          "is_main": false,
+          "material": "Brick"
+        },
+        {
+          "name": "Air Space",
+          "thickness": 1.0,
+          "is_main": false,
+          "material": "Air"
+        },
+        {
+          "name": "Sheathing",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "OSB-Hrz"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Foundation-8",
+      "layers": [
+        {
+          "name": "Concrete",
+          "thickness": 8.0,
+          "is_main": true,
+          "material": "Concrete"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "stone-6",
+      "layers": [
+        {
+          "name": "Stone",
+          "thickness": 1.5,
+          "is_main": false,
+          "material": "Stone Veneer"
+        },
+        {
+          "name": "Sheathing",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "OSB-Hrz"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Exterior"
+    },
+    {
+      "name": "Interior-4",
+      "layers": [
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        },
+        {
+          "name": "Framing",
+          "thickness": 3.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Interior"
+    },
+    {
+      "name": "Interior-6",
+      "layers": [
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        },
+        {
+          "name": "Framing",
+          "thickness": 5.5,
+          "is_main": true,
+          "material": "Fir Framing"
+        },
+        {
+          "name": "Drywall",
+          "thickness": 0.5,
+          "is_main": false,
+          "material": "Drywall"
+        }
+      ],
+      "kind": "Interior"
+    }
+  ],
+  "layer_sets": {
+    "sets": [
+      {
+        "name": "Default Set",
+        "states": [
+          {
+            "layer": "Walls, Normal",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Walls, Invisible",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Doors",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Windows",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Rooms",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Room Labels",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Dimensions, Manual",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Dimensions, Automatic",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Text",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "CAD, Default",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Cabinets, Base",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Cabinets, Wall",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Electrical",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Stairs",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Roof Planes",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          },
+          {
+            "layer": "Framing",
+            "display": true,
+            "locked": false,
+            "color": null,
+            "line_weight": null,
+            "line_style": null,
+            "text_style": null
+          }
+        ]
+      }
+    ],
+    "active": "Default Set"
+  },
+  "plan_views": [
+    {
+      "name": "Floor Plan View",
+      "layer_set": "Default Set",
+      "floor": null,
+      "reference_display": false,
+      "reference_floor": null,
+      "camera": null
+    }
+  ],
+  "active_plan_view": "Floor Plan View",
+  "text_styles": {
+    "styles": [
+      {
+        "name": "Default Text Style",
+        "font": "Arial",
+        "height_in": 6.0,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 9.0
+      },
+      {
+        "name": "1/4\" Text Style",
+        "font": "Arial",
+        "height_in": 6.0,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 9.0
+      },
+      {
+        "name": "Room Label Style",
+        "font": "Arial",
+        "height_in": 6.0,
+        "bold": true,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 9.0
+      },
+      {
+        "name": "Schedule Style",
+        "font": "Arial",
+        "height_in": 4.5,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 6.75
+      },
+      {
+        "name": "Default Label Style",
+        "font": "Arial",
+        "height_in": 4.5,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 6.75
+      },
+      {
+        "name": "Dimension Text Style",
+        "font": "Arial",
+        "height_in": 4.5,
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "size_by_scale": true,
+        "printed_pt": 6.75
+      }
+    ]
+  }
+}

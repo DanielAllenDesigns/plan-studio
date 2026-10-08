@@ -189,6 +189,36 @@ Use `std` only: `std::fs::File`, `std::os::unix::fs::FileExt::read_exact_at`, an
 - How `Content/<hash>-01` is referenced (not from any catalog table or `Referenced Files/`).
 - The meaning of registry category 3 (3 soft-deleted entries).
 
+### 7.1 Decoded 2026-10-08 (plan-calib `decode`)
+
+Answers to the first, second and fourth open questions above, found by differential
+analysis on Core Interiors, Exteriors, Architectural and MEP. Full layouts with
+offsets are in `crates/plan-calib/README.md`; this is the summary.
+
+- **Size.** `Data4LibraryObjects.Data` holds the default size as `w d h` followed by
+  three 1.0 scale factors, as f32 (`FF FF FF FF 01 w d h 1 1 1`, most Interiors and
+  Exteriors, e.g. `Cubby Bench` 50 x 16 x 18) or f64 (`FF FF FF FF 03 0.5 w d h 1 1 1`,
+  parametric objects, e.g. `Door E29` 38 x 1.375 x 79.875). Verified against the
+  geometry bounds: 179 of 187 Interiors and 300 of 342 Exteriors within 3%. Present in
+  897 of 970 Interiors, 1530 of 1947 Architectural and 344 of 378 MEP objects.
+- **`symDxf` is not DXF.** 0 of 541 blobs parse as text or binary DXF. It is a list of 3D
+  polygon faces: `u16 version, u32 FFFFFFFF, u32 face count`, then per face `u16 n,
+  u16 flags, u32 aux, u16 tag, n x (f64 x, y, z)` and an FF-filled trailer that may
+  carry a layer name. Coordinates are inches; the front of an object faces -Y.
+  (The "AIA layer names" seen earlier are those trailer strings.)
+- **Geometry elsewhere.** `AssociatedData` (after its JSON header) and
+  `SymbolData4LibraryObjects` carry `CD AB 74 00` triangle meshes: `u32 N`, N x 48-byte
+  vertices (x, y, z + 3 zero doubles), `u32 M`, M x 80-byte triangle records
+  (`u32 a, b, c`, partner, two ids, padding). 588 of 588 sampled records validate.
+  Core Architectural, MEP and most Interiors objects have only this; no catalog
+  stores a separate 2D symbol (`twoDRep`, `drawInfo` stay NULL), so plan symbols are
+  derived from the 3D geometry.
+- **Not decoded:** the other geometry record kinds (`CD AB 30`, `1f`, `23`, `19d`,
+  `403b`, `f530`), so about a quarter of the objects have partial meshes; parametric
+  cabinet and window records; door swings; elevation; `symBlock`; `LibraryObjects.Type`.
+- Plant records (Core Plants) hold a spread and a height after the anchor
+  `00 A6 91 3C 00 00 00 00 00 00 F0 3F`; the assignment is inferred, not proven.
+
 ## 8. Working files
 
 Probe scripts and extracted samples are in `/private/tmp/claude-501/-Users-danielsievers-Documents-Clauade-Code-Folder/cb8a3685-aa10-43d9-b6c5-fe60e024942e/scratchpad/calib-sniff/`. The only extracted sample left there is `symDxf_6.bin` and `symDxf_1.bin` (BonusTables geometry). Delete them when no longer needed, because they are licensed content.

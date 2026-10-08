@@ -12,6 +12,7 @@ mod editor;
 mod icons;
 mod menus;
 mod plan_defaults;
+mod shell;
 mod theme;
 mod toolbar;
 mod tools;
@@ -26,7 +27,7 @@ use plan_core::geometry::Point;
 use plan_core::{Id, Opening, OpeningKind, PlanDefaults, Project, WallKind};
 use std::path::PathBuf;
 use theme::{AppSettings, CanvasTheme};
-use toolbar::{Action, BarState, Dock, Hotkeys, Toolbars};
+use toolbar::{Action, BarState, Dock, Toolbars};
 use tools::{KeyEvent, PointerEvent, ToolId, ToolResult, ToolSet};
 
 const STATUS_GRAY: Color32 = Color32::from_rgb(0x2C, 0x2C, 0x2C);
@@ -49,7 +50,8 @@ struct PlanApp {
     zoom_history: Vec<Camera>,
     toolbars: Toolbars,
     dock: Option<Dock>,
-    hotkeys: Hotkeys,
+    hotkeys: shell::hotkeys::HotkeyState,
+    docks: shell::docks::DockState,
     settings: AppSettings,
     /// The settings last written to disk.
     saved_settings: AppSettings,
@@ -61,7 +63,10 @@ struct PlanApp {
     /// The press was a double-click the tool took; skip its release.
     suppress_release: bool,
     dialog: Option<ActiveDialog>,
+    /// Specification dialogs of every other object kind.
+    spec: shell::spec_dialogs::SpecDialogs,
     defaults_dialog: Option<DefaultsDialog>,
+    view3d: shell::view3d_panel::View3dState,
 }
 
 /// The state the toolbars and menus draw themselves from.
@@ -77,7 +82,8 @@ fn bar_state<'a>(
         dock,
         floor: cx.floor,
         floor_count: cx.project.floors.len(),
-        view_name: "Floor Plan View",
+        view_name: &cx.project.active_plan_view,
+        views: &cx.project.plan_views,
         brightness,
         undo_label: cx.undo_label(),
         redo_label: cx.redo_label(),
@@ -97,7 +103,8 @@ impl PlanApp {
             zoom_history: Vec::new(),
             toolbars: Toolbars::new(),
             dock: None,
-            hotkeys: Hotkeys::default(),
+            hotkeys: shell::hotkeys::HotkeyState::default(),
+            docks: shell::docks::DockState::default(),
             settings,
             saved_settings: settings,
             applied_brightness: settings.brightness,
@@ -105,12 +112,19 @@ impl PlanApp {
             pressed_in_canvas: false,
             suppress_release: false,
             dialog: None,
+            spec: Default::default(),
             defaults_dialog: None,
+            view3d: Default::default(),
         }
     }
 
     fn set_tool(&mut self, tool: ToolId) {
         self.tools.set_active(&mut self.cx, tool);
+    }
+
+    /// Is a specification dialog open (any kind)?
+    fn has_dialog(&self) -> bool {
+        self.dialog.is_some() || self.spec.is_open()
     }
 
     fn push_zoom_history(&mut self) {
@@ -177,7 +191,14 @@ impl PlanApp {
 
     fn apply(&mut self, action: Action) {
         match action {
-            Action::SetTool(t) => self.set_tool(t),
+            Action::SetTool(t) => {
+                // Plan tools work in the plan view.
+                self.view3d.active = false;
+                self.set_tool(t);
+            }
+            Action::Custom(id) => self.cx.run_custom(id),
+            Action::PlanView(i) => self.activate_plan_view(i),
+            Action::Terrain(c) => self.terrain_command(c),
             Action::CurrentWall => self.apply(self.toolbars.wall_action()),
             Action::FileNew => self.new_project(),
             Action::FileOpen => self.open_project(),
@@ -185,6 +206,7 @@ impl PlanApp {
             Action::FileSaveAs => self.save_project_as(),
             Action::SaveTemplate => self.save_template(),
             Action::ResetTemplate => self.reset_template(),
+            Action::ImportChiefTemplate => self.import_chief_template(),
             Action::ZoomIn => self.zoom_about_center(ZOOM_STEP),
             Action::ZoomOut => self.zoom_about_center(1.0 / ZOOM_STEP),
             Action::UndoZoom => {
@@ -234,8 +256,75 @@ impl PlanApp {
                     self.defaults_dialog = Some(DefaultsDialog::new());
                 }
             }
+            Action::BuildNewFloor
+            | Action::InsertFloor
+            | Action::DeleteFloor
+            | Action::DeleteFoundation
+            | Action::ExchangeFloorAbove
+            | Action::ExchangeFloorBelow
+            | Action::BuildFoundation
+            | Action::RebuildAll
+            | Action::SpacePlanning
+            | Action::PlanCheck
+            | Action::DoorWindowCheck
+            | Action::PlanFootprint
+            | Action::MaterialsList
+            | Action::DoorSchedule
+            | Action::WindowSchedule
+            | Action::RoomSchedule
+            | Action::WallSchedule
+            | Action::CreateConstructionSet => dialogs::build_tools::dispatch(&mut self.cx, action),
+            Action::OpenHotkeyDialog => self.docks.open_hotkey_dialog(&self.hotkeys),
+            Action::OpenLayerDisplay => self.docks.open_layer_dialog(),
+            Action::View3d(c) => {
+                shell::view3d_panel::dispatch(c, &mut self.cx, &mut self.tools, &mut self.view3d)
+            }
             Action::NotImplemented(name) => {
                 self.cx.status = format!("Not yet implemented: {name}");
+            }
+        }
+    }
+
+    /// Row-1 view selector: makes a saved plan view the active one and shows
+    /// its floor.
+    fn activate_plan_view(&mut self, i: usize) {
+        let Some(view) = self.cx.project.plan_views.get(i).cloned() else {
+            return;
+        };
+        self.cx.begin_change("Plan View");
+        self.cx.project.activate_plan_view(&view.name);
+        if let Some(f) = view.floor.filter(|f| *f < self.cx.project.floors.len()) {
+            self.cx.floor = f;
+        }
+        if let Some((center, px)) = view.camera {
+            self.camera.center = center;
+            self.camera.px_per_in = px.clamp(0.05, 50.0);
+        }
+        self.cx.mark_dirty();
+        self.cx.status = format!("Plan view: {}", view.name);
+    }
+
+    /// Terrain menu commands.
+    fn terrain_command(&mut self, c: toolbar::TerrainCommand) {
+        use toolbar::TerrainCommand as C;
+        match c {
+            C::Specification => {
+                self.open_spec(ObjectRef::Terrain);
+            }
+            C::Clear => {
+                if editor::site_view::load_terrain(&self.cx.project).is_some() {
+                    editor::site_view::edit_terrain(&mut self.cx, "Clear Terrain", |rec| {
+                        *rec = editor::site_view::TerrainRecord::new();
+                    });
+                    self.cx.status = "Cleared the terrain".into();
+                } else {
+                    self.cx.status = "There is no terrain to clear".into();
+                }
+            }
+            C::HoleAroundBuilding => {
+                if editor::site_view::auto_building_hole(&mut self.cx) {
+                    self.cx.status = "Made a terrain hole around the building".into();
+                }
             }
         }
     }
@@ -317,6 +406,39 @@ impl PlanApp {
         };
     }
 
+    /// File > Templates > Import Chief Template...: seeds the defaults (wall
+    /// types, layers, layer sets, text and dimension styles) from a Chief
+    /// `.plan` / `.tpl` file and keeps them as your template.
+    fn import_chief_template(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Chief Architect plan or template",
+                &["plan", "tpl", "layout"],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        match plan_chiefplan::build_inventory(&path) {
+            Ok(inv) => {
+                let seed = plan_chiefplan::seed_defaults(&inv, self.cx.defaults.clone());
+                self.cx.defaults = seed.defaults.clone();
+                let saved = plan_defaults::save_user(&self.cx.defaults);
+                self.cx.status = format!(
+                    "Imported {}: {} wall types, {} layers added{}",
+                    path.display(),
+                    seed.added_wall_types.len(),
+                    seed.added_layers.len(),
+                    match saved {
+                        Ok(_) => String::new(),
+                        Err(e) => format!(" (could not save your template: {e})"),
+                    }
+                );
+            }
+            Err(e) => self.cx.status = format!("Import failed: {e}"),
+        }
+    }
+
     /// File > Templates > Reset to Chief X18 Template.
     fn reset_template(&mut self) {
         self.cx.defaults = plan_defaults::embedded();
@@ -352,21 +474,31 @@ impl PlanApp {
         if let Some(t) = res.switch_to {
             self.set_tool(t);
         }
+        self.process_requests();
+    }
+
+    /// Runs what tools and Edit toolbar commands queued on the context.
+    fn process_requests(&mut self) {
         for req in std::mem::take(&mut self.cx.requests) {
             match req {
                 EditorRequest::OpenSpec(o) => self.open_spec(o),
                 EditorRequest::PanPixels(d) => self.camera.pan_by_pixels(d),
+                EditorRequest::SetTool(t) => self.set_tool(t),
             }
         }
     }
 
+    /// Opens the specification dialog of `o` (the one place that maps every
+    /// object kind to its dialog).
     fn open_spec(&mut self, o: ObjectRef) {
         match o {
             ObjectRef::Wall(id) => self.open_wall_dialog(id),
             ObjectRef::Opening(id) => self.open_opening_dialog(id),
             other => {
-                self.cx.status =
-                    format!("{} specification: not yet implemented", other.type_name());
+                if !self.spec.open(&mut self.cx, other) {
+                    self.cx.status =
+                        format!("{} specification: nothing to open", other.type_name());
+                }
             }
         }
     }
@@ -374,6 +506,10 @@ impl PlanApp {
     fn send_key(&mut self, ctx: &egui::Context, k: KeyEvent) {
         let is_esc = k.is(egui::Key::Escape);
         let is_del = k.is(egui::Key::Delete) || k.is(egui::Key::Backspace);
+        if is_del && self.view3d.active {
+            // The 3D view has no selection to delete.
+            return;
+        }
         let res = self.tools.active_mut().key(&mut self.cx, k);
         self.finish_tool_call(ctx, &res);
         if !res.consumed {
@@ -388,12 +524,12 @@ impl PlanApp {
     /// Applies hotkeys (see `toolbar::BINDINGS`) and forwards editing keys to
     /// the active tool.
     fn handle_keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        if self.dialog.is_some() || self.defaults_dialog.is_some() {
+        if self.has_dialog() || self.defaults_dialog.is_some() || self.docks.modal_open() {
             return;
         }
         let editing = self.cx.temp.editing.is_some();
         if !editing {
-            actions.extend(self.hotkeys.poll(ctx));
+            shell::hotkeys::handle(ctx, &self.cx, &mut self.hotkeys, actions);
         }
         if ctx.wants_keyboard_input() {
             return;
@@ -459,7 +595,7 @@ impl PlanApp {
                 p.latest_pos(),
             )
         });
-        if self.dialog.is_some() {
+        if self.has_dialog() {
             self.pressed_in_canvas = false;
             return;
         }
@@ -583,10 +719,21 @@ impl PlanApp {
             .exact_width(DOCK_WIDTH)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.heading(dock.title());
-                ui.separator();
-                ui.weak("Coming in Phase 1");
+                shell::docks::show(ui, dock, &mut self.cx, &mut self.docks);
             });
+        for req in std::mem::take(&mut self.docks.requests) {
+            match req {
+                shell::docks::DockRequest::SetTool(t) => {
+                    self.view3d.active = false;
+                    self.set_tool(t);
+                }
+                shell::docks::DockRequest::SwitchFloor(n) if n < self.cx.project.floors.len() => {
+                    self.cx.floor = n;
+                    self.reset_view_state();
+                }
+                shell::docks::DockRequest::SwitchFloor(_) => {}
+            }
+        }
     }
 
     fn properties_panel(&mut self, ctx: &egui::Context) {
@@ -846,7 +993,7 @@ impl PlanApp {
     /// The floating Edit toolbar at the bottom left of the canvas, built from
     /// the active tool's `edit_toolbar`.
     fn edit_toolbar(&mut self, ctx: &egui::Context) {
-        if self.dialog.is_some() {
+        if self.has_dialog() || self.view3d.active {
             return;
         }
         let actions = self.tools.active().edit_toolbar(&self.cx);
@@ -880,11 +1027,7 @@ impl PlanApp {
             });
         if let Some(kind) = clicked {
             self.cx.apply_edit_action(kind);
-            for req in std::mem::take(&mut self.cx.requests) {
-                if let EditorRequest::OpenSpec(o) = req {
-                    self.open_spec(o);
-                }
-            }
+            self.process_requests();
         }
     }
 
@@ -1007,6 +1150,7 @@ impl PlanApp {
                 }
             }
         }
+        self.spec.show(ctx, &mut self.cx);
         if let Some(mut defaults) = self.defaults_dialog.take() {
             match defaults.show(ctx, self.dialog.is_none()) {
                 DefaultsOutcome::Open => {}
@@ -1159,8 +1303,17 @@ impl PlanApp {
 }
 
 impl eframe::App for PlanApp {
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        if let (Some(gl), Some(vp)) = (gl, self.view3d.viewport.as_mut()) {
+            vp.destroy(gl);
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.cx.refresh();
+        if editor::roof_view::auto_rebuild(&mut self.cx) {
+            self.cx.refresh();
+        }
         if !ctx.input(|i| i.pointer.any_down()) {
             self.cx.end_merge();
         }
@@ -1181,12 +1334,22 @@ impl eframe::App for PlanApp {
             self.apply(action);
         }
         self.dock_panel(ctx);
+        self.tools.frame(&mut self.cx, ctx);
+        self.process_requests();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
-            .show(ctx, |ui| self.canvas(ctx, ui));
+            .show(ctx, |ui| {
+                if self.view3d.frame(ctx, &mut self.cx) {
+                    shell::view3d_panel::show(ui, &mut self.cx, &mut self.view3d);
+                } else {
+                    self.canvas(ctx, ui);
+                }
+            });
         self.edit_toolbar(ctx);
         self.about_window(ctx);
         self.dialogs(ctx);
+        shell::docks::show_dialogs(ctx, &mut self.cx, &mut self.docks, &mut self.hotkeys);
+        dialogs::build_tools::show_all(ctx, &mut self.cx, &mut self.camera);
         self.sync_settings(ctx);
         if self.cx.is_dirty() {
             ctx.request_repaint();
@@ -1247,6 +1410,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_title("Plan Studio"),
+        depth_buffer: 24,
         ..Default::default()
     };
     eframe::run_native(
@@ -1326,5 +1490,163 @@ mod tests {
         a.tools.active_mut().pointer_up(&mut a.cx, q);
         assert_eq!(a.cx.project.floors[0].walls.len(), 1);
         assert_eq!(a.cx.project.floors[0].walls[0].kind, WallKind::Interior);
+    }
+
+    /// A plan with one object of every kind; returns the refs.
+    fn synthetic_plan(a: &mut PlanApp) -> Vec<ObjectRef> {
+        use editor::{placed, roof_view, site_view, stairs_view};
+        use plan_cabinets::CabinetKind;
+        use plan_core::cad::CadItem;
+        use plan_core::{CameraKind, CameraObject, Dimension, DimensionKind, PlacedSymbol};
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(480.0, 0.0),
+            Point::new(480.0, 288.0),
+            Point::new(0.0, 288.0),
+        ];
+        let mut walls = Vec::new();
+        for i in 0..4 {
+            walls.push(a.cx.project.add_wall(
+                0,
+                c[i],
+                c[(i + 1) % 4],
+                6.0,
+                109.0,
+                WallKind::Exterior,
+            ));
+        }
+        let mut refs = vec![ObjectRef::Wall(walls[0])];
+        let door =
+            a.cx.project
+                .add_opening(0, walls[0], 100.0, OpeningKind::Door)
+                .unwrap();
+        refs.push(ObjectRef::Opening(door));
+        refs.push(ObjectRef::Dimension(a.cx.project.add_dimension(
+            0,
+            Dimension::new(0, DimensionKind::Manual, c[0], c[1], 24.0),
+        )));
+        refs.push(ObjectRef::Cad(a.cx.project.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Line { a: c[0], b: c[2] },
+        )));
+        refs.push(ObjectRef::Text(a.cx.project.add_cad(
+            0,
+            "Text",
+            CadItem::Text {
+                pos: c[3],
+                text: "Note".into(),
+                height: 3.0,
+                angle: 0.0,
+            },
+        )));
+        let cab = tools::cabinet::default_cabinet(&a.cx, CabinetKind::Base);
+        let cab_id = placed::add_cabinet(&mut a.cx.project, 0, cab).unwrap();
+        refs.push(ObjectRef::Cabinet(cab_id));
+        refs.push(ObjectRef::Symbol(a.cx.project.add_symbol(
+            0,
+            PlacedSymbol::new("none", Point::new(100.0, 100.0), 24.0, 24.0, 30.0),
+        )));
+        let stair = stairs_view::build(
+            &a.cx.project,
+            0,
+            stairs_view::StairKind::Draw,
+            plan_stairs::Turn::Left,
+            Point::new(200.0, 50.0),
+            Some(Point::new(350.0, 50.0)),
+        );
+        refs.push(ObjectRef::Stair(stairs_view::add(
+            &mut a.cx.project,
+            0,
+            stair,
+        )));
+        let settings = roof_view::RoofSettings::from_defaults(&a.cx.defaults);
+        roof_view::rebuild(&mut a.cx.project, 0, settings, false).unwrap();
+        let plane = roof_view::load(&a.cx.project.floors[0]).planes[0].id;
+        refs.push(ObjectRef::RoofPlane(plane));
+        refs.push(ObjectRef::Camera(a.cx.project.add_camera(
+            CameraObject::new(
+                CameraKind::FullCamera,
+                Point::new(50.0, 50.0),
+                45.0,
+                "Camera 1",
+                0,
+            ),
+        )));
+        let kind = tools::electrical::ElecVariant::Outlet110.kind().unwrap();
+        let dev = tools::electrical::placement(
+            &a.cx,
+            kind,
+            Point::new(100.0, 0.0),
+            Point::new(100.0, 0.0),
+        )
+        .unwrap();
+        let mut dev_id = 0;
+        site_view::edit_electrical(&mut a.cx, "Place", |layer, _| dev_id = layer.add(dev));
+        refs.push(ObjectRef::Device(dev_id));
+        site_view::save_terrain(&mut a.cx.project, &site_view::TerrainRecord::new());
+        refs.push(ObjectRef::Terrain);
+        a.cx.mark_dirty();
+        a.cx.refresh();
+        assert!(!a.cx.rooms.is_empty());
+        refs.push(ObjectRef::Room(0));
+        refs
+    }
+
+    #[test]
+    fn open_spec_opens_a_dialog_for_every_object_kind() {
+        let mut a = app();
+        let refs = synthetic_plan(&mut a);
+        for o in refs {
+            a.dialog = None;
+            a.spec = Default::default();
+            a.open_spec(o);
+            let opened = match o {
+                // Rooms and cameras are hosted by the room dialog and 3D panel.
+                ObjectRef::Room(_) => editor::rooms_edit::take_room_dialog_request(&a.cx).is_some(),
+                ObjectRef::Camera(id) => shell::view3d_panel::Outbox::global()
+                    .take()
+                    .contains(&shell::view3d_panel::ViewRequest::OpenCameraSpec(id)),
+                _ => a.has_dialog(),
+            };
+            assert!(opened, "no dialog for {o:?}");
+        }
+    }
+
+    #[test]
+    fn every_object_kind_is_found_by_hit_testing_and_deleted_by_the_selection() {
+        let mut a = app();
+        let refs = synthetic_plan(&mut a);
+        for o in &refs {
+            assert!(
+                matches!(o, ObjectRef::Room(_)) || o.exists_in(&a.cx.project, 0),
+                "{o:?} does not exist"
+            );
+            assert!(
+                editor::selection::layer_of(a.cx.floor(), *o).is_some()
+                    || matches!(o, ObjectRef::Room(_))
+            );
+        }
+        // Kinds deleted through the shared selection.
+        for o in refs.iter().filter(|o| {
+            matches!(
+                o,
+                ObjectRef::Cabinet(_)
+                    | ObjectRef::Symbol(_)
+                    | ObjectRef::Stair(_)
+                    | ObjectRef::RoofPlane(_)
+                    | ObjectRef::Camera(_)
+                    | ObjectRef::Device(_)
+            )
+        }) {
+            a.cx.selection.set(*o);
+            a.cx.refresh();
+            assert!(
+                a.cx.selection.contains(*o),
+                "{o:?} dropped from the selection"
+            );
+            a.cx.delete_selection();
+            assert!(!o.exists_in(&a.cx.project, 0), "{o:?} not deleted");
+        }
     }
 }

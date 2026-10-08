@@ -9,7 +9,7 @@ use crate::Stair;
 use plan_3d::{Material, Mesh, Vertex};
 use plan_core::Id;
 
-type V3 = [f64; 3];
+pub(crate) type V3 = [f64; 3];
 
 /// Stringer board thickness.
 const STRINGER_THICKNESS: f64 = 1.5;
@@ -164,7 +164,7 @@ impl Ctx<'_> {
 
     fn push(&mut self, part: StairPart, material: Material, profile: &[V3], ext: V3) {
         self.out
-            .push((part, solid(profile, ext, material, self.id)));
+            .push((part, solid(profile, ext, material, Some(self.id))));
     }
 
     /// A vertical-plane profile (along, height) at lateral `lat`, extruded sideways by `thick`.
@@ -280,7 +280,7 @@ fn newell(pts: &[V3]) -> V3 {
 
 /// A convex prism: `profile` swept along `ext`, with flat-shaded faces and
 /// outward normals (decided against the prism centroid, so any winding works).
-fn solid(profile: &[V3], ext: V3, material: Material, id: Id) -> Mesh {
+pub(crate) fn solid(profile: &[V3], ext: V3, material: Material, id: Option<Id>) -> Mesh {
     let moved: Vec<V3> = profile.iter().map(|&p| add(p, ext)).collect();
     let mut all = profile.to_vec();
     all.extend_from_slice(&moved);
@@ -290,7 +290,7 @@ fn solid(profile: &[V3], ext: V3, material: Material, id: Id) -> Mesh {
         vertices: Vec::new(),
         indices: Vec::new(),
         material,
-        object_id: Some(id),
+        object_id: id,
     };
     add_face(&mut mesh, profile, center);
     add_face(&mut mesh, &moved, center);

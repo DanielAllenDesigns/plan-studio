@@ -2211,7 +2211,26 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui_extras",
+ "plan-3d",
+ "plan-cabinets",
+ "plan-check",
+ "plan-chiefplan",
+ "plan-config",
  "plan-core",
+ "plan-docs",
+ "plan-electrical",
+ "plan-elevation",
+ "plan-framing",
+ "plan-import",
+ "plan-layout",
+ "plan-library",
+ "plan-materials",
+ "plan-render",
+ "plan-roof",
+ "plan-spaceplan",
+ "plan-stairs",
+ "plan-terrain",
+ "plan-view3d",
  "rfd",
  "serde_json",
 ]
@@ -2243,6 +2262,15 @@ dependencies = [
  "plan-3d",
  "plan-core",
  "plan-stairs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plan-chiefplan"
+version = "0.1.0"
+dependencies = [
+ "plan-core",
  "serde",
  "serde_json",
 ]
@@ -2299,6 +2327,7 @@ version = "0.1.0"
 dependencies = [
  "plan-3d",
  "plan-core",
+ "plan-roof",
  "serde",
  "serde_json",
 ]
@@ -2399,6 +2428,7 @@ dependencies = [
  "eframe",
  "plan-3d",
  "plan-core",
+ "plan-render",
 ]
 
 [[package]]

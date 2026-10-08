@@ -1,10 +1,655 @@
-//! Text tool: not built yet. Fill in the [`Tool`] methods (see
-//! `docs/architecture-tools.md` and the matching `docs/parity/*.md`).
+//! Text and annotation tools (TXT-1..TXT-15 in
+//! `docs/parity/dimensions-text-cad.md`).
+//!
+//! Every annotation is a CAD item on the `Text` layer (TXT-11): text is a
+//! `CadItem::Text`, leaders and callout shapes are polylines and circles
+//! grouped with their text so they select together.
+//!
+//! * Text (TXT-1): click places the anchor (the text's bottom-left), typing
+//!   fills it, Enter commits, a click elsewhere commits and starts the next
+//!   text, Esc cancels. Clicking existing text edits it in place. The height
+//!   is `defaults.text.height` in plan inches (TXT-2: the printed-size to
+//!   plan-scale conversion is deferred, the model has no print scale).
+//! * Rich Text (TXT-4): Enter adds a line, Tab commits; the size scale is
+//!   stored in the text height, bold/italic/underline are kept per session
+//!   ([`TextTool::style_of`]) because the model has no style fields.
+//! * Leader Line (TXT-5): click the arrow tip and the bends, double-click or
+//!   Enter ends. Text Line with Arrow (TXT-6) then asks for the text.
+//! * Callout (TXT-7): click the target, click the callout position, type;
+//!   a circle or hexagon is drawn around the text.
+//! * Marker (TXT-8): a numbered circle. Note (TXT-9): text "Note n: ..." with
+//!   the next free note number, which a Note schedule can read back with
+//!   [`note_number`].
+//!
+//! The shell sends typed characters to a tool only while `cx.temp.editing`
+//! is set, so the tool raises that flag while text is being typed
+//! ([`set_typing`]).
 
-use super::{Tool, ToolId};
-use crate::editor::EditorContext;
+use super::cad::{add_cad_items, arrowhead, regular_polygon, set_typing, OptionStrip, StripButton};
+use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
+use crate::editor::selection::{cad_by_id, cad_distance, hit_test};
+use crate::editor::{render, Camera, EditorContext, EditorRequest, ObjectRef};
+use eframe::egui::{self, Rect, Stroke};
+use plan_core::cad::{CadItem, TEXT_WIDTH_FACTOR};
+use plan_core::geometry::Point;
+use plan_core::Id;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
-pub struct TextTool;
+/// Layer of text and annotations (TXT-11).
+pub const TEXT_LAYER: &str = "Text";
+/// Prefix of note texts; see [`note_text`].
+pub const NOTE_PREFIX: &str = "Note ";
+
+thread_local! {
+    static REQUESTED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Asks for a variant (by Chief's name, e.g. "Leader Line") the next time the
+/// Text tool is activated or re-picked.
+pub fn request_variant(name: &str) {
+    REQUESTED.with(|r| *r.borrow_mut() = Some(name.to_string()));
+}
+
+fn take_requested() -> Option<String> {
+    REQUESTED.with(|r| r.borrow_mut().take())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextMode {
+    Text,
+    RichText,
+    LeaderLine,
+    ArrowLine,
+    Callout,
+    Marker,
+    Note,
+}
+
+impl TextMode {
+    pub const ALL: [TextMode; 7] = [
+        TextMode::Text,
+        TextMode::RichText,
+        TextMode::LeaderLine,
+        TextMode::ArrowLine,
+        TextMode::Callout,
+        TextMode::Marker,
+        TextMode::Note,
+    ];
+
+    /// Chief's name from the Text Tools flyout.
+    pub fn name(self) -> &'static str {
+        match self {
+            TextMode::Text => "Text",
+            TextMode::RichText => "Rich Text",
+            TextMode::LeaderLine => "Leader Line",
+            TextMode::ArrowLine => "Text Line with Arrow",
+            TextMode::Callout => "Callout",
+            TextMode::Marker => "Marker",
+            TextMode::Note => "Note",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<TextMode> {
+        TextMode::ALL
+            .into_iter()
+            .find(|m| m.name().eq_ignore_ascii_case(name))
+    }
+
+    fn short(self) -> &'static str {
+        match self {
+            TextMode::ArrowLine => "Line + Text",
+            m => m.name(),
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            TextMode::Text => "Text: click to place text, type, Enter to finish",
+            TextMode::RichText => "Rich Text: click, type (Enter adds a line), Tab to finish",
+            TextMode::LeaderLine => "Leader Line: click the arrow tip and the bends; Enter or double-click ends",
+            TextMode::ArrowLine => "Text Line with Arrow: click the arrow tip and the bends; Enter ends, then type the text",
+            TextMode::Callout => "Callout: click the target, click the callout position, type the text",
+            TextMode::Marker => "Marker: click to place the next numbered marker",
+            TextMode::Note => "Note: click to place a numbered note, type, Enter to finish",
+        }
+    }
+}
+
+/// The outline drawn around callout text.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CalloutShape {
+    Circle,
+    Hexagon,
+}
+
+/// The style of a Rich Text box. Only the size scale reaches the model (as
+/// the text height); the rest is kept for the session.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RichStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub size_scale: f64,
+}
+
+impl Default for RichStyle {
+    fn default() -> Self {
+        Self {
+            bold: false,
+            italic: false,
+            underline: false,
+            size_scale: 1.0,
+        }
+    }
+}
+
+// ----- pure builders -----
+
+/// Width of `text` in plan inches (longest line).
+pub fn text_width(text: &str, height: f64) -> f64 {
+    text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f64 * height * TEXT_WIDTH_FACTOR
+}
+
+/// The text of note number `n`.
+pub fn note_text(n: u32, body: &str) -> String {
+    format!("{NOTE_PREFIX}{n}: {body}")
+}
+
+/// The note number of a note text (for a Note schedule).
+pub fn note_number(text: &str) -> Option<u32> {
+    let rest = text.strip_prefix(NOTE_PREFIX)?;
+    let (n, _) = rest.split_once(':')?;
+    n.trim().parse().ok()
+}
+
+/// A leader: an open polyline from the arrow tip `pts[0]` through the bends,
+/// with a closed triangle for the arrowhead (TXT-5).
+pub fn leader_items(pts: &[Point], arrow: f64) -> Vec<CadItem> {
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+    vec![
+        CadItem::Polyline {
+            points: pts.to_vec(),
+            closed: false,
+        },
+        CadItem::Polyline {
+            points: arrowhead(pts[0], pts[1], arrow),
+            closed: true,
+        },
+    ]
+}
+
+/// A callout around `text` centered on `center` with a leader to `target`
+/// (TXT-7): shape first, then the leader and arrowhead, then the text.
+pub fn callout_items(
+    target: Point,
+    center: Point,
+    text: &str,
+    height: f64,
+    shape: CalloutShape,
+) -> Vec<CadItem> {
+    let w = text_width(text, height);
+    let lines = text.lines().count().max(1) as f64;
+    let h = height * lines;
+    let r = (w.max(h) * 0.5 + height * 0.7).max(height);
+    let mut items = Vec::new();
+    match shape {
+        CalloutShape::Circle => items.push(CadItem::Circle { center, radius: r }),
+        CalloutShape::Hexagon => items.push(CadItem::Polyline {
+            points: regular_polygon(center, center.add(Point::new(r * 1.1, 0.0)), 6),
+            closed: true,
+        }),
+    }
+    if target.dist(center) > r * 1.2 {
+        let edge = center.add(target.sub(center).normalized().scale(r));
+        items.extend(leader_items(&[target, edge], (height * 1.2).max(3.0)));
+    }
+    items.push(CadItem::Text {
+        pos: Point::new(center.x - w * 0.5, center.y - h * 0.5),
+        text: text.to_string(),
+        height,
+        angle: 0.0,
+    });
+    items
+}
+
+/// A numbered marker: a circle with the number centered in it (TXT-8).
+pub fn marker_items(center: Point, number: u32, height: f64) -> Vec<CadItem> {
+    let text = number.to_string();
+    let w = text_width(&text, height);
+    vec![
+        CadItem::Circle {
+            center,
+            radius: height * 1.2,
+        },
+        CadItem::Text {
+            pos: Point::new(center.x - w * 0.5, center.y - height * 0.5),
+            text,
+            height,
+            angle: 0.0,
+        },
+    ]
+}
+
+// ----- the tool -----
+
+pub struct TextTool {
+    mode: TextMode,
+    shape: CalloutShape,
+    rich: RichStyle,
+    /// Where the text being typed is anchored (bottom-left, or the center of
+    /// a callout); `Some` while typing.
+    anchor: Option<Point>,
+    buf: String,
+    /// An existing text being edited.
+    editing: Option<Id>,
+    /// Leader / callout points clicked so far.
+    pts: Vec<Point>,
+    /// A finished leader waiting for its text (Text Line with Arrow).
+    leader: Vec<Point>,
+    hover: Option<Point>,
+    styles: HashMap<Id, RichStyle>,
+    strip: OptionStrip,
+}
+
+impl Default for TextTool {
+    fn default() -> Self {
+        Self {
+            mode: TextMode::Text,
+            shape: CalloutShape::Circle,
+            rich: RichStyle::default(),
+            anchor: None,
+            buf: String::new(),
+            editing: None,
+            pts: Vec::new(),
+            leader: Vec::new(),
+            hover: None,
+            styles: HashMap::new(),
+            strip: OptionStrip::default(),
+        }
+    }
+}
+
+const BTN_SHAPE: u16 = 100;
+const BTN_BOLD: u16 = 110;
+const BTN_ITALIC: u16 = 111;
+const BTN_UNDERLINE: u16 = 112;
+const BTN_SMALLER: u16 = 113;
+const BTN_LARGER: u16 = 114;
+
+impl TextTool {
+    pub fn mode(&self) -> TextMode {
+        self.mode
+    }
+
+    /// Switches the variant (a flyout entry), dropping work in progress.
+    pub fn set_mode(&mut self, mode: TextMode) {
+        self.mode = mode;
+        self.reset_state();
+    }
+
+    pub fn set_mode_by_name(&mut self, name: &str) -> bool {
+        match TextMode::from_name(name) {
+            Some(m) => {
+                self.set_mode(m);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn set_callout_shape(&mut self, s: CalloutShape) {
+        self.shape = s;
+    }
+
+    pub fn rich_style(&self) -> RichStyle {
+        self.rich
+    }
+
+    /// The Rich Text style a text was created with this session.
+    pub fn style_of(&self, id: Id) -> Option<RichStyle> {
+        self.styles.get(&id).copied()
+    }
+
+    /// The text typed so far, while typing.
+    pub fn typed(&self) -> Option<&str> {
+        self.anchor.map(|_| self.buf.as_str())
+    }
+
+    fn typing(&self) -> bool {
+        self.anchor.is_some()
+    }
+
+    fn reset_state(&mut self) {
+        self.anchor = None;
+        self.buf.clear();
+        self.editing = None;
+        self.pts.clear();
+        self.leader.clear();
+    }
+
+    fn cancel(&mut self, cx: &mut EditorContext) {
+        self.reset_state();
+        set_typing(cx, false);
+        cx.readout = None;
+    }
+
+    /// Text height in plan inches: the defaults' height, scaled in Rich Text
+    /// (TXT-2).
+    fn height(&self, cx: &EditorContext) -> f64 {
+        let h = cx.defaults.text.height;
+        let h = if h > 0.0 { h } else { 6.0 };
+        if self.mode == TextMode::RichText {
+            h * self.rich.size_scale
+        } else {
+            h
+        }
+    }
+
+    fn arrow_size(&self, cx: &EditorContext) -> f64 {
+        (self.height(cx) * 1.2).max(3.0)
+    }
+
+    /// The next free note number (TXT-9).
+    fn next_note(cx: &EditorContext) -> u32 {
+        cx.floor()
+            .cad
+            .iter()
+            .filter_map(|c| match &c.item {
+                CadItem::Text { text, .. } => note_number(text),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    /// The next marker number: one more than the largest number text on the
+    /// Text layer that sits inside a marker circle.
+    fn next_marker(cx: &EditorContext) -> u32 {
+        cx.floor()
+            .cad
+            .iter()
+            .filter(|c| c.layer == TEXT_LAYER)
+            .filter_map(|c| match &c.item {
+                CadItem::Text { text, pos, .. } => {
+                    let n: u32 = text.parse().ok()?;
+                    let inside = cx.floor().cad.iter().any(|o| {
+                        matches!(o.item, CadItem::Circle { center, radius }
+                            if center.dist(*pos) <= radius * 1.2)
+                    });
+                    inside.then_some(n)
+                }
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    fn begin_typing(&mut self, cx: &mut EditorContext, anchor: Point) {
+        self.anchor = Some(anchor);
+        self.buf.clear();
+        set_typing(cx, true);
+        cx.status = "Type the text; Enter finishes, Esc cancels".into();
+    }
+
+    /// The items the current state would create, for the preview and commit.
+    fn pending_items(&self, cx: &EditorContext, extra: Option<Point>) -> Vec<CadItem> {
+        let height = self.height(cx);
+        match self.mode {
+            TextMode::Text | TextMode::RichText | TextMode::Note => {
+                let Some(a) = self.anchor else {
+                    return Vec::new();
+                };
+                let text = if self.mode == TextMode::Note && self.editing.is_none() {
+                    note_text(Self::next_note(cx), &self.buf)
+                } else {
+                    self.buf.clone()
+                };
+                vec![CadItem::Text {
+                    pos: a,
+                    text,
+                    height,
+                    angle: 0.0,
+                }]
+            }
+            TextMode::LeaderLine | TextMode::ArrowLine => {
+                let mut pts = if self.anchor.is_some() {
+                    self.leader.clone()
+                } else {
+                    self.pts.clone()
+                };
+                if self.anchor.is_none() {
+                    pts.extend(extra);
+                }
+                let mut items = leader_items(&pts, self.arrow_size(cx));
+                if let (Some(a), true) = (self.anchor, !self.buf.is_empty()) {
+                    items.push(CadItem::Text {
+                        pos: a,
+                        text: self.buf.clone(),
+                        height,
+                        angle: 0.0,
+                    });
+                }
+                items
+            }
+            TextMode::Callout => match (self.pts.first(), self.anchor) {
+                (Some(t), Some(c)) => callout_items(*t, c, &self.buf, height, self.shape),
+                (Some(t), None) => extra
+                    .map(|c| callout_items(*t, c, "  ", height, self.shape))
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            },
+            TextMode::Marker => extra
+                .map(|c| marker_items(c, Self::next_marker(cx), height))
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Finishes the text being typed (Enter, Tab, a click elsewhere).
+    fn commit_typing(&mut self, cx: &mut EditorContext) -> ToolResult {
+        let Some(anchor) = self.anchor else {
+            return ToolResult::ignored();
+        };
+        let height = self.height(cx);
+        let text = self.buf.trim_end().to_string();
+        let editing = self.editing;
+        let mode = self.mode;
+        let leader = std::mem::take(&mut self.leader);
+        let target = self.pts.first().copied();
+        self.anchor = None;
+        self.buf.clear();
+        self.editing = None;
+        self.pts.clear();
+        set_typing(cx, false);
+        cx.status.clear();
+
+        if let Some(id) = editing {
+            return self.finish_edit(cx, id, text);
+        }
+        let (items, label) = match mode {
+            TextMode::Text | TextMode::RichText => {
+                if text.trim().is_empty() {
+                    return ToolResult::consumed();
+                }
+                (
+                    vec![CadItem::Text {
+                        pos: anchor,
+                        text,
+                        height,
+                        angle: 0.0,
+                    }],
+                    "Place Text",
+                )
+            }
+            TextMode::Note => {
+                if text.trim().is_empty() {
+                    return ToolResult::consumed();
+                }
+                (
+                    vec![CadItem::Text {
+                        pos: anchor,
+                        text: note_text(Self::next_note(cx), &text),
+                        height,
+                        angle: 0.0,
+                    }],
+                    "Place Note",
+                )
+            }
+            TextMode::ArrowLine => {
+                let mut items = leader_items(&leader, self.arrow_size(cx));
+                if !text.trim().is_empty() {
+                    items.push(CadItem::Text {
+                        pos: anchor,
+                        text,
+                        height,
+                        angle: 0.0,
+                    });
+                }
+                (items, "Text Line with Arrow")
+            }
+            TextMode::Callout => {
+                let Some(t) = target else {
+                    return ToolResult::consumed();
+                };
+                if text.trim().is_empty() {
+                    return ToolResult::consumed();
+                }
+                (
+                    callout_items(t, anchor, &text, height, self.shape),
+                    "Place Callout",
+                )
+            }
+            _ => return ToolResult::consumed(),
+        };
+        let rich = mode == TextMode::RichText;
+        match add_cad_items(cx, TEXT_LAYER, items, label) {
+            Some(ids) => {
+                if rich {
+                    self.styles.insert(ids[0], self.rich);
+                }
+                ToolResult::committed(label)
+            }
+            None => ToolResult::consumed(),
+        }
+    }
+
+    /// Writes the edited text back; empty text deletes the object.
+    fn finish_edit(&mut self, cx: &mut EditorContext, id: Id, text: String) -> ToolResult {
+        if !cx.check_unlocked(ObjectRef::Cad(id)) {
+            return ToolResult::consumed();
+        }
+        let same = matches!(cad_by_id(cx.floor(), id).map(|c| &c.item),
+            Some(CadItem::Text { text: t, .. }) if *t == text);
+        if same {
+            return ToolResult::consumed();
+        }
+        cx.begin_change("Edit Text");
+        let fl = cx.floor;
+        if text.trim().is_empty() {
+            cx.project.remove_cad(fl, id);
+            cx.selection.clear();
+        } else if let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) {
+            if let CadItem::Text { text: t, .. } = &mut c.item {
+                *t = text;
+            }
+        }
+        cx.mark_dirty();
+        ToolResult::committed("Edit Text")
+    }
+
+    /// Ends a leader: Leader Line commits; Text Line with Arrow asks for the
+    /// text.
+    fn finish_leader(&mut self, cx: &mut EditorContext) -> ToolResult {
+        if self.pts.len() < 2 {
+            self.cancel(cx);
+            return ToolResult::consumed();
+        }
+        let pts = std::mem::take(&mut self.pts);
+        if self.mode == TextMode::ArrowLine {
+            let last = *pts.last().expect("points");
+            self.leader = pts;
+            // The text sits just beyond the last point.
+            self.begin_typing(cx, last.add(Point::new(3.0, 3.0)));
+            return ToolResult::consumed();
+        }
+        let items = leader_items(&pts, self.arrow_size(cx));
+        match add_cad_items(cx, TEXT_LAYER, items, "Leader Line") {
+            Some(_) => {
+                cx.readout = None;
+                ToolResult::committed("Leader Line")
+            }
+            None => ToolResult::consumed(),
+        }
+    }
+
+    /// The text object under `p`, for editing it in place.
+    fn text_under(cx: &EditorContext, p: Point) -> Option<Id> {
+        let tol = cx.pick_tol() * 0.5;
+        cx.floor().cad.iter().rev().find_map(|c| {
+            (matches!(c.item, CadItem::Text { .. })
+                && cx.layers().is_visible(&c.layer)
+                && cad_distance(&c.item, p) <= tol)
+                .then_some(c.id)
+        })
+    }
+
+    fn strip_items(&self) -> Vec<StripButton> {
+        let mut v: Vec<StripButton> = TextMode::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, m)| StripButton::new(m.short(), i as u16, *m == self.mode))
+            .collect();
+        if self.mode == TextMode::Callout {
+            v.push(StripButton::new(
+                "Circle",
+                BTN_SHAPE,
+                self.shape == CalloutShape::Circle,
+            ));
+            v.push(StripButton::new(
+                "Hexagon",
+                BTN_SHAPE + 1,
+                self.shape == CalloutShape::Hexagon,
+            ));
+        }
+        if self.mode == TextMode::RichText {
+            v.push(StripButton::new("B", BTN_BOLD, self.rich.bold));
+            v.push(StripButton::new("I", BTN_ITALIC, self.rich.italic));
+            v.push(StripButton::new("U", BTN_UNDERLINE, self.rich.underline));
+            v.push(StripButton::new("A\u{2212}", BTN_SMALLER, false));
+            v.push(StripButton::new(
+                format!("{:.0}%", self.rich.size_scale * 100.0),
+                BTN_LARGER + 1,
+                true,
+            ));
+            v.push(StripButton::new("A+", BTN_LARGER, false));
+        }
+        v
+    }
+
+    fn strip_click(&mut self, cx: &mut EditorContext, id: u16) -> ToolResult {
+        if let Some(m) = TextMode::ALL.get(id as usize).copied() {
+            self.cancel(cx);
+            self.set_mode(m);
+            cx.status = m.hint().into();
+            return ToolResult::consumed();
+        }
+        match id {
+            BTN_SHAPE => self.shape = CalloutShape::Circle,
+            i if i == BTN_SHAPE + 1 => self.shape = CalloutShape::Hexagon,
+            BTN_BOLD => self.rich.bold = !self.rich.bold,
+            BTN_ITALIC => self.rich.italic = !self.rich.italic,
+            BTN_UNDERLINE => self.rich.underline = !self.rich.underline,
+            BTN_SMALLER => self.rich.size_scale = (self.rich.size_scale - 0.25).max(0.5),
+            BTN_LARGER => self.rich.size_scale = (self.rich.size_scale + 0.25).min(4.0),
+            _ => {}
+        }
+        ToolResult::consumed()
+    }
+}
 
 impl Tool for TextTool {
     fn id(&self) -> ToolId {
@@ -12,14 +657,557 @@ impl Tool for TextTool {
     }
 
     fn name(&self) -> &'static str {
-        "Text"
+        self.mode.name()
     }
 
     fn hint(&self) -> String {
-        "Text: not yet implemented".into()
+        self.mode.hint().into()
+    }
+
+    fn cursor(&self) -> egui::CursorIcon {
+        egui::CursorIcon::Text
+    }
+
+    fn set_variant(&mut self, _id: ToolId) {
+        if let Some(name) = take_requested() {
+            self.set_mode_by_name(&name);
+        }
     }
 
     fn activate(&mut self, cx: &mut EditorContext) {
-        cx.status = "Tool not implemented yet".into();
+        self.reset_state();
+        cx.status = self.mode.hint().into();
+    }
+
+    fn deactivate(&mut self, cx: &mut EditorContext) {
+        // Text typed but not finished is kept (TXT-15: leaving the tool
+        // commits what was typed).
+        if self.typing() && self.editing.is_none() {
+            let _ = self.commit_typing(cx);
+        }
+        self.cancel(cx);
+        self.hover = None;
+        cx.last_snap = None;
+    }
+
+    fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        let s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+        self.hover = Some(s.point);
+        cx.last_snap = Some(s);
+        ToolResult {
+            repaint: true,
+            ..ToolResult::default()
+        }
+    }
+
+    fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if let Some(id) = self.strip.hit(p.screen) {
+            return self.strip_click(cx, id);
+        }
+        // A click away from the text being typed finishes it (TXT-1); in the
+        // text tools it also starts the next text.
+        if self.typing() {
+            let res = self.commit_typing(cx);
+            if !matches!(
+                self.mode,
+                TextMode::Text | TextMode::RichText | TextMode::Note
+            ) {
+                return res;
+            }
+            let started = self.start_text(cx, &p);
+            return ToolResult {
+                commit: res.commit,
+                ..started
+            };
+        }
+        match self.mode {
+            TextMode::Text | TextMode::RichText | TextMode::Note => self.start_text(cx, &p),
+            TextMode::LeaderLine | TextMode::ArrowLine => {
+                let s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+                if self.pts.last().is_none_or(|l| l.dist(s.point) >= 0.5) {
+                    self.pts.push(s.point);
+                }
+                ToolResult::consumed()
+            }
+            TextMode::Callout => {
+                let s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+                if self.pts.is_empty() {
+                    self.pts.push(s.point);
+                } else {
+                    self.begin_typing(cx, s.point);
+                }
+                ToolResult::consumed()
+            }
+            TextMode::Marker => {
+                let height = self.height(cx);
+                let n = Self::next_marker(cx);
+                let at = p.snapped;
+                match add_cad_items(cx, TEXT_LAYER, marker_items(at, n, height), "Place Marker") {
+                    Some(_) => ToolResult::committed("Place Marker"),
+                    None => ToolResult::consumed(),
+                }
+            }
+        }
+    }
+
+    fn pointer_up(&mut self, _cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
+        ToolResult::ignored()
+    }
+
+    fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if matches!(self.mode, TextMode::LeaderLine | TextMode::ArrowLine) && !self.pts.is_empty() {
+            return self.finish_leader(cx);
+        }
+        if !self.typing() && self.pts.is_empty() {
+            let tol = cx.pick_tol();
+            let hit = hit_test(cx.floor(), cx.layers(), p.world, tol)
+                .into_iter()
+                .find(|o| matches!(o, ObjectRef::Cad(_)));
+            if let Some(o) = hit {
+                cx.selection.set(o);
+                cx.requests.push(EditorRequest::OpenSpec(o));
+                return ToolResult::consumed();
+            }
+        }
+        ToolResult::ignored()
+    }
+
+    fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        if self.typing() {
+            if k.is(egui::Key::Escape) {
+                self.cancel(cx);
+                cx.status.clear();
+                return ToolResult::consumed();
+            }
+            if k.is(egui::Key::Enter) {
+                if self.mode == TextMode::RichText && self.editing.is_none() {
+                    self.buf.push('\n');
+                    return ToolResult::consumed();
+                }
+                return self.commit_typing(cx);
+            }
+            if k.is(egui::Key::Tab) && self.mode == TextMode::RichText {
+                return self.commit_typing(cx);
+            }
+            if k.is(egui::Key::Backspace) {
+                self.buf.pop();
+            } else if let Some(s) = &k.text {
+                self.buf.extend(s.chars().filter(|c| !c.is_control()));
+            }
+            return ToolResult::consumed();
+        }
+        if k.is(egui::Key::Escape) {
+            if !self.pts.is_empty() {
+                self.cancel(cx);
+                return ToolResult::consumed();
+            }
+            return ToolResult::ignored();
+        }
+        if k.is(egui::Key::Enter)
+            && matches!(self.mode, TextMode::LeaderLine | TextMode::ArrowLine)
+            && !self.pts.is_empty()
+        {
+            return self.finish_leader(cx);
+        }
+        ToolResult::ignored()
+    }
+
+    fn draw_overlay(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+        let pal = &cx.palette;
+        self.strip.draw(painter, cam, pal, &self.strip_items());
+        let ghost = Stroke::new(1.0_f32, pal.ghost_stroke);
+        let hover = self.hover;
+        let items = self.pending_items(cx, hover);
+        for it in &items {
+            render::draw_cad(painter, cam, it, ghost, pal);
+            if let CadItem::Text { text, .. } = it {
+                if self.typing() {
+                    let (lo, hi) = it.bounds();
+                    let r = Rect::from_two_pos(cam.world_to_screen(lo), cam.world_to_screen(hi))
+                        .expand(3.0);
+                    painter.rect_stroke(r, 0.0, ghost, egui::StrokeKind::Outside);
+                    // The caret.
+                    let end = cam.world_to_screen(Point::new(hi.x, lo.y));
+                    painter.line_segment(
+                        [
+                            end,
+                            end + egui::vec2(0.0, -((hi.y - lo.y) * cam.px_per_in) as f32),
+                        ],
+                        Stroke::new(1.5_f32, pal.selection),
+                    );
+                    let _ = text;
+                }
+            }
+        }
+        for q in &self.pts {
+            painter.circle_filled(cam.world_to_screen(*q), 3.0, pal.ghost_stroke);
+        }
+        if let Some(s) = cx.last_snap {
+            render::draw_snap_marker(painter, cam, &s, pal.ghost_stroke);
+        }
+    }
+
+    fn edit_toolbar(&self, cx: &EditorContext) -> Vec<crate::editor::EditAction> {
+        cx.common_edit_actions()
+    }
+}
+
+impl TextTool {
+    /// A click that places or edits text.
+    fn start_text(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        if let Some(id) = Self::text_under(cx, p.world) {
+            if let Some(CadItem::Text { pos, text, .. }) =
+                cad_by_id(cx.floor(), id).map(|c| c.item.clone())
+            {
+                if !cx.check_unlocked(ObjectRef::Cad(id)) {
+                    return ToolResult::consumed();
+                }
+                self.editing = Some(id);
+                self.begin_typing(cx, pos);
+                self.buf = text;
+                cx.selection.set(ObjectRef::Cad(id));
+                return ToolResult::consumed();
+            }
+        }
+        cx.selection.clear();
+        self.begin_typing(cx, p.snapped);
+        ToolResult::consumed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan_defaults;
+
+    fn new_cx() -> EditorContext {
+        EditorContext::new(plan_defaults::embedded())
+    }
+
+    fn tool(mode: TextMode) -> TextTool {
+        let mut t = TextTool::default();
+        t.set_mode(mode);
+        t
+    }
+
+    fn click(t: &mut TextTool, cx: &mut EditorContext, x: f64, y: f64) -> ToolResult {
+        let p = PointerEvent::at(cx, Point::new(x, y));
+        t.pointer_move(cx, p);
+        let r = t.pointer_down(cx, p.with_down(true));
+        t.pointer_up(cx, p);
+        r
+    }
+
+    fn type_text(t: &mut TextTool, cx: &mut EditorContext, s: &str) {
+        t.key(cx, KeyEvent::text(s));
+    }
+
+    fn enter(t: &mut TextTool, cx: &mut EditorContext) -> ToolResult {
+        t.key(cx, KeyEvent::key(egui::Key::Enter))
+    }
+
+    #[test]
+    fn click_type_enter_places_text_at_the_default_height() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 10.0, 10.0);
+        assert!(
+            cx.temp.editing.is_some(),
+            "typing asks the shell for characters"
+        );
+        assert!(
+            cx.floor().cad.is_empty(),
+            "nothing is stored until it is finished"
+        );
+        type_text(&mut t, &mut cx, "Hello");
+        assert_eq!(t.typed(), Some("Hello"));
+        let r = enter(&mut t, &mut cx);
+        assert_eq!(r.commit.as_deref(), Some("Place Text"));
+        let c = &cx.floor().cad[0];
+        assert_eq!(c.layer, TEXT_LAYER);
+        assert_eq!(
+            c.item,
+            CadItem::Text {
+                pos: Point::new(10.0, 10.0),
+                text: "Hello".into(),
+                height: cx.defaults.text.height,
+                angle: 0.0
+            }
+        );
+        assert!(cx.temp.editing.is_none());
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Cad(c.id)));
+        // Undo removes it.
+        assert_eq!(cx.undo().as_deref(), Some("Place Text"));
+        assert!(cx.floor().cad.is_empty());
+    }
+
+    #[test]
+    fn backspace_escape_and_empty_text() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        type_text(&mut t, &mut cx, "Abc");
+        t.key(&mut cx, KeyEvent::key(egui::Key::Backspace));
+        assert_eq!(t.typed(), Some("Ab"));
+        assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
+        assert!(cx.floor().cad.is_empty());
+        assert!(cx.temp.editing.is_none());
+        // Enter on nothing creates nothing.
+        click(&mut t, &mut cx, 0.0, 0.0);
+        enter(&mut t, &mut cx);
+        assert!(cx.floor().cad.is_empty());
+        assert!(
+            !t.key(&mut cx, KeyEvent::escape()).consumed,
+            "idle Esc leaves the tool"
+        );
+    }
+
+    #[test]
+    fn clicking_elsewhere_commits_and_starts_the_next_text() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        type_text(&mut t, &mut cx, "One");
+        let r = click(&mut t, &mut cx, 100.0, 50.0);
+        assert_eq!(r.commit.as_deref(), Some("Place Text"));
+        assert_eq!(cx.floor().cad.len(), 1);
+        assert_eq!(t.typed(), Some(""), "the second text is waiting for typing");
+        type_text(&mut t, &mut cx, "Two");
+        enter(&mut t, &mut cx);
+        assert_eq!(cx.floor().cad.len(), 2);
+    }
+
+    #[test]
+    fn clicking_existing_text_edits_it_in_place() {
+        let mut cx = new_cx();
+        let id = cx.project.add_cad(
+            0,
+            TEXT_LAYER,
+            CadItem::Text {
+                pos: Point::new(20.0, 20.0),
+                text: "Old".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 24.0, 23.0);
+        assert_eq!(t.typed(), Some("Old"));
+        type_text(&mut t, &mut cx, "er");
+        let r = enter(&mut t, &mut cx);
+        assert_eq!(r.commit.as_deref(), Some("Edit Text"));
+        let CadItem::Text { text, pos, .. } = &cad_by_id(cx.floor(), id).unwrap().item else {
+            panic!("text")
+        };
+        assert_eq!(text, "Older");
+        assert_eq!(*pos, Point::new(20.0, 20.0));
+        assert_eq!(cx.floor().cad.len(), 1);
+        // Clearing the text deletes the object.
+        click(&mut t, &mut cx, 24.0, 23.0);
+        for _ in 0..8 {
+            t.key(&mut cx, KeyEvent::key(egui::Key::Backspace));
+        }
+        enter(&mut t, &mut cx);
+        assert!(cx.floor().cad.is_empty());
+    }
+
+    #[test]
+    fn rich_text_takes_lines_and_a_size_scale() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::RichText);
+        t.rich.size_scale = 2.0;
+        t.rich.bold = true;
+        click(&mut t, &mut cx, 0.0, 0.0);
+        type_text(&mut t, &mut cx, "Line 1");
+        assert!(enter(&mut t, &mut cx).commit.is_none(), "Enter adds a line");
+        type_text(&mut t, &mut cx, "Line 2");
+        let r = t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        assert!(r.commit.is_some());
+        let c = &cx.floor().cad[0];
+        let CadItem::Text { text, height, .. } = &c.item else {
+            panic!("text")
+        };
+        assert_eq!(text, "Line 1\nLine 2");
+        assert_eq!(*height, cx.defaults.text.height * 2.0);
+        assert!(t.style_of(c.id).unwrap().bold);
+    }
+
+    #[test]
+    fn leader_line_is_a_polyline_with_an_arrowhead() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::LeaderLine);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        click(&mut t, &mut cx, 60.0, 0.0);
+        click(&mut t, &mut cx, 60.0, 40.0);
+        let p = PointerEvent::at(&cx, Point::new(60.0, 40.0));
+        let r = t.double_click(&mut cx, p);
+        assert_eq!(r.commit.as_deref(), Some("Leader Line"));
+        assert_eq!(cx.floor().cad.len(), 2);
+        let CadItem::Polyline { points, closed } = &cx.floor().cad[0].item else {
+            panic!("polyline")
+        };
+        assert_eq!(points.len(), 3);
+        assert!(!*closed);
+        let CadItem::Polyline {
+            points: head,
+            closed,
+        } = &cx.floor().cad[1].item
+        else {
+            panic!("arrowhead")
+        };
+        assert!(*closed);
+        assert_eq!(head[0], Point::ZERO, "the arrow tip is the first point");
+        assert_eq!(cx.floor().groups.len(), 1);
+        assert!(cx.floor().cad.iter().all(|c| c.layer == TEXT_LAYER));
+        assert_eq!(cx.undo().as_deref(), Some("Leader Line"));
+        assert!(cx.floor().cad.is_empty());
+    }
+
+    #[test]
+    fn text_line_with_arrow_attaches_text_to_the_last_point() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::ArrowLine);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        click(&mut t, &mut cx, 60.0, 0.0);
+        enter(&mut t, &mut cx);
+        assert!(cx.floor().cad.is_empty());
+        assert!(t.typing());
+        type_text(&mut t, &mut cx, "Verify");
+        enter(&mut t, &mut cx);
+        assert_eq!(cx.floor().cad.len(), 3);
+        let CadItem::Text { pos, text, .. } = &cx.floor().cad[2].item else {
+            panic!("text")
+        };
+        assert_eq!(text, "Verify");
+        assert!(pos.x > 60.0 && pos.y > 0.0);
+        assert_eq!(cx.floor().groups.len(), 1);
+    }
+
+    #[test]
+    fn callout_draws_a_shape_a_leader_and_centered_text() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Callout);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        click(&mut t, &mut cx, 120.0, 0.0);
+        type_text(&mut t, &mut cx, "A1");
+        let r = enter(&mut t, &mut cx);
+        assert_eq!(r.commit.as_deref(), Some("Place Callout"));
+        let items: Vec<&CadItem> = cx.floor().cad.iter().map(|c| &c.item).collect();
+        assert!(
+            matches!(items[0], CadItem::Circle { center, .. } if *center == Point::new(120.0, 0.0))
+        );
+        assert!(items
+            .iter()
+            .any(|i| matches!(i, CadItem::Text { text, .. } if text == "A1")));
+        assert_eq!(items.len(), 4, "circle, leader, arrowhead, text");
+
+        let mut t = tool(TextMode::Callout);
+        t.set_callout_shape(CalloutShape::Hexagon);
+        click(&mut t, &mut cx, 0.0, 100.0);
+        click(&mut t, &mut cx, 120.0, 100.0);
+        type_text(&mut t, &mut cx, "B");
+        enter(&mut t, &mut cx);
+        assert!(cx.floor().cad.iter().any(
+            |c| matches!(&c.item, CadItem::Polyline { points, closed: true } if points.len() == 6)
+        ));
+    }
+
+    #[test]
+    fn markers_count_up() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Marker);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        click(&mut t, &mut cx, 60.0, 0.0);
+        let numbers: Vec<String> = cx
+            .floor()
+            .cad
+            .iter()
+            .filter_map(|c| match &c.item {
+                CadItem::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbers, vec!["1", "2"]);
+    }
+
+    #[test]
+    fn notes_are_numbered_and_readable_by_a_schedule() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Note);
+        for (x, body) in [(0.0, "Verify"), (60.0, "Match existing")] {
+            click(&mut t, &mut cx, x, 0.0);
+            type_text(&mut t, &mut cx, body);
+            enter(&mut t, &mut cx);
+        }
+        let texts: Vec<String> = cx
+            .floor()
+            .cad
+            .iter()
+            .filter_map(|c| match &c.item {
+                CadItem::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["Note 1: Verify", "Note 2: Match existing"]);
+        assert_eq!(note_number(&texts[1]), Some(2));
+        assert_eq!(note_number("Just text"), None);
+    }
+
+    #[test]
+    fn locked_text_layer_refuses() {
+        let mut cx = new_cx();
+        cx.project.layers.set_locked(TEXT_LAYER, true);
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        type_text(&mut t, &mut cx, "No");
+        enter(&mut t, &mut cx);
+        assert!(cx.floor().cad.is_empty());
+        assert!(cx.status.contains("locked"));
+    }
+
+    #[test]
+    fn leaving_the_tool_keeps_typed_text() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        type_text(&mut t, &mut cx, "Kept");
+        t.deactivate(&mut cx);
+        assert_eq!(cx.floor().cad.len(), 1);
+        assert!(cx.temp.editing.is_none());
+    }
+
+    #[test]
+    fn double_click_asks_for_the_text_dialog() {
+        let mut cx = new_cx();
+        let id = cx.project.add_cad(
+            0,
+            TEXT_LAYER,
+            CadItem::Text {
+                pos: Point::ZERO,
+                text: "Hi".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        let mut t = tool(TextMode::Text);
+        let p = PointerEvent::at(&cx, Point::new(3.0, 3.0));
+        assert!(t.double_click(&mut cx, p).consumed);
+        assert_eq!(
+            cx.requests,
+            vec![EditorRequest::OpenSpec(ObjectRef::Cad(id))]
+        );
+    }
+
+    #[test]
+    fn variants_by_name_and_request() {
+        let mut t = TextTool::default();
+        assert!(t.set_mode_by_name("leader line"));
+        assert_eq!(t.mode(), TextMode::LeaderLine);
+        request_variant("Callout");
+        t.set_variant(ToolId::Text);
+        assert_eq!(t.mode(), TextMode::Callout);
+        for m in TextMode::ALL {
+            assert_eq!(TextMode::from_name(m.name()), Some(m));
+        }
     }
 }

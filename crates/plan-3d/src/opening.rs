@@ -1,57 +1,93 @@
-//! Door panels and window frames/glass that fill wall holes.
+//! Door panels, window units and casing that fill wall holes, by opening style.
 
 use crate::builder::MeshSet;
+use crate::casing;
+use crate::doors;
 use crate::frame::Frame;
-use crate::mesh::{Material, Mesh};
+use crate::mesh::Mesh;
 use crate::wall::Hole;
-use plan_core::{Opening, OpeningKind, Wall};
+use crate::windows;
+use crate::SceneOptions;
+use plan_core::{Opening, OpeningStyle, Wall, WallKind};
 
-/// Door panel thickness, 1 3/8".
-const DOOR_THICKNESS: f64 = 1.375;
-/// Window frame border width, 1 1/2".
-const FRAME_BORDER: f64 = 1.5;
-/// Window frame depth through the wall.
-const FRAME_DEPTH: f64 = 3.5;
-/// Window glass thickness, 1/4".
-const GLASS_THICKNESS: f64 = 0.25;
+/// Everything an opening builder needs, in wall-local terms.
+pub struct Ctx<'a> {
+    pub frame: Frame,
+    pub wall: &'a Wall,
+    pub opening: &'a Opening,
+    pub hole: Hole,
+    /// Side of the wall facing a room: `1.0` left (+t), `-1.0` right.
+    pub interior: f64,
+    pub opts: &'a SceneOptions,
+}
+
+impl Ctx<'_> {
+    /// Half the wall thickness.
+    pub fn half(&self) -> f64 {
+        self.wall.thickness * 0.5
+    }
+
+    /// Wall-local `t` sign of the side a door swings toward / a unit projects to.
+    pub fn swing_sign(&self) -> f64 {
+        if self.opening.swing_flipped {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+
+    /// `(hinge s, direction sign along s)` for hinged leaves.
+    pub fn hinge(&self) -> (f64, f64) {
+        if self.opening.hinge_at_end {
+            (self.hole.s1, -1.0)
+        } else {
+            (self.hole.s0, 1.0)
+        }
+    }
+}
 
 /// Build the meshes that fill `hole` for `opening`.
-pub fn build_opening(wall: &Wall, opening: &Opening, hole: &Hole, elevation: f64) -> Vec<Mesh> {
-    let frame = Frame::new(wall, elevation);
+pub fn build_opening(
+    wall: &Wall,
+    opening: &Opening,
+    hole: &Hole,
+    elevation: f64,
+    interior: f64,
+    opts: &SceneOptions,
+) -> Vec<Mesh> {
+    let ctx = Ctx {
+        frame: Frame::new(wall, elevation),
+        wall,
+        opening,
+        hole: *hole,
+        interior,
+        opts,
+    };
     let mut set = MeshSet::default();
-    match opening.kind {
-        OpeningKind::Door => add_door(&frame, hole, &mut set),
-        OpeningKind::Window => add_window(&frame, wall.thickness, hole, &mut set),
+    match opening.style {
+        OpeningStyle::Hinged
+        | OpeningStyle::Sliding
+        | OpeningStyle::Pocket
+        | OpeningStyle::Bifold
+        | OpeningStyle::Garage
+        | OpeningStyle::Barn
+        | OpeningStyle::Shower
+        | OpeningStyle::Doorway => doors::build(&ctx, &mut set),
+        OpeningStyle::Fixed if opening.kind == plan_core::OpeningKind::Door => {
+            doors::build(&ctx, &mut set)
+        }
+        OpeningStyle::Fixed
+        | OpeningStyle::Window
+        | OpeningStyle::BayWindow
+        | OpeningStyle::BowWindow
+        | OpeningStyle::BoxWindow => windows::build(&ctx, &mut set),
+        OpeningStyle::PassThrough | OpeningStyle::WallNiche => {}
+    }
+    if opts.show_casing && opening.style != OpeningStyle::WallNiche {
+        casing::add_casing(&ctx, &mut set);
+        if wall.kind == WallKind::Exterior {
+            casing::add_threshold(&ctx, &mut set);
+        }
     }
     set.finish(Some(opening.id))
-}
-
-fn add_door(frame: &Frame, hole: &Hole, set: &mut MeshSet) {
-    let half = DOOR_THICKNESS * 0.5;
-    let panel = set.material(Material::DoorPanel);
-    frame.cuboid(panel, (hole.s0, hole.s1), (-half, half), (hole.h0, hole.h1));
-}
-
-fn add_window(frame: &Frame, wall_thickness: f64, hole: &Hole, set: &mut MeshSet) {
-    let border = FRAME_BORDER
-        .min((hole.s1 - hole.s0) / 4.0)
-        .min((hole.h1 - hole.h0) / 4.0);
-    let depth = FRAME_DEPTH.min(wall_thickness) * 0.5;
-    let t = (-depth, depth);
-    let (s0, s1, h0, h1) = (hole.s0, hole.s1, hole.h0, hole.h1);
-
-    let ring = set.material(Material::WindowFrame);
-    frame.cuboid(ring, (s0, s1), t, (h0, h0 + border));
-    frame.cuboid(ring, (s0, s1), t, (h1 - border, h1));
-    frame.cuboid(ring, (s0, s0 + border), t, (h0 + border, h1 - border));
-    frame.cuboid(ring, (s1 - border, s1), t, (h0 + border, h1 - border));
-
-    let glass = set.material(Material::WindowGlass);
-    let g = GLASS_THICKNESS * 0.5;
-    frame.cuboid(
-        glass,
-        (s0 + border, s1 - border),
-        (-g, g),
-        (h0 + border, h1 - border),
-    );
 }

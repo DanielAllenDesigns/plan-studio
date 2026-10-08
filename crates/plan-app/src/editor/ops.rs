@@ -89,16 +89,23 @@ pub fn revalidate_openings(project: &mut Project, floor: usize, wall_id: Id) -> 
 }
 
 /// Sets one end of a wall without touching neighbours. Openings keep their
-/// distance from the end that stays put.
-fn set_end(project: &mut Project, floor: usize, id: Id, end: WallEnd, to: Point) {
+/// distance from the end that stays put. When the wall is stretched past its
+/// other end (its direction reverses) the exterior side is flipped with it, so
+/// the layers stay on the same physical face (Chief stretches, never
+/// detaches).
+pub(crate) fn set_end(project: &mut Project, floor: usize, id: Id, end: WallEnd, to: Point) {
     let f = &mut project.floors[floor];
     let Some(w) = f.wall_mut(id) else { return };
     let old_len = w.length();
+    let old_dir = w.direction();
     match end {
         WallEnd::Start => w.start = to,
         WallEnd::End => w.end = to,
     }
     let new_len = w.length();
+    if new_len > 1e-9 && old_len > 1e-9 && w.direction().dot(old_dir) < 0.0 {
+        w.exterior_side = w.exterior_side.opposite();
+    }
     if end == WallEnd::Start {
         for o in f.openings.iter_mut().filter(|o| o.wall_id == id) {
             o.center_offset += new_len - old_len;
@@ -108,7 +115,9 @@ fn set_end(project: &mut Project, floor: usize, id: Id, end: WallEnd, to: Point)
 }
 
 /// Moves one end of wall `id` to `to`; every other wall end connected to the
-/// old position follows (their far ends stay fixed). Returns false if the
+/// old position follows (their far ends stay fixed). Walls that butt into the
+/// side of wall `id` (T-junctions) are stretched along their own direction so
+/// they stay on the wall's new centerline (S-19, W-105). Returns false if the
 /// wall does not exist.
 pub fn move_wall_end_joined(
     project: &mut Project,
@@ -117,21 +126,51 @@ pub fn move_wall_end_joined(
     end: WallEnd,
     to: Point,
 ) -> bool {
-    let Some(w) = project.floors[floor].wall(id) else {
+    let Some(w) = project.floors[floor].wall(id).cloned() else {
         return false;
     };
-    let old = end_pos(w, end);
+    let old = end_pos(&w, end);
+    let far = end_pos(&w, other_end(end));
     let joined = walls_at(project, floor, old, JOIN_TOL, Some(id));
+    // Ends resting on this wall's side, away from both of its ends.
+    let mut butting: Vec<(Id, WallEnd, Point)> = Vec::new();
+    for o in &project.floors[floor].walls {
+        if o.id == id || joined.iter().any(|(j, _)| *j == o.id) {
+            continue;
+        }
+        for e in [WallEnd::Start, WallEnd::End] {
+            let p = end_pos(o, e);
+            if p.dist(w.start) > JOIN_TOL
+                && p.dist(w.end) > JOIN_TOL
+                && dist_to_segment(p, w.start, w.end) <= JOIN_TOL
+            {
+                butting.push((o.id, e, p));
+            }
+        }
+    }
     set_end(project, floor, id, end, to);
     for (jid, jend) in joined {
         set_end(project, floor, jid, jend, to);
+    }
+    let nd = (to - far).normalized();
+    if to.dist(far) > 1e-6 {
+        for (oid, e, p) in butting {
+            let Some(o) = project.floors[floor].wall(oid) else {
+                continue;
+            };
+            let far_o = end_pos(o, other_end(e));
+            let v = (p - far_o).normalized();
+            let target = line_intersection(far, nd, far_o, v)
+                .unwrap_or_else(|| project_on_segment(p, far, to).1);
+            set_end(project, floor, oid, e, target);
+        }
     }
     true
 }
 
 /// Intersection of the line through `p` along `u` with the line through `q`
 /// along `v`.
-fn line_intersection(p: Point, u: Point, q: Point, v: Point) -> Option<Point> {
+pub(crate) fn line_intersection(p: Point, u: Point, q: Point, v: Point) -> Option<Point> {
     let denom = u.cross(v);
     if denom.abs() < 0.02 {
         return None;
@@ -303,6 +342,19 @@ pub fn place_opening_at(
     true
 }
 
+/// Fix Wall Connections (W-41, W-42) on a whole floor: pairs ends within the
+/// connect distance, closes corners, joins Ts and crossings, merges
+/// overlapping collinear walls and removes zero-length walls. Returns the
+/// number of repairs made (0 when the plan was already clean). The Edit
+/// toolbar button calls `connect::fix_wall_connections_action`.
+pub fn fix_wall_connections(project: &mut Project, floor: usize) -> usize {
+    super::connect::fix_all_connections_project(
+        project,
+        floor,
+        &super::connect::ConnectOptions::default(),
+    )
+}
+
 // ----- CAD transforms -----
 
 fn rot(p: Point, c: Point, a: f64) -> Point {
@@ -454,6 +506,170 @@ mod tests {
         let o2 = f.openings.iter().find(|o| o.id == d2).unwrap();
         assert_eq!((o1.wall_id, o2.wall_id), (w, n));
         assert!((o2.center_offset - 60.0).abs() < 1e-9);
+    }
+
+    fn corner_pair() -> (Project, Id, Id) {
+        // A runs (0,0)-(100,0); B runs (100,0)-(100,60); joined at (100,0).
+        let mut p = Project::new("t");
+        let a = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(100.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        let b = p.add_wall(
+            0,
+            Point::new(100.0, 0.0),
+            Point::new(100.0, 60.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        (p, a, b)
+    }
+
+    #[test]
+    fn l_corner_wall_moved_perpendicular_stretches_the_neighbour() {
+        let (mut p, a, b) = corner_pair();
+        // Push B 30" to the right (toward +x).
+        let s = Point::new(30.0, 0.0).dot(p.floors[0].wall(b).unwrap().normal());
+        assert!(move_wall_perpendicular(&mut p, 0, b, s));
+        let f = &p.floors[0];
+        assert_eq!(f.wall(b).unwrap().start, Point::new(130.0, 0.0));
+        assert_eq!(f.wall(a).unwrap().end, Point::new(130.0, 0.0));
+        assert_eq!(f.wall(a).unwrap().start, Point::ZERO);
+        assert!(f.wall(a).unwrap().direction().y.abs() < 1e-9);
+    }
+
+    #[test]
+    fn t_wall_moved_perpendicular_keeps_butting_walls_attached() {
+        // Through wall along y=0; a stem rises from its middle.
+        let mut p = Project::new("t");
+        let through = p.add_wall(
+            0,
+            Point::new(-100.0, 0.0),
+            Point::new(100.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        let stem = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 80.0),
+            4.5,
+            100.0,
+            WallKind::Interior,
+        );
+        // Move the through wall up 25".
+        let s = Point::new(0.0, 25.0).dot(p.floors[0].wall(through).unwrap().normal());
+        assert!(move_wall_perpendicular(&mut p, 0, through, s));
+        let f = &p.floors[0];
+        assert_eq!(f.wall(through).unwrap().start.y, 25.0);
+        assert_eq!(f.wall(stem).unwrap().start, Point::new(0.0, 25.0));
+        assert_eq!(f.wall(stem).unwrap().end, Point::new(0.0, 80.0));
+    }
+
+    #[test]
+    fn x_junction_pieces_follow_a_moved_wall() {
+        // Two crossing walls, both already split at (0,0).
+        let mut p = Project::new("t");
+        let l = p.add_wall(
+            0,
+            Point::new(-80.0, 0.0),
+            Point::ZERO,
+            6.0,
+            100.0,
+            WallKind::Interior,
+        );
+        let r = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(80.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Interior,
+        );
+        let d = p.add_wall(
+            0,
+            Point::new(0.0, -80.0),
+            Point::ZERO,
+            6.0,
+            100.0,
+            WallKind::Interior,
+        );
+        let u = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(0.0, 80.0),
+            6.0,
+            100.0,
+            WallKind::Interior,
+        );
+        // Move the right-hand piece 20" up: the vertical pieces stretch to it.
+        let s = Point::new(0.0, 20.0).dot(p.floors[0].wall(r).unwrap().normal());
+        assert!(move_wall_perpendicular(&mut p, 0, r, s));
+        let f = &p.floors[0];
+        let joint = f.wall(r).unwrap().start;
+        assert_eq!(joint, Point::new(0.0, 20.0));
+        assert_eq!(f.wall(d).unwrap().end, joint);
+        assert_eq!(f.wall(u).unwrap().start, joint);
+        // The collinear neighbour simply follows (no detach).
+        assert_eq!(f.wall(l).unwrap().end, joint);
+    }
+
+    #[test]
+    fn wall_moved_past_a_connected_wall_end_stretches_and_stays_attached() {
+        let (mut p, a, b) = corner_pair();
+        // Push B 150" left, beyond A's start at x=0.
+        let s = Point::new(-150.0, 0.0).dot(p.floors[0].wall(b).unwrap().normal());
+        assert!(move_wall_perpendicular(&mut p, 0, b, s));
+        let f = &p.floors[0];
+        assert_eq!(f.wall(b).unwrap().start, Point::new(-50.0, 0.0));
+        assert_eq!(f.wall(a).unwrap().end, Point::new(-50.0, 0.0));
+        // A now runs backwards; its layers stay on the same physical face.
+        assert!(f.wall(a).unwrap().direction().x < 0.0);
+        assert_eq!(
+            f.wall(a).unwrap().exterior_side,
+            plan_core::Side::Right,
+            "exterior side flips with the direction"
+        );
+    }
+
+    #[test]
+    fn dragging_a_through_wall_end_keeps_the_stem_on_it() {
+        let mut p = Project::new("t");
+        let through = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(200.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        let stem = p.add_wall(
+            0,
+            Point::new(100.0, 70.0),
+            Point::new(100.0, 0.0),
+            4.5,
+            100.0,
+            WallKind::Interior,
+        );
+        // Lift the far end of the through wall by 20": the stem end rides the
+        // new centerline (y = 10 at x = 100).
+        assert!(move_wall_end_joined(
+            &mut p,
+            0,
+            through,
+            WallEnd::End,
+            Point::new(200.0, 20.0)
+        ));
+        let f = &p.floors[0];
+        assert_eq!(f.wall(stem).unwrap().start, Point::new(100.0, 70.0));
+        let e = f.wall(stem).unwrap().end;
+        assert!((e.x - 100.0).abs() < 1e-9 && (e.y - 10.0).abs() < 1e-9);
     }
 
     #[test]

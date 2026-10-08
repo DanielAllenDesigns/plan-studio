@@ -43,6 +43,16 @@ pub enum MemberKind {
     Joist,
     Blocking,
     Ledger,
+    Rafter,
+    Ridge,
+    Hip,
+    Valley,
+    Fascia,
+    CollarTie,
+    CeilingJoist,
+    TrussTopChord,
+    TrussBottomChord,
+    TrussWeb,
 }
 
 impl MemberKind {
@@ -61,6 +71,16 @@ impl MemberKind {
             MemberKind::Joist => "joist",
             MemberKind::Blocking => "blocking",
             MemberKind::Ledger => "ledger",
+            MemberKind::Rafter => "rafter",
+            MemberKind::Ridge => "ridge",
+            MemberKind::Hip => "hip",
+            MemberKind::Valley => "valley",
+            MemberKind::Fascia => "fascia",
+            MemberKind::CollarTie => "collar tie",
+            MemberKind::CeilingJoist => "ceiling joist",
+            MemberKind::TrussTopChord => "truss top chord",
+            MemberKind::TrussBottomChord => "truss bottom chord",
+            MemberKind::TrussWeb => "truss web",
         }
     }
 }

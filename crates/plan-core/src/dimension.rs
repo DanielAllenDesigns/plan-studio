@@ -2,7 +2,7 @@
 
 use crate::geometry::Point;
 use crate::model::{Id, Wall, WallKind};
-use crate::units::fmt_ft_in_frac;
+use crate::units::{fmt_ft_in_frac, format_length, LengthFormat};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +34,10 @@ pub struct DimFormat {
     pub smallest_fraction: u32,
     /// Show `'` and `"` unit indicators.
     pub unit_indicators: bool,
+    /// Full length format (imperial or metric). When set it takes over
+    /// from `smallest_fraction` / `unit_indicators`.
+    #[serde(default)]
+    pub length: Option<LengthFormat>,
 }
 
 impl Default for DimFormat {
@@ -41,14 +45,26 @@ impl Default for DimFormat {
         Self {
             smallest_fraction: 16,
             unit_indicators: true,
+            length: None,
         }
     }
 }
 
 impl DimFormat {
+    /// Whole-millimetre dimension text with no unit marks, e.g. `3048`.
+    pub fn metric_mm() -> Self {
+        Self {
+            length: Some(LengthFormat::metric_mm()),
+            ..Self::default()
+        }
+    }
+
     /// Feet-inches text rounded to the chosen fraction, e.g. `12'-6 1/2"`
     /// (or `12-6 1/2` without unit indicators).
     pub fn fmt_len(&self, inches: f64) -> String {
+        if let Some(l) = &self.length {
+            return format_length(inches, l);
+        }
         let s = fmt_ft_in_frac(inches, self.smallest_fraction);
         if self.unit_indicators {
             s
@@ -294,14 +310,24 @@ mod tests {
         let eighths = DimFormat {
             smallest_fraction: 8,
             unit_indicators: true,
+            length: None,
         };
         assert_eq!(eighths.fmt_len(150.07), "12'-6 1/8\"");
         assert_eq!(eighths.fmt_len(150.0), "12'-6\"");
         let bare = DimFormat {
             smallest_fraction: 16,
             unit_indicators: false,
+            length: None,
         };
         assert_eq!(bare.fmt_len(150.5), "12-6 1/2");
+        let mm = DimFormat::metric_mm();
+        assert_eq!(mm.fmt_len(120.0), "3048");
+        assert_eq!(mm.fmt_len(1234.5 / 25.4), "1235");
+        // Old JSON without the field still loads and stays imperial.
+        let old: DimFormat =
+            serde_json::from_str(r#"{"smallest_fraction":8,"unit_indicators":true}"#).unwrap();
+        assert_eq!(old.length, None);
+        assert_eq!(old.fmt_len(150.0), "12'-6\"");
         let mut d = Dimension::new(
             1,
             DimensionKind::Manual,

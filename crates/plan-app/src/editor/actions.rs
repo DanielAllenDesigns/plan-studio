@@ -1,7 +1,8 @@
 //! Commands of the contextual Edit toolbar, shared by every tool: Open
 //! Object, Delete, Copy, Paste in Place, Reverse Swing, Fix Wall Connections.
 
-use super::ops;
+use super::{ops, placed};
+
 use super::selection::{layer_of, ObjectRef};
 use super::{EditorContext, EditorRequest};
 use plan_core::{CadObject, Dimension, Id, Opening, OpeningKind, Wall};
@@ -15,6 +16,14 @@ pub enum EditActionKind {
     PasteInPlace,
     ReverseSwing,
     FixWallConnections,
+    /// A command of one object type (Auto Stairwell, Join Roof Planes, ...),
+    /// run by `EditorContext::run_custom` with its `id`.
+    Custom {
+        id: &'static str,
+        label: &'static str,
+        /// An icon id from `icons.rs`; empty when none fits.
+        icon: &'static str,
+    },
 }
 
 /// One button of the Edit toolbar.
@@ -36,6 +45,9 @@ impl EditAction {
             EditActionKind::PasteInPlace => ("Paste in Place", Some("paste_hold")),
             EditActionKind::ReverseSwing => ("Reverse Swing", Some("door_hinged")),
             EditActionKind::FixWallConnections => ("Fix Wall Connections", Some("wall_fix")),
+            EditActionKind::Custom { label, icon, .. } => {
+                (label, (!icon.is_empty()).then_some(icon))
+            }
         };
         Self {
             kind,
@@ -86,7 +98,7 @@ impl EditorContext {
         v.push(EditAction::new(EditActionKind::Delete));
         v.push(EditAction::new(EditActionKind::Copy));
         let paste = EditAction::new(EditActionKind::PasteInPlace);
-        v.push(if self.clipboard.as_ref().is_some_and(|c| !c.is_empty()) {
+        v.push(if self.has_clipboard() {
             paste
         } else {
             paste.disabled()
@@ -107,8 +119,9 @@ impl EditorContext {
             EditActionKind::PasteInPlace => self.paste_in_place(),
             EditActionKind::ReverseSwing => self.reverse_swing(),
             EditActionKind::FixWallConnections => {
-                self.status = "Fix Wall Connections: not implemented yet".into();
+                super::connect::fix_wall_connections_action(self);
             }
+            EditActionKind::Custom { id, .. } => self.run_custom(id),
         }
     }
 
@@ -142,11 +155,17 @@ impl EditorContext {
             self.status = "Those objects are on a locked layer".into();
             return;
         }
-        self.begin_change("Delete");
+        // The selection holds only the free objects while the owners of each
+        // kind delete theirs; the locked ones come back afterwards.
+        self.selection.items = free.clone();
         let fl = self.floor;
-        ops::delete_objects(&mut self.project, fl, &free);
+        if self.selection_has_core() {
+            self.begin_change("Delete");
+            ops::delete_objects(&mut self.project, fl, &free);
+        }
+        self.delete_extra();
         self.selection.items = locked;
-        self.selection.retain_existing(&self.project.floors[fl]);
+        self.selection.retain_existing(&self.project, fl);
         self.mark_dirty();
         self.status.clear();
     }
@@ -180,10 +199,16 @@ impl EditorContext {
             }
         }
         if clip.is_empty() {
-            self.status = "Nothing to copy".into();
+            // Cabinets and symbols have their own clipboard.
+            if self.copy_extra() == 0 {
+                self.status = "Nothing to copy".into();
+            } else {
+                self.clipboard = None;
+            }
             return;
         }
-        let n = clip.len();
+        placed::clear_clipboard();
+        let n = clip.len() + self.copy_extra();
         self.clipboard = Some(clip);
         self.status = format!("Copied {n} object{}", if n == 1 { "" } else { "s" });
     }
@@ -192,7 +217,11 @@ impl EditorContext {
     /// the selection. Openings come along only with their host wall.
     pub fn paste_in_place(&mut self) {
         let Some(clip) = self.clipboard.clone().filter(|c| !c.is_empty()) else {
-            self.status = "Nothing to paste".into();
+            if self.paste_extra() == 0 {
+                self.status = "Nothing to paste".into();
+            } else {
+                self.status = "Pasted in place".into();
+            }
             return;
         };
         self.begin_change("Paste in Place");
@@ -229,12 +258,19 @@ impl EditorContext {
             sel.push(ObjectRef::Cad(id));
         }
         self.selection.items = sel;
+        let core_sel = self.selection.items.clone();
+        if self.paste_extra() > 0 {
+            let mut all = core_sel;
+            all.extend(self.selection.items.iter().copied());
+            self.selection.items = all;
+        }
         self.mark_dirty();
         self.status = "Pasted in place".into();
     }
 
     /// Flips the swing of the selected doors.
     pub fn reverse_swing(&mut self) {
+        placed::reverse_door_swing(self);
         let ids: Vec<Id> = self
             .selection
             .items

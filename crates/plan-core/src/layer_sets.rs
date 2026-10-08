@@ -1,0 +1,551 @@
+//! Chief-style layer sets and saved plan views.
+//!
+//! A *layer set* is a named table of per-layer overrides (display, lock,
+//! colour, line weight, line style, text style) laid over the base layer
+//! definitions of a project ([`LayerSet`]). A *saved plan view* is a named
+//! view that carries its own layer set, floor, reference display and camera,
+//! like Chief's "Floor Plan View Dimensioned".
+
+use crate::geometry::Point;
+use crate::layers::{LayerSet, LineStyle};
+use crate::model::Project;
+use serde::{Deserialize, Serialize};
+
+/// Name of the layer set a new project starts with.
+pub const DEFAULT_LAYER_SET_NAME: &str = "Default Set";
+/// Name of the saved plan view a new project starts with.
+pub const DEFAULT_PLAN_VIEW_NAME: &str = "Floor Plan View";
+
+fn default_true() -> bool {
+    true
+}
+
+/// How one layer looks inside one layer set. `None` fields inherit the base
+/// layer definition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayerState {
+    pub layer: String,
+    #[serde(default = "default_true")]
+    pub display: bool,
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    pub color: Option<[u8; 3]>,
+    /// Hundredths of a millimetre.
+    #[serde(default)]
+    pub line_weight: Option<u32>,
+    #[serde(default)]
+    pub line_style: Option<LineStyle>,
+    #[serde(default)]
+    pub text_style: Option<String>,
+}
+
+impl LayerState {
+    /// A state that only sets display and lock; everything else inherits.
+    pub fn new(layer: impl Into<String>, display: bool, locked: bool) -> Self {
+        Self {
+            layer: layer.into(),
+            display,
+            locked,
+            color: None,
+            line_weight: None,
+            line_style: None,
+            text_style: None,
+        }
+    }
+}
+
+/// A named layer set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayerSetDef {
+    pub name: String,
+    #[serde(default)]
+    pub states: Vec<LayerState>,
+}
+
+impl LayerSetDef {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            states: Vec::new(),
+        }
+    }
+
+    pub fn state(&self, layer: &str) -> Option<&LayerState> {
+        self.states.iter().find(|s| s.layer == layer)
+    }
+
+    pub fn state_mut(&mut self, layer: &str) -> Option<&mut LayerState> {
+        self.states.iter_mut().find(|s| s.layer == layer)
+    }
+
+    /// The state of `layer`, added (visible, unlocked) when missing.
+    pub fn ensure_state(&mut self, layer: &str) -> &mut LayerState {
+        if let Some(i) = self.states.iter().position(|s| s.layer == layer) {
+            return &mut self.states[i];
+        }
+        self.states.push(LayerState::new(layer, true, false));
+        self.states.last_mut().expect("just pushed")
+    }
+}
+
+/// All layer sets of a project (or of the plan defaults) and which is active.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayerSets {
+    pub sets: Vec<LayerSetDef>,
+    /// Name of the active set.
+    pub active: String,
+}
+
+impl Default for LayerSets {
+    /// One set, "Default Set", matching the default floor-plan layers.
+    fn default() -> Self {
+        Self::from_layers(&LayerSet::default_floor_plan())
+    }
+}
+
+impl LayerSets {
+    /// One "Default Set" whose states mirror `layers` (display and lock only;
+    /// colour, weight and styles inherit).
+    pub fn from_layers(layers: &LayerSet) -> Self {
+        Self {
+            sets: vec![LayerSetDef {
+                name: DEFAULT_LAYER_SET_NAME.into(),
+                states: layers
+                    .layers
+                    .iter()
+                    .map(|l| LayerState::new(l.name.clone(), l.display, l.locked))
+                    .collect(),
+            }],
+            active: DEFAULT_LAYER_SET_NAME.into(),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&LayerSetDef> {
+        self.sets.iter().find(|s| s.name == name)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut LayerSetDef> {
+        self.sets.iter_mut().find(|s| s.name == name)
+    }
+
+    pub fn names(&self) -> Vec<&str> {
+        self.sets.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    pub fn active_set(&self) -> Option<&LayerSetDef> {
+        self.get(&self.active)
+    }
+
+    /// Makes `name` the active set; `false` if it does not exist.
+    pub fn set_active(&mut self, name: &str) -> bool {
+        if self.get(name).is_none() {
+            return false;
+        }
+        self.active = name.to_string();
+        true
+    }
+
+    /// Adds a set if its name is new and non-empty.
+    pub fn add_set(&mut self, set: LayerSetDef) -> bool {
+        if set.name.is_empty() || self.get(&set.name).is_some() {
+            return false;
+        }
+        self.sets.push(set);
+        true
+    }
+
+    /// Shows or hides `layer` in `set` (adding the state if needed). `false`
+    /// if the set does not exist.
+    pub fn set_display(&mut self, set: &str, layer: &str, display: bool) -> bool {
+        match self.get_mut(set) {
+            Some(s) => {
+                s.ensure_state(layer).display = display;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Locks or unlocks `layer` in `set`. `false` if the set does not exist.
+    pub fn set_locked(&mut self, set: &str, layer: &str, locked: bool) -> bool {
+        match self.get_mut(set) {
+            Some(s) => {
+                s.ensure_state(layer).locked = locked;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The base layers with the states of set `set_name` laid over them.
+    /// Layers without a state keep the base values; states naming unknown
+    /// layers are ignored; an unknown set changes nothing.
+    pub fn effective_for(&self, set_name: &str, layers: &LayerSet) -> LayerSet {
+        let mut out = layers.clone();
+        let Some(set) = self.get(set_name) else {
+            return out;
+        };
+        for st in &set.states {
+            let Some(l) = out.get_mut(&st.layer) else {
+                continue;
+            };
+            l.display = st.display;
+            l.locked = st.locked;
+            if let Some(c) = st.color {
+                l.color = c;
+            }
+            if let Some(w) = st.line_weight {
+                l.line_weight = w;
+            }
+            if let Some(ls) = st.line_style {
+                l.line_style = ls;
+            }
+            if let Some(t) = &st.text_style {
+                l.text_style = t.clone();
+            }
+        }
+        out
+    }
+
+    /// [`effective_for`](Self::effective_for) the active set.
+    pub fn effective(&self, layers: &LayerSet) -> LayerSet {
+        self.effective_for(&self.active, layers)
+    }
+
+    /// Copies set `from` under `new_name`. `false` if `from` is missing or
+    /// `new_name` is empty or taken.
+    pub fn copy_set(&mut self, from: &str, new_name: &str) -> bool {
+        if new_name.is_empty() || self.get(new_name).is_some() {
+            return false;
+        }
+        let Some(src) = self.get(from) else {
+            return false;
+        };
+        let mut copy = src.clone();
+        copy.name = new_name.to_string();
+        self.sets.push(copy);
+        true
+    }
+
+    /// Renames a set (and the active pointer). `false` if `old` is missing or
+    /// `new_name` is empty or taken.
+    pub fn rename(&mut self, old: &str, new_name: &str) -> bool {
+        if new_name.is_empty() || self.get(new_name).is_some() {
+            return false;
+        }
+        let Some(s) = self.get_mut(old) else {
+            return false;
+        };
+        s.name = new_name.to_string();
+        if self.active == old {
+            self.active = new_name.to_string();
+        }
+        true
+    }
+
+    /// Deletes a set. The last set cannot be deleted; deleting the active set
+    /// activates the first remaining one. `false` if nothing was deleted.
+    pub fn delete(&mut self, name: &str) -> bool {
+        if self.sets.len() <= 1 {
+            return false;
+        }
+        let Some(i) = self.sets.iter().position(|s| s.name == name) else {
+            return false;
+        };
+        self.sets.remove(i);
+        if self.active == name {
+            self.active = self.sets[0].name.clone();
+        }
+        true
+    }
+}
+
+/// A saved plan view: a layer set plus what the view looks at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedPlanView {
+    pub name: String,
+    /// Name of an entry of [`LayerSets::sets`].
+    pub layer_set: String,
+    /// Floor index the view shows; `None` = whichever floor is current.
+    #[serde(default)]
+    pub floor: Option<usize>,
+    #[serde(default)]
+    pub reference_display: bool,
+    /// Floor shown as reference, relative to the viewed floor (-1 = the one
+    /// below).
+    #[serde(default)]
+    pub reference_floor: Option<i32>,
+    /// Saved view centre and zoom.
+    #[serde(default)]
+    pub camera: Option<(Point, f64)>,
+}
+
+impl SavedPlanView {
+    pub fn new(name: impl Into<String>, layer_set: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            layer_set: layer_set.into(),
+            floor: None,
+            reference_display: false,
+            reference_floor: None,
+            camera: None,
+        }
+    }
+
+    /// The views a new project starts with.
+    pub fn defaults() -> Vec<SavedPlanView> {
+        vec![SavedPlanView::new(
+            DEFAULT_PLAN_VIEW_NAME,
+            DEFAULT_LAYER_SET_NAME,
+        )]
+    }
+}
+
+pub(crate) fn default_active_plan_view() -> String {
+    DEFAULT_PLAN_VIEW_NAME.into()
+}
+
+impl Project {
+    pub fn plan_view(&self, name: &str) -> Option<&SavedPlanView> {
+        self.plan_views.iter().find(|v| v.name == name)
+    }
+
+    /// The active saved plan view, if it exists.
+    pub fn current_plan_view(&self) -> Option<&SavedPlanView> {
+        self.plan_view(&self.active_plan_view)
+    }
+
+    /// Makes `name` the active plan view and, when its layer set exists,
+    /// the active layer set. `false` if the view does not exist.
+    pub fn activate_plan_view(&mut self, name: &str) -> bool {
+        let Some(v) = self.plan_view(name) else {
+            return false;
+        };
+        let set = v.layer_set.clone();
+        self.active_plan_view = name.to_string();
+        self.layer_sets.set_active(&set);
+        true
+    }
+
+    /// The layers as the active plan view shows them: the view's layer set
+    /// (or the active set when there is no such view) over the base layers.
+    pub fn view_layers(&self) -> LayerSet {
+        match self.current_plan_view() {
+            Some(v) if self.layer_sets.get(&v.layer_set).is_some() => {
+                self.layer_sets.effective_for(&v.layer_set, &self.layers)
+            }
+            _ => self.layer_sets.effective(&self.layers),
+        }
+    }
+
+    /// Renames a layer set and repoints the plan views that used it.
+    pub fn rename_layer_set(&mut self, old: &str, new_name: &str) -> bool {
+        if !self.layer_sets.rename(old, new_name) {
+            return false;
+        }
+        for v in self.plan_views.iter_mut().filter(|v| v.layer_set == old) {
+            v.layer_set = new_name.to_string();
+        }
+        true
+    }
+
+    /// Deletes a layer set; plan views that used it fall back to the new
+    /// active set.
+    pub fn delete_layer_set(&mut self, name: &str) -> bool {
+        if !self.layer_sets.delete(name) {
+            return false;
+        }
+        let active = self.layer_sets.active.clone();
+        for v in self.plan_views.iter_mut().filter(|v| v.layer_set == name) {
+            v.layer_set = active.clone();
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layers::Layer;
+
+    fn sets_with_two() -> LayerSets {
+        let mut s = LayerSets::default();
+        assert!(s.copy_set(DEFAULT_LAYER_SET_NAME, "Electrical Layer Set"));
+        s
+    }
+
+    #[test]
+    fn default_has_one_set_matching_base_layers() {
+        let base = LayerSet::default_floor_plan();
+        let s = LayerSets::default();
+        assert_eq!(s.sets.len(), 1);
+        assert_eq!(s.active, "Default Set");
+        assert_eq!(s.sets[0].states.len(), base.layers.len());
+        assert_eq!(s.effective(&base), base);
+    }
+
+    #[test]
+    fn effective_applies_display_lock_and_overrides() {
+        let base = LayerSet::default_floor_plan();
+        let mut s = sets_with_two();
+        assert!(s.set_display("Electrical Layer Set", "Doors", false));
+        assert!(s.set_locked("Electrical Layer Set", "Text", true));
+        {
+            let st = s
+                .get_mut("Electrical Layer Set")
+                .unwrap()
+                .ensure_state("Walls, Normal");
+            st.color = Some([1, 2, 3]);
+            st.line_weight = Some(70);
+            st.line_style = Some(LineStyle::Dashed);
+            st.text_style = Some("Room Label Style".into());
+        }
+        // Not active yet: base is unchanged.
+        assert!(s.effective(&base).is_visible("Doors"));
+        assert!(s.set_active("Electrical Layer Set"));
+        let eff = s.effective(&base);
+        assert!(!eff.is_visible("Doors"));
+        assert!(eff.is_locked("Text"));
+        let w = eff.get("Walls, Normal").unwrap();
+        assert_eq!(w.color, [1, 2, 3]);
+        assert_eq!(w.line_weight, 70);
+        assert_eq!(w.line_style, LineStyle::Dashed);
+        assert_eq!(w.text_style, "Room Label Style");
+        // The base layers are never mutated.
+        assert!(base.is_visible("Doors"));
+        // Layers without a state keep base values; unknown layers ignored.
+        s.get_mut("Electrical Layer Set")
+            .unwrap()
+            .states
+            .retain(|st| st.layer != "Windows");
+        s.set_display("Electrical Layer Set", "No Such Layer", false);
+        let eff = s.effective(&base);
+        assert_eq!(eff.get("Windows"), base.get("Windows"));
+        assert!(eff.get("No Such Layer").is_none());
+        // Unknown set -> base unchanged; set_display on unknown set fails.
+        assert_eq!(s.effective_for("nope", &base), base);
+        assert!(!s.set_display("nope", "Doors", false));
+        assert!(!s.set_locked("nope", "Doors", true));
+        assert!(!s.set_active("nope"));
+    }
+
+    #[test]
+    fn copy_rename_delete() {
+        let mut s = LayerSets::default();
+        assert!(!s.copy_set("nope", "X"));
+        assert!(!s.copy_set(DEFAULT_LAYER_SET_NAME, DEFAULT_LAYER_SET_NAME));
+        assert!(!s.copy_set(DEFAULT_LAYER_SET_NAME, ""));
+        assert!(s.copy_set(DEFAULT_LAYER_SET_NAME, "A"));
+        assert_eq!(s.get("A").unwrap().states, s.sets[0].states);
+        // A copy is independent.
+        s.set_display("A", "Doors", false);
+        assert!(s.sets[0].state("Doors").unwrap().display);
+        // Rename.
+        assert!(!s.rename("A", DEFAULT_LAYER_SET_NAME));
+        assert!(!s.rename("zzz", "B"));
+        assert!(s.rename("A", "B"));
+        assert!(s.get("A").is_none() && s.get("B").is_some());
+        // Renaming the active set moves the pointer.
+        assert!(s.rename(DEFAULT_LAYER_SET_NAME, "Main"));
+        assert_eq!(s.active, "Main");
+        // Delete.
+        assert!(!s.delete("zzz"));
+        assert!(s.delete("Main"));
+        assert_eq!(s.active, "B");
+        assert!(!s.delete("B"), "the last set stays");
+        assert_eq!(s.sets.len(), 1);
+        assert!(s.add_set(LayerSetDef::new("C")));
+        assert!(!s.add_set(LayerSetDef::new("C")));
+        assert!(!s.add_set(LayerSetDef::new("")));
+        assert_eq!(s.names(), vec!["B", "C"]);
+    }
+
+    #[test]
+    fn default_project_has_one_set_and_one_view() {
+        let p = Project::new("P");
+        assert_eq!(p.layer_sets.sets.len(), 1);
+        assert_eq!(p.plan_views.len(), 1);
+        assert_eq!(p.active_plan_view, DEFAULT_PLAN_VIEW_NAME);
+        let v = p.current_plan_view().unwrap();
+        assert_eq!(v.layer_set, p.layer_sets.active);
+        assert_eq!(p.view_layers(), p.layers);
+    }
+
+    #[test]
+    fn project_views_follow_their_layer_sets() {
+        let mut p = Project::new("P");
+        assert!(p.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "Dimmed"));
+        p.layer_sets.set_display("Dimmed", "Doors", false);
+        p.plan_views.push(SavedPlanView::new("Doors Off", "Dimmed"));
+        assert!(!p.activate_plan_view("nope"));
+        assert!(p.activate_plan_view("Doors Off"));
+        assert_eq!(p.layer_sets.active, "Dimmed");
+        assert!(!p.view_layers().is_visible("Doors"));
+        assert!(p.activate_plan_view(DEFAULT_PLAN_VIEW_NAME));
+        assert!(p.view_layers().is_visible("Doors"));
+        // Rename repoints views; delete falls back to the active set.
+        assert!(p.rename_layer_set("Dimmed", "Quiet"));
+        assert_eq!(p.plan_view("Doors Off").unwrap().layer_set, "Quiet");
+        assert!(p.delete_layer_set("Quiet"));
+        assert_eq!(
+            p.plan_view("Doors Off").unwrap().layer_set,
+            DEFAULT_LAYER_SET_NAME
+        );
+        assert!(!p.delete_layer_set(DEFAULT_LAYER_SET_NAME));
+    }
+
+    #[test]
+    fn json_round_trip_and_old_files() {
+        let mut p = Project::new("P");
+        p.layer_sets.copy_set(DEFAULT_LAYER_SET_NAME, "Second");
+        let mut v = SavedPlanView::new("Cam", "Second");
+        v.floor = Some(0);
+        v.reference_display = true;
+        v.reference_floor = Some(-1);
+        v.camera = Some((Point { x: 10.0, y: 20.0 }, 1.5));
+        p.plan_views.push(v.clone());
+        p.active_plan_view = "Cam".into();
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.layer_sets, p.layer_sets);
+        assert_eq!(back.plan_views, p.plan_views);
+        assert_eq!(back.active_plan_view, "Cam");
+        assert_eq!(back.plan_view("Cam"), Some(&v));
+
+        // An old file without any of the new fields still loads.
+        let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let obj = val.as_object_mut().unwrap();
+        for k in [
+            "layer_sets",
+            "plan_views",
+            "active_plan_view",
+            "text_styles",
+        ] {
+            assert!(obj.remove(k).is_some(), "{k} missing from output");
+        }
+        let old: Project = serde_json::from_value(val).unwrap();
+        assert_eq!(old.layer_sets.sets.len(), 1);
+        assert_eq!(old.plan_views.len(), 1);
+        assert_eq!(old.active_plan_view, DEFAULT_PLAN_VIEW_NAME);
+        assert!(!old.text_styles.styles.is_empty());
+
+        // Sparse layer state JSON.
+        let st: LayerState = serde_json::from_str(r#"{"layer":"A"}"#).unwrap();
+        assert!(st.display && !st.locked && st.color.is_none());
+    }
+
+    #[test]
+    fn from_layers_mirrors_flags() {
+        let mut base = LayerSet::default_floor_plan();
+        base.set_display("Doors", false);
+        base.set_locked("Text", true);
+        base.add(Layer::new("Extra", [1, 1, 1], 5));
+        let s = LayerSets::from_layers(&base);
+        let d = s.active_set().unwrap();
+        assert!(!d.state("Doors").unwrap().display);
+        assert!(d.state("Text").unwrap().locked);
+        assert!(d.state("Extra").is_some());
+    }
+}

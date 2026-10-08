@@ -11,9 +11,12 @@
 
 pub mod camera;
 pub mod edges;
+pub mod export;
 mod gpu;
 pub mod math;
 mod viewport;
+pub mod walkthrough;
 
 pub use camera::{standard_views, Camera, CameraMode};
 pub use viewport::{Lighting, Viewport3d};
+pub use walkthrough::{preview_poses, KeyFrame, Walkthrough, WalkthroughPath, WalkthroughSource};

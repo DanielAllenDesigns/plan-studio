@@ -5,6 +5,8 @@
 //! * [`frame_floor`] frames a floor platform: joists, rim joists and blocking.
 //! * [`Member::mesh`] gives each member a box mesh for the 3D view.
 //! * [`wall_detail`] draws the 2D framing elevation of a wall.
+//! * [`frame_roof`] frames a roof: rafters, ridge, hips, valleys, fascia,
+//!   collar ties, ceiling joists or Fink trusses.
 //! * [`takeoff`] counts members and totals lumber.
 //!
 //! Lengths are inches. The 3D frame matches `plan-3d`: X right, Y up,
@@ -15,6 +17,7 @@ mod detail;
 mod floor;
 mod lumber;
 mod member;
+mod roof;
 mod takeoff;
 mod wall;
 
@@ -25,6 +28,9 @@ pub use lumber::{
     format_inches, Lumber, TWO_BY_EIGHT, TWO_BY_FOUR, TWO_BY_SIX, TWO_BY_TEN, TWO_BY_TWELVE,
 };
 pub use member::{Member, MemberKind, Transform3, Vec3};
+pub use roof::{
+    frame_roof, roof_framing_takeoff, roof_plan_symbols, truss_id, OverhangCut, RoofFramingDefaults,
+};
 pub use takeoff::{takeoff, Takeoff};
 pub use wall::frame_wall;
 

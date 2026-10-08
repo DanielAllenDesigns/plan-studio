@@ -34,9 +34,9 @@ pub fn bar(
             ],
         )
     });
-    ui.menu_button("3D", three_d_menu);
+    ui.menu_button("3D", |ui| three_d_menu(ui, state, out));
     ui.menu_button("CAD", |ui| cad_menu(ui, state, out));
-    ui.menu_button("Tools", tools_menu);
+    ui.menu_button("Tools", |ui| tools_menu(ui, out));
     ui.menu_button("View", |ui| view_menu(ui, state, theme, brightness, out));
     ui.menu_button("Window", |ui| window_menu(ui, state, out));
     ui.menu_button("Help", |ui| help_menu(ui, out));
@@ -121,6 +121,14 @@ fn file_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
             "",
             false,
             Action::SaveTemplate,
+            out,
+        );
+        live(
+            ui,
+            "Import Chief Template\u{2026}",
+            "",
+            false,
+            Action::ImportChiefTemplate,
             out,
         );
         live(
@@ -260,30 +268,128 @@ fn build_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
 }
 
 fn terrain_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
-    inert(
+    use crate::tools::terrain::TerrainVariant as T;
+    use toolbar::TerrainCommand as C;
+    live(
         ui,
-        &[
-            "Create Terrain Perimeter",
-            "-",
-            "Terrain Specification\u{2026}",
-            "Build Terrain",
-            "Clear Terrain",
-            "-",
-        ],
+        "Create Terrain Perimeter",
+        "",
+        false,
+        Action::SetTool(ToolId::TerrainVariant(T::Perimeter)),
+        out,
     );
+    ui.separator();
+    live(
+        ui,
+        "Terrain Specification\u{2026}",
+        "",
+        false,
+        Action::Terrain(C::Specification),
+        out,
+    );
+    live(
+        ui,
+        "Build Terrain",
+        "",
+        false,
+        Action::SetTool(ToolId::TerrainVariant(T::Build)),
+        out,
+    );
+    live(
+        ui,
+        "Clear Terrain",
+        "",
+        false,
+        Action::Terrain(C::Clear),
+        out,
+    );
+    live(
+        ui,
+        "Make Terrain Hole Around Building",
+        "",
+        false,
+        Action::Terrain(C::HoleAroundBuilding),
+        out,
+    );
+    ui.separator();
     for f in &toolbar::terrain_menu() {
         toolbar::flyout_menu(ui, f, state, out);
     }
 }
 
-fn three_d_menu(ui: &mut egui::Ui) {
+fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
+    use crate::shell::view3d_panel::View3dCommand as C;
+    use crate::tools::camera::CameraVariant as V;
+    use plan_view3d::CameraMode as M;
+    let cmd = |c| Action::View3d(c);
+    ui.menu_button("Create Orthographic View", |ui| {
+        for (name, mode) in [
+            ("Front Elevation", M::ElevationFront),
+            ("Back Elevation", M::ElevationBack),
+            ("Left Elevation", M::ElevationLeft),
+            ("Right Elevation", M::ElevationRight),
+            ("Plan Overhead", M::PlanOverhead),
+        ] {
+            live(ui, name, "", false, cmd(C::Mode(mode)), out);
+        }
+        ui.separator();
+        live(
+            ui,
+            V::CrossSection.label(),
+            "",
+            false,
+            cmd(C::Tool(V::CrossSection)),
+            out,
+        );
+        live(
+            ui,
+            V::BackClippedSection.label(),
+            "",
+            false,
+            cmd(C::Tool(V::BackClippedSection)),
+            out,
+        );
+    });
+    ui.menu_button("Create Perspective View", |ui| {
+        live(
+            ui,
+            V::FullCamera.label(),
+            "\u{21E7}J",
+            false,
+            cmd(C::Tool(V::FullCamera)),
+            out,
+        );
+        live(
+            ui,
+            V::FullOverview.label(),
+            "\u{21E7}K",
+            false,
+            cmd(C::Mode(M::Orbit)),
+            out,
+        );
+        live(
+            ui,
+            V::FloorOverview.label(),
+            "",
+            false,
+            cmd(C::FloorOverview),
+            out,
+        );
+        live(
+            ui,
+            V::DollHouse.label(),
+            "",
+            false,
+            cmd(C::Mode(M::DollHouse)),
+            out,
+        );
+        ui.separator();
+        live(ui, "Ray Trace\u{2026}", "", false, cmd(C::RayTrace), out);
+    });
+    inert(ui, &["Create Auto Elevations>", "-"]);
     inert(
         ui,
         &[
-            "Create Orthographic View>",
-            "Create Perspective View>",
-            "Create Auto Elevations>",
-            "-",
             "Move Camera with Mouse>",
             "Move Camera with Keyboard>",
             "Move Camera>",
@@ -302,13 +408,22 @@ fn three_d_menu(ui: &mut egui::Ui) {
             "-",
             "Lighting>",
             "Camera View Options>",
-            "Rendering Techniques>",
-            "Toggle Patterns",
-            "Delete Surface",
-            "Rebuild 3D",
-            "-",
-            "3D View Defaults\u{2026}\t\u{2318}1",
         ],
+    );
+    toolbar::flyout_menu(ui, &toolbar::rendering_techniques(), state, out);
+    inert(ui, &["Toggle Patterns", "Delete Surface"]);
+    live(ui, "Rebuild 3D", "", false, cmd(C::Rebuild), out);
+    ui.menu_button("Export", |ui| {
+        live(ui, "glTF\u{2026}", "", false, cmd(C::ExportGltf), out);
+    });
+    ui.separator();
+    live(
+        ui,
+        "3D View Defaults\u{2026}",
+        "\u{2318}1",
+        false,
+        cmd(C::Defaults),
+        out,
     );
 }
 
@@ -349,23 +464,93 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     );
 }
 
-fn tools_menu(ui: &mut egui::Ui) {
+fn tools_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
+    ui.menu_button("Layer Settings", |ui| {
+        live(
+            ui,
+            "Display Options\u{2026}",
+            "",
+            false,
+            Action::OpenLayerDisplay,
+            out,
+        );
+    });
     inert(
         ui,
         &[
-            "Layer Settings>",
             "Floor/Reference Display>",
             "Active View>",
             "Active Defaults\u{2026}",
             "-",
-            "Checks>",
-            "Toolbars and Hotkeys>",
-            "Symbol>",
-            "Space Planning>",
-            "Plan Database>",
-            "Time Tracker>",
-            "Schedules>",
-            "Materials List>",
+        ],
+    );
+    ui.menu_button("Checks", |ui| {
+        live(ui, "Plan Check", "", false, Action::PlanCheck, out);
+        live(
+            ui,
+            "Door/Window Check",
+            "",
+            false,
+            Action::DoorWindowCheck,
+            out,
+        );
+        live(ui, "Plan Footprint", "", false, Action::PlanFootprint, out);
+    });
+    ui.menu_button("Toolbars and Hotkeys", |ui| {
+        live(
+            ui,
+            "Customize Hotkeys\u{2026}",
+            "",
+            false,
+            Action::OpenHotkeyDialog,
+            out,
+        );
+    });
+    inert(ui, &["Symbol>"]);
+    ui.menu_button("Space Planning", |ui| {
+        live(
+            ui,
+            "Space Planning Assistant\u{2026}",
+            "",
+            false,
+            Action::SpacePlanning,
+            out,
+        );
+    });
+    inert(ui, &["Plan Database>", "Time Tracker>"]);
+    ui.menu_button("Schedules", |ui| {
+        live(ui, "Door Schedule", "", false, Action::DoorSchedule, out);
+        live(
+            ui,
+            "Window Schedule",
+            "",
+            false,
+            Action::WindowSchedule,
+            out,
+        );
+        live(ui, "Room Schedule", "", false, Action::RoomSchedule, out);
+        live(ui, "Wall Schedule", "", false, Action::WallSchedule, out);
+        ui.separator();
+        live(
+            ui,
+            "Create Construction Set\u{2026}",
+            "",
+            false,
+            Action::CreateConstructionSet,
+            out,
+        );
+    });
+    live(
+        ui,
+        "Materials List\u{2026}",
+        "",
+        false,
+        Action::MaterialsList,
+        out,
+    );
+    inert(
+        ui,
+        &[
             "Object Painter>",
             "Fill Style Painter>",
             "-",

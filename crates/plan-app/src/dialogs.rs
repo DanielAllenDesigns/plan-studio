@@ -10,8 +10,23 @@
 //! disabled (the full option set stays discoverable) or, where the spec asks
 //! for it, kept per session by the app (see `WallExtras` / `OpeningExtras`).
 
+pub mod build_tools;
+pub mod cabinet;
+pub mod cad;
+pub mod camera;
 mod defaults;
+pub mod dimension;
+pub mod electrical;
+pub mod floor;
+pub mod hotkeys;
+pub mod layer_display;
 mod opening;
+pub mod roof;
+pub mod room;
+pub mod stairs;
+pub mod symbol;
+pub mod terrain;
+pub mod text;
 mod wall;
 mod wall_types;
 

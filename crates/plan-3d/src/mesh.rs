@@ -21,11 +21,22 @@ pub enum Material {
     WindowGlass,
     WindowFrame,
     Roof,
+    Stucco,
+    Siding,
+    Brick,
+    Stone,
+    Concrete,
+    /// Casing, jambs, sills, thresholds, posts.
+    Trim,
+    /// Door and shower glass (windows keep [`Material::WindowGlass`]).
+    Glass,
+    /// Rails, balusters, tracks, garage-door rails.
+    Metal,
 }
 
 impl Material {
     /// Every material, in the order used for glTF material indices.
-    pub const ALL: [Material; 8] = [
+    pub const ALL: [Material; 16] = [
         Material::WallExterior,
         Material::WallInterior,
         Material::Floor,
@@ -34,6 +45,14 @@ impl Material {
         Material::WindowGlass,
         Material::WindowFrame,
         Material::Roof,
+        Material::Stucco,
+        Material::Siding,
+        Material::Brick,
+        Material::Stone,
+        Material::Concrete,
+        Material::Trim,
+        Material::Glass,
+        Material::Metal,
     ];
 
     /// Index of this material within [`Material::ALL`].
@@ -55,6 +74,14 @@ impl Material {
             Material::WindowGlass => [0.62, 0.78, 0.90, 0.35], // light blue, translucent
             Material::WindowFrame => [0.96, 0.96, 0.95, 1.0],  // white frame
             Material::Roof => [0.34, 0.32, 0.31, 1.0],         // charcoal shingle
+            Material::Stucco => [0.86, 0.82, 0.72, 1.0],       // eggshell stucco
+            Material::Siding => [0.72, 0.70, 0.64, 1.0],       // painted lap siding
+            Material::Brick => [0.62, 0.30, 0.22, 1.0],        // red brick
+            Material::Stone => [0.58, 0.56, 0.52, 1.0],        // stone veneer
+            Material::Concrete => [0.66, 0.66, 0.65, 1.0],     // poured concrete
+            Material::Trim => [0.97, 0.97, 0.95, 1.0],         // painted trim
+            Material::Glass => [0.70, 0.85, 0.92, 0.30],       // translucent glass
+            Material::Metal => [0.55, 0.57, 0.60, 1.0],        // painted steel
         }
     }
 
@@ -69,7 +96,30 @@ impl Material {
             Material::WindowGlass => "WindowGlass",
             Material::WindowFrame => "WindowFrame",
             Material::Roof => "Roof",
+            Material::Stucco => "Stucco",
+            Material::Siding => "Siding",
+            Material::Brick => "Brick",
+            Material::Stone => "Stone",
+            Material::Concrete => "Concrete",
+            Material::Trim => "Trim",
+            Material::Glass => "Glass",
+            Material::Metal => "Metal",
         }
+    }
+
+    /// Map a wall-layer name or material string to a surface material
+    /// (case-insensitive substring match); `None` when nothing matches.
+    pub fn from_layer_name(name: &str) -> Option<Material> {
+        let n = name.to_ascii_lowercase();
+        const TABLE: [(&str, Material); 6] = [
+            ("stucco", Material::Stucco),
+            ("siding", Material::Siding),
+            ("brick", Material::Brick),
+            ("stone", Material::Stone),
+            ("concrete", Material::Concrete),
+            ("drywall", Material::WallInterior),
+        ];
+        TABLE.iter().find(|(k, _)| n.contains(k)).map(|&(_, m)| m)
     }
 }
 

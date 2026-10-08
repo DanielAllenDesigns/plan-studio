@@ -154,6 +154,29 @@ impl Camera {
         self.mode = mode;
     }
 
+    /// The equivalent [`plan_render::Camera`] (a pinhole, `up` = +Y).
+    ///
+    /// `FullCamera` looks along [`Camera::forward`] from `position`; the other
+    /// modes look from [`Camera::eye`] at `target`. The ray tracer has no
+    /// orthographic projection, so the orthographic modes become perspective
+    /// views from the same eye.
+    pub fn to_render_camera(&self) -> plan_render::Camera {
+        let eye = self.eye();
+        let target = if self.mode == CameraMode::FullCamera {
+            math::add(eye, math::scale(self.forward(), 100.0))
+        } else {
+            self.target
+        };
+        plan_render::Camera {
+            eye,
+            target,
+            up: [0.0, 1.0, 0.0],
+            fov_deg: self.fov_deg,
+            aperture: 0.0,
+            focus_dist: math::length(math::sub(target, eye)).max(1.0),
+        }
+    }
+
     /// Unit vector from the target toward the eye for orbit-style cameras.
     fn eye_offset(&self) -> Vec3 {
         let (sy, cy) = self.yaw.sin_cos();

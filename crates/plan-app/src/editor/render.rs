@@ -18,7 +18,11 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     let pal = &cx.palette;
     painter.rect_filled(cam.rect, 0.0, pal.background);
     draw_grid(cx, painter, cam);
+    crate::editor::site_view::draw_site(cx, painter, cam);
     draw_rooms(cx, painter, cam);
+    crate::editor::stairs_view::draw_stairs(cx, painter, cam);
+    crate::editor::placed::draw_placed(cx, painter, cam);
+    crate::editor::roof_view::draw_roofs(cx, painter, cam);
     draw_walls(cx, painter, cam);
     let floor = cx.floor();
     for wall in &floor.walls {
@@ -28,6 +32,8 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             }
         }
     }
+    // Devices sit on the wall faces: over the wall fill and the openings.
+    crate::editor::site_view::draw_devices(cx, painter, cam);
     let fmt = cx.defaults.dim_format();
     for d in &floor.dimensions {
         let layer = match d.kind {
@@ -50,6 +56,8 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal);
         }
     }
+    crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam);
+    crate::tools::camera::draw_camera_symbols(cx, painter, cam, None);
     if let Some(h) = cx.hover.filter(|h| !cx.selection.contains(*h)) {
         highlight(cx, painter, cam, h, Stroke::new(2.0_f32, pal.hover));
     }
@@ -144,16 +152,13 @@ fn draw_rooms(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             painter.text(
                 cam.world_to_screen(room.centroid),
                 Align2::CENTER_CENTER,
-                format!(
-                    "{}\n{} sq ft",
-                    cx.room_name(room),
-                    room.area_sq_ft().round()
-                ),
+                crate::editor::rooms_edit::room_label_text(cx, room),
                 FontId::proportional(13.0),
                 pal.room_label,
             );
         }
     }
+    crate::editor::rooms_edit::draw_room_selection(cx, painter, cam);
 }
 
 /// The wall's drawn polygon: the mitered outline when the cache has one.
@@ -169,7 +174,8 @@ fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     // Below this zoom the layer lines would just turn into a smear.
     let show_layers = cam.px_per_in >= 1.0;
     for wall in &cx.floor().walls {
-        if !cx.layers().is_visible(&wall.layer) {
+        // Invisible walls (stairwell dividers) are room boundaries only.
+        if wall.flags.invisible || !cx.layers().is_visible(&wall.layer) {
             continue;
         }
         let fill = match wall.kind {
@@ -261,11 +267,15 @@ pub fn draw_opening(
 
     match o.kind {
         OpeningKind::Door => {
-            let (hinge, toward_other, side) = if o.swing_flipped {
-                (pb, d.scale(-1.0), n.scale(-1.0))
+            // The hinge jamb comes from `hinge_at_end`, the swing side from
+            // `swing_flipped`.
+            let (hinge, toward_other) = if o.hinge_at_end {
+                (pb, d.scale(-1.0))
             } else {
-                (pa, d, n)
+                (pa, d)
             };
+            let side = if o.swing_flipped { n.scale(-1.0) } else { n };
+
             painter.line_segment([sc(hinge), sc(hinge.add(side.scale(o.width)))], line);
             let arc: Vec<Pos2> = (0..=16)
                 .map(|i| {
@@ -417,6 +427,24 @@ fn highlight(
                 draw_cad(painter, cam, &c.item, stroke, &cx.palette);
             }
         }
+        ObjectRef::Device(id) => {
+            let layer = crate::editor::site_view::electrical_layer(cx.floor, floor);
+            if let Some(d) = layer.device(id) {
+                let r = (8.0 * cam.px_per_in as f32).max(8.0);
+                painter.circle_stroke(cam.world_to_screen(d.position), r, stroke);
+            }
+        }
+        ObjectRef::RoofPlane(id) => {
+            if let Some(r) = crate::editor::roof_view::load(floor).plane(id) {
+                painter.add(Shape::closed_line(quad(cam, &r.plan_polygon()), stroke));
+            }
+        }
+        ObjectRef::Camera(id) => {
+            if let Some(c) = cx.project.camera(id) {
+                painter.circle_stroke(cam.world_to_screen(c.position), 14.0, stroke);
+            }
+        }
+        // Stairs, cabinets and symbols draw their own selection.
         _ => {}
     }
 }
@@ -547,7 +575,7 @@ mod tests {
                     cam.px_per_in = scale;
                     draw_plan(&cx, &painter, &cam);
                     crate::editor::handles::draw(
-                        &crate::editor::handles::handles_for(cx.floor(), &cx.selection, scale),
+                        &crate::editor::handles::handles_for(&cx, scale),
                         &painter,
                         &cam,
                         &cx.palette,

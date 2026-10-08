@@ -33,7 +33,9 @@ pub mod wall;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ToolId {
     Select,
-    Wall { kind: WallKind },
+    Wall {
+        kind: WallKind,
+    },
     Door,
     Window,
     Pan,
@@ -47,15 +49,56 @@ pub enum ToolId {
     Library,
     Camera,
     Terrain,
+    /// A flavor of the electrical tool (the flyout entry picked).
+    ElectricalVariant(electrical::ElecVariant),
+    /// A flavor of the terrain tool (the flyout entry picked).
+    TerrainVariant(terrain::TerrainVariant),
+    /// A stair tool of the Stairs flyout.
+    StairsVariant(crate::editor::stairs_view::StairKind),
+    /// A mode of the roof tool (Roof Plane, Build Roof, Gable Line, ...).
+    RoofVariant(roof::RoofMode),
+    /// A cabinet kind (Base, Wall, Full Height, ...).
+    CabinetVariant(plan_cabinets::CabinetKind),
+    /// A dimension tool (Manual, End to End, ...).
+    DimensionVariant(dimension::DimMode),
+    /// A text tool (Text, Leader Line, Callout, ...).
+    TextVariant(text::TextMode),
+    /// A CAD drawing tool (Draw Line, Circle, ...).
+    CadVariant(cad::CadMode),
+    /// A camera tool (Full Camera, the overviews, the section cameras).
+    CameraVariant(camera::CameraVariant),
 }
 
 impl ToolId {
     /// Do both ids belong to the same tool object?
     pub fn same_tool(self, other: ToolId) -> bool {
-        match (self, other) {
+        match (self.base(), other.base()) {
             (ToolId::Wall { .. }, ToolId::Wall { .. }) => true,
             (ToolId::Door | ToolId::Window, ToolId::Door | ToolId::Window) => true,
+            (
+                ToolId::Electrical | ToolId::ElectricalVariant(_),
+                ToolId::Electrical | ToolId::ElectricalVariant(_),
+            ) => true,
+            (
+                ToolId::Terrain | ToolId::TerrainVariant(_),
+                ToolId::Terrain | ToolId::TerrainVariant(_),
+            ) => true,
             (a, b) => a == b,
+        }
+    }
+
+    /// The plain id of the tool a variant id belongs to (`StairsVariant(_)`
+    /// is `Stairs`); other ids are their own base.
+    pub fn base(self) -> ToolId {
+        match self {
+            ToolId::StairsVariant(_) => ToolId::Stairs,
+            ToolId::RoofVariant(_) => ToolId::Roof,
+            ToolId::CabinetVariant(_) => ToolId::Cabinet,
+            ToolId::DimensionVariant(_) => ToolId::Dimension,
+            ToolId::TextVariant(_) => ToolId::Text,
+            ToolId::CadVariant(_) => ToolId::Cad,
+            ToolId::CameraVariant(_) => ToolId::Camera,
+            other => other,
         }
     }
 }
@@ -186,9 +229,14 @@ pub trait Tool {
     fn cursor(&self) -> egui::CursorIcon {
         egui::CursorIcon::Default
     }
-    /// A variant of this tool was picked (wall flavor, door or window). Called
-    /// before `activate` and when switching between variants.
+    /// A variant of this tool was picked (wall flavor, door or window, a
+    /// `*Variant(..)` payload). Called before `activate` and when switching
+    /// between variants.
     fn set_variant(&mut self, _id: ToolId) {}
+    /// Called once per frame by the shell, before the canvas is drawn, so a
+    /// tool that owns dialogs or palettes can apply what they asked for
+    /// without waiting for the next pointer or key event.
+    fn frame(&mut self, _cx: &mut EditorContext, _ctx: &egui::Context) {}
     fn activate(&mut self, _cx: &mut EditorContext) {}
     fn deactivate(&mut self, _cx: &mut EditorContext) {}
     fn pointer_down(&mut self, _cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
@@ -221,16 +269,16 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(wall::WallTool::default()),
         Box::new(opening::OpeningTool::default()),
         Box::new(pan::PanTool),
-        Box::new(dimension::DimensionTool),
-        Box::new(text::TextTool),
-        Box::new(cad::CadTool),
-        Box::new(cabinet::CabinetTool),
-        Box::new(stairs::StairsTool),
-        Box::new(roof::RoofTool),
-        Box::new(electrical::ElectricalTool),
-        Box::new(library::LibraryTool),
-        Box::new(camera::CameraTool),
-        Box::new(terrain::TerrainTool),
+        Box::new(dimension::DimensionTool::default()),
+        Box::new(text::TextTool::default()),
+        Box::new(cad::CadTool::default()),
+        Box::new(cabinet::CabinetTool::default()),
+        Box::new(stairs::StairsTool::default()),
+        Box::new(roof::RoofTool::default()),
+        Box::new(electrical::ElectricalTool::default()),
+        Box::new(library::LibraryTool::default()),
+        Box::new(camera::CameraTool::default()),
+        Box::new(terrain::TerrainTool::default()),
     ]
 }
 
@@ -238,6 +286,8 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
 pub struct ToolSet {
     tools: Vec<Box<dyn Tool>>,
     active: usize,
+    /// The id the active tool was last picked with (carries its variant).
+    picked: ToolId,
 }
 
 impl ToolSet {
@@ -245,11 +295,29 @@ impl ToolSet {
         Self {
             tools: registry(),
             active: 0,
+            picked: ToolId::Select,
         }
     }
 
+    /// The active tool's id; for tools with variants the id it was picked
+    /// with (so the toolbar can mark the flyout entry).
     pub fn active_id(&self) -> ToolId {
-        self.tools[self.active].id()
+        let id = self.tools[self.active].id();
+        if self.picked != self.picked.base() && self.picked.base() == id {
+            self.picked
+        } else {
+            id
+        }
+    }
+
+    /// Runs the active tool's per-frame hook.
+    pub fn frame(&mut self, cx: &mut EditorContext, ctx: &egui::Context) {
+        self.tools[self.active].frame(cx, ctx);
+    }
+
+    /// Every registered tool (smoke tests).
+    pub fn all_mut(&mut self) -> &mut [Box<dyn Tool>] {
+        &mut self.tools
     }
 
     pub fn active(&self) -> &dyn Tool {
@@ -266,6 +334,8 @@ impl ToolSet {
         let Some(next) = self.tools.iter().position(|t| t.id().same_tool(id)) else {
             return;
         };
+        self.picked = id;
+        bridge_variant(id);
         if next == self.active {
             self.tools[next].set_variant(id);
             return;
@@ -283,6 +353,17 @@ impl ToolSet {
     pub fn restart(&mut self, cx: &mut EditorContext) {
         self.tools[self.active].deactivate(cx);
         self.tools[self.active].activate(cx);
+    }
+}
+
+/// Tools that choose their flavor by Chief's name (`request_variant`) get
+/// it from the variant payload before `set_variant` runs.
+fn bridge_variant(id: ToolId) {
+    match id {
+        ToolId::DimensionVariant(m) => dimension::request_variant(m.name()),
+        ToolId::TextVariant(m) => text::request_variant(m.name()),
+        ToolId::CadVariant(m) => cad::request_variant(m.name()),
+        _ => {}
     }
 }
 
@@ -321,12 +402,51 @@ mod tests {
         }
     }
 
+    /// Every registered tool can be activated and describes itself; no tool
+    /// is a stub any more.
     #[test]
-    fn stubs_say_they_are_not_implemented() {
+    fn every_tool_activates_with_a_name_and_hint() {
         let mut cx = EditorContext::new(crate::plan_defaults::embedded());
         let mut set = ToolSet::new();
-        set.set_active(&mut cx, ToolId::Stairs);
-        assert_eq!(set.active_id(), ToolId::Stairs);
-        assert_eq!(cx.status, "Tool not implemented yet");
+        let n = set.tools.len();
+        for i in 0..n {
+            let id = set.tools[i].id();
+            set.set_active(&mut cx, id);
+            let t = set.active();
+            assert!(!t.name().is_empty(), "{id:?} has no name");
+            assert!(!t.hint().is_empty(), "{id:?} has no hint");
+            assert_ne!(cx.status, "Tool not implemented yet", "{id:?} is a stub");
+        }
+    }
+
+    #[test]
+    fn variant_ids_select_the_exact_sub_tool() {
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        let mut set = ToolSet::new();
+        let v = ToolId::StairsVariant(crate::editor::stairs_view::StairKind::Landing);
+        set.set_active(&mut cx, v);
+        assert_eq!(set.active().name(), "Landing");
+        assert_eq!(set.active_id(), v);
+        set.set_active(&mut cx, ToolId::CadVariant(cad::CadMode::CircleAboutCenter));
+        assert_eq!(set.active().name(), "Circle About Center");
+        set.set_active(&mut cx, ToolId::TextVariant(text::TextMode::Callout));
+        assert_eq!(set.active().name(), "Callout");
+        set.set_active(
+            &mut cx,
+            ToolId::DimensionVariant(dimension::DimMode::TapeMeasure),
+        );
+        assert_eq!(set.active().name(), "Tape Measure");
+        set.set_active(&mut cx, ToolId::RoofVariant(roof::RoofMode::Hole));
+        assert_eq!(set.active_id(), ToolId::RoofVariant(roof::RoofMode::Hole));
+        set.set_active(
+            &mut cx,
+            ToolId::CabinetVariant(plan_cabinets::CabinetKind::Shelf),
+        );
+        assert_eq!(set.active().name(), "Shelf");
+        set.set_active(
+            &mut cx,
+            ToolId::CameraVariant(camera::CameraVariant::DollHouse),
+        );
+        assert_eq!(set.active().name(), "Doll House View");
     }
 }

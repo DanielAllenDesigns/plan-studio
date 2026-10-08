@@ -5,8 +5,11 @@
 //! Chief X18 template (`docs/chief-x18-dialogs.md`). Lengths are inches.
 
 use crate::dimension::DimFormat;
+use crate::layer_sets::LayerSets;
 use crate::layers::LayerSet;
 use crate::model::{Project, WallKind, DEFAULT_CEILING_HEIGHT};
+use crate::text_styles::TextStyles;
+use crate::units::{LengthFormat, LengthUnit};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -187,6 +190,69 @@ pub struct DimensionDefaults {
     pub locate_openings_centers: bool,
 }
 
+/// One of Chief's saved dimension default sets ("1/4\" Scale", "NKBA", ...):
+/// how dimension text is formatted plus the automatic-dimension settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DimensionDefaultSet {
+    /// Short name as Chief lists it, e.g. `1/4" Scale`.
+    pub name: String,
+    pub format: DimFormat,
+    pub auto: DimensionDefaults,
+}
+
+impl DimensionDefaultSet {
+    /// A set from automatic-dimension settings; the text format is derived
+    /// from them and `auto.set_name` becomes `<name> Dimension Defaults`.
+    pub fn new(name: impl Into<String>, mut auto: DimensionDefaults) -> Self {
+        let name = name.into();
+        auto.set_name = format!("{name} Dimension Defaults");
+        let denominator = auto.smallest_fraction.max(1);
+        let format = DimFormat {
+            smallest_fraction: denominator,
+            unit_indicators: auto.unit_indicators,
+            length: Some(LengthFormat {
+                unit: LengthUnit::FeetInches,
+                fraction_denominator: denominator,
+                unit_indicators: auto.unit_indicators,
+                trailing_zeroes: auto.trailing_zeroes,
+                ..LengthFormat::default()
+            }),
+        };
+        Self { name, format, auto }
+    }
+
+    /// The same settings under another name.
+    pub fn cloned_as(&self, name: impl Into<String>) -> Self {
+        Self::new(name, self.auto.clone())
+    }
+}
+
+/// Chief's dimension default sets as listed in Daniel's template. Only the
+/// 1/4" set was captured in detail; the others start as copies of `base`.
+fn chief_dimension_sets(base: &DimensionDefaults) -> Vec<DimensionDefaultSet> {
+    [
+        "1\" Scale",
+        "1/2\" Scale",
+        "1/4\" Scale",
+        "1/8\" Scale",
+        "Electrical",
+        "Foundation",
+        "Framing",
+        "HVAC",
+        "Kitchen and Bath",
+        "Legacy NKBA",
+        "NKBA",
+        "Plot Plan",
+        "Roof",
+    ]
+    .iter()
+    .map(|n| DimensionDefaultSet::new(*n, base.clone()))
+    .collect()
+}
+
+/// Name of the active dimension set in Daniel's template.
+pub const DEFAULT_DIMENSION_SET: &str = "1/4\" Scale";
+
 // ----- rooms -----
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -247,8 +313,15 @@ pub struct PlanDefaults {
     pub window: WindowDefaults,
     pub cabinets: CabinetDefaults,
     pub dimensions: DimensionDefaults,
+    /// Saved dimension default sets; `dimensions` mirrors the active one.
+    pub dimension_sets: Vec<DimensionDefaultSet>,
+    /// Name of the active entry of `dimension_sets`.
+    pub active_dimension_set: String,
     pub rooms: RoomDefaults,
     pub layers: LayerSet,
+    /// Layer sets (display/lock/colour overrides over `layers`).
+    pub layer_sets: LayerSets,
+    pub text_styles: TextStyles,
     pub text: TextDefaults,
     pub grid: GridDefaults,
     pub units: UnitDefaults,
@@ -298,11 +371,33 @@ impl PlanDefaults {
         }
     }
 
+    pub fn dimension_set(&self, name: &str) -> Option<&DimensionDefaultSet> {
+        self.dimension_sets.iter().find(|s| s.name == name)
+    }
+
+    /// The active dimension default set, if its name is in the list.
+    pub fn active_dimension(&self) -> Option<&DimensionDefaultSet> {
+        self.dimension_set(&self.active_dimension_set)
+    }
+
+    /// Makes `name` the active dimension set and loads its settings into
+    /// `dimensions`. `false` (and no change) if there is no such set.
+    pub fn set_active_dimension_set(&mut self, name: &str) -> bool {
+        let Some(set) = self.dimension_set(name) else {
+            return false;
+        };
+        let auto = set.auto.clone();
+        self.active_dimension_set = name.to_string();
+        self.dimensions = auto;
+        true
+    }
+
     /// The dimension text format these defaults describe.
     pub fn dim_format(&self) -> DimFormat {
         DimFormat {
             smallest_fraction: self.dimensions.smallest_fraction.max(1),
             unit_indicators: self.dimensions.unit_indicators,
+            length: None,
         }
     }
 
@@ -328,6 +423,7 @@ impl PlanDefaults {
 
     /// Daniel's Chief X18 template, as captured in `docs/chief-x18-dialogs.md`.
     pub fn chief_x18_daniel() -> Self {
+        let layers = LayerSet::default_floor_plan();
         let roof = WallRoofDefaults {
             pitch_in_12: 8.0,
             overhang: 16.0,
@@ -344,6 +440,22 @@ impl PlanDefaults {
             jamb_width: 0.75,
             swing_angle: 90.0,
             sill_height: 0.0,
+        };
+        let dimensions = DimensionDefaults {
+            set_name: "1/4\" Scale Dimension Defaults".into(),
+            smallest_fraction: 8,
+            unit_indicators: true,
+            trailing_zeroes: true,
+            fraction_style: "Diagonal".into(),
+            fraction_text_size_pct: 60,
+            text_above_line: true,
+            leader_style: "Square Corner".into(),
+            arrow_size: 2.25,
+            extension_gap: 3.0,
+            extension_past: 3.0,
+            auto_exterior_offset: 32.0,
+            auto_line_separation: 18.0,
+            locate_openings_centers: true,
         };
         PlanDefaults {
             name: "Chief X18 (Daniel)".into(),
@@ -405,29 +517,18 @@ impl PlanDefaults {
                     height: 84.0,
                 },
             },
-            dimensions: DimensionDefaults {
-                set_name: "1/4\" Scale Dimension Defaults".into(),
-                smallest_fraction: 8,
-                unit_indicators: true,
-                trailing_zeroes: true,
-                fraction_style: "Diagonal".into(),
-                fraction_text_size_pct: 60,
-                text_above_line: true,
-                leader_style: "Square Corner".into(),
-                arrow_size: 2.25,
-                extension_gap: 3.0,
-                extension_past: 3.0,
-                auto_exterior_offset: 32.0,
-                auto_line_separation: 18.0,
-                locate_openings_centers: true,
-            },
+            dimensions: dimensions.clone(),
+            dimension_sets: chief_dimension_sets(&dimensions),
+            active_dimension_set: DEFAULT_DIMENSION_SET.into(),
             rooms: RoomDefaults {
                 ceiling_height: DEFAULT_CEILING_HEIGHT,
                 floor_finish_thickness: 0.75,
                 ceiling_finish_thickness: 0.625,
                 room_types: chief_room_types(),
             },
-            layers: LayerSet::default_floor_plan(),
+            layer_sets: LayerSets::from_layers(&layers),
+            layers,
+            text_styles: TextStyles::chief_defaults(),
             text: TextDefaults {
                 font: "Arial".into(),
                 height: 6.0,
@@ -613,6 +714,12 @@ impl Project {
         let mut p = Project::new(name);
         p.floors[0].ceiling_height = d.rooms.ceiling_height;
         p.layers = d.layers.clone();
+        p.layer_sets = d.layer_sets.clone();
+        p.text_styles = d.text_styles.clone();
+        // The starting view shows the defaults' active layer set.
+        for v in &mut p.plan_views {
+            v.layer_set = d.layer_sets.active.clone();
+        }
         p.wall_types = d.wall_types.clone();
         p
     }
@@ -726,6 +833,70 @@ mod tests {
         assert_eq!(p.floors[0].ceiling_height, 120.0);
         assert_eq!(p.wall_types.len(), d.wall_types.len());
         assert!(!p.layers.is_visible("Doors"));
+    }
+
+    #[test]
+    fn dimension_sets_seeded_with_active_quarter_scale() {
+        let mut d = PlanDefaults::chief_x18_daniel();
+        let names: Vec<_> = d.dimension_sets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "1\" Scale",
+                "1/2\" Scale",
+                "1/4\" Scale",
+                "1/8\" Scale",
+                "Electrical",
+                "Foundation",
+                "Framing",
+                "HVAC",
+                "Kitchen and Bath",
+                "Legacy NKBA",
+                "NKBA",
+                "Plot Plan",
+                "Roof"
+            ]
+        );
+        assert_eq!(d.active_dimension_set, "1/4\" Scale");
+        let active = d.active_dimension().unwrap();
+        assert_eq!(active.format.smallest_fraction, 8);
+        assert_eq!(active.auto, d.dimensions);
+        assert_eq!(active.format.fmt_len(109.125), "9'-1 1/8\"");
+        assert_eq!(active.auto.set_name, "1/4\" Scale Dimension Defaults");
+        // Switching the active set loads its settings into `dimensions`.
+        d.dimension_sets[0].auto.smallest_fraction = 16;
+        assert!(d.set_active_dimension_set("1\" Scale"));
+        assert_eq!(d.dimensions.smallest_fraction, 16);
+        assert_eq!(d.dim_format().smallest_fraction, 16);
+        assert!(!d.set_active_dimension_set("nope"));
+        assert_eq!(d.active_dimension_set, "1\" Scale");
+    }
+
+    #[test]
+    fn layer_sets_and_text_styles_in_defaults_and_old_json() {
+        let d = PlanDefaults::chief_x18_daniel();
+        assert_eq!(d.layer_sets.sets.len(), 1);
+        assert_eq!(d.layer_sets.effective(&d.layers), d.layers);
+        assert!(d.text_styles.get("Default Text Style").is_some());
+        // Old defaults JSON without the new fields still loads.
+        let mut v: serde_json::Value = serde_json::from_str(&d.to_json().unwrap()).unwrap();
+        for k in [
+            "layer_sets",
+            "text_styles",
+            "dimension_sets",
+            "active_dimension_set",
+        ] {
+            assert!(v.as_object_mut().unwrap().remove(k).is_some());
+        }
+        let old = PlanDefaults::from_json(&v.to_string()).unwrap();
+        assert_eq!(old, d);
+        let p = Project::from_defaults("X", &d);
+        assert_eq!(p.layer_sets, d.layer_sets);
+        assert_eq!(p.text_styles, d.text_styles);
+        assert_eq!(
+            p.current_plan_view().unwrap().layer_set,
+            d.layer_sets.active
+        );
     }
 
     #[test]

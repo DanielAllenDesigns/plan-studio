@@ -1,0 +1,11 @@
+[package]
+name = "plan-chiefplan"
+description = "Plan Studio: read-only scanner for Chief Architect .plan/.layout template files (names of layer sets, wall types, text styles, dimension sets, views, sheets) used to seed Plan Studio templates from the user's own Chief templates."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+plan-core = { path = "../plan-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

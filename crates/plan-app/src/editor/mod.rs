@@ -7,12 +7,19 @@
 
 pub mod actions;
 pub mod camera;
+pub mod connect;
+pub mod dispatch;
 pub mod handles;
 pub mod history;
 pub mod ops;
+pub mod placed;
 pub mod render;
+pub mod roof_view;
+pub mod rooms_edit;
 pub mod selection;
+pub mod site_view;
 pub mod snap;
+pub mod stairs_view;
 pub mod tempdim;
 
 pub use actions::{Clipboard, EditAction, EditActionKind};
@@ -53,6 +60,8 @@ pub enum EditorRequest {
     OpenSpec(ObjectRef),
     /// Pan the view by screen pixels.
     PanPixels(Vec2),
+    /// Switch to a tool (an Edit toolbar command such as Join Roof Planes).
+    SetTool(crate::tools::ToolId),
 }
 
 pub struct EditorContext {
@@ -86,6 +95,9 @@ pub struct EditorContext {
     pub outlines: Vec<WallOutline>,
     /// One polygon per wall layer (valid after [`refresh`](Self::refresh)).
     pub layer_outlines: Vec<WallLayerOutline>,
+    /// The layers as the active plan view shows them, when that differs from
+    /// `project.layers` (a non-default layer set or plan view is active).
+    view_layers: Option<LayerSet>,
     history: ChangeHistory,
     dirty: bool,
 }
@@ -118,6 +130,7 @@ impl EditorContext {
             rooms: Vec::new(),
             outlines: Vec::new(),
             layer_outlines: Vec::new(),
+            view_layers: None,
             history: ChangeHistory::new(),
             dirty: true,
         }
@@ -133,8 +146,9 @@ impl EditorContext {
         &mut self.project.floors[self.floor]
     }
 
+    /// The layers as the active plan view shows them (display, lock, color).
     pub fn layers(&self) -> &LayerSet {
-        &self.project.layers
+        self.view_layers.as_ref().unwrap_or(&self.project.layers)
     }
 
     /// Replaces the project (New / Open): clears history, selection and
@@ -237,6 +251,11 @@ impl EditorContext {
     /// tests call it before reading `rooms`.
     pub fn refresh(&mut self) {
         self.floor = self.floor.min(self.project.floors.len() - 1);
+        use plan_core::layer_sets::{DEFAULT_LAYER_SET_NAME, DEFAULT_PLAN_VIEW_NAME};
+        let custom_view = self.project.active_plan_view != DEFAULT_PLAN_VIEW_NAME
+            || self.project.layer_sets.active != DEFAULT_LAYER_SET_NAME;
+        self.view_layers = custom_view.then(|| self.project.view_layers());
+
         if self.dirty {
             let walls = &self.project.floors[self.floor].walls;
             self.rooms = detect_rooms(walls, 0.5);
@@ -249,8 +268,9 @@ impl EditorContext {
             self.layer_outlines = wall_layer_outlines(walls, types, ops::JOIN_TOL);
             self.dirty = false;
         }
+        self.selection.retain_existing(&self.project, self.floor);
         let f = &self.project.floors[self.floor];
-        self.selection.retain_existing(f);
+
         if self.view_flags.contains(&ViewFlag::TemporaryDimensions) {
             self.temp.compute(f, &self.selection);
         } else {
@@ -411,5 +431,28 @@ mod tests {
         assert_eq!(cx.redo_label(), Some("Draw Wall"));
         cx.redo();
         assert_eq!(cx.floor().walls.len(), 1);
+    }
+
+    #[test]
+    fn an_active_plan_view_decides_which_layers_show() {
+        use plan_core::SavedPlanView;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.refresh();
+        assert!(cx.layers().is_visible("Doors"));
+        let mut set = cx.project.layer_sets.get("Default Set").unwrap().clone();
+        set.name = "No Doors".into();
+        set.ensure_state("Doors").display = false;
+        assert!(cx.project.layer_sets.add_set(set));
+        cx.project
+            .plan_views
+            .push(SavedPlanView::new("Doorless", "No Doors"));
+        assert!(cx.project.activate_plan_view("Doorless"));
+        cx.refresh();
+        assert!(!cx.layers().is_visible("Doors"));
+        // The base layers are untouched.
+        assert!(cx.project.layers.is_visible("Doors"));
+        assert!(cx.project.activate_plan_view("Floor Plan View"));
+        cx.refresh();
+        assert!(cx.layers().is_visible("Doors"));
     }
 }

@@ -8,8 +8,11 @@
 //! the app applies them.
 
 use crate::icons;
+use crate::shell::view3d_panel::View3dCommand;
 use crate::theme::{scale, CanvasTheme};
+use crate::tools::camera::CameraVariant;
 use crate::tools::ToolId;
+
 use eframe::egui::{
     self, Align, Color32, Image, Key, Layout, Modifiers, PopupCloseBehavior, Rect, Sense, Shape,
     Stroke, Vec2,
@@ -65,6 +68,14 @@ impl Dock {
     }
 }
 
+/// Terrain menu commands that are not tools.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TerrainCommand {
+    Specification,
+    Clear,
+    HoleAroundBuilding,
+}
+
 /// Everything the UI can ask the app to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -79,6 +90,9 @@ pub enum Action {
     SaveTemplate,
     /// File > Templates > Reset to Chief X18 Template
     ResetTemplate,
+    /// File > Templates > Import Chief Template...
+    ImportChiefTemplate,
+
     Quit,
     ZoomIn,
     ZoomOut,
@@ -96,7 +110,40 @@ pub enum Action {
     ShowAbout,
     /// Edit > Default Settings...
     DefaultSettings,
+    /// Tools > Toolbars and Hotkeys > Customize Hotkeys...
+    OpenHotkeyDialog,
+    /// Tools > Layer Settings > Display Options...
+    OpenLayerDisplay,
+    // Build > Floor, Tools > Space Planning / Checks / Schedules (build_tools).
+    BuildNewFloor,
+    InsertFloor,
+    DeleteFloor,
+    DeleteFoundation,
+    ExchangeFloorAbove,
+    ExchangeFloorBelow,
+    BuildFoundation,
+    RebuildAll,
+    SpacePlanning,
+    PlanCheck,
+    DoorWindowCheck,
+    PlanFootprint,
+    MaterialsList,
+    DoorSchedule,
+    WindowSchedule,
+    RoomSchedule,
+    WallSchedule,
+    CreateConstructionSet,
     NotImplemented(&'static str),
+    /// A command of an object type (`EditorContext::run_custom`), such as
+    /// Delete Roof Planes.
+    Custom(&'static str),
+    /// Terrain menu commands.
+    Terrain(TerrainCommand),
+    /// Row-1 view selector: activate the saved plan view with this index.
+    PlanView(usize),
+
+    /// The 3D view, cameras and rendering (`shell::view3d_panel`).
+    View3d(View3dCommand),
 }
 
 /// One toolbar button (or one flyout variant).
@@ -141,6 +188,8 @@ pub struct BarState<'a> {
     pub floor: usize,
     pub floor_count: usize,
     pub view_name: &'a str,
+    /// The saved plan views the row-1 selector lists.
+    pub views: &'a [plan_core::SavedPlanView],
     /// Global UI brightness (0.6..=1.0), applied to icon tints and fills.
     pub brightness: f32,
     /// Label of the step Undo would revert ("Move Wall"); `None` when there is none.
@@ -235,33 +284,64 @@ pub const BINDINGS: &[Binding] = &[
     bind("\u{21E7}W", &[Key::W], SHIFT, WINDOW),
     // Hinged Door is a two-key sequence.
     bind("D, H", &[Key::D, Key::H], NONE, DOOR),
-    // Chief hotkeys for tools that are not built yet.
+    // Chief hotkeys for the build, CAD and 3D tools.
     bind(
         "\u{21E7}Y",
         &[Key::Y],
         SHIFT,
-        Action::NotImplemented("Draw Stairs"),
+        Action::SetTool(ToolId::StairsVariant(
+            crate::editor::stairs_view::StairKind::Draw,
+        )),
     ),
     bind(
         "\u{21E7}T",
         &[Key::T],
         SHIFT,
-        Action::NotImplemented("Base Cabinet"),
+        Action::SetTool(ToolId::CabinetVariant(plan_cabinets::CabinetKind::Base)),
     ),
     bind(
         "\u{21E7}A",
         &[Key::A],
         SHIFT,
-        Action::NotImplemented("Auto Exterior Dimensions"),
+        Action::SetTool(ToolId::DimensionVariant(
+            crate::tools::dimension::DimMode::AutoExterior,
+        )),
     ),
-    bind("Q", &[Key::Q], NONE, Action::NotImplemented("Roof Plane")),
-    bind("Y", &[Key::Y], NONE, Action::NotImplemented("Text")),
-    bind("K", &[Key::K], NONE, Action::NotImplemented("Circle")),
+    bind(
+        "Q",
+        &[Key::Q],
+        NONE,
+        Action::SetTool(ToolId::RoofVariant(crate::tools::roof::RoofMode::Plane)),
+    ),
+    bind(
+        "Y",
+        &[Key::Y],
+        NONE,
+        Action::SetTool(ToolId::TextVariant(crate::tools::text::TextMode::Text)),
+    ),
+    bind(
+        "K",
+        &[Key::K],
+        NONE,
+        Action::SetTool(ToolId::CadVariant(crate::tools::cad::CadMode::Circle)),
+    ),
     bind(
         "\u{21E7}P",
         &[Key::P],
         SHIFT,
-        Action::NotImplemented("Rectangular Polyline"),
+        Action::SetTool(ToolId::CadVariant(crate::tools::cad::CadMode::RectPolyline)),
+    ),
+    bind(
+        "\u{21E7}J",
+        &[Key::J],
+        SHIFT,
+        Action::View3d(View3dCommand::Tool(CameraVariant::FullCamera)),
+    ),
+    bind(
+        "\u{21E7}K",
+        &[Key::K],
+        SHIFT,
+        Action::View3d(View3dCommand::Tool(CameraVariant::FullOverview)),
     ),
     // View and window.
     bind("\u{2303}F", &[Key::F], CTRL, Action::FillWindow),
@@ -315,12 +395,15 @@ impl Binding {
 }
 
 /// Turns key presses into actions, including two-key sequences like `D, H`.
+/// Superseded at runtime by `shell::hotkeys::HotkeyState`; kept for its tests.
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct Hotkeys {
     pending: Vec<Key>,
     since: Option<Instant>,
 }
 
+#[allow(dead_code)]
 impl Hotkeys {
     /// Reads this frame's key presses (nothing while a text field has focus)
     /// and returns the actions they trigger.
@@ -576,15 +659,32 @@ pub fn window() -> Flyout {
 }
 
 pub fn cabinet() -> Flyout {
+    use plan_cabinets::CabinetKind as K;
+    let cab = |icon, name, key, k| {
+        with_hotkey(
+            item(icon, name, Action::SetTool(ToolId::CabinetVariant(k))),
+            key,
+        )
+    };
     fly(
         "Cabinet",
         vec![
-            todo_k("cabinet_base", "Base Cabinet", "\u{21E7}T"),
-            todo_k("cabinet_wall", "Wall Cabinet", "\u{2318}T"),
-            todo_k("cabinet_full", "Full Height", "\u{2303}\u{2325}\u{2318}X"),
-            todo_k("soffit", "Soffit", "T"),
-            todo_k("shelf", "Shelf", "\u{2303}\u{2325}\u{2318}Y"),
-            todo_k("partition", "Partition", "\u{2303}\u{2325}\u{2318}Z"),
+            cab("cabinet_base", "Base Cabinet", "\u{21E7}T", K::Base),
+            cab("cabinet_wall", "Wall Cabinet", "\u{2318}T", K::Wall),
+            cab(
+                "cabinet_full",
+                "Full Height",
+                "\u{2303}\u{2325}\u{2318}X",
+                K::FullHeight,
+            ),
+            cab("soffit", "Soffit", "T", K::Soffit),
+            cab("shelf", "Shelf", "\u{2303}\u{2325}\u{2318}Y", K::Shelf),
+            cab(
+                "partition",
+                "Partition",
+                "\u{2303}\u{2325}\u{2318}Z",
+                K::Partition,
+            ),
             todo_k("cabinet_base", "Base Filler", "\u{2303}\u{2325}\u{2318}0"),
             todo_k("cabinet_wall", "Wall Filler", "\u{2303}\u{2325}\u{2318}1"),
             todo_k(
@@ -611,58 +711,103 @@ pub fn cabinet() -> Flyout {
     )
 }
 
+/// An electrical flyout entry that starts the electrical tool in `v`.
+fn elec(
+    icon: &'static str,
+    name: &'static str,
+    key: &'static str,
+    v: crate::tools::electrical::ElecVariant,
+) -> Item {
+    with_hotkey(
+        item(icon, name, Action::SetTool(ToolId::ElectricalVariant(v))),
+        key,
+    )
+}
+
 pub fn electrical() -> Flyout {
+    use crate::tools::electrical::ElecVariant as E;
     fly(
         "Electrical",
         vec![
-            todo_k("outlet_110", "110V Outlet", "E, O"),
-            todo_k("outlet_220", "220V Outlet", "\u{2303}\u{2325}\u{2318}7"),
-            todo_k(
+            elec("outlet_110", "110V Outlet", "E, O", E::Outlet110),
+            elec(
+                "outlet_220",
+                "220V Outlet",
+                "\u{2303}\u{2325}\u{2318}7",
+                E::Outlet220,
+            ),
+            elec(
                 "outlet_110",
                 "GFCI Outlet",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}Y",
+                E::Gfci,
             ),
-            todo_k("light", "Light", "E, L"),
-            todo_k("light", "Rope Light", "\u{2303}\u{2325}\u{21E7}\u{2318}A"),
-            todo_k("switch", "Switch", "E, S"),
-            todo_k("connect_electrical", "Electrical Connection", "E, C"),
-            todo_k("outlet_110", "Auto Place Outlets", "E, A, O"),
+            elec("light", "Light", "E, L", E::Light),
+            elec(
+                "light",
+                "Rope Light",
+                "\u{2303}\u{2325}\u{21E7}\u{2318}A",
+                E::RopeLight,
+            ),
+            elec("switch", "Switch", "E, S", E::Switch),
+            item(
+                "switch",
+                "3-Way Switch",
+                Action::SetTool(ToolId::ElectricalVariant(E::Switch3Way)),
+            ),
+            item(
+                "light",
+                "Ceiling Fan",
+                Action::SetTool(ToolId::ElectricalVariant(E::CeilingFan)),
+            ),
+            item(
+                "light",
+                "Smoke Detector",
+                Action::SetTool(ToolId::ElectricalVariant(E::SmokeDetector)),
+            ),
+            elec(
+                "connect_electrical",
+                "Electrical Connection",
+                "E, C",
+                E::Connection,
+            ),
+            elec(
+                "outlet_110",
+                "Auto Place Outlets",
+                "E, A, O",
+                E::AutoOutlets,
+            ),
         ],
     )
 }
 
 pub fn stairs() -> Flyout {
+    use crate::editor::stairs_view::StairKind as K;
+    let st = |icon, k: K, key| {
+        with_hotkey(
+            item(icon, k.name(), Action::SetTool(ToolId::StairsVariant(k))),
+            key,
+        )
+    };
     fly(
         "Stairs",
         vec![
-            todo_k("stairs", "Draw Stairs", "\u{21E7}Y"),
-            todo_k(
-                "stairs",
-                "Straight Stairs",
-                "\u{2303}\u{2325}\u{21E7}\u{2318}B",
-            ),
-            todo_k(
-                "stairs",
-                "L-Shaped Stair",
-                "\u{2303}\u{2325}\u{21E7}\u{2318}C",
-            ),
-            todo_k(
-                "stairs",
-                "U-Shaped Stair",
-                "\u{2303}\u{2325}\u{21E7}\u{2318}D",
-            ),
-            todo_k(
+            st("stairs", K::Draw, "\u{21E7}Y"),
+            st("stairs", K::Straight, "\u{2303}\u{2325}\u{21E7}\u{2318}B"),
+            st("stairs", K::LShaped, "\u{2303}\u{2325}\u{21E7}\u{2318}C"),
+            st("stairs", K::UShaped, "\u{2303}\u{2325}\u{21E7}\u{2318}D"),
+            st(
                 "stairs_curved",
-                "Curve to Left",
+                K::CurveLeft,
                 "\u{2303}\u{2325}\u{21E7}\u{2318}E",
             ),
-            todo_k(
+            st(
                 "stairs_curved",
-                "Curve to Right",
+                K::CurveRight,
                 "\u{2303}\u{2325}\u{21E7}\u{2318}F",
             ),
-            todo_k("landing", "Landing", "\u{2303}\u{2325}\u{21E7}\u{2318}G"),
-            todo_k("ramp", "Draw Ramp", "\u{2303}\u{2325}\u{21E7}\u{2318}H"),
+            st("landing", K::Landing, "\u{2303}\u{2325}\u{21E7}\u{2318}G"),
+            st("ramp", K::Ramp, "\u{2303}\u{2325}\u{21E7}\u{2318}H"),
         ],
     )
 }
@@ -671,81 +816,132 @@ pub fn floor() -> Flyout {
     fly(
         "Floor",
         vec![
-            todo_k("floor_new", "Build New Floor", "\u{21E7}X"),
-            todo_k(
-                "floor_insert",
-                "Insert New Floor",
+            with_hotkey(
+                item("floor_new", "Build New Floor", Action::BuildNewFloor),
+                "\u{21E7}X",
+            ),
+            with_hotkey(
+                item("floor_insert", "Insert New Floor", Action::InsertFloor),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}I",
             ),
-            todo_k("foundation", "Build Foundation", "\u{2318}F"),
-            todo_k(
-                "floor_delete",
-                "Delete Current Floor",
+            with_hotkey(
+                item("foundation", "Build Foundation", Action::BuildFoundation),
+                "\u{2318}F",
+            ),
+            with_hotkey(
+                item("floor_delete", "Delete Current Floor", Action::DeleteFloor),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}J",
             ),
-            todo_k(
-                "floor_delete",
-                "Delete Foundation",
+            with_hotkey(
+                item(
+                    "floor_delete",
+                    "Delete Foundation",
+                    Action::DeleteFoundation,
+                ),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}K",
             ),
-            todo_k(
-                "floor_up",
-                "Exchange With Floor Above",
+            with_hotkey(
+                item(
+                    "floor_up",
+                    "Exchange With Floor Above",
+                    Action::ExchangeFloorAbove,
+                ),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}L",
             ),
-            todo_k(
-                "floor_down",
-                "Exchange With Floor Below",
+            with_hotkey(
+                item(
+                    "floor_down",
+                    "Exchange With Floor Below",
+                    Action::ExchangeFloorBelow,
+                ),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}M",
             ),
             todo("floor_new", "Floor Material Region"),
             todo("floor_new", "Hole in Floor Platform"),
             todo("floor_new", "Hole in Ceiling Platform"),
-            todo_k("floor_defaults", "Rebuild Walls/Floors/Ceilings", "F12"),
+            with_hotkey(
+                item(
+                    "floor_defaults",
+                    "Rebuild Walls/Floors/Ceilings",
+                    Action::RebuildAll,
+                ),
+                "F12",
+            ),
         ],
     )
 }
 
+/// A Roof flyout entry that starts the roof tool in `mode`.
+fn roof_k(
+    icon: &'static str,
+    name: &'static str,
+    key: &'static str,
+    mode: crate::tools::roof::RoofMode,
+) -> Item {
+    with_hotkey(
+        item(icon, name, Action::SetTool(ToolId::RoofVariant(mode))),
+        key,
+    )
+}
+
 pub fn roof() -> Flyout {
+    use crate::tools::roof::RoofMode as M;
     fly(
         "Roof",
         vec![
-            todo_k("roof_plane", "Roof Plane", "Q"),
-            todo_k(
+            roof_k("roof_plane", "Roof Plane", "Q", M::Plane),
+            roof_k(
                 "roof_build",
                 "Build Roof",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}N",
+                M::Build,
             ),
             todo_k(
                 "roof_plane",
                 "Ceiling Plane",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}U",
             ),
-            todo_k(
+            roof_k(
                 "gable_line",
                 "Gable/Roof Line",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}O",
+                M::GableLine,
             ),
-            todo_k(
+            roof_k(
                 "roof_plane",
                 "Roof Hole",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}T",
+                M::Hole,
             ),
-            todo_k("skylight", "Skylight", "\u{2303}\u{2325}\u{21E7}\u{2318}S"),
-            todo_k("dormer", "Auto Dormer", "\u{2303}\u{2325}\u{21E7}\u{2318}Z"),
+            roof_k(
+                "skylight",
+                "Skylight",
+                "\u{2303}\u{2325}\u{21E7}\u{2318}S",
+                M::Skylight,
+            ),
+            roof_k(
+                "dormer",
+                "Auto Dormer",
+                "\u{2303}\u{2325}\u{21E7}\u{2318}Z",
+                M::Dormer,
+            ),
             todo_k(
                 "dormer",
                 "Auto Floating Dormer",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}R",
             ),
-            todo_k(
+            roof_k(
                 "roof_plane",
                 "Edit All Roof Planes",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}P",
+                M::Edit,
             ),
-            todo_k(
-                "roof_plane",
-                "Delete Roof Planes",
+            with_hotkey(
+                item(
+                    "roof_plane",
+                    "Delete Roof Planes",
+                    Action::Custom(crate::editor::dispatch::cmd::ROOF_DELETE_ALL),
+                ),
                 "\u{2303}\u{2325}\u{21E7}\u{2318}W",
             ),
             todo_k(
@@ -869,51 +1065,56 @@ pub fn distributed_objects() -> Flyout {
 }
 
 pub fn dimensions() -> Flyout {
+    use crate::tools::dimension::DimMode as D;
+    let dim = |icon, m: D, key: Option<&'static str>| {
+        let it = item(icon, m.name(), Action::SetTool(ToolId::DimensionVariant(m)));
+        match key {
+            Some(k) => with_hotkey(it, k),
+            None => it,
+        }
+    };
     fly(
         "Dimensions",
         vec![
-            todo_k(
+            dim("dim_manual", D::Manual, Some("\u{2303}\u{2325}\u{2318}A")),
+            dim("dim_end_to_end", D::EndToEnd, Some("D, E")),
+            dim("dim_interior", D::Interior, Some("D, I")),
+            dim(
                 "dim_manual",
-                "Manual Dimension",
-                "\u{2303}\u{2325}\u{2318}A",
+                D::PointToPoint,
+                Some("\u{2303}\u{2325}\u{2318}B"),
             ),
-            todo_k("dim_end_to_end", "End to End Dimension", "D, E"),
-            todo_k("dim_interior", "Interior Dimension", "D, I"),
-            todo_k(
+            dim("dim_manual", D::Running, Some("\u{2303}\u{2325}\u{2318}C")),
+            dim("dim_manual", D::Baseline, Some("\u{2303}\u{2325}\u{2318}D")),
+            dim("dim_angular", D::Angular, Some("\u{2303}\u{2325}\u{2318}F")),
+            dim(
                 "dim_manual",
-                "Point to Point Dimension",
-                "\u{2303}\u{2325}\u{2318}B",
+                D::Centerline,
+                Some("\u{2303}\u{2325}\u{2318}G"),
             ),
-            todo_k(
-                "dim_manual",
-                "Running Dimension",
-                "\u{2303}\u{2325}\u{2318}C",
-            ),
-            todo_k(
-                "dim_manual",
-                "Baseline Dimension",
-                "\u{2303}\u{2325}\u{2318}D",
-            ),
-            todo_k(
-                "dim_angular",
-                "Angular Dimension",
-                "\u{2303}\u{2325}\u{2318}F",
-            ),
-            todo_k(
-                "dim_manual",
-                "Centerline Dimension",
-                "\u{2303}\u{2325}\u{2318}G",
-            ),
-            todo_k("dim_manual", "Tape Measure", "D, T, M"),
+            dim("dim_manual", D::TapeMeasure, Some("D, T, M")),
         ],
     )
 }
 
 pub fn auto_dimensions() -> Flyout {
+    use crate::tools::dimension::DimMode as D;
     fly(
         "Automatic Dimensions",
         vec![
-            todo_k("dim_auto_exterior", "Auto Exterior Dimensions", "\u{21E7}A"),
+            with_hotkey(
+                item(
+                    "dim_auto_exterior",
+                    D::AutoExterior.name(),
+                    Action::SetTool(ToolId::DimensionVariant(D::AutoExterior)),
+                ),
+                "\u{21E7}A",
+            ),
+            item(
+                "dim_auto_interior",
+                D::AutoInterior.name(),
+                Action::SetTool(ToolId::DimensionVariant(D::AutoInterior)),
+            ),
             todo_k(
                 "dim_auto_exterior",
                 "Auto Elevation Dimensions",
@@ -928,18 +1129,24 @@ pub fn auto_dimensions() -> Flyout {
     )
 }
 
-/// Text Tools; the toolbar face starts on Leader Line.
 pub fn text_tools() -> Flyout {
+    use crate::tools::text::TextMode as T;
+    let txt = |icon, m: T, key| {
+        with_hotkey(
+            item(icon, m.name(), Action::SetTool(ToolId::TextVariant(m))),
+            key,
+        )
+    };
     let mut f = fly(
         "Text",
         vec![
-            todo_k("text", "Text", "Y"),
-            todo_k("rich_text", "Rich Text", "\u{2303}\u{2325}\u{2318}J"),
-            todo_k("leader_line", "Leader Line", "\u{2325}L"),
-            todo_k("arrow_line", "Text Line with Arrow", "\u{2325}A"),
-            todo_k("callout", "Callout", "\u{2303}\u{2325}\u{2318}K"),
-            todo_k("marker", "Marker", "\u{2303}\u{2325}\u{2318}M"),
-            todo_k("note", "Note", "\u{2303}\u{2325}\u{2318}N"),
+            txt("text", T::Text, "Y"),
+            txt("rich_text", T::RichText, "\u{2303}\u{2325}\u{2318}J"),
+            txt("leader_line", T::LeaderLine, "\u{2325}L"),
+            txt("arrow_line", T::ArrowLine, "\u{2325}A"),
+            txt("callout", T::Callout, "\u{2303}\u{2325}\u{2318}K"),
+            txt("marker", T::Marker, "\u{2303}\u{2325}\u{2318}M"),
+            txt("note", T::Note, "\u{2303}\u{2325}\u{2318}N"),
             sep(todo("note", "Note Type Management")),
             todo("text", "Text Macro Management"),
         ],
@@ -948,59 +1155,70 @@ pub fn text_tools() -> Flyout {
     f
 }
 
+/// A CAD flyout entry that starts the CAD tool in `m`.
+fn cad_item(icon: &'static str, m: crate::tools::cad::CadMode) -> Item {
+    item(icon, m.name(), Action::SetTool(ToolId::CadVariant(m)))
+}
+
 pub fn points() -> Flyout {
+    use crate::tools::cad::CadMode as C;
     fly(
         "Points",
         vec![
-            todo("point", "Place Point"),
-            todo("point", "Input Point"),
-            todo("point", "Point Marker"),
+            cad_item("point", C::PlacePoint),
+            cad_item("point", C::InputPoint),
+            cad_item("point", C::PointMarker),
             todo("point", "Delete Temporary Points"),
         ],
     )
 }
 
 pub fn lines() -> Flyout {
+    use crate::tools::cad::CadMode as C;
     fly(
         "Lines",
         vec![
-            todo("line", "Draw Line"),
-            todo("line", "Input Line"),
-            todo("arrow_line", "Line With Arrow"),
+            cad_item("line", C::Line),
+            cad_item("line", C::InputLine),
+            cad_item("arrow_line", C::LineArrow),
+            cad_item("polyline", C::Polyline),
         ],
     )
 }
 
 pub fn arcs() -> Flyout {
+    use crate::tools::cad::CadMode as C;
     fly(
         "Arcs",
         vec![
-            todo("arc", "Draw Arc"),
-            todo("arc", "Input Arc"),
-            todo("arc", "Arc With Arrow"),
+            cad_item("arc", C::Arc),
+            cad_item("arc", C::InputArc),
+            cad_item("arc", C::ArcArrow),
         ],
     )
 }
 
 pub fn circles() -> Flyout {
+    use crate::tools::cad::CadMode as C;
     fly(
         "Circles",
         vec![
-            todo_k("circle", "Circle", "K"),
-            todo("circle", "Circle About Center"),
-            todo("ellipse", "Ellipse"),
-            todo("ellipse", "Oval"),
+            with_hotkey(cad_item("circle", C::Circle), "K"),
+            cad_item("circle", C::CircleAboutCenter),
+            cad_item("ellipse", C::Ellipse),
+            cad_item("ellipse", C::Oval),
         ],
     )
 }
 
 pub fn boxes() -> Flyout {
+    use crate::tools::cad::CadMode as C;
     fly(
         "Boxes",
         vec![
-            todo_k("rect_polyline", "Rectangular Polyline", "\u{21E7}P"),
+            with_hotkey(cad_item("rect_polyline", C::RectPolyline), "\u{21E7}P"),
             todo("box", "Box"),
-            todo("polygon", "Regular Polygon"),
+            cad_item("polygon", C::Polygon),
             todo("box", "Cross Box"),
             todo("box", "Blocking Box"),
             todo("box", "Insulation"),
@@ -1009,14 +1227,15 @@ pub fn boxes() -> Flyout {
 }
 
 pub fn cad_blocks() -> Flyout {
+    use crate::tools::cad::CadMode as C;
     fly(
         "CAD Blocks",
         vec![
             todo("point", "Add Insertion Point"),
             todo("point", "Add Arrow Backoff Point"),
-            todo("box", "Make CAD Block"),
+            cad_item("box", C::MakeBlock),
             todo("box", "Edit CAD Block"),
-            todo("box", "Explode CAD Block"),
+            cad_item("box", C::ExplodeBlock),
             todo_k("box", "CAD Block Management", "V"),
         ],
     )
@@ -1039,15 +1258,23 @@ pub fn terrain_wall_curb() -> Flyout {
     )
 }
 
+/// A terrain entry that starts the terrain tool in `v`.
+fn terr(icon: &'static str, name: &'static str, v: crate::tools::terrain::TerrainVariant) -> Item {
+    item(icon, name, Action::SetTool(ToolId::TerrainVariant(v)))
+}
+
 pub fn elevation_data() -> Flyout {
+    use crate::tools::terrain::TerrainVariant as T;
     fly(
         "Elevation Data",
         vec![
-            todo("elevation_line", "Elevation Line"),
-            todo("elevation_line", "Elevation Point"),
-            todo("terrain", "Elevation Region"),
+            terr("terrain", "Terrain Perimeter", T::Perimeter),
+            terr("elevation_line", "Elevation Line", T::ElevationLine),
+            terr("elevation_line", "Elevation Point", T::ElevationPoint),
+            terr("terrain", "Elevation Region", T::ElevationRegion),
             todo("spline", "Elevation Spline"),
             todo("terrain", "Terrain Break"),
+            sep(terr("terrain", "Build Terrain", T::Build)),
         ],
     )
 }
@@ -1056,11 +1283,31 @@ pub fn terrain_modifier() -> Flyout {
     fly(
         "Modifier",
         vec![
-            todo("terrain", "Hill"),
-            todo("terrain", "Valley"),
-            todo("terrain", "Raised Region"),
-            todo("terrain", "Lowered Region"),
-            todo("terrain", "Flat Region (Cut/Fill)"),
+            terr(
+                "terrain",
+                "Hill",
+                crate::tools::terrain::TerrainVariant::Hill,
+            ),
+            terr(
+                "terrain",
+                "Valley",
+                crate::tools::terrain::TerrainVariant::Valley,
+            ),
+            terr(
+                "terrain",
+                "Raised Region",
+                crate::tools::terrain::TerrainVariant::Raised,
+            ),
+            terr(
+                "terrain",
+                "Lowered Region",
+                crate::tools::terrain::TerrainVariant::Lowered,
+            ),
+            terr(
+                "terrain",
+                "Flat Region (Cut/Fill)",
+                crate::tools::terrain::TerrainVariant::Flat,
+            ),
         ],
     )
 }
@@ -1072,7 +1319,11 @@ pub fn terrain_feature() -> Flyout {
             todo("terrain", "Rectangular Feature"),
             todo("terrain", "Kidney Shaped Feature"),
             todo("spline", "Spline Feature"),
-            todo("terrain", "Terrain Hole"),
+            terr(
+                "terrain",
+                "Terrain Hole",
+                crate::tools::terrain::TerrainVariant::Hole,
+            ),
         ],
     )
 }
@@ -1122,7 +1373,14 @@ pub fn stepping_stone() -> Flyout {
 pub fn road() -> Flyout {
     fly(
         "Road",
-        vec![todo("road", "Polyline Road"), todo("road", "Spline Road")],
+        vec![
+            terr(
+                "road",
+                "Polyline Road",
+                crate::tools::terrain::TerrainVariant::Road,
+            ),
+            todo("road", "Spline Road"),
+        ],
     )
 }
 
@@ -1130,7 +1388,11 @@ pub fn driveway() -> Flyout {
     fly(
         "Driveway",
         vec![
-            todo("road", "Polyline Driveway"),
+            terr(
+                "road",
+                "Polyline Driveway",
+                crate::tools::terrain::TerrainVariant::Driveway,
+            ),
             todo("road", "Spline Driveway"),
         ],
     )
@@ -1140,7 +1402,11 @@ pub fn sidewalk() -> Flyout {
     fly(
         "Sidewalk",
         vec![
-            todo("road", "Polyline Sidewalk"),
+            terr(
+                "road",
+                "Polyline Sidewalk",
+                crate::tools::terrain::TerrainVariant::Sidewalk,
+            ),
             todo("road", "Spline Sidewalk"),
         ],
     )
@@ -1227,6 +1493,99 @@ pub fn terrain_menu() -> Vec<Flyout> {
     ]
 }
 
+// ----- 3D views and cameras (docs/parity/3d-views-cameras.md, C-1) -----
+
+fn view3d(icon: &'static str, name: &'static str, cmd: View3dCommand) -> Item {
+    item(icon, name, Action::View3d(cmd))
+}
+
+fn camera_tool(
+    icon: &'static str,
+    name: &'static str,
+    v: crate::tools::camera::CameraVariant,
+) -> Item {
+    view3d(icon, name, View3dCommand::Tool(v))
+}
+
+/// The 3D view flyout: overview cameras (C-10, C-11, C-13, C-15).
+pub fn view_3d() -> Flyout {
+    use crate::tools::camera::CameraVariant as V;
+    use plan_view3d::CameraMode;
+    fly(
+        "3D View",
+        vec![
+            with_hotkey(
+                camera_tool("view_3d", "Perspective Full Overview", V::FullOverview),
+                "\u{21E7}K",
+            ),
+            camera_tool("view_3d", "Perspective Floor Overview", V::FloorOverview),
+            camera_tool("view_3d", "Doll House View", V::DollHouse),
+            sep(view3d(
+                "view_plan",
+                "Orthographic Full Overview",
+                View3dCommand::Mode(CameraMode::PlanOverhead),
+            )),
+        ],
+    )
+}
+
+/// Full Camera and the section cameras (C-4, C-17, C-19).
+pub fn full_camera() -> Flyout {
+    use crate::tools::camera::CameraVariant as V;
+    fly(
+        "Full Camera",
+        vec![
+            with_hotkey(
+                camera_tool("camera_full", "Full Camera", V::FullCamera),
+                "\u{21E7}J",
+            ),
+            camera_tool(
+                "cross_section",
+                "Cross Section/Elevation Camera",
+                V::CrossSection,
+            ),
+            camera_tool(
+                "cross_section",
+                "Back-Clipped Cross Section",
+                V::BackClippedSection,
+            ),
+        ],
+    )
+}
+
+pub fn mouse_orbit() -> Flyout {
+    fly(
+        "Mouse-Orbit Camera",
+        vec![view3d(
+            "camera_orbit",
+            "Mouse-Orbit Camera",
+            View3dCommand::MouseOrbit,
+        )],
+    )
+}
+
+pub fn cross_section_slider() -> Flyout {
+    fly(
+        "Cross Section Slider",
+        vec![view3d(
+            "cross_section",
+            "Cross Section Slider",
+            View3dCommand::CrossSectionSlider,
+        )],
+    )
+}
+
+/// Rendering Techniques (C-45); the face shows the first entry.
+pub fn rendering_techniques() -> Flyout {
+    fly(
+        "Rendering Techniques",
+        plan_materials::RenderingTechnique::ALL
+            .iter()
+            .map(|t| view3d("render_standard", t.label(), View3dCommand::Technique(*t)))
+            .collect(),
+    )
+}
+
 // ----- the three bars -----
 
 fn row1_slots() -> Vec<Slot> {
@@ -1264,12 +1623,12 @@ fn row1_slots() -> Vec<Slot> {
         Slot::FloorLabel,
         Slot::Button(item("floor_up", "Up One Floor", Action::FloorUp)),
         Sep,
-        one("view_3d", "3D View"),
-        one("camera_full", "Full Camera"),
-        one("camera_orbit", "Mouse-Orbit Camera"),
-        one("cross_section", "Cross Section Slider"),
+        flyout_slot(view_3d()),
+        flyout_slot(full_camera()),
+        flyout_slot(mouse_orbit()),
+        flyout_slot(cross_section_slider()),
         one("walkthrough", "Create Walkthrough Path"),
-        one("render_standard", "Standard"),
+        flyout_slot(rendering_techniques()),
         one("add_lights", "Add Lights"),
         Sep,
         flag_toggle("sun_angle", "Sun Angle", ViewFlag::SunAngle),
@@ -1461,7 +1820,15 @@ fn show_slot(
                 .width(VIEW_SELECTOR_PX)
                 .selected_text(state.view_name)
                 .show_ui(ui, |ui| {
-                    let _ = ui.selectable_label(true, state.view_name);
+                    for (i, v) in state.views.iter().enumerate() {
+                        let on = v.name == state.view_name;
+                        if ui.selectable_label(on, &v.name).clicked() && !on {
+                            out.push(Action::PlanView(i));
+                        }
+                    }
+                    if state.views.is_empty() {
+                        let _ = ui.selectable_label(true, state.view_name);
+                    }
                 });
         }
         Slot::FloorLabel => {
@@ -1789,7 +2156,10 @@ mod tests {
         h.press(Key::Q, &shift, t, &mut out);
         h.press(Key::Q, &Modifiers::NONE, t, &mut out);
         assert_eq!(out[0], EXTERIOR_WALL);
-        assert_eq!(out[1], Action::NotImplemented("Roof Plane"));
+        assert_eq!(
+            out[1],
+            Action::SetTool(ToolId::RoofVariant(crate::tools::roof::RoofMode::Plane))
+        );
     }
 
     #[test]
@@ -1806,6 +2176,121 @@ mod tests {
                         assert_eq!(name, e.name);
                     }
                 }
+            }
+        }
+    }
+
+    /// Every flyout of the Build, Terrain and CAD menus, with the group's
+    /// name.
+    fn all_flyouts() -> Vec<Flyout> {
+        let mut v = Vec::new();
+        for g in build_menu() {
+            v.extend(g.flyouts);
+        }
+        v.extend(terrain_menu());
+        v.extend([
+            points(),
+            lines(),
+            arcs(),
+            circles(),
+            boxes(),
+            cad_blocks(),
+            dimensions(),
+            auto_dimensions(),
+            text_tools(),
+            view_3d(),
+            full_camera(),
+        ]);
+        v
+    }
+
+    /// The flyouts of tools that exist; every entry maps to a live action
+    /// except the names in `ALLOWED_NOT_IMPLEMENTED`. The other flyouts
+    /// (framing, slabs, curved walls, trim, terrain extras, ...) belong to
+    /// tools that are not built yet and are only printed.
+    const BUILT_GROUPS: &[&str] = &[
+        "Stairs",
+        "Roof",
+        "Cabinet",
+        "Electrical",
+        "Dimensions",
+        "Automatic Dimensions",
+        "Text",
+        "Points",
+        "Lines",
+        "Arcs",
+        "Circles",
+        "Boxes",
+        "CAD Blocks",
+        "3D View",
+        "Full Camera",
+        "Elevation Data",
+        "Modifier",
+        "Road",
+        "Driveway",
+        "Sidewalk",
+    ];
+
+    /// Entries of the built groups that are still `NotImplemented`.
+    const ALLOWED_NOT_IMPLEMENTED: &[&str] = &[
+        "Base Filler",
+        "Wall Filler",
+        "Full Height Filler",
+        "Custom Countertop",
+        "Custom Backsplash",
+        "Custom Counter Hole",
+        "Auto Floating Dormer",
+        "Ceiling Plane",
+        "Delete Ceiling Planes",
+        "Delete Temporary Points",
+        "Auto Elevation Dimensions",
+        "Auto Story Pole Dimensions",
+        "Note Type Management",
+        "Text Macro Management",
+        "Add Arrow Backoff Point",
+        "Add Insertion Point",
+        "CAD Block Management",
+        "Edit CAD Block",
+        "Elevation Spline",
+        "Terrain Break",
+        "Spline Road",
+        "Spline Driveway",
+        "Spline Sidewalk",
+        "Box",
+        "Cross Box",
+        "Blocking Box",
+        "Insulation",
+    ];
+
+    #[test]
+    fn flyout_entries_are_live_except_the_allowlist() {
+        let mut unexpected: Vec<(&str, &str)> = Vec::new();
+        for f in all_flyouts() {
+            for e in &f.entries {
+                if !matches!(e.action, Action::NotImplemented(_)) {
+                    continue;
+                }
+                println!("NotImplemented: {} / {}", f.group, e.name);
+                if BUILT_GROUPS.contains(&f.group) && !ALLOWED_NOT_IMPLEMENTED.contains(&e.name) {
+                    unexpected.push((f.group, e.name));
+                }
+            }
+        }
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+    }
+
+    #[test]
+    fn variant_entries_are_unique_and_named_after_their_tool() {
+        for f in all_flyouts() {
+            for e in &f.entries {
+                let name = match e.action {
+                    Action::SetTool(ToolId::DimensionVariant(m)) => m.name(),
+                    Action::SetTool(ToolId::TextVariant(m)) => m.name(),
+                    Action::SetTool(ToolId::CadVariant(m)) => m.name(),
+                    Action::SetTool(ToolId::StairsVariant(m)) => m.name(),
+                    _ => continue,
+                };
+                assert_eq!(name, e.name, "{}", f.group);
             }
         }
     }

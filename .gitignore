@@ -7,3 +7,5 @@
 *.calib
 *.calibz
 *.calib_error
+*.plan
+*.layout

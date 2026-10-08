@@ -2,13 +2,14 @@
 //! hit-testing and drawing. The select tool interprets the drags.
 
 use super::ops::cad_center;
-use super::selection::{cad_by_id, ObjectRef, Selection};
-use super::Camera;
+use super::selection::{cad_by_id, ObjectRef};
+use super::{placed, roof_view, site_view, stairs_view, Camera, EditorContext};
 use crate::theme::Palette;
+use crate::tools::camera::{self as camera_tool, CamHandle};
 use eframe::egui::{self, CursorIcon, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
-use plan_core::{Floor, OpeningKind};
+use plan_core::OpeningKind;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HandleKind {
@@ -37,9 +38,11 @@ pub struct Handle {
 
 /// Handles for a single selected object; none for an empty or multiple
 /// selection. `scale` is pixels per inch (rotate handles sit a fixed number
-/// of pixels off the object).
-pub fn handles_for(floor: &Floor, selection: &Selection, scale: f64) -> Vec<Handle> {
-    let Some(target) = selection.single() else {
+/// of pixels off the object). Stairs, cabinets, symbols, devices, roof planes
+/// and cameras delegate to the module that owns them.
+pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
+    let floor = cx.floor();
+    let Some(target) = cx.selection.single() else {
         return Vec::new();
     };
     let h = |kind, pos, cursor| Handle {
@@ -77,11 +80,12 @@ pub fn handles_for(floor: &Floor, selection: &Selection, scale: f64) -> Vec<Hand
                 resize_cursor(w.end.sub(w.start)),
             )];
             if o.kind == OpeningKind::Door {
-                let hinge = if o.swing_flipped {
+                let hinge = if o.hinge_at_end {
                     w.point_at(o.end_offset())
                 } else {
                     w.point_at(o.start_offset())
                 };
+
                 let side = if o.swing_flipped {
                     w.normal() * -1.0
                 } else {
@@ -139,7 +143,49 @@ pub fn handles_for(floor: &Floor, selection: &Selection, scale: f64) -> Vec<Hand
             }
             out
         }
-        _ => Vec::new(),
+        ObjectRef::Stair(id) => stairs_view::find(floor, id)
+            .map(|o| stairs_view::editor_handles(&o, scale))
+            .unwrap_or_default(),
+        ObjectRef::Cabinet(id) => {
+            placed::placed_handles(floor, placed::PlacedRef::Cabinet(id), scale)
+        }
+        ObjectRef::Symbol(id) => {
+            placed::placed_handles(floor, placed::PlacedRef::Symbol(id), scale)
+        }
+        ObjectRef::Device(id) => site_view::electrical_layer(cx.floor, floor)
+            .device(id)
+            .map(|d| vec![h(HandleKind::Move, d.position, CursorIcon::Move)])
+            .unwrap_or_default(),
+        ObjectRef::RoofPlane(id) => {
+            let Some(r) = roof_view::load(floor).plane(id).cloned() else {
+                return Vec::new();
+            };
+            let mut out = vec![h(HandleKind::Move, r.centroid(), CursorIcon::Move)];
+            for (i, v) in r.plan_polygon().into_iter().enumerate() {
+                out.push(h(HandleKind::Reshape(i), v, CursorIcon::Crosshair));
+            }
+            out
+        }
+        ObjectRef::Camera(id) => cx
+            .project
+            .camera(id)
+            .map(|c| {
+                camera_tool::handles_of(c)
+                    .into_iter()
+                    .map(|(k, pos)| {
+                        let (kind, cursor) = match k {
+                            CamHandle::Move => (HandleKind::Move, CursorIcon::Move),
+                            CamHandle::Aim => (HandleKind::Rotate, CursorIcon::Grab),
+                            CamHandle::Clip => (HandleKind::ResizeEnd, CursorIcon::Crosshair),
+                            CamHandle::EndA => (HandleKind::ResizeStart, CursorIcon::Crosshair),
+                            CamHandle::EndB => (HandleKind::Reshape(1), CursorIcon::Crosshair),
+                        };
+                        h(kind, pos, cursor)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        ObjectRef::Room(_) | ObjectRef::Terrain => Vec::new(),
     }
 }
 
@@ -208,12 +254,13 @@ pub fn draw(handles: &[Handle], painter: &egui::Painter, cam: &Camera, pal: &Pal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plan_core::{Project, WallKind};
+    use crate::plan_defaults;
+    use plan_core::WallKind;
 
     #[test]
     fn wall_handles_and_hit_priority() {
-        let mut p = Project::new("t");
-        let w = p.add_wall(
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let w = cx.project.add_wall(
             0,
             Point::ZERO,
             Point::new(100.0, 0.0),
@@ -221,10 +268,9 @@ mod tests {
             100.0,
             WallKind::Interior,
         );
-        let mut sel = Selection::default();
-        assert!(handles_for(&p.floors[0], &sel, 2.0).is_empty());
-        sel.set(ObjectRef::Wall(w));
-        let hs = handles_for(&p.floors[0], &sel, 2.0);
+        assert!(handles_for(&cx, 2.0).is_empty());
+        cx.selection.set(ObjectRef::Wall(w));
+        let hs = handles_for(&cx, 2.0);
         assert_eq!(hs.len(), 3);
         let hit = hit_handle(&hs, Point::new(98.0, 1.0), 5.0).unwrap();
         assert_eq!(hit.kind, HandleKind::ResizeEnd);

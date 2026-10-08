@@ -1,0 +1,12 @@
+[Desktop Entry]
+# Install: copy plan-studio to ~/.local/bin and this file to ~/.local/share/applications
+Type=Application
+Version=1.0
+Name=Plan Studio
+GenericName=Floor Plan Editor
+Comment=2D floor-plan editor with automatic rooms and areas
+Exec=plan-studio %f
+Terminal=false
+Categories=Graphics;2DGraphics;Engineering;
+Keywords=floor plan;architecture;home design;CAD;
+StartupWMClass=plan-studio

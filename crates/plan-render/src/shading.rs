@@ -16,7 +16,9 @@ const GLASS_IOR: f32 = 1.5;
 /// Albedo used by the clay technique.
 const CLAY_ALBEDO: f32 = 0.72;
 /// GGX roughness per [`Material`], in `Material::ALL` order.
-const ROUGHNESS: [f32; MATERIAL_COUNT] = [0.85, 0.9, 0.4, 0.95, 0.45, 0.0, 0.35, 0.75];
+const ROUGHNESS: [f32; MATERIAL_COUNT] = [
+    0.85, 0.9, 0.4, 0.95, 0.45, 0.0, 0.35, 0.75, 0.95, 0.8, 0.9, 0.85, 0.9, 0.5, 0.0, 0.35,
+];
 
 /// How light interacts with a surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

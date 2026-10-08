@@ -11,6 +11,26 @@ path = "src/main.rs"
 
 [dependencies]
 plan-core = { path = "../plan-core" }
+plan-3d = { path = "../plan-3d" }
+plan-view3d = { path = "../plan-view3d" }
+plan-roof = { path = "../plan-roof" }
+plan-cabinets = { path = "../plan-cabinets" }
+plan-stairs = { path = "../plan-stairs" }
+plan-framing = { path = "../plan-framing" }
+plan-docs = { path = "../plan-docs" }
+plan-elevation = { path = "../plan-elevation" }
+plan-import = { path = "../plan-import" }
+plan-library = { path = "../plan-library" }
+plan-config = { path = "../plan-config" }
+plan-terrain = { path = "../plan-terrain" }
+plan-materials = { path = "../plan-materials" }
+plan-layout = { path = "../plan-layout" }
+plan-electrical = { path = "../plan-electrical" }
+plan-spaceplan = { path = "../plan-spaceplan" }
+plan-check = { path = "../plan-check" }
+plan-render = { path = "../plan-render" }
+plan-chiefplan = { path = "../plan-chiefplan" }
+
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.31", default-features = false, features = ["svg"] }
 rfd = "0.15"

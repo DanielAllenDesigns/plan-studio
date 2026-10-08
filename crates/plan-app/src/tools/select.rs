@@ -18,10 +18,15 @@
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::handles::{self, hit_handle, HandleKind};
 use crate::editor::ops::{self, cad_center, JOIN_TOL};
-use crate::editor::selection::{hit_test, layer_of};
-use crate::editor::tempdim;
+use crate::editor::rooms_edit;
+use crate::editor::selection::{extra_in_rect, hit_test_cx, layer_of};
+use crate::editor::snap::snap_to_grid;
+use crate::editor::stairs_view::{self, StairHandleKind};
+use crate::editor::{placed, roof_view, site_view, tempdim};
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, EditorRequest, ObjectRef};
+use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use crate::toolbar::ViewFlag;
+use crate::tools::camera::{self as camera_tool, CamHandle};
 use eframe::egui::{self, Key, Pos2, Rect, Shape, Stroke};
 use plan_core::cad::CadItem;
 use plan_core::geometry::{
@@ -47,6 +52,14 @@ enum Op {
     Group,
     /// Click-only handle: flip the door swing.
     Swing(Id),
+    /// A handle (or the body, `Move`) of a stair.
+    Stair(Id, StairHandleKind),
+    Cabinet(Id, HandleKind),
+    Symbol(Id, HandleKind),
+    DeviceMove(Id),
+    RoofMove(Id),
+    RoofVertex(Id, usize),
+    Camera(Id, CamHandle),
 }
 
 impl Op {
@@ -59,6 +72,13 @@ impl Op {
             Op::CadRotate(_) => "Rotate",
             Op::CadVertex(..) => "Reshape",
             Op::Group => "Move Objects",
+            Op::Stair(_, k) => stairs_view::drag_label(k),
+            Op::Cabinet(..) => "Edit Cabinet",
+            Op::Symbol(..) => "Edit Symbol",
+            Op::DeviceMove(_) => "Move Device",
+            Op::RoofMove(_) => "Move Roof Plane",
+            Op::RoofVertex(..) => "Reshape Roof Plane",
+            Op::Camera(..) => "Edit Camera",
         }
     }
 }
@@ -90,6 +110,8 @@ enum Drag {
 pub struct SelectTool {
     drag: Drag,
     cursor: egui::CursorIcon,
+    /// The room under the press when it landed on empty floor (R-16).
+    room_click: Option<usize>,
 }
 
 impl Default for SelectTool {
@@ -97,6 +119,7 @@ impl Default for SelectTool {
         Self {
             drag: Drag::None,
             cursor: egui::CursorIcon::Default,
+            room_click: None,
         }
     }
 }
@@ -155,6 +178,7 @@ fn move_group(cx: &mut EditorContext, items: &[ObjectRef], delta: Point) {
         })
         .collect();
     ops::translate_walls_with_followers(&mut cx.project, fl, &walls, d);
+    cx.translate_extra(items, d);
     for o in items {
         match *o {
             ObjectRef::Opening(id) => {
@@ -193,7 +217,24 @@ fn single_op_for_body(o: ObjectRef) -> Op {
         ObjectRef::Wall(id) => Op::WallMove(id),
         ObjectRef::Opening(id) => Op::OpeningSlide(id),
         ObjectRef::Dimension(id) => Op::DimOffset(id),
+        ObjectRef::Stair(id) => Op::Stair(id, StairHandleKind::Move),
+        ObjectRef::Cabinet(id) => Op::Cabinet(id, HandleKind::Move),
+        ObjectRef::Symbol(id) => Op::Symbol(id, HandleKind::Move),
+        ObjectRef::Device(id) => Op::DeviceMove(id),
+        ObjectRef::RoofPlane(id) => Op::RoofMove(id),
+        ObjectRef::Camera(id) => Op::Camera(id, CamHandle::Move),
         _ => Op::Group,
+    }
+}
+
+/// Selects the object a click landed on; a room goes to the room selection.
+fn select_hit(cx: &mut EditorContext, o: ObjectRef) {
+    match o {
+        ObjectRef::Room(i) => rooms_edit::select_room(cx, i),
+        other => {
+            rooms_edit::clear_room_selection();
+            cx.selection.set(other);
+        }
     }
 }
 
@@ -276,21 +317,20 @@ fn objects_in_rect(cx: &EditorContext, a: Point, b: Point) -> Vec<ObjectRef> {
             out.push(r);
         }
     }
+    out.extend(extra_in_rect(cx, lo, hi, crossing));
     out
 }
 
 impl SelectTool {
     fn update_hover(&mut self, cx: &mut EditorContext, p: &PointerEvent) {
         let tol = cx.pick_tol();
-        let hs = handles::handles_for(cx.floor(), &cx.selection, cx.px_per_in);
+        let hs = handles::handles_for(cx, cx.px_per_in);
         if let Some(h) = hit_handle(&hs, p.world, tol) {
             self.cursor = h.cursor;
             cx.hover = None;
             return;
         }
-        let top = hit_test(cx.floor(), cx.layers(), p.world, tol)
-            .first()
-            .copied();
+        let top = hit_test_cx(cx, p.world, tol).first().copied();
         self.cursor = if top.is_some() {
             egui::CursorIcon::PointingHand
         } else {
@@ -299,9 +339,34 @@ impl SelectTool {
         cx.hover = top;
     }
 
+    /// The drag a press at `at` starts on a handle of the selected object.
+    fn handle_op(cx: &EditorContext, at: Point, tol: f64) -> Option<Op> {
+        match cx.selection.single()? {
+            ObjectRef::Stair(id) => {
+                let o = stairs_view::find(cx.floor(), id)?;
+                let hs = stairs_view::handles(&o, cx.px_per_in);
+                stairs_view::hit_handle(&hs, at, tol).map(|h| Op::Stair(id, h.kind))
+            }
+            ObjectRef::Camera(id) => {
+                camera_tool::hit_handle(cx.project.camera(id)?, at, tol).map(|h| Op::Camera(id, h))
+            }
+            _ => {
+                let hs = handles::handles_for(cx, cx.px_per_in);
+                hit_handle(&hs, at, tol)
+                    .as_ref()
+                    .and_then(Self::op_for_handle)
+            }
+        }
+    }
+
     /// The operation a handle starts, if it is a draggable one.
     fn op_for_handle(h: &handles::Handle) -> Option<Op> {
         Some(match (h.target, h.kind) {
+            (ObjectRef::Cabinet(id), k) => Op::Cabinet(id, k),
+            (ObjectRef::Symbol(id), k) => Op::Symbol(id, k),
+            (ObjectRef::Device(id), HandleKind::Move) => Op::DeviceMove(id),
+            (ObjectRef::RoofPlane(id), HandleKind::Move) => Op::RoofMove(id),
+            (ObjectRef::RoofPlane(id), HandleKind::Reshape(i)) => Op::RoofVertex(id, i),
             (ObjectRef::Wall(id), HandleKind::ResizeStart) => Op::WallEnd(id, WallEnd::Start),
             (ObjectRef::Wall(id), HandleKind::ResizeEnd) => Op::WallEnd(id, WallEnd::End),
             (ObjectRef::Wall(id), HandleKind::PerpendicularMove) => Op::WallMove(id),
@@ -414,6 +479,92 @@ impl SelectTool {
                 move_group(cx, &items, total);
             }
             Op::Swing(_) => {}
+            Op::Stair(id, kind) => {
+                if let Some(orig) = stairs_view::find(&a.original.floors[fl], id) {
+                    let to = match kind {
+                        StairHandleKind::Rotate | StairHandleKind::Run => {
+                            cx.snap_at(p.world, Some(orig.bottom_center()), alt, &[])
+                                .point
+                        }
+                        _ => p.world,
+                    };
+                    let mut n = stairs_view::drag_handle(&orig, kind, a.start, to);
+                    if kind == StairHandleKind::Move && !alt {
+                        n.stair.origin = snap_to_grid(n.stair.origin, cx.snap_unit());
+                    }
+                    stairs_view::update(&mut cx.project, fl, id, |o| *o = n);
+                }
+            }
+            Op::Cabinet(id, kind) => {
+                if let Some(orig) = placed::cabinet_by_id(&a.original.floors[fl], id) {
+                    let c = crate::tools::cabinet::apply_edit(cx, kind, &orig, a.start, p);
+                    placed::replace_cabinet(&mut cx.project, fl, &c);
+                }
+            }
+            Op::Symbol(id, kind) => {
+                if let Some(orig) = a.original.floors[fl].symbol(id).cloned() {
+                    let s = crate::tools::library::apply_drag(cx, kind, &orig, a.start, p);
+                    if let Some(slot) = cx.project.floors[fl]
+                        .symbols
+                        .iter_mut()
+                        .find(|x| x.id == id)
+                    {
+                        *slot = s;
+                    }
+                }
+            }
+            Op::DeviceMove(id) => {
+                let unit = cx.snap_unit();
+                let mut layer = site_view::load_electrical(&a.original.floors[fl]);
+                if let Some(d) = layer.device_mut(id) {
+                    match d.wall_id.and_then(|w| cx.floor().wall(w)).cloned() {
+                        Some(w) => site_view::slide_on_wall(d, &w, p.world, unit),
+                        None => {
+                            d.position = Point::new(
+                                snap_unit_round(d.position.x + total.x, unit),
+                                snap_unit_round(d.position.y + total.y, unit),
+                            );
+                        }
+                    }
+                }
+                site_view::save_electrical(&mut cx.project, fl, &layer);
+            }
+            Op::RoofMove(id) => {
+                let unit = cx.snap_unit();
+                let mut set = roof_view::load(&a.original.floors[fl]);
+                if let Some(r) = set.plane_mut(id) {
+                    r.translate(Point::new(
+                        snap_unit_round(total.x, unit),
+                        snap_unit_round(total.y, unit),
+                    ));
+                    roof_view::store(&mut cx.project, fl, &mut set);
+                }
+            }
+            Op::RoofVertex(id, i) => {
+                let to = cx.snap_at(p.world, None, alt, &[]).point;
+                let mut set = roof_view::load(&a.original.floors[fl]);
+                if let Some(r) = set.plane_mut(id) {
+                    r.move_vertex(i, to);
+                    roof_view::store(&mut cx.project, fl, &mut set);
+                }
+            }
+            Op::Camera(id, h) => {
+                if let Some(orig) = a.original.camera(id).cloned() {
+                    let unit = cx.snap_unit();
+                    let to = if h == CamHandle::Move {
+                        Point::new(
+                            snap_unit_round(orig.position.x + total.x, unit),
+                            snap_unit_round(orig.position.y + total.y, unit),
+                        )
+                    } else {
+                        p.world
+                    };
+                    cx.project.update_camera(id, |c| {
+                        *c = orig.clone();
+                        camera_tool::apply_handle(c, h, to, p.modifiers.shift);
+                    });
+                }
+            }
         }
         cx.mark_dirty();
     }
@@ -463,11 +614,19 @@ impl SelectTool {
                 ops::split_walls_at_point(&mut cx.project, fl, p, &skip);
             }
         }
+        // Chief auto-connects a wall whose end or body was dragged near other
+        // walls (W-31..W-36); run inside the drag's own undo step.
+        if let Op::WallEnd(id, _) | Op::WallMove(id) = a.op {
+            crate::editor::connect::auto_connect(cx, id);
+        }
         cx.last_snap = None;
         cx.mark_dirty();
         if a.original.to_json().ok() == cx.project.to_json().ok() {
             cx.cancel_change();
             return ToolResult::consumed();
+        }
+        if let Op::Camera(id, _) = a.op {
+            Outbox::global().post(ViewRequest::RefreshCamera(id));
         }
         ToolResult::committed(a.op.label())
     }
@@ -490,7 +649,7 @@ impl SelectTool {
         let Some(at) = cx.cursor_world else {
             return ToolResult::ignored();
         };
-        let hits = hit_test(cx.floor(), cx.layers(), at, cx.pick_tol());
+        let hits = hit_test_cx(cx, at, cx.pick_tol());
         if hits.is_empty() {
             return ToolResult::ignored();
         }
@@ -504,7 +663,7 @@ impl SelectTool {
             Some(i) => (i + 1) % n,
             None => 0,
         };
-        cx.selection.set(hits[next]);
+        select_hit(cx, hits[next]);
         ToolResult::consumed()
     }
 
@@ -574,6 +733,11 @@ impl Tool for SelectTool {
     }
 
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        // Space Planning boxes sit on top of the plan and are dragged first.
+        if rooms_edit::space_pointer_down(cx, p.world) {
+            return ToolResult::consumed();
+        }
+        self.room_click = None;
         let tol = cx.pick_tol();
         if let Some(i) = cx.temp.hit_label(p.world, cx.px_per_in) {
             cx.temp.cancel();
@@ -582,11 +746,7 @@ impl Tool for SelectTool {
         }
         cx.temp.cancel();
         let shift = p.modifiers.shift;
-        let hs = handles::handles_for(cx.floor(), &cx.selection, cx.px_per_in);
-        if let Some(op) = hit_handle(&hs, p.world, tol)
-            .as_ref()
-            .and_then(Self::op_for_handle)
-        {
+        if let Some(op) = Self::handle_op(cx, p.world, tol) {
             self.drag = Drag::Armed {
                 op,
                 start: p.world,
@@ -594,8 +754,14 @@ impl Tool for SelectTool {
             };
             return ToolResult::consumed();
         }
-        let hits = hit_test(cx.floor(), cx.layers(), p.world, tol);
-        if let Some(top) = hits.first().copied() {
+        let hits = hit_test_cx(cx, p.world, tol);
+        // A room on top means empty floor: the click selects the room.
+        let top_hit = hits
+            .first()
+            .copied()
+            .filter(|o| !matches!(o, ObjectRef::Room(_)));
+        if let Some(top) = top_hit {
+            rooms_edit::clear_room_selection();
             if shift {
                 cx.selection.toggle(top);
                 return ToolResult::consumed();
@@ -617,7 +783,9 @@ impl Tool for SelectTool {
         }
         if !shift {
             cx.selection.clear();
+            rooms_edit::clear_room_selection();
         }
+        self.room_click = rooms_edit::room_index_at(cx, p.world);
         self.drag = Drag::Marquee {
             start: p.world,
             current: p.world,
@@ -628,6 +796,10 @@ impl Tool for SelectTool {
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if p.down && rooms_edit::space_dragging() {
+            rooms_edit::space_pointer_move(p.world);
+            return ToolResult::consumed();
+        }
         if !p.down {
             self.update_hover(cx, &p);
             return ToolResult {
@@ -672,6 +844,9 @@ impl Tool for SelectTool {
     }
 
     fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if rooms_edit::space_pointer_up() {
+            return ToolResult::consumed();
+        }
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Active(a) => self.finish(cx, *a),
             Drag::Armed {
@@ -694,6 +869,9 @@ impl Tool for SelectTool {
                     for o in found {
                         cx.selection.add(o);
                     }
+                } else if let Some(room) = self.room_click.take() {
+                    // A plain click on empty floor selects the room.
+                    rooms_edit::select_room(cx, room);
                 }
                 ToolResult::consumed()
             }
@@ -703,14 +881,26 @@ impl Tool for SelectTool {
 
     fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         self.drag = Drag::None;
-        let hits = hit_test(cx.floor(), cx.layers(), p.world, cx.pick_tol());
-        match hits.first().copied() {
+        let hits = hit_test_cx(cx, p.world, cx.pick_tol());
+        let top = hits
+            .first()
+            .copied()
+            .filter(|o| !matches!(o, ObjectRef::Room(_)));
+        match top {
             Some(o) => {
-                cx.selection.set(o);
+                select_hit(cx, o);
                 cx.requests.push(EditorRequest::OpenSpec(o));
                 ToolResult::consumed()
             }
-            None => ToolResult::ignored(),
+            None => match rooms_edit::room_index_at(cx, p.world) {
+                // Double-click inside a room opens the Room Specification (R-19).
+                Some(room) => {
+                    rooms_edit::select_room(cx, room);
+                    rooms_edit::request_room_dialog(cx, room);
+                    ToolResult::consumed()
+                }
+                None => ToolResult::ignored(),
+            },
         }
     }
 
@@ -720,6 +910,10 @@ impl Tool for SelectTool {
         }
         if k.is(Key::Escape) {
             if self.cancel_drag(cx) {
+                return ToolResult::consumed();
+            }
+            if rooms_edit::selected_room(cx).is_some() {
+                rooms_edit::clear_room_selection();
                 return ToolResult::consumed();
             }
             if !cx.selection.is_empty() {
@@ -736,6 +930,10 @@ impl Tool for SelectTool {
             return ToolResult::committed("Delete");
         }
         if k.is(Key::Enter) {
+            if let (true, Some(room)) = (cx.selection.is_empty(), rooms_edit::selected_room(cx)) {
+                rooms_edit::request_room_dialog(cx, room);
+                return ToolResult::consumed();
+            }
             return match cx.selection.single() {
                 Some(o) => {
                     cx.requests.push(EditorRequest::OpenSpec(o));
@@ -769,7 +967,7 @@ impl Tool for SelectTool {
         if cx.view_flags.contains(&ViewFlag::TemporaryDimensions) {
             tempdim::draw(&cx.temp, painter, cam, pal, &cx.defaults.dim_format());
         }
-        let hs = handles::handles_for(cx.floor(), &cx.selection, cam.px_per_in);
+        let hs = handles::handles_for(cx, cam.px_per_in);
         handles::draw(&hs, painter, cam, pal);
         if let (Drag::Active(_), Some(s)) = (&self.drag, cx.last_snap) {
             crate::editor::render::draw_snap_marker(painter, cam, &s, pal.ghost_stroke);
@@ -778,6 +976,7 @@ impl Tool for SelectTool {
 
     fn edit_toolbar(&self, cx: &EditorContext) -> Vec<EditAction> {
         let mut v = cx.common_edit_actions();
+        v.extend(cx.extra_edit_actions());
         let floor = cx.floor();
         let has_door = cx.selection.items.iter().any(|o| match o {
             ObjectRef::Opening(id) => floor
@@ -1068,5 +1267,53 @@ mod tests {
         let kinds: Vec<_> = t.edit_toolbar(&cx).iter().map(|a| a.kind).collect();
         assert!(!kinds.contains(&EditActionKind::ReverseSwing));
         assert!(kinds.contains(&EditActionKind::FixWallConnections));
+    }
+
+    #[test]
+    fn clicking_inside_a_room_selects_the_room_and_double_click_opens_it() {
+        let (mut cx, ids) = room();
+        let mut t = SelectTool::default();
+        let q = ev(&cx, 60.0, 48.0);
+        t.pointer_down(&mut cx, q.with_down(true));
+        t.pointer_up(&mut cx, q);
+        assert!(cx.selection.is_empty());
+        assert_eq!(rooms_edit::selected_room(&cx), Some(0));
+        // Clicking an object takes the selection back from the room.
+        let w = ev(&cx, 60.0, 1.0);
+        t.pointer_down(&mut cx, w.with_down(true));
+        t.pointer_up(&mut cx, w);
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Wall(ids[0])));
+        assert_eq!(rooms_edit::selected_room(&cx), None);
+        // Double-click inside the room asks for the Room Specification.
+        let dc = ev(&cx, 60.0, 48.0);
+        let r = t.double_click(&mut cx, dc);
+        assert!(r.consumed);
+        assert_eq!(rooms_edit::selected_room(&cx), Some(0));
+        assert_eq!(rooms_edit::take_room_dialog_request(&cx), Some(0));
+        // Esc drops the room selection.
+        assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
+        assert_eq!(rooms_edit::selected_room(&cx), None);
+        // Outside every room a double-click does nothing.
+        let far = ev(&cx, 500.0, 500.0);
+        assert!(!t.double_click(&mut cx, far).consumed);
+    }
+
+    #[test]
+    fn dragging_a_space_planning_box_moves_it() {
+        use plan_spaceplan::{generate_boxes, Questionnaire};
+        let (mut cx, _) = room();
+        let mut t = SelectTool::default();
+        let boxes = generate_boxes(&Questionnaire::default());
+        let first = boxes[0].clone();
+        rooms_edit::set_space_boxes(boxes);
+        let c = first.center();
+        drag(&mut t, &mut cx, (c.x, c.y), (c.x + 240.0, c.y + 240.0));
+        let moved = rooms_edit::space_boxes()
+            .into_iter()
+            .find(|b| b.id == first.id)
+            .unwrap();
+        assert_ne!(moved.rect, first.rect);
+        assert!(cx.selection.is_empty());
+        rooms_edit::clear_space_boxes();
     }
 }

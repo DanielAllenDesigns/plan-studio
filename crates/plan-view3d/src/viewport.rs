@@ -9,6 +9,7 @@ use plan_3d::{Bounds, Scene};
 
 use crate::camera::{Camera, CameraMode};
 use crate::gpu::{FrameParams, GpuScene};
+use crate::walkthrough::Walkthrough;
 
 /// Orbit sensitivity, radians per dragged pixel.
 const ORBIT_RADIANS_PER_PX: f32 = 0.01;
@@ -140,6 +141,17 @@ impl Viewport3d {
             let t = self.camera.target;
             self.camera.position = [t[0], floor + self.camera.eye_height, t[2]];
         }
+    }
+
+    /// Replace the camera wholesale (for example with a saved view or a
+    /// walkthrough pose). The scene framing is left untouched.
+    pub fn set_camera(&mut self, camera: &Camera) {
+        self.camera = camera.clone();
+    }
+
+    /// Show the walkthrough's camera at time `t` seconds (Walkthrough Preview).
+    pub fn play_walkthrough(&mut self, walkthrough: &Walkthrough, t: f64) {
+        self.camera = walkthrough.camera_at(t);
     }
 
     /// Scene bounds from the last `set_scene` / `queue_scene`, if any.

@@ -93,4 +93,60 @@ impl Frame {
         self.face(mesh, Axis::H, -1.0, h.0, s, t);
         self.face(mesh, Axis::H, 1.0, h.1, s, t);
     }
+
+    /// Emit a closed vertical prism over a convex footprint given as local
+    /// `(s, t)` points (any winding), spanning the `h` range. Degenerate
+    /// footprints emit nothing.
+    pub fn prism(&self, mesh: &mut MeshBuilder, pts: &[(f64, f64)], h: (f64, f64)) {
+        let n = pts.len();
+        if n < 3 || h.1 - h.0 <= 1e-9 {
+            return;
+        }
+        let area: f64 = (0..n)
+            .map(|i| {
+                let (a, b) = (pts[i], pts[(i + 1) % n]);
+                a.0 * b.1 - b.0 * a.1
+            })
+            .sum();
+        if area.abs() < 1e-9 {
+            return;
+        }
+        let mut poly = pts.to_vec();
+        if area < 0.0 {
+            poly.reverse();
+        }
+        let dir_of = |ns: f64, nt: f64| -> V3 {
+            let v = self.dir * ns + self.nrm * nt;
+            [v.x as f32, 0.0, -v.y as f32]
+        };
+        let (v0, v1) = ((h.0 / IN_PER_FT) as f32, (h.1 / IN_PER_FT) as f32);
+        for i in 0..n {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            let (ds, dt) = (b.0 - a.0, b.1 - a.1);
+            let len = ds.hypot(dt);
+            if len <= 1e-9 {
+                continue;
+            }
+            let normal = dir_of(dt / len, -ds / len);
+            let quad = [
+                self.point(a.0, a.1, h.0),
+                self.point(b.0, b.1, h.0),
+                self.point(b.0, b.1, h.1),
+                self.point(a.0, a.1, h.1),
+            ];
+            let u = (len / IN_PER_FT) as f32;
+            mesh.quad(quad, [[0.0, v0], [u, v0], [u, v1], [0.0, v1]], normal);
+        }
+        let uv = |p: (f64, f64)| [(p.0 / IN_PER_FT) as f32, (p.1 / IN_PER_FT) as f32];
+        for i in 1..n - 1 {
+            let tri = [poly[0], poly[i], poly[i + 1]];
+            let uvs = tri.map(uv);
+            mesh.tri(tri.map(|p| self.point(p.0, p.1, h.1)), uvs, [0.0, 1.0, 0.0]);
+            mesh.tri(
+                tri.map(|p| self.point(p.0, p.1, h.0)),
+                uvs,
+                [0.0, -1.0, 0.0],
+            );
+        }
+    }
 }

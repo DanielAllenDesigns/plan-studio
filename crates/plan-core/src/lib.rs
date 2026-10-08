@@ -16,6 +16,8 @@
 //! * [`layers`]: Chief-style layers with display/lock state and colours.
 //! * [`defaults`]: the plan defaults a new project starts from (wall types,
 //!   door/window/cabinet/dimension defaults, room types, grid).
+//! * [`layer_sets`]: named layer sets and saved plan views.
+//! * [`text_styles`]: named text styles that layers refer to.
 //! * [`history`]: snapshot undo/redo.
 //! * [`export`]: file exporters (ASCII DXF today).
 //! * [`walls`]: wall flags, curves, roof directives, reference lines and wall
@@ -36,17 +38,19 @@ pub mod geometry;
 pub mod groups;
 pub mod history;
 pub mod joins;
+pub mod layer_sets;
 pub mod layers;
 pub mod model;
 pub mod openings;
 pub mod rooms;
 pub mod symbols;
+pub mod text_styles;
 pub mod units;
 pub mod walls;
 
 pub use cad::{CadItem, CadObject};
 pub use camera::{CameraKind, CameraObject};
-pub use defaults::{PlanDefaults, WallLayer, WallTypeDef};
+pub use defaults::{DimensionDefaultSet, PlanDefaults, WallLayer, WallTypeDef};
 pub use dimension::{auto_exterior_dimensions, DimFormat, Dimension, DimensionKind};
 pub use export::dxf::write_dxf;
 pub use floors::{FloorKind, FoundationKind};
@@ -57,11 +61,13 @@ pub use joins::{
     main_layer_lines, wall_end_joins, wall_faces, wall_layer_bands, wall_layer_outlines,
     wall_outlines, ConnectionKind, LayerBand, WallLayerOutline, WallOutline,
 };
+pub use layer_sets::{LayerSetDef, LayerSets, LayerState, SavedPlanView};
 pub use layers::{Layer, LayerSet, LineStyle};
 pub use model::*;
 pub use openings::{Casing, OpeningStyle};
 pub use rooms::{detect_rooms, detect_rooms_inner, Room};
 pub use symbols::PlacedSymbol;
+pub use text_styles::{TextStyle, TextStyles};
 pub use walls::{
     PonyWall, ResizeAbout, Side, WallConnection, WallCurve, WallFlags, WallRoofDirective,
 };

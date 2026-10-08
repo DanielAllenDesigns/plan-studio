@@ -39,7 +39,8 @@ Active whenever no text field has focus. The whole table lives in `toolbar::BIND
 | `Cmd+L` | Library Browser dock |
 | `Cmd+N`, `Cmd+O`, `Cmd+S` | New, Open, Save |
 | `Cmd+Z`, `Shift+Cmd+Z`, `Cmd+Y` | Undo, Redo, Redo |
-| `Shift+Y`, `Shift+T`, `Shift+A`, `Q`, `Y`, `K`, `Shift+P` | Draw Stairs, Base Cabinet, Auto Exterior Dimensions, Roof Plane, Text, Circle, Rectangular Polyline (not built yet: show a status message) |
+| `Shift+Y`, `Shift+T`, `Shift+A`, `Q`, `Y`, `K`, `Shift+P` | Draw Stairs, Base Cabinet, Auto Exterior Dimensions, Roof Plane, Text, Circle, Rectangular Polyline |
+| `Shift+J`, `Shift+K` | Full Camera, Perspective Full Overview |
 
 `D, H` is a two-key sequence: after `D` the status bar shows `D, ...` for 1.5 seconds. Four-modifier Chief chords (such as Straight Interior Wall, Ctrl+Alt+Cmd+6) appear in tooltips and menus but are not bound.
 
@@ -75,3 +76,36 @@ Not stored in the defaults yet: muntin width, label options and the door's secon
 Tools live in `src/tools/` (one file each, behind the `Tool` trait) and share
 the services in `src/editor/` through an `EditorContext`; `main.rs` is the
 window, panels and dialogs. See `../../docs/architecture-tools.md`.
+
+### Tools
+
+Every flyout entry selects its exact sub-tool through a `ToolId` payload
+(`StairsVariant`, `RoofVariant`, `CabinetVariant`, `DimensionVariant`,
+`TextVariant`, `CadVariant`, `CameraVariant`, `ElectricalVariant`,
+`TerrainVariant`); `Tool::set_variant` receives it. Tools with dialogs or
+palettes also get a per-frame `Tool::frame` hook.
+
+| Tool | File | Variants (flyout entries) |
+|---|---|---|
+| Select Objects | `select.rs` | picks, moves and edits every object kind (walls, openings, dimensions, CAD/text, cabinets, symbols, stairs, roof planes, devices, cameras, rooms, terrain) |
+| Walls, Doors, Windows | `wall.rs`, `opening.rs` | wall flavors, hinged door, window |
+| Dimensions | `dimension.rs` | Manual, End to End, Interior, Point to Point, Running, Baseline, Centerline, Angular, Tape Measure, Auto Exterior/Interior |
+| Text | `text.rs` | Text, Rich Text, Leader Line, Text Line with Arrow, Callout, Marker, Note |
+| CAD | `cad.rs` | points, lines, polyline, arcs, circles, ellipse/oval, boxes, polygon, spline, revision cloud, CAD blocks |
+| Cabinets, Library | `cabinet.rs`, `library.rs` | Base, Wall, Full Height, Soffit, Shelf, Partition; library symbols |
+| Stairs | `stairs.rs` | Draw, Straight, L-Shaped, U-Shaped, Curve Left/Right, Landing, Ramp |
+| Roofs | `roof.rs` | Roof Plane, Edit, Build Roof, Gable/Roof Line, Roof Hole, Skylight, Join, Auto Dormer |
+| Electrical | `electrical.rs` | outlets, switches, lights, connection, Auto Place Outlets |
+| Terrain | `terrain.rs` | perimeter, elevation data, modifiers, features, roads |
+| Cameras | `camera.rs` | Full Camera, overviews, Doll House, cross sections |
+
+Still dimmed in the toolbar: framing, slabs, trim, curved walls and the other
+tools whose flyouts are not built (see the `NotImplemented` list printed by
+`cargo test -p plan-app flyout_entries -- --nocapture`).
+
+The Edit toolbar is open-ended (`EditActionKind::Custom`): stairs add Auto
+Stairwell, Flare/Curve, Add/Remove Breakline and Make Railing; roof planes Join
+Roof Planes and Rebuild Roofs; symbols Replace From Library; devices Flip Side
+and Rotate. Specification dialogs of every kind open from `open_spec`
+(double-click or Enter in Select Objects). File > Templates > Import Chief
+Template... seeds the defaults from a Chief `.plan` file.

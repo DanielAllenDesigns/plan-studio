@@ -10,3 +10,9 @@ plan-core = { path = "../plan-core" }
 plan-library = { path = "../plan-library" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+# Force the portable seek+read file backend even on Unix (normally positioned
+# reads via `std::os::unix::fs::FileExt` are used there). Mostly for testing
+# the non-Unix code path.
+seek-io = []

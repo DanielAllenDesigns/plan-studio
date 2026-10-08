@@ -3,7 +3,7 @@
 use crate::builder::MeshSet;
 use crate::frame::{Axis, Frame};
 use crate::mesh::{Material, Mesh};
-use plan_core::{Opening, Wall, WallKind};
+use plan_core::{Opening, OpeningStyle, Wall, WallKind};
 
 /// Geometric tolerance, inches.
 const EPS: f64 = 1e-6;
@@ -15,6 +15,23 @@ pub struct Hole {
     pub s1: f64,
     pub h0: f64,
     pub h1: f64,
+    /// `Some(depth)` for a recess that does not pass through the wall.
+    pub niche_depth: Option<f64>,
+}
+
+/// Per-wall appearance chosen by the scene builder (wall type, pony wall...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WallLook {
+    /// Material of the exterior face and the wall's end/top caps.
+    pub exterior: Material,
+}
+
+impl Default for WallLook {
+    fn default() -> Self {
+        Self {
+            exterior: Material::WallExterior,
+        }
+    }
 }
 
 /// The hole an opening cuts in its wall, or `None` if it falls outside the wall.
@@ -24,6 +41,8 @@ pub fn hole_for(wall: &Wall, opening: &Opening) -> Option<Hole> {
         s1: opening.end_offset().min(wall.length()),
         h0: opening.sill_height.max(0.0),
         h1: (opening.sill_height + opening.height).min(wall.height),
+        niche_depth: (opening.style == OpeningStyle::WallNiche)
+            .then(|| (wall.thickness - 1.0).clamp(0.5, 3.5)),
     };
     (hole.s1 - hole.s0 > EPS && hole.h1 - hole.h0 > EPS).then_some(hole)
 }
@@ -83,24 +102,41 @@ fn add_reveals(frame: &Frame, wall: &Wall, hole: &Hole, set: &mut MeshSet) {
     }
 }
 
+/// Faces lining a recess that stops short of the far face of the wall.
+fn add_niche(frame: &Frame, wall: &Wall, hole: &Hole, side: f64, set: &mut MeshSet) {
+    let depth = hole.niche_depth.unwrap_or(0.0);
+    let half = wall.thickness * 0.5;
+    let (a, b) = (side * half, side * (half - depth));
+    let t = (a.min(b), a.max(b));
+    let mesh = set.material(Material::WallInterior);
+    frame.face(mesh, Axis::S, 1.0, hole.s0, t, (hole.h0, hole.h1));
+    frame.face(mesh, Axis::S, -1.0, hole.s1, t, (hole.h0, hole.h1));
+    frame.face(mesh, Axis::H, -1.0, hole.h1, (hole.s0, hole.s1), t);
+    frame.face(mesh, Axis::H, 1.0, hole.h0, (hole.s0, hole.s1), t);
+    frame.face(
+        mesh,
+        Axis::T,
+        side as f32,
+        b,
+        (hole.s0, hole.s1),
+        (hole.h0, hole.h1),
+    );
+}
+
 /// Materials for the (left, right) faces and for caps/top/bottom.
-fn wall_materials(wall: &Wall, interior: InteriorSign) -> (Material, Material, Material) {
+fn wall_materials(
+    wall: &Wall,
+    interior: InteriorSign,
+    ext: Material,
+) -> (Material, Material, Material) {
     match wall.kind {
         WallKind::Interior => (
             Material::WallInterior,
             Material::WallInterior,
             Material::WallInterior,
         ),
-        WallKind::Exterior if interior > 0.0 => (
-            Material::WallInterior,
-            Material::WallExterior,
-            Material::WallExterior,
-        ),
-        WallKind::Exterior => (
-            Material::WallExterior,
-            Material::WallInterior,
-            Material::WallExterior,
-        ),
+        WallKind::Exterior if interior > 0.0 => (Material::WallInterior, ext, ext),
+        WallKind::Exterior => (ext, Material::WallInterior, ext),
     }
 }
 
@@ -110,17 +146,29 @@ pub fn build_wall(
     elevation: f64,
     holes: &[Hole],
     interior: InteriorSign,
+    look: WallLook,
 ) -> Vec<Mesh> {
     let (length, height, half) = (wall.length(), wall.height, wall.thickness * 0.5);
     if length <= EPS || height <= EPS || half <= EPS {
         return Vec::new();
     }
     let frame = Frame::new(wall, elevation);
-    let (left, right, trim) = wall_materials(wall, interior);
+    let (left, right, trim) = wall_materials(wall, interior, look.exterior);
     let mut set = MeshSet::default();
 
-    for (s0, s1, h0, h1) in solid_rects(length, height, holes) {
+    // Niches only break the face on the interior side.
+    let niche_side = if interior >= 0.0 { 1.0 } else { -1.0 };
+    let face_holes = |side: f64| -> Vec<Hole> {
+        holes
+            .iter()
+            .filter(|h| h.niche_depth.is_none() || side == niche_side)
+            .copied()
+            .collect()
+    };
+    for (s0, s1, h0, h1) in solid_rects(length, height, &face_holes(1.0)) {
         frame.face(set.material(left), Axis::T, 1.0, half, (s0, s1), (h0, h1));
+    }
+    for (s0, s1, h0, h1) in solid_rects(length, height, &face_holes(-1.0)) {
         frame.face(
             set.material(right),
             Axis::T,
@@ -137,7 +185,11 @@ pub fn build_wall(
     frame.face(cap, Axis::H, 1.0, height, (0.0, length), t);
     frame.face(cap, Axis::H, -1.0, 0.0, (0.0, length), t);
     for hole in holes {
-        add_reveals(&frame, wall, hole, &mut set);
+        if hole.niche_depth.is_some() {
+            add_niche(&frame, wall, hole, niche_side, &mut set);
+        } else {
+            add_reveals(&frame, wall, hole, &mut set);
+        }
     }
     set.finish(Some(wall.id))
 }

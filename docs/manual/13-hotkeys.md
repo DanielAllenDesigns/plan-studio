@@ -110,7 +110,7 @@ Two details worth knowing:
   swaps them once, so the table below uses the physical keys: `Ctrl` = Control, `Cmd` = Command.
 - Daniel's setup is in `docs/daniel-chief-setup.md`: 101 of his bindings differ from factory (86 new, 15 changed),
   7 factory keys were cleared, 60 commands use `Ctrl+Alt+Cmd+...` chords, and 26 use two- and three-key sequences
-  (`D, H`, `S, L`, `E, O`, `D, T, M`, `E, A, O`). Examples of changes: Send to Layout `S, L`, Down One Floor
+  (`D, H`, `S, L`, `E, O`, `D, T, M`, `E, A, O`). Examples of changes: Send to Layout `S, L` (it opens the Send to Layout dialog, chapter 11.3), Down One Floor
   `Ctrl+Z`, Up One Floor `Ctrl+A`, Fill Window `Ctrl+F`, Zoom In `-`, Pan Window `H`.
 
 ### The named bindings
@@ -118,24 +118,24 @@ Two details worth knowing:
 Status: **Works** (the command runs today), **(planned)** (the command is on a dimmed button; the key is kept and reports
 "Not yet implemented"), **No matching command yet** (Chief has the command; Plan Studio has no equivalent
 and shows the key under "Chief bindings with no action in Plan Studio yet" in the dialog), or a flag toggle.
-Of the 143 named bindings, 88 work or toggle a flag, 32 are planned and 23 have no matching command.
+Of the 143 named bindings, 100 work or toggle a flag, 21 are planned and 22 have no matching command (as of the Round 7 commit; Round 6 and 7 made 12 of them live).
 
 | Command | Daniel's key | Status |
 |---|---|---|
 | 110V Outlet | `E, O` | Works |
 | 220V Outlet | `Ctrl+Alt+Cmd+7` | Works |
 | 3D View Defaults | `Cmd+1` | Works |
-| Adjust Lights | `Ctrl+Alt+Cmd+L` | No matching command yet |
+| Adjust Lights | `Ctrl+Alt+Cmd+L` | Works |
 | Angular Dimension | `Ctrl+Alt+Cmd+F` | Works |
 | Auto Dormer | `Ctrl+Alt+Shift+Cmd+Z` | Works |
-| Auto Elevation Dimensions | `Ctrl+Alt+Cmd+H` | (planned) |
+| Auto Elevation Dimensions | `Ctrl+Alt+Cmd+H` | Works |
 | Auto Exterior Dimensions | `Shift+A` | Works |
-| Auto Floating Dormer | `Ctrl+Alt+Shift+Cmd+R` | (planned) |
+| Auto Floating Dormer | `Ctrl+Alt+Shift+Cmd+R` | Works |
 | Auto Place Outlets | `E, A, O` | Works |
-| Auto Story Pole Dimensions | `Ctrl+Alt+Cmd+I` | (planned) |
+| Auto Story Pole Dimensions | `Ctrl+Alt+Cmd+I` | Works |
 | Barn Door | `Ctrl+Alt+Cmd+P` | (planned) |
 | Base Cabinet | `Shift+T` | Works |
-| Base Filler | `Ctrl+Alt+Cmd+0` | (planned) |
+| Base Filler | `Ctrl+Alt+Cmd+0` | Works |
 | Baseline Dimension | `Ctrl+Alt+Cmd+D` | Works |
 | Bay Window | `Ctrl+Alt+Cmd+S` | (planned) |
 | Bifold Door | `Ctrl+Alt+Cmd+O` | (planned) |
@@ -146,7 +146,7 @@ Of the 143 named bindings, 88 work or toggle a flag, 32 are planned and 23 have 
 | Build New Floor | `Shift+X` | Works |
 | Build Roof | `Ctrl+Alt+Shift+Cmd+N` | Works |
 | Bumping/Pushing | `F11` | No matching command yet |
-| CAD Block Management | `V` | (planned) |
+| CAD Block Management | `V` | Works |
 | CAD Detail Management | `Shift+V` | No matching command yet |
 | Callout | `Ctrl+Alt+Cmd+K` | Works |
 | Ceiling Plane | `Ctrl+Alt+Shift+Cmd+U` | Works |
@@ -162,9 +162,9 @@ Of the 143 named bindings, 88 work or toggle a flag, 32 are planned and 23 have 
 | CPU Ray Trace | `J` | No matching command yet |
 | Curve to Left | `Ctrl+Alt+Shift+Cmd+E` | Works |
 | Curve to Right | `Ctrl+Alt+Shift+Cmd+F` | Works |
-| Custom Backsplash | `Ctrl+Alt+Cmd+4` | (planned) |
-| Custom Counter Hole | `Ctrl+Alt+Cmd+5` | (planned) |
-| Custom Countertop | `Ctrl+Alt+Cmd+3` | (planned) |
+| Custom Backsplash | `Ctrl+Alt+Cmd+4` | Works |
+| Custom Counter Hole | `Ctrl+Alt+Cmd+5` | Works |
+| Custom Countertop | `Ctrl+Alt+Cmd+3` | Works |
 | Cut | `Cmd+X` | No matching command yet |
 | Delete | `Del` | No matching command yet |
 | Delete Ceiling Planes | `Ctrl+Alt+Shift+Cmd+X` | Works |
@@ -187,7 +187,7 @@ Of the 143 named bindings, 88 work or toggle a flag, 32 are planned and 23 have 
 | Floor Defaults | `Shift+Cmd+Y` | (planned) |
 | Full Camera | `Shift+J` | Works |
 | Full Height | `Ctrl+Alt+Cmd+X` | Works |
-| Full Height Filler | `Ctrl+Alt+Cmd+2` | (planned) |
+| Full Height Filler | `Ctrl+Alt+Cmd+2` | Works |
 | Gable/Roof Line | `Ctrl+Alt+Shift+Cmd+O` | Works |
 | Garage Door | `G, D` | (planned) |
 | GFCI Outlet | `Ctrl+Alt+Shift+Cmd+Y` | Works |
@@ -239,7 +239,7 @@ Of the 143 named bindings, 88 work or toggle a flag, 32 are planned and 23 have 
 | Save | `Cmd+S` | Works |
 | Select All | `Cmd+A` | No matching command yet |
 | Select Objects | `Space` | Works |
-| Send to Layout | `S, L` | (planned) |
+| Send to Layout | `S, L` | Works |
 | Shelf | `Ctrl+Alt+Cmd+Y` | Works |
 | Shower Door | `Ctrl+Alt+Cmd+Q` | (planned) |
 | Skylight | `Ctrl+Alt+Shift+Cmd+S` | Works |
@@ -260,7 +260,7 @@ Of the 143 named bindings, 88 work or toggle a flag, 32 are planned and 23 have 
 | Undo | `Cmd+Z` | Works |
 | Up One Floor | `Ctrl+A` | Works |
 | Wall Cabinet | `Cmd+T` | Works |
-| Wall Filler | `Ctrl+Alt+Cmd+1` | (planned) |
+| Wall Filler | `Ctrl+Alt+Cmd+1` | Works |
 | Wall Niche | `Ctrl+Alt+Cmd+W` | (planned) |
 | Window | `Shift+W` | Works |
 | Zoom | `Shift+Z` | (planned) |
@@ -285,8 +285,10 @@ Key (Chief command id): `Shift+F4` (106); `W` (202); `2` (231); `Cmd+D` (237); `
   what the keys do but those can still show the old one.
 - `Delete` and `Backspace` delete the selection through the tools' own key handling, not through the hotkey map.
   Daniel's `Del` (Delete) binding therefore shows under "no matching command" but still works.
-- `~` (Preferences), `` ` `` (Display Options), `Cmd+P` (Print) and the other dimmed commands hold their keys but do
-  nothing yet. `Cmd+Q` is shown beside Straight Railing but not bound, because it is the macOS Quit shortcut; the tool itself works from the
+- `~` (Preferences), `` ` `` (Display Options), `Cmd+P` (Print, the row 1 button) and the other dimmed commands hold their keys but do
+  nothing yet. File > Print > Print Layout and Export Layout PDF work from the menu and have no key.
+- **Adjust Lights** is `Ctrl+Alt+Cmd+L` on a Mac. Off macOS the Control and Command flags fold into one key, so the chord is `Ctrl+Alt+L` (the program binds it as a Chief default that needs Option, which the base table cannot express).
+- **Revision Cloud** (`Ctrl+Alt+Shift+Cmd+!`) is still on a dimmed toolbar toggle; the CAD menu runs the tool without a key. `Cmd+Q` is shown beside Straight Railing but not bound, because it is the macOS Quit shortcut; the tool itself works from the
   toolbar and the Build menu.
 - Four-modifier chords work on every platform; off macOS they are the `Ctrl+Alt+...` chords of 13.2.
 - Older notes say the four-modifier chords are "not bound on purpose". That predates the runtime hotkey map;
@@ -346,7 +348,9 @@ Where the manual covers each tool's keys in detail:
 | Electrical, terrain | 9 |
 | 3D views | 10 |
 | Framing tools and Build Framing | 11.11 |
+| Layout view, schedules, Project Information | 11.2 to 11.4 |
 | Slabs, pads, piers, platform holes | 16 |
+| Trim, material regions, decks, 3D solids | 17 |
 
 ## 13.9 Keys inside a tool
 
@@ -370,3 +374,11 @@ These go to the active tool, not the hotkey map.
 | `Shift` or `Cmd` + click | Framing tools | Picks a placed framing object (`Shift` on a picked one drops it). |
 | `Cmd` + click or drag | Slab tools | Picks an object, or moves it. |
 | `Shift`, `Alt` | Roof Return | `Shift` makes a half return, `Alt` a boxed one. |
+| `G` | Cabinet tool | Generate Countertop: joins the countertops of touching base cabinets (chapter 6.2). |
+| `Enter`, `Backspace`, `Esc` | Custom Countertop, Backsplash, Counter Hole; polygon details | Finish, drop the last corner, cancel (chapters 6.2, 17.2). |
+| `Cmd` + click or drag | Details tools | Picks an existing detail, or moves it (chapter 17.2). |
+| Arrow keys, `Shift`+arrow keys | Layout view | Nudge the selected layout box 1/16", or 1/4" with `Shift`. |
+| `Delete`, `Backspace`, `Esc` | Layout view | Delete the selected box; `Esc` clears the selection or a placement. `Alt` while dragging a box turns off the 1/16" snap (chapter 11.3). |
+| `Enter` | Walkthrough path, Fillet, Chamfer, Offset | Finishes the path; starts a typed radius, distances or offset distance (chapters 10.12, 5.4). |
+| `Delete` | Add Lights | Removes the selected light (chapter 10.13). |
+| `Cmd+Z`, `Cmd+Y` | Layout view | Undo and redo the layout's own history while the layout shows (chapter 11.3). |

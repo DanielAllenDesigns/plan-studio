@@ -524,7 +524,7 @@ fn schedule_window(
         });
     if place {
         let id = schedule_view::add(cx, kind.plan_kind(), cam.center);
-        schedule_view::select(id);
+        schedule_view::select(cx, id);
         cx.status = format!("{} placed in the plan", sched.title);
     }
     if export {
@@ -718,6 +718,7 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
         Action::WallSchedule => open_schedule(SchedKind::Wall),
         Action::CreateConstructionSet => create_construction_set(cx),
         Action::FileNewLayout => new_layout_from_template(cx),
+        Action::ProjectInfo => open_project_info(cx),
         _ => {}
     }
 }
@@ -1065,6 +1066,27 @@ mod tests {
         }
         let mut cam = Camera::default_view();
         let _ = ctx.run(input, |ctx| show_all(ctx, cx, &mut cam));
+    }
+
+    #[test]
+    fn the_project_information_action_opens_its_dialog() {
+        let mut cx = house();
+        close_project_info();
+        assert!(!project_info_open());
+        dispatch(&mut cx, Action::ProjectInfo);
+        assert!(project_info_open());
+        close_project_info();
+    }
+
+    #[test]
+    fn opening_a_selected_schedule_asks_for_its_specification() {
+        use plan_core::schedules::ScheduleKind;
+        let mut cx = house();
+        let id = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -40.0));
+        let mut spec = crate::shell::spec_dialogs::SpecDialogs::default();
+        assert!(spec.open(&mut cx, crate::editor::ObjectRef::Schedule(id)));
+        assert_eq!(with_windows(|w| w.sched_spec_request), Some((0, id)));
+        assert!(!spec.open(&mut cx, crate::editor::ObjectRef::Schedule(id + 1000)));
     }
 
     #[test]

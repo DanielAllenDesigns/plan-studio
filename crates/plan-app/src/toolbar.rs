@@ -14,6 +14,7 @@ use crate::tools::camera::CameraVariant;
 use crate::tools::details::DetailsVariant;
 use crate::tools::foundation::FoundationVariant;
 use crate::tools::framing::FramingVariant;
+use crate::tools::images::ImageMode;
 use crate::tools::wall::{WallStyle as Style, WallVariant};
 use crate::tools::ToolId;
 
@@ -142,6 +143,8 @@ pub enum Action {
     ShowAbout,
     /// Edit > Default Settings...
     DefaultSettings,
+    /// Tools > Project Information... (`build_tools::open_project_info`).
+    ProjectInfo,
     /// Tools > Toolbars and Hotkeys > Customize Hotkeys...
     OpenHotkeyDialog,
     /// Tools > Layer Settings > Display Options...
@@ -889,6 +892,11 @@ pub fn stairs() -> Flyout {
         "Stairs",
         vec![
             st("stairs", K::Draw, "\u{21E7}Y"),
+            item(
+                "stairs",
+                K::Click.name(),
+                Action::SetTool(ToolId::StairsVariant(K::Click)),
+            ),
             st("stairs", K::Straight, "\u{2303}\u{2325}\u{21E7}\u{2318}B"),
             st("stairs", K::LShaped, "\u{2303}\u{2325}\u{21E7}\u{2318}C"),
             st("stairs", K::UShaped, "\u{2303}\u{2325}\u{21E7}\u{2318}D"),
@@ -901,6 +909,11 @@ pub fn stairs() -> Flyout {
                 "stairs_curved",
                 K::CurveRight,
                 "\u{2303}\u{2325}\u{21E7}\u{2318}F",
+            ),
+            item(
+                "stairs_curved",
+                K::Curved.name(),
+                Action::SetTool(ToolId::StairsVariant(K::Curved)),
             ),
             st("landing", K::Landing, "\u{2303}\u{2325}\u{21E7}\u{2318}G"),
             st("ramp", K::Ramp, "\u{2303}\u{2325}\u{21E7}\u{2318}H"),
@@ -1162,6 +1175,12 @@ fn found(icon: &'static str, v: FoundationVariant) -> Item {
     )
 }
 
+/// An entry of the images tool (Image and Distributed Objects flyouts, and
+/// 3D Solid Feature).
+fn img(icon: &'static str, m: ImageMode) -> Item {
+    item(icon, m.name(), Action::SetTool(ToolId::ImagesVariant(m)))
+}
+
 pub fn slab() -> Flyout {
     fly(
         "Slab",
@@ -1186,7 +1205,7 @@ pub fn solid_3d() -> Flyout {
             det("cylinder", DetailsVariant::Cylinder),
             det("solid_3d", DetailsVariant::Pyramid),
             det("solid_3d", DetailsVariant::Sphere),
-            sep(todo("solid_3d", "3D Solid Feature")),
+            sep(img("solid_3d", ImageMode::SolidFeature)),
         ],
     )
 }
@@ -1195,9 +1214,9 @@ pub fn image() -> Flyout {
     fly(
         "Image",
         vec![
-            todo("drawing_sheet", "Create Image"),
-            todo("drawing_sheet", "Create Billboard Image"),
-            todo("library_browser", "Create Image Library"),
+            img("drawing_sheet", ImageMode::CreateImage),
+            img("drawing_sheet", ImageMode::BillboardImage),
+            img("library_browser", ImageMode::ImageLibrary),
         ],
     )
 }
@@ -1206,10 +1225,10 @@ pub fn distributed_objects() -> Flyout {
     fly(
         "Distributed Objects",
         vec![
-            todo("polyline", "Polyline Distribution Path"),
-            todo("polygon", "Polyline Distribution Region"),
-            todo("spline", "Spline Distribution Path"),
-            todo("spline", "Spline Distribution Region"),
+            img("polyline", ImageMode::PolylinePath),
+            img("polygon", ImageMode::PolylineRegion),
+            img("spline", ImageMode::SplinePath),
+            img("spline", ImageMode::SplineRegion),
         ],
     )
 }
@@ -1429,13 +1448,15 @@ pub fn terrain_wall_curb() -> Flyout {
     fly(
         "Terrain Wall and Curb",
         vec![
-            todo("wall_exterior", "Straight Terrain Wall"),
-            todo("wall_exterior", "Straight Terrain Curb"),
-            todo("wall_curved", "Curved Terrain Wall"),
-            todo("wall_curved", "Curved Terrain Curb"),
+            terr("wall_exterior", "Straight Terrain Wall", T::StraightWall),
+            terr("wall_exterior", "Straight Terrain Curb", T::StraightCurb),
+            terr("wall_curved", "Curved Terrain Wall", T::CurvedWall),
+            terr("wall_curved", "Curved Terrain Curb", T::CurvedCurb),
         ],
     )
 }
+
+use crate::tools::terrain::TerrainVariant as T;
 
 /// A terrain entry that starts the terrain tool in `v`.
 fn terr(icon: &'static str, name: &'static str, v: crate::tools::terrain::TerrainVariant) -> Item {
@@ -1443,7 +1464,6 @@ fn terr(icon: &'static str, name: &'static str, v: crate::tools::terrain::Terrai
 }
 
 pub fn elevation_data() -> Flyout {
-    use crate::tools::terrain::TerrainVariant as T;
     fly(
         "Elevation Data",
         vec![
@@ -1451,8 +1471,8 @@ pub fn elevation_data() -> Flyout {
             terr("elevation_line", "Elevation Line", T::ElevationLine),
             terr("elevation_line", "Elevation Point", T::ElevationPoint),
             terr("terrain", "Elevation Region", T::ElevationRegion),
-            todo("spline", "Elevation Spline"),
-            todo("terrain", "Terrain Break"),
+            terr("spline", "Elevation Spline", T::ElevationSpline),
+            terr("terrain", "Terrain Break", T::Break),
             sep(terr("terrain", "Build Terrain", T::Build)),
         ],
     )
@@ -1495,9 +1515,9 @@ pub fn terrain_feature() -> Flyout {
     fly(
         "Feature",
         vec![
-            todo("terrain", "Rectangular Feature"),
-            todo("terrain", "Kidney Shaped Feature"),
-            todo("spline", "Spline Feature"),
+            terr("terrain", "Rectangular Feature", T::RectFeature),
+            terr("terrain", "Kidney Shaped Feature", T::KidneyFeature),
+            terr("spline", "Spline Feature", T::SplineFeature),
             terr(
                 "terrain",
                 "Terrain Hole",
@@ -1511,9 +1531,9 @@ pub fn garden_bed() -> Flyout {
     fly(
         "Garden Bed",
         vec![
-            todo("polyline", "Polyline Garden Bed"),
-            todo("terrain", "Kidney Garden Bed"),
-            todo("spline", "Spline Garden Bed"),
+            terr("polyline", "Polyline Garden Bed", T::BedPolyline),
+            terr("terrain", "Kidney Garden Bed", T::BedKidney),
+            terr("spline", "Spline Garden Bed", T::BedSpline),
         ],
     )
 }
@@ -1522,9 +1542,9 @@ pub fn grass_region() -> Flyout {
     fly(
         "Grass Region",
         vec![
-            todo("polyline", "Polyline Grass Region"),
-            todo("terrain", "Kidney Grass Region"),
-            todo("spline", "Spline Grass Region"),
+            terr("polyline", "Polyline Grass Region", T::GrassPolyline),
+            terr("terrain", "Kidney Grass Region", T::GrassKidney),
+            terr("spline", "Spline Grass Region", T::GrassSpline),
         ],
     )
 }
@@ -1533,8 +1553,8 @@ pub fn water_feature() -> Flyout {
     fly(
         "Water Feature",
         vec![
-            todo("polyline", "Polyline Water Feature"),
-            todo("spline", "Spline Water Feature"),
+            terr("polyline", "Polyline Water Feature", T::WaterPolyline),
+            terr("spline", "Spline Water Feature", T::WaterSpline),
         ],
     )
 }
@@ -1543,8 +1563,8 @@ pub fn stepping_stone() -> Flyout {
     fly(
         "Stepping Stone",
         vec![
-            todo("polyline", "Polyline Stepping Stone"),
-            todo("spline", "Spline Stepping Stone"),
+            terr("polyline", "Polyline Stepping Stone", T::StonePolyline),
+            terr("spline", "Spline Stepping Stone", T::StoneSpline),
         ],
     )
 }
@@ -1558,7 +1578,7 @@ pub fn road() -> Flyout {
                 "Polyline Road",
                 crate::tools::terrain::TerrainVariant::Road,
             ),
-            todo("road", "Spline Road"),
+            terr("road", "Spline Road", T::SplineRoad),
         ],
     )
 }
@@ -1572,7 +1592,7 @@ pub fn driveway() -> Flyout {
                 "Polyline Driveway",
                 crate::tools::terrain::TerrainVariant::Driveway,
             ),
-            todo("road", "Spline Driveway"),
+            terr("road", "Spline Driveway", T::SplineDriveway),
         ],
     )
 }
@@ -1586,7 +1606,7 @@ pub fn sidewalk() -> Flyout {
                 "Polyline Sidewalk",
                 crate::tools::terrain::TerrainVariant::Sidewalk,
             ),
-            todo("road", "Spline Sidewalk"),
+            terr("road", "Spline Sidewalk", T::SplineSidewalk),
         ],
     )
 }
@@ -1595,8 +1615,8 @@ pub fn plant() -> Flyout {
     fly(
         "Plant",
         vec![
-            todo("terrain", "Polyline Plant"),
-            todo("terrain", "Spline Plant"),
+            terr("terrain", "Polyline Plant", T::PlantPolyline),
+            terr("terrain", "Spline Plant", T::PlantSpline),
         ],
     )
 }
@@ -1605,8 +1625,8 @@ pub fn sprinkler() -> Flyout {
     fly(
         "Sprinkler",
         vec![
-            todo("terrain", "Polyline Sprinkler"),
-            todo("terrain", "Spline Sprinkler"),
+            terr("terrain", "Polyline Sprinkler", T::SprinklerPolyline),
+            terr("terrain", "Spline Sprinkler", T::SprinklerSpline),
         ],
     )
 }
@@ -2479,19 +2499,24 @@ mod tests {
         "Full Camera",
         "Elevation Data",
         "Modifier",
+        "Terrain Wall and Curb",
+        "Feature",
+        "Garden Bed",
+        "Grass Region",
+        "Water Feature",
+        "Stepping Stone",
         "Road",
         "Driveway",
         "Sidewalk",
+        "Plant",
+        "Sprinkler",
+        "3D Solid",
+        "Image",
+        "Distributed Objects",
     ];
 
     /// Entries of the built groups that are still `NotImplemented`.
-    const ALLOWED_NOT_IMPLEMENTED: &[&str] = &[
-        "Elevation Spline",
-        "Terrain Break",
-        "Spline Road",
-        "Spline Driveway",
-        "Spline Sidewalk",
-    ];
+    const ALLOWED_NOT_IMPLEMENTED: &[&str] = &[];
 
     #[test]
     fn flyout_entries_are_live_except_the_allowlist() {

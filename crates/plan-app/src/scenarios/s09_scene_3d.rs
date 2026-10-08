@@ -209,7 +209,6 @@ fn the_floor_overview_scope_leaves_out_the_floors_above() {
 /// The scene should show placed cabinets (parity 3d-views-cameras "3D scene
 /// contents"): a cabinet on the south wall adds meshes and changes the hash.
 #[test]
-#[ignore = "QA-05"]
 fn placed_cabinets_appear_in_the_3d_scene_and_change_the_hash() {
     let mut sim = finished_house();
     let tris = scene(&sim).triangle_count();
@@ -233,7 +232,6 @@ fn placed_cabinets_appear_in_the_3d_scene_and_change_the_hash() {
 
 /// Same for stairs.
 #[test]
-#[ignore = "QA-06"]
 fn stairs_appear_in_the_3d_scene_and_change_the_hash() {
     let mut sim = finished_house();
     let tris = scene(&sim).triangle_count();

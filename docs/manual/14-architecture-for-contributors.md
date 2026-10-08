@@ -41,8 +41,9 @@ plan-chiefplan -> plan-core      plan-config -> plan-core
 
 **plan-core.** The data model and the pure geometry, with no GUI. `Project` holds floors; a `Floor`
 holds walls, openings, dimensions, CAD objects, room names, symbols and groups, and **typed slots** for what
-an engine crate owns: `cabinets`, `stairs`, `roofs`, `electrical`, `framing` and `foundation` per floor and
-`terrain` per project (opaque JSON read through typed accessors; chapter 12.2). It also has: `rooms` (planar-graph room detection from wall
+an engine crate or a view module owns: `cabinets`, `stairs`, `roofs`, `electrical`, `framing`, `foundation`, `details` and `schedules` per floor and
+`terrain` and `layout` per project (opaque JSON read through typed accessors; chapter 12.2). The project also holds typed values of its own: `info`
+(Project Information), `lights` and `light_options` (the lights of chapter 10.13). It also has: `rooms` (planar-graph room detection from wall
 centerlines, with interior and standard areas), `joins` (mitered wall outlines and per-layer bands),
 `walls` (`WallClass` and its flyout variants, flags, curves, roof directives, connection and split helpers), `extras`
 (the typed, serde-default dialog values of walls, openings and rooms, cross-section lines, the elevation rendering
@@ -50,7 +51,9 @@ options, and the slot accessors), `foundation` (`FoundationLayer`: slabs, slab h
 with the concrete takeoff math and the migration of the old record), `openings` (styles, casing,
 labels), `floors` (build, insert, delete, exchange, foundations), `layers`, `layer_sets` (named layer sets
 and saved plan views), `dimension`, `cad`,
-`camera`, `symbols`, `groups`, `history` (whole-project snapshot undo, 100 steps), `defaults`
+`camera` (camera objects, walkthrough paths and the plan's lights), `symbols`, `groups`, `details` (`DetailsLayer`: corner boards, quoins, moldings, material regions, wall
+hatches, decks and 3D solids, and the exterior-corner finder; chapter 17), `schedules` (`Schedule`, `ScheduleKind` and its column fields, `ProjectInfo` and its macro pairs; chapter 11),
+`text_styles` (text styles, rich-text runs and markup, text macros and note types), `history` (whole-project snapshot undo, 100 steps), `defaults`
 (`PlanDefaults` and the Chief X18 Daniel template), `units` (feet-inches formatting and parsing, metric)
 and `export::dxf` (ASCII DXF R12). It is the foundation; keep it free of GUI code and add a unit test
 with every geometry change.
@@ -60,7 +63,8 @@ with every geometry change.
 walls with openings and wall-type materials, door leaves and window units in every
 opening style, and floor and ceiling platforms. `wall_kinds` builds every wall class (foundation, pony, glass, glass pony, half-wall,
 railings, deck edge, fencing) and curved walls as facets; `foundation` builds slabs, footings, pads, piers and the platform holes
-cut in floors and ceilings; `roof` builds roof plane slabs with holes, skylights, ceiling planes and dormers. It includes an ear-clipping triangulator
+cut in floors and ceilings; `roof` builds roof plane slabs with holes, skylights, ceiling planes and dormers; `details` builds the exterior details
+(`detail_meshes`: corner boards, quoins, moldings, regions, decks, solids). Walls honor `Wall.bottom_offset`. It includes an ear-clipping triangulator
 (with holes) and the `Material` enum other crates' meshes use. Output is plain vertex and index buffers: X right, Y up, Z = -plan y, UVs in feet.
 
 ### Building elements
@@ -70,7 +74,8 @@ and returns watertight `RoofPlane`s (hip, gable and shed edges, per-edge pitch a
 `footprint_from_walls` traces the outer boundary. It falls back to uniform pitch or a bounding-box hip roof
 when the exact solution fails and sets `Roof::approximate`. It also holds the roof features as input/output types: roof holes and
 skylights (`roof_plane_with_holes`), ceiling planes (`CeilingPlane`), `auto_dormer` and `explode_dormer`, `apply_gable_line`, `roof_return`,
-and per-edge `EdgeRoofSpec` (`build_roof_with_specs`). No fascia, gutters or Dutch gables.
+and per-edge `EdgeRoofSpec` (`build_roof_with_specs`, with `extend_slope_downward`); `join_planes` (Join Roof Planes, in `join.rs`) and `ceiling_planes_for_vaulted_room` (Build Ceiling Planes).
+Floating dormers are a flag of the dormer record. No fascia, gutters or Dutch gables.
 
 **plan-stairs.** The parametric stair engine: `solve` rounds the rise to whole risers and checks IRC R311.7;
 `Stair` and `StairShape` (straight, L, U, winder, ramp); `plan_symbol` (outline, riser lines, UP arrow, break
@@ -79,7 +84,7 @@ baluster geometry for stairs and deck edges that no tool uses yet.
 
 **plan-cabinets.** The parametric cabinet engine: `Cabinet` (kind, countertop, backsplash, toe kick), `FaceLayout`
 (the face-item tree that `resolve()` turns into rectangles), `plan_symbol`, `meshes`, `auto_label` (`B24`,
-`W3030`) and `run_along_wall`.
+`W3030`), `run_along_wall`, fillers (`fit_between`), corner and blind cabinets, custom tops with edge profiles and cutouts, and `generate_countertops` (joining touching tops).
 
 **plan-electrical.** Devices (18 kinds), plan symbols, `place_on_wall` and `place_free`, `auto_place_outlets`
 (6' rule, door-jamb clearance, GFCI rules), `auto_place_room_light` and `auto_place_switch`, connections as
@@ -101,13 +106,13 @@ framing: `manual` (the `FramingMember` kinds with per-kind defaults), `truss` (F
 ### Documents and output
 
 **plan-docs.** Construction-document outputs: `schedule` (door, window, room and wall schedules to CSV or
-Markdown), `materials` (framing, drywall, sheathing, siding, flooring and openings take-off), and a minimal
+Markdown), `schedule_kinds` (the rows, columns and callout labels of the schedules placed in the plan, for every `ScheduleKind`), `materials` (framing, drywall, sheathing, siding, flooring and openings take-off), and a minimal
 dependency-free PDF 1.4 writer (`PdfDoc`) with `plan_sheet`, a scaled plan sheet with a title block.
 
 **plan-layout.** Chief's Layout, headless: `Layout`, `LayoutPage`, `LayoutBox`, `BoxSource`, page background, Layout Edge weight and
 a template page, title block templates (including Daniel's 18 x 24 with a REVISIONS table) and the macros, `send_to_layout` and
-`send_to_layout_auto` (automatic scale up to 1/4"), `default_construction_set`, and `render_pdf` (layer colors, weights and dashes; image boxes;
-poche and shadow fills; material hatch).
+`send_to_layout_auto` (automatic scale up to 1/4"), `send_camera_to_layout`, `default_construction_set`, and `render_pdf` (layer colors, weights and dashes; image boxes;
+poche and shadow fills; material hatch; camera boxes through a hook the app supplies). `LayoutRenderContext::new` fills the title block macros from `Project.info`.
 
 **plan-elevation.** Hidden-line vector drawings from a `plan-3d` scene: elevations, cross sections and the plan
 overhead, as weighted `Line2` lists with `to_cad` and `svg`. Also face, cut and shadow regions, material hatch lines, shadows from a sun direction,
@@ -122,7 +127,7 @@ no curves.
 
 **plan-view3d.** An egui widget (`Viewport3d`) that draws a `plan_3d::Scene` with OpenGL through eframe's glow backend:
 orbit, doll house, full camera (66" eye), elevation and plan-overhead cameras, opaque-then-translucent draw order,
-an edge overlay. Camera math and edge extraction are plain Rust and unit tested; all GL is in a private module.
+an edge overlay, and the walkthrough pose and frame-sequence export (`walkthrough`, `export`). Camera math and edge extraction are plain Rust and unit tested; all GL is in a private module.
 
 **plan-render.** A dependency-free CPU path tracer: BVH, Lambert plus GGX, glass, soft sun shadows, sky, Russian
 roulette, tone mapping, optional denoise, deterministic multithreaded output and its own PNG writer.
@@ -155,7 +160,8 @@ defaults, default heights, sheet size; `docs/chief-template-format.md` section 7
 for File > Templates > Import Chief Template....
 
 **plan-config.** Chief's user configuration: `UserHotkeys.xml` (208 of 2,284 commands carry keys in Daniel's file),
-the `.toolbar` files and the preferences INI, with Daniel's files embedded at compile time.
+the `.toolbar` files and the preferences INI, with Daniel's files embedded at compile time. `templates` finds Chief's default plan and layout templates
+(`detect_chief_templates`: the INI keys `Default Plan Template` and `Default Layout Template`, then a scan for the stock names; chapter 1.7.1).
 
 ### The application
 
@@ -168,21 +174,28 @@ menus.rs        the menu bar (Build and CAD menus generated from the flyout tabl
 theme.rs        canvas themes, UI brightness, ~/.plan-studio/settings.json
 plan_defaults.rs  defaults loading and the helpers that turn defaults into objects
 icons.rs        embedded SVG icons
+templates.rs    default templates: settings.json `templates` key, the template-seed.json cache, the overlay
+                onto PlanDefaults, and new_layout
+scenarios/      Chief-parity scenario tests (cfg(test) only); see 14.8
 tools/          one module per Chief tool behind the Tool trait (select, wall, opening, pan,
                 dimension, text, cad, cabinet, stairs, roof, electrical, library, camera, terrain,
-                foundation, framing); tools/library/chief.rs is the Chief catalog backend
+                foundation, framing, details, schedule); tools/cad/ holds the CAD edit tools (edit.rs)
+                and per-object CAD looks (style.rs); tools/library/chief.rs is the Chief catalog backend
 editor/         services shared by tools: EditorContext, selection, snap engine, handles,
                 temporary dimensions, undo history, plan rendering, wall connections, edit actions
                 and their dispatch, and per-object views (roof_view, stairs_view, site_view, placed,
-                rooms_edit, framing_view, foundation_view); restyle (View > Color and Line Weights)
-                and sheet (the drawing sheet). site_view also holds migrate_legacy_storage, run when a
-                plan is opened
+                rooms_edit, framing_view, foundation_view, details_view, schedule_view); restyle (View > Color
+                and Line Weights) and sheet (the drawing sheet). site_view also holds migrate_legacy_storage,
+                run when a plan is opened
 shell/          docks, library browser (library_browser.rs and library_browser/chief_ui.rs for the Chief
-                nodes, png.rs for thumbnails), the 3D panel, the runtime hotkey map, and spec_dialogs (the
-                one place that maps an object kind to its specification dialog)
+                nodes, png.rs for thumbnails), the 3D panel (view3d_panel.rs: GL scene, vector elevations,
+                walkthrough play and record, sun, lights), layout_window.rs (the layout view), the runtime
+                hotkey map, and spec_dialogs (the one place that maps an object kind to its specification dialog)
 dialogs/        Chief-style specification dialogs on the shared frame (wall, opening, room, roof, foundation,
-                framing, camera, symbol ...), Default Settings and its lists
-                (default_lists: dimension sets, room types, text styles), Customize Hotkeys, Layer
+                framing, camera, symbol, details, cad, text, schedule_spec, project_info ...), the layout
+                dialogs (layout.rs: Send to Layout, Layout Box Specification, Page Setup, Page Table,
+                Print), Default Settings and its lists (default_lists: dimension sets, room types, text styles;
+                defaults.rs: the tree and the Preferences > Templates page), Customize Hotkeys, Layer
                 Display Options, file exchange and framing windows (exchange), the Build and Tools windows
 ```
 
@@ -197,16 +210,21 @@ dialogs/        Chief-style specification dialogs on the shared frame (wall, ope
 - Pointer events arrive as `PointerEvent { world, snapped, snap, screen, modifiers, button, down, drag_delta }`
   already mapped to world inches; key events as `KeyEvent`. Activation hotkeys are never read by tools; they
   come from the runtime `HotkeyMap` (chapter 13).
-- Objects are addressed by `ObjectRef` (Wall, Opening, Dimension, Cad, Cabinet, Stair, RoofPlane, Symbol,
-  Camera, Text, Room, Device, Terrain, Foundation). A second, smaller `plan_core::ObjectRef` (Wall, Opening, Dimension, Cad,
+- Objects are addressed by `ObjectRef` (Wall, Opening, Dimension, Cad, Cabinet, Stair, RoofPlane (a plane, a ceiling plane or a dormer), Symbol,
+  Camera, Text, Room, Device, Terrain, Foundation (a slab, hole, pad, pier or platform hole), Framing (a placed member or layout line) and Detail (a corner board, quoin, molding, region, hatch, deck or solid)).
+  Each kind's view module answers `exists`, `layer_of`, hit tests, box selection, handles and the specification dialog. A placed schedule is not an `ObjectRef` at the Round 7 commit: only the Schedule tool
+  picks it (`schedule_view::{selected, select}`); Round 8 adds `ObjectRef::Schedule`. A second, smaller `plan_core::ObjectRef` (Wall, Opening, Dimension, Cad,
   Symbol, Camera) is used by object groups and the core clipboard; the two types are not the same, so convert
   deliberately.
 - Things the model has no field for yet go in the typed slots of `plan-core` (`Floor.cabinets`, `stairs`, `roofs`, `electrical`,
-  `framing`, `foundation` and `Project.terrain`: opaque JSON the owning view module reads and writes with `begin_change` and
-  `mark_dirty` like any other edit), in the serde-default `extras` of walls, openings and rooms (chapter 12.2), or, for what is still
+  `framing`, `foundation`, `details`, `schedules` and `Project.terrain`, `layout`: opaque JSON the owning view module reads and writes with `begin_change` and
+  `mark_dirty` like any other edit; `Project.info`, `lights` and `light_options` are ordinary typed fields), in the serde-default `extras` of walls, openings and rooms (chapter 12.2), or, for what is still
   not stored, in `SessionExtras` (per session). A file written before the slots existed is converted by `site_view::migrate_legacy_storage`
-  (which calls `roof_view::migrate_legacy` and `plan_core::foundation::migrate_legacy`) when `EditorContext::set_project` loads it; add a
-  step there when you move another record into a slot.
+  (which calls `roof_view::migrate_legacy`, and that calls `plan_core::foundation::migrate_legacy` and `plan_core::camera::migrate_legacy`, which moves the old lights records) when `EditorContext::set_project` loads it; add a
+  step there when you move another record into a slot. The CAD extras (own colors and weights, fills, arrows, blocks, text macros and note types) are the exception at the Round 7 commit: they ride on tagged text records on the hidden layer
+  `CAD, Data` (`plan_core::cad::CAD_DATA_LAYER`), and Round 8 moves them into typed slots.
+- **Lights** are the typed `Project.lights` (`PlanLight`) with `Project::{lights, add_light, update_light, remove_light, light_settings}`; the ray tracer reads them (`dialogs::camera::render_lights`).
+- **The layout** lives in `Project.layout` as the JSON of a `plan_layout::Layout`; `shell/layout_window.rs` loads and stores it and keeps its own undo history while the layout view shows (the plan's snapshots still include it).
 
 ## 14.4 How to add a tool
 
@@ -260,7 +278,7 @@ Engine first, editor second is the usual order: write the algorithm in its own c
 
 ```bash
 cargo test -p plan-core                  # one crate
-cargo test --workspace                   # everything (1,315 tests after Round 5)
+cargo test --workspace                   # everything (1,728 tests after Round 7)
 cargo test -p plan-app                   # editor state machines, dialogs, hotkeys (no window needed)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -285,3 +303,18 @@ cargo fmt --all
 `DECISIONS.md` records open decisions (license, app name, Chief catalog handling) and the queued work.
 `ROADMAP.md` is the feature inventory by phase. `docs/parity/` holds the per-area behavior specs with stable ids.
 `docs/chief-x18-*.md` are the captures of Chief's UI the program is built to.
+
+## 14.8 Scenario tests and the QA findings
+
+`crates/plan-app/src/scenarios/` holds twelve files of Chief-parity scenario tests (`s01_house_shell` to `s12_hotkeys`, compiled only for tests). Each drives the real tools through pointer and key events on a `PlanApp` with no window,
+then checks the model, the undo stack, the dialog requests, the 3D scene and the documents.
+
+- **`Sim`** (`scenarios/mod.rs`) is the harness. `Sim::new()` builds a `PlanApp` with the embedded defaults and a headless `egui::Context`. `sim.tool(ToolId)` activates a tool the way a toolbar click does; `move_to`, `down`, `up`, `click`, `drag` and `double_click`
+  send pointer events at plan coordinates and run what the shell does after each call (`finish_tool_call`, `refresh`); `key`, `esc` and `action` send key events and toolbar actions; `undo` and `redo` read the step names; `open_spec`, `ok`, `cancel` and `dialog_frame` open a specification dialog and run its frames headlessly.
+- **Findings.** A scenario that exposed a bug is marked `#[ignore = "QA-nn"]` so the gate stays green, and the bug is written up in `docs/qa-findings.md` with the repro, what Chief does and what Plan Studio does. Run
+  `cargo test -p plan-app scenarios -- --include-ignored` to see them fail; when one is fixed, delete its `#[ignore]` line. The first pass found seven: QA-01 door swing and hinge defaults, QA-02 Room ceiling height not in 3D,
+  QA-03 the Room Schedule's area, QA-04 the Auto Stairwell hole, QA-05 cabinets missing from the 3D scene, QA-06 stairs missing from the 3D scene, QA-07 the roof tool's name. Round 8 is fixing QA-01 to QA-03 and QA-05 to QA-07, and the stairs builder QA-04.
+- **Test-access limits.** The Dimension, Text and CAD dialogs keep their draft private, so scenarios can open and close them but not type a new value; the Electrical, Terrain and Roof dialogs are owned by their tools and are driven through the real overlay frame.
+- `s11_every_tool` walks every tool id (213 of them) from the registry, the toolbars, the flyouts and the menus and checks that none panics and that each has a name and a hint; `docs/qa-findings.md` lists which ones create nothing on a click-click and why.
+
+To add a scenario, copy the shape of the nearest file (each has a small `house()` helper that draws a shell), drive the tools with `Sim`, and assert on `sim.cx().project`, the history labels and `build_view_scene`.

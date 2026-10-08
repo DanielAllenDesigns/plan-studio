@@ -249,7 +249,7 @@ pub fn draw_cad_styled(
 mod tests {
     use super::*;
     use crate::plan_defaults;
-    use plan_core::cad::{FillAttr, CAD_DATA_LAYER};
+    use plan_core::cad::FillAttr;
 
     #[test]
     fn every_look_draws_without_panicking() {
@@ -345,7 +345,7 @@ mod tests {
                     let mut cam = Camera::default_view();
                     cam.rect = painter.clip_rect();
                     let attrs = cx.floor().cad_attr_map();
-                    for c in cx.floor().cad.iter().filter(|c| c.layer != CAD_DATA_LAYER) {
+                    for c in cx.floor().cad.iter() {
                         draw_cad_styled(&cx, &painter, &cam, c, attrs.get(&c.id));
                     }
                     // Objects without a look draw too.

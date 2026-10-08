@@ -6,8 +6,8 @@
 use super::actions::{EditAction, EditActionKind};
 use super::selection::ObjectRef;
 use super::{
-    details_view, foundation_view, framing_view, placed, roof_view, site_view, stairs_view,
-    EditorContext, EditorRequest,
+    details_view, foundation_view, framing_view, placed, roof_view, schedule_view, site_view,
+    stairs_view, EditorContext, EditorRequest,
 };
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use crate::tools::roof::RoofMode;
@@ -74,7 +74,7 @@ impl EditorContext {
     }
 
     /// Deletes the selected stairs, cabinets, symbols, devices, roof records,
-    /// foundation objects, details and cameras (each kind is one undo step),
+    /// foundation objects, details, schedules and cameras (each kind is one undo step),
     /// and the wall material regions and hatches of deleted walls (inside the
     /// walls' own undo step). Returns how many went.
     pub(super) fn delete_extra(&mut self) -> usize {
@@ -156,6 +156,14 @@ impl EditorContext {
         if !details.is_empty() {
             // delete_ids drops them from the selection itself.
             n += details_view::delete_ids(self, &details);
+        }
+        let schedules = self.selected_ids(|o| match o {
+            ObjectRef::Schedule(i) => Some(i),
+            _ => None,
+        });
+        if !schedules.is_empty() {
+            // delete_ids drops them from the selection itself.
+            n += schedule_view::delete_ids(self, &schedules);
         }
         let cams = self.selected_ids(|o| match o {
             ObjectRef::Camera(i) => Some(i),
@@ -492,6 +500,14 @@ impl EditorContext {
             })
             .collect();
         details_view::translate_ids(self, &details, d);
+        let schedules: Vec<Id> = items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::Schedule(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        schedule_view::translate_ids(self, &schedules, d);
         self.mark_dirty();
     }
 }
@@ -502,6 +518,60 @@ mod tests {
     use crate::plan_defaults;
     use plan_core::geometry::Point;
     use plan_core::{CameraKind, CameraObject};
+
+    #[test]
+    fn copy_paste_carries_cad_attrs_and_blocks_and_delete_drops_them() {
+        use plan_core::cad::{CadItem, DEFAULT_CAD_LAYER};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let ids: Vec<Id> = (0..3)
+            .map(|i| {
+                cx.project.add_cad(
+                    0,
+                    DEFAULT_CAD_LAYER,
+                    CadItem::Line {
+                        a: Point::new(f64::from(i) * 10.0, 0.0),
+                        b: Point::new(f64::from(i) * 10.0, 10.0),
+                    },
+                )
+            })
+            .collect();
+        cx.project
+            .edit_cad_attrs(0, ids[0], |a| a.weight = Some(70));
+        let g = cx.project.make_cad_block(0, &ids, Some("Bench")).unwrap();
+        cx.selection.items = ids.iter().map(|i| ObjectRef::Cad(*i)).collect();
+        cx.copy_selection();
+        cx.paste_in_place();
+
+        let pasted: Vec<Id> = cx
+            .selection
+            .items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::Cad(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pasted.len(), 3);
+        assert!(pasted.iter().all(|id| !ids.contains(id)));
+        assert_eq!(cx.floor().cad_attrs(pasted[0]).unwrap().weight, Some(70));
+        assert!(cx.floor().cad_attrs(pasted[1]).is_none());
+        let blocks = cx.floor().cad_blocks();
+        assert_eq!(blocks.len(), 2, "the copy is a block of its own");
+        let copy = blocks.iter().find(|b| b.group != g).unwrap();
+        assert_eq!(copy.name, "Bench");
+        assert_eq!(cx.floor().group_members_cad(copy.group), pasted);
+
+        // Deleting the copy takes its attributes and its block with it.
+        cx.delete_selection();
+        assert!(cx.floor().cad_attrs(pasted[0]).is_none());
+        assert_eq!(cx.floor().cad_attrs.len(), 1);
+        assert_eq!(cx.floor().cad_blocks().len(), 1);
+        assert_eq!(cx.floor().cad_blocks[0].group, g);
+        // Undo restores them with the objects.
+        cx.undo();
+        assert_eq!(cx.floor().cad_attrs.len(), 2);
+        assert_eq!(cx.floor().cad_blocks().len(), 2);
+    }
 
     #[test]
     fn deleting_a_camera_and_a_roof_plane_through_the_selection() {

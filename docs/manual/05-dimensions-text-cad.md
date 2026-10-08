@@ -1,7 +1,7 @@
 # Chapter 5: Dimensions, Text and CAD
 
 This chapter covers everything you draw on top of the model: dimensions,
-text and annotation, 2D CAD primitives, and the layers they live on.
+text and annotation, 2D CAD primitives and the CAD edit tools, and the layers they live on.
 
 ## 5.1 Choosing a variant
 
@@ -13,7 +13,7 @@ same.
 Inside the tool you can also switch variants with the **option strip**: a row of small buttons that
 the Dimension, Text and CAD tools draw along the top edge of the canvas while they are active.
 Click a button to change mode without leaving the tool. The strip reaches a few modes that have no
-flyout entry of their own, for example Spline, Revision Cloud and the Regular Polygon sides.
+flyout entry of their own, for example Spline, Revision Cloud, Hatch and the Regular Polygon sides.
 The Stairs, Electrical, Terrain, Roof and Cabinet tools take the flyout choice the same way
 (chapters 6 to 9).
 
@@ -55,8 +55,10 @@ step. `Esc` cancels one in progress.
 |---|---|---|
 | Auto Exterior Dimensions | `Shift+A` | Click once: puts an overall dimension on each axis-aligned side of the exterior walls plus a breakpoint string, set out by the Dimension Defaults offset (32"). Re-running replaces the previous exterior strings. Door and window strings are (planned). |
 | Auto Interior Dimensions | | Click once: adds one horizontal and one vertical clear dimension (interior surface to interior surface) through every room larger than 10 sq ft. Re-running replaces them. |
-| Auto Elevation Dimensions | `Ctrl+Alt+Cmd+H` | (planned) |
-| Auto Story Pole Dimensions | `Ctrl+Alt+Cmd+I` | (planned) |
+| Auto Elevation Dimensions | `Ctrl+Alt+Cmd+H` | Click once where the string should go: a vertical string of level heights (floor platforms, ceiling heights, heights above the first floor) with each level named beside it. |
+| Auto Story Pole Dimensions | `Ctrl+Alt+Cmd+I` | Click once: a story pole, the same kind of vertical string of level heights. |
+
+The plan has no elevation view, so the Y axis of an elevation or story pole string is the height: they are strings in plan coordinates, not dimensions drawn on an elevation.
 
 ### Editing dimensions
 
@@ -90,23 +92,54 @@ together.
 | Variant | Hotkey | How it works |
 |---|---|---|
 | Text | `Y` | Click to set the text's lower-left anchor, type, `Enter` to commit. A click elsewhere commits and starts the next text. `Esc` cancels. Clicking existing text edits it in place. |
-| Rich Text | `Ctrl+Alt+Cmd+J` | Click, type; `Enter` adds a line; `Tab` finishes. The size scale is stored; bold, italic and underline are (session only). |
+| Rich Text | `Ctrl+Alt+Cmd+J` | Click, type; `Enter` adds a line; `Tab` finishes. Bold, italic, underline, size and color are stored with the text as runs (below). |
 | Leader Line | `Alt+L` | Click the arrow tip and the bends; double-click or `Enter` ends. |
 | Text Line with Arrow | `Alt+A` | As Leader Line, then asks for the text at the end. |
-| Callout | `Ctrl+Alt+Cmd+K` | Click the target, click the callout position, type. A circle or hexagon frames the text. |
+| Callout | `Ctrl+Alt+Cmd+K` | Click the target, click the callout position, type. A circle, hexagon or **square** frames the text (pick the shape in the option strip). |
 | Marker | `Ctrl+Alt+Cmd+M` | Click to place the next numbered marker (a numbered circle). |
-| Note | `Ctrl+Alt+Cmd+N` | Click, type; the text reads "Note n: ..." with the next free note number. |
-| Note Type Management, Text Macro Management | | (planned) |
+| Note | `Ctrl+Alt+Cmd+N` | Click, type; the text reads "Note n: ..." with the next free number of the active note type. |
+| Note Type Management | | Opens the dialog below. |
+| Text Macro Management | | Opens the dialog below. |
 
 Text height defaults to the template's 6" plan height. Printed-size scaling (a 1/8"
 text that stays 1/8" at any plan scale) is (planned). Find/Replace Text and
 Replace Fonts are (planned).
 
+### Rich text
+
+Rich Text keeps formatting as **runs** stored with the text object. Type the formatting inline as markup, or use the **B**, **I** and **U** buttons in the option strip:
+
+| Markup | Effect |
+|---|---|
+| `<b>...</b>`, `<i>...</i>`, `<u>...</u>` | Bold, italic, underline. |
+| `<size=1.5>...</size>` | The run at 1.5 times the text height. |
+| `<color=#RRGGBB>...</color>` | The run in that color. |
+
+The Text Specification (5.8) shows the markup in its Text tab (tick *Rich text*). Limits: italic is stored but not drawn, because the on-screen font family has no italic face.
+
+### Text macros
+
+A `%macro%` in text is replaced when the text is placed or edited. The built-in macros:
+
+| Macro | Gives |
+|---|---|
+| `%room.name%`, `%room.number%`, `%room.area%` | The name, number and floor area of the room under the text |
+| `%plan.name%`, `%plan.date%` | The plan's name; today's date as `YYYY-MM-DD` |
+| `%floor%`, `%floor.number%`, `%floor.count%`, `%floor.height%` | The floor's name; its number (1 is the lowest); the number of floors; its ceiling height |
+
+**Text Macro Management** adds your own: a name (letters, digits, `.`, `_` or `-`; not a built-in's name; unique) and the text it expands to, used as `%name%`. They are saved with the plan.
+
+### Note types
+
+**Note Type Management** lists the kinds of note, each with a label prefix and a text style: General Note (`Note`), Construction Note (`C`), Framing Note (`F`) and Electrical Note (`E`) to start with. The Note tool writes the active type's prefix and numbers each type on
+its own: `Note 3:`, `E 1:`. Add a type with a name and a prefix of letters and digits. Types are saved with the plan.
+
 ## 5.4 CAD drawing tools
 
 CAD objects are drawn on the **current CAD layer**, `CAD, Default`. The Current
 CAD Layer button is (planned), so new CAD objects always land on that layer. Object
-snaps, angle snaps and the grid apply to every CAD tool.
+snaps, angle snaps and the grid apply to every CAD tool. In the tools that take a typed value (a length and angle, a radius, a distance)
+`Enter` starts the typed fields.
 
 ### Points, Lines, Arcs, Circles, Boxes
 
@@ -115,7 +148,7 @@ snaps, angle snaps and the grid apply to every CAD tool.
 | Points | Place Point | | Click to drop a point. |
 | | Input Point | | Type X, `Tab`, Y, `Enter`. |
 | | Point Marker | | Click to drop a marked point. |
-| | Delete Temporary Points | | (planned) |
+| | Delete Temporary Points | | A command: removes every point Place Point and Input Point dropped (they sit on the layer `CAD, Temporary Points`; Point Marker points stay). |
 | Lines | Draw Line | | Click start, click end, or press-drag-release. With Connect CAD Segments on (`Shift+F8`) the next line starts where the last ended. `Enter` after the first click types a length and angle. |
 | | Input Line | | Click start, type length, `Tab`, angle, `Enter`. |
 | | Line With Arrow | | Click the start, click the arrow tip. |
@@ -129,25 +162,60 @@ snaps, angle snaps and the grid apply to every CAD tool.
 | | Oval | | Two opposite corners of the bounding box. |
 | Boxes | Rectangular Polyline | `Shift+P` | Click two opposite corners. |
 | | Regular Polygon | | Click the center, then a vertex (sides in the option strip). |
-| | Box, Cross Box, Blocking Box, Insulation | | (planned) |
+| | Box | | Click the ends of one edge, then click the depth. |
+| | Cross Box | | The same gesture; drawn as a box with an X through it. |
+| | Blocking Box | | The same gesture; drawn as a box with one diagonal. |
+| | Insulation | | Click the ends of one edge, then the thickness; drawn as a box holding a wave. |
 
-Other CAD tools: `Backspace` drops the last vertex of a polyline, **Spline** and **Revision
-Cloud** work like polylines. On the toolbar, the Spline and Revision Cloud buttons are
-(planned) dimmed toggles, but both modes are reachable from the CAD option strip while a CAD
+(Cross Box, Blocking Box and Insulation follow Chief's usual symbols; check them against Chief before you rely on the exact look.)
+
+Other CAD tools: `Backspace` drops the last vertex of a polyline. **Spline** places points and draws a smooth curve through them (a **Fit** or **Bezier** toggle and a tension setting in the option strip; a click on the first point closes it; `Enter` or
+a double-click ends). **Revision Cloud** works like a polyline: click the outline, click the first point to close. The CAD menu lists both; on the toolbar the Revision Cloud button is a dimmed toggle, but both modes are reachable from the CAD menu and the CAD option strip while a CAD
 tool is active. An ellipse is stored as a 48-segment closed polyline.
 
 ### CAD Blocks
 
-Make CAD Block groups the selected CAD objects so they select and move together; Explode
-CAD Block ungroups them. Add Insertion Point, Add Arrow Backoff Point, Edit CAD Block and
-CAD Block Management (`V`) are (planned).
+CAD blocks are named groups of CAD objects you can insert again. The **CAD Blocks** flyout and the CAD menu hold:
+
+| Command | What it does |
+|---|---|
+| Make CAD Block | Groups the selected CAD objects into a block (they select and move together). |
+| Explode CAD Block | Ungroups the selected block. |
+| Add Insertion Point | Click a block, then click the point by which it will be placed. |
+| Add Arrow Backoff Point | Click a block, then click where arrows stop. |
+| Edit CAD Block | Select a block to edit its name and points. |
+| CAD Block Management (`V`) | A dialog listing the plan's blocks: rename, insert, edit or delete. |
+| Insert CAD Block | From the manager: click where the block's insertion point goes. |
+
+The commands that act on a selection run on the first frame after you pick them and return to Select Objects. Copy and paste carries a block as a plain group (no name, insertion point or attributes), because the clipboard copies only the selected objects;
+insert it from the manager instead.
 
 ### Editing CAD objects
 
 With Select Objects a selected CAD object shows handles: line ends and midpoint, polyline
 vertices with "add vertex" handles at edge midpoints, circle center and radius. Drag to
-edit. Double-click opens the CAD Specification (5.6). Edit toolbar commands Break Line,
-Change Line/Arc, Convert to Polyline, Make Arc Tangent, Fillet and Chamfer are (planned).
+edit. Double-click opens the CAD Specification (5.6).
+
+The **CAD edit tools** are in the CAD menu (CAD > Edit CAD, CAD > Patterns) as tool modes; each is one undo step:
+
+| Tool | Gesture |
+|---|---|
+| Fillet | Click two lines (or a polyline corner); `Enter` types the radius first. |
+| Chamfer | Click two lines (or a polyline corner); `Enter` types the distances first. |
+| Offset | Click an object, then the side; `Enter` types a distance (0 means through the click). |
+| Trim Line | Click the part of a line to remove at its nearest cutters. |
+| Extend Line | Click the end of a line to extend it to the next object. |
+| Break Line | Click the point where a line or polyline splits. |
+| Reverse Direction | Click a line or polyline to reverse it. |
+| Make Parallel | Click the end of a line to turn, then the line to match. |
+| Make Perpendicular | Click the end of a line to turn, then the line to square to. |
+| Convert to Polyline | Select connected lines, then use the command. |
+| Convert to Spline | Select polylines, then use the command. |
+| Convert Polyline to Lines | Select polylines, then use the command. |
+| Hatch (CAD > Patterns > Hatch Closed Shape) | Click inside a closed polyline or circle; pick the pattern in the option strip. The pattern is drawn as real lines grouped with the outline. The Fill Style tab of the CAD Specification does the same. |
+| CAD Detail From View (CAD menu) | Copies the view's wall outlines, CAD items and dimensions into a new floor named "CAD Detail" above the current one and makes it current. |
+
+CAD Detail From View makes a normal floor, which takes part in the 3D stack; Chief's detail windows and CAD Detail Management do not exist here. The Edit toolbar does not have buttons for these tools yet: use the CAD menu. Change Line/Arc and Make Arc Tangent are (planned).
 
 ## 5.5 Layers and layer display
 
@@ -179,19 +247,22 @@ Options...) shows a table with Name, Used (object count), Disp and Lock, plus Co
   one undo step). A new plan starts with "Default Set" and "Floor Plan View". Daniel's 34 layer sets
   (Presentation, Working, Electrical, Foundation, Roof Plan ...) come in through File > Templates > Import
   Chief Template.... Save Active View, Save Active View As, Edit Active View and creating views are (planned).
-- Line weights are stored (in hundredths of a millimeter) but the Line Weights toggle does
-  not change the drawing yet (planned).
+- Line weights are stored in hundredths of a millimeter; View > Line Weights scales the on-screen strokes by them (chapter 1.4). A CAD object can carry a weight, color and dash of its own (5.6).
+- Per-object CAD styles, CAD blocks and the plan's text macros and note types are kept in small hidden records on the locked layer `CAD, Data` at the Round 7 commit; Round 8 is moving them into typed slots (chapter 14.3). Delete does not sweep a deleted object's record yet (harmless).
 
 ## 5.6 Dialog: CAD Line / Polyline Specification
 
-Double-click a line, polyline, circle or arc. One dialog serves all of them.
+Double-click a line, polyline, circle or arc. One dialog serves all of them. OK applies the geometry and the look as one undo step.
 
 | Tab | Fields |
 |---|---|
 | General | **Line**: Start X, Start Y, End X, End Y, Length, Angle. **Circle**: Center X/Y, Radius, Diameter. **Arc**: Center X/Y, Radius, Start Angle, End Angle, Sweep, Arc Length. **Polyline**: Vertices, Perimeter, Area, Vertex List, Closed. |
-| Line Style | Shows the object's layer line weight and color (read-only) and Line Style options (Solid, Dashed, Dotted, Dash-Dot) which are disabled: the model keeps no per-object style. |
-| Fill Style | Closed shapes only: No Fill, Solid, Pattern, Fill Is Transparent (disabled). |
+| Line Style | **Line Weight**: *Use a weight of its own* and the weight (else the layer's). **Color**: *Use a color of its own* and the color (else the layer's). **Line Style**: By layer, Solid, Dashed, Dotted or Dash-Dot. |
+| Fill Style | Closed shapes only: **No Fill**, **Solid** or **Pattern**; a Color and an Opacity (lower it to see through a solid fill); for a pattern, the pattern and its Spacing. A pattern is drawn as lines grouped with the shape when you press OK. |
+| Arrow | Open shapes (lines, arcs, open polylines) only: **Start** and **End** arrow style (None, Open, Filled, Tick or Dot) and the **Arrow Size**. These add arrowheads to the line itself; Line With Arrow makes separate shapes. |
 | Layer | The layer, editable. |
+
+The plan draws the object's own color, weight, dash, solid fill and arrow ends. Not drawn: a concave solid fill paints as a convex polygon.
 
 ## 5.7 Dialog: Dimension Specification
 
@@ -213,8 +284,9 @@ fractions) is what dimensions use.
 
 | Tab | Fields |
 |---|---|
-| Text | The text, Angle, Position (lower left X and Y), Text Height. |
-| Appearance | Font family, Bold, Italic, Underline, Alignment (Left, Center, Right), Border, Background Fill. All disabled until the model stores them. |
+| Text | The text, with a *Rich text* check box that shows it as markup (`<b>`, `<i>`, `<u>`, `<size=1.5>`, 5.3), Angle, Position (lower left X and Y). |
+| Text Style | **Style**: a named text style of the plan, or "(layer's style)"; the font it gives; **Format** check boxes Bold, Italic and Underline for the whole text (mixed formats are typed as markup on the Text tab). |
+| Appearance | **Size**: Text Height. Alignment (Left, Center, Right), Border and Background Fill are disabled until the model stores them. |
 | Layer | The layer, editable. |
 
 ## 5.9 Default Settings: Dimensions and Text Styles

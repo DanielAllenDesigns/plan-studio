@@ -15,11 +15,16 @@
 //!
 //! Layout space is paper inches with the origin at the sheet's bottom-left.
 //!
-//! Undo: the layout has its own history (pushed and popped as whole-layout
-//! snapshots), used while the layout view is showing (Edit > Undo, Cmd+Z and
-//! the Undo button). The plan's history snapshots the whole project, layout
-//! included, so undoing a plan edit also restores the layout JSON it held at
-//! that moment.
+//! Undo: plan and layout share the one history of the editor context
+//! (`EditorContext::history`, whole-project snapshots, layout JSON included),
+//! so Edit > Undo, Cmd+Z and the Undo button step back through plan and layout
+//! edits in the order they were made, and undoing a plan edit can never
+//! silently roll back a later layout edit (or the other way round). A layout
+//! edit only has the project, not the context, at hand: it parks the project
+//! as it was before the edit in [`LayoutView::steps`], and the entry points
+//! that hold the context ([`dispatch`], [`show_central`], [`show_dialogs`],
+//! [`new_layout`], [`undo`], [`redo`]) record those as undo steps with
+//! `EditorContext::record_undo_step` at the end of the frame.
 
 use crate::dialogs::camera as cam;
 use crate::dialogs::layout::{
@@ -45,8 +50,6 @@ use std::f64::consts::TAU;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-/// Undo steps kept for the layout.
-const HISTORY_CAP: usize = 100;
 /// Smallest side of a layout box, paper inches.
 const MIN_BOX_IN: f64 = 0.25;
 /// Drag snap, paper inches (1/16").
@@ -490,8 +493,12 @@ pub struct LayoutView {
     /// Index of the page shown (into `Layout::pages`).
     pub page: usize,
     pub selected: Option<Id>,
-    past: Vec<(String, Layout)>,
-    future: Vec<(String, Layout)>,
+    /// Undo steps made since the last [`flush`](Self::flush): the label and
+    /// the project as it was before the edit.
+    steps: Vec<(String, Project)>,
+    /// What the unit tests undo through (they have no editor context).
+    #[cfg(test)]
+    test_history: crate::editor::history::ChangeHistory,
     /// Pixels per paper inch.
     zoom: f32,
     /// Screen offset of the sheet's top-left from the view's top-left.
@@ -517,8 +524,9 @@ impl Default for LayoutView {
             stored: None,
             page: 0,
             selected: None,
-            past: Vec::new(),
-            future: Vec::new(),
+            steps: Vec::new(),
+            #[cfg(test)]
+            test_history: crate::editor::history::ChangeHistory::new(),
             zoom: 20.0,
             offset: Vec2::ZERO,
             fit_pending: true,
@@ -585,8 +593,9 @@ impl LayoutView {
         }
         self.layout = load(project);
         self.stored = project.layout.clone();
-        self.past.clear();
-        self.future.clear();
+        self.steps.clear();
+        #[cfg(test)]
+        self.test_history.clear();
         self.cache.map.clear();
         self.drag = None;
         self.placing = None;
@@ -621,15 +630,26 @@ impl LayoutView {
         }
     }
 
+    /// Parks the project as it was before an edit that turned the layout
+    /// `before` into the current one (the undo step `label`).
+    fn record(&mut self, project: &Project, label: &str, before: &Layout) {
+        let mut snapshot = project.clone();
+        snapshot.layout = serde_json::to_value(before).ok();
+        self.steps.push((label.to_string(), snapshot));
+    }
+
+    /// Hands the parked undo steps to the editor's history, oldest first.
+    pub fn flush(&mut self, cx: &mut EditorContext) {
+        for (label, before) in self.steps.drain(..) {
+            cx.record_undo_step(&before, &label);
+        }
+    }
+
     /// Replaces the layout with `new`, recording the step for undo.
     fn commit(&mut self, project: &mut Project, label: &str, new: Layout) {
         if let Some(old) = self.layout.take() {
-            self.past.push((label.to_string(), old));
-            if self.past.len() > HISTORY_CAP {
-                self.past.remove(0);
-            }
+            self.record(project, label, &old);
         }
-        self.future.clear();
         self.layout = Some(new);
         self.write_back(project);
         self.clamp_page();
@@ -653,29 +673,44 @@ impl LayoutView {
         true
     }
 
-    /// Steps back; returns the undone step's label.
+    /// Steps back through the unit tests' stand-in for the editor history.
+    #[cfg(test)]
     pub fn undo(&mut self, project: &mut Project) -> Option<String> {
-        let (label, prev) = self.past.pop()?;
-        if let Some(cur) = self.layout.replace(prev) {
-            self.future.push((label.clone(), cur));
-        }
-        self.write_back(project);
-        self.clamp_page();
-        Some(label)
+        self.drain_into_test_history();
+        let label = self.test_history.undo(project);
+        self.reload_after_restore(project);
+        label
     }
 
+    #[cfg(test)]
     pub fn redo(&mut self, project: &mut Project) -> Option<String> {
-        let (label, next) = self.future.pop()?;
-        if let Some(cur) = self.layout.replace(next) {
-            self.past.push((label.clone(), cur));
-        }
-        self.write_back(project);
-        self.clamp_page();
-        Some(label)
+        self.drain_into_test_history();
+        let label = self.test_history.redo(project);
+        self.reload_after_restore(project);
+        label
     }
 
+    #[cfg(test)]
+    fn reload_after_restore(&mut self, project: &Project) {
+        self.layout = load(project);
+        self.stored = project.layout.clone();
+        self.cache.map.clear();
+        self.clamp_page();
+    }
+
+    #[cfg(test)]
+    fn drain_into_test_history(&mut self) {
+        for (label, before) in self.steps.drain(..) {
+            self.test_history.begin(&before, &label);
+        }
+    }
+
+    #[cfg(test)]
     pub fn undo_label(&self) -> Option<&str> {
-        self.past.last().map(|(l, _)| l.as_str())
+        self.steps
+            .last()
+            .map(|(l, _)| l.as_str())
+            .or_else(|| self.test_history.undo_label())
     }
 
     // ----- creating -----
@@ -693,8 +728,9 @@ impl LayoutView {
             return false;
         }
         let layout = crate::templates::new_layout(&format!("{} Layout", project.name), seed);
-        self.past.clear();
-        self.future.clear();
+        // Making the layout is an undo step too, so an older plan edit's
+        // undo cannot drop it unseen.
+        self.steps.push(("New Layout".to_string(), project.clone()));
         self.layout = Some(layout);
         self.write_back(project);
         // %date% needs a date; fill it in when Project Information has none.
@@ -1118,6 +1154,7 @@ pub fn new_layout(cx: &mut EditorContext) {
     let made = with_view(|v| {
         let made = v.create(&mut cx.project, seed.cache.layout.as_ref());
         v.active = true;
+        v.flush(cx);
         made
     });
     cx.status = if made {
@@ -1147,6 +1184,7 @@ fn sync_sheet(cx: &mut EditorContext) {
 pub fn dispatch(cmd: LayoutCommand, cx: &mut EditorContext, camera: Option<Id>) {
     let mut view = with_view(std::mem::take);
     view.run(cx, cmd, camera);
+    view.flush(cx);
     with_view(|slot| *slot = view);
     sync_sheet(cx);
 }
@@ -1166,11 +1204,13 @@ pub fn layout_pdf(project: &Project) -> Option<Vec<u8>> {
 
 /// Edit > Undo while the layout view shows.
 pub fn undo(cx: &mut EditorContext) -> Option<String> {
-    with_view(|v| v.undo(&mut cx.project))
+    with_view(|v| v.flush(cx));
+    cx.undo()
 }
 
 pub fn redo(cx: &mut EditorContext) -> Option<String> {
-    with_view(|v| v.redo(&mut cx.project))
+    with_view(|v| v.flush(cx));
+    cx.redo()
 }
 
 // ------------------------------------------------------------- commands --
@@ -1257,9 +1297,7 @@ impl LayoutView {
             }
             C::ProjectInfo => {
                 // Tools > Project Information (the schedules builder's dialog).
-                cx.requests.push(crate::editor::EditorRequest::SetTool(
-                    crate::tools::ToolId::ProjectInfo,
-                ));
+                crate::dialogs::build_tools::open_project_info(cx);
                 String::new()
             }
             C::PageTable => {
@@ -1325,14 +1363,20 @@ impl LayoutView {
                 String::new()
             }
             C::ExportPdf => self.export_pdf(project, None),
-            C::Undo => match self.undo(project) {
-                Some(l) => format!("Undid {l}"),
-                None => "Nothing to undo".into(),
-            },
-            C::Redo => match self.redo(project) {
-                Some(l) => format!("Redid {l}"),
-                None => "Nothing to redo".into(),
-            },
+            C::Undo => {
+                self.flush(cx);
+                match cx.undo() {
+                    Some(l) => format!("Undid {l}"),
+                    None => "Nothing to undo".into(),
+                }
+            }
+            C::Redo => {
+                self.flush(cx);
+                match cx.redo() {
+                    Some(l) => format!("Redid {l}"),
+                    None => "Nothing to redo".into(),
+                }
+            }
         };
         if !status.is_empty() {
             cx.status = status;
@@ -1404,6 +1448,7 @@ impl LayoutView {
 pub fn show_dialogs(ctx: &egui::Context, cx: &mut EditorContext) {
     let mut view = with_view(std::mem::take);
     view.show_dialogs(ctx, cx);
+    view.flush(cx);
     with_view(|slot| *slot = view);
     sync_sheet(cx);
 }
@@ -1915,6 +1960,7 @@ impl LayoutView {
 pub fn show_central(ctx: &egui::Context, ui: &mut Ui, cx: &mut EditorContext) {
     let mut view = with_view(std::mem::take);
     view.show(ctx, ui, cx);
+    view.flush(cx);
     with_view(|slot| *slot = view);
 }
 
@@ -2046,11 +2092,11 @@ impl LayoutView {
                     btn(
                         ui,
                         "Undo",
-                        "Undo the last layout edit",
+                        "Undo the last edit",
                         C::Undo,
-                        !self.past.is_empty(),
+                        cx.can_undo() || !self.steps.is_empty(),
                     );
-                    btn(ui, "Redo", "Redo", C::Redo, !self.future.is_empty());
+                    btn(ui, "Redo", "Redo", C::Redo, cx.can_redo());
                     btn(ui, "Fit", "Fit the page in the window", C::FitPage, true);
                     btn(ui, "Print", "Print Layout", C::Print, true);
                     ui.label(format!("{:.0}%", self.zoom / 0.96));
@@ -2284,8 +2330,8 @@ impl LayoutView {
                 }
                 _ => {}
             }
-            if let Some(l) = self.undo_label().map(str::to_string) {
-                cx.status = l;
+            if let Some((l, _)) = self.steps.last() {
+                cx.status = l.clone();
             }
         }
         // Clicks.
@@ -2376,11 +2422,7 @@ impl LayoutView {
     fn finish_drag(&mut self, project: &mut Project, before: Layout, label: &str) {
         let changed = self.layout.as_ref().is_some_and(|l| *l != before);
         if changed {
-            self.past.push((label.to_string(), before));
-            if self.past.len() > HISTORY_CAP {
-                self.past.remove(0);
-            }
-            self.future.clear();
+            self.record(project, label, &before);
             self.write_back(project);
         }
     }
@@ -2748,6 +2790,81 @@ mod tests {
     }
 
     #[test]
+    fn plan_and_layout_edits_share_one_undo_stack_in_order() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let mut v = LayoutView::default();
+        let wall = |cx: &mut EditorContext, label: &str, y: f64| {
+            cx.begin_change(label);
+            cx.project.add_wall(
+                0,
+                Point::new(0.0, y),
+                Point::new(240.0, y),
+                6.0,
+                96.0,
+                WallKind::Exterior,
+            );
+        };
+        wall(&mut cx, "Add Wall A", 0.0);
+        v.create(&mut cx.project, None);
+        v.flush(&mut cx);
+        wall(&mut cx, "Add Wall B", 100.0);
+        let id = v.send(&mut cx.project, &plan_spec(0), None).unwrap();
+        v.flush(&mut cx);
+        let boxes = |cx: &EditorContext| load(&cx.project).map(|l| l.pages[1].boxes.len());
+        assert_eq!(boxes(&cx), Some(1));
+        assert!(v.layout().unwrap().pages[1]
+            .boxes
+            .iter()
+            .any(|b| b.id == id));
+        assert_eq!(cx.undo_label(), Some("Send to Layout"));
+
+        // Undo walks back through both kinds of edit, newest first, and a
+        // plan undo never rolls back a layout edit made after it.
+        assert_eq!(cx.undo().as_deref(), Some("Send to Layout"));
+        assert_eq!(boxes(&cx), Some(0));
+        assert_eq!(cx.project.floors[0].walls.len(), 2, "wall B survives");
+        assert_eq!(cx.undo().as_deref(), Some("Add Wall B"));
+        assert_eq!(cx.project.floors[0].walls.len(), 1);
+        assert_eq!(boxes(&cx), Some(0), "the layout stays");
+        assert_eq!(cx.undo().as_deref(), Some("New Layout"));
+        assert!(cx.project.layout.is_none());
+        assert_eq!(cx.undo().as_deref(), Some("Add Wall A"));
+        assert!(cx.project.floors[0].walls.is_empty());
+
+        // Redo replays them in order; the view follows the project.
+        for label in ["Add Wall A", "New Layout", "Add Wall B", "Send to Layout"] {
+            assert_eq!(cx.redo().as_deref(), Some(label));
+        }
+        v.sync(&cx.project);
+        assert_eq!(boxes(&cx), Some(1));
+        assert_eq!(v.layout().unwrap().pages[1].boxes.len(), 1);
+        assert_eq!(cx.project.floors[0].walls.len(), 2);
+    }
+
+    #[test]
+    fn the_entry_points_record_layout_edits_in_the_editor_history() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        with_view(|v| *v = LayoutView::default());
+        new_layout_for_test(&mut cx);
+        assert_eq!(cx.undo_label(), Some("New Layout"));
+        dispatch(LayoutCommand::InsertPageAfter, &mut cx, None);
+        assert_eq!(cx.undo_label(), Some("Insert Page"));
+        assert_eq!(undo(&mut cx).as_deref(), Some("Insert Page"));
+        assert_eq!(load(&cx.project).unwrap().pages.len(), 2);
+        assert_eq!(redo(&mut cx).as_deref(), Some("Insert Page"));
+        assert_eq!(load(&cx.project).unwrap().pages.len(), 3);
+        with_view(|v| *v = LayoutView::default());
+    }
+
+    fn new_layout_for_test(cx: &mut EditorContext) {
+        with_view(|v| {
+            v.create(&mut cx.project, None);
+            v.active = true;
+            v.flush(cx);
+        });
+    }
+
+    #[test]
     fn external_changes_reload_the_layout_and_drop_history() {
         let (mut v, mut p) = view_with_layout();
         v.send(&mut p, &plan_spec(0), None).unwrap();
@@ -2962,6 +3079,7 @@ mod tests {
         cx.project = project();
         let mut v = LayoutView::default();
         v.create(&mut cx.project, None);
+        v.steps.clear();
         let id = v.send(&mut cx.project, &plan_spec(0), None).unwrap();
         v.selected = None;
         v.active = true;
@@ -3001,7 +3119,7 @@ mod tests {
         );
         // The project holds the move and one undo step covers the whole drag.
         assert_eq!(bounds(&load(&cx.project).unwrap().pages[1].boxes[0]), after);
-        assert_eq!(v.past.len(), 2, "send + move");
+        assert_eq!(v.steps.len(), 2, "send + move");
         assert_eq!(v.undo(&mut cx.project).as_deref(), Some("Move Layout Box"));
         assert_eq!(bounds(&v.layout().unwrap().pages[1].boxes[0]), before);
         let _ = t;
@@ -3022,7 +3140,7 @@ mod tests {
         frame(&ctx, &mut v, &mut cx, vec![press(c, true)], 1.05);
         frame(&ctx, &mut v, &mut cx, vec![press(c, false)], 1.1);
         assert_eq!(v.selected, Some(id));
-        assert!(v.past.len() == 1, "a click is not an edit");
+        assert!(v.steps.len() == 1, "a click is not an edit");
         // Drag the NE handle.
         let (_, before) = center_of(&v, id);
         let xf = v.last_xf.unwrap();
@@ -3088,7 +3206,7 @@ mod tests {
     #[test]
     fn a_click_places_a_pending_send() {
         let (ctx, mut v, mut cx, _) = interactive();
-        v.past.clear();
+        v.steps.clear();
         let spec = SendSpec {
             placement: Placement::Click,
             scale: Some(Scale::EighthInch),

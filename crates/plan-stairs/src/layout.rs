@@ -4,7 +4,7 @@
 //! first flight's direction of travel and `v` runs to the *right* of it. The
 //! [`Frame`] maps that into plan space.
 
-use crate::{effective_landing, solve, split, Stair, StairShape, Turn};
+use crate::{effective_landing, ramp_runs, solve, split, Stair, StairShape, Turn, RAMP_LANDING};
 use plan_core::Point;
 
 /// A point in the local `(u, v)` frame.
@@ -42,6 +42,64 @@ impl Frame {
     pub(crate) fn vector(&self, d: Uv) -> Point {
         self.along * d.0 + self.right * d.1
     }
+
+    /// Local `(u, v)` of a plan point.
+    pub(crate) fn local(&self, p: Point) -> Uv {
+        let d = p - self.origin;
+        (d.dot(self.along), d.dot(self.right))
+    }
+}
+
+/// A curved stair: treads fanned around `center` (local frame).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Curve {
+    pub center: Uv,
+    /// Radius of the inside edge.
+    pub inner: f64,
+    pub width: f64,
+    /// Turning left (counter-clockwise in plan).
+    pub left: bool,
+    /// Angle between two riser lines, radians.
+    pub step: f64,
+    pub treads: u32,
+    pub risers: u32,
+}
+
+impl Curve {
+    /// Radius of the walking line (the middle of the stair).
+    pub(crate) fn walk(&self) -> f64 {
+        self.inner + self.width / 2.0
+    }
+
+    pub(crate) fn outer(&self) -> f64 {
+        self.inner + self.width
+    }
+
+    /// Angle from the first to the last riser line.
+    pub(crate) fn sweep(&self) -> f64 {
+        self.step * f64::from(self.treads)
+    }
+
+    /// Radius at lateral offset `lat` from the left edge.
+    pub(crate) fn rho(&self, lat: f64) -> f64 {
+        if self.left {
+            self.inner + lat
+        } else {
+            self.inner + self.width - lat
+        }
+    }
+
+    /// The point at angle `a` from the first riser and radius `rho`.
+    pub(crate) fn at(&self, a: f64, rho: f64) -> Uv {
+        let (s, c) = a.sin_cos();
+        let v = if self.left { c } else { -c };
+        (self.center.0 + rho * s, self.center.1 + rho * v)
+    }
+
+    /// The point at angle `a` and lateral offset `lat` from the left edge.
+    pub(crate) fn at_lat(&self, a: f64, lat: f64) -> Uv {
+        self.at(a, self.rho(lat))
+    }
 }
 
 /// One straight run of steps (or a ramp when `risers == 0`).
@@ -61,6 +119,8 @@ pub(crate) struct Flight {
     pub len: f64,
     /// Clear width.
     pub width: f64,
+    /// Rise over the length (ramps only).
+    pub rise: f64,
 }
 
 impl Flight {
@@ -117,6 +177,24 @@ pub(crate) struct Layout {
     pub total_rise: f64,
     /// Set for ramps.
     pub is_ramp: bool,
+    /// Set for landings.
+    pub is_landing: bool,
+    /// Set for curved stairs.
+    pub curve: Option<Curve>,
+}
+
+/// Outline of a curved stair: the outer arc out, the inner arc back.
+fn curve_footprint(c: &Curve) -> Vec<Uv> {
+    let n = ((c.sweep().to_degrees() / 7.5).ceil() as usize).max(1);
+    let mut pts = Vec::new();
+    // Lateral 0 is the left edge, `width` the right edge.
+    for i in 0..=n {
+        pts.push(c.at_lat(c.sweep() * i as f64 / n as f64, 0.0));
+    }
+    for i in (0..=n).rev() {
+        pts.push(c.at_lat(c.sweep() * i as f64 / n as f64, c.width));
+    }
+    dedupe(pts)
 }
 
 fn dedupe(mut pts: Vec<Uv>) -> Vec<Uv> {
@@ -137,15 +215,22 @@ impl Layout {
         let frame = Frame::new(stair.origin, stair.direction);
         let (w, t) = (p.width, p.tread_depth);
 
-        if let StairShape::Ramp { .. } = p.shape {
+        if let StairShape::Landing { depth } = p.shape {
+            let poly: Vec<Uv> = if p.outline.len() >= 3 {
+                p.outline.iter().map(|&q| frame.local(q)).collect()
+            } else {
+                vec![(0.0, 0.0), (depth, 0.0), (depth, w), (0.0, w)]
+            };
+            let top = p.total_rise.max(0.0);
             let flight = Flight {
                 start: (0.0, 0.0),
                 dir: (1.0, 0.0),
-                base: 0.0,
+                base: top,
                 risers: 0,
                 treads: 0,
-                len: sol.total_run,
+                len: depth,
                 width: w,
+                rise: 0.0,
             };
             return Layout {
                 frame,
@@ -153,7 +238,60 @@ impl Layout {
                 tread_depth: 0.0,
                 flights: vec![flight],
                 outlines: Vec::new(),
-                slabs: Vec::new(),
+                slabs: vec![Slab {
+                    poly: poly.clone(),
+                    top,
+                }],
+                turn_risers: Vec::new(),
+                footprint: poly,
+                total_rise: top,
+                is_ramp: false,
+                is_landing: true,
+                curve: None,
+            };
+        }
+
+        if let StairShape::Ramp { slope_1_in } = p.shape {
+            let runs = ramp_runs(p.total_rise);
+            let rise = p.total_rise.max(0.0);
+            let run_rise = rise / f64::from(runs);
+            let run_len = run_rise * slope_1_in.max(0.0);
+            let mut flights = Vec::new();
+            let mut slabs = Vec::new();
+            let mut outlines = Vec::new();
+            for k in 0..runs {
+                let u0 = f64::from(k) * (run_len + RAMP_LANDING);
+                flights.push(Flight {
+                    start: (u0, 0.0),
+                    dir: (1.0, 0.0),
+                    base: f64::from(k) * run_rise,
+                    risers: 0,
+                    treads: 0,
+                    len: run_len,
+                    width: w,
+                    rise: run_rise,
+                });
+                if k + 1 < runs {
+                    let poly = vec![
+                        (u0 + run_len, 0.0),
+                        (u0 + run_len + RAMP_LANDING, 0.0),
+                        (u0 + run_len + RAMP_LANDING, w),
+                        (u0 + run_len, w),
+                    ];
+                    outlines.push(poly.clone());
+                    slabs.push(Slab {
+                        poly,
+                        top: f64::from(k + 1) * run_rise,
+                    });
+                }
+            }
+            return Layout {
+                frame,
+                riser_height: 0.0,
+                tread_depth: 0.0,
+                flights,
+                outlines,
+                slabs,
                 turn_risers: Vec::new(),
                 footprint: vec![
                     (0.0, 0.0),
@@ -161,8 +299,10 @@ impl Layout {
                     (sol.total_run, w),
                     (0.0, w),
                 ],
-                total_rise: p.total_rise.max(0.0),
+                total_rise: rise,
                 is_ramp: true,
+                is_landing: false,
+                curve: None,
             };
         }
 
@@ -178,7 +318,44 @@ impl Layout {
             footprint: Vec::new(),
             total_rise: h * f64::from(sol.risers),
             is_ramp: false,
+            is_landing: false,
+            curve: None,
         };
+
+        if let StairShape::Curved { inner_radius } = p.shape {
+            let inner = inner_radius.max(0.0);
+            let treads = sol.risers - 1;
+            let left = p.turn == Turn::Left;
+            let curve = Curve {
+                center: if left {
+                    (0.0, -inner)
+                } else {
+                    (0.0, w + inner)
+                },
+                inner,
+                width: w,
+                left,
+                step: t / (inner + w / 2.0).max(1e-9),
+                treads,
+                risers: sol.risers,
+            };
+            layout.footprint = curve_footprint(&curve);
+            // One pseudo-flight along the chord keeps flight-based consumers sane.
+            let end = curve.at(curve.sweep(), curve.walk());
+            let start = curve.at(0.0, curve.walk());
+            layout.flights.push(Flight {
+                start: (0.0, 0.0),
+                dir: (1.0, 0.0),
+                base: 0.0,
+                risers: sol.risers,
+                treads,
+                len: ((end.0 - start.0).powi(2) + (end.1 - start.1).powi(2)).sqrt(),
+                width: w,
+                rise: 0.0,
+            });
+            layout.curve = Some(curve);
+            return layout;
+        }
 
         let Some(sp) = split(p, sol.risers) else {
             let treads = sol.risers - 1;
@@ -191,6 +368,7 @@ impl Layout {
                 treads,
                 len,
                 width: w,
+                rise: f64::from(treads) * h,
             });
             layout.footprint = vec![(0.0, 0.0), (len, 0.0), (len, w), (0.0, w)];
             return layout;
@@ -215,6 +393,7 @@ impl Layout {
             treads: sp.t1,
             len: u1,
             width: w,
+            rise: f64::from(sp.t1) * h,
         });
 
         // Second flight: start corner, direction, and the landing rectangle.
@@ -286,6 +465,7 @@ impl Layout {
             treads: sp.t2,
             len: l2,
             width: w,
+            rise: f64::from(sp.t2) * h,
         });
         layout.outlines.push(landing.to_vec());
         layout.footprint = dedupe(footprint);

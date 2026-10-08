@@ -21,6 +21,7 @@ pub mod dimension;
 pub mod electrical;
 pub mod foundation;
 pub mod framing;
+pub mod images;
 pub mod library;
 pub mod opening;
 pub mod pan;
@@ -89,8 +90,10 @@ pub enum ToolId {
     /// The Schedule tool (Schedule flyout), with the kind it places.
     Schedule,
     ScheduleVariant(plan_core::schedules::ScheduleKind),
-    /// Tools > Project Information (opens the dialog, returns to Select).
-    ProjectInfo,
+    /// The Image and Distributed Objects tools and 3D Solid Feature.
+    Images,
+    /// A flavor of the images tool (the flyout entry picked).
+    ImagesVariant(images::ImageMode),
 }
 
 impl ToolId {
@@ -128,7 +131,8 @@ impl ToolId {
             ToolId::FoundationVariant(_) => ToolId::Foundation,
             ToolId::DetailsVariant(_) => ToolId::Details,
             ToolId::FramingVariant(_) => ToolId::Framing,
-            ToolId::ScheduleVariant(_) | ToolId::ProjectInfo => ToolId::Schedule,
+            ToolId::ScheduleVariant(_) => ToolId::Schedule,
+            ToolId::ImagesVariant(_) => ToolId::Images,
             other => other,
         }
     }
@@ -314,6 +318,7 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(details::DetailsTool::default()),
         Box::new(framing::FramingTool::default()),
         Box::new(schedule::ScheduleTool::default()),
+        Box::new(images::ImagesTool::default()),
     ]
 }
 

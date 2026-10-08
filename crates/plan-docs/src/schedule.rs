@@ -208,9 +208,32 @@ pub(crate) fn perimeter(poly: &[Point]) -> f64 {
         .sum()
 }
 
+/// The area a schedule reports for `room`, square feet: the Interior Area
+/// (to the inside wall surfaces) that the plan label shows (R-2, R-49), or
+/// the centerline area for a room without an interior outline.
+pub fn room_area_sq_ft(room: &Room) -> f64 {
+    if room.inner_polygon.is_empty() {
+        room.area_sq_ft()
+    } else {
+        room.interior_area_sq_ft()
+    }
+}
+
+/// The ceiling height of `room`: its own override (R-24) when set, else the
+/// floor's.
+pub fn room_ceiling_height(f: &Floor, room: &Room) -> f64 {
+    f.room_names
+        .iter()
+        .find(|n| point_in_polygon(n.anchor, &room.polygon))
+        .and_then(|n| n.ceiling_height)
+        .unwrap_or(f.ceiling_height)
+}
+
 /// Room schedule. Columns: Number, Name, Area sq ft, Perimeter ft,
-/// Ceiling height. Rooms keep the order given; areas and perimeters are
-/// measured on the wall-centerline polygon.
+/// Ceiling height. Rooms keep the order given. The area is the Interior Area
+/// (same as the plan label, QA-03), the perimeter is measured on the
+/// wall-centerline polygon, and the ceiling height is the room's override
+/// when it has one.
 pub fn room_schedule(project: &Project, floor: usize, rooms: &[Room]) -> Schedule {
     let mut s = Schedule::new(
         "Room Schedule",
@@ -229,9 +252,9 @@ pub fn room_schedule(project: &Project, floor: usize, rooms: &[Room]) -> Schedul
         s.rows.push(vec![
             format!("R{:02}", i + 1),
             room_name(f, r),
-            format!("{:.1}", r.area_sq_ft()),
+            format!("{:.1}", room_area_sq_ft(r)),
             format!("{:.1}", perimeter(&r.polygon) / 12.0),
-            fmt_ft_in(f.ceiling_height),
+            fmt_ft_in(room_ceiling_height(f, r)),
         ]);
     }
     s
@@ -341,9 +364,25 @@ mod tests {
         let s = room_schedule(&p, 0, &rooms);
         assert_eq!(s.rows.len(), 1);
         assert_eq!(s.rows[0][0], "R01");
-        assert_eq!(s.rows[0][2], "200.0");
+        // Interior Area (to the inside wall surfaces), like the plan label:
+        // (240 - 4.5) x (120 - 4.5) / 144 = 188.9; perimeter stays centerline.
+        assert_eq!(
+            s.rows[0][2],
+            format!("{:.1}", rooms[0].interior_area_sq_ft())
+        );
+        assert_eq!(s.rows[0][2], "188.9");
         assert_eq!(s.rows[0][3], "60.0");
         assert_eq!(s.rows[0][4], "9'-1 1/8\"");
+    }
+
+    #[test]
+    fn room_schedule_uses_the_ceiling_override() {
+        let mut p = Project::new("R");
+        rect_walls(&mut p, 240.0, 120.0, 4.5, WallKind::Interior);
+        let rooms = detect_rooms(&p.floors[0].walls, 1.0);
+        p.set_room_name(0, Point::new(50.0, 50.0), "Den", "Den", &rooms);
+        p.floors[0].room_names[0].ceiling_height = Some(120.0);
+        assert_eq!(room_schedule(&p, 0, &rooms).rows[0][4], "10'-0\"");
     }
 
     #[test]

@@ -168,6 +168,23 @@ when Reference Display is on. In 3D they are full geometry with railings.
 CB-34. **Ramps**: Draw Ramp makes a sloped surface with slope check against the
 1:12 ADA rule shown in the dialog (verify in Chief).
 
+**Status of section B (Round 8, `plan-stairs` + `editor/stairs_view.rs`, `tools/stairs.rs`, `dialogs/stairs.rs`):**
+
+| ID | Status |
+|---|---|
+| CB-22 | Done. Stairs flyout: Draw Stairs, Click Stairs, Straight Stairs, L-Shaped, U-Shaped, Curve to Left/Right (winders), Curved Stairs, Landing, Draw Ramp. Edit toolbar: Auto Stairwell, Flare/Curve Stairs, Add/Remove Stair Breakline, Make Railing. |
+| CB-23, CB-24 | Done. Drag direction and length set the direction and the run; the riser count comes from the floor-to-floor rise (109 1/8" with the 7 3/4" maximum gives 15 risers). Lock Tread depth / Riser height / Number of treads and the Bottom and Top Height fields (`stairs_view::{set_total_rise, set_risers, set_bottom_height, set_top_height, fit_to_story}`). |
+| CB-25 | Done. L and U stairs carry their landing; the winders option swaps the landing for pie treads (dialog check box). |
+| CB-26 | Done for curved stairs: Curved Stairs takes a centre and a walking radius (`StairShape::Curved`), turns left or right, wedge treads, stepped stringers, rails along the arc, 6" inside-tread check. The flared apron of Flare/Curve Stairs is open (the command toggles winders). |
+| CB-27 | Done. Landings are rectangles (drag) or polygons (click, click, double-click); a landing takes the height of the stair section that arrives on it and a section that starts on it begins there (`stairs_view::connect`). Ramps over 30" of rise get 60" landings between runs. |
+| CB-28 | Done for move, rotate, run (a curved stair's run handle turns it further round) and width handles. A polygon landing only moves. No per-landing corner handles. |
+| CB-29 | Done. Auto Stairwell cuts a `PlatformHole { kind: Floor, owner: stair }` in the floor above (the footprint grown by 1/20") and adds the divider walls; the hole and the walls follow a moved or reshaped stair and go with the stair on delete or undo. Guard railings around the opening are open. |
+| CB-30 | Done as a room named "Stairwell" (type Stairwell, no floor under it) bounded by the invisible dividers. `RoomFunction::OpenBelow` is not used. |
+| CB-31 | Done. Each side is None, Wall, Railing or Half Wall; newels, balusters (spacing from the clear-opening rule), top rail and bottom rail in 3D (`StairParams::{left_side, right_side, railing}`). A railing is not drawn across a landing in plan. |
+| CB-32 | Done: Staircase Specification tabs General (with the solved result), Style, Newels/Balusters, Rails, Line Style, Fill Style, Materials, Label; Landing Specification: General, Line Style, Fill Style, Materials, Label. Components and Schedule tabs are open. |
+| CB-33 | Done. Tread lines, UP arrow, riser count, break line at two thirds, DN arrow and the part beyond the break on the floor above; curved stairs and ramp landings have their own symbols; railings, walls and half-walls are drawn along the flights. Dashed hidden treads on other floors are open. |
+| CB-34 | Done. Slope check against 1:12; rise over 30" gets landings. |
+
 ## C. Framing
 
 CB-35. Framing tools: Build Framing (Shift+Cmd+S), Build All Framing, General
@@ -331,7 +348,7 @@ objects).
 
 ## G. Plan Studio today
 
-All five areas now exist as engine crates with editor tools. Cabinets (`plan-cabinets`): six kinds with a Cabinet Specification and face tree; fillers, custom countertops and 3D library models are open. Stairs (`plan-stairs`): straight, L, U, winder, curved, landing and ramp tools, an IRC solver, a Stair Specification and Auto Stairwell; railings in the editor, the 3D view and the stairwell cut are open. Framing (`plan-framing`): Build > Framing builds wall, floor and roof framing for the active floor or all floors, draws it on the Framing layer and offers a Framing Takeoff with CSV export; the manual framing tools and framing in 3D are open. Terrain (`plan-terrain`): perimeter, elevation data, modifiers, features, roads and Build Terrain with contours; terrain in 3D is open. Library: the Library Browser searches the built-in catalog (about 145 2D symbols) and places symbols; `plan-calib` reads Chief `.calib` catalogs but the browser does not show them yet, and there is no user library, Replace From Library or 3D symbol model. Electrical (`plan-electrical`) has devices and Auto Place Outlets; the circuits UI is open. `materials_list` still takes off studs, plates, drywall, sheathing, siding, flooring, ceiling drywall, doors and windows. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
+All five areas now exist as engine crates with editor tools. Cabinets (`plan-cabinets`): six kinds with a Cabinet Specification and face tree; fillers, custom countertops and 3D library models are open. Stairs (`plan-stairs`): straight, click, L, U, winder, curved, landing (rectangle or polygon) and ramp tools, an IRC solver, the Staircase and Landing Specifications, railings, walls and half-walls on the stair sides, open/closed risers and stringer styles, landings that join stair sections, and Auto Stairwell with the hole in the floor platform above (Round 8; see the status table in section B); guard railings around the stairwell opening and the flared apron are open. Framing (`plan-framing`): Build > Framing builds wall, floor and roof framing for the active floor or all floors, draws it on the Framing layer and offers a Framing Takeoff with CSV export; the manual framing tools and framing in 3D are open. Terrain (`plan-terrain`): perimeter, elevation data, modifiers, features, roads and Build Terrain with contours; terrain in 3D is open. Library: the Library Browser searches the built-in catalog (about 145 2D symbols) and places symbols; `plan-calib` reads Chief `.calib` catalogs but the browser does not show them yet, and there is no user library, Replace From Library or 3D symbol model. Electrical (`plan-electrical`) has devices and Auto Place Outlets; the circuits UI is open. `materials_list` still takes off studs, plates, drywall, sheathing, siding, flooring, ceiling drywall, doors and windows. (Refreshed 2026-10-08. The behavior statements in this document are Chief's and unchanged; the gap table below is the original audit and is partly out of date.)
 
 ## H. Gap table
 
@@ -348,12 +365,12 @@ All five areas now exist as engine crates with editor tools. Cabinets (`plan-cab
 | CB-16 Appliances inserted into cabinets, counter cut-outs | Library has Countertop placement flag only | High | Drop-on-cabinet logic converting face to Appliance item; boolean cut on counter |
 | CB-17..CB-19 Soffit, Shelf, Partition, Fillers | Toolbar placeholders | Med | Simple extruded objects with spec dialogs |
 | CB-21 Cabinet Schedule | Schedules for door/window/room/wall only | Med | Add `cabinet_schedule` in plan-docs |
-| CB-22..CB-25 Draw Stairs + riser/tread solver, L/U shapes | plan-stairs empty | Critical | `Stair` object, rise/run solver (7 3/4" / 10" defaults), run builders; plan symbol |
-| CB-26 Curved stairs, flare, winders | Missing | Med | Arc run generator after straight/L/U |
-| CB-27, CB-28 Landings and edit handles | Missing | High | Landing object; handle set for width/length/rotate |
-| CB-29, CB-30 Auto stairwell hole, guard rails, stairwell room | Missing | High | Cut floor platform on upper floor; generate railing; link with `RoomFunction::OpenBelow` (rooms-floors.md R-40) |
-| CB-31 Railings from Rail Style; baluster/newel | Toolbar entries are stubs | High | Railing object shared by stairs, decks, balconies |
-| CB-34 Ramps with slope check | Missing | Low | Slope check against 1:12 |
+| CB-22..CB-25 Draw Stairs + riser/tread solver, L/U shapes | Done (Round 8: solver, locks, heights, Click Stairs) | Critical | `Stair` object, rise/run solver (7 3/4" / 10" defaults), run builders; plan symbol |
+| CB-26 Curved stairs, flare, winders | Curved Stairs and winders done; flare apron open | Med | Arc run generator after straight/L/U |
+| CB-27, CB-28 Landings and edit handles | Done (rectangle and polygon landings join sections; move/rotate/run/width handles) | High | Landing object; handle set for width/length/rotate |
+| CB-29, CB-30 Auto stairwell hole, guard rails, stairwell room | Hole in the floor platform and Stairwell room done (QA-04); guard rails around the opening open | High | Cut floor platform on upper floor; generate railing; link with `RoomFunction::OpenBelow` (rooms-floors.md R-40) |
+| CB-31 Railings from Rail Style; baluster/newel | Done on stairs (none/wall/railing/half wall per side); decks use `deck_edge_railing` | High | Railing object shared by stairs, decks, balconies |
+| CB-34 Ramps with slope check | Done, with landings every 30" of rise | Low | Slope check against 1:12 |
 | CB-36, CB-37 Build Framing dialog, auto rebuild, manual retention | plan-framing empty; `materials_list` approximates studs | High | Real member model: plates, studs, headers; auto/manual flag |
 | CB-38 Stud layout from Framing Reference Marker, rollout | Studs counted by formula only | High | Layout generator keyed to reference marker; kings/jacks per opening |
 | CB-39 Floor framing, joist direction, rim joist | Missing | High | Joist generator per room/bearing lines |

@@ -6,7 +6,7 @@
 //! half-wall with a cap. All lengths are inches. Scene space is X right, Y up,
 //! Z = -plan y (see `plan-3d`).
 
-use crate::layout::Layout;
+use crate::layout::{Curve, Layout};
 use crate::model3d::{solid, V3};
 use crate::{effective_landing, Stair, Stroke};
 use plan_3d::{Material, Mesh};
@@ -34,6 +34,14 @@ const PANEL_THICKNESS: f64 = 1.5;
 const SOLID_THICKNESS: f64 = 3.5;
 /// Thickness of a glass infill.
 const GLASS_THICKNESS: f64 = 0.5;
+/// Thickness of a stair half-wall.
+const STAIR_HALF_WALL_THICKNESS: f64 = 5.5;
+/// Thickness of a stair wall.
+const STAIR_WALL_THICKNESS: f64 = 4.5;
+/// Height of a stair wall above the nosing line (under the 80" headroom).
+const STAIR_WALL_HEIGHT: f64 = 78.0;
+/// Newels are placed along a curved stair at most this far apart.
+const CURVE_NEWEL_SPACING: f64 = 96.0;
 /// Cross-section of a cable run.
 const CABLE_SIZE: f64 = 0.25;
 /// Infill on stairs starts this far above the nosing line.
@@ -599,9 +607,16 @@ pub fn stair_railing_geometry(
 ) -> StairRailingGeometry {
     let layout = Layout::build(stair);
     let sp = &stair.params;
-    let floor = stair.floor_elevation;
+    let floor = stair.bottom_elevation();
     let (h, t) = (layout.riser_height, layout.tread_depth);
     let mut g = StairRailingGeometry::default();
+    if layout.is_landing {
+        return g;
+    }
+    if let Some(c) = &layout.curve {
+        curved_geometry(&layout, c, stair, side, params, &mut g);
+        return g;
+    }
     let mut ends: Vec<Option<FlightEnd>> = Vec::new();
 
     for f in &layout.flights {
@@ -612,12 +627,8 @@ pub fn stair_railing_geometry(
         let plan = |s: f64| layout.frame.uv(f.at(s, lat));
         // Surface height at s = 0, slope, and the nosing offset along the run.
         let (surf0, slope, nose, foot_top) = if layout.is_ramp {
-            let slope = if f.len > 1e-9 {
-                layout.total_rise / f.len
-            } else {
-                0.0
-            };
-            (0.0, slope, 0.0, layout.total_rise)
+            let slope = if f.len > 1e-9 { f.rise / f.len } else { 0.0 };
+            (f.base, slope, 0.0, f.base + f.rise)
         } else {
             (
                 f.base + h,
@@ -642,7 +653,7 @@ pub fn stair_railing_geometry(
             if layout.is_ramp {
                 for o in span_balusters(f.len, params.newel.size, spacing, size) {
                     g.balusters
-                        .push((plan(o), floor + slope * o, rail_top(o) - below));
+                        .push((plan(o), floor + f.base + slope * o, rail_top(o) - below));
                 }
             } else {
                 let per = ((t / (spacing.max(1e-3) + size)) - 1e-9).ceil().max(1.0) as u32;
@@ -667,7 +678,7 @@ pub fn stair_railing_geometry(
         }));
     }
 
-    if !layout.is_ramp {
+    {
         let landing = effective_landing(sp);
         for pair in ends.windows(2) {
             let (Some(a), Some(b)) = (&pair[0], &pair[1]) else {
@@ -691,6 +702,121 @@ pub fn stair_railing_geometry(
         }
     }
     g
+}
+
+/// Rail, newel and baluster layout along the edge of a curved stair.
+fn curved_geometry(
+    layout: &Layout,
+    c: &Curve,
+    stair: &Stair,
+    side: RailSide,
+    params: &RailingParams,
+    g: &mut StairRailingGeometry,
+) {
+    let floor = stair.bottom_elevation();
+    let h = layout.riser_height;
+    let lat = match side {
+        RailSide::Left => 0.0,
+        RailSide::Right => c.width,
+    };
+    let rho = c.rho(lat);
+    let plan = |a: f64| layout.frame.uv(c.at(a, rho));
+    // The rail follows the steps: one level per riser line, rising at the
+    // nosing line.
+    let rail_top = |a: f64| floor + h + h * (a / c.step) + STAIR_RAIL_HEIGHT;
+    let sweep = c.sweep();
+    if c.treads == 0 || sweep < 1e-9 {
+        return;
+    }
+    for k in 0..c.treads {
+        let (a0, a1) = (c.step * f64::from(k), c.step * f64::from(k + 1));
+        g.rails
+            .push((plan(a0), rail_top(a0), plan(a1), rail_top(a1)));
+    }
+    g.add_newel(plan(0.0), floor + h);
+    g.add_newel(plan(sweep), floor + h * f64::from(c.treads + 1));
+    // Intermediate newels along long curves.
+    let arc = sweep * rho;
+    let extra = (arc / CURVE_NEWEL_SPACING - 1e-9).ceil() as u32;
+    for i in 1..extra {
+        let a = sweep * f64::from(i) / f64::from(extra);
+        let k = (a / c.step).floor();
+        g.add_newel(plan(a), floor + h * (k + 1.0));
+    }
+    if let RailStyle::Balusters { spacing, size } = params.style {
+        let below = params.top_rail.1;
+        let tread_arc = c.step * rho;
+        let per = ((tread_arc / (spacing.max(1e-3) + size)) - 1e-9)
+            .ceil()
+            .max(1.0) as u32;
+        for j in 1..=c.treads {
+            for k in 0..per {
+                let a = c.step * (f64::from(j - 1) + (f64::from(k) + 0.5) / f64::from(per));
+                let foot = floor + h * f64::from(j);
+                g.balusters.push((plan(a), foot, rail_top(a) - below));
+            }
+        }
+    }
+}
+
+/// A wall or half-wall along one side of a stair: a sloped panel under a cap
+/// rail (half-wall) or up to [`STAIR_WALL_HEIGHT`] above the nosing line
+/// (wall), following the rails across landings and around curves.
+pub fn stair_half_wall(
+    stair: &Stair,
+    side: RailSide,
+    params: &RailingParams,
+    full_height: bool,
+) -> Vec<Mesh> {
+    let solid_style = RailingParams {
+        style: RailStyle::Solid,
+        ..*params
+    };
+    let g = stair_railing_geometry(stair, side, &solid_style);
+    let id = Some(stair.id);
+    let depth = stair.params.stringer_depth;
+    let (tw, th) = params.top_rail;
+    let travel = Point::new(stair.direction.cos(), stair.direction.sin());
+    let mut out = Vec::new();
+    let thick = if full_height {
+        STAIR_WALL_THICKNESS
+    } else {
+        STAIR_HALF_WALL_THICKNESS
+    };
+    for &(a, ea, b, eb) in &g.rails {
+        let (na, nb) = (ea - STAIR_RAIL_HEIGHT, eb - STAIR_RAIL_HEIGHT);
+        let (top_a, top_b) = if full_height {
+            (na + STAIR_WALL_HEIGHT, nb + STAIR_WALL_HEIGHT)
+        } else {
+            (ea - th, eb - th)
+        };
+        let s = Slab {
+            a,
+            b,
+            a_range: (na - depth, top_a),
+            b_range: (nb - depth, top_b),
+        };
+        out.extend(slab(&s, thick, Material::WallInterior, id));
+        if !full_height {
+            let d = (b - a).normalized();
+            if d != Point::ZERO {
+                out.extend(bar(
+                    sc(a, ea - th / 2.0),
+                    sc(b, eb - th / 2.0),
+                    lateral(d.perp()),
+                    (tw.max(thick), th),
+                    Material::WallInterior,
+                    id,
+                ));
+            }
+        }
+    }
+    if !full_height {
+        for &(p, foot) in &g.newels {
+            newel_meshes(p, foot, &params.newel, lateral(travel.perp()), id, &mut out);
+        }
+    }
+    out
 }
 
 /// 3D meshes of the railing on one `side` of a stair; see

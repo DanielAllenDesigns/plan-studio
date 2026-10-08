@@ -761,7 +761,7 @@ fn tools_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         "Project Information\u{2026}",
         "",
         false,
-        Action::SetTool(ToolId::ProjectInfo),
+        Action::ProjectInfo,
         out,
     );
     inert(

@@ -111,6 +111,13 @@ impl CadDialog {
         &self.form.draft
     }
 
+    /// Test access: the draft the form edits, so a scenario can change a
+    /// value and press OK without typing into the egui widgets.
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut CadObject {
+        &mut self.form.draft
+    }
+
     /// Stores the edited object and its look (one undo step). Returns false
     /// when nothing changed, the object is gone, its layer is locked or the
     /// fill cannot be drawn.

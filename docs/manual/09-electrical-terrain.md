@@ -94,8 +94,9 @@ Double-click a device with the Electrical tool.
 ## 9.4 Circuits, schedules and legends (engine)
 
 The engine groups devices into circuits (`assign_circuits`), counts devices by kind for a
-schedule, and lists a legend of symbols. No menu uses them yet: the Electrical Schedule,
-circuit assignment and the electrical legend are (planned; engine in `plan-electrical`).
+schedule, and lists a legend of symbols. No menu uses the circuit and legend functions yet: circuit assignment and the electrical legend
+are (planned; engine in `plan-electrical`). The **Electrical Schedule** from the Schedule flyout (chapter 11.2) lists the plan's devices (mark, type, label, mount height, circuit) as a live table placed in the plan.
+Light fixtures also emit light in the ray tracer (chapter 10.13).
 Electrical devices are also not drawn in the 3D view yet (planned).
 
 # Part B: Terrain

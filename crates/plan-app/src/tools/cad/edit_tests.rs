@@ -5,7 +5,7 @@ use super::*;
 use crate::dialogs::cad::blocks::ManagerAction;
 use crate::plan_defaults;
 use crate::tools::ToolSet;
-use plan_core::cad::{CadBlockInfo, CadObject, CAD_DATA_LAYER};
+use plan_core::cad::{CadBlockInfo, CadObject};
 
 fn new_cx() -> EditorContext {
     EditorContext::new(plan_defaults::embedded())
@@ -42,11 +42,7 @@ fn item(cx: &EditorContext, id: Id) -> CadItem {
 
 /// Drawn objects, hidden data records left out.
 fn drawn(cx: &EditorContext) -> Vec<&CadObject> {
-    cx.floor()
-        .cad
-        .iter()
-        .filter(|c| c.layer != CAD_DATA_LAYER)
-        .collect()
+    cx.floor().cad.iter().collect()
 }
 
 fn run_frame(t: &mut CadTool, cx: &mut EditorContext) {

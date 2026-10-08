@@ -2,7 +2,8 @@
 
 This chapter takes you from a source checkout to a first drawn wall, and tours
 the window: the menus, the three toolbars, the docks, the status bar, the
-templates and the themes.
+templates (including how Plan Studio reads your own Chief templates), a first look
+at the layout view, and the themes.
 
 ## 1.1 Installing from source
 
@@ -92,7 +93,7 @@ make_samples`, so treat them as examples to open and take apart, not files to ed
 
 ```
 +--------------------------------------------------------------------------+
-| File Edit Build Terrain Library 3D CAD Tools View Window Help   (name)   |
+| File Edit Build Terrain Library 3D CAD Tools Layout View Window Help      |
 +--------------------------------------------------------------------------+
 | Row 1: file, undo, view, floor, 3D cameras, materials, configurations    |
 | Row 2: Select Objects, Build tools, dimensions, text, CAD tools          |
@@ -111,7 +112,7 @@ make_samples`, so treat them as examples to open and take apart, not files to ed
 +--------------------------------------------------------------------------+
 ```
 
-- **Menu bar** (top): File, Edit, Build, Terrain, Library, 3D, CAD, Tools, View,
+- **Menu bar** (top): File, Edit, Build, Terrain, Library, 3D, CAD, Tools, Layout, View,
   Window, Help, in Chief's order. Account is omitted (there is no licensing).
 - **Toolbar row 1 and row 2**: the two horizontal bars. Each scrolls
   horizontally when the window is narrow.
@@ -147,13 +148,13 @@ dark gray `#3A3A3A`, 28 px buttons, flyout buttons with a small arrow.
 
 ### Row 1
 
-New Plan, Open Plan, Save | Print (planned), Send to Layout (planned) | Undo,
+New Plan, Open Plan, Save | Print (planned; File > Print > Print Layout works, 1.6), Send to Layout (11.3) | Undo,
 Redo | Preferences (planned), Launch Help (planned) | Edit Active View,
 Save Active View, Save Active View As (planned); the saved-view selector lists the plan's saved plan views and switches to one |
 Display Options (planned), Default Settings, Plan Database (planned), Floor
 Defaults (planned) | Down One Floor, floor number, Up One Floor | 3D View
 flyout, Full Camera flyout, Mouse-Orbit Camera, Cross Section Slider, Create
-Walkthrough Path (planned), Rendering Techniques flyout, Add Lights (planned) |
+Walkthrough Path, Rendering Techniques flyout, Add Lights flyout (Add Lights and Adjust Lights) |
 Sun Angle | Material Painter and the five material tools (planned) | Default
 Configuration, Space Planning Configuration, Extended Tool Configuration
 (planned toggles). The camera and rendering buttons are covered in chapter 10.
@@ -162,10 +163,10 @@ Configuration, Space Planning Configuration, Extended Tool Configuration
 
 Select Objects | Wall flyouts (chapter 2) | Door and Window flyouts (3) |
 Cabinet and Electrical flyouts (6, 9) | Stairs and Floor flyouts (7, 4) |
-Roof, Trim, the three Framing flyouts, Slab and 3D Solid flyouts (8, 11.11, 16; Trim and 3D Solid are
-planned) | Paste Hold Position (planned) | Dimension flyouts (5) |
-Text flyout and Revision Cloud (5) | Points, Lines, Arcs, Circles, Boxes,
-Spline (5) | Auto Detail, Current CAD Layer (planned).
+Roof, Trim, the three Framing flyouts, Slab and 3D Solid flyouts (8, 11.11, 16, 17) | Paste Hold Position
+(planned) | Dimension flyouts (5) | Text flyout (5), Revision Cloud (the toolbar toggle is dimmed; the CAD menu and the
+CAD option strip have it, 5) | Schedule flyout (11.2) | Points, Lines, Arcs, Circles, Boxes, CAD Blocks, Spline (5) |
+Auto Detail, Current CAD Layer (planned).
 
 ### View bar
 
@@ -183,7 +184,7 @@ Spline (5) | Auto Detail, Current CAD Layer (planned).
 | Crosshairs | | Draws cursor crosshairs. |
 | Color | `F8` | On by default. Off draws the plan in grays (every color becomes its luminance); selection highlights stay colored. |
 | Line Weights | | On scales stroke widths by each layer's line weight (0.25 mm is the base width, so a 0.50 mm wall layer draws twice as heavy). |
-| Drawing Sheet, Print Preview | `Alt+F3`, `Alt+F2` | Drawing Sheet outlines the active layout's sheet, centered on the plan, with its size and scale as a caption. Print Preview also grays out everything outside the sheet. The size and scale are set in Project Browser > Layout (Arch D at 1/4" = 1'-0" by default). |
+| Drawing Sheet, Print Preview | `Alt+F3`, `Alt+F2` | Drawing Sheet outlines the active layout's sheet, centered on the plan, with its size and scale as a caption. Print Preview also grays out everything outside the sheet. The size and scale are set in Project Browser > Layout (Arch D at 1/4" = 1'-0" by default); once the plan has a layout, the outline follows the layout's sheet size (Page Setup, 11.3). |
 | Temporary Dimensions | | Yes, on by default (shows live length while drawing and dimensions to a selected object). |
 | Connect CAD Segments | `Shift+F8` | Yes: CAD lines chain into connected segments. |
 | Arc Centers and Ends | | Toggle state only (planned). |
@@ -200,7 +201,7 @@ Click a view-bar toggle again to close its dock.
   Turning off Disp hides a layer's objects at once. A **Layer Set** drop-down at the top switches the
   active layer set (a named table of per-layer display, lock, color and line weight overrides). Edits are
   undoable. Tools > Layer Settings > Display Options opens the same table as a window.
-- **Project Browser**: Plan > Floors (click one to switch floors), **Cameras** (the plan's camera objects; click one to select it, switch to its floor and pan the plan to it; an unnamed camera shows as "Camera n"), **Saved Views** (the plan's saved plan views; click one to activate it, hover for its layer set and floor; the active view is highlighted) and **Layout** (the active layout's sheet size and scale, which View > Drawing Sheet and Print Preview draw, and Create Construction Set...). The layout sheet is kept for the session only; the plan file stores no layouts yet.
+- **Project Browser**: Plan > Floors (click one to switch floors), **Cameras** (the plan's camera objects; click one to select it, switch to its floor and pan the plan to it; an unnamed camera shows as "Camera n"), **Saved Views** (the plan's saved plan views; click one to activate it, hover for its layer set and floor; the active view is highlighted) and **Layout**. The Layout section has the active layout sheet (size and scale, which View > Drawing Sheet and Print Preview draw), then the plan's layout: a **New Layout** button when there is none, otherwise one row per page (`A-1  Page 1`; the Page Template row is in italics; click a row to open that page in the layout view) and the buttons **Open Layout**, **Add Page**, **Page Setup...** and **Print...**, then **Create Construction Set...** (chapter 11).
 - **Library Browser**: a search field, a category tree and result rows with
   previews, plus the Chief Architect catalogs of your own Chief install (chapter 6).
 
@@ -210,25 +211,33 @@ The menu bar keeps Chief's titles and order: File, Edit, Build, Terrain, Library
 Window, Help. Build, Terrain and CAD are generated from the same flyout tables as the toolbars, so every
 entry shows its icon, name and hotkey and unbuilt ones are dimmed. Working today:
 
-- **File**: New Plan, Templates (Save Current Defaults as My Template..., Import Chief Template..., Reset to
-  Chief X18 Template), Open Plan..., Save, Save As..., Export (DXF..., Elevation DXF..., Construction Set
-  PDF..., glTF...), Import (Import Drawing (DXF)...), Quit (chapter 12).
+- **File**: New Plan, New Layout, Templates (Save Current Defaults as My Template..., Import Chief Template...,
+  Reset to Chief X18 Template), Open Plan..., Open Layout..., Save, Save As..., Export (DXF..., Elevation DXF...,
+  Construction Set PDF..., glTF...), Import (Import Drawing (DXF)...), Print (Print Layout..., Export Layout PDF...),
+  Send to Layout... (`S, L`), Quit (chapters 11 and 12).
 - **Edit**: Undo and Redo (with the step name), Select Objects, Default Settings...
 - **Build**, **CAD**: all the live tools of chapters 2 to 9 and 16, Build > Framing (Build Framing, Build All
   Framing, Delete Framing and the manual framing tools: chapter 11.11) and CAD > CAD to Walls... (12.4); **Terrain**: Create Terrain Perimeter, Terrain
   Specification..., Build Terrain, Clear Terrain, Make Terrain Hole Around Building and the submenus.
-- **3D**: Create Orthographic View, Create Perspective View (with Ray Trace...), Rendering Techniques,
-  Rebuild 3D, Export > glTF..., 3D View Defaults... (chapter 10).
+- **3D**: Create Orthographic View, Create Perspective View (with Ray Trace...), Create Auto Elevations (Auto
+  Elevations, Auto Back-Clipped Elevations, Wall Elevation Camera), Walkthroughs (Create Walkthrough Path, Play
+  Walkthrough, Record Walkthrough...), Rendering Techniques, Rebuild 3D, Export > glTF..., 3D View Defaults... (chapter 10).
 - **Tools**: Layer Settings > Display Options, Checks, Toolbars and Hotkeys > Customize Hotkeys..., Space
-  Planning, Schedules (door, window, room, wall, Create Construction Set, Framing Takeoff), Materials List.
+  Planning, Schedules (door, window, room and wall schedule windows, Place on Plan, Create Construction Set,
+  Framing Takeoff), Materials List, Project Information... (11.4).
+- **Layout**: the layout view's commands: Send to Layout, Send All Floors to Layout, Layout Box Specification,
+  Delete Layout Box, Update Layout Views, the page commands, Layout Page Table, Page Setup, Project Information,
+  Fit Page in Window, Print Layout and Export Layout PDF (11.3).
 - **View**: Library Browser, Project Browser, Active Layer Display Options, Color, Crosshairs, Reference Grid,
   Temporary Dimensions, Arc Centers and Ends, Line Weights, Drawing Sheet, Canvas Theme, UI Brightness.
-- **Window**: Zoom Out, Zoom In, Undo Zoom, Fill Window, Pan Window; the shortcut shown beside each comes
+- **Window**: Zoom Out, Zoom In, Undo Zoom, Fill Window, Pan Window, then **Floor Plan View** and **Layout** (they
+  switch the main area between the plan and the layout view; the one showing is checked); the shortcut shown beside each comes
   from the live hotkey map, so Daniel's keys (his `-` is Zoom In) and your own Customize Hotkeys edits
   appear there, and so does the key shown beside 3D > 3D View Defaults... (`Cmd+1`). **Help**: About Plan Studio.
 
 Everything else in Chief's menus is listed, dimmed, with Chief's name: Cut/Copy/Paste, Select All, Snap
-Settings, Edit Behaviors, Close View, File > Print, the Library menu and most of the 3D menu.
+Settings, Edit Behaviors, Close View, the Library menu and the camera-movement, isometric, materials and lighting
+items of the 3D menu.
 
 ## 1.7 Templates and Daniel's Chief defaults
 
@@ -261,16 +270,17 @@ What the Chief X18 (Daniel) template sets:
 
 How defaults reach a plan:
 
-- On startup the app loads `~/.plan-studio/defaults.json` if it exists, otherwise
-  the embedded template. If the file cannot be read, the status bar says so and
-  the template is used. Keys missing from the file fall back to the template.
+- On startup the app loads `~/.plan-studio/defaults.json` if it exists. Otherwise it starts from the embedded
+  template with your own Chief default plan template laid over it, when Plan Studio can find one (1.7.1). If
+  `defaults.json` cannot be read, the status bar says so and the template (seeded the same way) is used. Keys missing
+  from the file fall back to the template.
 - File > New Plan makes a project from the defaults' ceiling height and layer set.
 - New walls take the exterior or interior wall type thickness and height. New
   doors take the interior door defaults, or the exterior door defaults on an
   exterior wall. New windows take the window defaults.
 - File > Templates > Save Current Defaults as My Template... writes
-  `~/.plan-studio/defaults.json`. Reset to Chief X18 Template restores the
-  embedded values and deletes that file.
+  `~/.plan-studio/defaults.json`. Reset to Chief X18 Template deletes that file and goes back to the embedded
+  values, with the Chief plan template laid over them when seeding is set up (1.7.1).
 - File > Templates > **Import Chief Template...** picks a Chief `.plan`, `.tpl` or `.layout` file and seeds your
   defaults from what is stored in it: the names of wall types, layers and layer sets, text styles, dimension sets and
   saved plan views, the per-layer colors and line weights that could be decoded, and the decoded values (each wall type's real layer stack,
@@ -279,7 +289,7 @@ How defaults reach a plan:
   and layers were added; the few wall types with no definition in the template have a thickness guessed from the name and are approximate.
 - Edit > Default Settings... opens a searchable tree: Walls (Exterior, Interior,
   Foundation), Doors (Interior, Exterior), Windows, Dimension (Dimensions), Text
-  (Text Styles), and Floors and Rooms (Room Types). Double-click a leaf (or press
+  (Text Styles), Floors and Rooms (Room Types), and Preferences (Templates, 1.7.1). Double-click a leaf (or press
   Edit) to open its dialog. The wall, door and window leaves edit the values new
   objects are placed from. **Dimensions** opens the Saved Dimension Defaults list
   (5.9), **Text Styles** the text style editor (5.9) and **Room Types** the room
@@ -291,9 +301,66 @@ of a door.
 
 Daniel's other Chief templates (26 `.plan` and `.layout` files in his Chief data folder) are read by the
 `plan-chiefplan` crate and summarized in `docs/daniel-template-inventory.md`. Import Chief Template... is the way
-to pull one into Plan Studio; automatic seeding on first launch and File > New Plan From Template... are (planned).
+to pull one into Plan Studio; File > New Plan From Template... is (planned).
 
 Daniel's Chief hotkeys are loaded at startup as well; see chapter 13.
+
+### 1.7.1 Seeding from your own Chief templates
+
+Chief's New Plan opens the template you chose in its preferences. Plan Studio does the same for its defaults: it
+reads your default plan template and your default layout template, decodes them once, and lays what it
+understood over the embedded Daniel template. Nothing in your Chief install is changed or copied; the files are read in place.
+
+**Finding the templates.** The first time Plan Studio runs (no `templates` key yet in `~/.plan-studio/settings.json`) it
+reads Chief's own preferences file, `~/.config/Chief Architect Inc/Chief Architect Premier X18.ini` (then the X17 one),
+section `[%General]`, keys `Default Plan Template` and `Default Layout Template`. X18 stores a bare file name, which is
+looked up in `~/Documents/Chief Architect Premier X18 Data/Templates/` (X18's folder first, then X17's); X17 stored a full path.
+If a preference is missing or names a file that is not there, Plan Studio looks for the stock names of Daniel's setup,
+`x17 Working Template 2025-08-20.plan` and `18x24 PRESENTATION LAYOUT TEMPLATE.layout`, in the Templates folders, directly
+under `~/Documents`, and in the `Templates` (or top-level) folder of each folder under `~/Documents`. What it finds is saved
+as the `templates` key of `settings.json`: the plan path, the layout path and `seed_from_chief` (on). From then on the saved
+paths are used; the detection runs only that once.
+
+**What is decoded and when.** The decode of the plan template (a 9 MB file) is cached in `~/.plan-studio/template-seed.json`
+with the file's modification time, so it runs once and again only when the file, or the path, changes. Re-read template now
+(below) forces it. The plan template gives:
+
+| Decoded | Laid over the defaults |
+|---|---|
+| Wall types with their real layer stacks and main layer | Replace a wall type of the same name (it keeps its kind) or are added. |
+| Text styles (font, weight, plan height) | Replace the style of that name or are added. The font is recorded as the template names it (for example `Avenir`); a machine without it falls back when the text is drawn. |
+| Dimension sets | Each is laid over the saved set of the same name, else over the current dimension settings; the active set stays as it was. |
+| Default height (the room-type height, 109 1/8" in Daniel's) | Used for rooms and for the exterior and interior wall defaults. |
+
+The same decode counts layer sets, layers, materials and saved plan views for the summary, but this seeding does not lay
+those over the defaults; they come in through Import Chief Template... into My Defaults (1.7). The layout template is read for
+its sheet (the listed sheet name, or the `18x24` of the file name) and its page and text-style counts; New Layout uses the sheet
+(ARCH C, 18 x 24, when none is found) and Daniel's title block (11.3).
+
+**Order of precedence.** Your saved `defaults.json` (Save Current Defaults as My Template, or Import Chief Template > Import into
+My Defaults) wins over the seeding, and the Templates page says so when it applies; Reset to Chief X18 Template removes
+`defaults.json` so the seeded defaults apply again. Without a Chief install (a CI machine, another user) none of this runs and
+the embedded Chief X18 template applies.
+
+**The Templates page.** Edit > Default Settings... > Preferences > Templates (double-click, or Edit) opens the window
+**Preferences: Templates**:
+
+| Control | What it does |
+|---|---|
+| Plan template, Layout template | The two paths, each with a Browse... button (`.plan` or `.tpl`; `.layout`). Leaving a field you edited, or choosing a file, applies at once. |
+| Seed defaults from Chief template | Switch the seeding on or off. Off uses the shipped Chief X18 defaults ("Using the shipped Chief X18 defaults"). |
+| Re-read template now | Decodes both files again even if they have not changed. |
+| Close | Closes the window. |
+| Decoded from the templates | For each template: its file name, the counts (for the plan: wall types, text styles, dimension sets; layer sets, layers, materials, plan views; the default height; for the layout: the sheet and the page and text-style counts) and when it was last read (UTC). |
+
+Applying saves `settings.json`, decodes what changed, makes the result the defaults new plans start from (unless your saved
+template takes priority) and forgets the per-session edits of the wall, door and window default dialogs so they show the template's
+values. The status line reports "Defaults seeded from <file> (n wall types)" or why a template was not used ("Plan template not
+found", "Could not read ...").
+
+**Import Chief Template...** (File > Templates) has two buttons after its decode summary: **Import into My Defaults** (1.7) and
+**Set as default plan template** or **Set as default layout template** (by the kind of file), which writes the path into the
+`templates` key, decodes it and refreshes an open Templates page.
 
 ## 1.8 Tools
 
@@ -336,9 +403,21 @@ readable at any brightness.
 | Your plans | Wherever you save them, as `.psplan` JSON (File > Save As...) |
 | Theme and brightness, and the Chief catalog choice (`chief_catalogs`: on/off and an install-folder override) | `~/.plan-studio/settings.json` |
 | Saved template defaults | `~/.plan-studio/defaults.json` |
+| Template paths and the seeding switch (`templates` key: `plan`, `layout`, `seed_from_chief`) | `~/.plan-studio/settings.json` |
+| Decode cache of your Chief plan and layout templates | `~/.plan-studio/template-seed.json` |
 | Hotkey edits | `~/.plan-studio/hotkeys.json` |
 | Chief catalog index (file paths, sizes, modification times and catalog UUIDs the Library Browser's Chief nodes use to find your catalogs quickly) | `~/.plan-studio/chief-catalog-index.json` |
 
 The settings folder is found from `HOME`, else `USERPROFILE`, else `HOMEDRIVE` plus
 `HOMEPATH`, so it works on Windows as well. Undo keeps 100 steps.
 Autosave and backups are planned.
+
+## 1.11 The layout view in one minute
+
+Documents are laid out in a separate view of the same window. **File > New Layout** makes the plan's layout: a Page Template
+(not printed; its boxes and border repeat on every page) and an empty Page 1, on your layout template's sheet with Daniel's
+title block. **Send to Layout** (`S, L`, or the row 1 button) puts the current plan view, or the open elevation or section
+camera, on a page as a box at an architectural scale. Page tabs along the bottom switch pages; boxes are selected, moved and
+resized with handles; **Print Layout** and **Export Layout PDF** write the printed pages as a PDF. **Window > Floor Plan View**
+returns to the plan and **Window > Layout** comes back. A plan has one layout, stored in the `.psplan`. Chapter 11 has the whole
+tour, including the Project Information that fills the title block and the schedules you can place in the plan itself.

@@ -209,7 +209,6 @@ fn the_room_specification_starts_from_the_floor_ceiling_height() {
 
 /// R-24 / R-33: a room's own ceiling height reaches the 3D platforms.
 #[test]
-#[ignore = "QA-02"]
 fn a_room_ceiling_height_override_moves_that_rooms_3d_ceiling() {
     use crate::shell::view3d_panel::{build_view_scene, ViewScope};
     use plan_3d::Material;

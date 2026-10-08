@@ -208,6 +208,14 @@ impl EditorContext {
         self.history.end_merge();
     }
 
+    /// Records `before` (the project as it was before a change made outside
+    /// the context, such as an edit in the layout window) as the undo step
+    /// `label` of the one shared history.
+    pub fn record_undo_step(&mut self, before: &Project, label: &str) {
+        self.history.begin(before, label);
+        self.dirty = true;
+    }
+
     /// The change begun last turned out to be a no-op; drop its undo step.
     pub fn cancel_change(&mut self) {
         self.history.cancel();

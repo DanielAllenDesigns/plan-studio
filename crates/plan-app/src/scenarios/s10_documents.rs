@@ -138,7 +138,6 @@ fn the_schedules_follow_the_edits_and_the_room_names() {
 /// R-49 / manual 4.1: schedules report the interior area (to the inside wall
 /// surfaces), the same number as the plan label and Room Specification.
 #[test]
-#[ignore = "QA-03"]
 fn the_room_schedule_reports_the_interior_area_like_the_plan_label() {
     let sim = house();
     let rooms = schedule_for(&sim.app.cx, SchedKind::Room);

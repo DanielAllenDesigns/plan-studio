@@ -219,6 +219,112 @@ fn a_cad_line_and_a_box_land_on_the_cad_layer_and_open_their_dialogs() {
     );
 }
 
+/// The Dimension, Text and CAD specification dialogs: change a value in the
+/// draft (the `draft_mut` test accessors stand in for typing), press OK, and
+/// get exactly one undo step each that restores the old value.
+#[test]
+fn editing_the_dimension_text_and_cad_dialogs_is_one_undo_step_each() {
+    let mut sim = house();
+
+    // A manual dimension, a text and a line.
+    sim.tool(ToolId::DimensionVariant(DimMode::Manual));
+    sim.click(200.0, 4.0);
+    sim.click(200.0, H - 3.0);
+    sim.click(260.0, 180.0);
+    sim.tool(ToolId::TextVariant(TextMode::Text));
+    sim.click(100.0, 100.0);
+    sim.key(KeyEvent::text("Living Room"));
+    sim.key(KeyEvent::key(Key::Enter));
+    sim.tool(ToolId::CadVariant(CadMode::Line));
+    sim.drag((50.0, 50.0), (200.0, 50.0));
+    sim.esc();
+    let dim = sim.app.cx.floor().dimensions[0].clone();
+    let text = sim
+        .app
+        .cx
+        .floor()
+        .cad
+        .iter()
+        .find(|c| matches!(c.item, CadItem::Text { .. }))
+        .unwrap()
+        .clone();
+    let line = sim
+        .app
+        .cx
+        .floor()
+        .cad
+        .iter()
+        .find(|c| matches!(c.item, CadItem::Line { .. }))
+        .unwrap()
+        .clone();
+    let cad = |sim: &Sim, id| {
+        sim.app
+            .cx
+            .floor()
+            .cad
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .clone()
+    };
+
+    // Dimension: offset 36".
+    assert!(sim
+        .app
+        .spec
+        .open(&mut sim.app.cx, ObjectRef::Dimension(dim.id)));
+    sim.app.spec.dimension_draft_mut().unwrap().offset = 36.0;
+    let before = sim.app.cx.floor().dimensions[0].clone();
+    assert_eq!(before.offset, dim.offset, "nothing changes until OK");
+    sim.ok();
+    assert!(!sim.app.spec.is_open());
+    assert_eq!(sim.app.cx.floor().dimensions[0].offset, 36.0);
+    assert_eq!(sim.app.cx.undo_label(), Some("Change Dimension"));
+    assert_eq!(sim.undo().as_deref(), Some("Change Dimension"));
+    assert_eq!(sim.app.cx.floor().dimensions[0].offset, dim.offset);
+
+    // Text: new wording.
+    assert!(sim.app.spec.open(&mut sim.app.cx, ObjectRef::Cad(text.id)));
+    if let CadItem::Text { text: t, .. } = &mut sim.app.spec.text_draft_mut().unwrap().item {
+        *t = "Great Room".into();
+    }
+    sim.ok();
+    assert!(!sim.app.spec.is_open());
+    assert!(matches!(
+        &cad(&sim, text.id).item,
+        CadItem::Text { text: t, .. } if t == "Great Room"
+    ));
+    assert_eq!(sim.app.cx.undo_label(), Some("Change Text"));
+    assert_eq!(sim.undo().as_deref(), Some("Change Text"));
+    assert!(matches!(
+        &cad(&sim, text.id).item,
+        CadItem::Text { text: t, .. } if t == "Living Room"
+    ));
+
+    // CAD line: move its end point.
+    assert!(sim.app.spec.open(&mut sim.app.cx, ObjectRef::Cad(line.id)));
+    if let CadItem::Line { b, .. } = &mut sim.app.spec.cad_draft_mut().unwrap().item {
+        b.y += 40.0;
+    }
+    sim.ok();
+    assert!(!sim.app.spec.is_open());
+    assert_ne!(cad(&sim, line.id).item, line.item);
+    assert_eq!(sim.app.cx.undo_label(), Some("Change CAD Object"));
+    assert_eq!(sim.undo().as_deref(), Some("Change CAD Object"));
+    assert_eq!(cad(&sim, line.id).item, line.item);
+
+    // Cancel leaves the plan and the undo stack alone.
+    let steps = sim.app.cx.undo_label().map(String::from);
+    assert!(sim
+        .app
+        .spec
+        .open(&mut sim.app.cx, ObjectRef::Dimension(dim.id)));
+    sim.app.spec.dimension_draft_mut().unwrap().offset = 99.0;
+    sim.cancel();
+    assert_eq!(sim.app.cx.floor().dimensions[0].offset, dim.offset);
+    assert_eq!(sim.app.cx.undo_label().map(String::from), steps);
+}
+
 #[test]
 fn every_cad_mode_and_text_mode_activates_with_a_hint() {
     let mut sim = house();

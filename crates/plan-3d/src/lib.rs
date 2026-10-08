@@ -12,6 +12,7 @@ mod doors;
 pub mod foundation;
 mod frame;
 pub mod gltf;
+pub mod images;
 pub mod import;
 mod leaf;
 mod mesh;
@@ -176,27 +177,41 @@ fn add_floor(floor: &Floor, opts: &SceneOptions, types: &TypeLookup, scene: &mut
     for wall in &floor.walls {
         add_wall(floor, wall, &rooms, opts, types, scene);
     }
-    let finished_floor = floor.elevation + slab::FLOOR_FINISH;
-    let slabs = [
-        (
-            Material::Floor,
-            PlatformKind::Floor,
-            finished_floor - slab::SLAB_THICKNESS,
-            finished_floor,
-        ),
-        (
-            Material::Ceiling,
-            PlatformKind::Ceiling,
-            floor.elevation + floor.ceiling_height,
-            floor.elevation + floor.ceiling_height + slab::SLAB_THICKNESS,
-        ),
-    ];
-    for (material, kind, y0, y1) in slabs {
+    // Rooms with the same floor offset and ceiling height share a platform
+    // mesh; a named room's overrides (R-23, R-24) split it from the rest.
+    let mut groups: Vec<(slab::RoomLevels, Vec<Room>)> = Vec::new();
+    for room in &rooms {
+        let levels = slab::room_levels(floor, room);
+        match groups.iter_mut().find(|(l, _)| *l == levels) {
+            Some((_, rs)) => rs.push(room.clone()),
+            None => groups.push((levels, vec![room.clone()])),
+        }
+    }
+    let floor_holes = foundation::platform_holes(floor, PlatformKind::Floor);
+    let ceiling_holes = foundation::platform_holes(floor, PlatformKind::Ceiling);
+    for (levels, group) in &groups {
+        let finished_floor = floor.elevation + levels.floor_offset + slab::FLOOR_FINISH;
+        let ceiling = floor.elevation + levels.floor_offset + levels.ceiling_height;
         // Holes in the platform (stairwells, light wells) are cut out.
-        let holes = foundation::platform_holes(floor, kind);
-        scene.meshes.extend(foundation::build_platform(
-            material, &rooms, &holes, y0, y1, None,
-        ));
+        let slabs = [
+            (
+                Material::Floor,
+                &floor_holes,
+                finished_floor - slab::SLAB_THICKNESS,
+                finished_floor,
+            ),
+            (
+                Material::Ceiling,
+                &ceiling_holes,
+                ceiling,
+                ceiling + slab::SLAB_THICKNESS,
+            ),
+        ];
+        for (material, holes, y0, y1) in slabs {
+            scene.meshes.extend(foundation::build_platform(
+                material, group, holes, y0, y1, None,
+            ));
+        }
     }
 }
 

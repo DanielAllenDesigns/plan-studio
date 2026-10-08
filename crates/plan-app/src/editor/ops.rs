@@ -428,6 +428,8 @@ pub fn delete_objects(project: &mut Project, floor: usize, objects: &[ObjectRef]
         let after = f.walls.len() + f.openings.len() + f.dimensions.len() + f.cad.len();
         n += usize::from(after < before);
     }
+    // A deleted CAD object takes its style extras with it.
+    project.prune_cad_data(floor);
     n
 }
 

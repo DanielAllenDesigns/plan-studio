@@ -11,6 +11,11 @@ use crate::model::{ElevationRegion, Modifier, ModifierKind, Terrain};
 /// Width of the soft edge on raised, lowered and flat regions, inches.
 pub(crate) const FEATHER: f64 = 24.0;
 
+/// Sample spacing along a break line: finer than the grid so the crease is sharp.
+pub(crate) fn break_step(spacing: f64) -> f64 {
+    (spacing / 4.0).clamp(6.0, 24.0)
+}
+
 /// Evaluates terrain elevation at any plan point.
 pub(crate) struct ElevationModel<'a> {
     datums: Vec<(Point, f64)>,
@@ -40,6 +45,13 @@ impl<'a> ElevationModel<'a> {
                 densify(&region.polygon, half, true)
                     .into_iter()
                     .map(|p| (p, region.z)),
+            );
+        }
+        for brk in &t.breaks {
+            datums.extend(
+                densify(&brk.points, break_step(spacing), false)
+                    .into_iter()
+                    .map(|p| (p, brk.z)),
             );
         }
         let mut model = ElevationModel {

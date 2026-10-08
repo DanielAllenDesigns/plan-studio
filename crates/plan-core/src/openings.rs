@@ -212,6 +212,22 @@ pub fn clamp_opening_center(wall_len: f64, width: f64, center: f64) -> Option<f6
     Some(center.clamp(half + OPENING_MARGIN, wall_len - half - OPENING_MARGIN))
 }
 
+/// Door placement defaults from the pointer (DW-8, DW-76): returns
+/// `(swing_flipped, hinge_at_end)`. The door swings toward the side of the
+/// wall the pointer is on (`swing_flipped` is false for the wall's left/normal
+/// side, true for the right; a pointer on the centerline keeps the left), and
+/// the hinge goes to the jamb nearer the closer wall end.
+pub fn door_defaults_for_pointer(
+    wall: &crate::model::Wall,
+    pointer: Point,
+    center_offset: f64,
+) -> (bool, bool) {
+    let n = wall.normal();
+    let rel = pointer.sub(wall.start);
+    let side = rel.x * n.x + rel.y * n.y;
+    (side < 0.0, center_offset > wall.length() * 0.5)
+}
+
 impl Project {
     /// Reverse Swing (DW-32): the door opens to the other side of the wall,
     /// hinge unchanged. Returns `false` for an unknown opening.

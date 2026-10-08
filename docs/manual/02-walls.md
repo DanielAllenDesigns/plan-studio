@@ -21,6 +21,8 @@ A wall is one straight segment (or one arc, see Curve below), drawn along its
 ```
 
 - **Kind**: Exterior or Interior.
+- **Bottom height**: where the wall starts above the floor it is drawn on, in inches (0 by default, like Chief's wall "Bottom" value). A wall spans from its bottom height to its bottom
+  height plus its height. The 3D view honors it for standard walls and every straight wall class; the plan view, room detection, elevations, schedules and wall framing do not know it yet (2.9).
 - **Wall type**: a named stack of layers, for example `Stucco-6` (stucco,
   sheathing, 5 1/2" framing, drywall). Exactly one layer is the **Main layer**.
   The type decides the wall's thickness. See 2.8.
@@ -63,9 +65,9 @@ only in the wall it creates.
 | Straight Glass Pony Wall | | Works. |
 | Straight Half-Wall | | Works. |
 | Room Divider | | Works. |
-| Slab Footing | | (planned) The slab tools are in their own flyout (chapter 16). |
-| Wall Hatching | | (planned) |
-| Wall Material Region | | (planned) |
+| Slab Footing | | Works: draw a polygon and it makes a foundation slab with a footing (chapters 16 and 17). The slab tools are also in their own flyout. |
+| Wall Hatching | | Works: click a wall and pick the pattern (chapter 17). |
+| Wall Material Region | | Works: click a wall, or press and drag along it for part of its length (chapter 17). |
 
 The button's face shows the last variant you used, and alias key `2` starts
 whichever wall variant is on the face. Switching between Exterior and Interior
@@ -215,7 +217,7 @@ button is not wired to it yet and reports "not implemented yet".
 
 Press `Space`. Select Objects picks and edits every kind of object: walls, openings, dimensions, CAD
 and text, cabinets, library symbols, stairs, roof planes, electrical devices, camera objects, rooms,
-the terrain and slab objects (placed framing is picked with its own tools, chapter 11.11; each kind's handles and dialog are in its own chapter). This section is about walls: click
+the terrain, slab objects, placed framing and the exterior details (each kind's handles and dialog are in its own chapter; a schedule placed in the plan is picked with the Schedule tool, chapter 11.2). This section is about walls: click
 a wall to select it (anywhere inside its footprint). The selection shows **handles** and **temporary
 dimensions**.
 
@@ -299,8 +301,11 @@ does not parse.
 
 - **General**: check boxes **Foundation Wall** and **Railing** (they switch the wall's
   class; disabled in the Default Settings dialogs), Terrain Retaining Wall and Attic Wall
-  (disabled); **Wall Class**; **Thickness**; **Wall Length**; **Wall Angle**; **Lock**
+  (disabled); **Wall Class**; **Thickness**; **Bottom Height**; **Wall Length**; **Wall Angle**; **Lock**
   Start / Center / End.
+  - **Bottom Height** is the distance from the floor to the bottom of the wall (0 by default). A negative value is refused. It is disabled in the Default Settings dialogs;
+    "Default Wall Bottom Height" in the Structure group stays disabled. A wall with a bottom height shows its full height in 3D starting at that level;
+    the openings keep their sill heights measured from the floor, so only the part of an opening between the wall's bottom and top is cut. Explode Dormer (chapter 8) uses it to stand the dormer's walls on the roof.
   - **Wall Class** (not in the Default Settings dialogs) is a list of Standard, Foundation,
     Pony Wall, Glass Wall, Glass Pony Wall, Half-Wall, Room Divider, Railing, Deck Railing,
     Deck Edge and Fencing, in flyout order. Picking a class moves the wall to that class's
@@ -403,6 +408,8 @@ edits the same values.
 - **Stored in the wall's extras**: the Display in Plan View switch, a specified label text, and the
   wall type last picked in the Wall Types tab. They are saved with the plan and migrate on their own
   from older files (which simply load with the defaults).
+- **Stored with the wall**: the Bottom Height (`bottom_offset`, 0 unless set). Limits: Railing-class (`flags.railing`) walls ignore it in 3D, and the 2D plan, room detection, elevations,
+  schedules and wall framing do not read it yet.
 - **Stored with the class**: the Wall Class and the values that go with it (pony upper and lower
   types, split height and plan display; glass pony lower type and split; half-wall height; fence
   style), the Foundation Height, and the curve of a curved wall.
@@ -418,7 +425,7 @@ edits the same values.
 - Curved walls have no mitered joins, no 3D opening cuts, no bulge handle and no editable Curved Wall
   section; a curved wall is a run of 7.5 degree facets in 3D.
 - Pony, glass, half-wall, railing, deck and fencing default types and heights are typical values, not
-  Chief's, and are not editable from Default Settings. Terrain walls, curbs, Wall Hatching, Wall Material
-  Region and the Polygon Shaped Deck are (planned).
+  Chief's, and are not editable from Default Settings. Terrain walls and curbs are (planned); Wall Hatching, Wall Material
+  Region and the Polygon Shaped Deck are in chapter 17.
 - The Roof, Foundation, Wall Cap, Wall Covering, Newels/Balusters and Rails tabs of the Wall
   Specification are still (disabled).

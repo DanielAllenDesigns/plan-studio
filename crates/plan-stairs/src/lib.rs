@@ -9,6 +9,7 @@
 //! Y up, Z = -plan y (see `plan-3d`).
 
 mod deck;
+mod landing;
 mod layout;
 mod model3d;
 mod plan;
@@ -19,11 +20,13 @@ use plan_core::{Id, Point};
 use serde::{Deserialize, Serialize};
 
 pub use deck::{deck_edge_railing, Deck};
+pub use landing::polygon_slab;
 pub use model3d::{meshes, tagged_meshes, StairPart};
 pub use plan::{plan_symbol, Stroke};
 pub use railing::{
     plan_symbol_railing, railing_meshes, railing_segments, stair_railing, stair_railing_geometry,
     NewelParams, RailSide, RailStyle, RailingGeometry, RailingParams, StairRailingGeometry,
+    GUARD_HEIGHT, MAX_BALUSTER_CLEAR, STAIR_RAIL_HEIGHT,
 };
 
 /// Maximum riser height, IRC R311.7.5.1.
@@ -38,6 +41,12 @@ pub const MIN_WIDTH: f64 = 36.0;
 pub const MIN_HEADROOM: f64 = 80.0;
 /// Tolerance for float comparisons against code limits.
 const EPS: f64 = 1e-9;
+/// Maximum rise of one ramp run between landings, IBC 1012.2 (30").
+pub const RAMP_MAX_RISE: f64 = 30.0;
+/// Length of the flat landing between two ramp runs, IBC 1012.6 (60").
+pub const RAMP_LANDING: f64 = 60.0;
+/// Narrowest tread of a curved stair at the inside edge, IRC R311.7.5.2.1 (6").
+pub const MIN_CURVED_TREAD_INSIDE: f64 = 6.0;
 
 /// Which way a flight turns at a landing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,11 +77,73 @@ pub enum StairShape {
         /// Number of winder treads in the turn (at least 1).
         winders: u32,
     },
-    /// A ramp instead of steps.
+    /// A ramp instead of steps. A rise over 30" is split into runs of at most
+    /// 30" joined by flat 60" landings.
     Ramp {
         /// Run per inch of rise (12 means 1:12).
         slope_1_in: f64,
     },
+    /// Treads fanned around a centre point (a curved stair). The turn
+    /// direction is [`StairParams::turn`]; the sweep follows from the number
+    /// of treads and the tread depth on the walking line.
+    Curved {
+        /// Distance from the centre to the inside edge of the stair.
+        inner_radius: f64,
+    },
+    /// A flat platform, `depth` along the direction of travel by the width
+    /// (or the polygon in [`StairParams::outline`]). Its top sits
+    /// [`StairParams::total_rise`] above the floor.
+    Landing {
+        /// Length along the direction of travel.
+        depth: f64,
+    },
+}
+
+/// How the stringers under the treads are built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StringerStyle {
+    /// A full board whose top edge follows the nosing line (a housed or
+    /// closed stringer).
+    #[default]
+    Closed,
+    /// A notched (cut) stringer: the steps are cut out of the board.
+    Open,
+    /// No stringers (the treads span between walls).
+    None,
+}
+
+/// What stands on one side of the stair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SideKind {
+    /// Open and unguarded.
+    #[default]
+    None,
+    /// A full-height wall along the side.
+    Wall,
+    /// A railing with newels and balusters (see [`StairParams::railing`]).
+    Railing,
+    /// A half-wall with a cap rail.
+    HalfWall,
+}
+
+impl SideKind {
+    /// The names of the Stair Specification, in menu order.
+    pub const ALL: [SideKind; 4] = [
+        SideKind::None,
+        SideKind::Wall,
+        SideKind::Railing,
+        SideKind::HalfWall,
+    ];
+
+    /// Chief's label.
+    pub fn name(self) -> &'static str {
+        match self {
+            SideKind::None => "None",
+            SideKind::Wall => "Wall",
+            SideKind::Railing => "Railing",
+            SideKind::HalfWall => "Half Wall",
+        }
+    }
 }
 
 /// The inputs of the Stair Specification dialog.
@@ -107,6 +178,21 @@ pub struct StairParams {
     pub turn: Turn,
     /// Add a handrail along both sides of each flight.
     pub handrail: bool,
+    /// Stringer construction.
+    pub stringer: StringerStyle,
+    /// The left side, facing the direction of travel.
+    pub left_side: SideKind,
+    /// The right side, facing the direction of travel.
+    pub right_side: SideKind,
+    /// Rails, newels and balusters of the sides marked [`SideKind::Railing`]
+    /// (the half-wall height of a [`SideKind::HalfWall`] side is unused: the
+    /// wall rises to the rail).
+    pub railing: RailingParams,
+    /// Thickness of landings, winder treads and ramp slabs.
+    pub slab_thickness: f64,
+    /// The corners of a polygon landing in plan (empty: a rectangle `width`
+    /// by the landing depth).
+    pub outline: Vec<Point>,
 }
 
 impl Default for StairParams {
@@ -126,6 +212,12 @@ impl Default for StairParams {
             landing_depth: 36.0,
             turn: Turn::Left,
             handrail: false,
+            stringer: StringerStyle::Closed,
+            left_side: SideKind::None,
+            right_side: SideKind::None,
+            railing: RailingParams::default(),
+            slab_thickness: 3.5,
+            outline: Vec::new(),
         }
     }
 }
@@ -143,6 +235,8 @@ pub struct StairSolution {
     pub tread_depth: f64,
     /// Horizontal run along the path, including landings.
     pub total_run: f64,
+    /// Flat landings between flights (L and U stairs, ramp landings).
+    pub landings: u32,
     /// True when every hard IRC limit is met.
     pub code_ok: bool,
     /// Code violations and comfort-rule notes.
@@ -162,6 +256,11 @@ pub struct Stair {
     pub params: StairParams,
     /// Elevation of the floor the stair starts from.
     pub floor_elevation: f64,
+    /// Height of the bottom of the stair above that floor: 0 for a stair that
+    /// starts on the floor, the height of the landing for a section that
+    /// starts on one.
+    #[serde(default)]
+    pub base: f64,
 }
 
 impl Stair {
@@ -173,7 +272,13 @@ impl Stair {
             direction,
             params,
             floor_elevation: 0.0,
+            base: 0.0,
         }
+    }
+
+    /// Absolute elevation of the bottom of the stair.
+    pub fn bottom_elevation(&self) -> f64 {
+        self.floor_elevation + self.base
     }
 }
 
@@ -203,7 +308,10 @@ pub(crate) fn split(params: &StairParams, risers: u32) -> Option<Split> {
             treads_before_landing,
         } => (2, 0, Some(treads_before_landing)),
         StairShape::Winder { winders } => (winders.max(1) + 1, winders.max(1), None),
-        StairShape::Straight | StairShape::Ramp { .. } => return None,
+        StairShape::Straight
+        | StairShape::Ramp { .. }
+        | StairShape::Curved { .. }
+        | StairShape::Landing { .. } => return None,
     };
     if risers < pad {
         return None;
@@ -226,17 +334,35 @@ pub fn solve(params: &StairParams) -> StairSolution {
     let mut warnings = Vec::new();
     let mut code_ok = true;
 
+    if let StairShape::Landing { depth } = params.shape {
+        if params.width < MIN_WIDTH - EPS {
+            code_ok = false;
+            warnings.push(format!(
+                "landing width {:.2}\" is below the 36\" minimum",
+                params.width
+            ));
+        }
+        return StairSolution {
+            risers: 0,
+            riser_height: 0.0,
+            treads: 0,
+            tread_depth: 0.0,
+            total_run: depth.max(0.0),
+            landings: 0,
+            code_ok,
+            warnings,
+        };
+    }
+
     if let StairShape::Ramp { slope_1_in } = params.shape {
-        let run = params.total_rise.max(0.0) * slope_1_in.max(0.0);
+        let runs = ramp_runs(params.total_rise);
+        let run =
+            params.total_rise.max(0.0) * slope_1_in.max(0.0) + f64::from(runs - 1) * RAMP_LANDING;
         if slope_1_in < 12.0 {
             code_ok = false;
             warnings.push(format!(
                 "ramp slope 1:{slope_1_in:.1} is steeper than the 1:12 maximum"
             ));
-        }
-        if params.total_rise > 30.0 {
-            code_ok = false;
-            warnings.push("ramp rise exceeds 30\" between landings".into());
         }
         if params.width < MIN_WIDTH - EPS {
             code_ok = false;
@@ -251,6 +377,7 @@ pub fn solve(params: &StairParams) -> StairSolution {
             treads: 0,
             tread_depth: 0.0,
             total_run: run,
+            landings: runs - 1,
             code_ok,
             warnings,
         };
@@ -309,12 +436,22 @@ pub fn solve(params: &StairParams) -> StairSolution {
 
     let treads = risers - 1;
     let straight_run = f64::from(treads) * params.tread_depth;
+    if let StairShape::Curved { inner_radius } = params.shape {
+        let walk = inner_radius.max(0.0) + params.width / 2.0;
+        let inside = params.tread_depth * inner_radius.max(0.0) / walk.max(1e-9);
+        if inside < MIN_CURVED_TREAD_INSIDE - EPS {
+            code_ok = false;
+            warnings.push(format!(
+                "tread is {inside:.2}\" deep at the inside edge, under the 6\" minimum"
+            ));
+        }
+    }
     let total_run = match (split(params, risers), params.shape) {
         (Some(s), StairShape::Winder { .. }) => {
             f64::from(s.t1 + s.t2) * params.tread_depth + params.width
         }
         (Some(s), _) => f64::from(s.t1 + s.t2) * params.tread_depth + effective_landing(params),
-        (None, StairShape::Straight) => straight_run,
+        (None, StairShape::Straight | StairShape::Curved { .. }) => straight_run,
         (None, _) => {
             warnings
                 .push("too few risers for the requested turn; drawn as a straight stair".into());
@@ -322,15 +459,45 @@ pub fn solve(params: &StairParams) -> StairSolution {
         }
     };
 
+    let landings = match (split(params, risers), params.shape) {
+        (Some(_), StairShape::LShaped { .. } | StairShape::UShaped { .. }) => 1,
+        _ => 0,
+    };
     StairSolution {
         risers,
         riser_height,
         treads,
         tread_depth: params.tread_depth,
         total_run,
+        landings,
         code_ok,
         warnings,
     }
+}
+
+/// How many runs a ramp of `total_rise` is built in: at most 30" of rise
+/// each, joined by flat landings.
+pub fn ramp_runs(total_rise: f64) -> u32 {
+    ((total_rise.max(0.0) / RAMP_MAX_RISE - EPS).ceil().max(1.0)) as u32
+}
+
+/// The fewest risers that keep the riser height within `max_riser` for a
+/// floor-to-floor `rise` (15 for 109 1/8" with the 7 3/4" maximum).
+pub fn min_risers(rise: f64, max_riser: f64) -> u32 {
+    ((rise.max(0.0) / max_riser.max(MIN_RISER) - EPS)
+        .ceil()
+        .max(1.0)) as u32
+}
+
+/// The centre of a curved stair in plan, or `None` for other shapes.
+pub fn curve_center(stair: &Stair) -> Option<Point> {
+    let layout = Layout::build(stair);
+    layout.curve.map(|c| layout.frame.uv(c.center))
+}
+
+/// Angle swept by a curved stair from the first to the last riser, radians.
+pub fn curve_sweep(stair: &Stair) -> Option<f64> {
+    Layout::build(stair).curve.map(|c| c.sweep())
 }
 
 /// Plan polygon covering all flights and landings (for stairwell openings).
@@ -346,6 +513,10 @@ pub fn footprint(stair: &Stair) -> Vec<Point> {
 /// Where the stair arrives: the centre of the top riser line and its elevation.
 pub fn top_point(stair: &Stair) -> (Point, f64) {
     let layout = Layout::build(stair);
+    if let Some(c) = &layout.curve {
+        let p = layout.frame.uv(c.at(c.sweep(), c.walk()));
+        return (p, stair.bottom_elevation() + layout.total_rise);
+    }
     let last = layout
         .flights
         .last()
@@ -353,7 +524,7 @@ pub fn top_point(stair: &Stair) -> (Point, f64) {
     let (u, v) = last.at(last.len, last.width / 2.0);
     (
         layout.frame.point(u, v),
-        stair.floor_elevation + layout.total_rise,
+        stair.bottom_elevation() + layout.total_rise,
     )
 }
 

@@ -21,6 +21,8 @@ shared walls. Centerline area runs to the middle of every wall. See 4.1.
 **Attic wall.** A short wall in the attic, usually under the roof, that holds up the roof or defines a space. A
 floor of kind Attic sits above the top floor.
 
+**Auto elevations.** One click that makes the four exterior elevation cameras (north, east, south and west) around the building. See 10.11.
+
 ## B
 
 **Backsplash.** The strip of material behind a countertop, protecting the wall from splashes. Default
@@ -38,6 +40,10 @@ including the counter, in Daniel's template.
 
 **Bearing wall.** A wall that carries the weight of the floor or roof above it, not just its own.
 
+**Blind cabinet.** A cabinet whose hidden end tucks behind the cabinet at a perpendicular wall. See 6.2.
+
+**Bottom height.** Where a wall starts above the floor it is drawn on, in inches (0 by default). See 2.1 and 2.6.
+
 **Bumping.** A rule that makes a moved cabinet stop against a wall or slide up against its neighbor instead of
 overlapping it.
 
@@ -46,9 +52,11 @@ overlapping it.
 **CAD.** Computer-aided drafting: plain lines, arcs, circles, text. In Chief and Plan Studio, "CAD objects"
 are these 2D drawing items, as opposed to model objects such as walls.
 
-**CAD block.** A group of CAD objects saved or kept together so they move as one thing.
+**CAD block.** A named group of CAD objects kept together so they move as one thing and can be inserted again. See 5.4.
 
 **Callout.** A piece of text with a leader line that points at something and explains it.
+
+**Callout label.** The short mark (`D01`, `W03`, `C-12`) a schedule draws beside each door, window, cabinet or fixture so the object and its schedule row can be matched. See 11.2.
 
 **Casing.** The trim around a door or window opening on the wall surface. Defaults here are 3 1/2" interior
 and 3 1/4" exterior.
@@ -58,7 +66,7 @@ and 3 1/4" exterior.
 **Ceiling height.** The distance from the finished floor to the finished ceiling. 9'-1 1/8" (109 1/8") in
 Daniel's template, which is 9 feet of room plus the thickness of the floor structure above it.
 
-**Ceiling plane.** A sloped plane that carries a vaulted ceiling, drawn like a roof plane on the `Ceiling Planes` layer. See 8.2.
+**Ceiling plane.** A sloped plane that carries a vaulted ceiling, drawn like a roof plane on the `Ceiling Planes` layer, or made by Build Roof for rooms with Ceiling Over This Room turned off. See 8.2.
 
 **Centerline.** The middle of a wall, drawn as one line. Plan Studio stores each wall by its centerline.
 
@@ -68,6 +76,10 @@ Daniel's template, which is 9 feet of room plus the thickness of the floor struc
 unconditioned.
 
 **Contour (line).** A line on a site plan joining points at the same elevation. Closer lines mean a steeper slope.
+
+**Corner board.** A vertical trim board on each outside face of an exterior corner, covering the ends of the siding. See 17.
+
+**Corner cabinet.** A cabinet that sits in the inside corner of two walls, with a diagonal or pie-cut front. See 6.2.
 
 **Crawl space.** A low space under the first floor, too short to stand in, between the ground and the floor.
 
@@ -87,7 +99,7 @@ dimension**: a measurement that appears while you draw or select something and i
 **Door types.** Hinged (swings on hinges), doorway (a cased opening with no door), sliding, pocket (slides into the wall),
 bifold, barn, garage, fixed and shower. Only hinged is built so far.
 
-**Dormer.** A small structure that sticks out of a sloped roof and holds a vertical window. Auto Dormer builds a gable, shed or hip dormer on a roof plane; Explode Dormer turns it into plain roof planes (8.2, 8.6).
+**Dormer.** A small structure that sticks out of a sloped roof and holds a vertical window. Auto Dormer builds a gable, shed or hip dormer on a roof plane; Explode Dormer turns it into plain roof planes and real walls (8.2, 8.6).
 
 ## E
 
@@ -110,9 +122,11 @@ code limits are in 4.8.
 
 **Fencing.** A wall variant (picket, privacy or rail style) drawn on the `Fencing` layer, 72" high by default. See 2.2.
 
-**Filler.** A narrow strip that closes a gap between a cabinet and a wall or another cabinet. (Planned.)
+**Filler.** A narrow strip that closes a gap between a cabinet and a wall or another cabinet. The filler tools take the width of the gap you click into (6.2).
 
 **Fill style.** The pattern or color a closed shape is filled with in plan, such as a hatch.
+
+**Floating dormer.** A dormer that sits on the roof surface and cuts no hole in the roof plane under it. See 8.2.
 
 **Floor platform.** The structure of a floor: finish, subfloor and joists. Its thickness (10 1/4" by default) adds
 to the ceiling height to give the floor-to-floor rise.
@@ -146,7 +160,7 @@ template). The snap grid is the invisible spacing the cursor jumps to (1").
 
 **Half-wall.** A wall whose top is lowered to a set height, 36" by default. See 2.2.
 
-**Hatch.** A pattern of fine lines that stands for a material (brick, siding, stucco, stone, shingle ...) on a drawing. Elevations can hatch visible faces (10.7); the pattern scale is fixed for a 1/4" sheet.
+**Hatch.** A pattern of fine lines that stands for a material (brick, siding, stucco, stone, shingle ...) on a drawing. Elevations can hatch visible faces (10.7; the pattern scale is fixed for a 1/4" sheet), the CAD Hatch tool hatches a closed shape (5.4) and Wall Hatching hatches a wall in plan (17).
 
 **Header.** A beam over a door or window opening that carries the load of the wall above it.
 
@@ -163,6 +177,8 @@ template). The snap grid is the invisible spacing the cursor jumps to (1").
 ## J
 
 **Jamb.** The vertical side of a door or window opening, or the frame lining the opening.
+
+**Join Roof Planes.** Extends or trims one roof plane's edge to the line where it meets another plane. See 8.2.
 
 **Joist.** One of the parallel horizontal beams that hold up a floor or ceiling.
 
@@ -184,9 +200,13 @@ and Dimensions each have their own. See 5.5.
 
 **Layer set.** A saved combination of which layers are on, locked and how they look, so a view can show only what it needs. A **saved plan view** (such as "Floor Plan View") pairs a layer set with a floor and a zoom. See 5.5.
 
-**Layout.** In Chief, the part of the program that arranges views, schedules and notes on sheets of paper for printing. See 11.5.
+**Layout.** In Chief, the part of the program that arranges views, schedules and notes on sheets of paper for printing. Plan Studio keeps one layout per plan, shown in its own view. See 11.3.
 
-**Layout edge.** The weight of the border line around a layout page. See 11.5.
+**Layout box.** A rectangle on a layout page that shows one view (a plan, an elevation or a section) at a scale. See 11.3.
+
+**Layout edge.** The weight of the border line around a layout page. See 11.3.
+
+**Light (plan light).** A point light placed in the plan with Add Lights; the ray tracer uses it. See 10.13.
 
 **Lintel.** A beam or trim piece over an opening.
 
@@ -196,7 +216,7 @@ and Dimensions each have their own. See 5.5.
 
 ## M
 
-**Macro.** A `%...%` code in a title block (`%project.name%`, `%client%`, `%date.long%` ...) that is replaced by the project's value when the sheet is printed. See 11.5.
+**Macro.** A `%...%` code in a title block (`%project.name%`, `%client%`, `%date.long%` ...) that is replaced by the project's value when the sheet is printed. The values come from Project Information. See 11.4.
 
 **Main layer.** The structural layer of a wall (the framing). Other layers (siding, sheathing, drywall) are measured from it. Exactly one layer per wall type.
 
@@ -204,7 +224,11 @@ and Dimensions each have their own. See 5.5.
 
 **Marquee.** The rectangle you drag on empty space to select several objects.
 
+**Material region.** A patch of a different finish material on a floor or on one face of a wall, drawn as a polygon or a rectangle. See 17.
+
 **Miter.** A corner joint cut at half the angle between two parts. Wall corners are mitered so the faces meet cleanly.
+
+**Molding.** A profiled strip (crown, base, chair rail, casing) run along a line. The Molding tools sweep a profile along a line or polyline. See 17.
 
 **Mulled windows.** Two or more windows joined side by side into one unit. (Planned.)
 
@@ -214,7 +238,7 @@ and Dimensions each have their own. See 5.5.
 
 **Nosing.** The part of a stair tread that sticks out past the riser below it. 1" by default.
 
-**Note.** A numbered annotation from the Text tools, listed in the Note Schedule. (Planned schedule.)
+**Note.** A numbered annotation from the Text tools (`Note 3:`, or the prefix of its note type, such as `E 1:`). See 5.3.
 
 ## O
 
@@ -227,6 +251,8 @@ and Dimensions each have their own. See 5.5.
 **Overhang.** How far a roof or countertop sticks out past what holds it up. Roof: 16" by default. Countertop: 1".
 
 ## P
+
+**Page template.** The layout page that is not printed but whose boxes and border repeat on every other page. See 11.3.
 
 **Pad (square pad).** A square slab of concrete under a post or a load, placed with one click. See chapter 16.
 
@@ -248,7 +274,13 @@ and Dimensions each have their own. See 5.5.
 
 **Pocket door.** A door that slides into a hollow space inside the wall. (Planned.)
 
+## Q
+
+**Quoin.** A corner treatment of stacked blocks, long and short alternating, that imitates stone or brick bonded into an exterior corner. See 17.
+
 ## R
+
+**Project Information.** The client, designer, job number, date, revisions and custom fields of a plan, which fill the layout's title block. Tools > Project Information. See 11.4.
 
 **Rafter.** A sloping beam that carries the roof from the ridge down to the wall.
 
@@ -274,9 +306,11 @@ and Dimensions each have their own. See 5.5.
 
 ## S
 
-**Schedule.** A table that lists objects of one kind with their sizes: door schedule, window schedule, room schedule. See 11.2.
+**Schedule.** A table that lists objects of one kind with their sizes: door schedule, window schedule, room schedule. It can be a window, or a live table placed in the plan with callout labels on the objects. See 11.2.
 
 **Section.** See **cross section**.
+
+**Send to Layout.** Puts the current plan view, or an elevation or section camera, on a layout page as a box. `S, L`. See 11.3.
 
 **Shed roof.** A roof with a single slope.
 
@@ -294,6 +328,8 @@ and Dimensions each have their own. See 5.5.
 
 **Stem wall.** A short foundation wall that rises from the footing to the floor.
 
+**Story pole.** A vertical string of level heights (floor platforms and ceiling heights) used to check heights against the floors. See 5.2.
+
 **Stringer.** The sloped board under a stair that carries the treads.
 
 **Stud.** One of the vertical boards in a framed wall, usually at 16" on center.
@@ -304,6 +340,8 @@ and Dimensions each have their own. See 5.5.
 
 **Takeoff.** A count of the material a plan needs: studs by length, board feet, linear feet. The Framing Takeoff window lists it and exports CSV. See 11.11.
 
+**Template seeding.** Plan Studio reading your Chief default plan and layout templates and laying their wall types, text styles, dimension sets and default height over its own defaults. See 1.7.1.
+
 **Tread.** The flat part of a stair step you stand on. 10" deep or more by the code.
 
 **Toe kick.** The recessed strip at the bottom of a base cabinet so you can stand close. 4" high, 3" deep by default.
@@ -312,17 +350,25 @@ and Dimensions each have their own. See 5.5.
 
 **Truss base.** The closed outline you draw on a plan that Build Framing fills with roof trusses. See 11.11.
 
+**Typed slot.** A field of the plan file that holds one kind of object as JSON owned by a view module (roofs, details, schedules, the layout ...), saved and undone with the plan. See 12.2 and 14.3.
+
 ## V
 
 **Valley.** The inside corner where two roof slopes meet and water runs together.
 
-**Vaulted ceiling.** A ceiling that follows the slope of the roof, higher in the middle. The Ceiling Plane tool draws one by hand (8.2); Build Roof does not generate them yet.
+**Vaulted ceiling.** A ceiling that follows the slope of the roof, higher in the middle. The Ceiling Plane tool draws one by hand and Build Roof can make them (8.2).
+
+**Vector view.** A rendering technique that shows an elevation or section camera as a line drawing with poche, shadows and hatch instead of a 3D picture. See 10.7.
 
 ## W
 
 **Wall class.** Which kind of wall a wall is: standard, foundation, pony, glass, glass pony, half-wall, room divider, railing, deck railing, deck edge or fencing. Set it with the tool or in the Wall Specification. See 2.1.
 
+**Wall elevation.** An elevation camera of a single wall face, made by clicking the wall. See 10.11.
+
 **Wall type.** A named recipe for a wall's layers and thickness, such as Stucco-6: stucco, sheathing, 5 1/2" framing, drywall. See 2.7.
+
+**Walkthrough.** A camera that moves along a path drawn in the plan; it can be played in the 3D view or recorded as frames. See 10.12.
 
 **Winder.** A pie-shaped stair tread that lets a stair turn a corner without a landing.
 
@@ -337,4 +383,5 @@ and Dimensions each have their own. See 5.5.
 | o.c. | On center (stud and joist spacing, 16") |
 | OSB | Oriented strand board, a common sheathing |
 | psplan | Plan Studio plan file |
+| QA | Quality assurance; the scenario tests and `docs/qa-findings.md` (14.8) |
 | sq ft | Square feet |

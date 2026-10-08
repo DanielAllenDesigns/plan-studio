@@ -966,6 +966,8 @@ pub fn migrate_legacy(project: &mut Project) -> bool {
     changed |= plan_core::foundation::migrate_legacy(project);
     // Lights kept as hidden text records move into `Project::lights`.
     changed |= plan_core::camera::migrate_legacy(project);
+    // CAD attributes, blocks, text macros and note types kept on "CAD, Data".
+    changed |= plan_core::cad::migrate_legacy(project);
     changed
 }
 

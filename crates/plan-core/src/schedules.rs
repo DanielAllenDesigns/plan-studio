@@ -88,6 +88,7 @@ const ROOM_FIELDS: &[Field] = &[
     f("mark", "Number", true),
     f("name", "Name", true),
     f("area", "Area sq ft", true),
+    f("standard_area", "Standard Area", false),
     f("perimeter", "Perimeter ft", true),
     f("ceiling_height", "Ceiling height", true),
     f("floor_finish", "Floor Finish", false),

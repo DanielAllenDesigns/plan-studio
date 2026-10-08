@@ -104,6 +104,32 @@ pub fn slab_from_polygon(polygon3d: &[[f64; 3]], thickness: f64, material: Mater
     mesh.finish(None)
 }
 
+/// Per-room vertical settings that reach the 3D platforms (R-23, R-24, R-33):
+/// the room name entry whose anchor lies in the room supplies a floor height
+/// offset and a ceiling height override; rooms without a named entry (or
+/// without an override) keep the floor's defaults.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RoomLevels {
+    /// Raise of the room's floor above the floor datum, inches.
+    pub floor_offset: f64,
+    /// Ceiling height measured from the room's own floor, inches.
+    pub ceiling_height: f64,
+}
+
+/// The levels of `room` on `floor`.
+pub(crate) fn room_levels(floor: &plan_core::Floor, room: &plan_core::Room) -> RoomLevels {
+    let named = floor
+        .room_names
+        .iter()
+        .find(|n| plan_core::geometry::point_in_polygon(n.anchor, &room.polygon));
+    RoomLevels {
+        floor_offset: named.map_or(0.0, |n| n.floor_height_offset),
+        ceiling_height: named
+            .and_then(|n| n.ceiling_height)
+            .unwrap_or(floor.ceiling_height),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

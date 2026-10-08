@@ -269,21 +269,20 @@ fn reverse_swing_flips_the_leaf_side_in_one_undo_step() {
 }
 
 #[test]
-fn doors_default_to_the_start_hinge_and_inward_swing_before_any_edit() {
+fn a_centerline_click_near_the_wall_start_gives_the_default_swing_and_start_hinge() {
     let mut sim = house();
     sim.tool(ToolId::Door);
     sim.click(120.0, 0.0);
     let d = openings(&sim)[0].clone();
-    // Today every door starts from the template: hinge at the wall start,
-    // swing on the wall's default side. (DW-8 wants these derived from the
-    // pointer; see the ignored test below.)
+    // A click on the centerline of a wall near its start: hinge at the wall
+    // start and the swing on the wall's default side (DW-8 / DW-76; the test
+    // below covers the pointer side and the far end).
     assert!(!d.hinge_at_end && !d.swing_flipped);
 }
 
 /// DW-8 / DW-76: the swing side follows the side of the wall the pointer is
 /// on and the hinge goes to the jamb nearer a wall end.
 #[test]
-#[ignore = "QA-01"]
 fn door_swing_follows_the_pointer_side_and_hinge_the_nearer_end() {
     let mut sim = house();
     sim.tool(ToolId::Door);

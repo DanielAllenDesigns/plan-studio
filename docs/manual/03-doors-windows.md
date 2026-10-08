@@ -81,7 +81,7 @@ Hinge and swing: a placed hinged door hinges at the wall-start jamb and swings t
 the left side of the wall (looking from start to end). Use Reverse Swing or the
 swing handle (below) to flip the swing to the other side, and the Door Specification's
 Swing side and Hinge side to set both. Choosing the swing side and hinge jamb from the
-pointer position while placing (Chief's behavior) is (planned).
+pointer position while placing (Chief's behavior) is (planned); the scenario tests record it as QA-01 in `docs/qa-findings.md`, fixed in Round 8.
 
 ### Editing with Select Objects
 
@@ -176,7 +176,7 @@ Width, Fit Jamb to Wall, Depth (when not fit to wall), Inset. Defaults: 3/4" jam
 Display Options (Suppress Label in All Views, Display in Plan View), Label Content
 (Automatic Label or Specify Label), Size Format (Height/Width, Width/Height, Width
 Only), Include Schedule Number, Include Type. The Label Layer (Doors, Labels) is
-disabled. All of this is session only until the plan labels are drawn.
+disabled. All of this is session only until the plan labels are drawn. (The `D01` / `W01` marks that a Door or Window Schedule placed in the plan draws beside each opening are a separate thing, chapter 11.2.)
 
 ## 3.5 Dialog: Window Specification
 
@@ -227,5 +227,5 @@ active floor with its size, style and position, and export CSV (chapter 11).
   defaults from older files). The other Opening Specification choices (casing, lites' muntin width,
   label options, door style) are session only for placed openings; only the Default Settings dialogs
   write the template values that new openings copy.
-- Plan labels, schedule callouts, casing marks, mulled windows, bay/bow/box
+- Opening plan labels, casing marks, mulled windows, bay/bow/box
   windows, garage and sliding door symbols are all (planned).

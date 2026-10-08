@@ -22,7 +22,7 @@ use plan_core::cad::{
     break_polyline, break_segment, chamfer_lines_picked, chamfer_polyline_vertex, detail_items,
     extend_segment, fillet_lines_picked, fillet_polyline_vertex, lines_to_polylines, make_parallel,
     make_perpendicular, offset_polyline, offset_segment, polyline_to_lines, reverse_item,
-    trim_segment, CadAttrs, CadBlockInfo, CadObject, FillAttr, CAD_DATA_LAYER,
+    trim_segment, CadAttrs, CadBlockInfo, CadObject, FillAttr,
 };
 use plan_core::geometry::{dist_to_segment, point_in_polygon};
 use plan_core::layers::Layer;
@@ -370,9 +370,7 @@ impl CadTool {
             .into_iter()
             .find_map(|o| match o {
                 ObjectRef::Cad(id) => cad_by_id(cx.floor(), id)
-                    .filter(|c| {
-                        c.layer != CAD_DATA_LAYER && !matches!(c.item, CadItem::Text { .. })
-                    })
+                    .filter(|c| !matches!(c.item, CadItem::Text { .. }))
                     .cloned(),
                 _ => None,
             })
@@ -404,9 +402,7 @@ impl CadTool {
         cx.floor()
             .cad
             .iter()
-            .filter(|c| {
-                c.id != skip && c.layer != CAD_DATA_LAYER && cx.layers().is_visible(&c.layer)
-            })
+            .filter(|c| c.id != skip && cx.layers().is_visible(&c.layer))
             .flat_map(|c| item_segments(&c.item))
             .collect()
     }
@@ -808,7 +804,7 @@ impl CadTool {
             .floor()
             .cad
             .iter()
-            .filter(|c| c.layer != CAD_DATA_LAYER && cx.layers().is_visible(&c.layer))
+            .filter(|c| cx.layers().is_visible(&c.layer))
             .filter_map(|c| closed_outline(&c.item).map(|o| (c, o)))
             .filter(|(_, o)| point_in_polygon(p.world, o))
             .min_by(|a, b| polygon_area_abs(&a.1).total_cmp(&polygon_area_abs(&b.1)))

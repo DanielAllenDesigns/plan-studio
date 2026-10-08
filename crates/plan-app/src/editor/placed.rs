@@ -50,7 +50,7 @@ impl PlacedRef {
 #[derive(Clone, Debug)]
 pub enum PlacedItem {
     Cabinet(Box<Cabinet>),
-    Symbol(PlacedSymbol),
+    Symbol(Box<PlacedSymbol>),
 }
 
 thread_local! {
@@ -289,9 +289,17 @@ pub fn hit_symbol(cx: &EditorContext, p: Point, tol: f64) -> Option<Id> {
         .iter()
         .rev()
         .filter(|s| cx.layers().is_visible(&s.layer))
-        .find(|s| poly_dist(p, &s.footprint()) <= tol)
+        .find(|s| match &s.distribution {
+            // A distribution is picked on its path or outline, not anywhere
+            // in its bounding box.
+            Some(d) => d.distance_to(p) <= tol.max(DISTRIBUTION_PICK_TOL),
+            None => poly_dist(p, &s.footprint()) <= tol,
+        })
         .map(|s| s.id)
 }
+
+/// How close to its path a click picks a distribution record, inches.
+const DISTRIBUTION_PICK_TOL: f64 = 4.0;
 
 /// The cabinet or symbol under `p`: symbols first (they sit on top), then
 /// cabinets, newest first. Objects on hidden layers are skipped.
@@ -574,9 +582,15 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             continue;
         }
         let stroke = egui::Stroke::new(1.2_f32, pal.text);
-        match placed_symbol_strokes(s) {
-            Some(sym) => draw_library_strokes(painter, cam, &sym, stroke),
-            None => draw_outline(painter, cam, &s.footprint(), stroke),
+        if s.image.is_some() {
+            crate::tools::images::draw_image(painter, cam, s, pal.text);
+        } else if s.distribution.is_some() {
+            crate::tools::images::draw_distribution(painter, cam, s, pal.text);
+        } else {
+            match placed_symbol_strokes(s) {
+                Some(sym) => draw_library_strokes(painter, cam, &sym, stroke),
+                None => draw_outline(painter, cam, &s.footprint(), stroke),
+            }
         }
         if !s.label.is_empty() {
             draw_text(
@@ -676,7 +690,11 @@ pub fn copy_placed(cx: &mut EditorContext) -> usize {
             PlacedRef::Cabinet(id) => {
                 cabinet_by_id(cx.floor(), id).map(|c| PlacedItem::Cabinet(Box::new(c)))
             }
-            PlacedRef::Symbol(id) => cx.floor().symbol(id).cloned().map(PlacedItem::Symbol),
+            PlacedRef::Symbol(id) => cx
+                .floor()
+                .symbol(id)
+                .cloned()
+                .map(|s| PlacedItem::Symbol(Box::new(s))),
         })
         .collect();
     let n = items.len();
@@ -706,8 +724,16 @@ pub fn paste_placed(cx: &mut EditorContext) -> usize {
                     sel.push(ObjectRef::Cabinet(id));
                 }
             }
-            PlacedItem::Symbol(s) => {
-                sel.push(ObjectRef::Symbol(cx.project.add_symbol(fl, s)));
+            PlacedItem::Symbol(mut s) => {
+                // A pasted copy of a distributed object stands alone; a
+                // pasted distribution record makes its own copies.
+                s.owner = None;
+                let record = s.distribution.is_some();
+                let id = cx.project.add_symbol(fl, *s);
+                if record {
+                    cx.project.rebuild_distribution(fl, id);
+                }
+                sel.push(ObjectRef::Symbol(id));
             }
         }
     }
@@ -794,6 +820,9 @@ pub fn apply_cabinet(cx: &mut EditorContext, draft: &Cabinet) -> bool {
 
 /// Stores an edited symbol (the Symbol Specification OK) as one undo step.
 pub fn apply_symbol(cx: &mut EditorContext, draft: &PlacedSymbol) -> bool {
+    if draft.distribution.is_some() {
+        return crate::tools::images::apply_distribution(cx, draft);
+    }
     cx.begin_change("Symbol Specification");
     let fl = cx.floor;
     match cx.project.floors[fl]
@@ -811,6 +840,62 @@ pub fn apply_symbol(cx: &mut EditorContext, draft: &PlacedSymbol) -> bool {
             false
         }
     }
+}
+
+// ----- pictures, distributions and solids in 3D -----
+
+/// Flat-coloured quads for every picture of the project (see
+/// `plan_3d::images`); billboards keep their stored angle. The 3D view calls
+/// [`image_meshes_facing`] with the camera instead.
+pub fn image_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
+    image_meshes_facing(project, None)
+}
+
+/// Like [`image_meshes`], with billboards turned to face `eye` (the camera
+/// position in scene axes: x = plan x, y = up, z = -plan y). Call it every
+/// frame; billboards are cheap and need no rebuild of the cached scene.
+pub fn image_meshes_facing(project: &Project, eye: Option<[f32; 3]>) -> Vec<plan_3d::Mesh> {
+    plan_3d::images::image_meshes(project, eye)
+}
+
+/// The angle a billboard picture is drawn at for a camera at `eye` (scene
+/// axes), degrees.
+pub fn billboard_orientation(s: &PlacedSymbol, eye: Option<[f32; 3]>) -> f64 {
+    plan_3d::images::billboard_orientation(s, eye)
+}
+
+/// 3D Solid Feature symbols as solids: the library object's meshes in the
+/// solid (concrete) material, or a box. The 3D view draws these in place of
+/// the normal symbol mesh of `PlacedSymbol::solid` symbols.
+pub fn solid_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
+    use crate::tools::library::chief::{self, Chief3d};
+    let mut out = Vec::new();
+    for floor in &project.floors {
+        for s in floor.symbols.iter().filter(|s| s.solid) {
+            let mut meshes = if chief::is_chief_id(&s.catalog_id) {
+                match chief::placed_meshes(s, floor.elevation) {
+                    Chief3d::Meshes(m) => m,
+                    Chief3d::Box => {
+                        vec![crate::shell::view3d_panel::symbol_box(s, floor.elevation)]
+                    }
+                    Chief3d::Missing => Vec::new(),
+                }
+            } else {
+                vec![crate::shell::view3d_panel::symbol_box(s, floor.elevation)]
+            };
+            for m in &mut meshes {
+                m.material = plan_3d::Material::Concrete;
+            }
+            out.extend(meshes);
+        }
+    }
+    out
+}
+
+/// Rebuilds the distributions whose record was moved (the Select tool moves
+/// the record only); call it after a move or paste.
+pub fn sync_distributions(cx: &mut EditorContext) -> usize {
+    crate::tools::images::sync_distributions(cx)
 }
 
 /// The label drawn for a cabinet: its override with the macros expanded

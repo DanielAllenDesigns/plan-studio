@@ -3,8 +3,8 @@
 What Plan Studio can read and write today, how each format is handled, and what is
 engine-only (written and tested in a crate, but with no menu command yet). File > Export
 (DXF, Elevation DXF, Construction Set PDF, glTF), File > Import (Import Drawing (DXF)), File > Templates >
-Import Chief Template and CAD > CAD to Walls work; File > Print and the Library menu's catalog import
-are still dimmed. Chief catalogs are read in place by the Library Browser (chapter 6.6), not imported.
+Import Chief Template, File > Print (Print Layout, Export Layout PDF) and CAD > CAD to Walls work; the
+Library menu's catalog import is still dimmed. Chief catalogs are read in place by the Library Browser (chapter 6.6), not imported.
 
 ## 12.1 Formats at a glance
 
@@ -13,6 +13,7 @@ are still dimmed. Chief catalogs are read in place by the Library Browser (chapt
 | `.psplan` (Plan Studio JSON) | Read and write | Yes: File > Open Plan, Save, Save As | `plan-core` |
 | glTF 2.0 (`.gltf` + `.bin`) | Write | Yes: 3D > Export > glTF... | `plan-3d` |
 | PDF (construction set) | Write | Yes: Tools > Schedules > Create Construction Set... | `plan-layout`, `plan-docs` |
+| PDF (the plan's layout) | Write | Yes: File > Print > Print Layout... and Export Layout PDF... (chapter 11.3) | `plan-layout`, `plan-docs` |
 | PNG (ray-traced stills) | Write | Yes: Ray Trace > Save PNG... | `plan-render` |
 | CSV (schedules, materials list) | Write | Yes: Export CSV... buttons | `plan-docs` |
 | Markdown (Plan Check report) | Write | Yes: Save Report... | `plan-check` |
@@ -21,7 +22,7 @@ are still dimmed. Chief catalogs are read in place by the Library Browser (chapt
 | DWG | Neither | (planned) | |
 | Chief catalogs `.calib`, `.calibz` | Read in place | Yes: the Library Browser's Chief nodes (chapter 6.6); no import command | `plan-calib` |
 | Chief templates `.plan`, `.tpl`, `.layout` | Read names and some values | Yes: File > Templates > Import Chief Template... | `plan-chiefplan` |
-| Chief hotkeys, toolbars, preferences | Read | Hotkeys only (chapter 13) | `plan-config` |
+| Chief hotkeys, toolbars, preferences | Read | Hotkeys (chapter 13), and the default plan and layout template names from the preferences INI (chapter 1.7.1) | `plan-config` |
 | IFC, SketchUp, Revit, OBJ | Neither | (planned) | |
 
 ### Tools: the commands that read and write files
@@ -38,10 +39,15 @@ are still dimmed. Chief catalogs are read in place by the Library Browser (chapt
 | File > Import > Import Drawing (DXF)... | | Adds a DXF drawing to the active floor as CAD objects (12.4). | Works. |
 | File > Import > (DWG, image underlay) | | Not in the menu. | (planned) |
 | File > Templates > Import Chief Template... | | Seeds your defaults from a Chief `.plan`, `.tpl` or `.layout` (12.8). | Works. |
-| File > Print > Print... | `Cmd+P` | Prints the active view. | (planned) dimmed |
+| File > New Layout | | Makes the plan's layout and shows the layout view (11.3). | Works. |
+| File > Open Layout... | | Shows the layout view. | Works. |
+| File > Print > Print Layout... | | Saves the layout's printed pages (all, or a range) as a PDF (11.3). | Works. |
+| File > Print > Export Layout PDF... | | Saves every printed page as a PDF. | Works. |
+| Row 1 Print button | `Cmd+P` | Prints the active view. | (planned) dimmed |
 | 3D > Export > glTF... | | Writes `.gltf` and `.bin`. | Works. |
 | Tools > Schedules > Create Construction Set... | | Writes a PDF set. | Works. |
 | Door/Window/Room/Wall Schedule > Export CSV... | | Writes a CSV. | Works. |
+| Schedule Specification > Export CSV... (a schedule placed in the plan) | | Writes a CSV of the placed schedule (11.2). | Works. |
 | Materials List... > Export CSV... | | Writes a CSV. | Works. |
 | Checks window > Save Report... | | Writes Markdown. | Works. |
 | Ray Trace... > Save PNG... | | Writes a PNG. | Works. |
@@ -52,8 +58,8 @@ are still dimmed. Chief catalogs are read in place by the Library Browser (chapt
 
 A plan is one JSON document: a `Project` with its name, floors (each with walls, openings,
 dimensions, CAD objects, room names, symbols, cabinets, stairs, groups, roofs, electrical devices,
-framing and slab objects), the layer set, camera objects, the terrain and the wall types stored in the
-plan. Lengths are inches.
+framing and slab objects, exterior details and placed schedules), the layer set, camera objects, the lights, the terrain, the Project Information, the
+layout and the wall types stored in the plan. Lengths are inches.
 
 - File > **Open Plan...** and **Save As...** show a file dialog filtered to `.psplan`. Save As
   adds the extension if you leave it off. **Save** writes to the current file, or asks for one.
@@ -69,14 +75,19 @@ plan. Lengths are inches.
   | `Floor.electrical` | The floor's electrical devices and connections (chapter 9) |
   | `Floor.framing` | Built framing members, manual members and the framing layout lines (chapter 11.11) |
   | `Floor.foundation` | Slabs, slab holes, pads, piers and platform holes (chapter 16) |
+  | `Floor.details` | Corner boards, quoins, moldings, floor and wall material regions, wall hatches, polygon decks and 3D solids (chapter 17) |
+  | `Floor.schedules` | The schedules placed in the plan: kind, columns, sort, filter, labels, style, position (chapter 11.2) |
   | `Project.terrain` | The terrain, its contour interval and whether it is built (chapter 9) |
+  | `Project.layout` | The plan's one layout: pages, boxes, title block and page setup (chapter 11.3) |
+  | `Project.info` | Project Information: client, designer, job number, date, revisions, custom fields (chapter 11.4) |
+  | `Project.lights`, `Project.light_options` | The lights Add Lights places, and whether electrical light fixtures emit light (chapter 10.13) |
 
   Typed, serde-default **extras** hold what dialogs used to keep per session: a wall's label switch, specified label text and last
   picked wall type; an opening's style name, thickness, swing angle, jamb or frame width and Show Open in 2D; a room's
   conditioned setting, stem wall height, base and crown moldings, fill and label options. A wall also stores its class and
   curve, a camera object its section line (with the back clip) and its elevation rendering options (hatch, shadows, sun, line weight by distance, labels).
 - **Migration.** Files from before these slots kept the roofs, electrical devices, terrain and slabs as hidden, locked text records on
-  reserved layers (`Roof Planes, Data`, `Electrical, Data`, `Terrain, Data`, `Foundation, Data`). When you open such a file the editor moves each
+  reserved layers (`Roof Planes, Data`, `Electrical, Data`, `Terrain, Data`, `Foundation, Data`, and `Lights, Data` for lights). When you open such a file the editor moves each
   record into its slot and deletes the legacy items and the hidden layers; it happens as the file loads, so it is not an undo step. A slot that is already filled
   is left alone, every new field has a default, and old files otherwise load unchanged.
 - Per-session settings (the "session only" fields that remain in the dialogs) are not in the file.
@@ -183,7 +194,9 @@ empty" if the plan has no geometry. Open the file in Blender, a glTF viewer or a
 
 ## 12.6 PDF, PNG, CSV and Markdown (work)
 
-- **PDF**: Tools > Schedules > Create Construction Set... (chapter 11.4).
+- **PDF**: Tools > Schedules > Create Construction Set... (chapter 11.5) writes the automatic set; File > Print > Print Layout... and
+  Export Layout PDF... write the plan's own layout (chapter 11.3), and a vector elevation or section view has a Layout PDF... button (chapter 10.7).
+  The PDF writer is the same dependency-free PDF 1.4 one for all of them; Print means "save a PDF", not a printer dialog.
 - **PNG**: the Ray Trace window's Save PNG... (chapter 10.6), uncompressed 8-bit RGBA.
 - **CSV**: every schedule window and the Materials List window have Export CSV.... Fields are
   quoted as needed; open them in any spreadsheet.
@@ -268,12 +281,18 @@ rough ceiling and stem wall heights), roof and floor finish materials, arrow sty
 (the template stores no page or box objects the reader could identify). Chief's own `Default Text Style` is 6" Arial in the stock template but 4.5"
 Avenir in Daniel's; the seed keeps the names Plan Studio already ships at their current values.
 
+**Automatic seeding.** You do not have to import to use these values. Plan Studio finds your default plan and layout templates (from Chief's preferences INI,
+else by their stock names), decodes them once into `~/.plan-studio/template-seed.json`, and lays the decoded wall types, text styles, dimension sets and default height over its
+defaults when no saved `defaults.json` exists. **Edit > Default Settings > Preferences > Templates** shows and changes the two paths and the seeding switch, and the Import Chief Template window's
+**Set as default plan / layout template** button writes a path there (chapter 1.7.1 has the whole story). The module is `plan-app/src/templates.rs`, with the Chief INI reader in
+`plan-config/src/templates.rs`.
+
 ## 12.9 Chief hotkeys, toolbars and preferences
 
 `plan-config` reads Chief's `UserHotkeys.xml`, the `.toolbar` files and the preferences INI. The app uses the
-hotkeys (chapter 13). Daniel's own files are embedded at compile time from `docs/chief-config-raw/`; reading
-the live Chief INI at startup and rebuilding the toolbars from his four toolbar sets (Default, Extended Tool,
-Space Planning, Terrain) are (planned).
+hotkeys (chapter 13). Daniel's own files are embedded at compile time from `docs/chief-config-raw/`. The one thing read from the live Chief
+INI (`~/.config/Chief Architect Inc/Chief Architect Premier X18.ini`, then X17's) is the names of the default plan and layout templates (chapter 1.7.1); reading its other values
+and rebuilding the toolbars from his four toolbar sets (Default, Extended Tool, Space Planning, Terrain) are (planned).
 
 ## 12.10 Notes
 

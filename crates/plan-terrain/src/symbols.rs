@@ -71,7 +71,12 @@ pub fn plan_symbols(t: &Terrain, contours: &[Contour]) -> Vec<Stroke> {
             });
         }
     }
-    for f in t.features.iter().filter(|f| f.polygon.len() >= 3) {
+    // Terrain holes only: the other features draw through `landscape_plan`.
+    for f in t
+        .features
+        .iter()
+        .filter(|f| f.polygon.len() >= 3 && f.kind == crate::model::FeatureKind::Hole)
+    {
         out.push(Stroke::Polyline {
             points: f.polygon.clone(),
             closed: true,

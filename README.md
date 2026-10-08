@@ -6,8 +6,8 @@ elevations, schedules and construction documents are generated from that one
 model.
 
 **Status: pre-alpha, but a working editor.** Plan Studio opens, edits and saves
-plans, draws in 2D and 3D, and writes schedules, DXF, glTF and PDF. The workspace
-has 22 crates and 1,315 tests. See
+plans, draws in 2D and 3D, arranges plans on layout sheets, and writes schedules, DXF, glTF and PDF. The workspace
+has 22 crates and 1,728 tests. See
 [ROADMAP.md](ROADMAP.md) for what is done and what is left, and the
 [reference manual](docs/manual/00-index.md) for how everything works today.
 [docs/chief-x18-ui-notes.md](docs/chief-x18-ui-notes.md) is the UI study the
@@ -18,9 +18,9 @@ design is based on.
 ![Plan Studio with Chief-style toolbars, menus and the Low Glare theme](docs/screenshot-chief-toolbars.jpg)
 
 The window above shows the Chief-style toolbars, menus and the Low Glare theme. It was captured on 2026-10-07,
-before Rounds 2 to 5 added the dialogs and docks, the 3D view, the Chief catalogs in the Library Browser, curved walls and the
-other wall kinds, slabs, the roof and framing tools, and the layout engine, so the toolbars have more working buttons
-now than it shows. It has not been retaken. Earlier milestone: [phase 0 screenshot](docs/screenshot-phase0.jpg).
+before Rounds 2 to 7 added the dialogs and docks, the 3D view, the Chief catalogs in the Library Browser, curved walls and the
+other wall kinds, slabs, the roof and framing tools, the layout view, schedules in the plan, exterior details, cameras and the CAD, cabinet
+and text completeness, so the toolbars have far more working buttons now than it shows. It has not been retaken. Earlier milestone: [phase 0 screenshot](docs/screenshot-phase0.jpg).
 
 ## Why
 
@@ -32,39 +32,50 @@ extend.
 ## What it does today
 
 - **Tools** (Chief's names and hotkeys): walls (straight and curved exterior, interior, foundation, pony, glass,
-  glass pony and half walls, room dividers, railings, deck railings and edges, fencing); doors and windows;
-  dimensions (manual, end to end, interior, point to point, running, baseline, centerline, angular, tape measure,
-  automatic exterior and interior); text (text, rich text, leader line, arrow line, callout, marker, note); CAD
-  (points, lines, polylines, arcs, circles, boxes, polygons, splines, revision clouds, CAD blocks); cabinets (base,
-  wall, full height, soffit, shelf, partition); library symbols; stairs (straight, L, U, winder, curved, landing,
-  ramp); slabs (slab, slab with footing, slab holes, square pad, round pier) and holes in floor and ceiling platforms;
-  roofs (Build Roof, roof planes, ceiling planes, gable lines, holes, skylights, Auto Dormer and Explode Dormer, roof
-  returns); electrical devices with Auto Place Outlets; terrain (perimeter, elevation data, modifiers, features, roads,
-  Build Terrain); framing (Build Framing for walls, floors and roofs, 19 manual framing tools, a lumber takeoff with a
-  material list); cameras.
-- **Select Objects** picks, moves, stretches and edits every object kind except placed framing, with
-  temporary dimensions, snaps, an Edit toolbar, copy and paste, and whole-plan
+  glass pony and half walls, room dividers, railings, deck railings and edges, fencing; wall hatching and material
+  regions); doors and windows; dimensions (manual, end to end, interior, point to point, running, baseline, centerline,
+  angular, tape measure, automatic exterior, interior, elevation and story pole); text (text, rich text with markup, leader
+  line, arrow line, callout, marker, note with note types, text macros); CAD (points, lines, polylines, arcs, circles,
+  boxes, cross, blocking and insulation boxes, polygons, splines, revision clouds, CAD blocks, fillet, chamfer, offset,
+  trim, extend, break, hatch, CAD detail from view); cabinets (base, wall, full height, soffit, shelf, partition, fillers,
+  corner and blind cabinets, custom countertops, backsplashes and counter holes, Generate Countertop); library symbols;
+  stairs (straight, L, U, winder, curved, landing, ramp); slabs (slab, slab with footing, slab holes, square pad, round
+  pier) and holes in floor and ceiling platforms; roofs (Build Roof, roof planes, ceiling planes, gable lines, Join Roof
+  Planes, holes, skylights, Auto Dormer, Auto Floating Dormer and Explode Dormer, roof returns); exterior details (corner
+  boards, quoins, moldings, floor material regions, polygon decks, 3D solids); electrical devices with Auto Place
+  Outlets; terrain (perimeter, elevation data, modifiers, features, roads, Build Terrain); framing (Build Framing for
+  walls, floors and roofs, 19 manual framing tools, a lumber takeoff with a material list); cameras (full, section,
+  wall elevation, auto elevations, walkthrough paths) and lights.
+- **Select Objects** picks, moves, stretches and edits every object kind (placed framing, slabs and the exterior
+  details included), with temporary dimensions, snaps, an Edit toolbar, copy and paste, and whole-plan
   undo and redo that names each step.
+- **Layout**: File > New Layout opens a layout view with page tabs, boxes you move and resize by handles, Send to Layout
+  (plan views and elevation or section cameras), a Layout Box Specification, Page Setup, a page table, and Print Layout
+  and Export Layout PDF. Schedules (door, window, room, cabinet, electrical, framing, plant, fixture, furniture and
+  general) can also be placed in the plan as live tables with callout labels, and Project Information fills the title
+  block.
 - **Dialogs**: Chief-style specification dialogs for walls (with a Wall Class list and Wall Type Definitions), doors, windows, rooms,
   floors and foundations, slabs, pads and piers, dimensions, text, CAD, cabinets, symbols, stairs, roofs (with holes, per-edge
-  roof settings and dormers), framing members, electrical devices, terrain and cameras; Default Settings (walls, doors,
-  windows, saved dimension defaults, room types, text styles); Customize Hotkeys; Layer Display Options; the Space
+  roof settings, ceiling planes and dormers), framing members, exterior details, schedules, electrical devices, terrain and cameras; Default Settings (walls, doors,
+  windows, saved dimension defaults, room types, text styles, the Preferences > Templates page); Customize Hotkeys; Layer Display Options; the Space
   Planning Assistant; Plan Check and Door/Window Check; schedules, the Framing Takeoff and the Materials List.
 - **Docks**: Active Layer Display Options (layer sets and saved plan views), Project Browser (floors, cameras, saved
-  views, layout sheet) and the Library Browser (about 145 built-in 2D symbols, plus your Chief Architect Core, Bonus,
+  views, layout pages) and the Library Browser (about 145 built-in 2D symbols, plus your Chief Architect Core, Bonus,
   Manufacturer and User catalogs read in place from your install, with thumbnails, search and Open Object).
 - **3D**: overview, floor overview, doll house, Full Camera, cross sections and the four elevations in an orbitable view;
-  walls of every class, slabs and piers, roofs with holes, skylights and dormers, manual framing, and placed symbols
-  (Chief objects with their decoded meshes); nine rendering techniques, Sun Angle, a CPU path tracer with PNG output, and
-  glTF export. Elevation and section cameras store hatch, shadow, line-weight and label options.
+  walls of every class, slabs and piers, roofs with holes, skylights and dormers, manual framing, exterior details, and placed
+  symbols (Chief objects with their decoded meshes); nine rendering techniques, Sun Angle, a CPU path tracer with PNG output, and
+  glTF export. Elevation and section cameras store hatch, shadow, line-weight and label options and open as vector drawings
+  (Vector View, Technical Illustration); walkthroughs play and record as frame sequences; point lights feed the ray tracer.
 - **Documents**: door, window, room and wall schedules, materials list, framing takeoff (CSV and material list),
   hidden-line elevations, construction set PDF (18 x 24 sheets, Daniel's title block with macros and a revisions table,
   automatic scale, layer colors and weights), DXF export of a floor (with roof planes and manual framing) or the four
   elevations, DXF import and CAD to Walls.
 - **Plan files**: `.psplan` JSON with typed slots for roofs, electrical, framing, slabs and terrain, and typed extras for
   walls, openings, rooms and cameras; files from before the slots open and convert on their own.
-- **Chief data**: Daniel's Chief X18 template is built in; File > Templates > Import Chief Template reads a Chief `.plan`
-  for its layer sets, wall types (real layer stacks), text styles and dimension defaults; his customized hotkeys are loaded on top of
+- **Chief data**: Daniel's Chief X18 template is built in; Plan Studio reads your own Chief default plan and layout templates
+  (named in Chief's preferences) and seeds its defaults from them, with a Preferences > Templates page; File > Templates >
+  Import Chief Template reads a Chief `.plan` for its layer sets, wall types (real layer stacks), text styles and dimension defaults; his customized hotkeys are loaded on top of
   Chief's, and you can edit them. `plan-calib` reads the `.calib` catalogs of your own Chief install, and the Library Browser
   shows them (never copying them).
 - **Look**: four canvas themes (Low Glare is the default) and a UI brightness dimmer. View toggles for Color, Line Weights,
@@ -74,7 +85,7 @@ extend.
 
 ## Architecture
 
-Twenty-two crates in one Cargo workspace (1,315 tests). Only `plan-app` and `plan-view3d`
+Twenty-two crates in one Cargo workspace (1,728 tests). Only `plan-app` and `plan-view3d`
 touch the GUI; everything else is plain Rust, tested headlessly.
 
 | Crate | What it is |
@@ -143,8 +154,9 @@ Linux and Windows.
 
 ## Documentation
 
-- [Reference manual](docs/manual/00-index.md): 16 chapters from first launch to
+- [Reference manual](docs/manual/00-index.md): 17 chapters from first launch to
   contributor notes, with an honest status mark on every feature.
+- [docs/qa-findings.md](docs/qa-findings.md): the scenario tests' findings (seven, being fixed in Round 8).
 - [docs/parity/](docs/parity/): the Chief behavior specifications the code cites
   (ids such as `W-21`), each with a "Plan Studio today" snapshot.
 - [docs/chief-x18-*.md](docs/chief-x18-menus.md): captures of Chief's menus,

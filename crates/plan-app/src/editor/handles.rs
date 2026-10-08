@@ -248,7 +248,7 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 .map(|(i, p)| h(HandleKind::Reshape(i), p, CursorIcon::Crosshair))
                 .collect()
         }
-        ObjectRef::Room(_) | ObjectRef::Terrain => Vec::new(),
+        ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::Schedule(_) => Vec::new(),
     }
 }
 

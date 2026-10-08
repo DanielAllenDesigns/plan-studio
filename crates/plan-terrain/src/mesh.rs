@@ -16,27 +16,27 @@ const CURB_HEIGHT: f64 = 6.0;
 const CURB_WIDTH: f64 = 6.0;
 
 /// Plan point and elevation to a plan-3d position.
-fn to_scene(p: Point, z: f64) -> [f64; 3] {
+pub(crate) fn to_scene(p: Point, z: f64) -> [f64; 3] {
     [p.x, z, -p.y]
 }
 
 /// Accumulates triangles and produces a [`Mesh`] with area-weighted vertex normals.
 #[derive(Default)]
-struct MeshBuilder {
-    positions: Vec<[f64; 3]>,
-    uvs: Vec<[f32; 2]>,
-    triangles: Vec<[u32; 3]>,
+pub(crate) struct MeshBuilder {
+    pub(crate) positions: Vec<[f64; 3]>,
+    pub(crate) uvs: Vec<[f32; 2]>,
+    pub(crate) triangles: Vec<[u32; 3]>,
 }
 
 impl MeshBuilder {
-    fn push(&mut self, position: [f64; 3], uv: [f64; 2]) -> u32 {
+    pub(crate) fn push(&mut self, position: [f64; 3], uv: [f64; 2]) -> u32 {
         self.positions.push(position);
         self.uvs.push([uv[0] as f32, uv[1] as f32]);
         (self.positions.len() - 1) as u32
     }
 
     /// Add a triangle, flipping its winding if needed so it faces `facing`.
-    fn push_facing(&mut self, tri: [u32; 3], facing: [f64; 3]) {
+    pub(crate) fn push_facing(&mut self, tri: [u32; 3], facing: [f64; 3]) {
         let n = self.face_normal(tri);
         let dot: f64 = (0..3).map(|k| n[k] * facing[k]).sum();
         self.triangles.push(if dot < 0.0 {
@@ -57,7 +57,7 @@ impl MeshBuilder {
         ]
     }
 
-    fn finish(self, material: Material) -> Mesh {
+    pub(crate) fn finish(self, material: Material) -> Mesh {
         let mut normals = vec![[0.0f64; 3]; self.positions.len()];
         for &tri in &self.triangles {
             let n = self.face_normal(tri);
@@ -219,7 +219,7 @@ fn draped_rows(
     )
 }
 
-const UP: [f64; 3] = [0.0, 1.0, 0.0];
+pub(crate) const UP: [f64; 3] = [0.0, 1.0, 0.0];
 
 fn strip_mesh(rows: &[Row], material: Material) -> Mesh {
     let mut b = MeshBuilder::default();

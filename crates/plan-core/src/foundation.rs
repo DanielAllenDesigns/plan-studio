@@ -429,6 +429,10 @@ pub struct PlatformHole {
     pub id: Id,
     pub outline: Vec<Point>,
     pub kind: PlatformKind,
+    /// The object that owns the hole (a stair's Auto Stairwell), if any: the
+    /// hole is removed with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Id>,
 }
 
 impl Default for PlatformHole {
@@ -437,13 +441,30 @@ impl Default for PlatformHole {
             id: 0,
             outline: Vec::new(),
             kind: PlatformKind::Floor,
+            owner: None,
         }
     }
 }
 
 impl PlatformHole {
     pub fn new(id: Id, outline: Vec<Point>, kind: PlatformKind) -> Self {
-        Self { id, outline, kind }
+        Self {
+            id,
+            outline,
+            kind,
+            owner: None,
+        }
+    }
+
+    /// A stairwell: a hole in the floor platform of the floor above, cut
+    /// where the stair `stair` passes through (Auto Stairwell, CB-29).
+    pub fn stairwell(id: Id, outline: Vec<Point>, stair: Id) -> Self {
+        Self {
+            id,
+            outline,
+            kind: PlatformKind::Floor,
+            owner: Some(stair),
+        }
     }
 
     pub fn layer(&self) -> &'static str {
@@ -669,6 +690,18 @@ impl FoundationLayer {
             .cloned()
             .chain(self.holes_in(slab).into_iter().map(|h| h.outline.clone()))
             .collect()
+    }
+
+    /// The platform hole owned by `owner` (a stair's stairwell), if any.
+    pub fn owned_hole(&self, owner: Id) -> Option<&PlatformHole> {
+        self.platform_holes.iter().find(|h| h.owner == Some(owner))
+    }
+
+    /// Removes every platform hole owned by `owner`; returns how many went.
+    pub fn remove_owned(&mut self, owner: Id) -> usize {
+        let n = self.platform_holes.len();
+        self.platform_holes.retain(|h| h.owner != Some(owner));
+        n - self.platform_holes.len()
     }
 
     /// Outlines of the platform holes of one kind.
@@ -1053,6 +1086,28 @@ mod tests {
         assert_eq!(l.all_hole_outlines(&l.slabs[0]).len(), 2);
         assert_eq!(l.platform_hole_outlines(PlatformKind::Floor).len(), 1);
         assert_eq!(l.platform_hole_outlines(PlatformKind::Ceiling).len(), 1);
+    }
+
+    #[test]
+    fn a_stairwell_hole_is_owned_by_its_stair() {
+        let mut l = FoundationLayer::default();
+        l.platform_holes
+            .push(PlatformHole::stairwell(9, square(0.0, 0.0, 36.0), 4));
+        l.platform_holes.push(PlatformHole::new(
+            10,
+            square(80.0, 0.0, 12.0),
+            PlatformKind::Floor,
+        ));
+        assert_eq!(l.owned_hole(4).map(|h| h.id), Some(9));
+        assert!((l.owned_hole(4).unwrap().area() - 36.0 * 36.0).abs() < 1e-9);
+        // The owner survives a round trip; a plain hole stays ownerless.
+        let json = serde_json::to_string(&l).unwrap();
+        let back: FoundationLayer = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, l);
+        assert_eq!(back.platform_holes[1].owner, None);
+        assert_eq!(l.remove_owned(4), 1);
+        assert_eq!(l.platform_holes.len(), 1);
+        assert_eq!(l.remove_owned(4), 0);
     }
 
     #[test]

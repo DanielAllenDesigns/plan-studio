@@ -4,7 +4,8 @@
 //! contour interval, smoothing and grid spacing. Materials holds the
 //! grass/dirt controls the model has no fields for yet (disabled). Layer is
 //! the visible layer the terrain is drawn on. The dialog edits a
-//! [`TerrainRecord`] draft that the tool stores on OK.
+//! [`TerrainRecord`] draft that the tool stores on OK. [`ObjectDialog`] is the
+//! specification of one terrain object (wall, bed, plant run, ...).
 
 use super::{
     dis_combo, fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab,
@@ -13,6 +14,9 @@ use super::{
 use crate::editor::site_view::TerrainRecord;
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::Point;
+
+mod object;
+pub use object::ObjectDialog;
 
 const TABS: &[Tab] = &[on("General"), on("Materials"), on("Layer")];
 /// Smallest contour interval and grid spacing the build accepts, inches.

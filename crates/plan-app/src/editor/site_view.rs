@@ -25,8 +25,16 @@ use plan_core::units::fmt_ft_in_frac;
 use plan_core::{Floor, Id, Project, Wall};
 use plan_electrical::{place_on_wall, Device, ElectricalLayer, Stroke as ElStroke, WallSide};
 use plan_terrain::{
-    auto_hole_for_building, build_terrain, contours, plan_symbols, Contour, FeatureKind,
-    ModifierKind, Stroke as TerrainStroke, StrokeKind, Terrain, TerrainSurface,
+    auto_hole_for_building, build_terrain, contours, landscape_plan, plan_symbols, Contour,
+    FeatureKind, ModifierKind, PlanItem, Stroke as TerrainStroke, StrokeKind, Terrain,
+    TerrainSurface,
+};
+
+mod landscape;
+#[allow(unused_imports)] // `terrain_feature_meshes` is for the 3D scene
+pub use landscape::{
+    draw_landscape, ensure_landscape_layers, move_terrain_element, object_at, replace_object,
+    terrain_feature_meshes, TerrainObject,
 };
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -248,6 +256,8 @@ pub struct TerrainView {
     pub surface: Option<TerrainSurface>,
     pub contours: Vec<Contour>,
     pub symbols: Vec<TerrainStroke>,
+    /// Landscape objects (features, walls, beds, plants, ...) as plan items.
+    pub landscape: Vec<PlanItem>,
 }
 
 impl TerrainView {
@@ -260,11 +270,13 @@ impl TerrainView {
             (None, Vec::new())
         };
         let symbols = plan_symbols(&record.terrain, &cont);
+        let landscape = landscape_plan(&record.terrain);
         Self {
             record,
             surface,
             contours: cont,
             symbols,
+            landscape,
         }
     }
 }
@@ -406,6 +418,9 @@ pub enum TerrainHit {
     Modifier(usize),
     Feature(usize),
     Road(usize),
+    Break(usize),
+    Wall(usize),
+    Landscape(usize),
 }
 
 fn near_polygon(poly: &[Point], p: Point, tol: f64) -> bool {
@@ -459,6 +474,44 @@ pub fn hit_terrain(t: &Terrain, p: Point, tol: f64) -> Option<TerrainHit> {
     {
         return Some(TerrainHit::Road(i));
     }
+    if let Some(i) = t
+        .breaks
+        .iter()
+        .position(|b| near_polyline(&b.points, p, tol))
+    {
+        return Some(TerrainHit::Break(i));
+    }
+    if let Some(i) = t
+        .walls
+        .iter()
+        .position(|w| near_polyline(&w.points, p, tol.max(w.thickness * 0.5)))
+    {
+        return Some(TerrainHit::Wall(i));
+    }
+    // Paths and region outlines first, then the inside of regions.
+    if let Some(i) = t.landscape.iter().position(|l| {
+        if l.is_region() {
+            near_polygon(&l.points, p, tol)
+        } else {
+            near_polyline(&l.points, p, tol.max(l.size * 0.5))
+        }
+    }) {
+        return Some(TerrainHit::Landscape(i));
+    }
+    if let Some(i) = t
+        .landscape
+        .iter()
+        .position(|l| l.is_region() && point_in_polygon(p, &l.points))
+    {
+        return Some(TerrainHit::Landscape(i));
+    }
+    if let Some(i) = t
+        .features
+        .iter()
+        .position(|f| f.kind != FeatureKind::Hole && point_in_polygon(p, &f.polygon))
+    {
+        return Some(TerrainHit::Feature(i));
+    }
     near_polygon(&t.perimeter, p, tol).then_some(TerrainHit::Perimeter)
 }
 
@@ -479,6 +532,9 @@ pub fn remove_terrain_element(t: &mut Terrain, hit: TerrainHit) -> bool {
         TerrainHit::Modifier(i) => remove(&mut t.modifiers, i),
         TerrainHit::Feature(i) => remove(&mut t.features, i),
         TerrainHit::Road(i) => remove(&mut t.roads, i),
+        TerrainHit::Break(i) => remove(&mut t.breaks, i),
+        TerrainHit::Wall(i) => remove(&mut t.walls, i),
+        TerrainHit::Landscape(i) => remove(&mut t.landscape, i),
     }
 }
 
@@ -639,6 +695,7 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     let Some(view) = terrain_view(&cx.project) else {
         return;
     };
+    draw_landscape(cx, painter, cam, &view.landscape);
     if !cx.layers().is_visible(&view.record.layer) {
         return;
     }

@@ -641,6 +641,10 @@ impl SelectTool {
         if matches!(a.op, Op::WallMove(_) | Op::WallEnd(..) | Op::Group) {
             details_view::follow_walls(&mut cx.project, fl, &a.original.floors[fl].walls);
         }
+        // A moved distribution record carries its copies along.
+        if matches!(a.op, Op::Group) {
+            crate::editor::placed::sync_distributions(cx);
+        }
         cx.mark_dirty();
     }
 
@@ -695,6 +699,10 @@ impl SelectTool {
             crate::editor::connect::auto_connect(cx, id);
             // Joining may have moved the wall again: trim follows it.
             details_view::follow_walls(&mut cx.project, fl, &a.original.floors[fl].walls);
+        }
+        // A moved distribution record carries its copies along.
+        if matches!(a.op, Op::Group) {
+            crate::editor::placed::sync_distributions(cx);
         }
         cx.last_snap = None;
         cx.mark_dirty();
@@ -1437,6 +1445,62 @@ mod tests {
         assert!(foundation_view::load(&cx).pad(id).is_some());
         let boxed = objects_in_rect(&cx, Point::new(0.0, 0.0), Point::new(300.0, 300.0));
         assert!(boxed.contains(&ObjectRef::Foundation(id)));
+    }
+
+    #[test]
+    fn select_picks_moves_opens_and_deletes_a_schedule_with_undo() {
+        use crate::editor::schedule_view as sv;
+        use plan_core::schedules::ScheduleKind;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = sv::add(&mut cx, ScheduleKind::General, Point::new(100.0, 300.0));
+        cx.refresh();
+        let def = sv::find(&cx, id).unwrap();
+        let (lo, hi) = sv::layout_of(&cx, &def, 0).bounds(def.position);
+        let inside = Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+        let mut t = SelectTool::default();
+        // A click selects it as a Schedule object on its own layer.
+        let p = ev(&cx, inside.x, inside.y);
+        t.pointer_down(&mut cx, p.with_down(true));
+        t.pointer_up(&mut cx, p);
+        assert_eq!(cx.selection.single(), Some(ObjectRef::Schedule(id)));
+        assert_eq!(sv::selected(&cx), Some(id));
+        assert!(ObjectRef::Schedule(id).exists(cx.floor()));
+        assert_eq!(
+            layer_of(cx.floor(), ObjectRef::Schedule(id)).as_deref(),
+            Some(def.layer.as_str())
+        );
+        // Dragging its body moves it, as one undo step.
+        drag(
+            &mut t,
+            &mut cx,
+            (inside.x, inside.y),
+            (inside.x + 48.0, inside.y + 24.0),
+        );
+        let moved = sv::find(&cx, id).unwrap().position;
+        assert!(
+            (moved.x - 148.0).abs() < 1e-6 && (moved.y - 324.0).abs() < 1e-6,
+            "{moved:?}"
+        );
+        cx.undo();
+        assert_eq!(sv::find(&cx, id).unwrap().position, def.position);
+        // Double-click asks for the specification.
+        cx.requests.clear();
+        let at = ev(&cx, inside.x, inside.y);
+        assert!(t.double_click(&mut cx, at).consumed);
+        assert!(cx
+            .requests
+            .iter()
+            .any(|r| matches!(r, EditorRequest::OpenSpec(ObjectRef::Schedule(i)) if *i == id)));
+        // Box select finds it; Delete removes it and undo brings it back.
+        let boxed = objects_in_rect(&cx, Point::new(-500.0, -500.0), Point::new(3000.0, 3000.0));
+        assert!(boxed.contains(&ObjectRef::Schedule(id)));
+        cx.selection.set(ObjectRef::Schedule(id));
+        assert!(t.key(&mut cx, KeyEvent::key(Key::Delete)).consumed);
+        assert!(sv::find(&cx, id).is_none());
+        assert!(cx.selection.is_empty());
+        assert_eq!(cx.undo_label(), Some("Delete Schedule"));
+        cx.undo();
+        assert!(sv::find(&cx, id).is_some());
     }
 
     #[test]

@@ -19,11 +19,11 @@
 //!
 //! # Selection
 //!
-//! `ObjectRef` has no schedule variant yet, so the selected schedule is kept
-//! here ([`selected`], [`select`]) and shared by the Schedule tool and the
-//! highlight drawn by [`draw_schedules`].
+//! A schedule is `ObjectRef::Schedule(id)`: Select Objects and the Schedule
+//! tool share `cx.selection`, and [`draw_schedules`] highlights the selected
+//! ones.
 
-use super::{Camera, EditorContext};
+use super::{Camera, EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, StrokeKind};
 use plan_core::geometry::Point;
 use plan_core::schedules::{
@@ -32,7 +32,6 @@ use plan_core::schedules::{
 use plan_core::{Id, Project, TextStyle};
 use plan_docs::schedule_kinds::{self, Callout};
 use plan_docs::Schedule as Table;
-use std::cell::Cell;
 
 /// Characters narrower than this many character heights are rare; a column is
 /// sized as `chars * CHAR_W * height`.
@@ -45,21 +44,41 @@ const TITLE_H: f64 = 2.1;
 /// Text smaller than this many screen pixels is not drawn.
 const MIN_TEXT_PX: f32 = 3.0;
 
-thread_local! {
-    static SELECTED: Cell<Option<Id>> = const { Cell::new(None) };
+/// Is schedule `id` placed on `floor`?
+pub fn exists(floor: &plan_core::Floor, id: Id) -> bool {
+    ScheduleLayer::load(floor).find(id).is_some()
 }
 
-/// The selected schedule, if any.
-pub fn selected() -> Option<Id> {
-    SELECTED.with(Cell::get)
+/// The layer schedule `id` of `floor` is drawn on.
+pub fn layer_of(floor: &plan_core::Floor, id: Id) -> Option<String> {
+    ScheduleLayer::load(floor).find(id).map(|s| s.layer.clone())
 }
 
-pub fn select(id: Id) {
-    SELECTED.with(|s| s.set(Some(id)));
+/// The selected schedule, if exactly one schedule is selected.
+pub fn selected(cx: &EditorContext) -> Option<Id> {
+    let mut it = cx.selection.items.iter().filter_map(|o| match o {
+        ObjectRef::Schedule(id) => Some(*id),
+        _ => None,
+    });
+    let first = it.next()?;
+    it.next().is_none().then_some(first)
 }
 
-pub fn clear_selection() {
-    SELECTED.with(|s| s.set(None));
+/// Selects schedule `id` (and nothing else).
+pub fn select(cx: &mut EditorContext, id: Id) {
+    cx.selection.set(ObjectRef::Schedule(id));
+}
+
+/// Drops the schedules from the selection.
+pub fn clear_selection(cx: &mut EditorContext) {
+    cx.selection
+        .items
+        .retain(|o| !matches!(o, ObjectRef::Schedule(_)));
+}
+
+/// Is schedule `id` selected?
+pub fn is_selected(cx: &EditorContext, id: Id) -> bool {
+    cx.selection.contains(ObjectRef::Schedule(id))
 }
 
 // ===================================================================
@@ -150,10 +169,60 @@ pub fn delete(cx: &mut EditorContext, id: Id) -> bool {
     edit_floor(cx, fl, "Delete Schedule", |l| {
         l.remove(id);
     });
-    if selected() == Some(id) {
-        clear_selection();
-    }
+    cx.selection.items.retain(|o| *o != ObjectRef::Schedule(id));
     true
+}
+
+/// Deletes every schedule in `ids` from the active floor as one undo step.
+/// Returns how many went.
+pub fn delete_ids(cx: &mut EditorContext, ids: &[Id]) -> usize {
+    let n = {
+        let layer = load(cx);
+        ids.iter().filter(|id| layer.find(**id).is_some()).count()
+    };
+    if n == 0 {
+        return 0;
+    }
+    let fl = cx.floor;
+    edit_floor(cx, fl, "Delete Schedule", |l| {
+        for id in ids {
+            l.remove(*id);
+        }
+    });
+    cx.selection
+        .items
+        .retain(|o| !matches!(o, ObjectRef::Schedule(i) if ids.contains(i)));
+    n
+}
+
+/// Moves schedules by `d` (a group drag or nudge; the caller owns the undo
+/// step).
+pub fn translate_ids(cx: &mut EditorContext, ids: &[Id], d: Point) {
+    let fl = cx.floor;
+    let mut layer = ScheduleLayer::load(&cx.project.floors[fl]);
+    let mut any = false;
+    for id in ids {
+        if let Some(s) = layer.find_mut(*id) {
+            s.position = s.position + d;
+            any = true;
+        }
+    }
+    if any {
+        layer.store(&mut cx.project.floors[fl]);
+    }
+}
+
+/// The screen-independent extent `(id, lower-left, upper-right)` of every
+/// schedule on the active floor (for box selection).
+pub fn extents(cx: &EditorContext) -> Vec<(Id, Point, Point)> {
+    load(cx)
+        .schedules
+        .iter()
+        .map(|s| {
+            let (lo, hi) = layout_of(cx, s, cx.floor).bounds(s.position);
+            (s.id, lo, hi)
+        })
+        .collect()
 }
 
 /// Moves schedule `id` so its upper-left corner is `to`.
@@ -473,7 +542,7 @@ pub fn draw_schedules(cx: &EditorContext, painter: &egui::Painter, cam: &Camera)
         let style = cx.project.text_styles.resolve(&s.text_style);
         let ink = color_of(style, pal.text);
         draw_table(painter, cam, &l, s.position, ink, pal.background);
-        if selected() == Some(s.id) {
+        if is_selected(cx, s.id) {
             let (lo, hi) = l.bounds(s.position);
             let r = Rect::from_two_pos(
                 cam.world_to_screen(Point::new(lo.x, hi.y)),
@@ -528,7 +597,7 @@ mod tests {
     #[test]
     fn placing_stores_the_schedule_and_undo_removes_it() {
         let mut cx = cx();
-        clear_selection();
+        clear_selection(&mut cx);
         let id = add(&mut cx, ScheduleKind::Door, Point::new(10.0, -40.0));
         let l = load(&cx);
         assert_eq!(l.schedules.len(), 1);
@@ -556,9 +625,9 @@ mod tests {
         assert!(replace(&mut cx, 0, d));
         assert_eq!(cx.undo_label(), Some("Schedule Specification"));
         assert_eq!(table_for(&cx, &find(&cx, id).unwrap(), 0).title, "Windows");
-        select(id);
+        select(&mut cx, id);
         assert!(delete(&mut cx, id));
-        assert_eq!(selected(), None);
+        assert_eq!(selected(&cx), None);
         assert!(load(&cx).is_empty());
         assert_eq!(cx.undo().as_deref(), Some("Delete Schedule"));
         assert_eq!(cx.undo().as_deref(), Some("Schedule Specification"));

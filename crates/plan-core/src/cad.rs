@@ -2,7 +2,7 @@
 //! polylines and text. Angles are radians, counter-clockwise from +X.
 
 use crate::geometry::{segment_intersection, Point};
-use crate::layers::{Layer, LineStyle};
+use crate::layers::LineStyle;
 use crate::model::{Id, Project};
 use crate::text_styles::RichRun;
 use serde::{Deserialize, Serialize};
@@ -785,15 +785,14 @@ pub fn lines_to_polylines(lines: &[(Point, Point)], tol: f64) -> Vec<(Vec<Point>
 
 // ===== per-object attributes (the style tabs of the specification dialogs) =====
 //
-// The CAD model has no per-object line, fill or text style, and its struct
-// literals are built all over the workspace, so the extras live in small
-// tagged records on the hidden [`CAD_DATA_LAYER`], one per styled object, in
-// the same floor's CAD list (the pattern the first lights and roof planes
-// used). Deleting an object leaves its record behind; [`Project::prune_cad_data`]
-// sweeps them.
+// The extras of a CAD object live in typed slots: [`Floor::cad_attrs`] (one
+// [`CadAttrs`] per styled object) and [`Floor::cad_blocks`] (one
+// [`CadBlockInfo`] per CAD block). Older files kept them as tagged text
+// records on a hidden "CAD, Data" layer; [`migrate_legacy`] moves those into
+// the slots once on load.
 
-/// The hidden layer holding attribute, block and settings records.
-pub const CAD_DATA_LAYER: &str = "CAD, Data";
+/// The hidden layer older files kept attribute, block and settings records on.
+const LEGACY_DATA_LAYER: &str = "CAD, Data";
 const ATTR_TAG: &str = "cad-attrs:";
 const BLOCK_TAG: &str = "cad-block:";
 const BLOB_TAG: &str = "cad-blob:";
@@ -909,8 +908,8 @@ pub struct CadBlockInfo {
     pub backoff: Option<Point>,
 }
 
-fn tagged<'a>(o: &'a CadObject, tag: &str) -> Option<&'a str> {
-    if o.layer != CAD_DATA_LAYER {
+fn legacy_tagged<'a>(o: &'a CadObject, tag: &str) -> Option<&'a str> {
+    if o.layer != LEGACY_DATA_LAYER {
         return None;
     }
     match &o.item {
@@ -919,42 +918,26 @@ fn tagged<'a>(o: &'a CadObject, tag: &str) -> Option<&'a str> {
     }
 }
 
-fn data_record(layer_pos: Point, text: String) -> CadItem {
-    CadItem::Text {
-        pos: layer_pos,
-        text,
-        height: 1.0,
-        angle: 0.0,
-    }
-}
-
 impl crate::model::Floor {
     /// The attributes of CAD object `id`, if it has any.
     pub fn cad_attrs(&self, id: Id) -> Option<CadAttrs> {
-        self.cad
-            .iter()
-            .filter_map(|o| tagged(o, ATTR_TAG))
-            .filter_map(|j| serde_json::from_str::<CadAttrs>(j).ok())
-            .find(|a| a.target == id)
+        self.cad_attrs.iter().find(|a| a.target == id).cloned()
     }
 
-    /// Every attribute record of the floor, by target (for the renderer).
+    /// Every attribute entry of the floor, by target (for the renderer).
     pub fn cad_attr_map(&self) -> HashMap<Id, CadAttrs> {
-        self.cad
+        self.cad_attrs
             .iter()
-            .filter_map(|o| tagged(o, ATTR_TAG))
-            .filter_map(|j| serde_json::from_str::<CadAttrs>(j).ok())
-            .map(|a| (a.target, a))
+            .map(|a| (a.target, a.clone()))
             .collect()
     }
 
     /// The blocks of the floor whose group still exists.
     pub fn cad_blocks(&self) -> Vec<CadBlockInfo> {
-        self.cad
+        self.cad_blocks
             .iter()
-            .filter_map(|o| tagged(o, BLOCK_TAG))
-            .filter_map(|j| serde_json::from_str::<CadBlockInfo>(j).ok())
             .filter(|b| self.groups.iter().any(|g| g.id == b.group))
+            .cloned()
             .collect()
     }
 
@@ -989,61 +972,22 @@ impl crate::model::Floor {
     pub fn block_bounds(&self, group: Id) -> (Point, Point) {
         block_bounds(self, group)
     }
-
-    /// Is this CAD object one of the hidden data records?
-    pub fn is_cad_data(&self, id: Id) -> bool {
-        self.cad
-            .iter()
-            .any(|o| o.id == id && o.layer == CAD_DATA_LAYER)
-    }
 }
 
 impl Project {
-    fn ensure_cad_data_layer(&mut self) {
-        if self.layers.get(CAD_DATA_LAYER).is_none() {
-            let mut l = Layer::new(CAD_DATA_LAYER, [128, 128, 128], 13);
-            l.display = false;
-            l.locked = true;
-            self.layers.add(l);
-        }
-    }
-
-    /// Sets the attributes of a CAD object; default attributes remove the record.
+    /// Sets the attributes of a CAD object; default attributes remove the entry.
     pub fn set_cad_attrs(&mut self, floor: usize, attrs: CadAttrs) {
-        if floor >= self.floors.len() {
-            return;
-        }
-        let target = attrs.target;
-        let at = self.floors[floor].cad.iter().position(|o| {
-            tagged(o, ATTR_TAG)
-                .and_then(|j| serde_json::from_str::<CadAttrs>(j).ok())
-                .is_some_and(|a| a.target == target)
-        });
-        if attrs.is_default() {
-            if let Some(i) = at {
-                self.floors[floor].cad.remove(i);
-            }
-            return;
-        }
-        let Ok(json) = serde_json::to_string(&attrs) else {
+        let Some(f) = self.floors.get_mut(floor) else {
             return;
         };
-        let text = format!("{ATTR_TAG}{json}");
-        match at {
-            Some(i) => {
-                if let CadItem::Text { text: t, .. } = &mut self.floors[floor].cad[i].item {
-                    *t = text;
-                }
+        let at = f.cad_attrs.iter().position(|a| a.target == attrs.target);
+        match (at, attrs.is_default()) {
+            (Some(i), true) => {
+                f.cad_attrs.remove(i);
             }
-            None => {
-                self.ensure_cad_data_layer();
-                let id = self.alloc_id();
-                self.floors[floor].cad.push(CadObject {
-                    id,
-                    layer: CAD_DATA_LAYER.to_string(),
-                    item: data_record(Point::ZERO, text),
-                });
-            }
+            (Some(i), false) => f.cad_attrs[i] = attrs,
+            (None, false) => f.cad_attrs.push(attrs),
+            (None, true) => {}
         }
     }
 
@@ -1058,116 +1002,44 @@ impl Project {
         self.set_cad_attrs(floor, a);
     }
 
-    /// Removes data records whose object (or block group) no longer exists.
-    /// Returns how many were removed.
+    /// Removes attribute and block entries whose object (or block group) no
+    /// longer exists. Returns how many were removed.
     pub fn prune_cad_data(&mut self, floor: usize) -> usize {
         let Some(f) = self.floors.get_mut(floor) else {
             return 0;
         };
-        let live: std::collections::HashSet<Id> = f
-            .cad
-            .iter()
-            .filter(|o| o.layer != CAD_DATA_LAYER)
-            .map(|o| o.id)
-            .collect();
+        let live: std::collections::HashSet<Id> = f.cad.iter().map(|o| o.id).collect();
         let groups: std::collections::HashSet<Id> = f.groups.iter().map(|g| g.id).collect();
-        let before = f.cad.len();
-        f.cad.retain(|o| {
-            if let Some(j) = tagged(o, ATTR_TAG) {
-                return serde_json::from_str::<CadAttrs>(j)
-                    .map(|a| live.contains(&a.target))
-                    .unwrap_or(false);
-            }
-            if let Some(j) = tagged(o, BLOCK_TAG) {
-                return serde_json::from_str::<CadBlockInfo>(j)
-                    .map(|b| groups.contains(&b.group))
-                    .unwrap_or(false);
-            }
-            true
-        });
-        before - f.cad.len()
-    }
-
-    // ----- plan-wide settings blobs (macros, note types) -----
-
-    /// A settings string stored in the plan under `key`.
-    pub fn cad_blob(&self, key: &str) -> Option<String> {
-        let prefix = format!("{key}=");
-        self.floors.first()?.cad.iter().find_map(|o| {
-            tagged(o, BLOB_TAG)?
-                .strip_prefix(&prefix)
-                .map(str::to_string)
-        })
-    }
-
-    /// Stores (or with `None` removes) the settings string `key`.
-    pub fn set_cad_blob(&mut self, key: &str, value: Option<&str>) {
-        if self.floors.is_empty() {
-            return;
-        }
-        let prefix = format!("{key}=");
-        let at = self.floors[0]
-            .cad
+        let before = f.cad_attrs.len() + f.cad_blocks.len();
+        f.cad_attrs.retain(|a| live.contains(&a.target));
+        // A block goes with its group, or when none of its objects is left.
+        let members: Vec<(Id, Vec<Id>)> = f
+            .cad_blocks
             .iter()
-            .position(|o| tagged(o, BLOB_TAG).is_some_and(|rest| rest.starts_with(&prefix)));
-        match (at, value) {
-            (Some(i), None) => {
-                self.floors[0].cad.remove(i);
-            }
-            (Some(i), Some(v)) => {
-                if let CadItem::Text { text, .. } = &mut self.floors[0].cad[i].item {
-                    *text = format!("{BLOB_TAG}{prefix}{v}");
-                }
-            }
-            (None, Some(v)) => {
-                self.ensure_cad_data_layer();
-                let id = self.alloc_id();
-                self.floors[0].cad.push(CadObject {
-                    id,
-                    layer: CAD_DATA_LAYER.to_string(),
-                    item: data_record(Point::ZERO, format!("{BLOB_TAG}{prefix}{v}")),
-                });
-            }
-            (None, None) => {}
-        }
+            .map(|b| (b.group, f.group_members_cad(b.group)))
+            .collect();
+        f.cad_blocks.retain(|b| {
+            groups.contains(&b.group)
+                && members
+                    .iter()
+                    .find(|(g, _)| *g == b.group)
+                    .is_some_and(|(_, m)| m.iter().any(|id| live.contains(id)))
+        });
+        before - f.cad_attrs.len() - f.cad_blocks.len()
     }
 
     // ----- CAD blocks -----
 
     fn write_block(&mut self, floor: usize, info: &CadBlockInfo) {
-        let Ok(json) = serde_json::to_string(info) else {
-            return;
-        };
-        let text = format!("{BLOCK_TAG}{json}");
-        let at = self.floors[floor].cad.iter().position(|o| {
-            tagged(o, BLOCK_TAG)
-                .and_then(|j| serde_json::from_str::<CadBlockInfo>(j).ok())
-                .is_some_and(|b| b.group == info.group)
-        });
-        match at {
-            Some(i) => {
-                if let CadItem::Text { text: t, .. } = &mut self.floors[floor].cad[i].item {
-                    *t = text;
-                }
-            }
-            None => {
-                self.ensure_cad_data_layer();
-                let id = self.alloc_id();
-                self.floors[floor].cad.push(CadObject {
-                    id,
-                    layer: CAD_DATA_LAYER.to_string(),
-                    item: data_record(Point::ZERO, text),
-                });
-            }
+        let blocks = &mut self.floors[floor].cad_blocks;
+        match blocks.iter().position(|b| b.group == info.group) {
+            Some(i) => blocks[i] = info.clone(),
+            None => blocks.push(info.clone()),
         }
     }
 
     fn drop_block_record(&mut self, floor: usize, group: Id) {
-        self.floors[floor].cad.retain(|o| {
-            !tagged(o, BLOCK_TAG)
-                .and_then(|j| serde_json::from_str::<CadBlockInfo>(j).ok())
-                .is_some_and(|b| b.group == group)
-        });
+        self.floors[floor].cad_blocks.retain(|b| b.group != group);
     }
 
     /// Makes a CAD block of the given CAD objects (two or more). The name
@@ -1179,12 +1051,7 @@ impl Project {
         }
         let members: Vec<crate::groups::ObjectRef> = ids
             .iter()
-            .filter(|id| {
-                self.floors[floor]
-                    .cad
-                    .iter()
-                    .any(|o| o.id == **id && o.layer != CAD_DATA_LAYER)
-            })
+            .filter(|id| self.floors[floor].cad.iter().any(|o| o.id == **id))
             .map(|id| crate::groups::ObjectRef::Cad(*id))
             .collect();
         let group = self.make_group(floor, &members)?;
@@ -1338,6 +1205,74 @@ fn block_bounds(f: &crate::model::Floor, group: Id) -> (Point, Point) {
     min_max(pts)
 }
 
+// ===== migration of the old hidden-layer records =====
+
+/// Moves attribute, block and settings records kept the old way (tagged text
+/// on the hidden "CAD, Data" layer of the floors' CAD lists) into
+/// [`Floor::cad_attrs`], [`Floor::cad_blocks`], [`Project::text_macros`] and
+/// [`Project::note_types`], removes the records and the layer. Slots that are
+/// already filled win. Runs once when a project is loaded; returns whether
+/// anything changed.
+pub fn migrate_legacy(project: &mut Project) -> bool {
+    let mut changed = false;
+    let mut macros = None;
+    let mut notes = None;
+    for f in project.floors.iter_mut() {
+        let n = f.cad.len();
+        let mut attrs: Vec<CadAttrs> = Vec::new();
+        let mut blocks: Vec<CadBlockInfo> = Vec::new();
+        f.cad.retain(|o| {
+            if o.layer != LEGACY_DATA_LAYER {
+                return true;
+            }
+            if let Some(j) = legacy_tagged(o, ATTR_TAG) {
+                if let Ok(a) = serde_json::from_str::<CadAttrs>(j) {
+                    attrs.push(a);
+                }
+            } else if let Some(j) = legacy_tagged(o, BLOCK_TAG) {
+                if let Ok(b) = serde_json::from_str::<CadBlockInfo>(j) {
+                    blocks.push(b);
+                }
+            } else if let Some(rest) = legacy_tagged(o, BLOB_TAG) {
+                if let Some(j) = rest.strip_prefix("text-macros=") {
+                    macros = serde_json::from_str::<crate::text_styles::TextMacros>(j).ok();
+                } else if let Some(j) = rest.strip_prefix("note-types=") {
+                    notes = serde_json::from_str::<crate::text_styles::NoteTypes>(j).ok();
+                }
+            }
+            false
+        });
+        for a in attrs {
+            if !f.cad_attrs.iter().any(|x| x.target == a.target) {
+                f.cad_attrs.push(a);
+            }
+        }
+        for b in blocks {
+            if !f.cad_blocks.iter().any(|x| x.group == b.group) {
+                f.cad_blocks.push(b);
+            }
+        }
+        changed |= f.cad.len() != n;
+    }
+    if let Some(m) = macros {
+        if project.text_macros.macros.is_empty() {
+            project.text_macros = m;
+        }
+    }
+    if let Some(n) = notes {
+        if project.note_types == crate::text_styles::NoteTypes::default() {
+            project.note_types = n;
+        }
+    }
+    let n = project.layers.layers.len();
+    project
+        .layers
+        .layers
+        .retain(|l| l.name != LEGACY_DATA_LAYER);
+    changed |= project.layers.layers.len() != n;
+    changed
+}
+
 // ===== CAD detail from a view =====
 
 /// The lines of a floor as CAD objects for a CAD detail: wall outlines as
@@ -1366,7 +1301,7 @@ pub fn detail_items(
         }
     }
     for o in &floor.cad {
-        if o.layer != CAD_DATA_LAYER && layers.is_visible(&o.layer) {
+        if layers.is_visible(&o.layer) {
             out.push((o.layer.clone(), o.item.clone()));
         }
     }
@@ -1748,8 +1683,10 @@ mod tests {
             .groups
             .iter()
             .any(|x| x.id == g && x.members.len() == 3));
-        // The hidden data layer exists and is not displayed.
-        assert!(!pr.layers.is_visible(CAD_DATA_LAYER));
+        // The block is a typed slot entry; no hidden layer or record exists.
+        assert_eq!(pr.floors[0].cad_blocks.len(), 1);
+        assert!(pr.layers.get("CAD, Data").is_none());
+        assert!(pr.floors[0].cad.iter().all(|o| o.layer != "CAD, Data"));
 
         assert!(pr.edit_cad_block(0, g, |b| {
             b.insertion = Some(p(0.0, 0.0));
@@ -1855,5 +1792,86 @@ mod tests {
         // The other pair of sides.
         let j = chamfer_lines_picked(h, p(10.0, 50.0), v, p(50.0, 10.0), 5.0, 5.0).unwrap();
         assert!(close(j.first.1, p(45.0, 50.0)) && close(j.second.1, p(50.0, 45.0)));
+    }
+    fn legacy_record(pr: &mut Project, text: String) {
+        let id = pr.alloc_id();
+        pr.floors[0].cad.push(CadObject {
+            id,
+            layer: LEGACY_DATA_LAYER.to_string(),
+            item: CadItem::Text {
+                pos: Point::ZERO,
+                text,
+                height: 1.0,
+                angle: 0.0,
+            },
+        });
+    }
+
+    #[test]
+    fn typed_slots_round_trip_through_json() {
+        let (mut pr, ids) = project_with_lines(3);
+        pr.edit_cad_attrs(0, ids[0], |a| a.weight = Some(35));
+        let g = pr.make_cad_block(0, &ids, Some("Bench")).unwrap();
+        let mut m = crate::text_styles::TextMacros::default();
+        m.macros.push(crate::text_styles::TextMacro {
+            name: "job".into(),
+            text: "Smith".into(),
+        });
+        pr.text_macros = m.clone();
+        let back: Project = serde_json::from_str(&serde_json::to_string(&pr).unwrap()).unwrap();
+        assert_eq!(back.floors[0].cad_attrs(ids[0]).unwrap().weight, Some(35));
+        assert_eq!(back.floors[0].cad_block(g).unwrap().name, "Bench");
+        assert_eq!(back.text_macros, m);
+        // The slots are plain fields: nothing hides in the CAD list.
+        assert_eq!(back.floors[0].cad.len(), 3);
+    }
+
+    #[test]
+    fn migrate_legacy_moves_hidden_records_into_the_slots() {
+        let (mut pr, ids) = project_with_lines(3);
+        let g = pr.make_cad_block(0, &ids, Some("Bench")).unwrap();
+        let attrs = CadAttrs {
+            weight: Some(70),
+            ..CadAttrs::new(ids[1])
+        };
+        let block = pr.floors[0].cad_block(g).unwrap();
+        let mut m = crate::text_styles::TextMacros::default();
+        m.macros.push(crate::text_styles::TextMacro {
+            name: "job".into(),
+            text: "Smith".into(),
+        });
+        // A file written by the old storage: the slots empty, records present.
+        pr.floors[0].cad_blocks.clear();
+        pr.floors[0].cad_attrs.clear();
+        legacy_record(
+            &mut pr,
+            format!("{ATTR_TAG}{}", serde_json::to_string(&attrs).unwrap()),
+        );
+        legacy_record(
+            &mut pr,
+            format!("{BLOCK_TAG}{}", serde_json::to_string(&block).unwrap()),
+        );
+        legacy_record(
+            &mut pr,
+            format!(
+                "{BLOB_TAG}text-macros={}",
+                serde_json::to_string(&m).unwrap()
+            ),
+        );
+        let mut layer = crate::layers::Layer::new(LEGACY_DATA_LAYER, [128, 128, 128], 13);
+        layer.display = false;
+        pr.layers.add(layer);
+
+        assert!(migrate_legacy(&mut pr));
+        assert_eq!(pr.floors[0].cad_attrs(ids[1]), Some(attrs));
+        assert_eq!(pr.floors[0].cad_block(g).unwrap().name, "Bench");
+        assert_eq!(pr.text_macros, m);
+        assert_eq!(
+            pr.floors[0].cad.len(),
+            3,
+            "records are gone from the CAD list"
+        );
+        assert!(pr.layers.get(LEGACY_DATA_LAYER).is_none());
+        assert!(!migrate_legacy(&mut pr), "second run changes nothing");
     }
 }

@@ -95,8 +95,8 @@ Double-click or `Enter` opens the Stair Specification. The Edit toolbar adds fou
 - On the floor above: the part of the stair beyond the break line, its outline, and a
   **DN** arrow pointing back down.
 - In 3D: stairs are built by the engine (`plan_stairs::meshes`: treads, risers, stringers,
-  landings, ramp slab, optional handrail), but the 3D view does not draw them yet (planned;
-  see chapter 10).
+  landings, ramp slab, optional handrail), but the 3D view does not draw them at the Round 7 commit (QA-06 in
+  `docs/qa-findings.md`; Round 8 is wiring them in; see chapter 10).
 
 ## 7.4 Auto Stairwell
 
@@ -161,8 +161,8 @@ suggested fix. See chapter 4.8.
 
 ## 7.7 Differences from Chief
 
-- Stairs are a plan-only object in the editor today: no 3D, no framing, no stairwell cut in
-  the floor platform, no automatic railings.
+- Stairs are a plan-only object in the editor at the Round 7 commit: no 3D (QA-06), no framing, no stairwell cut in
+  the floor platform (QA-04: Auto Stairwell leaves the floor closed over the stair in 3D), no automatic railings. Round 8 has the stairs builder on these, with railings.
 - Auto Stairwell uses invisible room dividers, so the stairwell shows as a room. Chief
   names it by Function.
 - There is no Stair Schedule (planned).

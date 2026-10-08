@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use plan_core::geometry::{point_in_polygon, polygon_area, polygon_centroid};
+use plan_core::geometry::{dist_to_segment, point_in_polygon, polygon_area, polygon_centroid};
 use plan_core::Point;
 
 use crate::delaunay::triangulate;
-use crate::elevation::{ElevationModel, FEATHER};
+use crate::elevation::{break_step, ElevationModel, FEATHER};
 use crate::geom::{bounds, dedup_points, densify, dist_to_boundary, offset_polygon};
 use crate::model::{Feature, FeatureKind, HeightGrid, ModifierKind, Terrain, TerrainSurface};
 use crate::query::elevation_at;
@@ -76,7 +76,11 @@ fn sanitize_spacing(requested: f64, width: f64, height: f64) -> f64 {
 ///    24" feathered edge, flat regions levelled to their mean.
 /// 4. Delaunay triangulation (Bowyer-Watson), dropping triangles whose centroid is
 ///    outside the perimeter or inside a `Hole` feature.
-/// 5. `smoothing` Laplacian iterations on interior vertices (boundary vertices stay put).
+/// 5. `smoothing` Laplacian iterations on interior vertices (boundary vertices and
+///    vertices on a Terrain Break line stay put).
+///
+/// Break lines are sampled finely along their length at their own elevation, so the
+/// surface holds that elevation along the line and smoothing leaves the crease sharp.
 ///
 /// An invalid perimeter (fewer than three distinct points or zero area) gives an empty surface.
 pub fn build_terrain(t: &Terrain) -> TerrainSurface {
@@ -139,7 +143,19 @@ pub fn build_terrain(t: &Terrain) -> TerrainSurface {
         }));
     }
 
-    smooth(&mut vertices, &tris, t.smoothing);
+    // Vertices on a break line stay put so the crease survives smoothing.
+    let on_break: Vec<bool> = vertices
+        .iter()
+        .map(|v| {
+            let p = Point::new(v[0], v[2]);
+            t.breaks.iter().any(|b| {
+                b.points
+                    .windows(2)
+                    .any(|w| dist_to_segment(p, w[0], w[1]) <= MERGE_TOLERANCE)
+            })
+        })
+        .collect();
+    smooth(&mut vertices, &tris, t.smoothing, &on_break);
     let mut surface = TerrainSurface::new(vertices, tris, grid);
     if t.smoothing > 0 {
         // Keep the exported grid consistent with the smoothed surface where it has data.
@@ -197,6 +213,9 @@ fn collect_samples(t: &Terrain, perimeter: &[Point], grid: &HeightGrid) -> Vec<P
     for f in t.features.iter().filter(|f| f.kind == FeatureKind::Hole) {
         add_if_on_lot(&mut set, densify(&f.polygon, half, true));
     }
+    for brk in &t.breaks {
+        add_if_on_lot(&mut set, densify(&brk.points, break_step(spacing), false));
+    }
     for j in 0..grid.ny {
         for i in 0..grid.nx {
             let p = grid.node(i, j);
@@ -209,7 +228,7 @@ fn collect_samples(t: &Terrain, perimeter: &[Point], grid: &HeightGrid) -> Vec<P
 }
 
 /// Laplacian smoothing of interior vertices; vertices on a boundary edge are fixed.
-fn smooth(vertices: &mut [[f64; 3]], triangles: &[[u32; 3]], iterations: u32) {
+fn smooth(vertices: &mut [[f64; 3]], triangles: &[[u32; 3]], iterations: u32, pinned: &[bool]) {
     if iterations == 0 || triangles.is_empty() {
         return;
     }
@@ -223,7 +242,7 @@ fn smooth(vertices: &mut [[f64; 3]], triangles: &[[u32; 3]], iterations: u32) {
             neighbors[b as usize].push(a);
         }
     }
-    let mut fixed = vec![false; vertices.len()];
+    let mut fixed = pinned.to_vec();
     for (&(a, b), &uses) in &edge_uses {
         if uses == 1 {
             fixed[a as usize] = true;
@@ -258,6 +277,6 @@ pub fn auto_hole_for_building(t: &mut Terrain, footprint: &[Point]) {
     t.features.push(Feature {
         kind: FeatureKind::Hole,
         polygon,
-        material: String::new(),
+        ..Feature::default()
     });
 }

@@ -72,7 +72,7 @@ and the name stays with the piece that holds the point.
 | Exchange With Floor Above | `Ctrl+Alt+Shift+Cmd+L` | Swaps the contents of this floor and the one above; both keep their numbers. |
 | Exchange With Floor Below | `Ctrl+Alt+Shift+Cmd+M` | The same with the floor below. |
 | Rebuild Walls/Floors/Ceilings | `F12` | Restacks the floors and recomputes derived geometry. |
-| Floor Material Region | | (planned) |
+| Floor Material Region | | Works: draw a polygon of floor finish (chapter 17). |
 | Hole in Floor Platform, Hole in Ceiling Platform | | Work: draw a polygon, and the floor or ceiling platform is cut there in 3D (chapter 16). |
 
 Each of these is one undo step, and none of them needs a canvas click.
@@ -143,10 +143,10 @@ below, and old files load with the defaults for every field they lack. The rest 
 ### Structure
 
 - **Floor Height** and **Ceiling Height**, each Absolute or Relative (the absolute/
-  relative toggle is session only; the offset values are stored).
+  relative toggle is session only; the offset values are stored). A room's own Ceiling Height does not yet reach the 3D ceiling (QA-02 in `docs/qa-findings.md`; Round 8 is fixing it).
 - **Rough Ceiling Height** for dropped ceilings (stored).
 - **Finish** thicknesses for floor and ceiling (stored finish names; thickness session only).
-- **Platforms**: Floor Under This Room, Ceiling Over This Room (stored), Roof Over This Room (session only).
+- **Platforms**: Floor Under This Room, Ceiling Over This Room (stored; turning it off makes Build Roof add a vaulted ceiling plane over the room, chapter 8.2), Roof Over This Room (session only).
 - **Stem Wall** with its height. Stored (a room with a stem wall keeps its height; turning it off clears it).
 - The preview draws the room cross-section with the CEILING and FLOOR dimensions.
 
@@ -241,7 +241,7 @@ there is no settings dialog for them yet.
   setting, stem wall, base and crown moldings, fill and label options (all stored with the plan) are kept
   for the session only: Wall Covering, Roof Over This Room, the Absolute/Relative toggles and the finish
   thicknesses.
-- Floor Defaults, Floor Material Region and Attic floors from Build Roof are (planned).
+- Floor Defaults and Attic floors from Build Roof are (planned). Floor Material Region is in chapter 17.
 - Slabs, slab holes, pads, piers and the holes in the floor and ceiling platforms are objects of their
   own, not part of Build Foundation; see chapter 16.
 

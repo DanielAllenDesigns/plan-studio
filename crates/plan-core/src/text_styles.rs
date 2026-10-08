@@ -677,31 +677,20 @@ impl NoteTypes {
 impl crate::model::Project {
     /// The plan's user text macros.
     pub fn text_macros(&self) -> TextMacros {
-        self.cad_blob("text-macros")
-            .and_then(|j| serde_json::from_str(&j).ok())
-            .unwrap_or_default()
+        self.text_macros.clone()
     }
 
     pub fn set_text_macros(&mut self, m: &TextMacros) {
-        match serde_json::to_string(m) {
-            Ok(j) if !m.macros.is_empty() => self.set_cad_blob("text-macros", Some(&j)),
-            _ => self.set_cad_blob("text-macros", None),
-        }
+        self.text_macros = m.clone();
     }
 
     /// The plan's note types (the defaults until edited).
     pub fn note_types(&self) -> NoteTypes {
-        self.cad_blob("note-types")
-            .and_then(|j| serde_json::from_str(&j).ok())
-            .unwrap_or_default()
+        self.note_types.clone()
     }
 
     pub fn set_note_types(&mut self, n: &NoteTypes) {
-        if *n == NoteTypes::default() {
-            self.set_cad_blob("note-types", None);
-        } else if let Ok(j) = serde_json::to_string(n) {
-            self.set_cad_blob("note-types", Some(&j));
-        }
+        self.note_types = n.clone();
     }
 }
 
@@ -909,6 +898,6 @@ mod tests {
         assert_eq!(back.note_types(), n);
         p.set_text_macros(&TextMacros::default());
         assert!(p.text_macros().macros.is_empty());
-        assert!(p.cad_blob("text-macros").is_none());
+        assert!(p.text_macros.macros.is_empty());
     }
 }

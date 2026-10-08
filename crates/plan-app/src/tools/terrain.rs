@@ -10,33 +10,53 @@
 //! * Elevation Region, Hill, Valley, Raised, Lowered and Flat Region, Terrain
 //!   Hole: click a polygon, Enter closes it, then the elevation or height is
 //!   typed (Flat Region and Terrain Hole need no value);
-//! * Build Terrain: one click builds the surface and shows the contours (CB-53).
+//! * Build Terrain: one click builds the surface and shows the contours (CB-53);
+//! * Elevation Spline, Spline Road/Driveway/Sidewalk: like their polyline
+//!   versions, with the clicks as control points of a Catmull-Rom curve;
+//! * Terrain Break: a polyline, then the elevation it is held at;
+//! * Straight Terrain Wall/Curb: a polyline; Curved Terrain Wall/Curb: start,
+//!   end, then a click that sets the bulge of the arc;
+//! * Rectangular Feature: drag a rectangle (or click two corners); Kidney
+//!   Shaped Feature, Kidney Garden Bed, Kidney Grass Region: click both ends
+//!   of the long axis, then a third click that sets the width; Spline Feature
+//!   and the Spline Garden Bed, Grass Region and Water Feature: closed splines;
+//! * Garden Bed, Grass Region, Water Feature: polygons; Stepping Stone, Plant
+//!   and Sprinkler: polylines or splines the objects are laid along. They take
+//!   their sizes from defaults; the Specification (double-click the object)
+//!   edits them (`dialogs::terrain::ObjectDialog`, one undo step).
 //!
 //! The typed value goes through `cx.temp.editing` (the shell forwards typed
 //! text while it is set); Enter accepts, an empty field takes the default
-//! shown, Esc cancels. Delete removes the element under the pointer; a
-//! double-click outside a drawing opens the Terrain Specification.
+//! shown, Esc cancels. Delete removes the element under the pointer, the arrow
+//! keys nudge it; a double-click on an object with a specification opens it,
+//! one elsewhere (outside a drawing) opens the Terrain Specification.
 //!
 //! The terrain lives in `Project.terrain` through `editor::site_view`;
 //! `site_view::draw_site` draws it.
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
-use crate::dialogs::terrain::TerrainDialog;
+use crate::dialogs::terrain::{ObjectDialog, TerrainDialog};
 use crate::dialogs::Outcome;
 use crate::editor::site_view::{
-    draw_polyline, edit_terrain, hit_terrain, load_terrain, remove_terrain_element, terrain_view,
-    TerrainRecord,
+    draw_polyline, edit_terrain, ensure_landscape_layers, hit_terrain, load_terrain,
+    move_terrain_element, object_at, remove_terrain_element, replace_object, terrain_view,
+    TerrainHit, TerrainObject, TerrainRecord,
 };
 use crate::editor::tempdim::EditField;
 use crate::editor::{Camera, EditorContext};
 use eframe::egui::{self, Color32, FontId, Key, Pos2, Rect};
 use plan_core::geometry::Point;
 use plan_core::units::{fmt_ft_in, parse_ft_in};
+use plan_core::WallCurve;
 use plan_terrain::{
-    ElevationLine, ElevationPoint, ElevationRegion, Feature, FeatureKind, Modifier, ModifierKind,
-    RoadKind, RoadStrip,
+    arc_polyline, flatten_spline, kidney_outline, rectangle_outline, ElevationLine, ElevationPoint,
+    ElevationRegion, Feature, FeatureKind, Landscape, LandscapeKind, Modifier, ModifierKind,
+    RoadKind, RoadStrip, ShapeKind, TerrainBreak, TerrainWall, WallKind,
 };
 use std::cell::RefCell;
+
+mod scape;
+pub use scape::{apply_plant, default_plant, plant_choices};
 
 /// Default Hill/Valley height, inches.
 const DEFAULT_HILL: f64 = 72.0;
@@ -45,6 +65,10 @@ const DEFAULT_REGION_SHIFT: f64 = 24.0;
 const DEFAULT_ROAD_WIDTH: f64 = 240.0;
 const DEFAULT_DRIVEWAY_WIDTH: f64 = 144.0;
 const DEFAULT_SIDEWALK_WIDTH: f64 = 48.0;
+/// Default height of a new terrain feature slab, inches.
+const DEFAULT_FEATURE_HEIGHT: f64 = 4.0;
+/// Points per span of a flattened spline.
+const SPLINE_SAMPLES: usize = 8;
 /// The `EditField` index that marks "the terrain tool's inline value".
 const ENTRY_INDEX: usize = usize::MAX;
 
@@ -65,6 +89,32 @@ pub enum TerrainVariant {
     Sidewalk,
     Hole,
     Build,
+    ElevationSpline,
+    Break,
+    StraightWall,
+    StraightCurb,
+    CurvedWall,
+    CurvedCurb,
+    RectFeature,
+    KidneyFeature,
+    SplineFeature,
+    BedPolyline,
+    BedKidney,
+    BedSpline,
+    GrassPolyline,
+    GrassKidney,
+    GrassSpline,
+    WaterPolyline,
+    WaterSpline,
+    StonePolyline,
+    StoneSpline,
+    SplineRoad,
+    SplineDriveway,
+    SplineSidewalk,
+    PlantPolyline,
+    PlantSpline,
+    SprinklerPolyline,
+    SprinklerSpline,
 }
 
 /// What the clicks of a flavor draw.
@@ -74,9 +124,59 @@ enum Draw {
     Polyline,
     Polygon,
     Command,
+    /// Drag (or click two corners) for a rectangle.
+    Rect,
+    /// Three clicks: both ends of the long axis, then the width.
+    Kidney,
+    /// Three clicks: start, end, then the bulge of the arc.
+    Arc,
 }
 
 impl TerrainVariant {
+    /// Every flavor, in menu order.
+    pub const ALL: [TerrainVariant; 40] = [
+        TerrainVariant::Perimeter,
+        TerrainVariant::ElevationPoint,
+        TerrainVariant::ElevationLine,
+        TerrainVariant::ElevationRegion,
+        TerrainVariant::ElevationSpline,
+        TerrainVariant::Break,
+        TerrainVariant::Build,
+        TerrainVariant::Hill,
+        TerrainVariant::Valley,
+        TerrainVariant::Raised,
+        TerrainVariant::Lowered,
+        TerrainVariant::Flat,
+        TerrainVariant::RectFeature,
+        TerrainVariant::KidneyFeature,
+        TerrainVariant::SplineFeature,
+        TerrainVariant::Hole,
+        TerrainVariant::BedPolyline,
+        TerrainVariant::BedKidney,
+        TerrainVariant::BedSpline,
+        TerrainVariant::GrassPolyline,
+        TerrainVariant::GrassKidney,
+        TerrainVariant::GrassSpline,
+        TerrainVariant::WaterPolyline,
+        TerrainVariant::WaterSpline,
+        TerrainVariant::StonePolyline,
+        TerrainVariant::StoneSpline,
+        TerrainVariant::StraightWall,
+        TerrainVariant::StraightCurb,
+        TerrainVariant::CurvedWall,
+        TerrainVariant::CurvedCurb,
+        TerrainVariant::Road,
+        TerrainVariant::SplineRoad,
+        TerrainVariant::Driveway,
+        TerrainVariant::SplineDriveway,
+        TerrainVariant::Sidewalk,
+        TerrainVariant::SplineSidewalk,
+        TerrainVariant::PlantPolyline,
+        TerrainVariant::PlantSpline,
+        TerrainVariant::SprinklerPolyline,
+        TerrainVariant::SprinklerSpline,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             TerrainVariant::Perimeter => "Terrain Perimeter",
@@ -93,19 +193,122 @@ impl TerrainVariant {
             TerrainVariant::Sidewalk => "Sidewalk",
             TerrainVariant::Hole => "Terrain Hole",
             TerrainVariant::Build => "Build Terrain",
+            TerrainVariant::ElevationSpline => "Elevation Spline",
+            TerrainVariant::Break => "Terrain Break",
+            TerrainVariant::StraightWall => "Straight Terrain Wall",
+            TerrainVariant::StraightCurb => "Straight Terrain Curb",
+            TerrainVariant::CurvedWall => "Curved Terrain Wall",
+            TerrainVariant::CurvedCurb => "Curved Terrain Curb",
+            TerrainVariant::RectFeature => "Rectangular Feature",
+            TerrainVariant::KidneyFeature => "Kidney Shaped Feature",
+            TerrainVariant::SplineFeature => "Spline Feature",
+            TerrainVariant::BedPolyline => "Polyline Garden Bed",
+            TerrainVariant::BedKidney => "Kidney Garden Bed",
+            TerrainVariant::BedSpline => "Spline Garden Bed",
+            TerrainVariant::GrassPolyline => "Polyline Grass Region",
+            TerrainVariant::GrassKidney => "Kidney Grass Region",
+            TerrainVariant::GrassSpline => "Spline Grass Region",
+            TerrainVariant::WaterPolyline => "Polyline Water Feature",
+            TerrainVariant::WaterSpline => "Spline Water Feature",
+            TerrainVariant::StonePolyline => "Polyline Stepping Stone",
+            TerrainVariant::StoneSpline => "Spline Stepping Stone",
+            TerrainVariant::SplineRoad => "Spline Road",
+            TerrainVariant::SplineDriveway => "Spline Driveway",
+            TerrainVariant::SplineSidewalk => "Spline Sidewalk",
+            TerrainVariant::PlantPolyline => "Polyline Plant",
+            TerrainVariant::PlantSpline => "Spline Plant",
+            TerrainVariant::SprinklerPolyline => "Polyline Sprinkler",
+            TerrainVariant::SprinklerSpline => "Spline Sprinkler",
         }
     }
 
     fn draw(self) -> Draw {
+        use TerrainVariant as V;
         match self {
-            TerrainVariant::ElevationPoint => Draw::Spot,
-            TerrainVariant::ElevationLine
-            | TerrainVariant::Road
-            | TerrainVariant::Driveway
-            | TerrainVariant::Sidewalk => Draw::Polyline,
-            TerrainVariant::Build => Draw::Command,
+            V::ElevationPoint => Draw::Spot,
+            V::ElevationLine
+            | V::ElevationSpline
+            | V::Break
+            | V::StraightWall
+            | V::StraightCurb
+            | V::Road
+            | V::Driveway
+            | V::Sidewalk
+            | V::SplineRoad
+            | V::SplineDriveway
+            | V::SplineSidewalk
+            | V::StonePolyline
+            | V::StoneSpline
+            | V::PlantPolyline
+            | V::PlantSpline
+            | V::SprinklerPolyline
+            | V::SprinklerSpline => Draw::Polyline,
+            V::Build => Draw::Command,
+            V::CurvedWall | V::CurvedCurb => Draw::Arc,
+            V::RectFeature => Draw::Rect,
+            V::KidneyFeature | V::BedKidney | V::GrassKidney => Draw::Kidney,
             _ => Draw::Polygon,
         }
+    }
+
+    /// The clicks are control points of a Catmull-Rom curve.
+    fn spline(self) -> bool {
+        use TerrainVariant as V;
+        matches!(
+            self,
+            V::ElevationSpline
+                | V::SplineFeature
+                | V::BedSpline
+                | V::GrassSpline
+                | V::WaterSpline
+                | V::StoneSpline
+                | V::SplineRoad
+                | V::SplineDriveway
+                | V::SplineSidewalk
+                | V::PlantSpline
+                | V::SprinklerSpline
+        )
+    }
+
+    fn feature(self) -> Option<FeatureKind> {
+        match self {
+            TerrainVariant::RectFeature => Some(FeatureKind::Rectangular),
+            TerrainVariant::KidneyFeature => Some(FeatureKind::Kidney),
+            TerrainVariant::SplineFeature => Some(FeatureKind::Spline),
+            _ => None,
+        }
+    }
+
+    fn wall(self) -> Option<WallKind> {
+        match self {
+            TerrainVariant::StraightWall | TerrainVariant::CurvedWall => Some(WallKind::Wall),
+            TerrainVariant::StraightCurb | TerrainVariant::CurvedCurb => Some(WallKind::Curb),
+            _ => None,
+        }
+    }
+
+    /// The landscape object a flavor draws and how its outline is made.
+    fn scape(self) -> Option<(LandscapeKind, ShapeKind)> {
+        use LandscapeKind as K;
+        use ShapeKind as S;
+        use TerrainVariant as V;
+        Some(match self {
+            V::BedPolyline => (K::GardenBed, S::Polyline),
+            V::BedKidney => (K::GardenBed, S::Kidney),
+            V::BedSpline => (K::GardenBed, S::Spline),
+            V::GrassPolyline => (K::GrassRegion, S::Polyline),
+            V::GrassKidney => (K::GrassRegion, S::Kidney),
+            V::GrassSpline => (K::GrassRegion, S::Spline),
+            V::WaterPolyline => (K::WaterFeature, S::Polyline),
+            V::WaterSpline => (K::WaterFeature, S::Spline),
+            V::StonePolyline => (K::SteppingStones, S::Polyline),
+            V::StoneSpline => (K::SteppingStones, S::Spline),
+            V::PlantPolyline => (K::Plants, S::Polyline),
+            V::PlantSpline => (K::Plants, S::Spline),
+            V::SprinklerPolyline => (K::Sprinklers, S::Polyline),
+            V::SprinklerSpline => (K::Sprinklers, S::Spline),
+            _ => return None,
+        })
     }
 
     fn modifier(self) -> Option<ModifierKind> {
@@ -121,9 +324,9 @@ impl TerrainVariant {
 
     fn road(self) -> Option<RoadKind> {
         match self {
-            TerrainVariant::Road => Some(RoadKind::Road),
-            TerrainVariant::Driveway => Some(RoadKind::Driveway),
-            TerrainVariant::Sidewalk => Some(RoadKind::Sidewalk),
+            TerrainVariant::Road | TerrainVariant::SplineRoad => Some(RoadKind::Road),
+            TerrainVariant::Driveway | TerrainVariant::SplineDriveway => Some(RoadKind::Driveway),
+            TerrainVariant::Sidewalk | TerrainVariant::SplineSidewalk => Some(RoadKind::Sidewalk),
             _ => None,
         }
     }
@@ -131,8 +334,8 @@ impl TerrainVariant {
     /// Fewest points a finished shape needs.
     fn min_points(self) -> usize {
         match self.draw() {
-            Draw::Polygon => 3,
-            Draw::Polyline => 2,
+            Draw::Polygon | Draw::Kidney | Draw::Arc => 3,
+            Draw::Polyline | Draw::Rect => 2,
             _ => 1,
         }
     }
@@ -145,6 +348,7 @@ enum Pending {
     Region(Vec<Point>),
     Modifier(ModifierKind, Vec<Point>),
     Road(RoadKind, Vec<Point>),
+    Break(Vec<Point>),
 }
 
 struct Entry {
@@ -163,6 +367,11 @@ pub struct TerrainTool {
     last_elevation: f64,
     dialog: RefCell<Option<TerrainDialog>>,
     applied: RefCell<Option<TerrainRecord>>,
+    /// The specification of one object, with the element it edits.
+    object_dialog: RefCell<Option<(TerrainHit, ObjectDialog)>>,
+    applied_object: RefCell<Option<(TerrainHit, TerrainObject)>>,
+    /// The first corner of a rectangle was pressed: releasing elsewhere ends it.
+    pressed: bool,
 }
 
 impl Default for TerrainTool {
@@ -175,8 +384,24 @@ impl Default for TerrainTool {
             last_elevation: 0.0,
             dialog: RefCell::new(None),
             applied: RefCell::new(None),
+            object_dialog: RefCell::new(None),
+            applied_object: RefCell::new(None),
+            pressed: false,
         }
     }
+}
+
+/// The arc from `start` to `end` through the side of the chord `click` is on,
+/// bulging as far as the click is from the chord (rounded to `unit`).
+fn arc_through(start: Point, end: Point, click: Point, unit: f64) -> Vec<Point> {
+    let normal = (end - start).normalized().perp();
+    let mid = Point::lerp(start, end, 0.5);
+    let bulge = ((click - mid).dot(normal) / unit).round() * unit;
+    if bulge.abs() < 0.5 {
+        return vec![start, end];
+    }
+    let n = WallCurve { bulge }.facet_count(start, end).max(8);
+    arc_polyline(start, end, bulge, n)
 }
 
 /// Parses a typed length, allowing a leading minus (`-6"`, `-2'`).
@@ -221,10 +446,17 @@ impl TerrainTool {
     }
 
     fn dialog_open(&self) -> bool {
-        self.dialog.borrow().is_some()
+        self.dialog.borrow().is_some() || self.object_dialog.borrow().is_some()
     }
 
     fn flush(&mut self, cx: &mut EditorContext) -> Option<ToolResult> {
+        if let Some((hit, obj)) = self.applied_object.borrow_mut().take() {
+            let label = obj.title().to_string();
+            edit_terrain(cx, &label, |r| {
+                replace_object(&mut r.terrain, hit, obj);
+            });
+            return Some(ToolResult::committed(&label));
+        }
         let draft = self.applied.borrow_mut().take()?;
         edit_terrain(cx, "Terrain Specification", |rec| {
             rec.contour_interval = draft.contour_interval;
@@ -250,6 +482,7 @@ impl TerrainTool {
             Pending::Road(RoadKind::Road, _) => ("Road width", DEFAULT_ROAD_WIDTH),
             Pending::Road(RoadKind::Driveway, _) => ("Driveway width", DEFAULT_DRIVEWAY_WIDTH),
             Pending::Road(RoadKind::Sidewalk, _) => ("Sidewalk width", DEFAULT_SIDEWALK_WIDTH),
+            Pending::Break(_) => ("Break elevation", self.last_elevation),
         };
         self.entry = Some(Entry {
             prompt,
@@ -267,16 +500,87 @@ impl TerrainTool {
         ));
     }
 
-    /// Ends the shape: closes a perimeter, adds a hole or flat region, or asks
-    /// for the value the shape needs.
+    /// The outline the clicks make: the corners of a rectangle or kidney, the
+    /// arc of a curved wall, the flattened curve of a spline, or the polyline
+    /// itself. `None` (with a status line) when the clicks make no valid shape.
+    fn shape_from(&self, cx: &mut EditorContext, ctrl: &[Point]) -> Option<Vec<Point>> {
+        let v = self.variant;
+        match v.draw() {
+            Draw::Rect => {
+                let (a, b) = (ctrl[0], ctrl[1]);
+                if (a.x - b.x).abs() < 1.0 || (a.y - b.y).abs() < 1.0 {
+                    cx.status = "The rectangle has no area".into();
+                    return None;
+                }
+                Some(rectangle_outline(a, b))
+            }
+            Draw::Kidney => {
+                let blob = kidney_outline(ctrl[0], ctrl[1], ctrl[2]);
+                if blob.is_none() {
+                    cx.status =
+                        "Click the two ends, then a point off the axis for the width".into();
+                }
+                blob
+            }
+            Draw::Arc => Some(arc_through(ctrl[0], ctrl[1], ctrl[2], cx.snap_unit())),
+            Draw::Polygon if v.spline() => Some(flatten_spline(ctrl, true, SPLINE_SAMPLES)),
+            Draw::Polyline if v.spline() => Some(flatten_spline(ctrl, false, SPLINE_SAMPLES)),
+            _ => Some(ctrl.to_vec()),
+        }
+    }
+
+    /// Ends the shape: closes a perimeter, adds a hole, flat region, wall,
+    /// break or landscape object, or asks for the value the shape needs.
     fn finish(&mut self, cx: &mut EditorContext) -> ToolResult {
         let v = self.variant;
         if self.points.len() < v.min_points() {
             cx.status = format!("{} needs at least {} points", v.name(), v.min_points());
             return ToolResult::consumed();
         }
-        let pts = std::mem::take(&mut self.points);
+        let ctrl = std::mem::take(&mut self.points);
+        self.pressed = false;
+        let Some(pts) = self.shape_from(cx, &ctrl) else {
+            // Keep the clicks of a polygon so the user can add more; the
+            // fixed-count shapes start over.
+            if matches!(v.draw(), Draw::Polygon | Draw::Polyline) {
+                self.points = ctrl;
+            }
+            return ToolResult::consumed();
+        };
         let at = pts[pts.len() - 1];
+        if let Some((kind, shape)) = v.scape() {
+            let mut obj = Landscape::new(kind, shape, pts);
+            if kind == LandscapeKind::Plants {
+                scape::apply_plant(&mut obj, &default_plant());
+            }
+            edit_terrain(cx, v.name(), |r| r.terrain.landscape.push(obj));
+            ensure_landscape_layers(&mut cx.project);
+            self.after_commit(cx);
+            return ToolResult::committed(v.name());
+        }
+        if let Some(kind) = v.feature() {
+            edit_terrain(cx, v.name(), |r| {
+                r.terrain.features.push(Feature {
+                    kind,
+                    polygon: pts,
+                    material: "Concrete".into(),
+                    height: DEFAULT_FEATURE_HEIGHT,
+                    ..Feature::default()
+                });
+            });
+            ensure_landscape_layers(&mut cx.project);
+            self.after_commit(cx);
+            return ToolResult::committed(v.name());
+        }
+        if let Some(kind) = v.wall() {
+            let curved = v.draw() == Draw::Arc;
+            edit_terrain(cx, v.name(), |r| {
+                r.terrain.walls.push(TerrainWall::new(kind, pts, curved));
+            });
+            ensure_landscape_layers(&mut cx.project);
+            self.after_commit(cx);
+            return ToolResult::committed(v.name());
+        }
         match v {
             TerrainVariant::Perimeter => {
                 edit_terrain(cx, "Terrain Perimeter", |r| r.terrain.perimeter = pts);
@@ -288,7 +592,7 @@ impl TerrainTool {
                     r.terrain.features.push(Feature {
                         kind: FeatureKind::Hole,
                         polygon: pts,
-                        material: String::new(),
+                        ..Feature::default()
                     });
                 });
                 self.after_commit(cx);
@@ -305,8 +609,12 @@ impl TerrainTool {
                 self.after_commit(cx);
                 ToolResult::committed("Flat Region")
             }
-            TerrainVariant::ElevationLine => {
+            TerrainVariant::ElevationLine | TerrainVariant::ElevationSpline => {
                 self.begin_entry(cx, Pending::Line(pts), at);
+                ToolResult::consumed()
+            }
+            TerrainVariant::Break => {
+                self.begin_entry(cx, Pending::Break(pts), at);
                 ToolResult::consumed()
             }
             TerrainVariant::ElevationRegion => {
@@ -383,6 +691,18 @@ impl TerrainTool {
                 });
                 "Elevation Region"
             }
+            Pending::Break(points) => {
+                self.last_elevation = value;
+                edit_terrain(cx, "Terrain Break", |r| {
+                    r.terrain.breaks.push(TerrainBreak {
+                        points,
+                        z: value,
+                        ..TerrainBreak::default()
+                    });
+                });
+                ensure_landscape_layers(&mut cx.project);
+                "Terrain Break"
+            }
             Pending::Modifier(kind, polygon) => {
                 edit_terrain(cx, "Terrain Modifier", |r| {
                     r.terrain.modifiers.push(Modifier {
@@ -434,6 +754,60 @@ impl TerrainTool {
         ToolResult::committed("Delete Terrain Element")
     }
 
+    /// The outline the clicks so far (and the pointer) would make.
+    fn preview(&self, cx: &EditorContext, ctrl: Vec<Point>) -> (Vec<Point>, bool) {
+        let v = self.variant;
+        let enough = ctrl.len() >= v.min_points();
+        match v.draw() {
+            Draw::Rect if ctrl.len() >= 2 => (rectangle_outline(ctrl[0], ctrl[1]), true),
+            Draw::Kidney if enough => match kidney_outline(ctrl[0], ctrl[1], ctrl[2]) {
+                Some(blob) => (blob, true),
+                None => (ctrl, false),
+            },
+            Draw::Arc if enough => (
+                arc_through(ctrl[0], ctrl[1], ctrl[2], cx.snap_unit()),
+                false,
+            ),
+            Draw::Polygon if v.spline() && ctrl.len() >= 3 => {
+                (flatten_spline(&ctrl, true, SPLINE_SAMPLES), true)
+            }
+            Draw::Polyline if v.spline() && ctrl.len() >= 3 => {
+                (flatten_spline(&ctrl, false, SPLINE_SAMPLES), false)
+            }
+            _ => (ctrl, self.entry.is_some() && v.draw() == Draw::Polygon),
+        }
+    }
+
+    /// Arrow keys: moves the element under the pointer.
+    fn nudge_hovered(&mut self, cx: &mut EditorContext, delta: Point) -> ToolResult {
+        let Some(h) = self.hover else {
+            return ToolResult::ignored();
+        };
+        let Some(rec) = load_terrain(&cx.project) else {
+            return ToolResult::ignored();
+        };
+        let Some(hit) = hit_terrain(&rec.terrain, h, cx.pick_tol()) else {
+            return ToolResult::ignored();
+        };
+        edit_terrain(cx, "Move Terrain Element", |r| {
+            move_terrain_element(&mut r.terrain, hit, delta);
+        });
+        self.hover = Some(h + delta);
+        ToolResult::committed("Move Terrain Element")
+    }
+
+    /// The snapped point for the pointer: from the last point's angle, except
+    /// for the first point and the click that sets a width or a bulge.
+    fn point_for(&self, cx: &EditorContext, p: &PointerEvent) -> Point {
+        let sets_width =
+            matches!(self.variant.draw(), Draw::Arc | Draw::Kidney) && self.points.len() == 2;
+        if self.points.is_empty() || sets_width {
+            p.snapped
+        } else {
+            self.snapped(cx, p)
+        }
+    }
+
     fn snapped(&self, cx: &EditorContext, p: &PointerEvent) -> Point {
         cx.snap_at(p.world, self.points.last().copied(), p.modifiers.alt, &[])
             .point
@@ -467,9 +841,26 @@ impl Tool for TerrainTool {
                 "Elevation Point: click, then type the elevation".into()
             }
             (v, _) => match v.draw() {
+                Draw::Polygon if v.spline() => format!(
+                    "{}: click the control points, Enter closes the curve",
+                    v.name()
+                ),
                 Draw::Polygon => {
                     format!("{}: click the corners, Enter closes the shape", v.name())
                 }
+                Draw::Rect => format!("{}: drag a rectangle, or click two corners", v.name()),
+                Draw::Kidney => format!(
+                    "{}: click both ends of the long axis, then the width",
+                    v.name()
+                ),
+                Draw::Arc => format!(
+                    "{}: click the start, the end, then the bulge of the curve",
+                    v.name()
+                ),
+                _ if v.spline() => format!(
+                    "{}: click the control points, Enter ends the curve",
+                    v.name()
+                ),
                 _ => format!("{}: click the points, Enter ends the line", v.name()),
             },
         }
@@ -484,6 +875,7 @@ impl Tool for TerrainTool {
             if v != self.variant {
                 self.points.clear();
                 self.entry = None;
+                self.pressed = false;
             }
             self.variant = v;
         }
@@ -499,17 +891,16 @@ impl Tool for TerrainTool {
         self.reset(cx);
         *self.dialog.borrow_mut() = None;
         *self.applied.borrow_mut() = None;
+        *self.object_dialog.borrow_mut() = None;
+        *self.applied_object.borrow_mut() = None;
+        self.pressed = false;
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         if let Some(r) = self.flush(cx) {
             return r;
         }
-        self.hover = Some(if self.points.is_empty() {
-            p.snapped
-        } else {
-            self.snapped(cx, &p)
-        });
+        self.hover = Some(self.point_for(cx, &p));
         self.update_readout(cx);
         ToolResult {
             repaint: true,
@@ -548,7 +939,7 @@ impl Tool for TerrainTool {
                 self.begin_entry(cx, Pending::Point(at), at);
                 ToolResult::consumed()
             }
-            Draw::Polyline | Draw::Polygon => {
+            Draw::Polyline | Draw::Polygon | Draw::Rect | Draw::Kidney | Draw::Arc => {
                 if self.points.is_empty()
                     && v == TerrainVariant::Perimeter
                     && load_terrain(&cx.project).is_some_and(|r| r.has_perimeter())
@@ -557,11 +948,7 @@ impl Tool for TerrainTool {
                         "The plan already has a terrain perimeter (Delete removes it)".into();
                     return ToolResult::consumed();
                 }
-                let pt = if self.points.is_empty() {
-                    p.snapped
-                } else {
-                    self.snapped(cx, &p)
-                };
+                let pt = self.point_for(cx, &p);
                 let closes = v.draw() == Draw::Polygon
                     && self.points.len() >= 3
                     && p.world.dist(self.points[0]) <= cx.pick_tol() * 1.5;
@@ -572,9 +959,33 @@ impl Tool for TerrainTool {
                     self.points.push(pt);
                 }
                 self.update_readout(cx);
+                match v.draw() {
+                    Draw::Rect if self.points.len() == 1 => self.pressed = true,
+                    Draw::Rect | Draw::Kidney | Draw::Arc
+                        if self.points.len() >= v.min_points() =>
+                    {
+                        return self.finish(cx);
+                    }
+                    _ => {}
+                }
                 ToolResult::consumed()
             }
         }
+    }
+
+    /// Releasing a pressed rectangle corner somewhere else ends the drag.
+    fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        let pressed = std::mem::take(&mut self.pressed);
+        if pressed
+            && self.variant.draw() == Draw::Rect
+            && self.points.len() == 1
+            && !self.dialog_open()
+            && p.snapped.dist(self.points[0]) > cx.pick_tol() * 1.5
+        {
+            self.points.push(p.snapped);
+            return self.finish(cx);
+        }
+        ToolResult::ignored()
     }
 
     fn frame(&mut self, cx: &mut EditorContext, _ctx: &egui::Context) {
@@ -582,14 +993,25 @@ impl Tool for TerrainTool {
         let _ = self.flush(cx);
     }
 
-    fn double_click(&mut self, cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
+    fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         if self.entry.is_some() {
             return ToolResult::consumed();
+        }
+        let rec = load_terrain(&cx.project).unwrap_or_default();
+        // The first click of a double-click has just started a shape: an
+        // object under the pointer gets its specification instead.
+        if self.points.len() <= 1 {
+            if let Some(hit) = hit_terrain(&rec.terrain, p.world, cx.pick_tol()) {
+                if let Some(obj) = object_at(&rec.terrain, hit) {
+                    self.reset(cx);
+                    *self.object_dialog.borrow_mut() = Some((hit, ObjectDialog::new(obj)));
+                    return ToolResult::consumed();
+                }
+            }
         }
         if !self.points.is_empty() {
             return self.finish(cx);
         }
-        let rec = load_terrain(&cx.project).unwrap_or_default();
         *self.dialog.borrow_mut() = Some(TerrainDialog::new(&rec));
         ToolResult::consumed()
     }
@@ -642,6 +1064,18 @@ impl Tool for TerrainTool {
             }
             return self.delete_hovered(cx);
         }
+        let step = [
+            (Key::ArrowLeft, (-1.0, 0.0)),
+            (Key::ArrowRight, (1.0, 0.0)),
+            (Key::ArrowUp, (0.0, 1.0)),
+            (Key::ArrowDown, (0.0, -1.0)),
+        ]
+        .into_iter()
+        .find(|(key, _)| k.is(*key));
+        if let (Some((_, (dx, dy))), true) = (step, self.points.is_empty()) {
+            let unit = cx.snap_unit() * if k.modifiers.shift { 10.0 } else { 1.0 };
+            return self.nudge_hovered(cx, Point::new(dx * unit, dy * unit));
+        }
         ToolResult::ignored()
     }
 
@@ -658,7 +1092,7 @@ impl Tool for TerrainTool {
         if self.entry.is_none() {
             shape.extend(self.hover.filter(|_| !self.points.is_empty()));
         }
-        let closed = self.variant.draw() == Draw::Polygon && self.entry.is_some();
+        let (shape, closed) = self.preview(cx, shape);
         draw_polyline(painter, cam, &shape, closed, stroke, true);
         if self.variant.draw() == Draw::Polygon && self.points.len() >= 3 && self.entry.is_none() {
             // The closing edge back to the first point.
@@ -706,6 +1140,22 @@ impl Tool for TerrainTool {
             );
             painter.galley(r.min + egui::vec2(6.0, 3.0), galley, pal.text);
             painter.circle_filled(cam.world_to_screen(e.at), 3.0, pal.selection);
+        }
+        // The specification of one object.
+        {
+            let mut slot = self.object_dialog.borrow_mut();
+            let outcome = slot.as_mut().map(|(_, d)| d.show(painter.ctx()));
+            match outcome {
+                Some(Outcome::Ok) => {
+                    if let Some((hit, d)) = slot.take() {
+                        *self.applied_object.borrow_mut() = Some((hit, d.draft().clone()));
+                    }
+                }
+                Some(Outcome::Cancel) => {
+                    slot.take();
+                }
+                _ => {}
+            }
         }
         // The Terrain Specification.
         let mut slot = self.dialog.borrow_mut();
@@ -1123,5 +1573,497 @@ mod tests {
         let p = PointerEvent::at(&cx, Point::new(10.0, 10.0));
         t.double_click(&mut cx, p);
         draw(&t, &cx);
+    }
+
+    // ----- landscape objects -----
+
+    fn press_move_release(
+        t: &mut TerrainTool,
+        cx: &mut EditorContext,
+        a: Point,
+        b: Point,
+    ) -> ToolResult {
+        let pa = PointerEvent::at(cx, a);
+        t.pointer_move(cx, pa);
+        t.pointer_down(cx, pa.with_down(true));
+        let pb = PointerEvent::at(cx, b);
+        t.pointer_move(cx, pb);
+        t.pointer_up(cx, pb)
+    }
+
+    fn clicks(t: &mut TerrainTool, cx: &mut EditorContext, pts: &[(f64, f64)]) {
+        for (x, y) in pts {
+            click(t, cx, *x, *y);
+        }
+    }
+
+    fn enter(t: &mut TerrainTool, cx: &mut EditorContext) -> ToolResult {
+        t.key(cx, KeyEvent::key(Key::Enter))
+    }
+
+    const PATH: [(f64, f64); 2] = [(0.0, 100.0), (300.0, 100.0)];
+    const CURVE: [(f64, f64); 4] = [(0.0, 100.0), (150.0, 160.0), (300.0, 100.0), (450.0, 160.0)];
+    const POLY: [(f64, f64); 4] = [
+        (100.0, 100.0),
+        (300.0, 100.0),
+        (300.0, 300.0),
+        (100.0, 300.0),
+    ];
+    const KIDNEY: [(f64, f64); 3] = [(100.0, 100.0), (400.0, 100.0), (250.0, 200.0)];
+
+    /// Draws a variant with its documented gesture and returns the undo label.
+    fn draw(cx: &mut EditorContext, v: TerrainVariant) -> Option<String> {
+        use TerrainVariant as V;
+        let mut t = tool(v);
+        let r = match v {
+            V::RectFeature => press_move_release(
+                &mut t,
+                cx,
+                Point::new(100.0, 100.0),
+                Point::new(400.0, 300.0),
+            ),
+            V::CurvedWall | V::CurvedCurb => {
+                clicks(&mut t, cx, &[(100.0, 100.0), (600.0, 100.0)]);
+                click(&mut t, cx, 350.0, 200.0)
+            }
+            V::KidneyFeature | V::BedKidney | V::GrassKidney => {
+                clicks(&mut t, cx, &KIDNEY[..2]);
+                click(&mut t, cx, KIDNEY[2].0, KIDNEY[2].1)
+            }
+            V::StraightWall
+            | V::StraightCurb
+            | V::Break
+            | V::ElevationSpline
+            | V::SplineRoad
+            | V::SplineDriveway
+            | V::SplineSidewalk
+            | V::StonePolyline
+            | V::StoneSpline
+            | V::PlantPolyline
+            | V::PlantSpline
+            | V::SprinklerPolyline
+            | V::SprinklerSpline => {
+                let pts: &[(f64, f64)] = if v.spline() { &CURVE } else { &PATH };
+                clicks(&mut t, cx, pts);
+                enter(&mut t, cx)
+            }
+            _ => {
+                clicks(&mut t, cx, &POLY);
+                enter(&mut t, cx)
+            }
+        };
+        // Shapes that ask for a value take the default.
+        let r = if t.is_typing() {
+            type_value(&mut t, cx, "")
+        } else {
+            r
+        };
+        r.commit
+    }
+
+    #[test]
+    fn every_new_entry_activates_and_creates_its_object() {
+        use TerrainVariant as V;
+        for v in [
+            V::ElevationSpline,
+            V::Break,
+            V::StraightWall,
+            V::StraightCurb,
+            V::CurvedWall,
+            V::CurvedCurb,
+            V::RectFeature,
+            V::KidneyFeature,
+            V::SplineFeature,
+            V::BedPolyline,
+            V::BedKidney,
+            V::BedSpline,
+            V::GrassPolyline,
+            V::GrassKidney,
+            V::GrassSpline,
+            V::WaterPolyline,
+            V::WaterSpline,
+            V::StonePolyline,
+            V::StoneSpline,
+            V::SplineRoad,
+            V::SplineDriveway,
+            V::SplineSidewalk,
+            V::PlantPolyline,
+            V::PlantSpline,
+            V::SprinklerPolyline,
+            V::SprinklerSpline,
+        ] {
+            let mut cx = cx();
+            let label = draw(&mut cx, v);
+            let rec = record(&cx);
+            let t = &rec.terrain;
+            let made = t.elevation_lines.len()
+                + t.breaks.len()
+                + t.walls.len()
+                + t.features.len()
+                + t.landscape.len()
+                + t.roads.len();
+            assert_eq!(made, 1, "{}: {label:?}", v.name());
+            assert!(label.is_some(), "{} committed nothing", v.name());
+            assert!(!tool(v).hint().is_empty());
+            // One undo step takes it away again.
+            assert!(cx.undo().is_some());
+            let after = load_terrain(&cx.project).unwrap_or_default().terrain;
+            assert_eq!(
+                after.elevation_lines.len()
+                    + after.breaks.len()
+                    + after.walls.len()
+                    + after.features.len()
+                    + after.landscape.len()
+                    + after.roads.len(),
+                0,
+                "{} undo",
+                v.name()
+            );
+        }
+    }
+
+    #[test]
+    fn the_flyouts_hold_only_live_terrain_variants() {
+        use crate::toolbar::{terrain_menu, Action};
+        let mut seen = Vec::new();
+        for f in terrain_menu() {
+            for e in &f.entries {
+                match e.action {
+                    Action::SetTool(ToolId::TerrainVariant(v)) => seen.push(v),
+                    ref other => panic!("{} / {} is {other:?}", f.group, e.name),
+                }
+            }
+        }
+        for v in &seen {
+            assert!(TerrainVariant::ALL.contains(v), "{v:?}");
+        }
+        assert!(seen.len() >= 38);
+        for (i, a) in TerrainVariant::ALL.iter().enumerate() {
+            assert!(!TerrainVariant::ALL[i + 1..].contains(a), "{a:?} twice");
+        }
+    }
+
+    #[test]
+    fn walls_and_curbs_take_their_shape_and_defaults() {
+        let mut cx = cx();
+        draw(&mut cx, TerrainVariant::StraightWall);
+        draw(&mut cx, TerrainVariant::StraightCurb);
+        draw(&mut cx, TerrainVariant::CurvedWall);
+        let w = &record(&cx).terrain.walls;
+        assert_eq!(
+            (w[0].kind, w[0].curved, w[0].points.len()),
+            (WallKind::Wall, false, 2)
+        );
+        assert_eq!((w[0].height, w[0].thickness), (36.0, 8.0));
+        assert_eq!((w[1].kind, w[1].height), (WallKind::Curb, 6.0));
+        assert!(w[2].curved && w[2].points.len() > 4, "an arc, not a chord");
+        // The arc bulges 100" towards the click and ends where it began.
+        assert_eq!(
+            (w[2].points[0], *w[2].points.last().unwrap()),
+            (Point::new(100.0, 100.0), Point::new(600.0, 100.0))
+        );
+        let apex = w[2].points.iter().map(|p| p.y).fold(f64::MIN, f64::max);
+        assert!((apex - 200.0).abs() < 3.0, "{apex}");
+        // The Chief layers exist after the first object.
+        assert!(cx.project.layers.get("Terrain, Walls").is_some());
+    }
+
+    #[test]
+    fn a_rectangle_is_dragged_or_clicked() {
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::RectFeature);
+        let r = press_move_release(
+            &mut t,
+            &mut cx,
+            Point::new(100.0, 100.0),
+            Point::new(400.0, 300.0),
+        );
+        assert_eq!(r.commit.as_deref(), Some("Rectangular Feature"));
+        let f = &record(&cx).terrain.features[0];
+        assert_eq!(f.kind, FeatureKind::Rectangular);
+        assert_eq!(f.polygon.len(), 4);
+        assert_eq!((f.material.as_str(), f.height), ("Concrete", 4.0));
+
+        // Two clicks do as well; a click without a drag keeps the first corner.
+        click(&mut t, &mut cx, 500.0, 100.0);
+        assert_eq!(t.points().len(), 1);
+        let r = click(&mut t, &mut cx, 700.0, 250.0);
+        assert!(r.commit.is_some());
+        assert_eq!(record(&cx).terrain.features.len(), 2);
+        // A flat "rectangle" is refused.
+        click(&mut t, &mut cx, 500.0, 400.0);
+        click(&mut t, &mut cx, 700.0, 400.0);
+        assert!(cx.status.contains("no area"));
+        assert_eq!(record(&cx).terrain.features.len(), 2);
+    }
+
+    #[test]
+    fn a_kidney_takes_three_clicks() {
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::BedKidney);
+        clicks(&mut t, &mut cx, &KIDNEY[..2]);
+        assert_eq!(t.points().len(), 2);
+        let r = click(&mut t, &mut cx, 250.0, 200.0);
+        assert_eq!(r.commit.as_deref(), Some("Kidney Garden Bed"));
+        let o = &record(&cx).terrain.landscape[0];
+        assert_eq!(
+            (o.kind, o.shape),
+            (LandscapeKind::GardenBed, ShapeKind::Kidney)
+        );
+        assert!(o.points.len() >= 20);
+        assert!(o.points.iter().all(|p| p.x >= 99.0 && p.x <= 401.0));
+        // A third click on the axis makes no blob.
+        clicks(&mut t, &mut cx, &KIDNEY[..2]);
+        let r = click(&mut t, &mut cx, 250.0, 100.0);
+        assert!(r.commit.is_none() && cx.status.contains("width"));
+        assert_eq!(record(&cx).terrain.landscape.len(), 1);
+    }
+
+    #[test]
+    fn splines_are_stored_flattened_through_their_clicks() {
+        let mut cx = cx();
+        draw(&mut cx, TerrainVariant::SplineFeature);
+        draw(&mut cx, TerrainVariant::StoneSpline);
+        let t = record(&cx).terrain;
+        assert_eq!(t.features[0].polygon.len(), 4 * SPLINE_SAMPLES);
+        assert_eq!(t.landscape[0].points.len(), 3 * SPLINE_SAMPLES + 1);
+        assert_eq!(t.landscape[0].shape, ShapeKind::Spline);
+        assert!(t.features[0].polygon.contains(&Point::new(100.0, 100.0)));
+    }
+
+    #[test]
+    fn elevation_spline_and_break_ask_for_an_elevation() {
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::ElevationSpline);
+        clicks(&mut t, &mut cx, &CURVE);
+        enter(&mut t, &mut cx);
+        assert!(cx.readout.as_deref().unwrap().contains("Elevation"));
+        type_value(&mut t, &mut cx, "5'");
+        let l = &record(&cx).terrain.elevation_lines[0];
+        assert_eq!(l.z, 60.0);
+        assert_eq!(l.points.len(), 3 * SPLINE_SAMPLES + 1);
+
+        t.set_variant(ToolId::TerrainVariant(TerrainVariant::Break));
+        clicks(&mut t, &mut cx, &PATH);
+        enter(&mut t, &mut cx);
+        assert!(cx.readout.as_deref().unwrap().contains("Break elevation"));
+        // The last elevation is the default.
+        type_value(&mut t, &mut cx, "");
+        let b = &record(&cx).terrain.breaks[0];
+        assert_eq!((b.z, b.points.len()), (60.0, 2));
+    }
+
+    #[test]
+    fn a_break_line_changes_the_built_surface() {
+        let mut cx = cx();
+        sloped_terrain(&mut cx);
+        click(&mut tool(TerrainVariant::Build), &mut cx, 0.0, 0.0);
+        let before = terrain_view(&cx.project).unwrap();
+        let z0 = elevation_at(before.surface.as_ref().unwrap(), Point::new(600.0, 480.0)).unwrap();
+
+        let mut t = tool(TerrainVariant::Break);
+        clicks(&mut t, &mut cx, &[(600.0, 0.0), (600.0, 960.0)]);
+        enter(&mut t, &mut cx);
+        type_value(&mut t, &mut cx, "20'");
+        let after = terrain_view(&cx.project).unwrap();
+        let z1 = elevation_at(after.surface.as_ref().unwrap(), Point::new(600.0, 480.0)).unwrap();
+        assert!(
+            (z0 - 60.0).abs() < 1.0 && (z1 - 240.0).abs() < 1.0,
+            "{z0} -> {z1}"
+        );
+        assert_eq!(cx.undo().as_deref(), Some("Terrain Break"));
+    }
+
+    #[test]
+    fn splined_roads_ask_for_a_width_like_their_polyline_versions() {
+        let mut cx = cx();
+        let mut t = tool(TerrainVariant::SplineDriveway);
+        clicks(&mut t, &mut cx, &CURVE);
+        let p = PointerEvent::at(&cx, Point::new(450.0, 160.0));
+        t.double_click(&mut cx, p);
+        assert!(cx.readout.as_deref().unwrap().contains("Driveway width"));
+        type_value(&mut t, &mut cx, "");
+        let r = &record(&cx).terrain.roads[0];
+        assert_eq!(
+            (r.kind, r.width, r.centerline.len()),
+            (RoadKind::Driveway, 144.0, 3 * SPLINE_SAMPLES + 1)
+        );
+        t.set_variant(ToolId::TerrainVariant(TerrainVariant::SplineRoad));
+        clicks(&mut t, &mut cx, &CURVE);
+        enter(&mut t, &mut cx);
+        assert!(cx.readout.as_deref().unwrap().contains("Road width"));
+        t.key(&mut cx, KeyEvent::escape());
+        t.set_variant(ToolId::TerrainVariant(TerrainVariant::SplineSidewalk));
+        clicks(&mut t, &mut cx, &CURVE);
+        enter(&mut t, &mut cx);
+        type_value(&mut t, &mut cx, "");
+        assert_eq!(record(&cx).terrain.roads[1].kind, RoadKind::Sidewalk);
+    }
+
+    #[test]
+    fn stepping_stones_plants_and_sprinklers_are_counted_along_the_path() {
+        let mut cx = cx();
+        draw(&mut cx, TerrainVariant::StonePolyline);
+        draw(&mut cx, TerrainVariant::PlantPolyline);
+        draw(&mut cx, TerrainVariant::SprinklerPolyline);
+        let t = record(&cx).terrain;
+        let (stones, plants, sprinklers) = (&t.landscape[0], &t.landscape[1], &t.landscape[2]);
+        // 300" of path at 30" per stone.
+        assert_eq!(plan_terrain::path_length(&stones.points), 300.0);
+        assert_eq!(stones.stones().len(), 10);
+        // Plants start with the library's boxwood: one per canopy width.
+        assert!(plants.plant.starts_with("core.plants."), "{}", plants.plant);
+        assert_eq!(plants.spacing, plants.size);
+        assert_eq!(
+            plants.plant_positions().len(),
+            (300.0 / plants.spacing).floor() as usize + 1
+        );
+        // 144" between heads: 0, 144, 288.
+        assert_eq!(sprinklers.heads().len(), 3);
+        assert_eq!(sprinklers.layer(), "Sprinklers");
+        assert_eq!(plants.layer(), "Plants");
+    }
+
+    #[test]
+    fn beds_grass_and_water_are_polygons_on_their_layers() {
+        let mut cx = cx();
+        draw(&mut cx, TerrainVariant::BedPolyline);
+        draw(&mut cx, TerrainVariant::GrassPolyline);
+        draw(&mut cx, TerrainVariant::WaterPolyline);
+        let t = record(&cx).terrain;
+        assert_eq!(t.landscape.len(), 3);
+        assert_eq!(t.landscape[0].layer(), "Landscaping, Garden Beds");
+        assert_eq!(
+            (t.landscape[0].material.as_str(), t.landscape[0].edging),
+            ("Mulch", true)
+        );
+        assert_eq!(t.landscape[1].material, "Grass");
+        assert_eq!((t.landscape[2].height, t.landscape[2].depth), (6.0, 24.0));
+        assert!(t.landscape.iter().all(|o| o.points.len() == 4));
+        for layer in [
+            "Landscaping, Garden Beds",
+            "Landscaping, Grass Regions",
+            "Landscaping, Water Features",
+            "Terrain, Features",
+            "Plants",
+            "Sprinklers",
+        ] {
+            assert!(cx.project.layers.get(layer).is_some(), "{layer}");
+        }
+    }
+
+    #[test]
+    fn a_double_click_opens_the_object_specification_and_ok_is_one_undo_step() {
+        let mut cx = cx();
+        draw(&mut cx, TerrainVariant::StonePolyline);
+        let mut t = tool(TerrainVariant::Hill);
+        // The first click of the double-click has started a shape.
+        click(&mut t, &mut cx, 150.0, 100.0);
+        let p = PointerEvent::at(&cx, Point::new(150.0, 100.0));
+        assert!(t.double_click(&mut cx, p).consumed);
+        assert!(
+            t.object_dialog.borrow().is_some(),
+            "the stones' specification"
+        );
+        assert!(t.points().is_empty());
+        assert!(t.pointer_down(&mut cx, p.with_down(true)).consumed);
+        assert!(
+            t.points().is_empty(),
+            "the canvas ignores clicks while it is open"
+        );
+
+        let mut draft = t.object_dialog.borrow().as_ref().unwrap().1.draft().clone();
+        let TerrainObject::Landscape(l) = &mut draft else {
+            panic!("{draft:?}")
+        };
+        l.spacing = 60.0;
+        l.size = 12.0;
+        let hit = t.object_dialog.borrow().as_ref().unwrap().0;
+        *t.applied_object.borrow_mut() = Some((hit, draft));
+        t.object_dialog.borrow_mut().take();
+        let depth = cx.undo_label().map(str::to_string);
+        let r = t.pointer_move(&mut cx, p);
+        assert_eq!(r.commit.as_deref(), Some("Stepping Stone Specification"));
+        let o = &record(&cx).terrain.landscape[0];
+        assert_eq!((o.spacing, o.size, o.stones().len()), (60.0, 12.0, 5));
+        // One undo step restores the stones.
+        assert_eq!(cx.undo().as_deref(), Some("Stepping Stone Specification"));
+        assert_eq!(record(&cx).terrain.landscape[0].spacing, 30.0);
+        assert_eq!(cx.undo_label().map(str::to_string), depth);
+    }
+
+    #[test]
+    fn delete_and_the_arrow_keys_work_on_landscape_objects() {
+        let mut cx = cx();
+        draw(&mut cx, TerrainVariant::StraightWall);
+        draw(&mut cx, TerrainVariant::BedPolyline);
+        let mut t = tool(TerrainVariant::Hill);
+        // Over the wall.
+        let ev = PointerEvent::at(&cx, Point::new(150.0, 101.0));
+        t.pointer_move(&mut cx, ev);
+        let r = t.key(&mut cx, KeyEvent::key(Key::ArrowUp));
+        assert_eq!(r.commit.as_deref(), Some("Move Terrain Element"));
+        let unit = cx.snap_unit();
+        assert_eq!(
+            record(&cx).terrain.walls[0].points[0],
+            Point::new(0.0, 100.0 + unit)
+        );
+        let r = t.key(&mut cx, KeyEvent::key(Key::Delete));
+        assert_eq!(r.commit.as_deref(), Some("Delete Terrain Element"));
+        assert!(record(&cx).terrain.walls.is_empty());
+        // Inside the bed (a region is picked by its inside as well).
+        let ev = PointerEvent::at(&cx, Point::new(200.0, 200.0));
+        t.pointer_move(&mut cx, ev);
+        assert!(t.key(&mut cx, KeyEvent::key(Key::Delete)).commit.is_some());
+        assert!(record(&cx).terrain.landscape.is_empty());
+        assert_eq!(cx.undo().as_deref(), Some("Delete Terrain Element"));
+        assert_eq!(record(&cx).terrain.landscape.len(), 1);
+    }
+
+    #[test]
+    fn landscape_meshes_appear_for_the_drawn_objects() {
+        let mut cx = cx();
+        sloped_terrain(&mut cx);
+        click(&mut tool(TerrainVariant::Build), &mut cx, 0.0, 0.0);
+        assert!(crate::editor::site_view::terrain_feature_meshes(&cx.project).is_empty());
+        for v in [
+            TerrainVariant::StraightWall,
+            TerrainVariant::BedPolyline,
+            TerrainVariant::StonePolyline,
+            TerrainVariant::PlantPolyline,
+        ] {
+            let before = crate::editor::site_view::terrain_feature_meshes(&cx.project).len();
+            draw(&mut cx, v);
+            let after = crate::editor::site_view::terrain_feature_meshes(&cx.project).len();
+            assert!(after > before, "{} added no mesh", v.name());
+        }
+    }
+
+    #[test]
+    fn every_flavor_draws_its_overlay_in_every_state() {
+        let ctx = egui::Context::default();
+        for v in TerrainVariant::ALL {
+            let mut cx = cx();
+            let mut t = tool(v);
+            let ev = PointerEvent::at(&cx, Point::new(300.0, 200.0));
+            let mut states = Vec::new();
+            for (x, y) in [(100.0, 100.0), (400.0, 100.0), (250.0, 220.0)] {
+                click(&mut t, &mut cx, x, y);
+                let ev2 = PointerEvent::at(&cx, Point::new(x + 40.0, y + 40.0));
+                t.pointer_move(&mut cx, ev2);
+                states.push(t.points().len());
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (_, painter) = ui
+                            .allocate_painter(egui::Vec2::new(800.0, 600.0), egui::Sense::hover());
+                        let mut cam = Camera::default_view();
+                        cam.rect = painter.clip_rect();
+                        t.draw_overlay(&cx, &painter, &cam);
+                    });
+                });
+            }
+            t.pointer_move(&mut cx, ev);
+            assert!(!t.hint().is_empty(), "{}", v.name());
+        }
     }
 }

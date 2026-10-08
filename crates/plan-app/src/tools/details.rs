@@ -1361,8 +1361,8 @@ mod tests {
         for v in DetailsVariant::ALL {
             assert!(!stubs.contains(&v.name()), "{} is still a stub", v.name());
         }
-        // The one flyout entry left is the 3D Solid Feature.
-        assert!(stubs.contains(&"3D Solid Feature"));
+        // The 3D Solid Feature went live with the Images round.
+        assert!(!stubs.contains(&"3D Solid Feature"));
     }
 
     #[test]

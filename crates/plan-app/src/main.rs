@@ -300,7 +300,8 @@ impl PlanApp {
             | Action::RoomSchedule
             | Action::WallSchedule
             | Action::CreateConstructionSet
-            | Action::FileNewLayout => dialogs::build_tools::dispatch(&mut self.cx, action),
+            | Action::FileNewLayout
+            | Action::ProjectInfo => dialogs::build_tools::dispatch(&mut self.cx, action),
             Action::OpenHotkeyDialog => self.docks.open_hotkey_dialog(&self.hotkeys),
             Action::OpenLayerDisplay => self.docks.open_layer_dialog(),
             Action::View3d(c) => {

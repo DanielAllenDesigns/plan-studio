@@ -24,6 +24,7 @@ pub mod floor;
 pub mod foundation;
 pub mod framing;
 pub mod hotkeys;
+pub mod images;
 pub mod layer_display;
 pub mod layout;
 mod opening;

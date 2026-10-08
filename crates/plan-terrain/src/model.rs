@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use plan_core::Point;
 use serde::{Deserialize, Serialize};
 
+use crate::landscape::{Landscape, ObjectStyle, TerrainBreak, TerrainWall};
 use crate::query::TriIndex;
 
 /// A spot height (Elevation Point tool).
@@ -62,12 +63,30 @@ pub enum FeatureKind {
     Hole,
 }
 
-/// A feature overlay. Only `Hole` changes the surface; the others are drawn in plan.
+/// A feature overlay. Only `Hole` changes the surface; the others are drawn in
+/// plan and, in 3D, are flat slabs ([`crate::landscape_meshes`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Feature {
     pub kind: FeatureKind,
     pub polygon: Vec<Point>,
     pub material: String,
+    /// Height of the flat top above the mean ground under the outline, inches.
+    pub height: f64,
+    /// Layer, line style and fill style.
+    pub style: ObjectStyle,
+}
+
+impl Default for Feature {
+    fn default() -> Self {
+        Feature {
+            kind: FeatureKind::Rectangular,
+            polygon: Vec::new(),
+            material: String::new(),
+            height: 0.0,
+            style: ObjectStyle::default(),
+        }
+    }
 }
 
 /// Road-like strip types.
@@ -100,6 +119,12 @@ pub struct Terrain {
     pub modifiers: Vec<Modifier>,
     pub features: Vec<Feature>,
     pub roads: Vec<RoadStrip>,
+    /// Terrain Break lines: flat creases that stay sharp in the surface.
+    pub breaks: Vec<TerrainBreak>,
+    /// Terrain walls and curbs (retaining walls that follow the ground).
+    pub walls: Vec<TerrainWall>,
+    /// Garden beds, grass, water, stepping stones, plant runs and sprinklers.
+    pub landscape: Vec<Landscape>,
     /// Chief default 6": how far the subfloor sits above the terrain at the building.
     pub subfloor_height_above_terrain: f64,
     /// Elevation of the building pad, inches.
@@ -126,6 +151,9 @@ impl Default for Terrain {
             modifiers: Vec::new(),
             features: Vec::new(),
             roads: Vec::new(),
+            breaks: Vec::new(),
+            walls: Vec::new(),
+            landscape: Vec::new(),
             subfloor_height_above_terrain: 6.0,
             building_pad_elevation: 0.0,
             smoothing: 0,

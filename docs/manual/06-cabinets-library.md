@@ -24,7 +24,8 @@ of a `plan_cabinets::Cabinet`, so the plan file stays readable and the engine
 ```
 
 - Units are inches. In the cabinet's own frame the back is at y = 0 and the front faces +Y.
-- Kinds: Base, Wall, Full Height, Soffit, Shelf, Partition.
+- Kinds: Base, Wall, Full Height, Soffit, Shelf, Partition; Base, Wall and Full Height Fillers; Corner Base and Corner Wall cabinets; Blind Base and Wall cabinets; and the
+  custom tops Custom Countertop, Custom Backsplash and Custom Counter Hole (6.2).
 - Chief defaults in Daniel's template: Base 24" x 24" x 36" high (the 36" includes a
   1 1/2" countertop with a 1" overhang, and a 4" x 3" toe kick); Wall cabinet 24" x 12" x 30"
   with its bottom at 54"; Full Height 24" x 24" x 84". Door style Lincoln Door,
@@ -32,8 +33,7 @@ of a `plan_cabinets::Cabinet`, so the plan file stays readable and the engine
 - Automatic labels follow the industry style: `B24` (base 24"), `B36-SB` (sink base),
   `W3030` (wall cabinet, width then height), `FH2484` (full height), with `SO`, `SH`,
   `PT` for soffit, shelf, partition.
-- Engine helpers that exist but have no editor command yet: `run_along_wall`
-  (a row of cabinets along a wall) and countertop merging (planned).
+- Countertop merging is Generate Countertop (`G`, 6.2). One engine helper has no editor command yet: `run_along_wall` (a row of cabinets along a wall).
 
 ## 6.2 Tools
 
@@ -47,16 +47,18 @@ of a `plan_cabinets::Cabinet`, so the plan file stays readable and the engine
 | Soffit | `T` | Works as a cabinet-like box. |
 | Shelf | `Ctrl+Alt+Cmd+Y` | Works. |
 | Partition | `Ctrl+Alt+Cmd+Z` | Works. |
-| Base Filler | `Ctrl+Alt+Cmd+0` | (planned) |
-| Wall Filler | `Ctrl+Alt+Cmd+1` | (planned) |
-| Full Height Filler | `Ctrl+Alt+Cmd+2` | (planned) |
-| Custom Countertop | `Ctrl+Alt+Cmd+3` | (planned; reports "not yet implemented") |
-| Custom Backsplash | `Ctrl+Alt+Cmd+4` | (planned) |
-| Custom Counter Hole | `Ctrl+Alt+Cmd+5` | (planned) |
+| Base Filler | `Ctrl+Alt+Cmd+0` | Works: a click in a gap makes a filler the width of the gap. |
+| Wall Filler | `Ctrl+Alt+Cmd+1` | Works. |
+| Full Height Filler | `Ctrl+Alt+Cmd+2` | Works. |
+| Custom Countertop | `Ctrl+Alt+Cmd+3` | Works: a polygon. |
+| Custom Backsplash | `Ctrl+Alt+Cmd+4` | Works: a polygon (a strip). |
+| Custom Counter Hole | `Ctrl+Alt+Cmd+5` | Works: a polygon cut out of the countertop it lies in. |
+| Corner Base Cabinet, Corner Wall Cabinet | | Works (no hotkey of its own). |
+| Blind Base Cabinet, Blind Wall Cabinet | | Works (no hotkey of its own). |
 
-All six working entries start the one Cabinet tool in that kind, so the flyout choice and the hotkey
-select Base, Wall, Full Height, Soffit, Shelf or Partition directly. Press `Tab` while the tool is active
-to cycle the kind; the status bar names it ("Base Cabinet: click to place, drag to set the width; Tab
+All entries start the one Cabinet tool in that kind, so the flyout choice and the hotkey
+select the kind directly. Press `Tab` while the tool is active
+to cycle the kind (through all sixteen, in flyout order); the status bar names it ("Base Cabinet: click to place, drag to set the width; Tab
 changes the cabinet type").
 
 ### Placing and editing
@@ -68,6 +70,7 @@ changes the cabinet type").
 | Press, drag, release | Sets the width in 3" steps (one cabinet). |
 | Place or drag next to another cabinet | It slides to butt against the neighbor and aligns its back line (bumping). |
 | `Tab` | Next cabinet kind. |
+| `G` | **Generate Countertop**: joins the countertops of touching base cabinets into custom countertops (below). |
 | `Esc` | Returns to Select Objects. |
 
 A placed cabinet is selected. Its handles:
@@ -81,9 +84,33 @@ Double-click or press `Enter` opens the Cabinet Specification. The Edit toolbar 
 Open Object, Delete Objects, Copy Selected Objects, Paste in Place and **Reverse Door
 Swing**. Select a cabinet with Select Objects too; the Cabinet tool can also pick cabinets.
 
-Not built: cabinet depth/corner resize handles, fillers, merged countertops over adjacent
-cabinets, appliance insertion with a countertop cut-out, a Cabinet Schedule (the engine
-is ready), elevation views of a cabinet run (all planned).
+#### Fillers, corner and blind cabinets
+
+- A **filler** (Base, Wall or Full Height) takes the width of the gap you click into, between a wall and a cabinet or between two cabinets.
+- A **corner cabinet** clicked near the inside corner of two walls (within 30") turns to the corner and sits in it with its legs along both walls. In the specification its front is **Diagonal** or **Pie-Cut**
+  (a pie-cut can have **Lazy Susan shelves**), with an **Arm Depth**.
+- A **blind cabinet** turns its hidden end toward the nearest perpendicular wall (within 30"); the dialog sets the **Hidden end** (left or right) and the **Blind Width**.
+
+#### Custom countertops, backsplashes and counter holes
+
+These three work like the polygon tools of chapter 16: click the corners, or drag a rectangle; `Enter`, a double-click or a click on the first corner finishes; `Backspace` drops the last corner; `Esc` cancels.
+A counter hole is cut out of the countertop it lies in. A custom countertop has a thickness and an **Edge Profile** (Square, Beveled or Bullnose, with an edge size); a custom backsplash has a height and a strip thickness.
+
+#### Generate Countertop (`G`)
+
+With the Cabinet tool active, `G` joins the countertops of touching base cabinets into custom countertops: the selected cabinets, or all of them when none is selected. The cabinets give up their own slab (they shrink by its thickness),
+and their sink and cooktop holes move to the new top. One undo step ("Generate Countertop"); "No base cabinet countertops to join" if there is nothing to join.
+
+#### Appliance openings, sinks and cooktops
+
+A base cabinet can hold an **open bay for an appliance** (General tab, *Appliance Opening*): Dishwasher, Range, Refrigerator or Microwave. The bay stays open and the appliance fills it in plan and 3D. A countertop can have **sink and cooktop cutouts**
+(*Add Sink*, *Add Cooktop*, each with a *Remove* button; their area in square inches is listed).
+
+#### Cabinet Schedule and callouts
+
+A **Cabinet Schedule** from the Schedule flyout lists the plan's cabinets as a live table and, with *Show schedule number labels*, labels each cabinet `C-01`, `C-02` ... in the plan (chapter 11.2).
+
+Not built: cabinet depth and corner resize handles, elevation views of a cabinet run. Cabinets are not in the 3D view at the Round 7 commit (QA-05 in `docs/qa-findings.md`; Round 8 is fixing it).
 
 ## 6.3 Dialog: Cabinet Specification
 
@@ -93,24 +120,27 @@ The preview shows the plan symbol and a front elevation of the resolved face ite
 |---|---|
 | General | Works |
 | Box Construction | Works |
-| Front/Sides/Back | Works |
+| Front/Sides/Back | Works for the Front; the Sides and Back faces are not editable (the Cabinet Side list is disabled and shows Front) |
 | Door/Drawer | Works |
-| Accessories | Works |
-| Opening Indicators | (disabled) |
-| Moldings | Works (list only) |
-| Layer | Works |
+| Accessories | Works (mostly disabled controls) |
+| Opening Indicators | Works |
+| Moldings | Works (crown and light rail) |
+| Layer | Works (shows the layer; follows the cabinet's type) |
 | Fill Style | (disabled) |
-| Materials | Works (list) |
+| Materials | Works (per part) |
 | Label | Works |
 | Components, Object Information, Schedule | (disabled) |
 
 ### General
 
-- **Cabinet Style**: Type (Standard); Treat As Filler.
+- **Cabinet Style**: Type (shows the kind, disabled); Treat As Filler (checked for the filler kinds, disabled).
 - **Size/Position**: Width, Height (including countertop), Depth, Finished Floor to Bottom,
   Finished Floor to Top, Position X and Y (the back-left corner), Angle.
+- **Corner Cabinet** (corner kinds): Front Diagonal or Pie-Cut, Lazy Susan shelves, Arm Depth. **Blind Corner** (blind kinds): Hidden end, Blind Width.
+- **Appliance Opening** (base cabinets): the open-bay check box and the appliance.
+- **Custom Top** (custom kinds): Thickness; Edge Profile and Edge Size (countertop); Height (backsplash).
 - **Countertop**: Thickness (1 1/2"), Overhang Front, Back and Sides (1"), Corner Treatment
-  None / Clipped / Rounded.
+  None / Clipped / Rounded (only None is available; the others are disabled). **Sink and Cooktop Cutouts**: Add Sink, Add Cooktop, Remove.
 - **Backsplash**: Height, Thickness.
 - **Toe Kick**: Height (4"), Depth (3").
 
@@ -123,7 +153,8 @@ The preview shows the plan symbol and a front elevation of the resolved face ite
 
 ### Front/Sides/Back
 
-- **Cabinet Side**: picks the face to edit (Front is the default), and Side Type.
+- **Cabinet Side**: the list shows Front and is disabled, and so is Side Type: only the front face is editable, not the Sides or the Back.
+- **Front Elevation** (the face editor): a drawing of the resolved face items; drag a divider to resize the items on either side of it.
 - **Face Items**: an indented tree such as `Vertical Layout > Separation, Layout > Drawer,
   Separation, Door - Auto Right, Separation`. Buttons: **Add New**, **Delete**, **Move
   Up**, **Move Down**, **Split Vertical**, **Split Horizontal**, **Equalize**, **Reset to
@@ -135,16 +166,17 @@ The preview shows the plan symbol and a front elevation of the resolved face ite
 
 ### Door/Drawer, Accessories
 
-Door/Drawer: Door Panel (Main Style, Thickness), Door Handle (Main Style), Drawer Panel,
-Drawer Handle. Accessories: Front Pilasters, Feet (Foot Style), Side Panels (Main Panel
-Style, Full Size Panel). Style names come from the engine's built-in styles (Lincoln Door,
-Lincoln Flat Panel Drawer); library styles are (planned).
+**Door/Drawer** has: *Door Panel* (Main Style, Panel Profile Slab, Shaker or Raised Panel, Thickness, Stile and Rail Width for framed profiles, Glass Doors); *Door Handle* (Main Style, Vertical Position Centered or Distance From Top,
+Distance From Edge); *Door Hinges* (Hidden or Exposed, Up/Down From Edge); *Drawer Panel* (Main Style, Panel Profile, Thickness); *Drawer Handle* (Main Style, Vertical Position Centered or Near the top). The built-in door styles are Lincoln
+Door, Slab Door, Shaker Door and Raised Panel Door; the drawer styles are Lincoln Flat Panel Drawer, Slab Drawer, Shaker Drawer and Raised Panel Drawer; library styles are (planned). Handles are None, Knob or Pull.
+**Accessories**: Front Pilasters, Feet (Foot Style), Side Panels (Main Panel Style, Full Size Panel); the controls are disabled.
 
-### Moldings, Layer, Materials, Label
+### Opening Indicators, Moldings, Layer, Materials, Label
 
-Moldings lists profiles (editing is planned). Layer picks the layer (Cabinets, Base;
-Cabinets, Wall). Materials lists the default materials. Label shows the automatic label
-(`B24`) and lets you type your own.
+**Opening Indicators**: the check box *Show door swings and open drawers in plan* draws each door's quarter-circle swing from its hinge and each drawer pulled out in front of the cabinet.
+**Moldings** lists up to four profiles, each with a Projection, a Height and a Delete button; **Add Crown** puts a crown molding on top of the cabinet and **Add Light Rail** one under it; both run along the front and return at the ends.
+**Layer** shows the layer (Cabinets, Base; Cabinets, Wall ...), which follows the kind. **Materials** gives each part (Box, Door Fronts, Drawer Fronts, Countertop, Backsplash, Toe Kick, Molding) a material from Default, Wood, Painted, Stone, Concrete,
+Metal or Glass; Default keeps the part's usual stand-in. **Label** shows the automatic label (`B24`); *Specify label* lets you type your own, with the macros `<W>` width, `<D>` depth, `<H>` height, `<T>` the type letters and `<L>` the automatic label.
 
 ## 6.4 The Library Browser
 
@@ -275,4 +307,5 @@ User Library and the other Library menu items.
   fraction of them decode only partially and fall back to a box (6.6).
 - Chief catalogs are read, never written: no Add to User Library, no Import Library, no editing of a catalog.
 - Search filters are name and keyword only.
-- No cabinet-to-appliance insertion, joined countertops or fillers yet.
+- Cabinets are not in the 3D view at the Round 7 commit (QA-05; Round 8 is wiring them in). Only the Front face of a cabinet can be edited; its Sides and Back cannot. Library door and drawer styles, countertop corner treatments and
+  accessories are (planned).

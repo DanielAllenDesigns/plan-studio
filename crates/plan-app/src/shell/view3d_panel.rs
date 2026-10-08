@@ -467,6 +467,28 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
         .meshes
         .extend(crate::editor::details_view::detail_meshes(proj));
     scene.meshes.extend(symbol_meshes(proj));
+    // Pictures, 3D solid features and library solids (billboards keep their
+    // stored angle in the cached scene).
+    scene
+        .meshes
+        .extend(crate::editor::placed::image_meshes(proj));
+    scene
+        .meshes
+        .extend(crate::editor::placed::solid_meshes(proj));
+    // Terrain surface, roads and landscape objects.
+    if let Some(view) = crate::editor::site_view::terrain_view(proj) {
+        if let Some(surface) = &view.surface {
+            scene.meshes.push(plan_terrain::terrain_mesh(surface));
+            scene
+                .meshes
+                .extend(plan_terrain::road_meshes(&view.record.terrain, surface));
+        }
+    }
+    scene
+        .meshes
+        .extend(crate::editor::site_view::terrain_feature_meshes(proj));
+    scene.meshes.extend(cabinet_meshes(proj));
+    scene.meshes.extend(stair_meshes(proj));
     let mut scene = match &scope.section {
         Some(cut) => clip_scene(&scene, cut),
         None => scene,
@@ -557,6 +579,10 @@ pub fn symbol_meshes(project: &Project) -> Vec<Mesh> {
     let mut out = Vec::new();
     for floor in &project.floors {
         for s in &floor.symbols {
+            // Pictures and solids are meshed by `editor::placed`.
+            if s.image.is_some() || s.solid {
+                continue;
+            }
             if chief::is_chief_id(&s.catalog_id) {
                 match chief::placed_meshes(s, floor.elevation) {
                     Chief3d::Meshes(m) => out.extend(m),
@@ -571,6 +597,61 @@ pub fn symbol_meshes(project: &Project) -> Vec<Mesh> {
     out
 }
 
+/// 3D geometry of every placed cabinet (QA-05): `plan_cabinets::meshes` for
+/// all kinds (base, wall, corner, fillers, custom countertops and
+/// backsplashes ...) at each cabinet's stored position and rotation, lifted
+/// by the floor's elevation. `plan-cabinets` has no wood or stone materials:
+/// its countertop stand-in (`Floor`) becomes `Stone` so it is not mistaken
+/// for a room slab, and its handle stand-in (`WindowFrame`) becomes `Metal`.
+pub fn cabinet_meshes(project: &Project) -> Vec<Mesh> {
+    let mut out = Vec::new();
+    for floor in &project.floors {
+        for cab in crate::editor::placed::load_cabinets(floor) {
+            for mut m in plan_cabinets::meshes(&cab) {
+                m.material = match m.material {
+                    Material::Floor => Material::Stone,
+                    Material::WindowFrame => Material::Metal,
+                    other => other,
+                };
+                lift(&mut m, floor.elevation);
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// 3D geometry of every stair, ramp and landing (QA-06):
+/// `plan_stairs::model3d` on each stair at its floor's elevation. Treads,
+/// landings and ramps are `Framing` (lumber) so `Floor` stays the room
+/// slabs; risers, stringers and handrails are `Trim`.
+pub fn stair_meshes(project: &Project) -> Vec<Mesh> {
+    use plan_stairs::StairPart;
+    let mut out = Vec::new();
+    for floor in &project.floors {
+        for mut obj in crate::editor::stairs_view::load(floor) {
+            obj.stair.floor_elevation = floor.elevation;
+            for (part, mut m) in plan_stairs::tagged_meshes(&obj.stair) {
+                m.material = match part {
+                    StairPart::Tread | StairPart::Landing | StairPart::Ramp => Material::Framing,
+                    StairPart::Riser | StairPart::Stringer | StairPart::Handrail => Material::Trim,
+                };
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// Raise a mesh by `dy` inches (cabinets are authored relative to the floor).
+fn lift(mesh: &mut Mesh, dy: f64) {
+    if dy != 0.0 {
+        for v in &mut mesh.vertices {
+            v.position[1] += dy as f32;
+        }
+    }
+}
+
 struct HashFmt<'a>(&'a mut DefaultHasher);
 
 impl std::fmt::Write for HashFmt<'_> {
@@ -581,7 +662,8 @@ impl std::fmt::Write for HashFmt<'_> {
 }
 
 /// A hash of everything that shapes the 3D model: floors, walls, openings,
-/// placed symbols, the roofs and the foundation objects.
+/// placed symbols, room names, cabinets, stairs, the roofs and the
+/// foundation objects.
 /// Cameras, dimensions and other annotations are not part of it.
 pub fn project_hash(p: &Project) -> u64 {
     let mut h = DefaultHasher::new();
@@ -598,6 +680,19 @@ pub fn project_hash(p: &Project) -> u64 {
         // Placed library symbols (position, size, angle, flip, elevation).
         for sym in &f.symbols {
             let _ = write!(HashFmt(&mut h), "{sym:?}");
+        }
+        // Room names carry the ceiling height and floor offset overrides
+        // that shape the platforms (R-23, R-24).
+        for n in &f.room_names {
+            let _ = write!(HashFmt(&mut h), "{n:?}");
+        }
+        // Cabinets and stairs live in typed JSON slots (`editor::placed`,
+        // `editor::stairs_view`) and are meshed into the scene.
+        for c in &f.cabinets {
+            let _ = write!(HashFmt(&mut h), "{c}");
+        }
+        for st in &f.stairs {
+            let _ = write!(HashFmt(&mut h), "{st}");
         }
         // Roof planes are stored as tagged CAD records (`editor::roof_view`).
         for c in f.cad.iter().filter(|c| c.layer != LIGHTS_LAYER) {
@@ -617,6 +712,10 @@ pub fn project_hash(p: &Project) -> u64 {
         }
     }
     p.wall_types.len().hash(&mut h);
+    // The terrain (surface, roads, landscape objects).
+    if let Some(t) = &p.terrain {
+        let _ = write!(HashFmt(&mut h), "{t:?}");
+    }
     h.finish()
 }
 

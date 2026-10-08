@@ -5,6 +5,7 @@ use super::{ops, placed};
 
 use super::selection::{layer_of, ObjectRef};
 use super::{EditorContext, EditorRequest};
+use plan_core::cad::{CadAttrs, CadBlockInfo};
 use plan_core::{CadObject, Dimension, Id, Opening, OpeningKind, Wall};
 use std::collections::HashMap;
 
@@ -70,6 +71,10 @@ pub struct Clipboard {
     pub openings: Vec<Opening>,
     pub dimensions: Vec<Dimension>,
     pub cad: Vec<CadObject>,
+    /// Style extras of the copied CAD objects (targets are the old ids).
+    pub cad_attrs: Vec<CadAttrs>,
+    /// CAD blocks whose every object was copied, with the old member ids.
+    pub cad_blocks: Vec<(CadBlockInfo, Vec<Id>)>,
 }
 
 impl Clipboard {
@@ -198,6 +203,16 @@ impl EditorContext {
                 _ => {}
             }
         }
+        // CAD style extras and whole CAD blocks travel with their objects.
+        for c in &clip.cad {
+            clip.cad_attrs.extend(f.cad_attrs(c.id));
+        }
+        for b in f.cad_blocks() {
+            let members = f.group_members_cad(b.group);
+            if members.len() >= 2 && members.iter().all(|m| clip.cad.iter().any(|c| c.id == *m)) {
+                clip.cad_blocks.push((b, members));
+            }
+        }
         if clip.is_empty() {
             // Cabinets and symbols have their own clipboard.
             if self.copy_extra() == 0 {
@@ -253,9 +268,30 @@ impl EditorContext {
             let id = self.project.add_dimension(fl, d.clone());
             sel.push(ObjectRef::Dimension(id));
         }
+        let mut cad_map: HashMap<Id, Id> = HashMap::new();
         for c in &clip.cad {
             let id = self.project.add_cad(fl, c.layer.clone(), c.item.clone());
+            cad_map.insert(c.id, id);
             sel.push(ObjectRef::Cad(id));
+        }
+        for a in &clip.cad_attrs {
+            if let Some(&id) = cad_map.get(&a.target) {
+                let mut copy = a.clone();
+                copy.target = id;
+                self.project.set_cad_attrs(fl, copy);
+            }
+        }
+        for (info, members) in &clip.cad_blocks {
+            let refs: Vec<plan_core::groups::ObjectRef> = members
+                .iter()
+                .filter_map(|m| cad_map.get(m))
+                .map(|id| plan_core::groups::ObjectRef::Cad(*id))
+                .collect();
+            if let Some(group) = self.project.make_group(fl, &refs) {
+                let mut copy = info.clone();
+                copy.group = group;
+                self.project.floors[fl].cad_blocks.push(copy);
+            }
         }
         self.selection.items = sel;
         let core_sel = self.selection.items.clone();

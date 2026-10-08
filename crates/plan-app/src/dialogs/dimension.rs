@@ -92,6 +92,13 @@ impl DimensionDialog {
         self.form.result()
     }
 
+    /// Test access: the draft the form edits, so a scenario can change a
+    /// value and press OK without typing into the egui widgets.
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut Dimension {
+        &mut self.form.draft
+    }
+
     /// Stores the edited dimension (one undo step). Editing the points or
     /// offset of an automatic dimension makes it manual (DIM-33). Returns
     /// false when nothing changed or the dimension is gone.

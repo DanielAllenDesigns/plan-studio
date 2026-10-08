@@ -333,6 +333,14 @@ pub struct Floor {
     /// Opaque schedules placed on this floor; see [`crate::schedules::ScheduleLayer`].
     #[serde(default)]
     pub schedules: Option<serde_json::Value>,
+    /// Per-object CAD style extras (line, fill, arrow, rich text), one entry
+    /// per styled CAD object; see [`crate::cad::CadAttrs`].
+    #[serde(default)]
+    pub cad_attrs: Vec<crate::cad::CadAttrs>,
+    /// Name and placement points of the floor's CAD blocks (groups of CAD
+    /// objects); see [`crate::cad::CadBlockInfo`].
+    #[serde(default)]
+    pub cad_blocks: Vec<crate::cad::CadBlockInfo>,
 }
 
 impl Floor {
@@ -357,6 +365,8 @@ impl Floor {
             foundation: None,
             details: None,
             schedules: None,
+            cad_attrs: Vec::new(),
+            cad_blocks: Vec::new(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -412,6 +422,12 @@ pub struct Project {
     /// plan-layout, so the app reads and writes it (`shell::layout_window`).
     #[serde(default)]
     pub layout: Option<serde_json::Value>,
+    /// The plan's user text macros (Text Macro Management).
+    #[serde(default)]
+    pub text_macros: crate::text_styles::TextMacros,
+    /// The plan's note types (Note Type Management).
+    #[serde(default)]
+    pub note_types: crate::text_styles::NoteTypes,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -435,6 +451,8 @@ impl Project {
             lights: Vec::new(),
             light_options: crate::camera::LightSettings::default(),
             layout: None,
+            text_macros: crate::text_styles::TextMacros::default(),
+            note_types: crate::text_styles::NoteTypes::default(),
         }
     }
 

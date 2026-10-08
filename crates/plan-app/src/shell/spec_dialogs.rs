@@ -19,8 +19,8 @@ use crate::dialogs::terrain::TerrainDialog;
 use crate::dialogs::text::TextDialog;
 use crate::dialogs::{cad, text, Outcome};
 use crate::editor::{
-    details_view, foundation_view, framing_view, placed, roof_view, rooms_edit, site_view,
-    stairs_view,
+    details_view, foundation_view, framing_view, placed, roof_view, rooms_edit, schedule_view,
+    site_view, stairs_view,
 };
 use crate::editor::{EditorContext, ObjectRef};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
@@ -54,6 +54,33 @@ pub struct SpecDialogs {
 impl SpecDialogs {
     pub fn is_open(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// Test access to the open Dimension Specification's draft.
+    #[cfg(test)]
+    pub fn dimension_draft_mut(&mut self) -> Option<&mut plan_core::Dimension> {
+        match self.active.as_mut()? {
+            Active::Dimension(d) => Some(d.draft_mut()),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open Text Specification's draft.
+    #[cfg(test)]
+    pub fn text_draft_mut(&mut self) -> Option<&mut plan_core::CadObject> {
+        match self.active.as_mut()? {
+            Active::Text(d) => Some(d.draft_mut()),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open CAD Specification's draft.
+    #[cfg(test)]
+    pub fn cad_draft_mut(&mut self) -> Option<&mut plan_core::CadObject> {
+        match self.active.as_mut()? {
+            Active::Cad(d) => Some(d.draft_mut()),
+            _ => None,
+        }
     }
 
     /// Opens the dialog of `o`. Returns false when the object has none (or
@@ -138,6 +165,11 @@ impl SpecDialogs {
             ObjectRef::Camera(id) => {
                 Outbox::global().post(ViewRequest::OpenCameraSpec(id));
                 return cx.project.camera(id).is_some();
+            }
+            ObjectRef::Schedule(id) => {
+                // The Schedule Specification window is hosted by build_tools.
+                crate::dialogs::build_tools::open_schedule_spec(cx.floor, id);
+                return schedule_view::exists(cx.floor(), id);
             }
             ObjectRef::Wall(_) | ObjectRef::Opening(_) => None,
         };

@@ -41,6 +41,7 @@ mod library;
 mod shapes;
 mod starter;
 mod symbol;
+pub mod user;
 
 pub use catalog::{Catalog, CatalogItem, Placement};
 pub use library::{CategoryNode, Library};

@@ -26,7 +26,8 @@
 //! Kitchen`, `Lighting`).
 
 use crate::schedule::{
-    kind_label, ordered_openings, perimeter, reading_key, wall_number_of, wall_numbers,
+    kind_label, ordered_openings, perimeter, reading_key, room_area_sq_ft, wall_number_of,
+    wall_numbers,
 };
 use crate::Schedule as Table;
 use plan_cabinets::{auto_label, Cabinet, CabinetKind};
@@ -226,11 +227,14 @@ fn rooms(project: &Project, active: ActiveRooms) -> Vec<Entry> {
                 .unwrap_or(f.ceiling_height);
             let mut e = new_entry(fi, 0, r.centroid, ScheduleKind::Room);
             e.name = name.clone();
-            e.size = format!("{:.1} sq ft", r.area_sq_ft());
+            e.size = format!("{:.1} sq ft", room_area_sq_ft(r));
             e.cells = vec![
                 ("mark", String::new()),
                 ("name", name),
-                ("area", format!("{:.1}", r.area_sq_ft())),
+                // The Interior Area, like the plan label (QA-03); the
+                // centerline ("Standard") area is kept as its own value.
+                ("area", format!("{:.1}", room_area_sq_ft(r))),
+                ("standard_area", format!("{:.1}", r.area_sq_ft())),
                 ("perimeter", format!("{:.1}", perimeter(&r.polygon) / 12.0)),
                 ("ceiling_height", fmt_ft_in(ceiling)),
                 (
@@ -970,7 +974,8 @@ mod tests {
         let t = table(&p, &def(ScheduleKind::Room), 0, Some((0, &detected)));
         assert_eq!(t.rows.len(), 1);
         assert_eq!(t.rows[0][0], "R01");
-        assert_eq!(t.rows[0][2], "200.0");
+        // Interior area (QA-03): (240 - 4.5) x (120 - 4.5) / 144.
+        assert_eq!(t.rows[0][2], "188.9");
         // Without the editor's rooms the floor is detected here.
         assert_eq!(table(&p, &def(ScheduleKind::Room), 0, None).rows.len(), 1);
         let mut d = def(ScheduleKind::Room);

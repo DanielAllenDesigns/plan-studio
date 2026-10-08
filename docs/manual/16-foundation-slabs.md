@@ -30,7 +30,7 @@ top height is 0 has its top at the floor and its body below it. Lengths are inch
 ## 16.2 Tools
 
 The slab tools are in the **Slab** flyout on row 2 (Build > Slab). The two platform-hole tools are in the
-**Floor** flyout (Build > Floor), next to Floor Material Region, which is (planned). None of them has a
+**Floor** flyout (Build > Floor), next to Floor Material Region (chapter 17). None of them has a
 hotkey.
 
 | Button | Today |
@@ -43,7 +43,7 @@ hotkey.
 | Round Pier | Works. |
 | Hole in Floor Platform | Works (Floor flyout). |
 | Hole in Ceiling Platform | Works (Floor flyout). |
-| Slab Footing (Straight Wall flyout) | (planned) |
+| Slab Footing (Straight Wall flyout) | Works: draw the polygon as for Slab with Footing; it makes the same foundation slab with a footing (chapter 17.2). |
 
 ### Drawing a polygon
 
@@ -69,7 +69,7 @@ ghost at the default size.
 - **Select Objects** picks a slab, hole, pad, pier or platform hole by clicking it (piers and pads first, then hole edges, then a slab by its edge, then by
   its inside, smallest slab first; a slab picked only by its inside ranks below the room under it). Dragging the object's body moves it as one undo step; Delete removes it;
   a marquee box-selects (left to right: those inside; right to left: those touched); double-click or `Enter` opens its specification. A selected object is outlined.
-  There are no corner handles yet: to change a shape, delete it and draw it again.
+- **Corner handles.** A selected slab, slab hole or platform hole shows a handle on every corner; drag one to reshape the polygon (one undo step). Pads and piers have no handles: they move by their body.
 - With a slab tool active, hold `Cmd` (`Ctrl` off macOS) and click an object to pick it and drag to move it (one undo step, "Move Slab" ...); `Delete` or `Backspace`
   deletes the selected object or the one under the pointer; double-click one outside a drawing to open its specification. Objects on a hidden layer cannot be picked.
 
@@ -106,6 +106,6 @@ Each object has its own Specification dialog on the shared frame (tab list, pane
 ## 16.5 Differences from Chief
 
 - Slabs are objects you draw; they do not follow the walls, and Build Foundation does not make them.
-- No corner handles, no Slab Footing wall variant, no Wall Hatching, no Floor Material Region (all planned).
+- The Slab Footing wall variant, Wall Hatching and Floor Material Region are in chapter 17. Pads and piers have no resize handles (change their size in the dialog).
 - Slab Hole footings use the footing of the slab they cut (or the defaults), not a size of their own.
 - Fill patterns are simple screen patterns, not Chief's hatch library.

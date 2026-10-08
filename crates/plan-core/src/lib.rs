@@ -42,6 +42,7 @@ pub mod foundation;
 pub mod geometry;
 pub mod groups;
 pub mod history;
+pub mod images;
 pub mod joins;
 pub mod layer_sets;
 pub mod layers;
@@ -69,6 +70,7 @@ pub use floors::{FloorKind, FoundationKind};
 pub use geometry::Point;
 pub use groups::{Clipboard, ObjectGroup, ObjectRef};
 pub use history::History;
+pub use images::{Distribution, ImageSpec};
 pub use joins::{
     main_layer_lines, wall_end_joins, wall_faces, wall_layer_bands, wall_layer_outlines,
     wall_outlines, ConnectionKind, LayerBand, WallLayerOutline, WallOutline,

@@ -5,6 +5,13 @@
 //! templates (exterior door on exterior walls, interior door otherwise,
 //! window). A ghost with temporary dimensions to both wall ends follows the
 //! pointer. The tool stays active after a placement.
+//!
+//! Door swing and hinge (DW-8, DW-76) are derived from the pointer, not copied
+//! from the template: the door swings toward the side of the wall the pointer
+//! is on (`swing_flipped` false for the wall's left side, true for the right;
+//! a pointer exactly on the centerline keeps the left), and the hinge goes to
+//! the jamb nearer the closer wall end (`hinge_at_end` when the center is in
+//! the far half of the wall). Windows are unaffected.
 
 use super::{PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::place_from_template;
@@ -13,11 +20,14 @@ use crate::editor::{render, Camera, EditorContext, ObjectRef};
 use crate::toolbar::ViewFlag;
 use eframe::egui;
 use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
+use plan_core::openings::door_defaults_for_pointer;
 use plan_core::{Id, OpeningKind};
 
 pub struct OpeningTool {
     kind: OpeningKind,
     hover: Option<(Id, f64)>,
+    /// World position of the last pointer move (drives the ghost's swing).
+    hover_pointer: Point,
 }
 
 impl Default for OpeningTool {
@@ -25,6 +35,7 @@ impl Default for OpeningTool {
         Self {
             kind: OpeningKind::Door,
             hover: None,
+            hover_pointer: Point::new(0.0, 0.0),
         }
     }
 }
@@ -90,6 +101,7 @@ impl Tool for OpeningTool {
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         self.hover = target(cx, p.world, p.modifiers.alt);
+        self.hover_pointer = p.world;
         ToolResult {
             repaint: true,
             ..ToolResult::default()
@@ -103,7 +115,13 @@ impl Tool for OpeningTool {
         let Some(wall_kind) = cx.floor().wall(wid).map(|w| w.kind) else {
             return ToolResult::consumed();
         };
-        let (target_key, template) = cx.opening_template(self.kind, wall_kind);
+        let (target_key, mut template) = cx.opening_template(self.kind, wall_kind);
+        if self.kind == OpeningKind::Door {
+            if let Some(wall) = cx.floor().wall(wid) {
+                (template.swing_flipped, template.hinge_at_end) =
+                    door_defaults_for_pointer(wall, p.world, center);
+            }
+        }
         let extras = cx.default_opening_extras(target_key);
         let label = match self.kind {
             OpeningKind::Door => "Place Door",
@@ -144,6 +162,10 @@ impl Tool for OpeningTool {
         );
         let (_, mut ghost) = cx.opening_template(self.kind, wall.kind);
         ghost.wall_id = wid;
+        if self.kind == OpeningKind::Door {
+            (ghost.swing_flipped, ghost.hinge_at_end) =
+                door_defaults_for_pointer(wall, self.hover_pointer, center);
+        }
         let half = ghost.width * 0.5;
         let len = wall.length();
         if len < ghost.width + 4.0 {
@@ -207,6 +229,34 @@ mod tests {
             .unwrap();
         assert_eq!((win.width, win.height, win.sill_height), (32.0, 72.0, 24.0));
         assert!(cx.extras.openings.contains_key(&win.id));
+    }
+
+    #[test]
+    fn door_swing_follows_the_pointer_side_and_hinge_the_nearer_end() {
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        // Wall runs +x, so its left (normal) side is +y or -y by `perp`;
+        // read it from the wall rather than assume.
+        let n = cx.floor().wall(w).unwrap().normal();
+        click(&mut t, &mut cx, 40.0, 3.0 * n.y);
+        click(&mut t, &mut cx, 200.0, -3.0 * n.y);
+        let mut ds: Vec<_> = cx.floor().openings_on(w).cloned().collect();
+        ds.sort_by(|a, b| a.center_offset.total_cmp(&b.center_offset));
+        // Pointer on the left side near the start: unflipped, hinge at start.
+        assert!(!ds[0].swing_flipped && !ds[0].hinge_at_end);
+        // Right side near the end: flipped, hinge at the end jamb.
+        assert!(ds[1].swing_flipped && ds[1].hinge_at_end);
+
+        // Windows are unaffected.
+        t.set_variant(ToolId::Window);
+        click(&mut t, &mut cx, 120.0, -3.0 * n.y);
+        let win = cx
+            .floor()
+            .openings
+            .iter()
+            .find(|o| o.kind == OpeningKind::Window)
+            .unwrap();
+        assert!(!win.swing_flipped && !win.hinge_at_end);
     }
 
     #[test]

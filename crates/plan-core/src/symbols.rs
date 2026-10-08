@@ -35,6 +35,20 @@ pub struct PlacedSymbol {
     pub label: String,
     /// Layer name (see `LayerSet`).
     pub layer: String,
+    /// Makes the symbol a picture (Create Image / Billboard Image); see
+    /// [`crate::images`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<crate::images::ImageSpec>,
+    /// Makes the symbol the record of a distributed-object path or region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution: Option<crate::images::Distribution>,
+    /// The distribution record this symbol is a generated copy of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Id>,
+    /// A 3D Solid Feature: the library object is used as a solid. Affects
+    /// the 3D view only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub solid: bool,
 }
 
 impl PlacedSymbol {
@@ -58,6 +72,10 @@ impl PlacedSymbol {
             flip: false,
             label: String::new(),
             layer: "CAD, Default".to_string(),
+            image: None,
+            distribution: None,
+            owner: None,
+            solid: false,
         }
     }
 
@@ -164,7 +182,8 @@ impl Project {
     pub fn remove_symbol(&mut self, floor: usize, id: Id) -> bool {
         let f = &mut self.floors[floor];
         let n = f.symbols.len();
-        f.symbols.retain(|s| s.id != id);
+        // A distribution record takes its generated copies with it.
+        f.symbols.retain(|s| s.id != id && s.owner != Some(id));
         f.symbols.len() != n
     }
 

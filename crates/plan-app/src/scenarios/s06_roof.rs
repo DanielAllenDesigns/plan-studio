@@ -341,7 +341,6 @@ fn delete_roof_planes_and_a_manual_roof_plane_by_drag() {
 /// Every other multi-mode tool names the mode it is in ("Draw Line",
 /// "Auto Exterior Dimensions"); the roof tool answers "Roof" for all twelve.
 #[test]
-#[ignore = "QA-07"]
 fn each_roof_mode_names_itself_like_its_toolbar_entry() {
     let expected = [
         (RoofMode::Plane, "Roof Plane"),

@@ -53,6 +53,8 @@ pub fn library_catalog() -> &'static Library {
 pub enum ItemRef {
     Core(&'static CatalogItem),
     Chief(Arc<CatalogItem>),
+    /// An item of the user library (saved pictures).
+    User(Arc<CatalogItem>),
 }
 
 impl Deref for ItemRef {
@@ -61,7 +63,7 @@ impl Deref for ItemRef {
     fn deref(&self) -> &CatalogItem {
         match self {
             ItemRef::Core(i) => i,
-            ItemRef::Chief(i) => i,
+            ItemRef::Chief(i) | ItemRef::User(i) => i,
         }
     }
 }
@@ -71,7 +73,10 @@ impl Deref for ItemRef {
 pub fn find_item(id: &str) -> Option<ItemRef> {
     match library_catalog().get(id) {
         Some(i) => Some(ItemRef::Core(i)),
-        None => chief::resolve_item(id).map(|c| ItemRef::Chief(c.item)),
+        None => match super::images::user_item(id) {
+            Some(i) => Some(ItemRef::User(i)),
+            None => chief::resolve_item(id).map(|c| ItemRef::Chief(c.item)),
+        },
     }
 }
 
@@ -161,6 +166,8 @@ pub fn placement_for(cx: &EditorContext, item: &CatalogItem, p: &PointerEvent) -
         item.height,
     );
     s.elevation = item.elevation;
+    // A saved picture places the picture.
+    s.image = super::images::spec_from_item(item);
     // Free placement: the symbol's center sits on the snapped point, so the
     // back-center is half a depth behind it.
     let free = |s: &mut PlacedSymbol, center: Point| {

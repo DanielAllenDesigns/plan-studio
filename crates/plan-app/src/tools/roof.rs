@@ -834,7 +834,7 @@ impl Tool for RoofTool {
     }
 
     fn name(&self) -> &'static str {
-        "Roof"
+        self.mode.get().label()
     }
 
     fn hint(&self) -> String {

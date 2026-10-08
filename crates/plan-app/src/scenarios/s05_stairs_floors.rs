@@ -234,7 +234,6 @@ fn auto_stairwell_adds_a_stairwell_room_on_the_floor_above() {
 /// CB-29: the stairwell is a hole in the upper floor platform: nothing of the
 /// 2nd floor's floor slab covers the stair's footprint.
 #[test]
-#[ignore = "QA-04"]
 fn the_stairwell_cuts_a_hole_in_the_upper_floor_slab_in_3d() {
     use crate::shell::view3d_panel::{build_view_scene, ViewScope};
     use plan_3d::Material;

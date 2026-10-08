@@ -3,7 +3,7 @@
 Plan Studio builds roofs two ways, like Chief: automatically from the exterior
 walls (Build Roof), or one plane at a time (Roof Plane). Both produce editable
 **roof planes**, and both show in plan and in the 3D view. On top of the planes sit roof
-holes, skylights, vaulted ceiling planes, dormers and roof returns.
+holes, skylights, vaulted ceiling planes, dormers (including floating dormers) and roof returns, and you can join planes along their meeting line.
 
 ## 8.1 How roofs work
 
@@ -71,13 +71,13 @@ can change mode without going back to the flyout.
 | Roof Hole | `Ctrl+Alt+Shift+Cmd+T` | Roof Hole | Works. |
 | Skylight | `Ctrl+Alt+Shift+Cmd+S` | Skylight | Works. |
 | Auto Dormer | `Ctrl+Alt+Shift+Cmd+Z` | Auto Dormer | Works: click a plane, then the Dormer Specification (8.6). |
-| Auto Floating Dormer | `Ctrl+Alt+Shift+Cmd+R` | | (planned) |
-| Explode Dormer | | Explode Dormer | Works. |
+| Auto Floating Dormer | `Ctrl+Alt+Shift+Cmd+R` | Auto Floating Dormer | Works, see 8.2. |
+| Explode Dormer | | Explode Dormer | Works; the dormer's walls stay as real walls (8.2). |
 | Roof Return | | Roof Return | Works. |
 | Edit All Roof Planes | `Ctrl+Alt+Shift+Cmd+P` | Edit | Works (select, move, reshape planes). |
 | Delete Roof Planes | `Ctrl+Alt+Shift+Cmd+W` | (command) | Works: removes every roof plane in the plan, on every floor, in one undo step. "There are no roof planes to delete" if none. |
 | Delete Ceiling Planes | `Ctrl+Alt+Shift+Cmd+X` | (command) | Works: removes the ceiling planes of every floor in one undo step. "There are no ceiling planes to delete" if none. |
-| Join Roof Planes | (Edit toolbar) | Join | (planned) Asks for two planes, then says "not implemented yet". |
+| Join Roof Planes | (Edit toolbar) | Join | Works, see 8.2. It is on the Edit toolbar (with a plane selected) and in the tool's palette, as in Chief, not in the flyout. |
 
 ### Roof Plane mode
 
@@ -135,9 +135,12 @@ Specification (8.5). The 3D view cuts the holes out of the plane slab and builds
 Draws a **vaulted ceiling plane** the way Roof Plane draws a roof plane: press and drag the baseline, then click
 toward the high side. The plane starts at the floor's ceiling height and at the pitch in this floor's roof settings (4:12
 when it has none), and sits on the `Ceiling Planes` layer. Its thickness is 9" below the surface. Each plane is one undo step ("Draw Ceiling Plane");
-**Delete Ceiling Planes** clears them all. The Build Roof dialog's Build Ceiling Planes box is stored but does not make
-planes yet; you draw each ceiling plane by hand. In Edit All Roof Planes a ceiling plane can be selected, moved and
-deleted like a roof plane; it has no specification dialog yet.
+**Delete Ceiling Planes** clears them all. A ceiling plane is selected, moved and deleted like a roof plane (in Select Objects or Edit All Roof Planes), and
+double-click or `Enter` opens the **Ceiling Plane Specification** (8.5).
+
+**Build Ceiling Planes.** The Build Roof dialog's check box *Build ceiling planes for vaulted rooms* (8.4) makes ceiling planes for you: Build Roof adds one that follows the
+roof (same pitch and eave baseline) over every room whose **Ceiling Over This Room** is turned off in the Room Specification, on the `Ceiling Planes` layer, and
+replaces the ones it made before. Ceiling planes you drew by hand stay. Auto Rebuild reruns only when walls change, so after you change a room's ceiling flag, run Build Roof again.
 
 ### Auto Dormer and Explode Dormer
 
@@ -150,8 +153,10 @@ deleted like a roof plane; it has no specification dialog yet.
   hip 3), a window in the front wall if you ask for one, and a hole in the main roof plane under it. It has no overhang,
   soffit or fascia.
 - **Explode Dormer**: click a dormer (or use the Edit toolbar button with a dormer selected). Its roof planes become
-  ordinary planes and its footprint a plain hole in the main plane; **the dormer's walls are dropped**. "Exploded the
-  dormer into n roof planes".
+  ordinary planes and its footprint a plain hole in the main plane (none for a floating dormer), and **the front and cheek walls become real walls**: they take the default exterior wall type
+  and thickness, sit with their outer face on the footprint, and stand on the roof through a **Bottom Height** (chapter 2.9); a dormer window becomes a window opening in the front wall. "Exploded the
+  dormer into n roof planes". Limits: the front wall of a gable dormer is a rectangle up to the wall height (the gable triangle above it is not part of the wall); the plan view and room detection do not know Bottom Height yet, so a dormer wall
+  draws like any wall of the roof's floor and, being open at the back, makes no room; and Auto Rebuild after wall changes sees the dormer walls as exterior walls of that floor.
 
 ### Roof Return mode
 
@@ -159,6 +164,25 @@ Click an eave corner to add a **roof return** 24" long at that corner. A plain c
 continues the main plane around the corner), `Shift` a half return (its triangle) and `Alt` a boxed return (a level boxed
 return). It becomes a new roof plane ("Roof return made"; "A roof return does not fit at that corner" when it cannot).
 Chief's slope, extend, shadow-board, ridge-cap, frieze and gutter options are not modeled, and the length is fixed.
+
+**Auto Roof Return.** A gable-end wall (Full Gable) whose roof directive has *auto roof return* set makes a full 24" return on the planes at both of its corners when Build Roof runs. These returns
+are automatic planes with no source edge and are replaced by every rebuild. The flag is a field of the wall's roof directive; the Roof tab of the Wall Specification that would set it is still disabled, so today
+it comes from data.
+
+### Join Roof Planes
+
+Joins two planes along the line where they meet: the first plane's edge is extended or trimmed to that line.
+
+1. Click an **edge of the first plane**, or select the plane and press the Edit toolbar's **Join Roof Planes** (which then asks for the edge).
+2. Click the **second plane**.
+
+"Roof planes joined" is the result, in one undo step ("Join Roof Planes"); the joined plane becomes **manual** (a later Build Roof leaves it alone). It refuses, with the reason in the status bar, for planes that are parallel,
+for an edge whose neighbors run parallel to the meeting line, or when the result would fold over. `Esc` drops the first pick.
+
+### Auto Floating Dormer
+
+Works exactly like Auto Dormer (click a plane, then the Dormer Specification), but the dormer is marked **floating**: it cuts no hole in the roof plane under it, in 3D or when you explode it. Editing it later keeps the flag.
+Use it for a dormer that sits on top of the roof surface instead of breaking through it.
 
 ## 8.3 What the plan and 3D show
 
@@ -178,7 +202,7 @@ Opened from the Build Roof mode. Three tabs.
 
 | Tab | Fields |
 |---|---|
-| Roof | **Roof**: Build Roof Planes, Auto Rebuild Roofs, Ignore Top Floor (build over the floor below the top one), Build Ceiling Planes (stored; Build Roof does not generate ceiling planes yet, use the Ceiling Plane tool). **Defaults for walls without their own roof settings**: Pitch, Overhang, Raise Roof Off Plate. A note says which floor the roof goes over. |
+| Roof | **Roof**: Build Roof Planes, Auto Rebuild Roofs, Ignore Top Floor (build over the floor below the top one), **Build ceiling planes for vaulted rooms** (Build Roof makes the ceiling planes of 8.2). **Defaults for walls without their own roof settings**: Pitch, Overhang, Raise Roof Off Plate. A note says which floor the roof goes over. |
 | Options | **Framing**: Build Framing (stored; the Build > Framing commands frame the stored roof planes whatever it says, 11.11), Rafters (disabled, on), Trusses (disabled, off). |
 | Materials | **Roofing**: Material (Asphalt Shingles, Concrete Tile, Standing Seam Metal, Wood Shakes, Slate). |
 
@@ -202,9 +226,20 @@ Open by double-clicking a plane.
 Editing a plane's own fields by hand marks it Manual, so a later Build Roof leaves it alone. The per-edge overrides on the Build Roof
 Edge tab are different: they are remembered with the roof's settings and used by the next Build Roof.
 
-With a plane selected, the Edit toolbar offers **Join Roof Planes** (planned: it asks for two planes, then
-says "not implemented yet") and **Rebuild Roofs** (re-runs the last Build Roof settings; "No roof has been
+With a plane selected, the Edit toolbar offers **Join Roof Planes** (8.2) and **Rebuild Roofs** (re-runs the last Build Roof settings; "No roof has been
 built yet: use Build Roof" if there are none). With a dormer selected it offers **Explode Dormer** instead.
+
+### Dialog: Ceiling Plane Specification
+
+Open by double-click or `Enter` on a ceiling plane (it opens in Select Objects and in Edit All Roof Planes). Three tabs on the shared frame.
+
+| Tab | Fields |
+|---|---|
+| General | **Height at Baseline** (the plane's height at its baseline), **Pitch** (0 to 24 in 12), **Thickness** (not negative), and **Origin**: built by Build Roof (replaced when the roof is rebuilt) or manual (kept). |
+| Line Style | The line style of the plane's outline. |
+| Layer | The layer, `Ceiling Planes` by default. |
+
+OK writes the change as one undo step, and a plane you edit is no longer replaced by Build Roof.
 
 ## 8.6 Dialog: Dormer Specification
 
@@ -222,16 +257,20 @@ OK is refused for an out-of-range pitch or an invalid length. The preview draws 
 
 Each exterior wall carries a roof directive in the model: kind (Hip, Full Gable, Dutch Gable,
 High Shed/Gable, Knee Wall, Extend Slope Downward), pitch, overhang, an optional upper pitch with
-its start height, and flags (Include Frieze, Roof Cuts Wall at Bottom). Daniel's template sets
+its start height, and flags (Include Frieze, Roof Cuts Wall at Bottom, auto roof return). Daniel's template sets
 exterior walls to Hip, 8:12, 16" overhang. Today you change a wall's directive with
 Gable/Roof Line (Hip or Full Gable) and the Build Roof defaults; the per-wall Roof tab is planned.
 
+Build Roof honors two more directives from data, without a dialog to set them: **Extend Slope Downward** (the edge's plane continues a fixed 24" below its eave; Chief reaches down to the wall below)
+and the *auto roof return* flag (8.2). Dutch gable, knee wall and the upper-pitch directives are still not read by Build Roof.
+
 ## 8.8 Differences from Chief
 
-- No Join Roof Planes, Auto Floating Dormer or Dutch gable, knee wall and upper-pitch breaks.
-- Explode Dormer drops the dormer's walls. Dormers have no overhang, soffit or fascia, and a dormer cannot straddle two planes.
+- No Dutch gable, knee wall and upper-pitch breaks.
+- Extend Slope Downward drops a fixed 24" instead of reaching the wall below, and Auto Roof Return applies only at gable ends and makes a fixed 24" return; neither has a dialog yet (the Wall Roof tab is disabled).
+- Explode Dormer keeps the walls, but the gable triangle above a gable dormer's front wall is not part of it, and the plan and room detection do not read their Bottom Height. Dormers have no overhang, soffit or fascia, and a dormer cannot straddle two planes.
 - Roof Return is a fixed 24" full, half or boxed return; its options (slope, extend, shadow boards, ridge cap, frieze, gutter) are not modeled.
-- Ceiling planes are drawn by hand, one at a time (Build Roof does not generate them), and walls are not cut by them.
+- Build Ceiling Planes follows the roof planes only; walls are not cut by ceiling planes.
 - Roof holes must sit wholly inside one plane; Chief's holes across a ridge need one hole per plane here.
 - No automatic attic floor from Build Roof.
 - Walls do not yet extend to meet the roof plane above them, so gable ends do not get their triangle in 3D.

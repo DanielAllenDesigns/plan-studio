@@ -5,8 +5,8 @@
 //! [`extra_in_rect`] ask the view module that owns the kind.
 
 use super::{
-    details_view, foundation_view, framing_view, placed, roof_view, rooms_edit, site_view,
-    stairs_view, EditorContext,
+    details_view, foundation_view, framing_view, placed, roof_view, rooms_edit, schedule_view,
+    site_view, stairs_view, EditorContext,
 };
 use crate::tools::camera as camera_tool;
 use plan_core::cad::CadItem;
@@ -48,6 +48,8 @@ pub enum ObjectRef {
     /// A corner board, quoin, molding, material region, wall hatch, deck or
     /// 3D solid (`DetailsLayer::find(id)` tells which).
     Detail(Id),
+    /// A schedule table placed on the plan (`schedule_view`).
+    Schedule(Id),
 }
 
 impl ObjectRef {
@@ -66,7 +68,8 @@ impl ObjectRef {
             | ObjectRef::Device(i)
             | ObjectRef::Foundation(i)
             | ObjectRef::Framing(i)
-            | ObjectRef::Detail(i) => i,
+            | ObjectRef::Detail(i)
+            | ObjectRef::Schedule(i) => i,
             ObjectRef::Room(i) => i as Id,
             ObjectRef::Terrain => 0,
         }
@@ -91,6 +94,7 @@ impl ObjectRef {
             ObjectRef::Foundation(_) => "Foundation Object",
             ObjectRef::Framing(_) => "Framing Object",
             ObjectRef::Detail(_) => "Detail Object",
+            ObjectRef::Schedule(_) => "Schedule",
         }
     }
 
@@ -111,6 +115,7 @@ impl ObjectRef {
             ObjectRef::Foundation(i) => FoundationLayer::load(floor).find(i).is_some(),
             ObjectRef::Framing(i) => framing_view::find(floor, i).is_some(),
             ObjectRef::Detail(i) => DetailsLayer::load(floor).find(i).is_some(),
+            ObjectRef::Schedule(i) => schedule_view::exists(floor, i),
             ObjectRef::Camera(_) | ObjectRef::Room(_) | ObjectRef::Terrain => false,
         }
     }
@@ -223,6 +228,7 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
             let layer = DetailsLayer::load(floor);
             layer.find(i).and_then(|r| layer.layer_of(r))
         }
+        ObjectRef::Schedule(i) => schedule_view::layer_of(floor, i),
         ObjectRef::Device(_) => Some(site_view::ELECTRICAL_LAYER.to_string()),
         ObjectRef::Camera(_) => Some(camera_tool::CAMERA_LAYER.to_string()),
         ObjectRef::Terrain => Some(site_view::TERRAIN_LAYER.to_string()),
@@ -416,6 +422,10 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
         }
     }
     out.extend(dim_cad_hits(floor, p, tol, &visible));
+    // A schedule table is an opaque rectangle drawn over the plan.
+    if let Some(id) = schedule_view::pick(cx, p) {
+        out.push(ObjectRef::Schedule(id));
+    }
 
     // Details: trim, moldings and solids sit above the walls, wall regions
     // and hatching belong to their wall (below it), floor regions and decks
@@ -564,7 +574,39 @@ pub fn extra_in_rect(cx: &EditorContext, lo: Point, hi: Point, crossing: bool) -
             out.push(r);
         }
     }
+    for (id, lo, hi) in schedule_view::extents(cx) {
+        let r = ObjectRef::Schedule(id);
+        if usable(r) && hit(&[lo, hi]) {
+            out.push(r);
+        }
+    }
     out
+}
+
+/// The object a 3D mesh was built from: the floor it is on and its
+/// [`ObjectRef`], from the mesh's `object_id` (ids are unique across the
+/// project). `None` for ids that belong to no selectable object (floor
+/// slabs, roof shells).
+pub fn object_for_mesh_id(project: &Project, id: Id) -> Option<(usize, ObjectRef)> {
+    let kinds: [fn(Id) -> ObjectRef; 10] = [
+        ObjectRef::Opening,
+        ObjectRef::Wall,
+        ObjectRef::Symbol,
+        ObjectRef::Cabinet,
+        ObjectRef::Stair,
+        ObjectRef::RoofPlane,
+        ObjectRef::Foundation,
+        ObjectRef::Framing,
+        ObjectRef::Detail,
+        ObjectRef::Device,
+    ];
+    (0..project.floors.len()).find_map(|fl| {
+        kinds
+            .iter()
+            .map(|k| k(id))
+            .find(|r| r.exists_in(project, fl))
+            .map(|r| (fl, r))
+    })
 }
 
 /// A CAD object by id.
@@ -634,5 +676,27 @@ mod tests {
         assert_eq!(s.len(), 2);
         s.toggle(ObjectRef::Wall(1));
         assert_eq!(s.single(), Some(ObjectRef::Wall(2)));
+    }
+
+    #[test]
+    fn a_mesh_id_resolves_to_its_object_and_floor() {
+        let (mut p, w) = plan();
+        let door = p.floors[0].openings[0].id;
+        p.build_new_floor(false);
+        let w2 = p.add_wall(
+            1,
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        assert_eq!(object_for_mesh_id(&p, w), Some((0, ObjectRef::Wall(w))));
+        assert_eq!(
+            object_for_mesh_id(&p, door),
+            Some((0, ObjectRef::Opening(door)))
+        );
+        assert_eq!(object_for_mesh_id(&p, w2), Some((1, ObjectRef::Wall(w2))));
+        assert_eq!(object_for_mesh_id(&p, 9999), None);
     }
 }

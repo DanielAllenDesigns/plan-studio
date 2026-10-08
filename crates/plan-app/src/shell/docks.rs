@@ -34,12 +34,15 @@ use plan_core::{DimensionKind, Layer, OpeningKind, Project};
 use std::collections::HashMap;
 
 /// Something a dock panel needs the application to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DockRequest {
     SetTool(ToolId),
     SwitchFloor(usize),
     /// Select a camera object, show its floor and pan the plan to it.
     SelectCamera(plan_core::Id),
+    /// Center the plan view on this point (the Project Browser's jump to a
+    /// schedule or a CAD detail; the camera lives in the shell).
+    PanTo(plan_core::geometry::Point),
     /// Activate the saved plan view at this index of `Project::plan_views`.
     /// (The Project Browser and the tab strip switch views themselves through
     /// `editor::plan_tabs`; the shell still handles this request.)
@@ -374,7 +377,6 @@ pub fn show_dialogs(
     }
     crate::dialogs::layer_sets::show_all(ctx, cx);
     crate::dialogs::plan_views::show_all(ctx, cx);
-    plan_view_tab_strip(ctx, cx);
 }
 
 // ----- layers -----
@@ -713,6 +715,41 @@ pub fn jump_to_cad_detail(cx: &mut EditorContext, floor: usize, group: plan_core
     jump_to_floor(cx, floor);
     cx.selection.items = ids.into_iter().map(ObjectRef::Cad).collect();
     true
+}
+
+/// The middle of schedule `id`'s table on the active floor (what the plan
+/// pans to after [`jump_to_schedule`]).
+pub fn schedule_center(
+    cx: &EditorContext,
+    id: plan_core::Id,
+) -> Option<plan_core::geometry::Point> {
+    crate::editor::schedule_view::extents(cx)
+        .into_iter()
+        .find(|(i, _, _)| *i == id)
+        .map(|(_, lo, hi)| plan_core::geometry::Point::lerp(lo, hi, 0.5))
+}
+
+/// The middle of the CAD detail group `group` of `floor` (what the plan pans
+/// to after [`jump_to_cad_detail`]).
+pub fn cad_detail_center(
+    cx: &EditorContext,
+    floor: usize,
+    group: plan_core::Id,
+) -> Option<plan_core::geometry::Point> {
+    let f = cx.project.floors.get(floor)?;
+    let ids = f.group_members_cad(group);
+    let mut bounds: Option<(plan_core::geometry::Point, plan_core::geometry::Point)> = None;
+    for o in f.cad.iter().filter(|o| ids.contains(&o.id)) {
+        let (lo, hi) = o.bounds();
+        bounds = Some(match bounds {
+            None => (lo, hi),
+            Some((a, b)) => (
+                plan_core::geometry::Point::new(a.x.min(lo.x), a.y.min(lo.y)),
+                plan_core::geometry::Point::new(b.x.max(hi.x), b.y.max(hi.y)),
+            ),
+        });
+    }
+    bounds.map(|(a, b)| plan_core::geometry::Point::lerp(a, b, 0.5))
 }
 
 /// Rename a camera (one undo step). `false` when it does not exist or the
@@ -1108,8 +1145,11 @@ fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec
                                                 .selectable_label(on, &e.label)
                                                 .on_hover_text("Jump to the schedule")
                                                 .clicked()
+                                                && jump_to_schedule(cx, floor, id)
                                             {
-                                                jump_to_schedule(cx, floor, id);
+                                                if let Some(at) = schedule_center(cx, id) {
+                                                    requests.push(DockRequest::PanTo(at));
+                                                }
                                             }
                                         }
                                     }
@@ -1126,8 +1166,13 @@ fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec
                                                 .selectable_label(false, &e.label)
                                                 .on_hover_text("Jump to the detail and select it")
                                                 .clicked()
+                                                && jump_to_cad_detail(cx, floor, group)
                                             {
-                                                jump_to_cad_detail(cx, floor, group);
+                                                if let Some(at) =
+                                                    cad_detail_center(cx, floor, group)
+                                                {
+                                                    requests.push(DockRequest::PanTo(at));
+                                                }
                                             }
                                         }
                                     }
@@ -1150,8 +1195,9 @@ struct TabDrag(usize);
 /// Plan views open as tabs above the canvas (shown from two tabs up): click a
 /// tab to switch to it, its x to close it, drag to reorder, "+" to open
 /// another saved view. Each tab keeps its floor, layer set, reference display
-/// and zoom (see `editor::plan_tabs`). Drawn over the top edge of the drawing
-/// area (the rectangle the app stores with [`set_central_rect`]).
+/// and zoom (see `editor::plan_tabs`). A top panel of its own: the app shows
+/// it each frame after the side panels and before the central panel, so the
+/// drawing area starts below the strip instead of the strip covering it.
 pub fn plan_view_tab_strip(ctx: &egui::Context, cx: &mut EditorContext) {
     use crate::editor::plan_tabs::with_tabs;
     if super::layout_window::is_active() {
@@ -1164,9 +1210,6 @@ pub fn plan_view_tab_strip(ctx: &egui::Context, cx: &mut EditorContext) {
     if tabs.len() < 2 {
         return;
     }
-    let Some(rect) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("central_rect"))) else {
-        return;
-    };
     let chrome = theme::current_chrome();
     let active = cx.project.active_plan_view.clone();
     let others: Vec<String> = cx
@@ -1180,13 +1223,11 @@ pub fn plan_view_tab_strip(ctx: &egui::Context, cx: &mut EditorContext) {
     let mut close: Option<String> = None;
     let mut open: Option<String> = None;
     let mut mv: Option<(usize, usize)> = None;
-    egui::Area::new(egui::Id::new("plan_view_tabs"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(rect.left_top())
-        .constrain(false)
+    egui::TopBottomPanel::top("plan_view_tabs")
+        .frame(egui::Frame::NONE.fill(chrome.status))
+        .show_separator_line(false)
         .show(ctx, |ui| {
-            egui::Frame::NONE.fill(chrome.status).show(ui, |ui| {
-                ui.set_width(rect.width());
+            ui.scope(|ui| {
                 egui::ScrollArea::horizontal()
                     .id_salt("plan_view_tabs_scroll")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -1538,10 +1579,39 @@ mod tests {
         assert!(jump_to_schedule(&mut cx, floor, id));
         assert_eq!(cx.floor, 0);
         assert_eq!(cx.selection.single(), Some(ObjectRef::Schedule(id)));
+        // The plan pans to the middle of the table.
+        let (lo, hi) = {
+            let e = crate::editor::schedule_view::extents(&cx);
+            let e = e.iter().find(|x| x.0 == id).unwrap();
+            (e.1, e.2)
+        };
+        let at = schedule_center(&cx, id).expect("a table to pan to");
+        assert!(at.dist(Point::lerp(lo, hi, 0.5)) < 1e-9);
+        assert!(at.x > lo.x && at.x < hi.x && at.y > lo.y && at.y < hi.y);
+        assert!(schedule_center(&cx, 9999).is_none());
         cx.floor = 1;
         assert!(jump_to_cad_detail(&mut cx, 0, g));
         assert_eq!(cx.floor, 0);
         assert_eq!(cx.selection.len(), 2);
+        // ... and to the middle of the detail's objects.
+        let mid = cad_detail_center(&cx, 0, g).expect("a detail to pan to");
+        let ids = cx.project.floors[0].group_members_cad(g);
+        let (mut lo, mut hi) = (
+            Point::new(f64::MAX, f64::MAX),
+            Point::new(f64::MIN, f64::MIN),
+        );
+        for o in cx.project.floors[0]
+            .cad
+            .iter()
+            .filter(|o| ids.contains(&o.id))
+        {
+            let (a, b) = o.bounds();
+            lo = Point::new(lo.x.min(a.x), lo.y.min(a.y));
+            hi = Point::new(hi.x.max(b.x), hi.y.max(b.y));
+        }
+        assert!(mid.dist(Point::lerp(lo, hi, 0.5)) < 1e-9);
+        assert!(cad_detail_center(&cx, 0, 9999).is_none());
+        assert!(cad_detail_center(&cx, 5, g).is_none());
         assert!(!jump_to_cad_detail(&mut cx, 0, 9999));
         assert!(!jump_to_schedule(&mut cx, 0, 9999));
         assert!(!jump_to_schedule(&mut cx, 7, id));
@@ -1586,16 +1656,27 @@ mod tests {
         cx.project
             .add_plan_view(plan_core::SavedPlanView::new("Second View", "Default Set"));
         with_tabs(|t| t.open_view(&mut cx, "Second View"));
+        let mut top = 0.0_f32;
         for _ in 0..3 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                set_central_rect(
-                    ctx,
-                    egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(600.0, 400.0)),
-                );
+                let before = ctx.available_rect().top();
                 plan_view_tab_strip(ctx, &mut cx);
+                // A real panel: the space for the drawing starts below it.
+                top = ctx.available_rect().top() - before;
             });
         }
+        assert!(top > 8.0, "the strip takes {top} px off the drawing area");
         assert!(with_tabs(|t| t.open().len()) >= 2);
+        // With one tab there is no strip and nothing is taken.
+        with_tabs(|t| {
+            t.close(&mut cx, "Second View");
+        });
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let before = ctx.available_rect().top();
+            plan_view_tab_strip(ctx, &mut cx);
+            top = ctx.available_rect().top() - before;
+        });
+        assert!(top.abs() < 1e-3, "{top}");
         // The Project Browser draws every node, including the new ones.
         let mut st = DockState::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {

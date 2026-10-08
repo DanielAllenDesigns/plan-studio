@@ -810,6 +810,10 @@ mod tests {
             d.set_room_type(t);
             assert!(!d.room_name().has_floor, "{t}");
         }
+        // A courtyard is open to the sky: no ceiling either.
+        assert!(!d.room_name().has_ceiling);
+        d.set_room_type("Attic");
+        assert!(d.room_name().has_ceiling);
         // A plain room goes back to the floor's defaults, switches stay editable.
         d.set_room_type("Bedroom");
         assert!(d.room_name().has_floor && d.room_name().has_ceiling);

@@ -2021,6 +2021,7 @@ mod tests {
                 indices: vec![0, 2, 1, 0, 3, 2],
                 material: Material::Floor,
                 object_id: None,
+                color: None,
             }],
         }
     }

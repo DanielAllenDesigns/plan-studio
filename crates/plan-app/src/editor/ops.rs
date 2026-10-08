@@ -300,8 +300,7 @@ pub fn split_walls_at_point(
 }
 
 fn overlaps(a: &Opening, b: &Opening) -> bool {
-    a.start_offset() < b.end_offset() + OPENING_MARGIN
-        && a.end_offset() > b.start_offset() - OPENING_MARGIN
+    plan_core::openings::openings_conflict(a, b, OPENING_MARGIN)
 }
 
 /// Moves an opening to `center` on `wall_id` (its host or another wall),
@@ -318,7 +317,7 @@ pub fn place_opening_at(
     let Some(mut o) = f.openings.iter().find(|o| o.id == opening_id).cloned() else {
         return false;
     };
-    let Some(len) = f.wall(wall_id).map(Wall::length) else {
+    let Some(len) = f.wall(wall_id).map(Wall::path_length) else {
         return false;
     };
     let half = o.width * 0.5;

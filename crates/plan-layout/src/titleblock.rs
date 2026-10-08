@@ -133,6 +133,54 @@ impl MacroContext {
     }
 }
 
+impl MacroContext {
+    /// Feeds the REVISIONS table from the revision clouds of `layout`: every
+    /// mark a cloud carries that Project Information has no row for gets one
+    /// (mark, no date, "Revision cloud on A-2, A-5"), after the existing rows
+    /// and in mark order (numbers before letters). With no current revision
+    /// set, `%revision%` becomes the last row's mark.
+    pub fn add_cloud_revisions(&mut self, layout: &crate::model::Layout) {
+        let mut found: Vec<(String, Vec<String>)> = Vec::new();
+        for page in layout.content_pages() {
+            for c in &page.clouds {
+                let mark = c.revision.trim();
+                if mark.is_empty() || self.revisions.iter().any(|(n, _, _)| n.trim() == mark) {
+                    continue;
+                }
+                let sheet = page.sheet_number();
+                match found.iter_mut().find(|(m, _)| m == mark) {
+                    Some((_, sheets)) => {
+                        if !sheets.contains(&sheet) {
+                            sheets.push(sheet);
+                        }
+                    }
+                    None => found.push((mark.to_string(), vec![sheet])),
+                }
+            }
+        }
+        found.sort_by(
+            |(a, _), (b, _)| match (a.parse::<u32>(), b.parse::<u32>()) {
+                (Ok(x), Ok(y)) => x.cmp(&y),
+                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                (Err(_), Err(_)) => a.cmp(b),
+            },
+        );
+        for (mark, sheets) in found {
+            self.revisions.push((
+                mark,
+                String::new(),
+                format!("Revision cloud on {}", sheets.join(", ")),
+            ));
+        }
+        if self.revision.trim().is_empty() {
+            if let Some((n, _, _)) = self.revisions.last() {
+                self.revision = n.clone();
+            }
+        }
+    }
+}
+
 /// Rows in the REVISIONS table of [`TitleBlockTemplate::from_daniel_18x24`].
 pub const DANIEL_REVISION_ROWS: usize = 5;
 
@@ -273,5 +321,46 @@ mod tests {
         );
         assert_eq!(t.revision_rows, 5);
         assert_eq!(t.style, TitleBlockStyle::RightStrip);
+    }
+
+    #[test]
+    fn revision_clouds_add_rows_to_the_revision_table() {
+        use crate::model::Layout;
+        use plan_core::Point;
+        let mut l = Layout::new("t", plan_docs::SheetSize::ArchC);
+        l.add_page(1, "Plan")
+            .add_cloud(Point::new(1.0, 1.0), Point::new(3.0, 3.0), "B");
+        l.add_page(2, "Elevations");
+        {
+            let p = &mut l.pages[1];
+            p.add_cloud(Point::new(1.0, 1.0), Point::new(3.0, 3.0), "2");
+            p.add_cloud(Point::new(4.0, 1.0), Point::new(6.0, 3.0), "B");
+            p.add_cloud(Point::new(7.0, 1.0), Point::new(9.0, 3.0), "1");
+            p.add_cloud(Point::new(7.0, 5.0), Point::new(9.0, 7.0), " ");
+        }
+        let mut ctx = MacroContext {
+            revisions: vec![("1".into(), "2026-10-01".into(), "Issued for permit".into())],
+            ..MacroContext::default()
+        };
+        ctx.add_cloud_revisions(&l);
+        let marks: Vec<&str> = ctx.revisions.iter().map(|r| r.0.as_str()).collect();
+        // Project Information's row stays as it was; the cloud marks follow
+        // (numbers, then letters), each with the sheets that carry it.
+        assert_eq!(marks, ["1", "2", "B"]);
+        assert_eq!(ctx.revisions[0].2, "Issued for permit");
+        assert_eq!(ctx.revisions[1].2, "Revision cloud on A-2");
+        assert_eq!(ctx.revisions[2].2, "Revision cloud on A-1, A-2");
+        assert_eq!(ctx.revision, "B", "the latest mark is the current revision");
+        // Running it again adds nothing; a set revision is kept.
+        let before = ctx.clone();
+        ctx.add_cloud_revisions(&l);
+        assert_eq!(ctx, before);
+        let mut set = MacroContext {
+            revision: "A".into(),
+            ..MacroContext::default()
+        };
+        set.add_cloud_revisions(&l);
+        assert_eq!(set.revision, "A");
+        assert_eq!(set.revisions.len(), 3);
     }
 }

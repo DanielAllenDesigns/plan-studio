@@ -524,6 +524,7 @@ pub fn read_floor_roof(floor: &Floor) -> FloorRoofInput {
                         }
                         o
                     },
+                    skip: Vec::new(),
                 });
             }
             Some("ceiling") => {

@@ -172,6 +172,11 @@ pub struct Mesh {
     pub material: Material,
     /// The wall or opening this mesh was generated from, if any.
     pub object_id: Option<Id>,
+    /// Exact sRGB colour for this mesh (Material Painter, Adjust Materials,
+    /// Material Builder). When set, the viewport and the ray tracer use it as
+    /// the albedo in place of [`Material::color`]; `None` keeps the material's
+    /// own colour.
+    pub color: Option<[u8; 3]>,
 }
 
 /// Min/max corners of an axis-aligned box.
@@ -190,6 +195,24 @@ fn bounds_of<'a>(vertices: impl Iterator<Item = &'a Vertex>) -> Option<Bounds> {
 }
 
 impl Mesh {
+    /// Linear-light value of an sRGB colour (what the shader and the ray
+    /// tracer use as albedo; [`Material::color`] is linear already).
+    pub fn linear_rgb(rgb: [u8; 3]) -> [f32; 3] {
+        rgb.map(|c| {
+            let c = f32::from(c) / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        })
+    }
+
+    /// This mesh's own colour as linear light, if it has one.
+    pub fn color_linear(&self) -> Option<[f32; 3]> {
+        self.color.map(Self::linear_rgb)
+    }
+
     /// Axis-aligned bounds, or `None` for an empty mesh.
     pub fn bounds(&self) -> Option<Bounds> {
         bounds_of(self.vertices.iter())

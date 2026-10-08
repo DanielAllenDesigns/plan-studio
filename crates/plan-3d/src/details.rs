@@ -477,6 +477,7 @@ pub fn sphere_mesh(center: V3, r: f64, material: Material, object_id: Option<u64
         indices,
         material,
         object_id,
+        color: None,
     }
 }
 

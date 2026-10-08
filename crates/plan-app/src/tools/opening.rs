@@ -25,7 +25,7 @@ use crate::editor::tempdim::{self, opening_temp_dims, TempDims};
 use crate::editor::{render, Camera, EditAction, EditorContext, ObjectRef};
 use crate::toolbar::ViewFlag;
 use eframe::egui;
-use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
+use plan_core::geometry::Point;
 use plan_core::openings::door_defaults_for_pointer;
 use plan_core::{Id, OpeningKind, OpeningStyle};
 
@@ -94,12 +94,12 @@ fn target(cx: &EditorContext, p: Point, alt: bool) -> Option<(Id, f64)> {
         .walls
         .iter()
         .filter(|w| cx.layers().is_visible(&w.layer))
-        .map(|w| (w, dist_to_segment(p, w.start, w.end)))
+        .map(|w| (w, w.closest_point(p).0.dist(p)))
         .filter(|(_, d)| *d <= tol)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(w, _)| w)?;
-    let (t, _) = project_on_segment(p, wall.start, wall.end);
-    let mut offset = t * wall.length();
+    // Along the wall is arc length on a curved wall (DW-88).
+    let mut offset = wall.locate(p).0;
     let unit = cx.snap_unit();
     if !alt {
         offset = (offset / unit).round() * unit;
@@ -219,6 +219,36 @@ impl Tool for OpeningTool {
             OpeningKind::Door => "Place Door",
             OpeningKind::Window => "Place Window",
         };
+        // A window clicked onto a door goes over it as a transom (DW-52).
+        let door_here = (self.kind == OpeningKind::Window)
+            .then(|| {
+                cx.floor()
+                    .openings_on(wid)
+                    .find(|d| {
+                        d.kind == OpeningKind::Door
+                            && center >= d.start_offset()
+                            && center <= d.end_offset()
+                    })
+                    .map(|d| d.id)
+            })
+            .flatten();
+        if let Some(door) = door_here {
+            cx.begin_change("Add Transom");
+            let fl = cx.floor;
+            return match cx.project.add_transom(fl, door, template.height) {
+                Ok(id) => {
+                    cx.selection.set(ObjectRef::Opening(id));
+                    cx.status = "Added a transom over the door".into();
+                    cx.mark_dirty();
+                    ToolResult::committed("Add Transom")
+                }
+                Err(e) => {
+                    cx.cancel_change();
+                    cx.status = e;
+                    ToolResult::consumed()
+                }
+            };
+        }
         cx.begin_change(label);
         let fl = cx.floor;
         match place_from_template(&mut cx.project, fl, wid, center, &template) {
@@ -302,7 +332,7 @@ impl Tool for OpeningTool {
         );
         let (_, mut ghost) = self.opening_for(cx, wall, self.hover_pointer, center);
         let half = ghost.width * 0.5;
-        let len = wall.length();
+        let len = wall.path_length();
         if len < ghost.width + 4.0 {
             return;
         }
@@ -556,5 +586,60 @@ mod tests {
             .map(|l| l.a.x.min(l.b.x))
             .fold(f64::MAX, f64::min);
         assert!(louver_x >= wall_x - 1e-6);
+    }
+
+    #[test]
+    fn a_door_on_a_curved_wall_is_placed_at_the_arc_length_under_the_pointer() {
+        let (mut cx, w) = setup();
+        cx.project.floors[0].walls[0].curve = Some(plan_core::walls::WallCurve { bulge: 60.0 });
+        let wall = cx.floor().wall(w).unwrap().clone();
+        // A point on the arc 200" along it: far from the chord.
+        let at = wall.point_along(200.0);
+        let mut t = OpeningTool::default();
+        click(&mut t, &mut cx, at.x, at.y);
+        let (first, center) = {
+            let o = cx.floor().openings_on(w).next().unwrap();
+            (o.id, o.center_offset)
+        };
+        assert!((center - 200.0).abs() <= 0.5, "{center}");
+        // The swing follows the pointer's side of the arc.
+        let n = wall.normal_along(200.0);
+        let out = wall.point_along(120.0) + n * -2.0;
+        click(&mut t, &mut cx, out.x, out.y);
+        let second = cx.floor().openings_on(w).find(|x| x.id != first).unwrap();
+        assert!(second.swing_flipped);
+        // Nothing is placed away from the arc (the chord's middle is 60" off).
+        let before = cx.floor().openings.len();
+        let mid = wall.point_at(wall.length() * 0.5);
+        click(&mut t, &mut cx, mid.x, mid.y);
+        assert_eq!(cx.floor().openings.len(), before);
+    }
+
+    #[test]
+    fn a_window_clicked_onto_a_door_becomes_its_transom() {
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        click(&mut t, &mut cx, 120.0, 0.0);
+        let door = cx.floor().openings_on(w).next().unwrap().id;
+        t.set_variant(ToolId::Window);
+        let r = click(&mut t, &mut cx, 125.0, 0.0);
+        assert_eq!(r.commit.as_deref(), Some("Add Transom"));
+        let all = &cx.floor().openings;
+        assert_eq!(all.len(), 2);
+        let (d, tr) = (
+            all.iter().find(|o| o.id == door).unwrap(),
+            all.iter().find(|o| o.id != door).unwrap(),
+        );
+        assert!(plan_core::openings::stands_over(tr, d));
+        assert_eq!(tr.mull_group, d.mull_group);
+        // The wall is 109 1/8" high and the door 96": the transom takes the room left.
+        assert!(
+            (tr.sill_height + tr.height - 109.125).abs() < 1e-9,
+            "{tr:?}"
+        );
+        // A second click does not pile on another one.
+        click(&mut t, &mut cx, 125.0, 0.0);
+        assert_eq!(cx.floor().openings.len(), 2);
+        assert!(cx.status.contains("over it already"), "{}", cx.status);
     }
 }

@@ -93,8 +93,49 @@ pub fn solid_rects(length: f64, height: f64, holes: &[Hole]) -> Vec<(f64, f64, f
     rects
 }
 
+/// The parts of the head (`head`) or the sill of `hole` that no other
+/// hole continues across: where a window stands over a door the two holes are
+/// one opening and the head of the door and the sill of the window are not
+/// faces of the wall.
+fn uncovered(hole: &Hole, others: &[Hole], head: bool) -> Vec<(f64, f64)> {
+    let at = if head { hole.h1 } else { hole.h0 };
+    let mut free = vec![(hole.s0, hole.s1)];
+    for o in others {
+        let same = (o.s0 - hole.s0).abs() <= EPS
+            && (o.s1 - hole.s1).abs() <= EPS
+            && (o.h0 - hole.h0).abs() <= EPS
+            && (o.h1 - hole.h1).abs() <= EPS;
+        let across = if head {
+            o.h0 <= at + EPS && o.h1 > at + EPS
+        } else {
+            o.h1 >= at - EPS && o.h0 < at - EPS
+        };
+        if same || o.niche_depth.is_some() || !across {
+            continue;
+        }
+        free = free
+            .into_iter()
+            .flat_map(|(a, b)| {
+                if o.s1 <= a + EPS || o.s0 >= b - EPS {
+                    return vec![(a, b)];
+                }
+                let mut out = Vec::new();
+                if o.s0 > a + EPS {
+                    out.push((a, o.s0));
+                }
+                if o.s1 < b - EPS {
+                    out.push((o.s1, b));
+                }
+                out
+            })
+            .collect();
+    }
+    free.retain(|(a, b)| b - a > EPS);
+    free
+}
+
 /// Reveal faces (jambs, head, sill) lining one hole.
-fn add_reveals(frame: &WallFrame, wall: &Wall, hole: &Hole, set: &mut MeshSet) {
+fn add_reveals(frame: &WallFrame, wall: &Wall, hole: &Hole, others: &[Hole], set: &mut MeshSet) {
     let half = wall.thickness * 0.5;
     let mesh = set.material(Material::WallInterior);
     let t = (-half, half);
@@ -105,10 +146,14 @@ fn add_reveals(frame: &WallFrame, wall: &Wall, hole: &Hole, set: &mut MeshSet) {
         frame.face(mesh, Axis::S, -1.0, hole.s1, t, (hole.h0, hole.h1));
     }
     if hole.h1 < wall.height - EPS {
-        frame.face(mesh, Axis::H, -1.0, hole.h1, (hole.s0, hole.s1), t);
+        for span in uncovered(hole, others, true) {
+            frame.face(mesh, Axis::H, -1.0, hole.h1, span, t);
+        }
     }
     if hole.h0 > EPS {
-        frame.face(mesh, Axis::H, 1.0, hole.h0, (hole.s0, hole.s1), t);
+        for span in uncovered(hole, others, false) {
+            frame.face(mesh, Axis::H, 1.0, hole.h0, span, t);
+        }
     }
 }
 
@@ -335,7 +380,7 @@ pub fn build_wall_shaped_cut(
             add_niche(&frame, wall, hole, niche_side, &mut set);
         } else {
             match shape.top {
-                None => add_reveals(&frame, wall, hole, &mut set),
+                None => add_reveals(&frame, wall, hole, holes, &mut set),
                 Some(profile) => add_reveals_under(&frame, wall, hole, profile, &mut set),
             }
         }

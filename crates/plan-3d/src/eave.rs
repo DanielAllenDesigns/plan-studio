@@ -74,6 +74,9 @@ pub struct EavePlane {
     pub id: Option<Id>,
     /// This plane's own eave choices (cut, tails, fascia, soffit, gutters).
     pub opts: EaveOverrides,
+    /// Edges (by index of their first vertex) that get no detail at all: a
+    /// dormer roof's valleys against the main roof.
+    pub skip: Vec<usize>,
 }
 
 impl EavePlane {
@@ -86,6 +89,7 @@ impl EavePlane {
             cuts: Vec::new(),
             id: None,
             opts: EaveOverrides::default(),
+            skip: Vec::new(),
         }
     }
 }
@@ -310,7 +314,10 @@ pub fn eave_elements(planes: &[EavePlane], base: &RoofDetail) -> Vec<EaveElement
                 i
             }
         };
-        for e in edges.iter().filter(|e| e.plane == k) {
+        for e in edges
+            .iter()
+            .filter(|e| e.plane == k && !ep.skip.contains(&e.index))
+        {
             let (a, b) = (e.a, e.b);
             let (pa, pb) = (plan(a), plan(b));
             if pa.dist(pb) < 1.0 {

@@ -11,8 +11,10 @@
 //! and upper pieces are one plane again and are merged.
 //!
 //! Limits: the break is one height for the whole roof (the smallest `break_rise`
-//! of the edges that give one); the vertical gable face of a Dutch gable is not
-//! a plane (no roof model has one: Full Gable ends are not infilled either).
+//! of the edges that give one). The vertical face of a Dutch gable (the
+//! triangle that stands on the cut of the end hip, under the short gable) is
+//! returned beside the roof as a plain polygon, see [`build_roof_with_faces`]
+//! (`crate::build_roof_with_faces`); it is not one of the roof's planes.
 
 use crate::geom::{self, V3};
 use crate::{build_roof, EdgeKind, EdgeRoof, EdgeRoofSpec, Roof, RoofPlane};
@@ -33,13 +35,14 @@ pub(crate) fn needs_break(specs: &[EdgeRoofSpec]) -> bool {
         .any(|s| s.dutch_gable || s.upper_pitch.is_some())
 }
 
-/// The staged roof, or `None` when the plain roof should be used (the
+/// The staged roof and the vertical faces of its Dutch gables (outward-facing
+/// roof-space polygons), or `None` when the plain roof should be used (the
 /// skeleton had to approximate, or the break is at or above the peak).
 pub(crate) fn build_staged(
     footprint: &[Point],
     specs: &[EdgeRoofSpec],
     baseline: f64,
-) -> Option<Roof> {
+) -> Option<(Roof, Vec<Vec<V3>>)> {
     let n = footprint.len();
     if n < 3 || polygon_area(footprint) <= 0.0 {
         return None; // counter-clockwise footprints only
@@ -143,6 +146,43 @@ pub(crate) fn build_staged(
         return None;
     }
 
+    // The face under each Dutch gable: the cut of the end hip is its sill,
+    // the upper roof's rake edges over that line its sides.
+    let mut faces: Vec<Vec<V3>> = Vec::new();
+    for e in 0..n {
+        if !(spec_of(e).dutch_gable && lower_edges[e].kind == EdgeKind::Hip) {
+            continue;
+        }
+        let Some((a, b)) = cut_of(e) else { continue };
+        let len = a.dist(b);
+        if len <= EPS {
+            continue;
+        }
+        let dir = b.sub(a).normalized();
+        let mut tops: Vec<(f64, V3)> = Vec::new();
+        for v in upper.planes.iter().flat_map(|u| u.polygon3d.iter()) {
+            let q = geom::to_plan(*v);
+            let along = q.sub(a).dot(dir);
+            let off = q.sub(a).cross(dir).abs();
+            if v[1] > cut_y + 1e-3
+                && off < 1e-3
+                && (-1e-3..=len + 1e-3).contains(&along)
+                && !tops.iter().any(|(t, _)| (t - along).abs() < 1e-3)
+            {
+                tops.push((along, *v));
+            }
+        }
+        if tops.is_empty() {
+            continue;
+        }
+        // From b's side back to a's, above the sill a -> b.
+        tops.sort_by(|x, y| y.0.total_cmp(&x.0));
+        let mut face = vec![geom::lift(a, cut_y), geom::lift(b, cut_y)];
+        face.extend(tops.into_iter().map(|(_, v)| v));
+        let d = footprint[(e + 1) % n].sub(footprint[e]).normalized();
+        faces.push(geom::orient_toward(face, [d.y, 0.0, d.x]));
+    }
+
     let mut planes: Vec<RoofPlane> = Vec::new();
     for piece in pieces {
         let e = piece.plane.source_edge;
@@ -175,12 +215,15 @@ pub(crate) fn build_staged(
             None => planes.push(piece.plane),
         }
     }
-    Some(Roof {
-        planes,
-        fascia_height: lower.fascia_height,
-        baseline_elevation: baseline,
-        approximate: false,
-    })
+    Some((
+        Roof {
+            planes,
+            fascia_height: lower.fascia_height,
+            baseline_elevation: baseline,
+            approximate: false,
+        },
+        faces,
+    ))
 }
 
 fn upper_plane(u: &RoofPlane, source_edge: usize) -> RoofPlane {
@@ -394,6 +437,66 @@ mod tests {
         // Nothing sticks out of the footprint.
         let (lo, hi) = roof.bounds().unwrap();
         assert!(lo[0] >= -1e-6 && hi[0] <= 480.0 + 1e-6);
+    }
+
+    #[test]
+    fn a_dutch_gable_gets_a_vertical_face_standing_on_the_cut_of_the_hip() {
+        let long = hip(8.0);
+        let dutch = EdgeRoofSpec {
+            dutch_gable: true,
+            break_rise: Some(60.0),
+            ..hip(8.0)
+        };
+        let specs = vec![long, dutch, long, dutch];
+        let (roof, faces) = crate::build_roof_with_faces(&rect(), &specs, 0.0);
+        let plain = build_roof_with_specs(&rect(), &specs, 0.0);
+        assert_eq!(roof, plain, "the roof is the same either way");
+        // One face for each Dutch end.
+        assert_eq!(faces.len(), 2);
+        let mut sides = [0, 0];
+        for face in &faces {
+            let n = geom::unit3(geom::newell(face)).unwrap();
+            assert!(n[1].abs() < 1e-9, "vertical: {n:?}");
+            // Faces out of the building: the east end looks +x, the west -x.
+            let east = n[0] > 0.9;
+            assert!(east || n[0] < -0.9, "{n:?}");
+            sides[usize::from(east)] += 1;
+            let x = face[0][0];
+            assert!(
+                face.iter().all(|v| (v[0] - x).abs() < 1e-6),
+                "one vertical plane"
+            );
+            assert!(
+                x > 1.0 && x < 479.0,
+                "inside the footprint, at the cut: {x}"
+            );
+            // The sill is the cut of the end hip at the break (60").
+            assert!((face[0][1] - 60.0).abs() < 1e-6 && (face[1][1] - 60.0).abs() < 1e-6);
+            // The top is the ridge, level with the roof's peak.
+            let top = face.iter().fold(f64::MIN, |m, v| m.max(v[1]));
+            assert!((top - peak(&roof)).abs() < 1e-6);
+            // A triangle: the 108" cut sill and 36" of height.
+            let area = geom::dot3(geom::newell(face), geom::newell(face)).sqrt() * 0.5;
+            assert!((area - 0.5 * 108.0 * 36.0).abs() < 1e-3, "{area}");
+            // The face meets the hip below it exactly along the sill.
+            let end = roof
+                .planes
+                .iter()
+                .find(|p| p.source_edge == if east { 1 } else { 3 })
+                .unwrap();
+            let on_end = |v: V3| {
+                end.polygon3d
+                    .iter()
+                    .any(|w| geom::sub3(v, *w).iter().all(|c| c.abs() < 1e-6))
+            };
+            assert!(on_end(face[0]) || on_end(face[1]));
+        }
+        assert_eq!(sides, [1, 1]);
+        // No Dutch gable, no faces; the plate variant carries them too.
+        let (_, none) = crate::build_roof_with_faces(&rect(), &[hip(8.0); 4], 0.0);
+        assert!(none.is_empty());
+        let (_, at_plate) = crate::build_roof_at_plate_with_faces(&rect(), &specs, 100.0, 6.0);
+        assert_eq!(at_plate.len(), 2);
     }
 
     #[test]

@@ -20,6 +20,7 @@ fn wall(material: Material) -> Scene {
             indices: vec![0, 1, 2, 0, 2, 3],
             material,
             object_id: None,
+            color: None,
         }],
     }
 }

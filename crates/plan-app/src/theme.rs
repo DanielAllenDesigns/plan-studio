@@ -674,6 +674,9 @@ const UI_FADE_TARGET: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
 /// Applies the chrome (colors, text sizes, motion) and the UI scale for
 /// `settings` to egui. Cheap enough to call when anything changed.
 pub fn apply_settings(ctx: &egui::Context, settings: &AppSettings) {
+    // Installed fonts: the saved switch, the background font scan and the
+    // PDF writer's font source (once per run).
+    crate::fonts::install(ctx);
     let colors = chrome_colors(settings.theme);
     CURRENT_CHROME.with(|c| c.set(Some(colors)));
     let b = settings.brightness.clamp(BRIGHTNESS_MIN, BRIGHTNESS_MAX);

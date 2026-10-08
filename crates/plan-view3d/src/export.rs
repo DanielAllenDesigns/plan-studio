@@ -103,6 +103,7 @@ mod tests {
                 indices: vec![0, 1, 2, 0, 2, 3],
                 material: Material::WallInterior,
                 object_id: None,
+                color: None,
             }],
         }
     }

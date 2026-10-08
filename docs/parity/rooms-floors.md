@@ -1,6 +1,8 @@
 # Parity spec: Rooms and Floors (Chief Architect X18)
 
-> Status (2026-10-08): 71 ids: 37 Works, 28 Partial, 6 Missing, 0 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+> Status (2026-10-08, re-audited against HEAD 4c11b69): 71 ids: 48 Works, 21 Partial, 2 Missing, 0 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+>
+> Since that count (Round 13): R-40 a Courtyard has no ceiling as well as no floor; layers and plan views (LAY-6, LAY-8): the Project Browser's jumps to a schedule or a CAD detail pan the plan there, the plan-view tab strip is a top panel of its own, the Active Layer by Tool table is read by the Text tools, the Angular Dimension and the wall tools (not yet by doors, windows, cabinets, devices, stairs, roofs, framing or Dimension objects, which take their layer from their kind), text styles can be renamed or removed with every layer, override, plan view, CAD text, dimension and schedule following (`Project::rename_text_style`; the Text Styles editor does not call it yet), and the 20 template plan views are checked by name against the template inventory (a tab switch is navigation, not an undo step: DECISIONS).
 
 Scope: automatic room detection, Room Specification, room types, room labels,
 living area, floors (Build New Floor, Foundation, Reference Display, Exchange,

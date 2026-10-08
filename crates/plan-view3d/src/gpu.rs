@@ -30,7 +30,7 @@ use crate::pipeline::{self, Prog, Targets};
 use crate::quality::{
     self, Look, ShadowMap, ViewLight, ViewSettings, MAX_AO_SAMPLES, MAX_POINT_LIGHTS,
 };
-use crate::texturing::{self, ImageTexture};
+use crate::texturing::{self, ImageTexture, SurfaceTexture};
 use crate::Lighting;
 
 /// `GL_TEXTURE_MAX_ANISOTROPY_EXT` and its limit query.
@@ -355,6 +355,9 @@ struct GpuMesh {
     material: Material,
     object_id: Option<Id>,
     color: [f32; 4],
+    /// The colour is the mesh's own (`Mesh::color`), not its material's: the
+    /// material's bitmap does not paint it.
+    custom_color: bool,
     /// GGX roughness and metalness from the scene material table.
     rough: f32,
     metal: f32,
@@ -414,6 +417,13 @@ pub(crate) struct GpuScene {
     pictures: HashMap<u64, PictureTex>,
     /// Picture binding by mesh object id: (texture key, mirrored).
     by_object: HashMap<Id, (u64, bool)>,
+    /// Bitmaps of painted materials (Material Painter), by content key.
+    surface_tex: HashMap<u64, MaterialTex>,
+    /// Painted-material binding by mesh object id: the scene material the
+    /// mesh is drawn as (`None` for any) and the texture key.
+    surface_by_object: HashMap<Id, Vec<(Option<Material>, u64)>>,
+    /// Index in `meshes` where the overlay starts; the cached scene is before it.
+    overlay_from: usize,
     anisotropy: Option<Option<f32>>,
     /// A 1 x 1 white texture bound while drawing flat colors, so the sampler
     /// never points at an empty unit.
@@ -624,6 +634,9 @@ impl GpuScene {
             unavailable: HashSet::new(),
             pictures: HashMap::new(),
             by_object: HashMap::new(),
+            surface_tex: HashMap::new(),
+            surface_by_object: HashMap::new(),
+            overlay_from: 0,
             anisotropy: None,
             blank: None,
             pending_uploads: 0,
@@ -648,7 +661,7 @@ impl GpuScene {
 
     /// Number of meshes currently resident on the GPU.
     pub fn mesh_count(&self) -> usize {
-        self.meshes.len()
+        self.overlay_from.min(self.meshes.len())
     }
 
     /// Material textures resident on the GPU.
@@ -701,6 +714,9 @@ impl GpuScene {
         self.unavailable.clear();
         self.pictures.clear();
         self.by_object.clear();
+        self.surface_tex.clear();
+        self.surface_by_object.clear();
+        self.overlay_from = 0;
         self.anisotropy = None;
         self.blank = None;
         self.pending_uploads = 0;
@@ -729,6 +745,91 @@ impl GpuScene {
                 Err(e) => self.error = Some(e),
             }
         }
+        self.overlay_from = self.meshes.len();
+    }
+
+    /// Replace the overlay: meshes drawn after (and over) the cached scene.
+    /// Cheap enough to call on every selection or hover change: nothing of
+    /// the cached scene (its meshes, its shadow map) is touched, and overlay
+    /// meshes cast no shadows. Call after [`GpuScene::upload`], which clears
+    /// the overlay.
+    pub fn set_overlay(&mut self, gl: &glow::Context, overlay: &[plan_3d::Mesh]) {
+        self.ensure_program(gl);
+        let from = self.overlay_from.min(self.meshes.len());
+        for m in self.meshes.drain(from..) {
+            free_mesh(gl, m);
+        }
+        for mesh in overlay {
+            if mesh.indices.is_empty() || mesh.vertices.is_empty() {
+                continue;
+            }
+            let n = mesh.vertices.len() as u32;
+            if mesh.indices.iter().any(|&i| i >= n) {
+                continue;
+            }
+            match upload_mesh(gl, mesh) {
+                Ok(m) => self.meshes.push(m),
+                Err(e) => self.error = Some(e),
+            }
+        }
+    }
+
+    /// Meshes of the overlay currently resident.
+    pub fn overlay_count(&self) -> usize {
+        self.meshes.len().saturating_sub(self.overlay_from)
+    }
+
+    /// Make `textures` the resident bitmaps of painted materials: new keys
+    /// are uploaded, keys no longer listed are freed, unchanged ones cost
+    /// nothing.
+    pub fn set_surface_textures(&mut self, gl: &glow::Context, textures: &[SurfaceTexture]) {
+        let aniso = self.max_anisotropy(gl);
+        let wanted: HashSet<u64> = textures
+            .iter()
+            .filter(|t| t.is_valid())
+            .map(|t| t.key)
+            .collect();
+        let stale: Vec<u64> = self
+            .surface_tex
+            .keys()
+            .copied()
+            .filter(|k| !wanted.contains(k))
+            .collect();
+        for k in stale {
+            if let Some(t) = self.surface_tex.remove(&k) {
+                unsafe { gl.delete_texture(t.tex) };
+            }
+        }
+        self.surface_by_object.clear();
+        for t in textures.iter().filter(|t| t.is_valid()) {
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.surface_tex.entry(t.key) {
+                match unsafe { create_texture(gl, t.width, t.height, &t.rgba, true, aniso) } {
+                    Ok(tex) => {
+                        slot.insert(MaterialTex {
+                            tex,
+                            inv_scale: [
+                                1.0 / t.scale_in[0].max(1e-3),
+                                1.0 / t.scale_in[1].max(1e-3),
+                            ],
+                            proj: 0,
+                        });
+                    }
+                    Err(e) => {
+                        self.error = Some(e);
+                        continue;
+                    }
+                }
+            }
+            self.surface_by_object
+                .entry(t.object_id)
+                .or_default()
+                .push((t.material, t.key));
+        }
+    }
+
+    /// Painted-material bitmaps resident on the GPU.
+    pub fn surface_texture_count(&self) -> usize {
+        self.surface_tex.len()
     }
 
     /// Make `images` the resident picture textures: new keys are uploaded,
@@ -861,6 +962,27 @@ impl GpuScene {
                 });
             }
         }
+        // A painted material's own bitmap, then the flat colour of a mesh
+        // that has one; only plain scene materials get their stock bitmap.
+        if let Some(list) = m.object_id.and_then(|id| self.surface_by_object.get(&id)) {
+            let hit = list
+                .iter()
+                .filter(|(mat, _)| mat.is_none_or(|x| x == m.material))
+                .find_map(|(_, key)| self.surface_tex.get(key));
+            if let Some(t) = hit {
+                return Some(TexBind {
+                    tex: t.tex,
+                    mode: 1,
+                    proj: t.proj,
+                    inv_scale: t.inv_scale,
+                    flip: false,
+                    blended: false,
+                });
+            }
+        }
+        if m.custom_color {
+            return None;
+        }
         let t = self.material_tex.get(&m.material)?;
         Some(TexBind {
             tex: t.tex,
@@ -908,6 +1030,7 @@ impl GpuScene {
                     index,
                     tex,
                     blended: m.is_transparent() || tex.is_some_and(|t| t.blended),
+                    overlay: index >= self.overlay_from,
                 }
             })
             .collect();
@@ -1060,7 +1183,7 @@ impl GpuScene {
                 gl.polygon_offset(2.0, 4.0);
                 gl.use_program(Some(prog.program));
                 prog.m4(gl, "u_mvp", &map.view_proj);
-                for d in draws.iter().filter(|d| !d.blended) {
+                for d in draws.iter().filter(|d| !d.blended && !d.overlay) {
                     let m = &self.meshes[d.index];
                     gl.bind_vertex_array(Some(m.vao));
                     gl.draw_elements(glow::TRIANGLES, m.index_count, glow::UNSIGNED_INT, 0);
@@ -1446,18 +1569,9 @@ impl GpuScene {
 
     fn free_meshes(&mut self, gl: &glow::Context) {
         self.mesh_version += 1;
+        self.overlay_from = 0;
         for m in self.meshes.drain(..) {
-            unsafe {
-                gl.delete_vertex_array(m.vao);
-                gl.delete_buffer(m.vbo);
-                gl.delete_buffer(m.ebo);
-                if let Some(v) = m.edge_vao {
-                    gl.delete_vertex_array(v);
-                }
-                if let Some(b) = m.edge_vbo {
-                    gl.delete_buffer(b);
-                }
-            }
+            free_mesh(gl, m);
         }
     }
 
@@ -1470,7 +1584,11 @@ impl GpuScene {
         for (_, p) in self.pictures.drain() {
             unsafe { gl.delete_texture(p.tex) };
         }
+        for (_, t) in self.surface_tex.drain() {
+            unsafe { gl.delete_texture(t.tex) };
+        }
         self.by_object.clear();
+        self.surface_by_object.clear();
         self.unavailable.clear();
         if let Some(b) = self.blank.take() {
             unsafe { gl.delete_texture(b) };
@@ -1509,11 +1627,28 @@ fn gl_check(gl: &glow::Context, stage: &str) {
     }
 }
 
+/// Delete the GL objects of one mesh.
+fn free_mesh(gl: &glow::Context, m: GpuMesh) {
+    unsafe {
+        gl.delete_vertex_array(m.vao);
+        gl.delete_buffer(m.vbo);
+        gl.delete_buffer(m.ebo);
+        if let Some(v) = m.edge_vao {
+            gl.delete_vertex_array(v);
+        }
+        if let Some(b) = m.edge_vbo {
+            gl.delete_buffer(b);
+        }
+    }
+}
+
 /// One mesh to draw this frame.
 struct Draw {
     index: usize,
     tex: Option<TexBind>,
     blended: bool,
+    /// An overlay mesh: drawn over the cached scene, casts no shadow.
+    overlay: bool,
 }
 
 /// The shadow map the scene shader samples.
@@ -1587,6 +1722,16 @@ unsafe fn create_texture(
     }
 }
 
+/// The uniform colour a mesh is drawn with: its own `color` (linear light)
+/// with the material's opacity, else the material's colour.
+fn mesh_color(mesh: &plan_3d::Mesh) -> [f32; 4] {
+    let base = mesh.material.color();
+    match mesh.color_linear() {
+        Some([r, g, b]) => [r, g, b, base[3]],
+        None => base,
+    }
+}
+
 fn upload_mesh(gl: &glow::Context, mesh: &plan_3d::Mesh) -> Result<GpuMesh, String> {
     let surface = plan_materials::scene_surface(mesh.material);
     let mut flat: Vec<f32> = Vec::with_capacity(mesh.vertices.len() * 8);
@@ -1634,7 +1779,8 @@ fn upload_mesh(gl: &glow::Context, mesh: &plan_3d::Mesh) -> Result<GpuMesh, Stri
         Ok(GpuMesh {
             material: mesh.material,
             object_id: mesh.object_id,
-            color: mesh.material.color(),
+            color: mesh_color(mesh),
+            custom_color: mesh.color.is_some(),
             rough: surface.roughness,
             metal: surface.metallic,
             centroid,

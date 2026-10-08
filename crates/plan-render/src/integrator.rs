@@ -6,10 +6,9 @@ use crate::camera::{Camera, Lens};
 use crate::lighting::{AreaData, AreaLight, Environment, LightData, PointLight, Sky, SunData};
 use crate::rng::Rng;
 use crate::settings::{RenderSettings, Technique};
-use crate::shading::{
-    reflect, sample_cone, sample_cosine, sheet_reflectance, Kind, Surface, MATERIAL_COUNT,
-};
+use crate::shading::{reflect, sample_cone, sample_cosine, sheet_reflectance, Kind, Surface};
 use crate::vec3::V3;
+use plan_3d::Material;
 use plan_materials::textures::TextureStore;
 
 /// Ray-origin offset along the surface normal, inches.
@@ -30,7 +29,7 @@ pub(crate) struct Guide {
 }
 
 /// Distance along the image-centre ray to the first opaque surface.
-fn centre_distance(bvh: &Bvh, cam: &Camera, surfaces: &[Surface; MATERIAL_COUNT]) -> Option<f32> {
+fn centre_distance(bvh: &Bvh, cam: &Camera, surfaces: &[Surface]) -> Option<f32> {
     let pinhole = Camera {
         aperture: 0.0,
         ..*cam
@@ -53,8 +52,9 @@ fn centre_distance(bvh: &Bvh, cam: &Camera, surfaces: &[Surface; MATERIAL_COUNT]
 /// Everything needed to shade rays for one render.
 pub(crate) struct Frame<'a> {
     bvh: &'a Bvh,
-    surfaces: [Surface; MATERIAL_COUNT],
-    textures: [Option<TexBinding>; MATERIAL_COUNT],
+    /// One entry per material, then one per recoloured `(material, colour)`.
+    surfaces: Vec<Surface>,
+    textures: Vec<Option<TexBinding>>,
     sky: Sky,
     sun: Option<SunData>,
     lights: Vec<LightData>,
@@ -76,10 +76,10 @@ impl<'a> Frame<'a> {
         env: &Environment,
         (lights, areas): (&[PointLight], &[AreaLight]),
         settings: &RenderSettings,
-        store: &TextureStore,
+        (store, custom): (&TextureStore, &[(Material, [u8; 3])]),
     ) -> Frame<'a> {
         let (width, height) = (settings.width.max(1), settings.height.max(1));
-        let surfaces = Surface::table(settings.technique);
+        let surfaces = Surface::table_with(settings.technique, custom);
         // Depth of field with no focus distance focuses on whatever is at the
         // image centre.
         let mut cam = *cam;

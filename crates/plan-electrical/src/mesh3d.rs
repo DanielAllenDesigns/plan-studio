@@ -188,6 +188,7 @@ impl<'a> Parts<'a> {
                 indices: s.indices,
                 material,
                 object_id: Some(id),
+                color: None,
             })
             .collect()
     }

@@ -324,6 +324,34 @@ impl Camera {
         self.target = math::add(self.target, shift);
     }
 
+    /// Make `center` the point the camera orbits (C-39, Alt-click) without
+    /// moving the eye: the view turns to look at the point, and later orbit
+    /// drags circle it at the distance it now has. Orbit and doll house
+    /// cameras only; returns whether the centre changed. The pitch limit of
+    /// the mode applies (a point almost straight above or below the eye moves
+    /// the eye slightly).
+    pub fn set_orbit_center(&mut self, center: Vec3) -> bool {
+        if !self.mode.is_orbit_like() || center.iter().any(|c| !c.is_finite()) {
+            return false;
+        }
+        let eye = self.eye();
+        let offset = math::sub(eye, center);
+        let distance = math::length(offset);
+        if distance < 1.0 {
+            return false;
+        }
+        let min_pitch = if self.mode == CameraMode::DollHouse {
+            0.05
+        } else {
+            -MAX_PITCH
+        };
+        self.target = center;
+        self.distance = distance;
+        self.yaw = offset[0].atan2(offset[2]);
+        self.pitch = (offset[1] / distance).asin().clamp(min_pitch, MAX_PITCH);
+        true
+    }
+
     /// Zoom in (`amount > 0`) or out (`amount < 0`) exponentially. In
     /// `FullCamera` this walks forward/back instead.
     pub fn dolly(&mut self, amount: f32) {
@@ -499,6 +527,40 @@ mod tests {
         assert_eq!(views.len(), 8);
         assert_eq!(views[0], ("Perspective Full Overview", CameraMode::Orbit));
         assert_eq!(views[7], ("Plan Overhead", CameraMode::PlanOverhead));
+    }
+
+    #[test]
+    fn setting_the_orbit_center_keeps_the_eye_and_orbits_the_new_point() {
+        let mut cam = Camera::default();
+        cam.fit_to_bounds(MIN, MAX);
+        let eye = cam.eye();
+        let point = [900.0, 40.0, -100.0];
+        assert!(cam.set_orbit_center(point));
+        assert_eq!(cam.target, point);
+        let now = cam.eye();
+        for k in 0..3 {
+            assert!((now[k] - eye[k]).abs() < 0.05, "{now:?} vs {eye:?}");
+        }
+        // The view now looks at the point.
+        let f = cam.forward();
+        let to = math::normalize(math::sub(point, now));
+        assert!(math::dot(f, to) > 0.9999);
+        // Orbiting circles the point at the same distance.
+        let d = cam.distance;
+        cam.orbit(0.7, 0.1);
+        assert_eq!(cam.target, point);
+        assert!((cam.distance - d).abs() < 1e-3);
+        // Walk-through and orthographic cameras have no orbit centre; a point
+        // on the eye is refused.
+        let mut full = Camera::default();
+        full.set_mode(CameraMode::FullCamera);
+        assert!(!full.set_orbit_center(point));
+        let mut ortho = Camera::default();
+        ortho.set_mode(CameraMode::ElevationFront);
+        assert!(!ortho.set_orbit_center(point));
+        let mut cam = Camera::default();
+        assert!(!cam.set_orbit_center(cam.eye()));
+        assert!(!cam.set_orbit_center([f32::NAN, 0.0, 0.0]));
     }
 
     #[test]

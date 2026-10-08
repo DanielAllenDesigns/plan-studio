@@ -24,10 +24,19 @@
 //!
 //! Everything else is counted in [`ImportReport::skipped_classes`].
 
+pub mod blocks;
+pub mod cabinets;
 pub mod dims;
+pub mod electrical;
 pub mod floors;
+pub mod labels;
+pub mod lines;
+mod objects;
 pub mod openings;
+pub mod roofs;
 pub mod rooms;
+pub mod stairs;
+pub mod symbols;
 pub mod texts;
 pub mod tree;
 pub mod walls;
@@ -62,7 +71,28 @@ pub struct ImportOptions {
     pub dimensions: bool,
     /// Import text notes as CAD text (their size is assumed).
     pub text: bool,
+    /// Import cabinets, shelves, soffits and island countertops (class 15, 109).
+    pub cabinets: bool,
+    /// Import placed library objects (class 123) as symbols.
+    pub symbols: bool,
+    /// Import electrical devices (class 21).
+    pub electrical: bool,
+    /// Import stair flights and landings (class 46, 47).
+    pub stairs: bool,
+    /// Import roof planes (class 50) as roof records.
+    pub roofs: bool,
+    /// Name rooms from typed text labels (class 48).
+    pub room_labels: bool,
+    /// Maps a library object's name and tags to a Plan Studio catalog id
+    /// (`chief.<catalog-uuid>.<object id>`); `None` return keeps the stand-in
+    /// `chief-plan.<name>` id. The plan stores no catalog link, so only a caller
+    /// that has the catalogs can resolve one.
+    pub symbol_resolver: Option<SymbolResolver>,
 }
+
+/// A name-to-catalog-id lookup for placed library objects; see
+/// [`ImportOptions::symbol_resolver`].
+pub type SymbolResolver = fn(name: &str, tags: &[String]) -> Option<String>;
 
 impl Default for ImportOptions {
     fn default() -> Self {
@@ -71,6 +101,13 @@ impl Default for ImportOptions {
             seed_from_file: true,
             dimensions: true,
             text: true,
+            cabinets: true,
+            symbols: true,
+            electrical: true,
+            stairs: true,
+            roofs: true,
+            room_labels: true,
+            symbol_resolver: None,
         }
     }
 }
@@ -107,7 +144,12 @@ pub struct ImportReport {
     pub objects: usize,
     pub rejected_objects: usize,
     /// `floors`, `walls`, `doors`, `windows`, `rooms`, `rooms_named`,
-    /// `dimensions`, `wall_types`.
+    /// `dimensions`, `wall_types`, `texts`, `cabinets` (boxes of every kind),
+    /// `cabinet_soffits`, `countertops` (free-form), `symbols`,
+    /// `symbols_in_cabinets` (left to their cabinet), `electrical_devices`,
+    /// `electrical_on_wall`, `stairs` (flights), `stair_landings`,
+    /// `roof_planes`, `roof_duplicates`, `room_labels`,
+    /// `room_labels_applied`.
     pub counts: BTreeMap<String, usize>,
     pub floors: Vec<FloorReport>,
     pub skipped_classes: Vec<SkippedClass>,
@@ -119,11 +161,13 @@ impl ImportReport {
         *self.counts.entry(key.to_string()).or_insert(0) += n;
     }
 
-    /// A short multi-line summary for a dialog or a log.
-    pub fn summary(&self) -> String {
+    /// One line of counts (file, floors, walls, openings, rooms, dimensions,
+    /// texts, cabinets with free-form countertops, symbols, electrical devices,
+    /// stair flights with landings, roof planes) for a status bar.
+    pub fn headline(&self) -> String {
         let c = |k: &str| self.counts.get(k).copied().unwrap_or(0);
-        let mut s = format!(
-            "{}: {} floors, {} walls, {} doors, {} windows, {} named rooms, {} dimensions, {} texts",
+        format!(
+            "{}: {} floors, {} walls, {} doors, {} windows, {} named rooms, {} dimensions, {} texts, {} cabinets, {} symbols, {} electrical devices, {} stairs, {} roof planes",
             self.file_name,
             c("floors"),
             c("walls"),
@@ -131,8 +175,19 @@ impl ImportReport {
             c("windows"),
             c("rooms_named"),
             c("dimensions"),
-            c("texts")
-        );
+            c("texts"),
+            c("cabinets") + c("countertops"),
+            c("symbols"),
+            c("electrical_devices"),
+            c("stairs") + c("stair_landings"),
+            c("roof_planes")
+        )
+    }
+
+    /// The [`headline`](Self::headline) followed by one line per warning, for
+    /// a dialog or a log.
+    pub fn summary(&self) -> String {
+        let mut s = self.headline();
         for w in &self.warnings {
             s.push_str("\n  - ");
             s.push_str(w);
@@ -209,6 +264,9 @@ pub fn import_bytes(bytes: &[u8], file_name: &str, opts: &ImportOptions) -> Resu
         "curved_walls",
         "wall_ends_joined",
         "texts",
+        "symbols_in_cabinets",
+        "electrical_on_wall",
+        "roof_duplicates",
     ] {
         report.counts.insert(k.to_string(), 0);
     }
@@ -263,7 +321,11 @@ pub fn import_bytes(bytes: &[u8], file_name: &str, opts: &ImportOptions) -> Resu
     let mut floors: Vec<Floor> = Vec::new();
     let roof_floor: Vec<bool> = chief_floors
         .iter()
-        .map(|f| tree.of_kind(18, 1).any(|i| tree.contains(f.node, i)))
+        .map(|f| {
+            tree.of_kind(18, 1)
+                .chain(tree.of_kind(roofs::ROOF_PLANE, 0))
+                .any(|i| tree.contains(f.node, i))
+        })
         .collect();
     let mut normal_count = 0;
     for (i, f) in chief_floors.iter().enumerate() {
@@ -416,6 +478,7 @@ pub fn import_bytes(bytes: &[u8], file_name: &str, opts: &ImportOptions) -> Resu
 
     // Rooms.
     let (mut rooms_total, mut rooms_named, mut rooms_failed) = (0usize, 0usize, 0usize);
+    let mut room_boxes: Vec<Vec<objects::RoomBox>> = vec![Vec::new(); project.floors.len()];
     for rn in tree.of_kind(rooms::ROOM, 0) {
         let Some(fi) = floor_of(&tree, &chief_floors, rn) else {
             continue;
@@ -423,6 +486,11 @@ pub fn import_bytes(bytes: &[u8], file_name: &str, opts: &ImportOptions) -> Resu
         rooms_total += 1;
         match rooms::decode_room(bytes, &tree, rn) {
             Some(r) => {
+                room_boxes[fi].push(objects::RoomBox {
+                    center: r.center,
+                    size: r.size,
+                    named: r.display_name().is_some(),
+                });
                 if let Some(label) = r.display_name() {
                     rooms_named += 1;
                     let ty = if r.room_type == "Default" {
@@ -562,16 +630,27 @@ pub fn import_bytes(bytes: &[u8], file_name: &str, opts: &ImportOptions) -> Resu
     }
     report.count("texts", text_count);
 
+    // Cabinets, library objects, devices, stairs, roofs and room labels.
+    let covered = objects::import_objects(
+        bytes,
+        &tree,
+        &chief_floors,
+        &mut project,
+        opts,
+        &mut report,
+        &room_boxes,
+    );
+
     // Skipped classes: what sits on a floor that no importer handled.
     let mut skipped: BTreeMap<(u8, u8), usize> = BTreeMap::new();
     for (i, n) in tree.nodes.iter().enumerate() {
-        if floor_of(&tree, &chief_floors, i).is_none() {
+        if covered[i] || floor_of(&tree, &chief_floors, i).is_none() {
             continue;
         }
         if matches!(n.class, 6 | 9 | 10 | 23 | 24 | 25 | 30) || PART_CLASSES.contains(&n.class) {
             continue;
         }
-        if [6u8, 23, 24, 9, 10, 15, 21]
+        if [6u8, 23, 24, 9, 10, 15, 21, 79]
             .iter()
             .any(|&c| tree.ancestor_of_class(i, c).is_some())
         {
@@ -602,7 +681,16 @@ pub fn import_bytes(bytes: &[u8], file_name: &str, opts: &ImportOptions) -> Resu
         .floors
         .iter()
         .map(|f| {
-            f.walls.len() + f.openings.len() + f.room_names.len() + f.dimensions.len() + f.cad.len()
+            f.walls.len()
+                + f.openings.len()
+                + f.room_names.len()
+                + f.dimensions.len()
+                + f.cad.len()
+                + f.cabinets.len()
+                + f.symbols.len()
+                + f.stairs.len()
+                + f.roofs.len()
+                + usize::from(f.electrical.is_some())
         })
         .collect();
     // The first floor above grade is always kept.

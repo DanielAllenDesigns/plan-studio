@@ -1027,6 +1027,22 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         out,
     );
     live(ui, "Rebuild 3D", "", false, cmd(C::Rebuild), out);
+    live(
+        ui,
+        "Show Doors Open",
+        "",
+        false,
+        Action::Custom(crate::editor::opening_edit::DOORS_OPEN),
+        out,
+    );
+    live(
+        ui,
+        "Casing, Jambs and Sills",
+        "",
+        false,
+        Action::Custom(crate::editor::opening_edit::CASING_3D),
+        out,
+    );
     ui.menu_button("Export", |ui| {
         live(ui, "glTF\u{2026}", "", false, cmd(C::ExportGltf), out);
     });
@@ -1612,6 +1628,9 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     row(ui, "Fit Page in Window", C::FitPage, out);
     row(ui, "Layer Display Options\u{2026}", C::LayerDisplay, out);
     row(ui, "Add Sheet Index", C::AddSheetIndex, out);
+    ui.separator();
+    row(ui, "Save As Template\u{2026}", C::SaveAsTemplate, out);
+    row(ui, "Apply Template\u{2026}", C::ApplyTemplate, out);
     ui.separator();
     row(ui, "Print Model\u{2026}", C::PrintModel, out);
     row(ui, "Print Layout\u{2026}", C::Print, out);

@@ -1,6 +1,8 @@
 # Parity spec: walls
 
-> Status (2026-10-08): 105 ids: 64 Works, 25 Partial, 14 Missing, 2 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+> Status (2026-10-08, re-audited against HEAD 4c11b69): 105 ids: 79 Works, 19 Partial, 5 Missing, 2 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+>
+> Since that count (Round 13, walls builder): W-66 curved-wall dialog is complete (Radius to Outer Surface / Main Layer Outside / Wall Center / Main Layer Inside / Inner Surface, Lock Ends or Arc Center, and making a wall curved rescales its openings, W-67); W-23 Reverse Layers keeps the main layer in place and drags the joined wall ends; a wall raised 48" or more is dashed in plan and in layout plan boxes; railing walls stand on their Bottom Height; S-65 Edit Behaviors gained Chamfer and the Replicate hand-off to Transform/Replicate Object; standard walls take the exterior or interior wall tool's active layer. Still Partial: the Lock Center option, Terrain Retaining and Attic wall flags (W-24), the Label tab (W-81).
 
 Reference: Chief Architect X18 straight/curved wall tools, wall connections and wall specification. Source: Chief's
 Reference Manual and documented behavior, plus `docs/chief-x18-subtools.md` and `docs/chief-x18-dialogs.md`.

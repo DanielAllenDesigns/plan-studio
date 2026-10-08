@@ -405,3 +405,70 @@ fn image_boxes_draw_the_picture_the_loader_reads() {
     );
     assert_eq!((w, h), (4.0, 2.0));
 }
+
+fn size_labels(a: &BoxArtwork) -> Vec<String> {
+    a.texts
+        .iter()
+        .filter(|t| t.text.len() >= 4 && t.text.chars().all(|c| c.is_ascii_digit()))
+        .map(|t| t.text.clone())
+        .collect()
+}
+
+#[test]
+fn plan_boxes_label_their_doors_and_windows() {
+    let mut p = two_room_house();
+    let l = one_page(
+        BoxSource::PlanView {
+            floor: 0,
+            layer_set: "Floor Plan".into(),
+        },
+        ((0.5, 0.5), (13.0, 9.0)),
+    );
+    let b = &l.pages[0].boxes[0];
+    let cx = LayoutRenderContext::new(&p);
+    let all = size_labels(&render_box_artwork(b, &cx));
+    drop(cx);
+    assert_eq!(all.len(), 4, "{all:?}");
+    // Doors read 3068 style, windows are width then height.
+    assert!(all.iter().any(|t| t == "3068"), "{all:?}");
+    // The label settings of Default Settings apply: no door labels.
+    let mut cx = LayoutRenderContext::new(&p);
+    cx.opening_labels.door.mode = plan_core::LabelMode::Suppress;
+    assert_eq!(size_labels(&render_box_artwork(b, &cx)).len(), 2);
+    drop(cx);
+    // A custom text wins for that opening only.
+    p.floors[0].openings[0].label_override = Some("EXIT".into());
+    let cx = LayoutRenderContext::new(&p);
+    let a = render_box_artwork(b, &cx);
+    assert!(a.texts.iter().any(|t| t.text == "EXIT"));
+    assert_eq!(size_labels(&a).len(), 3);
+    drop(cx);
+    // Hiding the label layer hides the labels, not the openings.
+    p.layers.set_display("Windows, Labels", false);
+    let cx = LayoutRenderContext::new(&p);
+    let a = render_box_artwork(b, &cx);
+    assert_eq!(size_labels(&a).len(), 1);
+    let drawn = a.lines.len();
+    assert!(drawn > 20);
+}
+
+#[test]
+fn a_raised_wall_is_dashed_and_unfilled_in_a_plan_box() {
+    let mut p = two_room_house();
+    let l = one_page(
+        BoxSource::PlanView {
+            floor: 0,
+            layer_set: "Floor Plan".into(),
+        },
+        ((0.5, 0.5), (13.0, 9.0)),
+    );
+    let cx = LayoutRenderContext::new(&p);
+    let before = text_of(&render_pdf(&l, &cx));
+    let dashes = |t: &str| count(t.as_bytes(), "[6 3] 0 d");
+    let base = dashes(&before);
+    drop(cx);
+    p.floors[0].walls[4].bottom_offset = 84.0;
+    let cx = LayoutRenderContext::new(&p);
+    let after = text_of(&render_pdf(&l, &cx));
+    assert!(dashes(&after) > base, "the raised wall adds a dash pattern");
+}

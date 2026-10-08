@@ -24,6 +24,7 @@ pub mod pdf;
 pub mod schedule;
 pub mod schedule_kinds;
 pub mod terrain_report;
+pub mod xlsx;
 
 pub use materials::{
     fmt_money, materials_list, materials_report, price_keys, row_cells as materials_cells,
@@ -39,6 +40,7 @@ pub use pdf::{
 pub use schedule::{
     door_schedule, room_name, room_schedule, wall_schedule, window_schedule, Schedule,
 };
+pub use xlsx::{materials_to_xlsx, sheet_name as xlsx_sheet_name};
 
 #[cfg(test)]
 pub(crate) mod test_support {

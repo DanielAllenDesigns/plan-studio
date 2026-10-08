@@ -76,6 +76,68 @@ pub fn monochrome(shape: &mut Shape) {
     }
 }
 
+/// A line or text color as printed in black and white: anything that is not
+/// near-white prints black.
+pub fn bw_line(c: Color32) -> Color32 {
+    let l = gray(c);
+    let v = if l.r() >= 235 { 255 } else { 0 };
+    Color32::from_rgba_unmultiplied(v, v, v, c.a())
+}
+
+/// A fill as printed in black and white: only the dark ones print black.
+pub fn bw_fill(c: Color32) -> Color32 {
+    let l = gray(c);
+    let v = if l.r() >= 110 { 255 } else { 0 };
+    Color32::from_rgba_unmultiplied(v, v, v, c.a())
+}
+
+/// Turns every color of `shape` to pure black or white: Print Preview in
+/// Black and white.
+pub fn black_and_white(shape: &mut Shape) {
+    fn path_stroke(s: &mut PathStroke) {
+        if let ColorMode::Solid(c) = &mut s.color {
+            *c = bw_line(*c);
+        }
+    }
+    fn stroke(s: &mut Stroke) {
+        s.color = bw_line(s.color);
+    }
+    match shape {
+        Shape::Vec(v) => v.iter_mut().for_each(black_and_white),
+        Shape::Circle(c) => {
+            c.fill = bw_fill(c.fill);
+            stroke(&mut c.stroke);
+        }
+        Shape::Ellipse(e) => {
+            e.fill = bw_fill(e.fill);
+            stroke(&mut e.stroke);
+        }
+        Shape::LineSegment { stroke: s, .. } => stroke(s),
+        Shape::Path(p) => {
+            p.fill = bw_fill(p.fill);
+            path_stroke(&mut p.stroke);
+        }
+        Shape::Rect(r) => {
+            r.fill = bw_fill(r.fill);
+            stroke(&mut r.stroke);
+        }
+        Shape::Text(t) => {
+            t.fallback_color = bw_line(t.fallback_color);
+            t.override_text_color =
+                Some(bw_line(t.override_text_color.unwrap_or(t.fallback_color)));
+        }
+        Shape::QuadraticBezier(b) => {
+            b.fill = bw_fill(b.fill);
+            path_stroke(&mut b.stroke);
+        }
+        Shape::CubicBezier(b) => {
+            b.fill = bw_fill(b.fill);
+            path_stroke(&mut b.stroke);
+        }
+        Shape::Noop | Shape::Mesh(_) | Shape::Callback(_) => {}
+    }
+}
+
 /// Multiplies every stroke width of `shape` by `factor` (never below a
 /// half-pixel hairline).
 pub fn scale_widths(shape: &mut Shape, factor: f32) {
@@ -212,5 +274,47 @@ mod tests {
                 assert_eq!(seen, vec![Color32::RED, gray(Color32::RED)]);
             });
         });
+    }
+
+    #[test]
+    fn black_and_white_prints_dark_things_black_and_light_things_white() {
+        let mut s = Shape::Vec(vec![
+            Shape::line_segment(
+                [Pos2::ZERO, Pos2::new(1.0, 1.0)],
+                Stroke::new(1.0_f32, Color32::from_rgb(200, 40, 40)),
+            ),
+            Shape::rect_filled(
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(2.0, 2.0)),
+                0.0,
+                Color32::from_rgb(204, 204, 204),
+            ),
+            Shape::rect_filled(
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(2.0, 2.0)),
+                0.0,
+                Color32::from_rgb(30, 30, 30),
+            ),
+            Shape::circle_stroke(Pos2::ZERO, 3.0, Stroke::new(1.0_f32, Color32::WHITE)),
+        ]);
+        black_and_white(&mut s);
+        let Shape::Vec(v) = &s else { unreachable!() };
+        let Shape::LineSegment { stroke, .. } = &v[0] else {
+            unreachable!()
+        };
+        assert_eq!(stroke.color, Color32::BLACK);
+        let fill = |i: usize| match &v[i] {
+            Shape::Rect(r) => r.fill,
+            _ => unreachable!(),
+        };
+        assert_eq!(fill(1), Color32::WHITE, "a light fill prints white");
+        assert_eq!(fill(2), Color32::BLACK);
+        let Shape::Circle(c) = &v[3] else {
+            unreachable!()
+        };
+        assert_eq!(c.stroke.color, Color32::WHITE);
+        // Alpha survives.
+        assert_eq!(
+            bw_line(Color32::from_rgba_unmultiplied(9, 9, 9, 77)).a(),
+            77
+        );
     }
 }

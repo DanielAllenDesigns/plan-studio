@@ -231,6 +231,7 @@ fn options_switch_dimensions_and_seeding_off() {
         seed_from_file: false,
         dimensions: false,
         text: false,
+        ..ImportOptions::default()
     };
     let r = import_bytes(&bytes, "House.plan", &opts).unwrap();
     assert_eq!(r.project.name, "Renamed");
@@ -285,9 +286,9 @@ fn garbage_bodies_do_not_panic() {
 
 #[test]
 fn corrupted_houses_never_panic() {
-    // Deterministic byte flips and truncations of a valid file: every decoder
-    // is bounds-checked, so none of these may panic.
-    let original = build_template(&house(), &[]);
+    // Deterministic byte flips and truncations of valid files, with and without
+    // the object stage's classes: every decoder is bounds-checked, so none of
+    // these may panic.
     let mut seed = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
         seed ^= seed << 13;
@@ -295,17 +296,228 @@ fn corrupted_houses_never_panic() {
         seed ^= seed << 17;
         seed
     };
-    for round in 0..120 {
-        let mut bytes = original.clone();
-        for _ in 0..(1 + round % 12) {
-            let at = (next() as usize) % bytes.len();
-            bytes[at] = (next() & 0xFF) as u8;
+    for original in [
+        build_template(&house(), &[]),
+        build_template(&objects_house(), &[]),
+    ] {
+        for round in 0..120 {
+            let mut bytes = original.clone();
+            for _ in 0..(1 + round % 12) {
+                let at = (next() as usize) % bytes.len();
+                bytes[at] = (next() & 0xFF) as u8;
+            }
+            if round % 7 == 0 {
+                let cut = 64 + (next() as usize) % (bytes.len() - 64);
+                bytes.truncate(cut);
+            }
+            // Errors are fine (a damaged header); panics are not.
+            let _ = import_bytes(&bytes, "Fuzz.plan", &ImportOptions::default());
         }
-        if round % 7 == 0 {
-            let cut = 64 + (next() as usize) % (bytes.len() - 64);
-            bytes.truncate(cut);
-        }
-        // Errors are fine (a damaged header); panics are not.
-        let _ = import_bytes(&bytes, "Fuzz.plan", &ImportOptions::default());
     }
+}
+
+/// A first floor with walls, a room and one object of each kind the object
+/// stage reads, plus an attic floor holding a roof plane.
+fn objects_house() -> Vec<u8> {
+    use super::cabinets::tests::cabinet_obj;
+    use super::electrical::tests::device_obj;
+    use super::labels::tests::label_obj;
+    use super::lines::tests::put_rect;
+    use super::roofs::tests::plane_obj;
+    use super::stairs::tests::flight_obj;
+    use super::symbols::tests::symbol_obj;
+    let mut body = types_body();
+    let ext = |x: f64, y: f64, dx: f64, dy: f64, len: f64| {
+        wall_obj(line_obj(x, y, dx, dy, len), Some(581), Some(121.125), &[])
+    };
+    let partition = wall_obj(
+        line_obj(200.0, 0.0, 0.0, 1.0, 300.0),
+        Some(351),
+        Some(121.125),
+        &[],
+    );
+    let kids = vec![
+        ext(0.0, 0.0, 1.0, 0.0, 400.0),
+        ext(400.0, 0.0, 0.0, 1.0, 300.0),
+        ext(400.0, 300.0, -1.0, 0.0, 400.0),
+        ext(0.0, 300.0, 0.0, -1.0, 300.0),
+        partition,
+        room_obj("Default", None, (190.0, 290.0), (100.0, 150.0)),
+        label_obj("kitchen", 100.0, 100.0, 180.0, 150.0),
+        cabinet_obj(
+            0x300,
+            [100.0, 24.0, 0.0, 1.0, 24.0, 36.0, 36.0, 36.0],
+            2,
+            &["Lincoln Door", "Lincoln Flat Panel Drawer"],
+            false,
+        ),
+        symbol_obj(
+            [150.0, 100.0, 0.0, 1.0, 30.0, 30.0, 30.0, 30.0],
+            "Elongated Toilet",
+            &["ADA"],
+        ),
+        device_obj(
+            751,
+            203.0,
+            150.0,
+            &["Duplex", "110V", "Outlets", "Wall Mounted"],
+        ),
+        flight_obj(
+            (300.0, 100.0, 0.0, 1.0, 63.0),
+            48.0,
+            10.5,
+            137.875,
+            137.875 / 18.0,
+        ),
+        sized(47, 0, 2000, |b| put_rect(b, 671, 280.0, 160.0, 48.0, 46.0)),
+    ];
+    body.extend(floor_obj(0.0, 121.125, &kids));
+    let roof = plane_obj(
+        &[
+            (-12.0, -12.0),
+            (412.0, -12.0),
+            (412.0, 312.0),
+            (-12.0, 312.0),
+        ],
+        (0.0, 0.0, 1.0, 0.0, 400.0),
+        129.84,
+        (8.0f64 / 12.0).atan(),
+    );
+    body.extend(floor_obj(137.875, 109.125, &[roof]));
+    body
+}
+
+#[test]
+fn object_stage_end_to_end() {
+    let bytes = build_template(&objects_house(), &[]);
+    let r = import_bytes(&bytes, "Objects.plan", &ImportOptions::default()).unwrap();
+    let (p, rep) = (&r.project, &r.report);
+    assert_eq!(p.floors.len(), 2, "{:?}", rep.floors);
+    assert_eq!(p.floors[1].name, "Attic");
+    let f = &p.floors[0];
+
+    // Cabinet: a base with a top, front toward +y so the angle is zero and the
+    // origin is half a width left of the back centre.
+    assert_eq!(f.cabinets.len(), 1);
+    let c = &f.cabinets[0];
+    assert_eq!(c["kind"], "Base");
+    assert_eq!(c["angle"], 0.0);
+    assert_eq!(c["position"]["x"], 100.0 - 18.0);
+    assert_eq!(c["position"]["y"], 24.0);
+    assert_eq!(c["countertop"]["thickness"], 1.5);
+    assert_eq!(c["door_style"]["name"], "Lincoln Door");
+    assert_eq!(rep.counts["cabinets"], 1);
+
+    // Library object: a stand-in id from the name, angle in degrees.
+    assert_eq!(f.symbols.len(), 1);
+    let s = &f.symbols[0];
+    assert_eq!(s.catalog_id, "chief-plan.elongated-toilet");
+    assert_eq!((s.position.x, s.position.y), (150.0, 100.0));
+    assert_eq!(s.angle, 0.0);
+    assert_eq!(s.label, "Elongated Toilet");
+    assert_eq!(rep.counts["symbols"], 1);
+
+    // Electrical: the outlet sits on the partition and faces +x (the right of
+    // a wall running +y).
+    let layer = f.electrical.as_ref().unwrap();
+    let devices = layer["devices"].as_array().unwrap();
+    assert_eq!(devices.len(), 1);
+    let partition = &f.walls[4];
+    assert_eq!(devices[0]["kind"], "Outlet110");
+    assert_eq!(devices[0]["wall_id"], partition.id);
+    assert!(devices[0]["angle"].as_f64().unwrap().abs() < 1e-9);
+    assert_eq!(devices[0]["height"], 12.0);
+    assert_eq!(rep.counts["electrical_on_wall"], 1);
+
+    // Stairs: a flight of 6 treads and a landing.
+    assert_eq!(f.stairs.len(), 2);
+    assert_eq!(f.stairs[0]["params"]["shape"], "Straight");
+    assert_eq!(f.stairs[1]["params"]["shape"]["Landing"]["depth"], 48.0);
+    assert_eq!((rep.counts["stairs"], rep.counts["stair_landings"]), (1, 1));
+
+    // Roof plane on the attic floor: 8/12 pitch, vertices follow the plane.
+    let roofs = &p.floors[1].roofs;
+    assert_eq!(roofs.len(), 1);
+    assert!((roofs[0]["pitch"].as_f64().unwrap() - 8.0).abs() < 1e-9);
+    assert_eq!(roofs[0]["polygon3d"].as_array().unwrap().len(), 4);
+    assert_eq!(rep.counts["roof_planes"], 1);
+
+    // The label named the unnamed room, at the label frame's centre.
+    assert_eq!(rep.counts["room_labels_applied"], 1);
+    let n = f.room_names.iter().find(|n| n.name == "kitchen").unwrap();
+    assert_eq!((n.anchor.x, n.anchor.y), (190.0, 175.0));
+
+    // Nothing of the object stage is reported as skipped, and the summary
+    // names the new counts.
+    for class in [15u8, 21, 46, 47, 48, 50, 123] {
+        assert!(
+            !rep.skipped_classes.iter().any(|s| s.class == class),
+            "class {class} listed as skipped"
+        );
+    }
+    let summary = rep.summary();
+    assert_eq!(summary.lines().next().unwrap(), rep.headline());
+    assert!(!rep.headline().contains('\n'));
+    assert!(summary.contains("1 cabinets") && summary.contains("1 roof planes"));
+    assert!(summary.contains("1 electrical devices") && summary.contains("2 stairs"));
+    // The project, with its opaque slots, survives JSON.
+    let back = Project::from_json(&p.to_json().unwrap()).unwrap();
+    assert_eq!(back.floors[0].cabinets, f.cabinets);
+    assert_eq!(back.floors[0].electrical, f.electrical);
+    assert_eq!(back.floors[1].roofs, p.floors[1].roofs);
+    assert_eq!(back.floors[0].stairs, f.stairs);
+    // Ids are unique across every object kind.
+    let mut ids: Vec<u64> = f
+        .walls
+        .iter()
+        .map(|w| w.id)
+        .chain(f.symbols.iter().map(|s| s.id))
+        .chain(f.cabinets.iter().map(|c| c["id"].as_u64().unwrap()))
+        .chain(f.stairs.iter().map(|c| c["id"].as_u64().unwrap()))
+        .chain(devices.iter().map(|c| c["id"].as_u64().unwrap()))
+        .chain(roofs.iter().map(|c| c["id"].as_u64().unwrap()))
+        .collect();
+    let total = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), total);
+}
+
+#[test]
+fn symbol_resolver_and_stage_switches() {
+    let bytes = build_template(&objects_house(), &[]);
+    let opts = ImportOptions {
+        symbol_resolver: Some(|name: &str, tags: &[String]| {
+            (name == "Elongated Toilet" && tags.iter().any(|t| t == "ADA"))
+                .then(|| "chief.abc.7".to_string())
+        }),
+        ..ImportOptions::default()
+    };
+    let r = import_bytes(&bytes, "Objects.plan", &opts).unwrap();
+    assert_eq!(r.project.floors[0].symbols[0].catalog_id, "chief.abc.7");
+    assert!(r
+        .report
+        .warnings
+        .iter()
+        .all(|w| !w.contains("library object(s) imported by name") || w.contains("so 0 import")));
+
+    let off = ImportOptions {
+        cabinets: false,
+        symbols: false,
+        electrical: false,
+        stairs: false,
+        roofs: false,
+        room_labels: false,
+        ..ImportOptions::default()
+    };
+    let r = import_bytes(&bytes, "Objects.plan", &off).unwrap();
+    let f = &r.project.floors[0];
+    assert!(f.cabinets.is_empty() && f.symbols.is_empty() && f.stairs.is_empty());
+    assert!(f.electrical.is_none());
+    assert!(r.project.floors.iter().all(|f| f.roofs.is_empty()));
+    assert!(f.room_names.iter().all(|n| n.name != "kitchen"));
+    assert_eq!(r.report.counts["cabinets"], 0);
+    // Left unread, the classes show up as skipped.
+    assert!(r.report.skipped_classes.iter().any(|s| s.class == 15));
+    assert!(r.report.skipped_classes.iter().any(|s| s.class == 21));
 }

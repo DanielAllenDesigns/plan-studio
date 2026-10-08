@@ -94,6 +94,21 @@ pub fn parse_stock(text: &str) -> Vec<u32> {
     v
 }
 
+/// Asks for a file name and writes `bytes` there (the Excel workbook).
+fn save_bytes(name: &str, ext: &str, bytes: &[u8]) -> String {
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(name)
+        .add_filter(ext, &[ext])
+        .save_file()
+    else {
+        return "Export cancelled".into();
+    };
+    match std::fs::write(&path, bytes) {
+        Ok(()) => format!("Saved {}", path.display()),
+        Err(e) => format!("Could not save: {e}"),
+    }
+}
+
 fn save_text(name: &str, ext: &str, text: &str) -> String {
     let Some(path) = rfd::FileDialog::new()
         .set_file_name(name)
@@ -219,6 +234,13 @@ fn list_tab(ui: &mut Ui, cx: &mut EditorContext, st: &mut State, all: &[Material
     ui.horizontal(|ui| {
         if ui.button("Export CSV\u{2026}").clicked() {
             st.status = save_text("materials_list.csv", "csv", &materials_to_csv(&shown));
+        }
+        if ui.button("Export Excel\u{2026}").clicked() {
+            st.status = save_bytes(
+                "materials_list.xlsx",
+                "xlsx",
+                &plan_docs::materials_to_xlsx(&shown),
+            );
         }
         if ui.button("Export PDF\u{2026}").clicked() {
             st.status = match lw::materials_pdf(&cx.project) {

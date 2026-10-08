@@ -26,11 +26,12 @@ use crate::model::{
 use crate::textfit::{fit_text_box, visible_line_count, whole_line_count, TextFit, PAD_PT};
 use crate::titleblock::{MacroContext, TitleBlockStyle};
 use plan_3d::Scene;
-use plan_core::opening_symbol::{casing_parts, plan_symbol, PartKind};
+use plan_core::opening_symbol::{casing_parts, plan_symbol_in, PartKind};
 use plan_core::{
     detect_rooms, wall_outlines, CadItem, CadObject, DimFormat, DimensionKind, Floor, LayerSet,
     Opening, OpeningKind, Point, Project, Room, Wall,
 };
+use plan_docs::pdf::FontSpec;
 use plan_docs::{
     materials_report, materials_to_schedule, MasterList, MaterialsScope, PdfColor, PdfDoc,
     CHIEF_SHEET_BACKGROUND,
@@ -100,6 +101,9 @@ pub struct LayoutRenderContext<'a> {
     pub picture_loader: Option<PictureFn<'a>>,
     /// Prices, waste and stock lengths for [`BoxSource::Materials`] boxes.
     pub master_list: MasterList,
+    /// Default Settings > Door and Window Labels: what a plan box prints as
+    /// the label of each opening (an opening's own settings win).
+    pub opening_labels: plan_core::OpeningLabelDefaults,
     camera_cache: RefCell<HashMap<plan_core::Id, Option<Rc<Drawing>>>>,
     perspective_cache: RefCell<HashMap<PerspectiveRequest, Option<Rc<PerspectiveImage>>>>,
     /// `(sheet number, title)` of every printed page, for sheet index boxes
@@ -168,6 +172,7 @@ impl<'a> LayoutRenderContext<'a> {
             perspective_render: None,
             picture_loader: None,
             master_list: MasterList::default(),
+            opening_labels: plan_core::OpeningLabelDefaults::default(),
             camera_cache: RefCell::new(HashMap::new()),
             perspective_cache: RefCell::new(HashMap::new()),
             sheet_rows: RefCell::new(Vec::new()),
@@ -456,7 +461,11 @@ fn draw_cad_item_styled(
                 Some((st, ipf)) => st.text_height(*height, ipf),
                 None => *height,
             };
-            cv.text_full(tp(*pos), plan_h * k, pen.color, false, *angle, text)
+            // The style's font (installed fonts are embedded in the PDF).
+            let bold = style.is_some_and(|(st, _)| st.bold);
+            cv.set_font(style.and_then(|(st, _)| FontSpec::of_style(st)));
+            cv.text_full(tp(*pos), plan_h * k, pen.color, bold, *angle, text);
+            cv.set_font(None);
         }
     }
 }
@@ -469,6 +478,7 @@ fn draw_cad_item_styled(
 /// lines, the projecting outline of a bay, bow or box window and so on get the
 /// pen their part kind calls for. `exterior` is the wall side of the outside
 /// (see [`plan_core::exterior_sign`]).
+#[allow(clippy::too_many_arguments)]
 fn draw_opening(
     cv: &mut Canvas,
     w: &Wall,
@@ -477,12 +487,12 @@ fn draw_opening(
     tp: &dyn Fn(Point) -> Pt,
     k: f64,
     pen: Pen,
+    stands_over: bool,
 ) {
-    let sym = plan_symbol(w, o, exterior);
-    let (n, half) = (w.normal(), w.thickness * 0.5);
+    let sym = plan_symbol_in(w, o, exterior, stands_over);
+    let half = w.thickness * 0.5;
     // The gap overshoots the faces a little so the outline strokes vanish.
     let over = half + 1.5 / k;
-    let (pa, pb) = (w.point_at(o.start_offset()), w.point_at(o.end_offset()));
     let lo = if sym.cut.0 <= -half + 1e-9 {
         -over
     } else {
@@ -493,10 +503,13 @@ fn draw_opening(
     } else {
         sym.cut.1
     };
-    cv.fill(
-        &[pa + n * hi, pb + n * hi, pb + n * lo, pa + n * lo].map(tp),
-        gray(1.0),
-    );
+    // The wall is cleared along the arc on a curved wall; a window standing
+    // over a door leaves the door's clearing alone.
+    if !stands_over {
+        for quad in w.band_quads(o.start_offset(), o.end_offset(), lo, hi) {
+            cv.fill(&quad.map(tp), gray(1.0));
+        }
+    }
     for part in &sym.parts {
         let pts: Vec<Pt> = part.points.iter().map(|&p| tp(p)).collect();
         let dashed = |p: Pen| Pen {
@@ -515,6 +528,66 @@ fn draw_opening(
     }
 }
 
+/// Where the center of a label `text_w` x `text_h` source inches goes: on the
+/// wall for `Center`, else beside it on the room side (`Interior`) or the
+/// outside (`Exterior`), clear of the wall face. The offset the user dragged
+/// the label by (along the wall, across it) is applied last.
+fn opening_label_center(
+    w: &Wall,
+    o: &Opening,
+    placement: plan_core::LabelPlacement,
+    exterior: f64,
+    text_w: f64,
+    text_h: f64,
+) -> Point {
+    use plan_core::LabelPlacement;
+    let c = w.point_along(o.center_offset);
+    let side = match placement {
+        LabelPlacement::Center => 0.0,
+        LabelPlacement::Interior => -exterior,
+        LabelPlacement::Exterior => exterior,
+    };
+    let n = w.normal_along(o.center_offset);
+    let at = if side == 0.0 {
+        c
+    } else {
+        let reach = w.thickness * 0.5 + 1.5 + n.x.abs() * text_w * 0.5 + n.y.abs() * text_h * 0.5;
+        c.add(n.scale(side * reach))
+    };
+    let s = w.locate(at).0;
+    let (along, across) = o.extras.spec.label_offset;
+    at.add(w.tangent_along(s).scale(along))
+        .add(w.normal_along(s).scale(across))
+}
+
+/// The label of an opening on the page (DW-59..DW-63): its size, schedule
+/// mark or custom text per the label settings, beside or on the opening.
+#[allow(clippy::too_many_arguments)]
+fn draw_opening_label(
+    cv: &mut Canvas,
+    cx: &LayoutRenderContext,
+    w: &Wall,
+    o: &Opening,
+    exterior: f64,
+    tp: &dyn Fn(Point) -> Pt,
+    k: f64,
+    color: PdfColor,
+) {
+    let Some(text) = o.plan_label(&cx.opening_labels, None) else {
+        return;
+    };
+    // About 4.5" of building at the scale, held to a legible size on paper.
+    let pt = (4.5 * k).clamp(5.0, 9.0);
+    let (tw, th) = (
+        cv.text_width(&text, pt, false) / k.max(1e-9),
+        pt / k.max(1e-9),
+    );
+    let placement = o.label_settings(&cx.opening_labels).placement;
+    let at = opening_label_center(w, o, placement, exterior, tw, th);
+    let (x, y) = tp(at);
+    cv.text_centered(x, y - pt * 0.35, pt, color, false, &text);
+}
+
 fn room_name(f: &Floor, room: &Room) -> String {
     room.name_entry(&f.room_names)
         .map_or_else(|| room.label.clone(), |n| n.name.clone())
@@ -525,15 +598,35 @@ fn room_name(f: &Floor, room: &Room) -> String {
 /// scale, `k` points per source inch. A printed-size style is the same on
 /// paper at any scale; a character-height style scales with the box.
 fn dimension_text_pt(project: &Project, d: &plan_core::Dimension, k: f64) -> f64 {
+    match dimension_text_style(project, d) {
+        Some(st) => st.plan_height_at(k / 6.0, false) * k,
+        None => 7.0,
+    }
+}
+
+/// The font `st` names with bold forced on or off (a face style such as
+/// `Heavy` only stays when bold is as the style has it).
+fn font_spec_bold(st: &plan_core::TextStyle, bold: bool) -> Option<FontSpec> {
+    let mut spec = FontSpec::of_style(st)?;
+    if spec.bold != bold {
+        spec.bold = bold;
+        spec.style.clear();
+    }
+    Some(spec)
+}
+
+/// The text style a dimension's number is set in: its own, else "Dimension
+/// Text Style".
+fn dimension_text_style<'a>(
+    project: &'a Project,
+    d: &plan_core::Dimension,
+) -> Option<&'a plan_core::TextStyle> {
     let name = d
         .text_style
         .as_deref()
         .filter(|n| !n.is_empty())
         .unwrap_or("Dimension Text Style");
-    match project.text_styles.resolve(name) {
-        Some(st) => st.plan_height_at(k / 6.0, false) * k,
-        None => 7.0,
-    }
+    project.text_styles.resolve(name)
 }
 
 fn draw_dimension(
@@ -565,7 +658,7 @@ fn draw_dimension(
     } else {
         // Vertical dimensions read bottom to top, centred beside the line
         // (the glyphs rise to the left of the baseline).
-        let w = text_w(&label, text_pt, false);
+        let w = cv.text_width(&label, text_pt, false);
         cv.text_full(
             (mid.0 + 2.0 + text_pt * 0.75, mid.1 - w * 0.5),
             text_pt,
@@ -604,11 +697,24 @@ fn draw_plan(
         .collect();
     let poly =
         |o: &plan_core::WallOutline| -> Vec<Pt> { o.polygon.iter().map(|&p| tp(p)).collect() };
+    // A wall raised 48" or more off the floor is overhead: dashed, unfilled.
+    let raised = |w: &Wall| w.bottom_offset >= plan_core::walls::ROOM_BOUNDARY_MAX_BOTTOM;
     for (w, o) in &shown {
-        cv.stroke(&poly(o), true, pen(&w.layer).scaled(2.0));
+        let wall_pen = pen(&w.layer).scaled(2.0);
+        let wall_pen = if raised(w) {
+            Pen {
+                dash: Dash::Dashed,
+                ..wall_pen
+            }
+        } else {
+            wall_pen
+        };
+        cv.stroke(&poly(o), true, wall_pen);
     }
-    for (_, o) in &shown {
-        cv.fill(&poly(o), gray(0.8));
+    for (w, o) in &shown {
+        if !raised(w) {
+            cv.fill(&poly(o), gray(0.8));
+        }
     }
 
     let fallback;
@@ -627,21 +733,38 @@ fn draw_plan(
         let Some(w) = f.wall(o.wall_id) else { continue };
         if show(layer) && show(&w.layer) {
             let exterior = plan_core::exterior_sign(w, rooms);
-            draw_opening(cv, w, o, exterior, tp, k, pen(layer));
-            // Casing drawn in plan (a mulled unit shares one loop around its span).
-            let unit = o.mull_group.and_then(|_| cx.project.unit_span(floor, o.id));
-            for part in casing_parts(w, o, unit, exterior) {
-                let pts: Vec<Pt> = part.points.iter().map(|&p| tp(p)).collect();
-                cv.stroke(&pts, true, pen(layer).scaled(0.6).solid());
+            let over = f
+                .openings_on(w.id)
+                .any(|v| plan_core::openings::stands_over(o, v));
+            draw_opening(cv, w, o, exterior, tp, k, pen(layer), over);
+            // Its label, on the label layer ("Doors, Labels").
+            let label_layer = LayerSet::label_layer_of(o.kind);
+            if show(label_layer) {
+                draw_opening_label(cv, cx, w, o, exterior, tp, k, pen(label_layer).color);
+            }
+            // Casing drawn in plan (a mulled unit shares one loop around its
+            // span; a window over a door leaves it to the door).
+            if let Some(unit) = cx.project.casing_unit(floor, o.id) {
+                for part in casing_parts(w, o, unit, exterior) {
+                    let pts: Vec<Pt> = part.points.iter().map(|&p| tp(p)).collect();
+                    cv.stroke(&pts, true, pen(layer).scaled(0.6).solid());
+                }
             }
         }
     }
 
     if show("Room Labels") {
         let color = pen("Room Labels").color;
+        // Room names are set in the Room Label Style's font (bold as the
+        // style says, else bold as before); the area line in its family.
+        let label_style = cx.project.text_styles.resolve("Room Label Style");
+        let name_font = label_style.and_then(|st| font_spec_bold(st, true));
+        let area_font = label_style.and_then(|st| font_spec_bold(st, false));
         for r in rooms {
             let (x, y) = tp(r.centroid);
+            cv.set_font(name_font.clone());
             cv.text_centered(x, y + 1.5, 8.0, color, true, &room_name(f, r));
+            cv.set_font(area_font.clone());
             cv.text_centered(
                 x,
                 y - 8.0,
@@ -651,6 +774,7 @@ fn draw_plan(
                 &format!("{:.0} SF", r.area_sq_ft()),
             );
         }
+        cv.set_font(None);
     }
 
     for d in &f.dimensions {
@@ -661,7 +785,9 @@ fn draw_plan(
         };
         if show(layer) {
             let text_pt = dimension_text_pt(cx.project, d, k);
+            cv.set_font(dimension_text_style(cx.project, d).and_then(FontSpec::of_style));
             draw_dimension(cv, d, tp, pen(layer), text_pt);
+            cv.set_font(None);
         }
     }
 
@@ -1100,6 +1226,9 @@ pub struct BoxText {
     /// Gray level 0 (black) to 1.
     pub gray: f32,
     pub text: String,
+    /// The font of the text style the line is set in (the screen draws the
+    /// installed font; `None` is the standard font, bold as `bold` says).
+    pub font: Option<FontSpec>,
 }
 
 /// A raster image a box draws, placed in paper inches.
@@ -1166,6 +1295,7 @@ pub fn render_box_artwork_in(
                 bold,
                 angle,
                 text,
+                font,
             } => {
                 let gray = match color {
                     PdfColor::Gray(g) => g as f32,
@@ -1182,6 +1312,7 @@ pub fn render_box_artwork_in(
                     angle,
                     gray,
                     text,
+                    font: font.map(|f| (*f).clone()),
                 });
             }
             Prim::Image { rect, px, rgba } => out.images.push(BoxImage {
@@ -1497,6 +1628,8 @@ pub(crate) fn draw_page(
     ctx.sheet_title = page.title.clone();
     ctx.scale = page_scale_label(page);
     ctx.page_count = pages.len();
+    // The REVISIONS table lists the revisions the page clouds carry.
+    ctx.add_cloud_revisions(layout);
 
     cx.set_sheet_index(layout);
     for t in layout.template_pages() {

@@ -36,11 +36,14 @@ pub use gable::{
     apply_gable_line, roof_return, roof_return_at, ReturnKind, ReturnSpec, RoofReturn,
 };
 pub use hole::{
-    roof_plane_with_holes, HoleKind, RoofHole, RoofPolygonWithHoles, Skylight, SkylightSpec,
+    hole_pieces, roof_plane_with_holes, HoleKind, RoofHole, RoofPolygonWithHoles, Skylight,
+    SkylightSpec,
 };
 pub use join::join_planes;
 pub use spec::{
-    build_roof_at_plate, build_roof_with_specs, flat_roof_plane, plate_baseline, EdgeRoofSpec,
+    build_roof_at_plate, build_roof_at_plate_with_faces, build_roof_with_faces,
+    build_roof_with_specs, flat_roof_plane, flat_roof_plane_with_overhang, plate_baseline,
+    EdgeRoofSpec,
 };
 pub use staged::DEFAULT_BREAK_FRACTION;
 

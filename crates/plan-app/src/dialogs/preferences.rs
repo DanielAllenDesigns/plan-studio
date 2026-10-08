@@ -164,6 +164,7 @@ pub fn write_at(path: &Path, p: &Preferences) -> Result<(), String> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Appearance,
+    Fonts,
     Colors,
     Library,
     Folders,
@@ -174,8 +175,9 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 8] = [
+    pub const ALL: [Page; 9] = [
         Page::Appearance,
+        Page::Fonts,
         Page::Colors,
         Page::Library,
         Page::Folders,
@@ -188,6 +190,7 @@ impl Page {
     pub fn label(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
+            Page::Fonts => "Fonts",
             Page::Colors => "Colors",
             Page::Library => "Library",
             Page::Folders => "Folders",
@@ -439,6 +442,7 @@ fn body(
             ui.separator();
             match active {
                 Page::Appearance => appearance(ui, &mut prefs, settings),
+                Page::Fonts => fonts(ui, &mut prefs),
                 Page::Colors => colors(ui, &mut prefs, settings),
                 Page::Library => library(ui),
                 Page::Folders => folders(ui, actions),
@@ -477,6 +481,48 @@ fn appearance(ui: &mut egui::Ui, p: &mut Preferences, settings: &mut AppSettings
         &mut p.icon_halo,
         "Icon halo (a light plate behind toolbar icons)",
     );
+}
+
+/// The Fonts page: the interface text size and the switch for installed
+/// fonts (plan text, layout text and printed PDFs).
+fn fonts(ui: &mut egui::Ui, p: &mut Preferences) {
+    ui.horizontal(|ui| {
+        ui.label("Interface text size");
+        ui.add(egui::Slider::new(&mut p.text_size_pct, TEXT_SIZE_MIN..=TEXT_SIZE_MAX).suffix("%"));
+    });
+    ui.add_space(6.0);
+    let mut on = crate::fonts::use_system_fonts();
+    if ui
+        .checkbox(&mut on, "Use system fonts for plan, layout and PDF text")
+        .changed()
+    {
+        let saved = crate::fonts::set_use_system_fonts(on).err();
+        ui.data_mut(|d| d.insert_temp(egui::Id::new("fonts_save_error"), saved));
+    }
+    if let Some(Some(e)) =
+        ui.data(|d| d.get_temp::<Option<String>>(egui::Id::new("fonts_save_error")))
+    {
+        ui.weak(format!(
+            "The choice holds for this run; it could not be saved ({e})."
+        ));
+    }
+    ui.weak(
+        "A text style's font (Avenir, Arial...) is drawn and printed in the installed font of \
+         that name. Off: the bundled font on screen, Helvetica on paper.",
+    );
+    ui.weak(
+        "Installed fonts are embedded (subset) only in the PDFs you make here; a font whose \
+         licence forbids embedding is printed in Helvetica.",
+    );
+    ui.add_space(6.0);
+    let cat = crate::fonts::catalog();
+    ui.label(format!(
+        "{} font families found on this computer.",
+        cat.families().len()
+    ));
+    for n in crate::fonts::notes_so_far() {
+        ui.weak(n);
+    }
 }
 
 fn colors(ui: &mut egui::Ui, p: &mut Preferences, settings: &AppSettings) {

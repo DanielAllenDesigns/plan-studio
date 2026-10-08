@@ -80,11 +80,10 @@ impl OpeningSymbol {
 
     /// Farthest distance of any point from the wall centerline, inches.
     pub fn max_reach(&self, wall: &Wall) -> f64 {
-        let n = wall.normal();
         self.parts
             .iter()
             .flat_map(|p| p.points.iter())
-            .map(|q| q.sub(wall.start).dot(n).abs())
+            .map(|q| wall.locate(*q).1.abs())
             .fold(0.0, f64::max)
     }
 }
@@ -112,24 +111,31 @@ pub fn door_leaves(style: OpeningStyle) -> usize {
     }
 }
 
-/// Wall-local frame: `p(s, t)` is the world point.
-struct Axes {
+/// Wall-local frame: `p(s, t)` is the world point. On a curved wall `s` is
+/// the arc length and `t` the radial offset, so a line along the wall
+/// follows the arc (DW-88).
+struct Axes<'a> {
     start: Point,
     d: Point,
     n: Point,
+    curve: Option<&'a Wall>,
 }
 
-impl Axes {
-    fn new(wall: &Wall) -> Self {
+impl<'a> Axes<'a> {
+    fn new(wall: &'a Wall) -> Self {
         Self {
             start: wall.start,
             d: wall.direction(),
             n: wall.normal(),
+            curve: wall.is_curved().then_some(wall),
         }
     }
 
     fn p(&self, s: f64, t: f64) -> Point {
-        self.start.add(self.d.scale(s)).add(self.n.scale(t))
+        match self.curve {
+            Some(w) => w.point_offset(s, t),
+            None => self.start.add(self.d.scale(s)).add(self.n.scale(t)),
+        }
     }
 
     fn pts(&self, pts: &[(f64, f64)]) -> Vec<Point> {
@@ -290,7 +296,116 @@ pub fn inset_polyline(poly: &[(f64, f64)], d: f64) -> Vec<(f64, f64)> {
 /// [`crate::openings::exterior_sign`]): bay, bow and box windows project
 /// there (reversed by [`Opening::swing_flipped`]), awnings open outward and
 /// hoppers inward, and a niche is cut from the other, room side.
+///
+/// On a curved wall the lines along the wall (jambs, frame and glazing
+/// lines, sliding panels, the projecting outline) follow the arc, and a
+/// hinged leaf with its swing arc stands in the frame of the chord between
+/// the jambs, the way the 3D view builds it (DW-88).
 pub fn plan_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
+    plan_symbol_in(wall, o, exterior, false)
+}
+
+/// [`plan_symbol`] for an opening that may stand over another one on its
+/// wall (`over`, a transom over a door): drawn dashed, as what is above the
+/// plan's cut plane.
+pub fn plan_symbol_in(wall: &Wall, o: &Opening, exterior: f64, over: bool) -> OpeningSymbol {
+    let mut sym = if wall.is_curved() {
+        curved_symbol(wall, o, exterior)
+    } else {
+        straight_symbol(wall, o, exterior)
+    };
+    if over {
+        for p in &mut sym.parts {
+            p.kind = PartKind::Hidden;
+        }
+    }
+    sym
+}
+
+/// The style a symbol is drawn for: one that does not suit the kind falls
+/// back to the plain one.
+fn symbol_style(o: &Opening) -> OpeningStyle {
+    match (o.kind, o.effective_style()) {
+        (OpeningKind::Door, s) if !s.is_door_style() && s != OpeningStyle::Fixed => {
+            OpeningStyle::Hinged
+        }
+        (OpeningKind::Window, OpeningStyle::Sliding) => OpeningStyle::SlidingWindow,
+        (OpeningKind::Window, s) if s.is_door_style() && s != OpeningStyle::Doorway => {
+            OpeningStyle::Window
+        }
+        (_, s) => s,
+    }
+}
+
+/// Segments of a drawn curve are at most this many degrees of arc.
+const CURVE_STEP_DEG: f64 = 3.0;
+
+/// The symbol of an opening on a curved wall: worked out against the
+/// straight wall of the chord between its jambs, then the parts along the
+/// wall are laid on the arc.
+fn curved_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
+    let (s0, s1) = (o.start_offset(), o.end_offset());
+    let (a, b) = (wall.point_along(s0), wall.point_along(s1));
+    let chord = a.dist(b);
+    let Some((_, radius)) = wall.arc_center_radius().filter(|_| chord > 1e-6) else {
+        let mut flat = wall.clone();
+        flat.curve = None;
+        return straight_symbol(&flat, o, exterior);
+    };
+    let u = b.sub(a).scale(1.0 / chord);
+    let nv = u.perp();
+    let mut vw = wall.clone();
+    vw.curve = None;
+    vw.start = a.sub(u.scale(s0));
+    vw.end = vw.start.add(u.scale(wall.path_length()));
+    let mut vo = o.clone();
+    vo.width = chord;
+    vo.center_offset = s0 + chord * 0.5;
+    let mut sym = straight_symbol(&vw, &vo, exterior);
+    let style = symbol_style(o);
+    let rigid_leaf = matches!(
+        style,
+        OpeningStyle::Hinged
+            | OpeningStyle::Shower
+            | OpeningStyle::DoubleDoor
+            | OpeningStyle::Casement
+    );
+    let scale = o.width / chord;
+    let step = (radius * CURVE_STEP_DEG.to_radians()).max(0.5);
+    // Virtual (s, t) of a point, and its place on the arc.
+    let local = |p: Point| {
+        let rel = p.sub(vw.start);
+        (s0 + (rel.dot(u) - s0) * scale, rel.dot(nv))
+    };
+    for part in &mut sym.parts {
+        if part.kind == PartKind::Swing || (part.kind == PartKind::Leaf && rigid_leaf) {
+            continue;
+        }
+        let pts: Vec<(f64, f64)> = part.points.iter().map(|&p| local(p)).collect();
+        let n = pts.len();
+        let edges = if part.closed { n } else { n.saturating_sub(1) };
+        let mut out: Vec<Point> = Vec::with_capacity(n);
+        for i in 0..n {
+            let (sa, ta) = pts[i];
+            out.push(wall.point_offset(sa, ta));
+            if i >= edges {
+                continue;
+            }
+            let (sb, tb) = pts[(i + 1) % n];
+            // Only a line running along the wall bends with it.
+            if (tb - ta).abs() < 1e-6 {
+                let k = ((sb - sa).abs() / step).ceil() as usize;
+                for j in 1..k.clamp(1, 64) {
+                    out.push(wall.point_offset(sa + (sb - sa) * j as f64 / k as f64, ta));
+                }
+            }
+        }
+        part.points = out;
+    }
+    sym
+}
+
+fn straight_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
     let ax = Axes::new(wall);
     let half = wall.thickness * 0.5;
     let (s0, s1) = (o.start_offset(), o.end_offset());
@@ -337,17 +452,7 @@ pub fn plan_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
         ));
     };
 
-    // A style that does not suit the kind falls back to the plain one.
-    let style = match (o.kind, o.effective_style()) {
-        (OpeningKind::Door, s) if !s.is_door_style() && s != OpeningStyle::Fixed => {
-            OpeningStyle::Hinged
-        }
-        (OpeningKind::Window, OpeningStyle::Sliding) => OpeningStyle::SlidingWindow,
-        (OpeningKind::Window, s) if s.is_door_style() && s != OpeningStyle::Doorway => {
-            OpeningStyle::Window
-        }
-        (_, s) => s,
-    };
+    let style = symbol_style(o);
 
     match style {
         OpeningStyle::Hinged | OpeningStyle::Shower => {
@@ -540,7 +645,7 @@ pub fn plan_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
                 PartKind::Track,
                 vec![
                     ax.p((s0 - w).max(0.0), tm),
-                    ax.p((s1 + w).min(wall.length()), tm),
+                    ax.p((s1 + w).min(wall.path_length()), tm),
                 ],
             ));
         }
@@ -781,7 +886,7 @@ pub fn casing_parts(
             out.push(rect(
                 &ax,
                 PartKind::Frame,
-                (start, (start + c.width).min(wall.length())),
+                (start, (start + c.width).min(wall.path_length())),
                 t,
             ));
         }
@@ -1238,5 +1343,132 @@ mod tests {
         assert_eq!(sym(&d).count(PartKind::Leaf), 2);
         d.width = 30.0;
         assert_eq!(sym(&d).count(PartKind::Leaf), 1);
+    }
+
+    /// A 240" chord bowed by 60": radius 150, a 36" opening at arc length 90.
+    fn arc_wall() -> Wall {
+        let mut w = Wall::new(
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        w.curve = Some(crate::walls::WallCurve { bulge: 60.0 });
+        w
+    }
+
+    /// Distance of `p` from the arc of `w` offset `t` to its left.
+    fn off_arc(w: &Wall, p: Point, t: f64) -> f64 {
+        let (c, r) = w.arc_center_radius().unwrap();
+        let sweep = w.curve.unwrap().sweep(w.start, w.end);
+        // Left of travel is toward the center when turning counter-clockwise.
+        let radius = r - sweep.signum() * t;
+        (p.sub(c).length() - radius).abs()
+    }
+
+    #[test]
+    fn a_window_on_a_curved_wall_lies_on_the_offset_arcs() {
+        let w = arc_wall();
+        let half = 3.0;
+        let mut o = open(OpeningKind::Window, OpeningStyle::Window, 60.0);
+        o.center_offset = 130.0;
+        let s = plan_symbol(&w, &o, 1.0);
+        // The frame lines, the glazing line and the jambs all stay on the
+        // arcs at the faces and the centerline.
+        let mut points = 0;
+        for part in s
+            .parts
+            .iter()
+            .filter(|p| matches!(p.kind, PartKind::Frame | PartKind::Glass | PartKind::Jamb))
+        {
+            for q in &part.points {
+                points += 1;
+                let d = [half, 0.0, -half]
+                    .iter()
+                    .map(|t| off_arc(&w, *q, *t))
+                    .fold(f64::MAX, f64::min);
+                assert!(d < 0.1, "{:?} {q:?} is {d} off the arcs", part.kind);
+            }
+        }
+        // A straight window symbol has 2 points per line; these follow the arc.
+        assert!(points > 12, "{points}");
+        // Every line runs from the start jamb to the end jamb along the arc:
+        // the end points sit at arc length 100 and 160.
+        let ends: Vec<Point> = [100.0, 160.0].iter().map(|a| w.point_along(*a)).collect();
+        let frame = s.of(PartKind::Frame).next().unwrap();
+        let first = frame.points.first().unwrap();
+        let last = frame.points.last().unwrap();
+        let near = |p: &Point| {
+            ends.iter()
+                .map(|e| {
+                    let (c, _) = w.arc_center_radius().unwrap();
+                    // Compare angles about the arc center.
+                    (p.sub(c).angle() - e.sub(c).angle()).abs()
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        assert!(near(first) < 0.01 && near(last) < 0.01);
+    }
+
+    #[test]
+    fn a_door_on_a_curved_wall_swings_in_the_frame_of_its_chord() {
+        let w = arc_wall();
+        let mut o = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        o.center_offset = 130.0;
+        let s = plan_symbol(&w, &o, 1.0);
+        // The jambs are radial lines across the wall on the arc.
+        let jambs: Vec<&SymbolPart> = s.of(PartKind::Jamb).collect();
+        assert_eq!(jambs.len(), 2);
+        for j in &jambs {
+            let (a, b) = (j.points[0], j.points[1]);
+            assert!(off_arc(&w, a, 3.0) < 0.1 && off_arc(&w, b, -3.0) < 0.1);
+        }
+        // The hinge is on the centerline at the start jamb, and the leaf is as
+        // long as the chord between the jambs.
+        let leaf = s.of(PartKind::Leaf).next().unwrap();
+        let (hinge, tip) = (leaf.points[0], leaf.points[1]);
+        assert!(off_arc(&w, hinge, 0.0) < 1e-6);
+        assert!((hinge.dist(w.point_along(112.0)) - 0.0).abs() < 1e-6);
+        let chord = w.point_along(112.0).dist(w.point_along(148.0));
+        assert!((hinge.dist(tip) - chord).abs() < 1e-6);
+        // The swing arc is a true circle about the hinge.
+        let arc = s.of(PartKind::Swing).next().unwrap();
+        for q in &arc.points {
+            assert!((q.dist(hinge) - chord).abs() < 1e-6);
+        }
+        // Opened a quarter turn, the tip stands square to the chord.
+        let chord_dir = w.point_along(148.0).sub(hinge).normalized();
+        assert!(tip.sub(hinge).normalized().dot(chord_dir).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_curved_wall_symbol_stays_inside_the_wall_band() {
+        let w = arc_wall();
+        for style in [
+            OpeningStyle::Sliding,
+            OpeningStyle::Doorway,
+            OpeningStyle::Fixed,
+        ] {
+            let mut o = open(OpeningKind::Door, style, 48.0);
+            o.center_offset = 120.0;
+            let s = plan_symbol(&w, &o, 1.0);
+            assert!(
+                s.max_reach(&w) <= 3.0 + 0.1,
+                "{style:?} {}",
+                s.max_reach(&w)
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_over_a_door_is_drawn_dashed() {
+        let w = wall();
+        let o = open(OpeningKind::Window, OpeningStyle::Fixed, 36.0);
+        let solid = plan_symbol(&w, &o, 1.0);
+        let over = plan_symbol_in(&w, &o, 1.0, true);
+        assert!(solid.parts.iter().any(|p| p.kind == PartKind::Frame));
+        assert_eq!(solid.parts.len(), over.parts.len());
+        assert!(over.parts.iter().all(|p| p.kind == PartKind::Hidden));
     }
 }

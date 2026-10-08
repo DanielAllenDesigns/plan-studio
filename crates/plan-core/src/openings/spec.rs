@@ -501,6 +501,62 @@ impl Shutters {
     }
 }
 
+// ----- casing profile -----
+
+/// The shape of the casing boards in 3D (Casing tab, Profile).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CasingProfile {
+    /// Plain boards, head and legs the same width.
+    #[default]
+    Flat,
+    /// A head cap: the head board has a projecting cap on top of it.
+    Cap,
+    /// Plinth blocks at the foot of each leg and a block at each head corner.
+    Plinth,
+}
+
+impl CasingProfile {
+    pub const ALL: [CasingProfile; 3] = [
+        CasingProfile::Flat,
+        CasingProfile::Cap,
+        CasingProfile::Plinth,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CasingProfile::Flat => "Flat",
+            CasingProfile::Cap => "Head Cap",
+            CasingProfile::Plinth => "Plinth Blocks",
+        }
+    }
+}
+
+// ----- the plan-wide 3D display of openings -----
+
+/// How the 3D view shows the doors and windows of a plan, kept in the plan
+/// (`Project::opening_display`): casing, jambs, sills and thresholds, and
+/// whether the doors stand open.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpeningView3d {
+    /// Casing, window stools and aprons, jambs and thresholds are built.
+    pub casing: bool,
+    /// Every door is shown open ("Show Doors Open").
+    pub doors_open: bool,
+    /// The angle hinged doors stand open at when `doors_open`, degrees.
+    pub open_angle_deg: f64,
+}
+
+impl Default for OpeningView3d {
+    fn default() -> Self {
+        Self {
+            casing: true,
+            doors_open: false,
+            open_angle_deg: 90.0,
+        }
+    }
+}
+
 // ----- the spec -----
 
 /// The tab values of a door or window beyond the ones on [`Opening`] itself.
@@ -526,6 +582,17 @@ pub struct OpeningSpec {
     pub casing_exterior: bool,
     /// Draw the casing as rectangles on the wall faces in plan (DW-79).
     pub casing_in_plan: bool,
+    /// Width, depth and reveal of the exterior casing; `None` uses the
+    /// opening's own `casing` (the interior one) on both faces.
+    pub casing_exterior_size: Option<super::Casing>,
+    /// The casing profile in 3D.
+    pub casing_profile: CasingProfile,
+    /// Options tab, "Show Open in 3D": the leaf or panels are built open.
+    pub show_open_in_3d: bool,
+    /// The "Open" slider, `0..=1`: how far a door shown open in 3D is open
+    /// (a hinged leaf swings that fraction of its Swing Angle, a sliding,
+    /// pocket, bifold, barn or garage door travels that fraction).
+    pub open_fraction: f64,
     pub lintel: Lintel,
     pub sill: ExteriorSill,
     pub arch: Arch,
@@ -555,6 +622,10 @@ impl Default for OpeningSpec {
             casing_interior: true,
             casing_exterior: true,
             casing_in_plan: false,
+            casing_exterior_size: None,
+            casing_profile: CasingProfile::Flat,
+            show_open_in_3d: false,
+            open_fraction: 1.0,
             lintel: Lintel::default(),
             sill: ExteriorSill::default(),
             arch: Arch::default(),

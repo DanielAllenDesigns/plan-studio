@@ -363,6 +363,24 @@ pub fn open(cx: &mut EditorContext) {
     });
 }
 
+/// Opens the dialog set up to place `copies` copies, each `delta` further
+/// along than the last (the hand-off of the Replicate edit behavior).
+pub fn open_replicate(cx: &mut EditorContext, delta: Point, copies: u32) {
+    if cx.selection.is_empty() {
+        cx.status = "Select objects to replicate".into();
+        return;
+    }
+    let mut d = TransformDialog {
+        make_copies: true,
+        copies: copies.max(1),
+        move_x: plan_core::units::fmt_ft_in(delta.x),
+        move_y: plan_core::units::fmt_ft_in(delta.y),
+        ..TransformDialog::default()
+    };
+    d.message = "Replicate: adjust the move and the copy count, then Apply".into();
+    DIALOG.with(|slot| *slot.borrow_mut() = Some(d));
+}
+
 /// Opens the dialog set up to rotate by a quarter turn.
 pub fn open_rotate(cx: &mut EditorContext) {
     open(cx);
@@ -378,6 +396,18 @@ pub fn open_rotate(cx: &mut EditorContext) {
 #[cfg(test)]
 pub fn is_open() -> bool {
     DIALOG.with(|d| d.borrow().is_some())
+}
+
+/// Closes the window (tests).
+#[cfg(test)]
+pub fn close_for_tests() {
+    DIALOG.with(|d| *d.borrow_mut() = None);
+}
+
+/// The open Transform/Replicate window's fields (tests).
+#[cfg(test)]
+pub fn current() -> Option<TransformDialog> {
+    DIALOG.with(|d| d.borrow().clone())
 }
 
 /// Draws every open Edit window; the shell calls it once a frame.

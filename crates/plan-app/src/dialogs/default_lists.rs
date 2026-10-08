@@ -1109,16 +1109,6 @@ impl StyleScope {
     }
 }
 
-const FONTS: [&str; 7] = [
-    "Arial",
-    "Helvetica",
-    "Times New Roman",
-    "Courier New",
-    "Verdana",
-    "Georgia",
-    "Calibri",
-];
-
 /// Editing rules for a list of text styles.
 pub trait StyleListExt {
     fn name_error(&self, idx: usize, new: &str) -> Option<&'static str>;
@@ -1179,6 +1169,11 @@ pub struct TextStylesDialog {
     plan_orig: Vec<String>,
     selected: usize,
     message: Option<String>,
+    /// Replace Fonts: the family to replace and the one to use instead.
+    replace_from: String,
+    replace_to: String,
+    /// What the last Replace Fonts did.
+    notice: Option<String>,
 }
 
 impl TextStylesDialog {
@@ -1196,6 +1191,9 @@ impl TextStylesDialog {
                 .collect(),
             selected: 0,
             message: None,
+            replace_from: String::new(),
+            replace_to: String::new(),
+            notice: None,
         }
     }
 
@@ -1225,6 +1223,11 @@ impl TextStylesDialog {
         let mut scope = self.scope;
         let mut selected = self.selected;
         let mut message = self.message.take();
+        let mut notice = self.notice.take();
+        let (mut replace_from, mut replace_to) = (
+            std::mem::take(&mut self.replace_from),
+            std::mem::take(&mut self.replace_to),
+        );
         let (plan, defaults) = (&mut self.plan, &mut self.defaults);
         let outcome = list_window(
             ctx,
@@ -1291,6 +1294,15 @@ impl TextStylesDialog {
                         if let Some(m) = &message {
                             ui.colored_label(ERROR_RED, m);
                         }
+                        ui.add_space(6.0);
+                        ui.separator();
+                        replace_fonts_section(
+                            ui,
+                            list,
+                            &mut replace_from,
+                            &mut replace_to,
+                            &mut notice,
+                        );
                     });
                 });
             },
@@ -1298,7 +1310,50 @@ impl TextStylesDialog {
         self.scope = scope;
         self.selected = selected;
         self.message = message;
+        self.notice = notice;
+        self.replace_from = replace_from;
+        self.replace_to = replace_to;
         outcome
+    }
+}
+
+/// Replace Fonts (Chief TXT-12): every style set in one family is set in
+/// another. `from` offers the families the list's styles use now.
+fn replace_fonts_section(
+    ui: &mut Ui,
+    list: &mut TextStyles,
+    from: &mut String,
+    to: &mut String,
+    notice: &mut Option<String>,
+) {
+    ui.label(egui::RichText::new("Replace Fonts").strong());
+    let used = list.fonts_used();
+    if !used.iter().any(|u| u == from) {
+        *from = used.first().cloned().unwrap_or_default();
+    }
+    ui.horizontal(|ui| {
+        ui.label("Replace");
+        let names: Vec<&str> = used.iter().map(String::as_str).collect();
+        string_combo(ui, "replace_fonts_from", from, &names);
+        ui.label("with");
+    });
+    crate::fonts::font_picker(ui, "replace_fonts_to", to, "", false, false);
+    let ready = !from.is_empty()
+        && !to.trim().is_empty()
+        && !plan_core::text_styles::same_font_family(from, to);
+    if ui
+        .add_enabled(ready, egui::Button::new("Replace in all styles"))
+        .clicked()
+    {
+        let n = list.replace_font(from, to);
+        *notice = Some(match n {
+            0 => "No style uses that font.".to_string(),
+            1 => format!("1 style now uses {to}."),
+            n => format!("{n} styles now use {to}."),
+        });
+    }
+    if let Some(n) = notice {
+        ui.weak(n.as_str());
     }
 }
 
@@ -1326,7 +1381,19 @@ fn style_form(ui: &mut Ui, list: &mut TextStyles, idx: usize) -> Option<&'static
         }
     });
     row(ui, "Font", |ui| {
-        string_combo(ui, "text_style_font", &mut s.font, &FONTS);
+        // Installed families with a preview in the face the style maps to.
+        ui.vertical(|ui| {
+            if crate::fonts::font_picker(
+                ui,
+                "text_style_font",
+                &mut s.font,
+                &style.font_style,
+                s.bold,
+                s.italic,
+            ) {
+                s.font_style.clear();
+            }
+        });
     });
     row(ui, "Height", |ui| {
         let r = ui.add(
@@ -1369,6 +1436,14 @@ fn style_form(ui: &mut Ui, list: &mut TextStyles, idx: usize) -> Option<&'static
         ui.checkbox(&mut s.italic, "Italic");
         ui.checkbox(&mut s.underline, "Underline");
     });
+    // Bold and italic pick the real face, so a named face style (Heavy)
+    // steps aside when either is toggled.
+    if s.bold != style.bold || s.italic != style.italic {
+        s.font = plan_core::text_styles::split_font_name(&s.font)
+            .0
+            .to_string();
+        s.font_style.clear();
+    }
     row(ui, "Color", |ui| {
         ui.color_edit_button_srgb(&mut s.color);
     });
@@ -1523,6 +1598,47 @@ mod tests {
         assert_eq!(cx.defaults.text_styles.styles[0].font, "Georgia");
         cx.undo();
         assert_eq!(cx.project.text_styles.styles.len(), n);
+    }
+
+    #[test]
+    fn replace_fonts_updates_every_style_with_one_undo_step() {
+        let mut cx = EditorContext::new(defaults());
+        let before = cx.project.text_styles.clone();
+        let n = before.styles.len();
+        assert!(n >= 3);
+        let mut dlg = TextStylesDialog::new(&cx);
+        let used = dlg.plan.fonts_used();
+        assert_eq!(used, vec!["Arial"], "the shipped styles are Arial");
+        assert_eq!(dlg.plan.replace_font("Arial", "Helvetica Neue"), n);
+        assert_eq!(dlg.plan.replace_font("Arial", "Georgia"), 0, "nothing left");
+        dlg.apply(&mut cx);
+        assert!(cx
+            .project
+            .text_styles
+            .styles
+            .iter()
+            .all(|s| s.font == "Helvetica Neue"));
+        // The new-plan defaults are separate and untouched.
+        assert!(cx
+            .defaults
+            .text_styles
+            .styles
+            .iter()
+            .all(|s| s.font != "Helvetica Neue"));
+        // One undo step restores every style.
+        assert_eq!(cx.undo().as_deref(), Some("Text Styles"));
+        assert_eq!(cx.project.text_styles, before);
+        // The defaults scope replaces in the defaults only.
+        let mut dlg = TextStylesDialog::new(&cx);
+        assert!(dlg.defaults.replace_font("arial", "Georgia") > 0);
+        dlg.apply(&mut cx);
+        assert!(cx
+            .defaults
+            .text_styles
+            .styles
+            .iter()
+            .all(|s| s.font == "Georgia"));
+        assert_eq!(cx.project.text_styles, before);
     }
 
     #[test]

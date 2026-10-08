@@ -90,6 +90,7 @@ impl MeshBuilder {
             indices: self.triangles.into_iter().flatten().collect(),
             material,
             object_id: None,
+            color: None,
         }
     }
 }

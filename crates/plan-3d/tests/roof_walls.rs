@@ -484,6 +484,7 @@ fn eave_planes(caps: bool) -> Vec<EavePlane> {
             cuts: Vec::new(),
             id: None,
             opts: Default::default(),
+            skip: Vec::new(),
         })
         .collect()
 }

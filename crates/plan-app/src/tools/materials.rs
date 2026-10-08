@@ -13,9 +13,12 @@
 //!   (`plan_core::object_materials`), by library name: one material for the
 //!   whole object or per part (Adjust Materials lists the parts of
 //!   `plan_materials::default_assignments_for`).
-//! * [`apply_overrides`] recolors the 3D scene: the viewport shades with a
-//!   fixed set of scene materials, so an override shows the scene material
-//!   that is closest to the library material (`plan_materials::scene_material`).
+//! * [`apply_overrides`] recolors the 3D scene: a painted mesh is drawn as the
+//!   scene material that stands for the library material
+//!   (`plan_materials::scene_material`, which keeps its gloss and clear glass)
+//!   with the library material's exact colour in `Mesh::color`; a library
+//!   material with a bitmap (a Material Builder image, a generated texture)
+//!   also gets that bitmap per mesh ([`painted_textures`]).
 
 use crate::editor::selection::ObjectRef;
 use crate::editor::EditorContext;
@@ -149,6 +152,9 @@ struct State {
     adjust_open: bool,
     builder: Option<Builder>,
     search: String,
+    /// Bumped whenever the user library changes (the 3D view repaints the
+    /// painted objects).
+    revision: u64,
 }
 
 thread_local! {
@@ -170,6 +176,12 @@ fn user_library() -> MaterialLibrary {
             })
             .clone()
     })
+}
+
+/// Changes whenever the user's material library does: a painted object must
+/// be drawn again when the colour of its material was edited.
+pub fn library_revision() -> u64 {
+    state(|s| s.revision)
 }
 
 /// Core library plus the user's materials (a user material replaces the core
@@ -371,6 +383,17 @@ pub fn override_for_mesh(
     object: Id,
     current: Material,
 ) -> Option<Material> {
+    override_def_for_mesh(project, lib, object, current).map(scene_material)
+}
+
+/// The library material the project's overrides give a mesh of `object` that
+/// would otherwise be drawn as `current`; `None` when nothing overrides it.
+pub fn override_def_for_mesh<'a>(
+    project: &Project,
+    lib: &'a MaterialLibrary,
+    object: Id,
+    current: Material,
+) -> Option<&'a MaterialDef> {
     let parts = project.object_materials_of(object);
     if parts.is_empty() {
         return None;
@@ -383,16 +406,17 @@ pub fn override_for_mesh(
         // glass itself.
         parts.iter().find(|p| p.part == WHOLE_OBJECT)
     })?;
-    let m = scene_material(lib.find(&chosen.material)?);
+    let def = lib.find(&chosen.material)?;
     let glass = matches!(current, Material::WindowGlass | Material::Glass);
-    if glass && chosen.part == WHOLE_OBJECT && !matches!(m, Material::Glass) {
+    if glass && chosen.part == WHOLE_OBJECT && !matches!(scene_material(def), Material::Glass) {
         return None;
     }
-    Some(m)
+    Some(def)
 }
 
-/// Recolors the meshes of `scene` whose object has a material override.
-/// Returns how many meshes changed.
+/// Paints the meshes of `scene` whose object has a material override: each
+/// becomes the scene material that stands for its library material and takes
+/// that material's exact colour. Returns how many meshes changed.
 pub fn apply_overrides(project: &Project, scene: &mut Scene) -> usize {
     if project.object_materials.is_empty() {
         return 0;
@@ -401,14 +425,101 @@ pub fn apply_overrides(project: &Project, scene: &mut Scene) -> usize {
     let mut n = 0;
     for mesh in &mut scene.meshes {
         let Some(id) = mesh.object_id else { continue };
-        if let Some(m) = override_for_mesh(project, &lib, id, mesh.material) {
-            if m != mesh.material {
+        if let Some(def) = override_def_for_mesh(project, &lib, id, mesh.material) {
+            let m = scene_material(def);
+            if m != mesh.material || mesh.color != Some(def.color) {
                 mesh.material = m;
+                mesh.color = Some(def.color);
                 n += 1;
             }
         }
     }
     n
+}
+
+/// Does `def` paint with a bitmap (an image file, a generated texture) rather
+/// than its flat colour?
+fn has_bitmap(def: &MaterialDef) -> bool {
+    def.texture_path.is_some() || !matches!(def.texture, plan_materials::Texture::Solid)
+}
+
+/// Content key of the bitmap of `def` (its name, image path and tile size).
+fn bitmap_key(def: &MaterialDef) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    def.name.hash(&mut h);
+    def.texture_path.hash(&mut h);
+    def.texture_scale_in.0.to_bits().hash(&mut h);
+    def.texture_scale_in.1.to_bits().hash(&mut h);
+    format!("{:?}", def.texture).hash(&mut h);
+    h.finish()
+}
+
+thread_local! {
+    /// Pixels handed to the viewport, by bitmap key (one copy per bitmap).
+    static BITMAPS: RefCell<std::collections::HashMap<u64, std::sync::Arc<Vec<u8>>>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// The bitmaps of the painted materials `scene` (already painted by
+/// [`apply_overrides`]) uses: for each object with an override whose library
+/// material has a bitmap, that bitmap on the object's meshes drawn as the
+/// scene material standing for it. An image file is read through `store`
+/// (cached); a material without a file gets its generated texture. Flat
+/// materials need nothing (their colour is on the mesh).
+pub fn painted_textures(
+    project: &Project,
+    scene: &Scene,
+    store: &plan_materials::textures::TextureStore,
+) -> Vec<plan_view3d::SurfaceTexture> {
+    if project.object_materials.is_empty() {
+        return Vec::new();
+    }
+    let lib = library();
+    let mut out = Vec::new();
+    for om in &project.object_materials {
+        let drawn: std::collections::HashSet<Material> = scene
+            .meshes
+            .iter()
+            .filter(|m| m.object_id == Some(om.object) && m.color.is_some())
+            .map(|m| m.material)
+            .collect();
+        if drawn.is_empty() {
+            continue;
+        }
+        // Part overrides first: they win over the whole-object material on
+        // the meshes they cover.
+        let mut parts: Vec<_> = om.parts.iter().collect();
+        parts.sort_by_key(|p| p.part == WHOLE_OBJECT);
+        for part in parts {
+            let Some(def) = lib.find(&part.material).filter(|d| has_bitmap(d)) else {
+                continue;
+            };
+            let material = scene_material(def);
+            if !drawn.contains(&material) {
+                continue;
+            }
+            let image = store.definition(def);
+            let key = bitmap_key(def);
+            let rgba = BITMAPS.with(|b| {
+                std::sync::Arc::clone(
+                    b.borrow_mut()
+                        .entry(key)
+                        .or_insert_with(|| std::sync::Arc::new(image.image.rgba.clone())),
+                )
+            });
+            out.push(plan_view3d::SurfaceTexture {
+                object_id: om.object,
+                material: Some(material),
+                key,
+                width: image.image.width,
+                height: image.image.height,
+                rgba,
+                scale_in: image.scale_in,
+            });
+        }
+    }
+    out
 }
 
 // ----- painting -----
@@ -875,8 +986,21 @@ pub fn save_to_user_library(def: &MaterialDef) -> Result<String, String> {
     if let Some(p) = user_library_path() {
         save_user_library_at(&p, &lib).map_err(|e| format!("Could not save: {e}"))?;
     }
-    state(|s| s.user = Some(lib));
+    state(|s| {
+        s.user = Some(lib);
+        s.revision += 1;
+    });
     Ok(def.name.clone())
+}
+
+/// Replaces the user library for this thread without touching any file
+/// (tests).
+#[cfg(test)]
+pub fn set_user_library_for_test(lib: MaterialLibrary) {
+    state(|s| {
+        s.user = Some(lib);
+        s.revision += 1;
+    });
 }
 
 /// Removes a material from the user library and saves the file.
@@ -890,6 +1014,7 @@ pub fn remove_from_user_library(name: &str) -> Result<(), String> {
     }
     state(|s| {
         s.user = Some(lib);
+        s.revision += 1;
         if s.active.as_deref() == Some(name) {
             s.active = None;
         }
@@ -936,6 +1061,7 @@ mod tests {
             indices: vec![0, 1, 2],
             material,
             object_id: Some(object),
+            color: None,
         });
         scene
     }
@@ -1015,6 +1141,68 @@ mod tests {
         assert_eq!(scene.meshes[1].material, Material::Trim);
         assert_eq!(scene.meshes[2].material, Material::WindowGlass);
         assert_eq!(scene.meshes[3].material, Material::Roof);
+    }
+
+    #[test]
+    fn painted_meshes_take_the_exact_colour_of_the_library_material() {
+        let (mut cx, wall) = cx_with_wall();
+        let bone = library().find("Color – Bone").unwrap().color;
+        cx.project
+            .set_object_material(wall, WHOLE_OBJECT, "Color – Bone");
+        let mut scene = scene_with(wall, Material::WallInterior);
+        scene.meshes.extend(scene_with(999, Material::Roof).meshes);
+        assert_eq!(apply_overrides(&cx.project, &mut scene), 1);
+        assert_eq!(scene.meshes[0].color, Some(bone));
+        assert_eq!(scene.meshes[1].color, None, "other objects keep their own");
+        // Painting again changes nothing; a plain colour needs no bitmap.
+        assert_eq!(apply_overrides(&cx.project, &mut scene), 0);
+        let store = plan_materials::textures::TextureStore::with_dirs(Vec::new());
+        assert!(painted_textures(&cx.project, &scene, &store).is_empty());
+    }
+
+    #[test]
+    fn a_material_with_an_image_file_binds_its_bitmap_to_the_painted_meshes() {
+        let dir = std::env::temp_dir().join(format!("plan-studio-paint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("red.png");
+        let img = plan_render::Image {
+            width: 2,
+            height: 2,
+            rgba: [200, 10, 10, 255].repeat(4),
+            hdr: vec![[0.0; 3]; 4],
+        };
+        plan_render::write_png(&png, &img).unwrap();
+        let def = build_material(
+            "Test Red Image",
+            "Custom",
+            [200, 10, 10],
+            0.5,
+            Pattern::None,
+            &png.to_string_lossy(),
+        )
+        .unwrap();
+        let mut user = MaterialLibrary::default();
+        user.add(def.clone());
+        set_user_library_for_test(user);
+        let (mut cx, wall) = cx_with_wall();
+        cx.project
+            .set_object_material(wall, WHOLE_OBJECT, "Test Red Image");
+        let mut scene = scene_with(wall, Material::WallInterior);
+        apply_overrides(&cx.project, &mut scene);
+        assert_eq!(scene.meshes[0].color, Some([200, 10, 10]));
+        let store = plan_materials::textures::TextureStore::with_dirs(Vec::new());
+        let tex = painted_textures(&cx.project, &scene, &store);
+        assert_eq!(tex.len(), 1);
+        let t = &tex[0];
+        assert_eq!(t.object_id, wall);
+        assert_eq!(t.material, Some(scene_material(&def)));
+        assert!(t.is_valid());
+        assert_eq!(t.rgba[..4], [200, 10, 10, 255], "the file's pixels");
+        // The same bitmap is shared, not copied, for the next call.
+        let again = painted_textures(&cx.project, &scene, &store);
+        assert!(std::sync::Arc::ptr_eq(&t.rgba, &again[0].rgba));
+        set_user_library_for_test(MaterialLibrary::default());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

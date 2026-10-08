@@ -7,12 +7,21 @@
 //! points (1/72"), origin at the bottom-left, Y up, which matches plan space.
 //!
 //! [`plan_sheet`] builds on it to print a floor at an architectural scale.
+//!
+//! Text is Helvetica unless [`PdfDoc::set_font_source`] gives the document a
+//! source of font files and [`PdfDoc::use_font`] names a font: that font's
+//! used glyphs are then embedded as a TrueType subset (`/FontFile2`), one
+//! subset per font per document, so the text prints as it looks on screen.
 
 mod scale;
 mod sheet;
+pub mod truetype;
 
 #[cfg(test)]
 mod mode_tests;
+
+#[cfg(test)]
+mod font_tests;
 
 pub use scale::{Scale, SheetSize};
 pub use sheet::{
@@ -20,7 +29,82 @@ pub use sheet::{
     CHIEF_SHEET_BACKGROUND,
 };
 
+pub use truetype::{FontFace, FontSource, FontSpec};
+
+use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+
+static DEFAULT_FONT_SOURCE: RwLock<Option<Arc<dyn FontSource>>> = RwLock::new(None);
+
+fn measure_cache() -> &'static Mutex<HashMap<FontSpec, Option<truetype::Font>>> {
+    static CACHE: OnceLock<Mutex<HashMap<FontSpec, Option<truetype::Font>>>> = OnceLock::new();
+    CACHE.get_or_init(Mutex::default)
+}
+
+static FONT_NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The font fallback notes of every document finished since the last call
+/// (see [`PdfDoc::font_notes`]), each once.
+pub fn take_font_notes() -> Vec<String> {
+    std::mem::take(&mut *FONT_NOTES.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// The font source new documents start with (the application installs the
+/// installed-fonts source once). `None`: Helvetica only.
+pub fn set_default_font_source(source: Option<Arc<dyn FontSource>>) {
+    *DEFAULT_FONT_SOURCE
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = source;
+    measure_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+/// The font source new documents start with.
+pub fn default_font_source() -> Option<Arc<dyn FontSource>> {
+    DEFAULT_FONT_SOURCE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Width in points of `text` at `size_pt` in the font `spec` names, through
+/// the default font source; `None` when that font would not be embedded (the
+/// text is then Helvetica, which [`PdfDoc::text_width`] measures).
+pub fn text_width_in(spec: &FontSpec, text: &str, size_pt: f64) -> Option<f64> {
+    let source = default_font_source()?;
+    let mut cache = measure_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let font = cache
+        .entry(spec.clone())
+        .or_insert_with(|| {
+            resolve_embeddable(source.as_ref(), spec)
+                .ok()
+                .map(|(f, _)| f)
+        })
+        .as_ref()?;
+    let mapped: String = text.chars().map(|c| winansi_char(winansi(c))).collect();
+    Some(font.text_width(&mapped, size_pt))
+}
+
+/// The font `spec` names as a parsed, embeddable TrueType face, or why it
+/// cannot be embedded (a phrase finishing "Font \"X\" ...").
+fn resolve_embeddable(
+    source: &dyn FontSource,
+    spec: &FontSpec,
+) -> Result<(truetype::Font, truetype::FaceInfo), &'static str> {
+    let face = source.face(spec).ok_or("is not installed")?;
+    let font = truetype::Font::parse(face.data, face.index).ok_or("could not be read")?;
+    let info = font.info();
+    if info.outlines != truetype::Outlines::TrueType {
+        return Err("has PostScript (CFF) outlines, which are not embedded");
+    }
+    if !info.embeddable {
+        return Err("does not allow embedding");
+    }
+    Ok((font, info))
+}
 
 /// Helvetica advance widths (1/1000 em) for ASCII 32..=126.
 const HELVETICA_WIDTHS: [u16; 95] = [
@@ -100,6 +184,23 @@ fn winansi(c: char) -> u8 {
     }
 }
 
+/// The character a WinAnsi byte stands for (the inverse of [`winansi`] for
+/// the bytes it produces).
+fn winansi_char(b: u8) -> char {
+    match b {
+        0x80 => '\u{20ac}',
+        0x85 => '\u{2026}',
+        0x91 => '\u{2018}',
+        0x92 => '\u{2019}',
+        0x93 => '\u{201c}',
+        0x94 => '\u{201d}',
+        0x95 => '\u{2022}',
+        0x96 => '\u{2013}',
+        0x97 => '\u{2014}',
+        b => b as char,
+    }
+}
+
 /// Escape a string as a PDF literal string body (without the parentheses).
 fn escape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -116,6 +217,39 @@ fn escape_text(s: &str) -> String {
         }
     }
     out
+}
+
+/// `ABCDEF+PostScriptName` for a subset: a six-letter tag from the font and
+/// the codes used, as the PDF specification asks of subset fonts.
+fn subset_font_name(info: &truetype::FaceInfo, codes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in info
+        .postscript_name
+        .bytes()
+        .chain(info.full_name.bytes())
+        .chain(codes.iter().copied())
+    {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    let tag: String = (0..6)
+        .map(|i| char::from(b'A' + ((h >> (i * 5)) % 26) as u8))
+        .collect();
+    let mut ps: String = info
+        .postscript_name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if ps.is_empty() {
+        ps = info
+            .full_name
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
+    }
+    if ps.is_empty() {
+        ps = "Font".into();
+    }
+    format!("{tag}+{ps}")
 }
 
 /// A fill or stroke colour.
@@ -266,6 +400,15 @@ const OBJ_FONT_BOLD: usize = 4;
 /// First object number after the fixed catalog / pages / font objects.
 const OBJ_FIRST_DYNAMIC: usize = 5;
 
+/// A font file taken into the document: its glyphs are subset at
+/// [`PdfDoc::finish`] to the WinAnsi codes in `used`.
+#[derive(Debug, Clone)]
+struct EmbeddedFont {
+    font: truetype::Font,
+    info: truetype::FaceInfo,
+    used: Vec<bool>,
+}
+
 /// A multi-page PDF under construction.
 #[derive(Debug, Clone)]
 pub struct PdfDoc {
@@ -287,6 +430,14 @@ pub struct PdfDoc {
     uniform_line: Option<f64>,
     /// `(page index, title)` bookmarks, written as the PDF outline.
     bookmarks: Vec<(usize, String)>,
+    /// Where [`PdfDoc::use_font`] finds font files; `None`: standard fonts only.
+    font_source: Option<Arc<dyn FontSource>>,
+    /// Every font asked for, with the embedded slot it got (`None`: Helvetica).
+    font_slots: Vec<(FontSpec, Option<usize>)>,
+    embedded: Vec<EmbeddedFont>,
+    /// The embedded font later text is drawn in.
+    cur_embedded: Option<usize>,
+    font_notes: Vec<String>,
 }
 
 impl PdfDoc {
@@ -306,6 +457,11 @@ impl PdfDoc {
             color_mode: PdfColorMode::Color,
             uniform_line: None,
             bookmarks: Vec::new(),
+            font_source: default_font_source(),
+            font_slots: Vec::new(),
+            embedded: Vec::new(),
+            cur_embedded: None,
+            font_notes: Vec::new(),
         };
         doc.emit_state();
         doc
@@ -525,6 +681,88 @@ impl PdfDoc {
     /// [`PdfDoc::text_right`]. Survives [`PdfDoc::new_page`].
     pub fn set_font_bold(&mut self, bold: bool) {
         self.bold = bold;
+        self.cur_embedded = None;
+    }
+
+    /// Gives the document a source of font files for [`PdfDoc::use_font`].
+    pub fn set_font_source(&mut self, source: Option<Arc<dyn FontSource>>) {
+        self.font_source = source;
+    }
+
+    /// Draws later text in the font `spec` names (embedded as a subset), or
+    /// in Helvetica again for `None`. When the font cannot be embedded (no
+    /// source, not installed, PostScript outlines, a licence that forbids
+    /// embedding) the text is Helvetica, bold as `spec.bold` says, a note is
+    /// kept ([`PdfDoc::font_notes`]) and this returns `false`.
+    pub fn use_font(&mut self, spec: Option<&FontSpec>) -> bool {
+        let Some(spec) = spec else {
+            self.cur_embedded = None;
+            return false;
+        };
+        let slot = match self.font_slots.iter().find(|(s, _)| s == spec) {
+            Some((_, slot)) => *slot,
+            None => {
+                let slot = self.load_font(spec);
+                self.font_slots.push((spec.clone(), slot));
+                slot
+            }
+        };
+        self.cur_embedded = slot;
+        if slot.is_none() {
+            self.bold = spec.bold;
+        }
+        slot.is_some()
+    }
+
+    /// Why fonts fell back to Helvetica, one line each, in the order met.
+    pub fn font_notes(&self) -> &[String] {
+        &self.font_notes
+    }
+
+    /// Number of fonts that will be embedded (those that drew text).
+    pub fn embedded_font_count(&self) -> usize {
+        self.embedded
+            .iter()
+            .filter(|e| e.used.iter().any(|u| *u))
+            .count()
+    }
+
+    fn load_font(&mut self, spec: &FontSpec) -> Option<usize> {
+        let source = self.font_source.clone()?;
+        let (font, info) = match resolve_embeddable(source.as_ref(), spec) {
+            Ok(r) => r,
+            Err(why) => {
+                let label = if spec.style.is_empty() {
+                    spec.family.clone()
+                } else {
+                    format!("{} {}", spec.family, spec.style)
+                };
+                self.font_notes
+                    .push(format!("Font \"{label}\" {why}; Helvetica is used."));
+                return None;
+            }
+        };
+        if let Some(i) = self.embedded.iter().position(|e| {
+            e.info.postscript_name == info.postscript_name
+                && e.info.full_name == info.full_name
+                && e.font.num_glyphs() == font.num_glyphs()
+        }) {
+            return Some(i);
+        }
+        self.embedded.push(EmbeddedFont {
+            font,
+            info,
+            used: vec![false; 256],
+        });
+        Some(self.embedded.len() - 1)
+    }
+
+    fn note_used(&mut self, text: &str) {
+        if let Some(i) = self.cur_embedded {
+            for c in text.chars() {
+                self.embedded[i].used[winansi(c) as usize] = true;
+            }
+        }
     }
 
     /// Is the bold font selected?
@@ -807,11 +1045,11 @@ impl PdfDoc {
 
     // ------------------------------------------------------------- text --
 
-    fn font_name(&self) -> &'static str {
-        if self.bold {
-            "F2"
-        } else {
-            "F1"
+    fn font_name(&self) -> String {
+        match self.cur_embedded {
+            Some(i) => format!("E{}", i + 1),
+            None if self.bold => "F2".into(),
+            None => "F1".into(),
         }
     }
 
@@ -820,6 +1058,7 @@ impl PdfDoc {
     /// colour. Characters are mapped to WinAnsi; parentheses and backslashes
     /// are escaped.
     pub fn text(&mut self, x: f64, y: f64, size_pt: f64, text: &str) {
+        self.note_used(text);
         let s = format!(
             "BT /{} {} Tf {} {} Td ({}) Tj ET\n",
             self.font_name(),
@@ -834,6 +1073,7 @@ impl PdfDoc {
     /// Draw text rotated `angle_deg` degrees counter-clockwise about its
     /// baseline-left origin (x, y): 90 reads bottom to top.
     pub fn text_rotated(&mut self, x: f64, y: f64, size_pt: f64, angle_deg: f64, text: &str) {
+        self.note_used(text);
         let (sin, cos) = angle_deg.to_radians().sin_cos();
         let s = format!(
             "BT /{} {} Tf {} {} {} {} {} {} Tm ({}) Tj ET\n",
@@ -863,6 +1103,10 @@ impl PdfDoc {
 
     /// Width of `text` in the currently selected font.
     pub fn current_text_width(&self, text: &str, size_pt: f64) -> f64 {
+        if let Some(i) = self.cur_embedded {
+            let mapped: String = text.chars().map(|c| winansi_char(winansi(c))).collect();
+            return self.embedded[i].font.text_width(&mapped, size_pt);
+        }
         if self.bold {
             Self::text_width_bold(text, size_pt)
         } else {
@@ -1005,15 +1249,96 @@ impl PdfDoc {
 
     // ----------------------------------------------------------- output --
 
+    /// The objects of the embedded fonts (font dictionary, descriptor, font
+    /// file for each, numbered from `start`) and the `/E<n>` entries of the
+    /// page font resources.
+    fn build_embedded(&self, start: usize) -> (Vec<Vec<u8>>, String) {
+        let mut objs: Vec<Vec<u8>> = Vec::new();
+        let mut resources = String::new();
+        for (i, e) in self.embedded.iter().enumerate() {
+            let codes: Vec<u8> = (0..=255u8).filter(|b| e.used[*b as usize]).collect();
+            let (Some(&first), Some(&last)) = (codes.first(), codes.last()) else {
+                continue;
+            };
+            let chars: Vec<char> = codes.iter().map(|&b| winansi_char(b)).collect();
+            let base = start + objs.len();
+            let _ = write!(resources, " /E{} {base} 0 R", i + 1);
+            let Some(sub) = e.font.subset(&chars) else {
+                // Unreachable for a font that parsed as TrueType; keep the
+                // file valid with a standard font under the same name.
+                objs.push(
+                    b"<< /Type/Font /Subtype/Type1 /BaseFont/Helvetica /Encoding/WinAnsiEncoding >>"
+                        .to_vec(),
+                );
+                continue;
+            };
+            let name = subset_font_name(&e.info, &codes);
+            let widths: Vec<String> = (first..=last)
+                .map(|b| {
+                    let w = e.font.char_width_1000(winansi_char(b)).unwrap_or(0.0);
+                    format!("{}", w.round() as i64)
+                })
+                .collect();
+            objs.push(
+                format!(
+                    "<< /Type/Font /Subtype/TrueType /BaseFont/{name} /Encoding/WinAnsiEncoding \
+                     /FirstChar {first} /LastChar {last} /Widths [{}] /FontDescriptor {} 0 R >>",
+                    widths.join(" "),
+                    base + 1
+                )
+                .into_bytes(),
+            );
+            let bbox = e.font.bbox_1000();
+            let (ascent, descent) = e.font.ascent_descent_1000();
+            let flags = 32 + if e.info.italic { 64 } else { 0 };
+            objs.push(
+                format!(
+                    "<< /Type /FontDescriptor /FontName/{name} /Flags {flags} \
+                     /FontBBox [{} {} {} {}] /ItalicAngle {} /Ascent {} /Descent {} \
+                     /CapHeight {} /StemV {} /FontFile2 {} 0 R >>",
+                    bbox[0].round() as i64,
+                    bbox[1].round() as i64,
+                    bbox[2].round() as i64,
+                    bbox[3].round() as i64,
+                    num(e.font.italic_angle()),
+                    ascent.round() as i64,
+                    descent.round() as i64,
+                    e.font.cap_height_1000().round() as i64,
+                    (e.info.weight / 5).max(40),
+                    base + 2
+                )
+                .into_bytes(),
+            );
+            let mut file = format!(
+                "<< /Length {len} /Length1 {len} >>\nstream\n",
+                len = sub.data.len()
+            )
+            .into_bytes();
+            file.extend_from_slice(&sub.data);
+            file.extend_from_slice(b"\nendstream");
+            objs.push(file);
+        }
+        (objs, resources)
+    }
+
     /// Serialise the document: header, objects, xref table and trailer.
     ///
     /// Object layout: 1 catalog, 2 page tree, 3 Helvetica, 4 Helvetica-Bold,
     /// one image XObject per embedded image, then a page object and a content
-    /// stream per page, the two font descriptors and, when bookmarks were
+    /// stream per page, the two font descriptors, three objects per embedded
+    /// font that drew text and, when bookmarks were
     /// added, the outline (root, then one item per bookmark). Non-page dictionaries write `/Type/X` without a space
     /// so a search for `/Type /Page` matches only pages.
     pub fn finish(mut self) -> Vec<u8> {
         self.close_states();
+        if !self.font_notes.is_empty() {
+            let mut kept = FONT_NOTES.lock().unwrap_or_else(|e| e.into_inner());
+            for n in &self.font_notes {
+                if !kept.contains(n) {
+                    kept.push(n.clone());
+                }
+            }
+        }
         let n_pages = self.pages.len();
         let n_img = self.images.len();
         let first_page_obj = OBJ_FIRST_DYNAMIC + n_img;
@@ -1034,6 +1359,11 @@ impl PdfDoc {
         // same way without a substitute font; the descriptors are the last
         // objects of the file (see `descriptor_obj` below).
         let n_dynamic = n_img + 2 * n_pages;
+        // Embedded fonts that drew text come after the two descriptors, three
+        // objects each (font, descriptor, font file); built first because the
+        // pages' resources name them.
+        let emb_start = OBJ_FIRST_DYNAMIC + n_dynamic + 2;
+        let (emb_objs, emb_resources) = self.build_embedded(emb_start);
         let descriptor_obj = |bold: bool| OBJ_FIRST_DYNAMIC + n_dynamic + usize::from(bold);
         for (bold, base, widths) in [
             (false, "Helvetica", &HELVETICA_WIDTHS),
@@ -1080,7 +1410,7 @@ impl PdfDoc {
             objs.push(
                 format!(
                     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Contents {} 0 R \
-                     /Resources << /Font << /F1 {OBJ_FONT} 0 R /F2 {OBJ_FONT_BOLD} 0 R >>{xobjects} >> >>",
+                     /Resources << /Font << /F1 {OBJ_FONT} 0 R /F2 {OBJ_FONT_BOLD} 0 R{emb_resources} >>{xobjects} >> >>",
                     num(w),
                     num(h),
                     first_page_obj + 2 * i + 1
@@ -1103,6 +1433,7 @@ impl PdfDoc {
                 .into_bytes(),
             );
         }
+        objs.extend(emb_objs);
         if !self.bookmarks.is_empty() {
             // Outline: the root, then one item per bookmark, all after the
             // pages so the fixed object numbers above do not move.

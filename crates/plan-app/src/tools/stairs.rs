@@ -14,6 +14,9 @@
 //!   heading when it arrived.
 //! * Curved Stairs: press at the centre, drag to the walking radius; the
 //!   stair starts at the drag end and turns left (Tab flips it to the right).
+//! * Spiral Stairs: press at the centre, drag to the outside radius; wedge
+//!   treads wind round a centre pole, the first one at the drag end (a click
+//!   draws a 6' spiral).
 //! * Landing: drag a rectangle, or click the corners of a polygon and
 //!   double-click the last (Enter also ends it, Esc cancels, Backspace drops
 //!   the last corner); a double-click on its own places a 3' square. A landing
@@ -139,7 +142,9 @@ impl StairsTool {
                 cx.fmt_dim(o.stair.params.total_rise)
             );
         }
-        let name = if o.is_curved() {
+        let name = if o.stair.params.spiral {
+            "Spiral stairs"
+        } else if o.is_curved() {
             "Curved stairs"
         } else {
             "Stairs"
@@ -429,6 +434,7 @@ impl Tool for StairsTool {
                     | StairKind::CurveLeft
                     | StairKind::CurveRight
                     | StairKind::Curved
+                    | StairKind::Spiral
             )
         {
             self.turn = match self.turn {
@@ -619,7 +625,18 @@ mod tests {
             .any(|s| matches!(s, PlanStroke::Polyline(p, false) if p.len() == 6)));
         assert!(strokes
             .iter()
-            .any(|s| matches!(s, PlanStroke::Text { text, .. } if text == "UP")));
+            .any(|s| matches!(s, PlanStroke::Text { text, .. } if text.starts_with("UP"))));
+        // The label carries the riser count and height: 15 risers of 7 1/4".
+        let label = strokes
+            .iter()
+            .find_map(|s| match s {
+                PlanStroke::Text { text, .. } if text.starts_with("UP") => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(label.contains("R @ "), "{label}");
+        assert!(label.ends_with('"'), "{label}");
+        assert_eq!(label, format!("UP {}", view::riser_label(&o)));
         // The cut is at 2/3 of the run: nothing is drawn beyond x = 100.
         let max_x = strokes
             .iter()
@@ -635,6 +652,48 @@ mod tests {
         assert!(!view::symbol_strokes(&o2)
             .iter()
             .any(|s| matches!(s, PlanStroke::Polyline(p, false) if p.len() == 6)));
+    }
+
+    #[test]
+    fn the_break_line_can_sit_elsewhere_on_each_stair() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let mut o = only_stair(&cx);
+        assert_eq!(view::break_fraction(&o), view::BREAK_AT);
+        let reach = |o: &StairObj| {
+            view::symbol_strokes(o)
+                .iter()
+                .filter_map(|s| match s {
+                    PlanStroke::Line(a, b) => Some(a.x.max(b.x)),
+                    _ => None,
+                })
+                .fold(f64::MIN, f64::max)
+        };
+        let two_thirds = reach(&o);
+        o.x.break_at = 0.4;
+        assert!(
+            reach(&o) < two_thirds - 30.0,
+            "{} vs {two_thirds}",
+            reach(&o)
+        );
+        assert!(reach(&o) <= 60.0 + 1e-6);
+        // The floor above and the dashed rest follow the same cut.
+        let up = view::upper_strokes(&o);
+        let xs: Vec<f64> = up
+            .iter()
+            .filter_map(|s| match s {
+                PlanStroke::Line(a, b) if (a.x - b.x).abs() < 1e-9 => Some(a.x),
+                _ => None,
+            })
+            .collect();
+        assert!(xs.iter().all(|x| *x >= 60.0 - 1e-9) && xs.iter().any(|x| *x < 100.0));
+        assert!(view::hidden_strokes(&o).len() > 3);
+        // It is kept in the saved object, and wild values are held in range.
+        let back = view::StairExtras::from_json(&o.x.to_json());
+        assert!((back.break_at - 0.4).abs() < 1e-9);
+        o.x.break_at = 5.0;
+        assert_eq!(view::break_fraction(&o), view::MAX_BREAK_AT);
     }
 
     #[test]
@@ -1579,5 +1638,204 @@ mod tests {
         assert!(parts
             .iter()
             .any(|(p, _)| *p == plan_stairs::StairPart::Landing));
+    }
+
+    #[test]
+    fn riser_heights_print_in_eighths() {
+        assert_eq!(view::fmt_eighths(7.75), "7 3/4\"");
+        assert_eq!(view::fmt_eighths(7.0), "7\"");
+        assert_eq!(view::fmt_eighths(7.275), "7 1/4\"");
+        assert_eq!(view::fmt_eighths(7.636), "7 5/8\"");
+        assert_eq!(view::fmt_eighths(0.5), "1/2\"");
+        assert_eq!(view::fmt_eighths(7.99), "8\"");
+        // The plan label of the standard 109 1/8" floor-to-floor stair.
+        let mut cx = new_cx();
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let o = only_stair(&cx);
+        let sol = o.solution();
+        assert_eq!(
+            view::riser_label(&o),
+            format!("{}R @ {}", sol.risers, view::fmt_eighths(sol.riser_height))
+        );
+        // The label can be turned off with the number of risers.
+        let mut quiet = o.clone();
+        quiet.x.show_risers = false;
+        assert!(view::symbol_strokes(&quiet)
+            .iter()
+            .any(|s| matches!(s, PlanStroke::Text { text, .. } if text == "UP")));
+    }
+
+    #[test]
+    fn spiral_stairs_take_a_centre_and_an_outside_radius() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::new(StairKind::Spiral);
+        // Centre (200, 200), outside radius 36 straight below it.
+        drag(&mut t, &mut cx, (200.0, 200.0), (200.0, 164.0));
+        let o = only_stair(&cx);
+        let p = &o.stair.params;
+        assert!(p.spiral);
+        assert_eq!(
+            p.shape,
+            StairShape::Curved {
+                inner_radius: plan_stairs::SPIRAL_POLE_RADIUS
+            }
+        );
+        assert!((p.width - (36.0 - plan_stairs::SPIRAL_POLE_RADIUS)).abs() < 1e-9);
+        let c = plan_stairs::curve_center(&o.stair).unwrap();
+        assert!(c.dist(Point::new(200.0, 200.0)) < 1e-6, "{c:?}");
+        // Wedge treads wind more than once round the pole and meet the
+        // spiral-stair code, which the straight-stair code would refuse.
+        assert!(plan_stairs::curve_sweep(&o.stair).unwrap() > std::f64::consts::TAU);
+        let sol = o.solution();
+        assert!(sol.code_ok, "{:?}", sol.warnings);
+        assert!(cx.status.starts_with("Spiral stairs"), "{}", cx.status);
+        assert_eq!(cx.undo_label(), Some("Spiral Stairs"));
+        // The first tread is at the drag end, on the walking line.
+        let walk = plan_stairs::SPIRAL_POLE_RADIUS + p.width / 2.0;
+        assert!((o.bottom_center().dist(c) - walk).abs() < 1e-6);
+        // Tab flips the turn; a click draws a 6' spiral.
+        cx.selection.clear();
+        t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        let at = pe(&cx, 500.0, 200.0);
+        t.pointer_move(&mut cx, at);
+        t.pointer_down(&mut cx, at.with_down(true));
+        t.pointer_up(&mut cx, at);
+        let r = view::load(cx.floor()).pop().unwrap();
+        assert_eq!(r.stair.params.turn, Turn::Right);
+        assert!(
+            (r.stair.params.width + plan_stairs::SPIRAL_POLE_RADIUS - view::DEFAULT_SPIRAL_RADIUS)
+                .abs()
+                < 1e-9
+        );
+        // Too small a drag is raised to the narrowest legal spiral.
+        cx.selection.clear();
+        drag(&mut t, &mut cx, (800.0, 200.0), (800.0, 190.0));
+        let small = view::load(cx.floor()).pop().unwrap();
+        assert!((small.stair.params.width - plan_stairs::SPIRAL_MIN_WIDTH).abs() < 1e-9);
+        assert!(small.solution().code_ok);
+        // The plan symbol has the pole and the 3D scene a pole column.
+        assert!(view::symbol_strokes(&o)
+            .iter()
+            .any(|s| matches!(s, PlanStroke::Arc { center, .. } if center.dist(c) < 1e-6)));
+        // Persistence keeps the spiral.
+        let back: plan_core::Project =
+            serde_json::from_str(&serde_json::to_string(&cx.project).unwrap()).unwrap();
+        assert!(view::load(&back.floors[0])
+            .iter()
+            .any(|o| o.stair.params.spiral));
+    }
+
+    #[test]
+    fn the_components_tab_counts_the_parts() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let mut o = only_stair(&cx);
+        let by_name =
+            |o: &StairObj, name: &str| view::components(o).into_iter().find(|c| c.name == name);
+        let sol = o.solution();
+        assert_eq!(by_name(&o, "Treads").unwrap().count as u32, sol.treads);
+        assert_eq!(by_name(&o, "Risers").unwrap().count as u32, sol.risers);
+        assert_eq!(by_name(&o, "Stringers").unwrap().count, 2);
+        assert_eq!(by_name(&o, "Treads").unwrap().material, "Oak");
+        assert!(by_name(&o, "Newels").is_none());
+        // Rails add newels, balusters and rails; open risers drop the risers.
+        o.stair.params.left_side = plan_stairs::SideKind::Railing;
+        o.stair.params.open_risers = true;
+        assert!(by_name(&o, "Newels").unwrap().count >= 2);
+        assert!(by_name(&o, "Balusters").unwrap().count > 10);
+        assert!(by_name(&o, "Rails").is_some());
+        assert!(by_name(&o, "Risers").is_none());
+        // A flared tread and a spiral pole are listed too.
+        o.stair.params.flare = 6.0;
+        assert!(by_name(&o, "Flared bottom tread").is_some());
+        let spiral = view::build(
+            &cx.project,
+            0,
+            StairKind::Spiral,
+            Turn::Left,
+            Point::new(0.0, 0.0),
+            None,
+        );
+        assert!(by_name(&spiral, "Centre pole").is_some());
+        // A landing lists its slab.
+        let landing = view::build(
+            &cx.project,
+            0,
+            StairKind::Landing,
+            Turn::Left,
+            Point::new(0.0, 0.0),
+            Some(Point::new(48.0, 36.0)),
+        );
+        assert_eq!(by_name(&landing, "Landing").unwrap().count, 1);
+    }
+
+    #[test]
+    fn a_landing_with_a_railing_side_is_guarded_in_3d_and_in_plan() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::new(StairKind::Landing);
+        drag(&mut t, &mut cx, (0.0, 0.0), (48.0, 36.0));
+        let mut o = only_stair(&cx);
+        let plain_3d = plan_stairs::meshes(&o.stair).len();
+        let plain_plan = view::symbol_strokes(&o).len();
+        o.stair.params.left_side = plan_stairs::SideKind::Railing;
+        o.stair.params.right_side = plan_stairs::SideKind::Railing;
+        assert!(plan_stairs::meshes(&o.stair).len() > plain_3d + 4);
+        assert!(view::symbol_strokes(&o).len() > plain_plan + 4);
+        assert!(view::components(&o).iter().any(|c| c.name == "Newels"));
+        // The scene of the floor carries the rail pieces tagged with it.
+        view::apply_edit(&mut cx, &o);
+        assert!(view::scene_meshes(cx.floor())
+            .iter()
+            .any(|m| m.object_id == Some(o.id()) && m.material == plan_3d::Material::WallInterior));
+    }
+
+    #[test]
+    fn stairs_show_in_a_section_with_their_treads_cut() {
+        use crate::shell::view3d_panel::{build_view_scene, ViewScope};
+        use plan_elevation::{section, EdgeKind, Options, SectionCut, ViewDir};
+        let mut cx = new_cx();
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let o = only_stair(&cx);
+        let scene = build_view_scene(&cx.project, &ViewScope::default());
+        assert!(
+            scene.meshes.iter().any(|m| m.object_id == Some(o.id())),
+            "the stair is in the view scene"
+        );
+        // Cut through the middle of the stair (it runs east, plan y = 0 is
+        // its centre line; scene z = -y).
+        let cut = SectionCut {
+            plane_normal: ViewDir::Front,
+            offset: 0.0,
+        };
+        let drawing = section(&scene, cut, &Options::default());
+        let cut_lines: Vec<_> = drawing
+            .lines
+            .iter()
+            .filter(|l| l.kind == EdgeKind::Cut)
+            .collect();
+        assert!(!cut_lines.is_empty(), "the cut makes heavy lines");
+        // Every tread shows as a horizontal cut edge at its own height.
+        let sol = o.solution();
+        let mut levels: Vec<f64> = cut_lines
+            .iter()
+            .filter(|l| (l.a.y - l.b.y).abs() < 1e-6 && l.length() > 4.0)
+            .map(|l| (l.a.y * 4.0).round() / 4.0)
+            .collect();
+        levels.sort_by(f64::total_cmp);
+        levels.dedup();
+        assert!(
+            levels.len() as u32 >= sol.treads,
+            "{} levels for {} treads",
+            levels.len(),
+            sol.treads
+        );
+        // The section cut regions include the stair's pieces.
+        assert!(drawing
+            .regions
+            .iter()
+            .any(|r| r.kind == plan_elevation::RegionKind::Cut && r.object_id == Some(o.id())));
     }
 }

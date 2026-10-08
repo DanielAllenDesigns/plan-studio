@@ -52,6 +52,12 @@ use std::collections::HashMap;
 
 /// Layer of text and annotations (TXT-11).
 pub const TEXT_LAYER: &str = "Text";
+
+/// The layer the Text tools draw on: the active layer chosen for them in
+/// Tools > Layer Settings, else [`TEXT_LAYER`].
+fn text_layer(cx: &EditorContext) -> String {
+    cx.project.layers.tool_layer("text")
+}
 /// Prefix of note texts; see [`note_text`].
 pub const NOTE_PREFIX: &str = "Note ";
 /// The note type every plan starts with.
@@ -431,7 +437,7 @@ impl TextTool {
         let h = cx
             .project
             .text_styles
-            .placed_height(cx.layers(), TEXT_LAYER, None, h);
+            .placed_height(cx.layers(), &text_layer(cx), None, h);
         if self.mode == TextMode::RichText {
             h * self.rich.size_scale
         } else {
@@ -445,7 +451,7 @@ impl TextTool {
     fn drawn_height(cx: &EditorContext, height: f64) -> f64 {
         cx.project.text_styles.drawn_height(
             cx.layers(),
-            TEXT_LAYER,
+            &text_layer(cx),
             None,
             height,
             cx.sheet.scale.inches_per_foot(),
@@ -520,10 +526,11 @@ impl TextTool {
     /// The next marker number: one more than the largest number text on the
     /// Text layer that sits inside a marker circle.
     fn next_marker(cx: &EditorContext) -> u32 {
+        let layer = text_layer(cx);
         cx.floor()
             .cad
             .iter()
-            .filter(|c| c.layer == TEXT_LAYER)
+            .filter(|c| c.layer == layer)
             .filter_map(|c| match &c.item {
                 CadItem::Text { text, pos, .. } => {
                     let n: u32 = text.parse().ok()?;
@@ -710,7 +717,8 @@ impl TextTool {
             _ => return ToolResult::consumed(),
         };
         let rich = mode == TextMode::RichText;
-        match add_cad_items(cx, TEXT_LAYER, items, label) {
+        let layer = text_layer(cx);
+        match add_cad_items(cx, &layer, items, label) {
             Some(ids) => {
                 if rich {
                     self.styles.insert(ids[0], self.rich);
@@ -800,7 +808,8 @@ impl TextTool {
             return ToolResult::consumed();
         }
         let items = leader_items(&pts, self.arrow_size(cx));
-        match add_cad_items(cx, TEXT_LAYER, items, "Leader Line") {
+        let layer = text_layer(cx);
+        match add_cad_items(cx, &layer, items, "Leader Line") {
             Some(_) => {
                 cx.readout = None;
                 ToolResult::committed("Leader Line")
@@ -1079,7 +1088,8 @@ impl Tool for TextTool {
                 let at = p.snapped;
                 let dh = Self::drawn_height(cx, height);
                 let items = keep_text_height(marker_items(at, n, dh), height);
-                match add_cad_items(cx, TEXT_LAYER, items, "Place Marker") {
+                let layer = text_layer(cx);
+                match add_cad_items(cx, &layer, items, "Place Marker") {
                     Some(_) => ToolResult::committed("Place Marker"),
                     None => ToolResult::consumed(),
                 }
@@ -1262,6 +1272,37 @@ mod tests {
 
     fn enter(t: &mut TextTool, cx: &mut EditorContext) -> ToolResult {
         t.key(cx, KeyEvent::key(egui::Key::Enter))
+    }
+
+    #[test]
+    fn text_goes_on_the_active_layer_of_the_text_tools() {
+        use plan_core::Layer;
+        let mut cx = new_cx();
+        cx.project
+            .layers
+            .add(Layer::new("Text, Notes", [0, 0, 0], 18));
+        assert!(cx.project.layers.set_tool_layer("text", "Text, Notes"));
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 10.0, 10.0);
+        type_text(&mut t, &mut cx, "Note");
+        enter(&mut t, &mut cx);
+        assert_eq!(cx.floor().cad[0].layer, "Text, Notes");
+        // Marker numbers count the markers on that layer.
+        let mut m = tool(TextMode::Marker);
+        click(&mut m, &mut cx, 50.0, 50.0);
+        assert!(cx
+            .floor()
+            .cad
+            .iter()
+            .skip(1)
+            .all(|c| c.layer == "Text, Notes"));
+        // Back on its own layer, the next text goes there.
+        assert!(cx.project.layers.set_tool_layer("text", TEXT_LAYER));
+        let mut t = tool(TextMode::Text);
+        click(&mut t, &mut cx, 80.0, 80.0);
+        type_text(&mut t, &mut cx, "Other");
+        enter(&mut t, &mut cx);
+        assert_eq!(cx.floor().cad.last().unwrap().layer, TEXT_LAYER);
     }
 
     #[test]

@@ -31,6 +31,10 @@ pub const LAYER: &str = "Stairs";
 /// Fraction of the flight length at which the floor above cuts the stair
 /// (Chief's default break line, CB-33).
 pub const BREAK_AT: f64 = 2.0 / 3.0;
+/// The break line can sit anywhere from this fraction of the run...
+pub const MIN_BREAK_AT: f64 = 0.1;
+/// ...to this one.
+pub const MAX_BREAK_AT: f64 = 0.95;
 /// Default stair width (CB-23).
 pub const DEFAULT_WIDTH: f64 = 36.0;
 /// Floor platform added to the ceiling height when no floor is above (the
@@ -57,6 +61,14 @@ pub const JOIN_TOLERANCE: f64 = 6.0;
 /// Default distance of the walking line from the centre of a curved stair
 /// when it is placed with a click.
 pub const DEFAULT_CURVE_RADIUS: f64 = 60.0;
+/// Outside radius of a spiral stair placed with a click: 6' across.
+pub const DEFAULT_SPIRAL_RADIUS: f64 = 36.0;
+/// The narrowest spiral the tool draws: the code's 26" clear width around
+/// the pole.
+pub const MIN_SPIRAL_RADIUS: f64 = plan_stairs::SPIRAL_MIN_WIDTH + plan_stairs::SPIRAL_POLE_RADIUS;
+/// Angle between two treads of a spiral stair, radians (about 28.6 degrees:
+/// twelve and a half treads to the turn).
+pub const SPIRAL_STEP: f64 = 0.5;
 /// Default number of treads of a Click Stairs stair is the solved count; its
 /// run is that many default treads.
 pub const CLICK_TREAD: f64 = 10.0;
@@ -76,12 +88,14 @@ pub enum StairKind {
     CurveRight,
     /// Curved Stairs: click the centre, drag to the walking radius.
     Curved,
+    /// Spiral Stairs: click the centre, drag to the outside radius.
+    Spiral,
     Landing,
     Ramp,
 }
 
 impl StairKind {
-    pub const ALL: [StairKind; 10] = [
+    pub const ALL: [StairKind; 11] = [
         StairKind::Draw,
         StairKind::Click,
         StairKind::Straight,
@@ -90,6 +104,7 @@ impl StairKind {
         StairKind::CurveLeft,
         StairKind::CurveRight,
         StairKind::Curved,
+        StairKind::Spiral,
         StairKind::Landing,
         StairKind::Ramp,
     ];
@@ -105,6 +120,7 @@ impl StairKind {
             StairKind::CurveLeft => "Curve to Left",
             StairKind::CurveRight => "Curve to Right",
             StairKind::Curved => "Curved Stairs",
+            StairKind::Spiral => "Spiral Stairs",
             StairKind::Landing => "Landing",
             StairKind::Ramp => "Draw Ramp",
         }
@@ -125,6 +141,9 @@ impl StairKind {
             }
             StairKind::Curved => {
                 "Curved Stairs: click the centre, drag to the walking radius; Tab flips the turn"
+            }
+            StairKind::Spiral => {
+                "Spiral Stairs: click the centre, drag to the outside radius (a click draws a 6' spiral); Tab flips the turn"
             }
             StairKind::Landing => {
                 "Landing: drag a rectangle, or click the corners and double-click the last; double-click alone places a 3' square"
@@ -153,6 +172,9 @@ pub struct StairExtras {
     pub break_line: bool,
     /// Show the number of risers beside the arrow (CB-23).
     pub show_risers: bool,
+    /// Where the floor above cuts the stair, as a fraction of the run
+    /// (the break line); Chief draws it at 2/3 ([`BREAK_AT`]).
+    pub break_at: f64,
     pub label: String,
     pub show_label: bool,
     pub line_weight: f32,
@@ -189,6 +211,7 @@ impl Default for StairExtras {
             landing_depth: None,
             break_line: true,
             show_risers: true,
+            break_at: BREAK_AT,
             label: String::new(),
             show_label: false,
             line_weight: 1.0,
@@ -220,6 +243,7 @@ impl StairExtras {
             "landing_depth": self.landing_depth,
             "break_line": self.break_line,
             "show_risers": self.show_risers,
+            "break_at": self.break_at,
             "label": self.label,
             "show_label": self.show_label,
             "line_weight": self.line_weight,
@@ -268,6 +292,7 @@ impl StairExtras {
             landing_depth: v.get("landing_depth").and_then(Value::as_f64),
             break_line: b("break_line", true),
             show_risers: b("show_risers", true),
+            break_at: f("break_at", BREAK_AT).clamp(MIN_BREAK_AT, MAX_BREAK_AT),
             label: s("label"),
             show_label: b("show_label", false),
             line_weight: f("line_weight", 1.0) as f32,
@@ -693,6 +718,28 @@ pub fn build(
                 Turn::Right => phi - FRAC_PI_2,
             };
             anchor = start;
+        }
+        StairKind::Spiral => {
+            // `a` is the centre; `b` a point on the outside radius, which
+            // is also where the first tread points (straight down when only
+            // clicked). The pole is a 2" post; the treads are wedges.
+            let pole = plan_stairs::SPIRAL_POLE_RADIUS;
+            let out = b
+                .filter(|b| a.dist(*b) > 1e-6)
+                .unwrap_or_else(|| Point::new(a.x, a.y - DEFAULT_SPIRAL_RADIUS));
+            let radius = a.dist(out).max(MIN_SPIRAL_RADIUS);
+            let phi = (out - a).angle();
+            params.spiral = true;
+            params.width = radius - pole;
+            let walk = pole + params.width * 0.5;
+            params.tread_depth = walk * SPIRAL_STEP;
+            params.turn = turn;
+            params.shape = StairShape::Curved { inner_radius: pole };
+            direction = match turn {
+                Turn::Left => phi + FRAC_PI_2,
+                Turn::Right => phi - FRAC_PI_2,
+            };
+            anchor = a + Point::new(phi.cos(), phi.sin()) * walk;
         }
         StairKind::Ramp => {
             params.total_rise = rise.min(RAMP_RISE);
@@ -1632,29 +1679,58 @@ pub fn footprint_area(obj: &StairObj) -> f64 {
 
 // ----- symbols -----
 
+/// Where the break line of `o` sits, as a fraction of the run: its own
+/// setting, kept between [`MIN_BREAK_AT`] and [`MAX_BREAK_AT`].
+pub fn break_fraction(o: &StairObj) -> f64 {
+    o.x.break_at.clamp(MIN_BREAK_AT, MAX_BREAK_AT)
+}
+
 /// The plan symbol on the stair's own floor: treads, outline, the UP arrow
 /// and, where the floor above cuts it, the break line at 2/3 (CB-33).
 pub fn symbol_strokes(o: &StairObj) -> Vec<PlanStroke> {
     if o.is_landing() {
         return plan_symbol(&o.stair, None);
     }
-    let cut = (o.x.break_line && !o.is_ramp()).then_some(BREAK_AT);
+    let cut = (o.x.break_line && !o.is_ramp()).then_some(break_fraction(o));
     let mut out = plan_symbol(&o.stair, cut);
     if o.x.show_risers && !o.is_ramp() {
-        let risers = o.solution().risers;
-        let u = if o.is_curved() {
-            10.0
-        } else {
-            o.first_flight_len() * 0.3
-        };
-        out.push(PlanStroke::Text {
-            pos: o.stair.origin + o.along() * u + o.right() * (o.stair.params.width * 0.12),
-            text: format!("{risers}R"),
-            height: 4.5,
-            angle: o.stair.direction.to_degrees().rem_euclid(360.0),
-        });
+        // Chief's label: "UP 15R @ 7 3/4"".
+        for s in &mut out {
+            if let PlanStroke::Text { text, .. } = s {
+                if text == "UP" {
+                    *text = format!("UP {}", riser_label(o));
+                }
+            }
+        }
     }
     out
+}
+
+/// Inches to the nearest eighth as feet-less inches and a fraction: 7.636
+/// is `7 5/8"`, 8.0 is `8"`.
+pub fn fmt_eighths(inches: f64) -> String {
+    let eighths = (inches.max(0.0) * 8.0).round() as u64;
+    let (whole, rest) = (eighths / 8, eighths % 8);
+    if rest == 0 {
+        return format!("{whole}\"");
+    }
+    let g = (1..=rest)
+        .rev()
+        .find(|g| rest % g == 0 && 8 % g == 0)
+        .unwrap_or(1);
+    let frac = format!("{}/{}", rest / g, 8 / g);
+    if whole == 0 {
+        format!("{frac}\"")
+    } else {
+        format!("{whole} {frac}\"")
+    }
+}
+
+/// The riser count and height of a stair as the plan labels it:
+/// `15R @ 7 1/4"`.
+pub fn riser_label(o: &StairObj) -> String {
+    let sol = o.solution();
+    format!("{}R @ {}", sol.risers, fmt_eighths(sol.riser_height))
 }
 
 /// The treads beyond the break line, which the stair's own floor leaves out
@@ -1665,7 +1741,7 @@ pub fn hidden_strokes(o: &StairObj) -> Vec<PlanStroke> {
         return Vec::new();
     }
     let full = plan_symbol(&o.stair, None);
-    let lower = plan_symbol(&o.stair, Some(BREAK_AT));
+    let lower = plan_symbol(&o.stair, Some(break_fraction(o)));
     full.into_iter()
         .filter(|s| match s {
             PlanStroke::Line(a, b) => !lower
@@ -1684,7 +1760,7 @@ pub fn upper_strokes(o: &StairObj) -> Vec<PlanStroke> {
         return Vec::new();
     }
     let full = plan_symbol(&o.stair, None);
-    let lower = plan_symbol(&o.stair, Some(BREAK_AT));
+    let lower = plan_symbol(&o.stair, Some(break_fraction(o)));
     let mut out = Vec::new();
     for s in &full {
         if let PlanStroke::Line(a, b) = s {
@@ -1729,6 +1805,198 @@ pub fn upper_strokes(o: &StairObj) -> Vec<PlanStroke> {
             height: 6.0,
             angle: dir.angle().to_degrees().rem_euclid(360.0),
         });
+    }
+    out
+}
+
+/// One line of the Components tab.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Component {
+    pub name: String,
+    pub count: usize,
+    /// Dimensions, e.g. `36" x 11" x 1"`.
+    pub size: String,
+    pub material: String,
+}
+
+/// The parts a stair is built of (the Components tab): treads, risers (none
+/// with open risers), stringers, landings or ramp slabs, newels, balusters
+/// and the rails or walls of its sides, counted from the solved layout.
+pub fn components(o: &StairObj) -> Vec<Component> {
+    use plan_stairs::{StairPart, StringerStyle};
+    let p = &o.stair.params;
+    let material = |name: &str| {
+        o.x.materials
+            .iter()
+            .find(|(c, _)| c.eq_ignore_ascii_case(name))
+            .map_or_else(String::new, |(_, m)| m.clone())
+    };
+    let inch = |v: f64| fmt_eighths(v);
+    let parts = plan_stairs::tagged_meshes(&o.stair);
+    let count = |part: StairPart| parts.iter().filter(|(q, _)| *q == part).count();
+    let mut out = Vec::new();
+    let mut push = |name: &str, count: usize, size: String, mat: &str| {
+        if count > 0 {
+            out.push(Component {
+                name: name.to_string(),
+                count,
+                size,
+                material: material(mat),
+            });
+        }
+    };
+    if o.is_landing() {
+        push(
+            "Landing",
+            count(StairPart::Landing),
+            format!("{} thick", inch(p.slab_thickness)),
+            "Treads",
+        );
+    } else if o.is_ramp() {
+        push(
+            "Ramp",
+            count(StairPart::Ramp),
+            format!("{} wide, {} thick", inch(p.width), inch(p.slab_thickness)),
+            "Treads",
+        );
+        push(
+            "Landings",
+            count(StairPart::Landing),
+            inch(p.slab_thickness),
+            "Treads",
+        );
+    } else {
+        let sol = o.solution();
+        push(
+            "Treads",
+            count(StairPart::Tread),
+            format!(
+                "{} x {} x {}",
+                inch(p.width),
+                inch(sol.tread_depth + p.nosing),
+                inch(p.tread_thickness)
+            ),
+            "Treads",
+        );
+        if !p.open_risers {
+            push(
+                "Risers",
+                count(StairPart::Riser),
+                format!(
+                    "{} x {} x {}",
+                    inch(p.width),
+                    inch(sol.riser_height),
+                    inch(p.riser_thickness)
+                ),
+                "Risers",
+            );
+        }
+        // Two boards under each flight (a curve has stepped skirts instead).
+        let flights = match p.shape {
+            _ if p.stringer == StringerStyle::None => 0,
+            StairShape::Curved { .. } => 0,
+            StairShape::LShaped { .. } | StairShape::UShaped { .. } | StairShape::Winder { .. }
+                if sol.risers >= 3 =>
+            {
+                4
+            }
+            _ => 2,
+        };
+        push(
+            "Stringers",
+            flights,
+            format!(
+                "{} deep, {}",
+                inch(p.stringer_depth),
+                match p.stringer {
+                    StringerStyle::Open => "notched",
+                    _ => "closed",
+                }
+            ),
+            "Stringers",
+        );
+        push(
+            "Landings and winders",
+            count(StairPart::Landing),
+            inch(p.slab_thickness),
+            "Treads",
+        );
+        if p.flare > 0.0 {
+            push(
+                "Flared bottom tread",
+                1,
+                format!("{} past each side", inch(p.flare)),
+                "Treads",
+            );
+        }
+        if p.spiral {
+            push(
+                "Centre pole",
+                1,
+                format!(
+                    "{} radius",
+                    inch(match p.shape {
+                        StairShape::Curved { inner_radius } => inner_radius,
+                        _ => 0.0,
+                    })
+                ),
+                "Handrail",
+            );
+        }
+    }
+    let mut newels = 0;
+    let mut balusters = 0;
+    let mut rails = 0;
+    for (side, kind) in [
+        (plan_stairs::RailSide::Left, p.left_side),
+        (plan_stairs::RailSide::Right, p.right_side),
+    ] {
+        if kind != SideKind::Railing {
+            continue;
+        }
+        if o.is_landing() {
+            let g = plan_stairs::landing_edges(&o.stair, side);
+            rails += g.len();
+            newels += g.len() + 1;
+        } else {
+            let g = plan_stairs::stair_railing_geometry(&o.stair, side, &p.railing);
+            rails += g.rails.len();
+            newels += g.newels.len();
+            balusters += g.balusters.len();
+        }
+    }
+    push(
+        "Newels",
+        newels,
+        format!("{} square", inch(p.railing.newel.size)),
+        "Handrail",
+    );
+    push(
+        "Balusters",
+        balusters,
+        match p.railing.style {
+            plan_stairs::RailStyle::Balusters { size, .. } => format!("{} square", inch(size)),
+            _ => String::new(),
+        },
+        "Balusters",
+    );
+    push(
+        "Rails",
+        rails,
+        format!(
+            "{} x {}",
+            inch(p.railing.top_rail.0),
+            inch(p.railing.top_rail.1)
+        ),
+        "Handrail",
+    );
+    let walls = [p.left_side, p.right_side]
+        .iter()
+        .filter(|k| matches!(k, SideKind::Wall | SideKind::HalfWall))
+        .count();
+    push("Side walls", walls, String::new(), "Stringers");
+    if p.handrail && !o.is_landing() && !o.is_ramp() {
+        push("Handrails", 2, "on both sides".to_string(), "Handrail");
     }
     out
 }

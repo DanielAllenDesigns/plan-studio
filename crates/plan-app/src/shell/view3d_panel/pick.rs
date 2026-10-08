@@ -5,13 +5,17 @@
 //!   ([`nearest_hit`], [`pick_ray`], `selection::pick_for_mesh_id`). The
 //!   selection is the editor's own `cx.selection`, so the plan shows it when
 //!   the user goes back.
-//! * **Overlay**: what must follow the camera or the selection without
-//!   rebuilding the cached model: pictures (billboards turn to face the eye,
-//!   `placed::image_meshes_facing` semantics) and a translucent tint over the
-//!   selected objects ([`overlay_meshes`]). The viewport only takes whole
-//!   scenes, so the panel re-queues "cached scene + overlay" whenever
-//!   [`overlay_key`] changes (selection, picture geometry at half-inch
-//!   resolution), not on every frame.
+//! * **Overlay**: what must follow the camera, the selection or the pointer
+//!   without rebuilding the cached model: pictures (billboards turn to face
+//!   the eye, `placed::image_meshes_facing` semantics), a translucent tint
+//!   over the selected objects and a lighter one over the object under the
+//!   pointer ([`overlay_meshes`]). The panel hands them to
+//!   `Viewport3d::set_overlay`, which draws them after the cached scene and
+//!   leaves that scene (and its shadow map) alone, whenever [`overlay_key`]
+//!   changes (selection, hover, picture geometry at half-inch resolution),
+//!   not on every frame.
+//! * **Hover**: the object under the pointer is re-picked only when the
+//!   pointer has moved and the last pick is old enough ([`hover_due`]).
 
 use super::{apply_fill, clip_scene, ViewScope};
 use crate::editor::selection::{pick_for_mesh_id, ObjectRef, Selection};
@@ -27,6 +31,13 @@ use std::hash::{Hash, Hasher};
 
 /// How far the selection tint stands off the surface it covers, inches.
 const TINT_OFFSET: f32 = 0.4;
+/// The tint over the object under the pointer: a light blue (the selection
+/// tint is the orange of its material).
+pub const HOVER_RGB: [u8; 3] = [150, 200, 255];
+/// The pointer must move this far (pixels) before the hover is picked again...
+pub const HOVER_MIN_MOVE_PX: f32 = 3.0;
+/// ...and this long (seconds) after the last pick.
+pub const HOVER_MIN_INTERVAL_S: f64 = 0.05;
 /// Triangles flatter than this to the ray are skipped (determinant).
 const PARALLEL_EPS: f32 = 1e-9;
 
@@ -136,6 +147,41 @@ fn is_drawn(m: &Mesh, hide_ceiling_roof: bool) -> bool {
     !(hide_ceiling_roof && matches!(m.material, Material::Ceiling | Material::Roof))
 }
 
+/// The scene point on the nearest visible surface under `pos` (any surface,
+/// object or not): where Alt-click puts the orbit centre.
+pub fn surface_point(
+    cam: &Camera,
+    rect: egui::Rect,
+    pos: egui::Pos2,
+    base: &Scene,
+    pictures: &[Mesh],
+) -> Option<Vec3> {
+    let (origin, dir) = pick_ray_at(cam, rect, pos);
+    let hide = cam.mode.hides_ceiling_and_roof();
+    let (t, _) = nearest_hit(base.meshes.iter().chain(pictures), origin, dir, |m| {
+        is_drawn(m, hide)
+    })?;
+    Some(math::add(origin, math::scale(dir, t)))
+}
+
+/// Is it time to pick the object under a hovering pointer again? `last` is
+/// where and when (seconds) the previous pick ran. A new pick needs the
+/// pointer to have moved [`HOVER_MIN_MOVE_PX`] and [`HOVER_MIN_INTERVAL_S`]
+/// to have passed, so a still pointer costs nothing and a fast one a few
+/// picks a second.
+pub fn hover_due(last: Option<(egui::Pos2, f64)>, pos: egui::Pos2, now: f64) -> bool {
+    match last {
+        None => true,
+        Some((p, t)) => (pos - p).length() >= HOVER_MIN_MOVE_PX && now - t >= HOVER_MIN_INTERVAL_S,
+    }
+}
+
+/// The object id a hover tints for a pick result: objects that have meshes.
+pub fn hover_id(hit: Option<(usize, ObjectRef)>) -> Option<Id> {
+    let (_, obj) = hit?;
+    (!matches!(obj, ObjectRef::Room(_) | ObjectRef::Terrain) && obj.id() != 0).then(|| obj.id())
+}
+
 /// What a click at `pos` selects: the object of the nearest visible triangle
 /// of `base` and the pictures, with the floor it is on. `None` for the sky
 /// and for surfaces that are no object (slabs, the ground).
@@ -237,10 +283,12 @@ fn selected_ids(selection: &Selection) -> Vec<Id> {
     ids
 }
 
-/// A copy of `m` in the selection tint, standing `TINT_OFFSET` off its surface.
-fn tint(m: &Mesh) -> Mesh {
+/// A copy of `m` in the selection tint (or `color` over it), standing
+/// `TINT_OFFSET` off its surface.
+fn tint(m: &Mesh, color: Option<[u8; 3]>) -> Mesh {
     let mut t = m.clone();
     t.material = Material::Selection;
+    t.color = color;
     for v in &mut t.vertices {
         for k in 0..3 {
             v.position[k] += v.normal[k] * TINT_OFFSET;
@@ -251,22 +299,44 @@ fn tint(m: &Mesh) -> Mesh {
 
 /// The overlay: `pictures` followed by the selection tint over the selected
 /// objects' meshes in `base` and `pictures`.
+#[cfg(test)]
 pub fn overlay_meshes(
     base: &Scene,
     pictures: Vec<Mesh>,
     selection: &Selection,
     hide_ceiling_roof: bool,
 ) -> Vec<Mesh> {
+    overlay_with_hover(base, pictures, selection, None, hide_ceiling_roof)
+}
+
+/// [`overlay_meshes`] with the light hover tint over the object `hover` as
+/// well (nothing extra when it is selected: the selection tint is there).
+pub fn overlay_with_hover(
+    base: &Scene,
+    pictures: Vec<Mesh>,
+    selection: &Selection,
+    hover: Option<Id>,
+    hide_ceiling_roof: bool,
+) -> Vec<Mesh> {
     let ids = selected_ids(selection);
-    let tints: Vec<Mesh> = if ids.is_empty() {
+    let hover = hover.filter(|h| !ids.contains(h));
+    let tints: Vec<Mesh> = if ids.is_empty() && hover.is_none() {
         Vec::new()
     } else {
         base.meshes
             .iter()
             .chain(&pictures)
-            .filter(|m| m.object_id.is_some_and(|id| ids.contains(&id)))
             .filter(|m| is_drawn(m, hide_ceiling_roof))
-            .map(tint)
+            .filter_map(|m| {
+                let id = m.object_id?;
+                if ids.contains(&id) {
+                    Some(tint(m, None))
+                } else if hover == Some(id) {
+                    Some(tint(m, Some(HOVER_RGB)))
+                } else {
+                    None
+                }
+            })
             .collect()
     };
     let mut out = pictures;
@@ -278,8 +348,19 @@ pub fn overlay_meshes(
 /// `pictures`' geometry (to half an inch). The panel re-uploads only when it
 /// changes.
 pub fn overlay_key(selection: &Selection, pictures: &[Mesh], hide_ceiling_roof: bool) -> u64 {
+    overlay_key_with_hover(selection, None, pictures, hide_ceiling_roof)
+}
+
+/// [`overlay_key`] for an overlay that also tints the hovered object.
+pub fn overlay_key_with_hover(
+    selection: &Selection,
+    hover: Option<Id>,
+    pictures: &[Mesh],
+    hide_ceiling_roof: bool,
+) -> u64 {
     let mut h = DefaultHasher::new();
     selected_ids(selection).hash(&mut h);
+    hover.hash(&mut h);
     hide_ceiling_roof.hash(&mut h);
     pictures.len().hash(&mut h);
     for m in pictures {
@@ -474,6 +555,7 @@ mod tests {
             indices: vec![0, 1, 2, 0, 2, 3],
             material,
             object_id: id,
+            color: None,
         }
     }
 
@@ -744,5 +826,80 @@ mod tests {
         // With the painter off a pick selects again.
         apply_pick(&mut cx, hit, false);
         assert_eq!(cx.selection.single(), Some(ObjectRef::Wall(wall)));
+    }
+
+    #[test]
+    fn hover_picks_wait_for_a_real_move_and_the_interval() {
+        let p = egui::pos2(100.0, 100.0);
+        assert!(hover_due(None, p, 0.0), "the first pointer position picks");
+        let last = Some((p, 1.0));
+        // Still, a wobble, a move that comes too soon: nothing.
+        assert!(!hover_due(last, p, 2.0));
+        assert!(!hover_due(last, p + egui::vec2(1.0, 1.0), 2.0));
+        assert!(!hover_due(last, p + egui::vec2(20.0, 0.0), 1.01));
+        // A move of a few pixels after the interval: pick.
+        assert!(hover_due(
+            last,
+            p + egui::vec2(HOVER_MIN_MOVE_PX, 0.0),
+            1.0 + HOVER_MIN_INTERVAL_S
+        ));
+        assert!(hover_due(last, p + egui::vec2(0.0, -30.0), 1.5));
+    }
+
+    #[test]
+    fn the_hover_tints_objects_that_are_not_selected_in_a_lighter_colour() {
+        let (p, wall) = one_wall();
+        let scene = scene_of(&p);
+        let sel = Selection::default();
+        let hover = overlay_with_hover(&scene, Vec::new(), &sel, Some(wall), false);
+        assert!(!hover.is_empty());
+        assert!(hover
+            .iter()
+            .all(|m| m.material == Material::Selection && m.color == Some(HOVER_RGB)));
+        // A selected object keeps the selection tint alone.
+        let mut sel = Selection::default();
+        sel.set(ObjectRef::Wall(wall));
+        let both = overlay_with_hover(&scene, Vec::new(), &sel, Some(wall), false);
+        assert_eq!(both.len(), hover.len());
+        assert!(both.iter().all(|m| m.color.is_none()));
+        // The hover is part of the overlay's identity.
+        assert_ne!(
+            overlay_key_with_hover(&Selection::default(), Some(wall), &[], false),
+            empty_overlay_key()
+        );
+        assert_eq!(
+            overlay_key_with_hover(&Selection::default(), None, &[], false),
+            empty_overlay_key()
+        );
+        // Rooms and the terrain have no meshes to tint.
+        assert_eq!(hover_id(Some((0, ObjectRef::Room(0)))), None);
+        assert_eq!(hover_id(Some((0, ObjectRef::Wall(wall)))), Some(wall));
+        assert_eq!(hover_id(None), None);
+    }
+
+    #[test]
+    fn the_surface_point_is_where_the_nearest_surface_is_hit() {
+        let (p, _) = one_wall();
+        let scene = scene_of(&p);
+        let cam = camera_for(CameraMode::Orbit, &scene);
+        let on_wall: Vec3 = [120.0, 96.0, 0.0];
+        let at = pixel_of(&cam, on_wall);
+        let got = surface_point(&cam, rect(), at, &scene, &[]).expect("a hit");
+        let off = math::length(math::sub(got, on_wall));
+        assert!(off < 1.0, "{got:?} is {off} from {on_wall:?}");
+        // Surfaces without an object count (the slab under a wall would).
+        let mut floor = Scene::default();
+        floor.meshes.push(quad(Material::Floor, None, 50.0, 0.0));
+        let cam = Camera {
+            mode: CameraMode::FullCamera,
+            position: [0.0, 100.0, 0.0],
+            yaw: 0.0,
+            pitch: -std::f32::consts::FRAC_PI_2 + 0.01,
+            ..Camera::default()
+        };
+        let hit = surface_point(&cam, rect(), rect().center(), &floor, &[]).expect("the slab");
+        assert!(hit[1].abs() < 1e-3);
+        // The sky has no point.
+        assert!(surface_point(&cam, rect(), rect().center(), &Scene::default(), &[]).is_none());
     }
 }

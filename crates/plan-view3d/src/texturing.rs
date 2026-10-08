@@ -55,14 +55,45 @@ impl ImageTexture {
     }
 }
 
+/// A painted material's bitmap (Material Painter, Adjust Materials, Material
+/// Builder), drawn on the meshes of `object_id` with the planar mapping of
+/// the stock material textures: `scale_in` is the real-world size of one
+/// repeat. `material` limits it to the meshes drawn as that scene material
+/// (a part of the object); `None` paints every mesh of the object. `key`
+/// identifies the pixels; equal keys share one GPU upload.
+#[derive(Clone, Debug)]
+pub struct SurfaceTexture {
+    pub object_id: Id,
+    pub material: Option<Material>,
+    pub key: u64,
+    pub width: u32,
+    pub height: u32,
+    /// Straight sRGB RGBA8, top row first (`width * height * 4` bytes).
+    pub rgba: Arc<Vec<u8>>,
+    /// Inches `[across, down]` covered by one repeat of the bitmap.
+    pub scale_in: [f32; 2],
+}
+
+impl SurfaceTexture {
+    /// Whether the pixel buffer matches the declared size.
+    pub fn is_valid(&self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && self.width <= MAX_PICTURE_SIDE
+            && self.height <= MAX_PICTURE_SIDE
+            && self.rgba.len() == self.width as usize * self.height as usize * 4
+    }
+}
+
 /// The textured materials `scene` uses, each once, in order of first
-/// appearance. The selection tint never counts.
+/// appearance. The selection tint never counts, and neither do meshes with a
+/// colour of their own (they are drawn flat).
 pub fn needed_materials(scene: &Scene) -> Vec<Material> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for mesh in &scene.meshes {
         let m = mesh.material;
-        if m != Material::Selection && textured(m) && seen.insert(m) {
+        if mesh.color.is_none() && m != Material::Selection && textured(m) && seen.insert(m) {
             out.push(m);
         }
     }

@@ -719,6 +719,8 @@ pub struct LeaderSpec {
     pub id: Option<Id>,
     pub tip: Point,
     pub elbow: Point,
+    /// Bend points between the tip and the elbow (a multi-segment leader).
+    pub bends: Vec<Point>,
     pub text: String,
     /// Text height, paper inches.
     pub height_in: f64,
@@ -959,6 +961,218 @@ impl PageTableDialog {
     }
 }
 
+// ----------------------------------------------------- layout templates --
+
+/// `~/.plan-studio/templates`, where layout templates are kept.
+pub fn layout_templates_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(d) = TEMPLATE_DIR_OVERRIDE.with(|d| d.borrow().clone()) {
+        return Some(d);
+    }
+    crate::paths::user_file("templates")
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests keep their templates here instead of in the home folder.
+    static TEMPLATE_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Points the template folder at `dir` for the rest of this test (tests).
+#[cfg(test)]
+pub fn set_layout_templates_dir_for_tests(dir: Option<std::path::PathBuf>) {
+    TEMPLATE_DIR_OVERRIDE.with(|d| *d.borrow_mut() = dir);
+}
+
+/// Writes `template` to `dir` as `<name>.layout.json`, creating the folder,
+/// and returns the file. A template of the same name is replaced; when the
+/// template is the default for its sheet size, the other templates of that
+/// size stop being it.
+pub fn save_layout_template(
+    dir: &std::path::Path,
+    template: &plan_layout::LayoutTemplate,
+) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    if template.default_for_sheet {
+        for mut other in list_layout_templates(dir) {
+            if other.sheet() == template.sheet()
+                && other.default_for_sheet
+                && other.name != template.name
+            {
+                other.default_for_sheet = false;
+                write_template_file(dir, &other)?;
+            }
+        }
+    }
+    write_template_file(dir, template)
+}
+
+fn write_template_file(
+    dir: &std::path::Path,
+    template: &plan_layout::LayoutTemplate,
+) -> Result<std::path::PathBuf, String> {
+    let file = dir.join(format!(
+        "{}{}",
+        plan_layout::template_file_stem(&template.name),
+        plan_layout::TEMPLATE_EXTENSION
+    ));
+    std::fs::write(&file, template.to_json()?)
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    Ok(file)
+}
+
+/// The layout templates in `dir` (unreadable files are skipped), by name.
+pub fn list_layout_templates(dir: &std::path::Path) -> Vec<plan_layout::LayoutTemplate> {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<plan_layout::LayoutTemplate> = read
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .ends_with(plan_layout::TEMPLATE_EXTENSION)
+        })
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .filter_map(|t| plan_layout::LayoutTemplate::from_json(&t).ok())
+        .collect();
+    out.sort_by_key(|a| a.name.to_lowercase());
+    out
+}
+
+/// The template new layouts of `sheet` start from: the one marked as the
+/// default for that size.
+pub fn default_layout_template(
+    dir: &std::path::Path,
+    sheet: SheetSize,
+) -> Option<plan_layout::LayoutTemplate> {
+    list_layout_templates(dir)
+        .into_iter()
+        .find(|t| t.default_for_sheet && t.sheet() == sheet)
+}
+
+/// What the template window does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemplateMode {
+    /// Save As Template: name the template and store the layout under it.
+    Save,
+    /// Apply Template: replace the layout with a saved template.
+    Apply,
+}
+
+/// The Save As Template and Apply Template window.
+pub struct LayoutTemplateDialog {
+    mode: TemplateMode,
+    pub name: String,
+    pub default_for_sheet: bool,
+    existing: Vec<plan_layout::LayoutTemplate>,
+    selected: Option<usize>,
+}
+
+impl LayoutTemplateDialog {
+    /// Save As Template for a layout called `layout_name`.
+    pub fn save(layout_name: &str, existing: Vec<plan_layout::LayoutTemplate>) -> Self {
+        Self {
+            mode: TemplateMode::Save,
+            name: layout_name.to_string(),
+            default_for_sheet: false,
+            existing,
+            selected: None,
+        }
+    }
+
+    /// Apply one of `existing`.
+    pub fn apply(existing: Vec<plan_layout::LayoutTemplate>) -> Self {
+        let selected = (!existing.is_empty()).then_some(0);
+        Self {
+            mode: TemplateMode::Apply,
+            name: String::new(),
+            default_for_sheet: false,
+            existing,
+            selected,
+        }
+    }
+
+    pub fn mode(&self) -> TemplateMode {
+        self.mode
+    }
+
+    /// The template picked to apply.
+    pub fn picked(&self) -> Option<&plan_layout::LayoutTemplate> {
+        self.selected.and_then(|i| self.existing.get(i))
+    }
+
+    /// Does saving under the typed name replace a template?
+    pub fn replaces(&self) -> bool {
+        let n = self.name.trim().to_lowercase();
+        self.existing.iter().any(|t| t.name.to_lowercase() == n)
+    }
+
+    fn error(&self) -> Option<&'static str> {
+        match self.mode {
+            TemplateMode::Save if self.name.trim().is_empty() => Some("Name the template"),
+            TemplateMode::Apply if self.picked().is_none() => {
+                Some("There are no saved layout templates")
+            }
+            _ => None,
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let error = self.error();
+        let title = match self.mode {
+            TemplateMode::Save => "Save Layout As Template",
+            TemplateMode::Apply => "Apply Layout Template",
+        };
+        let (mode, replaces) = (self.mode, self.replaces());
+        let (name, default_for_sheet, existing, selected) = (
+            &mut self.name,
+            &mut self.default_for_sheet,
+            &self.existing,
+            &mut self.selected,
+        );
+        frame(ctx, title, 360.0, error, |ui| {
+            if mode == TemplateMode::Save {
+                row(ui, "Name", |ui| {
+                    ui.add(egui::TextEdit::singleline(name).desired_width(240.0));
+                });
+                ui.checkbox(
+                    default_for_sheet,
+                    "Start new layouts of this sheet size from it",
+                );
+                if replaces {
+                    ui.weak("A template with this name is replaced.");
+                }
+                ui.weak("Boxes of cameras and placed schedules are left out.");
+            }
+            if !existing.is_empty() {
+                ui.separator();
+                ui.label(if mode == TemplateMode::Save {
+                    "Saved templates"
+                } else {
+                    "Choose a template"
+                });
+                for (i, t) in existing.iter().enumerate() {
+                    let text = format!(
+                        "{}   ({}, {} pages{})",
+                        t.name,
+                        t.sheet().label(),
+                        t.layout.pages.len(),
+                        if t.default_for_sheet { ", default" } else { "" }
+                    );
+                    if ui.selectable_label(*selected == Some(i), text).clicked() {
+                        *selected = Some(i);
+                        if mode == TemplateMode::Save {
+                            *name = t.name.clone();
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
 // --------------------------------------------------------------- print --
 
 pub use super::print::PrintDialog;
@@ -1091,6 +1305,7 @@ mod tests {
             id: None,
             tip: Point::new(1.0, 1.0),
             elbow: Point::new(2.0, 2.0),
+            bends: Vec::new(),
             text: String::new(),
             height_in: 0.125,
             arrow: true,
@@ -1163,5 +1378,88 @@ mod tests {
                 let _ = ctx.run(egui::RawInput::default(), |c| d(c));
             }
         }
+    }
+
+    #[test]
+    fn layout_templates_save_list_and_default_per_sheet() {
+        let dir = std::env::temp_dir().join(format!(
+            "plan-studio-layout-templates-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(list_layout_templates(&dir).is_empty());
+        let mut layout = plan_layout::Layout::new("Smith", SheetSize::ArchC);
+        layout.add_page(1, "Plan");
+        let a = plan_layout::LayoutTemplate::new("Presentation", &layout, true);
+        let file = save_layout_template(&dir, &a).unwrap();
+        assert!(file.ends_with("Presentation.layout.json"));
+        let mut b = plan_layout::LayoutTemplate::new("Working", &layout, true);
+        b.layout.add_page(2, "Elevations");
+        save_layout_template(&dir, &b).unwrap();
+        // Another sheet size keeps its own default.
+        let other = plan_layout::Layout::new("Small", SheetSize::ArchB);
+        save_layout_template(
+            &dir,
+            &plan_layout::LayoutTemplate::new("Small", &other, true),
+        )
+        .unwrap();
+        let all = list_layout_templates(&dir);
+        assert_eq!(
+            all.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            ["Presentation", "Small", "Working"]
+        );
+        // Only one default per sheet size: the newest.
+        let defaults: Vec<&str> = all
+            .iter()
+            .filter(|t| t.default_for_sheet)
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(defaults, ["Small", "Working"]);
+        let d = default_layout_template(&dir, SheetSize::ArchC).unwrap();
+        assert_eq!(d.name, "Working");
+        assert_eq!(d.layout.pages.len(), 2);
+        assert_eq!(
+            default_layout_template(&dir, SheetSize::ArchB)
+                .unwrap()
+                .name,
+            "Small"
+        );
+        assert!(default_layout_template(&dir, SheetSize::ArchD).is_none());
+        // Re-saving a name replaces the file; junk files are skipped.
+        std::fs::write(dir.join("junk.layout.json"), "nope").unwrap();
+        std::fs::write(dir.join("readme.txt"), "x").unwrap();
+        save_layout_template(
+            &dir,
+            &plan_layout::LayoutTemplate::new("Working", &layout, false),
+        )
+        .unwrap();
+        let all = list_layout_templates(&dir);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[2].layout.pages.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_template_dialog_validates_and_picks() {
+        let layout = plan_layout::Layout::new("Smith", SheetSize::ArchC);
+        let t = plan_layout::LayoutTemplate::new("Presentation", &layout, false);
+        let mut save = LayoutTemplateDialog::save("Smith Layout", vec![t.clone()]);
+        assert!(save.error().is_none());
+        assert!(!save.replaces());
+        save.name = "presentation".into();
+        assert!(save.replaces(), "names compare without case");
+        save.name = "  ".into();
+        assert!(save.error().is_some());
+        let apply = LayoutTemplateDialog::apply(vec![t]);
+        assert_eq!(apply.picked().unwrap().name, "Presentation");
+        assert!(LayoutTemplateDialog::apply(vec![]).error().is_some());
+        // Both windows draw.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let mut d = LayoutTemplateDialog::save("x", vec![]);
+            d.show(ctx);
+            let mut d = LayoutTemplateDialog::apply(vec![]);
+            d.show(ctx);
+        });
     }
 }

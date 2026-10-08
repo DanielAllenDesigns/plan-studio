@@ -33,10 +33,10 @@ use plan_core::{
     detect_rooms, Floor, Id, Layer, LineStyle, PlanDefaults, Project, Room, Wall, WallKind,
 };
 use plan_roof::{
-    apply_gable_line, auto_dormer, build_roof_at_plate, build_roof_with_specs,
-    ceiling_planes_for_vaulted_room, flat_roof_plane, footprint_from_walls, join_planes,
-    roof_plane_with_holes, roof_return_at, CeilingPlane, Dormer, DormerSpec, EdgeRoofSpec,
-    ReturnKind, ReturnSpec, Roof, RoofHole, RoofPlane, SkylightSpec,
+    apply_gable_line, auto_dormer, build_roof_at_plate_with_faces, build_roof_with_faces,
+    ceiling_planes_for_vaulted_room, flat_roof_plane_with_overhang, footprint_from_walls,
+    join_planes, roof_plane_with_holes, roof_return_at, CeilingPlane, Dormer, DormerSpec,
+    EdgeRoofSpec, ReturnKind, ReturnSpec, Roof, RoofHole, RoofPlane, SkylightSpec,
 };
 use serde_json::{json, Value};
 
@@ -52,6 +52,8 @@ pub const AUTO_RETURN_LENGTH: f64 = 24.0;
 /// (vertical drop). Chief reaches down to the wall below; plan-roof needs a
 /// fixed drop because the walls below are not known to Build Roof.
 pub const EXTEND_SLOPE_DROP: f64 = 24.0;
+/// Overhang a new dormer starts with, inches.
+pub const DORMER_OVERHANG: f64 = 12.0;
 /// Thickness of the dormer walls in the 3D meshes, inches.
 pub const DORMER_WALL_THICKNESS: f64 = 4.5;
 /// Hidden layer of the legacy CAD-record storage (older files only).
@@ -139,6 +141,13 @@ impl HoleRecord {
         }
     }
 
+    /// Turns the outline by `angle` radians about `pivot`.
+    pub fn rotate(&mut self, angle: f64, pivot: Point) {
+        for p in &mut self.outline {
+            *p = rotate_about(*p, angle, pivot);
+        }
+    }
+
     /// The `plan-roof` hole.
     pub fn to_roof_hole(&self) -> RoofHole {
         match self.skylight {
@@ -157,6 +166,145 @@ impl HoleRecord {
             outline,
             skylight: field!(v, "skylight", SkylightSpec),
         })
+    }
+}
+
+/// `p` turned by `angle` radians (counter-clockwise) about `pivot`.
+pub fn rotate_about(p: Point, angle: f64, pivot: Point) -> Point {
+    let (s, c) = angle.sin_cos();
+    let d = p.sub(pivot);
+    pivot.add(Point::new(d.x * c - d.y * s, d.x * s + d.y * c))
+}
+
+/// How far up the slope from the centre the pitch arrow's handle sits, inches.
+pub const PITCH_ARROW_REACH: f64 = 24.0;
+/// How far below the eave the rotate handle sits, inches.
+pub const ROTATE_REACH: f64 = 30.0;
+/// Rise in 12 gained per inch the pitch arrow is dragged up the slope.
+pub const PITCH_PER_INCH: f64 = 0.25;
+/// Edges shorter than this get no edge handle, inches.
+const MIN_EDGE_HANDLE: f64 = 12.0;
+
+/// The edit handles of a selected roof plane (RF-38).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlaneHandle {
+    /// A corner: drags it in plan, the plane keeps its pitch.
+    Vertex(usize),
+    /// The middle of edge `i` (vertex `i` to `i + 1`): drags the whole edge
+    /// square to itself.
+    Edge(usize),
+    /// The pitch arrow: dragging it up the slope steepens the plane.
+    Pitch,
+    /// The knob below the eave: turns the plane about its centre.
+    Rotate,
+}
+
+impl RoofPlaneRecord {
+    /// The handles of the plane with their plan positions: corners, the
+    /// middle of every edge long enough, the pitch arrow up the slope from the
+    /// centre and the rotate knob below the eave.
+    pub fn handles(&self) -> Vec<(PlaneHandle, Point)> {
+        let poly = self.plan_polygon();
+        let n = poly.len();
+        let mut out: Vec<(PlaneHandle, Point)> = poly
+            .iter()
+            .enumerate()
+            .map(|(i, &q)| (PlaneHandle::Vertex(i), q))
+            .collect();
+        for i in 0..n {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            if a.dist(b) >= MIN_EDGE_HANDLE {
+                out.push((PlaneHandle::Edge(i), Point::lerp(a, b, 0.5)));
+            }
+        }
+        let c = self.centroid();
+        out.push((
+            PlaneHandle::Pitch,
+            c.add(self.up_slope().scale(PITCH_ARROW_REACH)),
+        ));
+        let (a, b) = self.baseline;
+        out.push((
+            PlaneHandle::Rotate,
+            Point::lerp(a, b, 0.5).sub(self.up_slope().scale(ROTATE_REACH)),
+        ));
+        out
+    }
+
+    /// The handle at `p` within `tol`, corners first.
+    pub fn handle_at(&self, p: Point, tol: f64) -> Option<(PlaneHandle, Point)> {
+        self.handles()
+            .into_iter()
+            .filter(|(_, q)| q.dist(p) <= tol)
+            .min_by(|x, y| {
+                let rank = |h: PlaneHandle| match h {
+                    PlaneHandle::Vertex(_) => 0,
+                    PlaneHandle::Pitch | PlaneHandle::Rotate => 1,
+                    PlaneHandle::Edge(_) => 2,
+                };
+                (rank(x.0), x.1.dist(p))
+                    .partial_cmp(&(rank(y.0), y.1.dist(p)))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    /// Steepens the plane by `along` inches of drag up the slope (negative
+    /// flattens it): [`PITCH_PER_INCH`] in 12 per inch, in quarters, between
+    /// 1/4:12 and 24:12. The plane becomes manual (RF-37).
+    pub fn drag_pitch(&mut self, along: f64) {
+        let target = (self.pitch + along * PITCH_PER_INCH).clamp(0.25, 24.0);
+        self.set_pitch((target * 4.0).round() / 4.0);
+        self.auto = false;
+    }
+
+    /// Turns the plane (outline, baseline, holes, source edge) by `angle`
+    /// radians about `pivot`; the heights follow the turned baseline.
+    pub fn rotate(&mut self, angle: f64, pivot: Point) {
+        for v in &mut self.polygon3d {
+            let q = rotate_about(Point::new(v[0], -v[2]), angle, pivot);
+            v[0] = q.x;
+            v[2] = -q.y;
+        }
+        self.baseline = (
+            rotate_about(self.baseline.0, angle, pivot),
+            rotate_about(self.baseline.1, angle, pivot),
+        );
+        for h in &mut self.holes {
+            h.rotate(angle, pivot);
+        }
+        if let Some((a, b)) = &mut self.source {
+            *a = rotate_about(*a, angle, pivot);
+            *b = rotate_about(*b, angle, pivot);
+        }
+        self.auto = false;
+        self.resolve_heights();
+    }
+
+    /// Moves edge `i` (vertex `i` to `i + 1`) by `by` inches square to
+    /// itself, positive toward the right of the edge's direction (away from
+    /// a counter-clockwise plane's inside). The plane stays planar and its
+    /// pitch is kept; it becomes manual. Moving the baseline edge moves the
+    /// eave.
+    pub fn move_edge(&mut self, i: usize, by: f64) {
+        let n = self.polygon3d.len();
+        if i >= n {
+            return;
+        }
+        let poly = self.plan_polygon();
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        let d = b.sub(a).normalized();
+        let shift = Point::new(d.y, -d.x).scale(by);
+        for k in [i, (i + 1) % n] {
+            let q = poly[k].add(shift);
+            self.polygon3d[k][0] = q.x;
+            self.polygon3d[k][2] = -q.y;
+            if k == 0 {
+                self.baseline.0 = q;
+            } else if k == 1 {
+                self.baseline.1 = q;
+            }
+        }
+        self.auto = false;
+        self.resolve_heights();
     }
 }
 
@@ -761,6 +909,10 @@ pub struct RoofSet {
     pub planes: Vec<RoofPlaneRecord>,
     pub ceilings: Vec<CeilingRecord>,
     pub dormers: Vec<DormerRecord>,
+    /// The vertical faces Build Roof makes under Dutch gables (outward
+    /// roof-space polygons, see `plan_roof::build_roof_with_faces`). They are
+    /// not roof planes: not selectable, replaced by every rebuild.
+    pub faces: Vec<Vec<[f64; 3]>>,
 }
 
 /// What an id of the roof slot names.
@@ -817,7 +969,7 @@ impl RoofSet {
             .rev()
             .find(|d| {
                 dormer_geometry(self, d).is_some_and(|g| {
-                    g.roof_planes
+                    g.overhang_planes
                         .iter()
                         .any(|r| point_in_polygon(p, &r.plan_polygon()))
                 })
@@ -862,7 +1014,10 @@ impl RoofSet {
                 out.push((
                     d.id,
                     d.layer.clone(),
-                    g.roof_planes.iter().map(RoofPlane::plan_polygon).collect(),
+                    g.overhang_planes
+                        .iter()
+                        .map(RoofPlane::plan_polygon)
+                        .collect(),
                 ));
             }
         }
@@ -889,6 +1044,11 @@ pub fn load(floor: &Floor) -> RoofSet {
             Some("plane") => set.planes.extend(RoofPlaneRecord::from_json(v)),
             Some("ceiling") => set.ceilings.extend(CeilingRecord::from_json(v)),
             Some("dormer") => set.dormers.extend(DormerRecord::from_json(v)),
+            Some("face") => {
+                if let Some(poly) = field!(v, "polygon3d", Vec<[f64; 3]>).filter(|p| p.len() >= 3) {
+                    set.faces.push(poly);
+                }
+            }
             Some("settings") => set.settings = Some(RoofSettings::from_json(v, &base)),
             _ => {}
         }
@@ -908,6 +1068,11 @@ pub fn store(project: &mut Project, fi: usize, set: &mut RoofSet) {
     let mut items: Vec<Value> = set.planes.iter().map(RoofPlaneRecord::to_json).collect();
     items.extend(set.ceilings.iter().map(CeilingRecord::to_json));
     items.extend(set.dormers.iter().map(DormerRecord::to_json));
+    items.extend(
+        set.faces
+            .iter()
+            .map(|p| json!({"kind": "face", "polygon3d": p})),
+    );
     if let Some(s) = &set.settings {
         items.push(s.to_json());
     }
@@ -1328,7 +1493,7 @@ fn make_auto_planes(
     project: &mut Project,
     fi: usize,
     s: &RoofSettings,
-) -> Result<(Vec<RoofPlaneRecord>, bool), String> {
+) -> Result<AutoRoof, String> {
     let floor = &project.floors[fi];
     let rooms = detect_rooms(&floor.walls, TOL);
     // A floor whose every room is flat or roofless has no pitched roof.
@@ -1338,6 +1503,7 @@ fn make_auto_planes(
             .any(|r| room_roof(floor, r) == RoomRoof::Pitched);
     let mut out = Vec::new();
     let mut approximate = false;
+    let mut faces: Vec<Vec<[f64; 3]>> = Vec::new();
     if pitched {
         let walls = exterior_walls(floor);
         let fp = footprint_from_walls(&walls, TOL)
@@ -1348,11 +1514,12 @@ fn make_auto_planes(
         let plate = floor.elevation + top + s.raise_off_plate;
         // With the baseline rule on the structure sits on the top plate at
         // the wall; without it the eave tip is at plate height.
-        let roof = if s.detail.baseline_at_plate {
-            build_roof_at_plate(&fp, &specs, plate, s.detail.thickness)
+        let (roof, dutch_faces) = if s.detail.baseline_at_plate {
+            build_roof_at_plate_with_faces(&fp, &specs, plate, s.detail.thickness)
         } else {
-            build_roof_with_specs(&fp, &specs, plate)
+            build_roof_with_faces(&fp, &specs, plate)
         };
+        faces = dutch_faces;
         approximate = roof.approximate;
         let n = fp.len();
         let returns = auto_returns(&roof.planes, &plans);
@@ -1387,10 +1554,39 @@ fn make_auto_planes(
             }),
             RoomRoof::Flat => {
                 let height = plan_3d::room_ceiling_top(floor, room);
-                if let Some(pl) = flat_roof_plane(&room.polygon, height) {
+                // The exterior edges of the room overhang like the pitched
+                // roof's eaves; a partition against the pitched roof does not.
+                let n = room.polygon.len();
+                let mut ring = room.polygon.clone();
+                let mut over: Vec<f64> = (0..n)
+                    .map(|i| {
+                        let (a, b) = (room.polygon[i], room.polygon[(i + 1) % n]);
+                        let (mid, dir) = (Point::lerp(a, b, 0.5), b.sub(a).normalized());
+                        floor
+                            .walls
+                            .iter()
+                            .filter(|w| w.kind == WallKind::Exterior)
+                            .find(|w| {
+                                dist_to_segment(mid, w.start, w.end)
+                                    <= w.thickness.max(1.0) * 0.5 + TOL
+                                    && w.direction().cross(dir).abs() < 0.02
+                            })
+                            .map_or(0.0, |w| {
+                                w.thickness * 0.5 + w.roof.overhang.unwrap_or(s.overhang)
+                            })
+                    })
+                    .collect();
+                // The baseline (first edge) is an overhanging one.
+                let first = (0..n).max_by(|&x, &y| over[x].total_cmp(&over[y]).then(y.cmp(&x)));
+                if let Some(k) = first.filter(|_| n > 0) {
+                    ring.rotate_left(k);
+                    over.rotate_left(k);
+                }
+                if let Some(pl) = flat_roof_plane_with_overhang(&ring, height, &over) {
                     let mut r = RoofPlaneRecord::new(0, pl.polygon3d, 0.0, pl.baseline);
                     r.auto = true;
                     r.material = s.material.clone();
+                    r.overhang = s.overhang;
                     out.push(r);
                 }
             }
@@ -1402,12 +1598,34 @@ fn make_auto_planes(
             .find(|r| r.source.is_some() && r.encloses(&outline))
         {
             r.holes.push(HoleRecord::hole(outline));
+            continue;
+        }
+        // A roofless room that crosses a ridge, hip or valley: one hole piece
+        // in every plane it reaches.
+        let hit: Vec<usize> = (0..out.len())
+            .filter(|&i| out[i].source.is_some())
+            .collect();
+        let roofs: Vec<RoofPlane> = hit.iter().map(|&i| out[i].to_roof_plane(0)).collect();
+        for (k, piece) in plan_roof::hole_pieces(&roofs, &outline) {
+            out[hit[k]].holes.push(HoleRecord::hole(piece));
         }
     }
     for r in &mut out {
         r.id = project.alloc_id();
     }
-    Ok((out, approximate))
+    Ok(AutoRoof {
+        planes: out,
+        approximate,
+        faces,
+    })
+}
+
+/// What Build Roof made of the walls: the planes, whether plan-roof had to
+/// approximate, and the Dutch gable faces.
+struct AutoRoof {
+    planes: Vec<RoofPlaneRecord>,
+    approximate: bool,
+    faces: Vec<Vec<[f64; 3]>>,
 }
 
 /// The roof returns of walls with Auto Roof Return (RF-27): at each gable end
@@ -1494,7 +1712,12 @@ pub fn rebuild(
     let mut built = 0;
     if settings.build_planes {
         match make_auto_planes(project, fi, &settings) {
-            Ok((mut planes, approx)) => {
+            Ok(AutoRoof {
+                mut planes,
+                approximate: approx,
+                faces,
+            }) => {
+                set.faces = faces;
                 let moved = carry_over(&old_auto, &mut planes);
                 // Dormers follow their (rebuilt) plane.
                 for d in &mut set.dormers {
@@ -1597,6 +1820,7 @@ pub fn auto_rebuild(cx: &mut EditorContext) -> bool {
             // planes and settings, keep the manual ones.
             let mut old = set;
             old.planes.retain(|p| !p.auto);
+            old.faces.clear();
             old.settings = None;
             store(&mut cx.project, fi, &mut old);
         }
@@ -1634,6 +1858,7 @@ pub fn delete_all(project: &mut Project, fi: usize) -> usize {
     set.planes.clear();
     // Dormers stand on planes: they go with them.
     set.dormers.clear();
+    set.faces.clear();
     set.settings = None;
     store(project, fi, &mut set);
     n
@@ -1954,7 +2179,10 @@ fn apply_dormer_as(
 /// The dormer spec a click at `at` on plane `main` starts from: centered at
 /// the click along the eave and `at`'s distance up the slope as the setback.
 pub fn dormer_spec_at(set: &RoofSet, main: Id, at: Point) -> DormerSpec {
-    let mut spec = DormerSpec::default();
+    let mut spec = DormerSpec {
+        overhang: DORMER_OVERHANG,
+        ..DormerSpec::default()
+    };
     if let Some(p) = set.plane(main) {
         let (a, b) = p.baseline;
         spec.position_along_eave = at.sub(a).dot(b.sub(a).normalized());
@@ -2030,7 +2258,16 @@ pub fn explode_dormer_record(
         // thickness inside it.
         let out = Point::new(dw.normal[0], -dw.normal[2]);
         let inward = out * (-thickness * 0.5);
-        let height = dw.height.min(rec.spec.wall_height).max(1.0);
+        // The front wall of a gable dormer is the gable end: it stands to the
+        // ridge and, as a Full Gable wall, rises to the underside of the
+        // dormer roof planes, which gives the gable triangle above the wall.
+        let gable_front = i == 0 && rec.spec.kind == plan_roof::DormerKind::Gable;
+        let height = if gable_front {
+            dw.height
+        } else {
+            dw.height.min(rec.spec.wall_height)
+        }
+        .max(1.0);
         let wid = project.add_wall(
             fi,
             dw.start + inward,
@@ -2041,6 +2278,9 @@ pub fn explode_dormer_record(
         );
         if let Some(w) = project.floors[fi].wall_mut(wid) {
             w.bottom_offset = dw.base_elevation - floor_elevation;
+            if gable_front {
+                w.roof.kind = RoofWallKind::FullGable;
+            }
             if typed {
                 w.wall_type = Some(type_name.clone());
             }
@@ -2465,11 +2705,11 @@ pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         };
         let color = layer_color(cx, &d.layer);
         let planes: Vec<Vec<(Point, Point)>> = g
-            .roof_planes
+            .overhang_planes
             .iter()
             .map(|p| poly_edges(&p.plan_polygon()))
             .collect();
-        for (k, pl) in g.roof_planes.iter().enumerate() {
+        for (k, pl) in g.overhang_planes.iter().enumerate() {
             let heights: Vec<f64> = pl.polygon3d.iter().map(|v| v[1]).collect();
             let others: Vec<Vec<(Point, Point)>> = planes
                 .iter()
@@ -2543,14 +2783,25 @@ fn floor_roof_meshes_in(floor: &Floor, cover: Option<&plan_3d::FloorCover>) -> V
         let poly = roof_plane_with_holes(&plane, &holes);
         out.extend(tagged(plan_3d::roof_plane_meshes(&poly, thickness), r.id));
     }
-    for c in &set.ceilings {
-        out.extend(tagged(plan_3d::ceiling_plane_meshes(&c.to_plane()), c.id));
+    // Ceiling planes that meet along an edge (the ridge of a vaulted ceiling)
+    // are mitred.
+    let ceiling_planes: Vec<CeilingPlane> =
+        set.ceilings.iter().map(CeilingRecord::to_plane).collect();
+    for (c, plane) in set.ceilings.iter().zip(&ceiling_planes) {
+        out.extend(tagged(
+            plan_3d::ceiling_plane_meshes_joined(plane, &ceiling_planes),
+            c.id,
+        ));
     }
     for (d, g) in &dormers {
         out.extend(tagged(
             plan_3d::dormer_meshes(g, DORMER_WALL_THICKNESS, SLAB_THICKNESS),
             d.id,
         ));
+    }
+    // The wall faces under Dutch gables.
+    for face in &set.faces {
+        out.extend(plan_3d::gable_face_meshes(face, DORMER_WALL_THICKNESS));
     }
     out
 }
@@ -2573,7 +2824,20 @@ pub fn roof_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
 /// tagged with its roof plane's id. Kept apart from [`roof_meshes`] so the
 /// plane slabs stay one mesh per plane.
 pub fn roof_detail_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
-    plan_3d::RoofCover::from_project(project).eave_meshes()
+    let cover = plan_3d::RoofCover::from_project(project);
+    let mut out = cover.eave_meshes();
+    // The dormers' own eaves and rakes (a dormer overhang has fascia and
+    // soffit like any roof plane).
+    for (i, floor) in project.floors.iter().enumerate() {
+        let set = load(floor);
+        let detail = cover.floor(i).map_or(cover.detail, |c| c.detail);
+        for d in &set.dormers {
+            if let Some(g) = dormer_geometry(&set, d) {
+                out.extend(tagged(plan_3d::dormer_eave_meshes(&g, &detail), d.id));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2876,6 +3140,160 @@ mod tests {
         assert_eq!(r.baseline.0, Point::new(-10.0, 0.0));
     }
 
+    fn square_plane() -> RoofPlaneRecord {
+        let (base, poly) = manual_plane_geometry(
+            Point::new(0.0, 0.0),
+            Point::new(120.0, 0.0),
+            Point::new(60.0, 60.0),
+            100.0,
+            12.0,
+        )
+        .unwrap();
+        let mut r = RoofPlaneRecord::new(1, poly, 12.0, base);
+        r.auto = true;
+        r
+    }
+
+    fn assert_planar(r: &RoofPlaneRecord) {
+        let plane = r.to_roof_plane(0);
+        let n = plane.normal();
+        for v in &r.polygon3d {
+            let d = [
+                v[0] - r.polygon3d[0][0],
+                v[1] - r.polygon3d[0][1],
+                v[2] - r.polygon3d[0][2],
+            ];
+            assert!((d[0] * n[0] + d[1] * n[1] + d[2] * n[2]).abs() < 1e-6);
+        }
+        assert!(n[1] > 0.0);
+    }
+
+    #[test]
+    fn a_plane_has_vertex_edge_pitch_and_rotate_handles() {
+        let r = square_plane();
+        let hs = r.handles();
+        let count = |f: fn(&PlaneHandle) -> bool| hs.iter().filter(|(h, _)| f(h)).count();
+        assert_eq!(count(|h| matches!(h, PlaneHandle::Vertex(_))), 4);
+        assert_eq!(count(|h| matches!(h, PlaneHandle::Edge(_))), 4);
+        assert_eq!(count(|h| matches!(h, PlaneHandle::Pitch)), 1);
+        assert_eq!(count(|h| matches!(h, PlaneHandle::Rotate)), 1);
+        let at = |h: PlaneHandle| hs.iter().find(|(k, _)| *k == h).unwrap().1;
+        // Edge handles are the edge middles, the pitch arrow is up the slope
+        // from the centre, the rotate knob is below the eave.
+        assert_eq!(at(PlaneHandle::Edge(0)), Point::new(60.0, 0.0));
+        let up = r.up_slope();
+        assert!(
+            (at(PlaneHandle::Pitch).sub(r.centroid()).dot(up) - PITCH_ARROW_REACH).abs() < 1e-9
+        );
+        assert!(at(PlaneHandle::Rotate).y < 0.0 && (at(PlaneHandle::Rotate).x - 60.0).abs() < 1e-9);
+        // The nearest handle wins; corners beat edges.
+        assert_eq!(
+            r.handle_at(Point::new(1.0, 1.0), 6.0).map(|h| h.0),
+            Some(PlaneHandle::Vertex(0))
+        );
+        assert_eq!(
+            r.handle_at(Point::new(61.0, 1.0), 6.0).map(|h| h.0),
+            Some(PlaneHandle::Edge(0))
+        );
+        assert_eq!(r.handle_at(Point::new(60.0, 30.0), 4.0), None);
+        // Short edges get none.
+        let mut thin = r.clone();
+        thin.move_vertex(1, Point::new(5.0, 0.0));
+        assert!(
+            thin.handles()
+                .iter()
+                .filter(|(h, _)| matches!(h, PlaneHandle::Edge(_)))
+                .count()
+                < 4
+        );
+    }
+
+    #[test]
+    fn dragging_the_pitch_arrow_changes_the_pitch_in_quarters() {
+        let mut r = square_plane();
+        assert_eq!(r.pitch, 12.0);
+        r.drag_pitch(8.0);
+        assert!(!r.auto);
+        assert_eq!(r.pitch, 14.0);
+        // The heights follow: the far edge is 60" of run at 14:12.
+        assert!((r.polygon3d[2][1] - (100.0 + 60.0 * 14.0 / 12.0)).abs() < 1e-9);
+        assert_planar(&r);
+        r.drag_pitch(-1.1);
+        assert_eq!(r.pitch, 13.75);
+        r.drag_pitch(-1000.0);
+        assert_eq!(r.pitch, 0.25);
+        r.drag_pitch(1000.0);
+        assert_eq!(r.pitch, 24.0);
+        assert_eq!(r.baseline_height(), 100.0, "the eave stays");
+    }
+
+    #[test]
+    fn rotating_a_plane_turns_it_about_its_centre_and_keeps_its_pitch() {
+        let mut r = square_plane();
+        r.holes.push(HoleRecord::hole(rect_polygon(
+            Point::new(50.0, 20.0),
+            Point::new(70.0, 40.0),
+        )));
+        let c = r.centroid();
+        let area = polygon_area(&r.plan_polygon()).abs();
+        r.rotate(std::f64::consts::FRAC_PI_2, c);
+        assert!(!r.auto);
+        // Same shape and size, still about the same centre.
+        assert!((polygon_area(&r.plan_polygon()).abs() - area).abs() < 1e-6);
+        assert!(r.centroid().dist(c) < 1e-6);
+        // The baseline was along +x; a quarter turn puts it along +y.
+        let d = r.baseline.1.sub(r.baseline.0);
+        assert!(d.x.abs() < 1e-9 && d.y > 100.0, "{d:?}");
+        // The plane rises the other way now and keeps 12:12 and its eave.
+        assert_planar(&r);
+        assert_eq!(r.baseline_height(), 100.0);
+        let slope = r.up_slope();
+        assert!(slope.x.abs() > 0.99, "{slope:?}");
+        assert!((r.to_roof_plane(0).pitch_in_12 - 12.0).abs() < 1e-9);
+        // The hole turned with it and is still inside.
+        assert!(r.encloses(&r.holes[0].outline));
+        // Four quarter turns bring everything back.
+        let orig = square_plane();
+        for _ in 0..3 {
+            r.rotate(std::f64::consts::FRAC_PI_2, c);
+        }
+        for (a, b) in r.plan_polygon().iter().zip(orig.plan_polygon()) {
+            assert!(a.dist(b) < 1e-6);
+        }
+    }
+
+    #[test]
+    fn moving_an_edge_keeps_the_plane_planar_and_its_pitch() {
+        let mut r = square_plane();
+        // The top edge (vertex 2 to 3) 20" further out (to the right of
+        // its direction, which is up the screen for a plane rising in +y).
+        let top = r.plan_polygon();
+        let edge = (0..4)
+            .find(|&i| (top[i].y - 60.0).abs() < 1e-9 && (top[(i + 1) % 4].y - 60.0).abs() < 1e-9)
+            .unwrap();
+        r.move_edge(edge, 20.0);
+        let moved = r.plan_polygon();
+        assert!(
+            (moved[edge].y - 80.0).abs() < 1e-9 && (moved[(edge + 1) % 4].y - 80.0).abs() < 1e-9
+        );
+        assert!(!r.auto);
+        assert_planar(&r);
+        assert!(
+            (r.polygon3d[edge][1] - (100.0 + 80.0)).abs() < 1e-9,
+            "12:12 over 80\""
+        );
+        // The eave edge moves the eave line (its elevation stays).
+        let mut e = square_plane();
+        e.move_edge(0, -10.0);
+        assert_eq!(e.baseline.0, Point::new(0.0, 10.0));
+        assert_eq!(e.baseline_height(), 100.0);
+        assert_planar(&e);
+        // Out of range does nothing.
+        let before = e.clone();
+        e.move_edge(9, 5.0);
+        assert_eq!(e, before);
+    }
+
     #[test]
     fn meshes_cover_each_plane() {
         let d = eave_tip_defaults();
@@ -3051,6 +3469,22 @@ mod tests {
             .inner_polygon
             .clone();
         assert!((area - polygon_area(&room).abs()).abs() < 1.0, "{area}");
+        // Planes that meet along the hips are mitred: every slab is meshed
+        // with finite corners and its structure above the underside.
+        let meshes = floor_roof_meshes(&p.floors[0]);
+        for c in &set.ceilings {
+            let mine: Vec<&plan_3d::Mesh> = meshes
+                .iter()
+                .filter(|m| m.object_id == Some(c.id))
+                .collect();
+            assert!(mine
+                .iter()
+                .any(|m| m.material == plan_3d::CEILING_FRAMING_MATERIAL));
+            assert!(mine
+                .iter()
+                .flat_map(|m| m.vertices.iter())
+                .all(|v| v.position.iter().all(|x| x.is_finite())));
+        }
         // The ceilings sit under the roof surface.
         let c = &set.ceilings[0];
         let mid = polygon_centroid(&c.outline);
@@ -3281,6 +3715,29 @@ mod tests {
             "{} vs {hip_ridge}",
             ridge_x(&p)
         );
+        // The vertical face under each short gable is stored and meshed.
+        let set = load(&p.floors[0]);
+        assert_eq!(set.faces.len(), 2);
+        let face_tris = |p: &Project| -> usize {
+            floor_roof_meshes(&p.floors[0])
+                .iter()
+                .filter(|m| m.object_id.is_none() && m.material == plan_3d::Material::Stucco)
+                .map(plan_3d::Mesh::triangle_count)
+                .sum()
+        };
+        assert!(face_tris(&p) > 0, "the faces are in the roof meshes");
+        // It survives a save, and goes with a rebuild without the directive.
+        let back: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(load(&back.floors[0]).faces, set.faces);
+        for i in [1, 3] {
+            p.floors[0].walls[i].roof.kind = RoofWallKind::Hip;
+        }
+        let s = RoofSettings::from_defaults(&d);
+        rebuild(&mut p, 0, s, false).unwrap();
+        assert!(load(&p.floors[0]).faces.is_empty());
+        assert_eq!(face_tris(&p), 0);
+        delete_all(&mut p, 0);
+        assert!(load(&p.floors[0]).faces.is_empty());
     }
 
     #[test]
@@ -3435,6 +3892,73 @@ mod tests {
             .map(|r| r.holes.len())
             .sum();
         assert_eq!(holes, 1, "one hole where the room is");
+    }
+
+    /// Is the point `p` (plan) under a roof triangle facing up?
+    fn roof_covers(p: &Project, at: Point) -> bool {
+        roof_meshes(p).iter().any(|m| {
+            m.indices.chunks(3).any(|t| {
+                let v = |i: u32| m.vertices[i as usize];
+                let (a, b, c) = (v(t[0]), v(t[1]), v(t[2]));
+                let plan = |q: plan_3d::Vertex| {
+                    Point::new(f64::from(q.position[0]), -f64::from(q.position[2]))
+                };
+                a.normal[1] > 0.5 && point_in_polygon(at, &[plan(a), plan(b), plan(c)])
+            })
+        })
+    }
+
+    #[test]
+    fn a_roofless_room_across_the_ridge_gets_a_hole_in_each_plane() {
+        let d = eave_tip_defaults();
+        let mut p = rect_project(480.0, 288.0);
+        // 60 x 90 inches, straddling the ridge at y = 144.
+        let (a, b) = (Point::new(210.0, 100.0), Point::new(270.0, 190.0));
+        let c = [a, Point::new(b.x, a.y), b, Point::new(a.x, b.y)];
+        for i in 0..4 {
+            p.add_wall(0, c[i], c[(i + 1) % 4], 4.5, 109.0, WallKind::Interior);
+        }
+        let mut well =
+            plan_core::RoomName::new(Point::new(240.0, 145.0), "Light well", "Courtyard");
+        well.misc = Some(deck_misc(false, false));
+        p.floors[0].room_names.push(well);
+        rebuild(&mut p, 0, RoofSettings::from_defaults(&d), false).unwrap();
+        let set = load(&p.floors[0]);
+        let with_holes = set.planes.iter().filter(|r| !r.holes.is_empty()).count();
+        assert_eq!(with_holes, 2, "the south and the north plane");
+        // The roof is open over both halves of the room and closed beside it.
+        assert!(!roof_covers(&p, Point::new(240.0, 120.0)));
+        assert!(!roof_covers(&p, Point::new(240.0, 170.0)));
+        assert!(roof_covers(&p, Point::new(240.0, 60.0)));
+        assert!(roof_covers(&p, Point::new(240.0, 230.0)));
+    }
+
+    #[test]
+    fn a_flat_roof_overhangs_its_exterior_edges_but_not_the_partition() {
+        let d = eave_tip_defaults();
+        let mut p = house_with_east_room(deck_misc(true, true));
+        rebuild(&mut p, 0, RoofSettings::from_defaults(&d), false).unwrap();
+        let set = load(&p.floors[0]);
+        let flat = set.planes.iter().find(|r| r.pitch == 0.0).unwrap();
+        let pts = flat.plan_polygon();
+        let range = |f: fn(&Point) -> f64| {
+            (
+                pts.iter().map(f).fold(f64::MAX, f64::min),
+                pts.iter().map(f).fold(f64::MIN, f64::max),
+            )
+        };
+        // 3" half wall + 16" overhang past the centerlines on the three
+        // exterior sides; the partition at x = 360 stays put.
+        let (x0, x1) = range(|p| p.x);
+        let (y0, y1) = range(|p| p.y);
+        assert!((x0 - 360.0).abs() < 1e-6, "{x0}");
+        assert!((x1 - 499.0).abs() < 1e-6, "{x1}");
+        assert!((y0 + 19.0).abs() < 1e-6, "{y0}");
+        assert!((y1 - 307.0).abs() < 1e-6, "{y1}");
+        // The eave (baseline) is an overhanging edge.
+        let (a, b) = flat.baseline;
+        assert!(a.x > 360.0 + 1.0 || b.x > 360.0 + 1.0 || (a.y + 19.0).abs() < 1e-6);
+        assert_eq!(flat.overhang, d.exterior_wall.roof.overhang);
     }
 
     #[test]

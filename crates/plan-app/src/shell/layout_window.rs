@@ -28,9 +28,11 @@
 
 use crate::dialogs::camera as cam;
 use crate::dialogs::layout::{
+    default_layout_template, layout_templates_dir, list_layout_templates, save_layout_template,
     BoxSpec, BoxSpecDialog, CadTextDialog, CadTextSpec, CloudDialog, CloudSpec, LayoutLayersDialog,
-    LeaderDialog, LeaderSpec, PageChoice, PageRow, PageSetup, PageSetupDialog, PageTableDialog,
-    Placement, PrintDialog, SendDialog, SendSource, SendSpec, TextBoxDialog, TextBoxSpec,
+    LayoutTemplateDialog, LeaderDialog, LeaderSpec, PageChoice, PageRow, PageSetup,
+    PageSetupDialog, PageTableDialog, Placement, PrintDialog, SendDialog, SendSource, SendSpec,
+    TemplateMode, TextBoxDialog, TextBoxSpec,
 };
 use crate::dialogs::print::{self, Image3dDialog, ImageDialog, ModelDialog, PrintTarget};
 use crate::dialogs::Outcome;
@@ -99,6 +101,25 @@ thread_local! {
     /// Tests: render every perspective view at this `(width, height, samples)`
     /// instead of the size its box asks for.
     static PERSPECTIVE_TEST_SIZE: Cell<Option<(u32, u32, u32)>> = const { Cell::new(None) };
+    /// Default Settings > Door and Window Labels, as the plan's editor holds
+    /// them (the render contexts see only the project); refreshed every frame
+    /// by [`show_dialogs`].
+    static OPENING_LABELS: RefCell<plan_core::OpeningLabelDefaults> =
+        RefCell::new(plan_core::OpeningLabelDefaults::default());
+}
+
+/// Hands the layout the label settings of the plan's Default Settings.
+pub fn set_opening_labels(labels: &plan_core::OpeningLabelDefaults) {
+    OPENING_LABELS.with(|l| {
+        if *l.borrow() != *labels {
+            *l.borrow_mut() = labels.clone();
+        }
+    });
+}
+
+/// The label settings plan boxes print their openings with.
+fn opening_labels() -> plan_core::OpeningLabelDefaults {
+    OPENING_LABELS.with(|l| l.borrow().clone())
 }
 
 /// `~/.plan-studio/master-list.json`: prices, waste and stock lengths of the
@@ -196,7 +217,7 @@ pub fn cached_perspective(
 }
 
 /// Ray traces the view of `req` (its camera at its size and sample count).
-/// Limits: the default clear-day sun and sky, no point lights.
+/// Limits: the default clear-day sun and sky; the plan's point lights shine.
 fn trace_perspective(project: &Project, req: &PerspectiveRequest) -> Option<PerspectiveImage> {
     let c = project.camera(req.camera_id)?;
     let (w, h, samples) = (req.width.max(1), req.height.max(1), req.samples.max(1));
@@ -216,10 +237,13 @@ fn trace_perspective(project: &Project, req: &PerspectiveRequest) -> Option<Pers
         samples,
         ..plan_render::RenderSettings::default()
     };
+    // The plan's lights shine (Adjust Lights, and the electrical fixtures when
+    // the plan asks for them).
+    let lights = cam::render_lights(project);
     let image = renderer.render(
         &camera,
         &plan_render::Environment::default(),
-        &[],
+        &lights,
         &settings,
     );
     Some(PerspectiveImage {
@@ -290,6 +314,7 @@ pub fn render_context(project: &Project) -> LayoutRenderContext<'_> {
         .with_picture_loader(load_picture)
         .with_master_list(load_master_list());
     rcx.macros = macro_context(project);
+    rcx.opening_labels = opening_labels();
     rcx
 }
 
@@ -304,6 +329,7 @@ fn ui_context(project: &Project) -> LayoutRenderContext<'_> {
         .with_picture_loader(load_picture)
         .with_master_list(load_master_list());
     rcx.macros = macro_context(project);
+    rcx.opening_labels = opening_labels();
     rcx
 }
 
@@ -349,14 +375,16 @@ fn is_scaled(s: &BoxSource) -> bool {
 
 // ---------------------------------------------------------- page logic --
 
-/// Content pages are numbered consecutively from the first one's number, in
-/// page order; template pages keep their number.
+/// Content pages are numbered consecutively in page order, from the lowest
+/// number any of them has (so moving the cover, sheet 0, away from the front
+/// does not shift the whole set up by one); template pages keep their number.
 pub fn renumber_pages(layout: &mut Layout) {
     let Some(start) = layout
         .pages
         .iter()
-        .find(|p| !p.template_page)
+        .filter(|p| !p.template_page)
         .map(|p| p.number)
+        .min()
     else {
         return;
     };
@@ -821,6 +849,11 @@ pub enum LayoutCommand {
     /// Add Daniel's sheet set (cover, site, plans, elevations, sections,
     /// details, schedules) to the layout.
     CreateConstructionSet,
+    /// Layout > Save As Template: store the layout under a name in
+    /// `~/.plan-studio/templates`.
+    SaveAsTemplate,
+    /// Layout > Apply Template: replace the layout with a saved template.
+    ApplyTemplate,
     /// Choose the tool that clicks and drags on the page use.
     Tool(LayoutTool),
     Undo,
@@ -895,6 +928,8 @@ struct Dialogs {
     cloud: Option<CloudDialog>,
     layers: Option<LayoutLayersDialog>,
     model: Option<ModelDialog>,
+    /// Save As Template and Apply Template.
+    template: Option<LayoutTemplateDialog>,
     /// Print Image of the 3D view: the dialog and the view it will render.
     image3d: Option<(Image3dDialog, crate::shell::view3d_panel::Snapshot3d)>,
 }
@@ -913,6 +948,7 @@ impl Dialogs {
             || self.cloud.is_some()
             || self.layers.is_some()
             || self.model.is_some()
+            || self.template.is_some()
             || self.image3d.is_some()
     }
 }
@@ -1185,7 +1221,13 @@ impl LayoutView {
         if self.layout.is_some() {
             return false;
         }
-        let layout = crate::templates::new_layout(&format!("{} Layout", project.name), seed);
+        let mut layout = crate::templates::new_layout(&format!("{} Layout", project.name), seed);
+        // A template saved as the default for this sheet size takes over.
+        if let Some(t) =
+            layout_templates_dir().and_then(|d| default_layout_template(&d, layout.sheet))
+        {
+            layout = t.instantiate(&layout.name);
+        }
         // Making the layout is an undo step too, so an older plan edit's
         // undo cannot drop it unseen.
         self.steps.push(("New Layout".to_string(), project.clone()));
@@ -1278,6 +1320,67 @@ impl LayoutView {
                 None => false,
             }
         })
+    }
+
+    /// Save As Template: writes the layout as a template named in the
+    /// window. Returns what to tell the user.
+    pub fn save_template(&self, name: &str, default_for_sheet: bool) -> String {
+        let Some(layout) = &self.layout else {
+            return "There is no layout to save".into();
+        };
+        let Some(dir) = layout_templates_dir() else {
+            return format!("Could not save the template: {}", crate::paths::NO_HOME);
+        };
+        let template = plan_layout::LayoutTemplate::new(name, layout, default_for_sheet);
+        match save_layout_template(&dir, &template) {
+            Ok(file) => format!(
+                "Saved the layout template \"{}\" to {}",
+                template.name,
+                file.display()
+            ),
+            Err(e) => format!("Could not save the template: {e}"),
+        }
+    }
+
+    /// Replaces the layout with `template` (one undo step). The layout keeps
+    /// its name; the page shown is the first printed page.
+    pub fn apply_template(
+        &mut self,
+        project: &mut Project,
+        template: &plan_layout::LayoutTemplate,
+    ) -> bool {
+        let name = self
+            .layout
+            .as_ref()
+            .map_or_else(String::new, |l| l.name.clone());
+        let done = self.edit(project, "Apply Layout Template", |l| {
+            *l = template.instantiate(&name);
+            true
+        });
+        if done {
+            self.page = self
+                .layout
+                .as_ref()
+                .and_then(|l| l.pages.iter().position(|p| !p.template_page))
+                .unwrap_or(0);
+            self.selected = None;
+            self.selected_cad = None;
+            self.fit_pending = true;
+        }
+        done
+    }
+
+    /// OK in the template window: save, or apply, as it was opened for.
+    fn finish_template(&mut self, project: &mut Project, d: &LayoutTemplateDialog) -> String {
+        match d.mode() {
+            TemplateMode::Save => self.save_template(&d.name, d.default_for_sheet),
+            TemplateMode::Apply => match d.picked() {
+                Some(t) if self.apply_template(project, t) => {
+                    format!("Applied the layout template \"{}\"", t.name)
+                }
+                _ => "The layout was not changed".into(),
+            },
+        }
     }
 
     pub fn apply_page_table(&mut self, project: &mut Project, rows: &[PageRow]) -> bool {
@@ -1637,7 +1740,13 @@ impl LayoutView {
             };
             match spec.id {
                 None => {
-                    let id = p.add_leader(spec.tip, spec.elbow, &spec.text, spec.height_in);
+                    let id = p.add_leader_bent(
+                        spec.tip,
+                        spec.bends.clone(),
+                        spec.elbow,
+                        &spec.text,
+                        spec.height_in,
+                    );
                     made = Some(id);
                     if let Some(l) = p.leaders.iter_mut().find(|l| l.id == id) {
                         l.arrow = spec.arrow;
@@ -2277,6 +2386,7 @@ impl LayoutView {
                 | C::PageSetup
                 | C::ProjectInfo
                 | C::PageTable
+                | C::SaveAsTemplate
                 | C::Undo
                 | C::Redo
                 | C::FitPage
@@ -2330,6 +2440,28 @@ impl LayoutView {
             C::PageTable => {
                 self.dialogs.table = Some(PageTableDialog::new(self.page_rows()));
                 String::new()
+            }
+            C::SaveAsTemplate => {
+                let existing = layout_templates_dir()
+                    .map(|d| list_layout_templates(&d))
+                    .unwrap_or_default();
+                let name = self
+                    .layout
+                    .as_ref()
+                    .map_or_else(String::new, |l| l.name.clone());
+                self.dialogs.template = Some(LayoutTemplateDialog::save(&name, existing));
+                String::new()
+            }
+            C::ApplyTemplate => {
+                let existing = layout_templates_dir()
+                    .map(|d| list_layout_templates(&d))
+                    .unwrap_or_default();
+                if existing.is_empty() {
+                    "There are no saved layout templates (Layout > Save As Template)".into()
+                } else {
+                    self.dialogs.template = Some(LayoutTemplateDialog::apply(existing));
+                    String::new()
+                }
             }
             C::InsertPageBefore | C::InsertPageAfter => {
                 self.add_page(project, cmd == C::InsertPageBefore);
@@ -2488,7 +2620,7 @@ impl LayoutView {
                         "Arc: click the centre, then the start, then the end of the arc".into()
                     }
                     LayoutTool::Leader => {
-                        "Leader: drag from what it points at to where the text goes".into()
+                        "Leader: drag from what it points at to where the text goes, or click the tip and each bend and double-click where the text goes".into()
                     }
                     LayoutTool::Polyline => {
                         "Polyline: click the corners, double-click to finish".into()
@@ -2685,7 +2817,13 @@ impl LayoutView {
         }
         cx.view_flags.insert(ViewFlag::DrawingSheet);
         cx.view_flags.insert(ViewFlag::PrintPreview);
-        cx.status = "Print Preview: the sheet shows the chosen paper and scale".into();
+        crate::editor::sheet::set_preview_color(opts.color);
+        let mode = crate::editor::sheet::preview_color_label(opts.color);
+        cx.status = if mode.is_empty() {
+            "Print Preview: the sheet shows the chosen paper and scale".into()
+        } else {
+            format!("Print Preview: the sheet shows the chosen paper and scale, in {mode}")
+        };
     }
 
     /// Print Image was accepted: saves the plan view as a PNG.
@@ -2736,6 +2874,7 @@ impl LayoutView {
 
 /// Shows the layout dialogs and applies what was accepted.
 pub fn show_dialogs(ctx: &egui::Context, cx: &mut EditorContext) {
+    set_opening_labels(&cx.defaults.opening_labels);
     let mut view = with_view(std::mem::take);
     view.show_dialogs(ctx, cx);
     view.flush(cx);
@@ -2858,6 +2997,13 @@ impl LayoutView {
                         cx.status = "Layout layers updated".into();
                     }
                 }
+            }
+        }
+        if let Some(mut d) = self.dialogs.template.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.template = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => cx.status = self.finish_template(&mut cx.project, &d),
             }
         }
         if let Some(mut d) = self.dialogs.model.take() {
@@ -3078,7 +3224,11 @@ fn paint_text(painter: &egui::Painter, xf: &Xf, t: &BoxText, faint: bool) {
     if faint {
         color = color.gamma_multiply(0.45);
     }
-    let font = FontId::proportional(px);
+    // The text style's installed font, else the bundled one.
+    let font = match &t.font {
+        Some(spec) => crate::fonts::font_id(painter.ctx(), spec, px),
+        None => FontId::proportional(px),
+    };
     let at = xf.pt(t.x, t.y);
     if t.angle.abs() < 1e-9 {
         painter.text(
@@ -3462,11 +3612,13 @@ impl LayoutView {
         ctx.sheet_title = page.title.clone();
         ctx.scale = page_scale_label(page);
         ctx.page_count = layout.content_pages().len();
+        ctx.add_cloud_revisions(layout);
         // The cached drawings depend on the layers too.
         let sig = {
             let mut h = DefaultHasher::new();
             self.sig.hash(&mut h);
             format!("{:?}", layout.layers).hash(&mut h);
+            format!("{:?}", opening_labels()).hash(&mut h);
             h.finish()
         };
         let mut cache = std::mem::take(&mut self.cache);
@@ -3772,6 +3924,16 @@ impl LayoutView {
                             "Construction Set",
                             "Add Daniel's sheet set to the layout",
                             C::CreateConstructionSet,
+                        ),
+                        (
+                            "Save Template\u{2026}",
+                            "Save this layout as a template",
+                            C::SaveAsTemplate,
+                        ),
+                        (
+                            "Apply Template\u{2026}",
+                            "Replace this layout with a saved template",
+                            C::ApplyTemplate,
                         ),
                     ] {
                         if ui.button(text).on_hover_text(tip).clicked() {
@@ -4182,7 +4344,7 @@ impl LayoutView {
             }
             painter.add(egui::Shape::line(pts, draft));
         }
-        if !self.poly.is_empty() && self.tool == LayoutTool::Polyline {
+        if !self.poly.is_empty() && matches!(self.tool, LayoutTool::Polyline | LayoutTool::Leader) {
             let mut pts: Vec<Pos2> = self.poly.iter().map(|p| xf.pt(p.x, p.y)).collect();
             if let Some(h) = resp.hover_pos() {
                 let (x, y) = xf.paper(h);
@@ -4282,7 +4444,7 @@ impl LayoutView {
                     }
                 }
             }
-            LayoutTool::Polyline => {
+            LayoutTool::Polyline | LayoutTool::Leader => {
                 self.poly
                     .push(Point::new(snap(x, snapping), snap(y, snapping)));
             }
@@ -4309,7 +4471,6 @@ impl LayoutView {
             | LayoutTool::Box
             | LayoutTool::TextBox
             | LayoutTool::Circle
-            | LayoutTool::Leader
             | LayoutTool::Cloud => {}
         }
     }
@@ -4319,6 +4480,10 @@ impl LayoutView {
     fn double_click(&mut self, cx: &mut EditorContext, xf: &Xf, pos: Pos2) {
         if self.tool == LayoutTool::Polyline {
             self.finish_polyline(cx);
+            return;
+        }
+        if self.tool == LayoutTool::Leader {
+            self.finish_leader();
             return;
         }
         if self.tool != LayoutTool::Select {
@@ -4353,6 +4518,7 @@ impl LayoutView {
                     id: Some(id),
                     tip: l.tip,
                     elbow: l.elbow,
+                    bends: l.bends.clone(),
                     text: l.text.clone(),
                     height_in: l.height_in,
                     arrow: l.arrow,
@@ -4382,6 +4548,28 @@ impl LayoutView {
                 }
             }
         }
+    }
+
+    /// Ends the multi-segment leader being clicked out: the first click is the
+    /// arrow tip, the last the elbow where the text goes, the ones between
+    /// are bends. Fewer than two distinct points start nothing.
+    fn finish_leader(&mut self) {
+        let mut pts = std::mem::take(&mut self.poly);
+        pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9);
+        if pts.len() < 2 {
+            return;
+        }
+        let tip = pts.remove(0);
+        let elbow = pts.pop().unwrap_or(tip);
+        self.dialogs.leader = Some(LeaderDialog::new(LeaderSpec {
+            id: None,
+            tip,
+            elbow,
+            bends: pts,
+            text: String::new(),
+            height_in: plan_layout::LEADER_TEXT_IN,
+            arrow: true,
+        }));
     }
 
     /// Ends the polyline being drawn (two or more distinct corners).
@@ -4414,11 +4602,20 @@ impl LayoutView {
                 }
             }
             LayoutTool::Leader => {
-                // Dragged from the arrow tip to where the text goes.
+                // Dragged from the arrow tip to where the text goes; clicks
+                // before the drag are the tip and the bends.
+                let mut pts = std::mem::take(&mut self.poly);
+                let (tip, bends) = if pts.is_empty() {
+                    (a, Vec::new())
+                } else {
+                    let tip = pts.remove(0);
+                    (tip, pts)
+                };
                 self.dialogs.leader = Some(LeaderDialog::new(LeaderSpec {
                     id: None,
-                    tip: a,
+                    tip,
                     elbow: b,
+                    bends,
                     text: String::new(),
                     height_in: plan_layout::LEADER_TEXT_IN,
                     arrow: true,
@@ -5923,6 +6120,20 @@ mod tests {
             .view_flags
             .contains(&crate::toolbar::ViewFlag::DrawingSheet));
         assert_eq!(cx.sheet.size, plan_docs::SheetSize::Letter);
+        // ... and shows the colour mode the dialog chose.
+        assert_eq!(
+            crate::editor::sheet::preview_color(),
+            plan_layout::PrintColor::Color
+        );
+        let mut plan = plan;
+        plan.set_color(plan_layout::PrintColor::BlackWhite);
+        v.preview_print(&mut cx, &plan);
+        assert_eq!(
+            crate::editor::sheet::preview_color(),
+            plan_layout::PrintColor::BlackWhite
+        );
+        assert!(cx.status.contains("Black and white"), "{}", cx.status);
+        crate::editor::sheet::set_preview_color(plan_layout::PrintColor::Color);
     }
 
     #[test]
@@ -6044,6 +6255,7 @@ mod tests {
                 id: None,
                 tip: Point::new(12.0, 8.0),
                 elbow: Point::new(14.0, 9.0),
+                bends: Vec::new(),
                 text: "SEE DETAIL".into(),
                 height_in: 0.125,
                 arrow: true,
@@ -6070,6 +6282,7 @@ mod tests {
             id: None,
             tip: Point::new(5.0, 5.0),
             elbow: Point::new(7.0, 6.0),
+            bends: Vec::new(),
             text: "NEW 2x6 WALL".into(),
             height_in: 0.125,
             arrow: true,
@@ -6140,6 +6353,172 @@ mod tests {
         // The undo history names every step.
         let page = v.current_page().unwrap();
         assert_eq!(page.clouds[0].revision, "2");
+    }
+
+    #[test]
+    fn reordering_pages_keeps_the_numbering_and_the_sheet_index_follows() {
+        let mut l = Layout::new("t", plan_docs::SheetSize::ArchC);
+        for (n, t) in [(0, "Cover"), (1, "Plan"), (2, "Elevations")] {
+            l.add_page(n, t);
+        }
+        // Cover to second place: it is no longer first, but the set still
+        // runs A-0, A-1, A-2 and the index reads the new order.
+        assert_eq!(exchange_page(&mut l, 0, true), Some(1));
+        let rows: Vec<(String, String)> = l
+            .content_pages()
+            .iter()
+            .map(|p| (p.sheet_number(), p.title.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("A-0".to_string(), "Plan".to_string()),
+                ("A-1".to_string(), "Cover".to_string()),
+                ("A-2".to_string(), "Elevations".to_string())
+            ]
+        );
+        // The same through the printed index.
+        let p = project();
+        l.pages[1].boxes.push(plan_layout::LayoutBox::new(
+            1,
+            (Point::new(1.0, 1.0), Point::new(6.0, 4.0)),
+            BoxSource::SheetIndex,
+            plan_docs::Scale::QuarterInch,
+        ));
+        let pdf = print_bytes(&l, &p, None);
+        let text: String = pdf.iter().map(|&b| b as char).collect();
+        let (plan_at, cover_at) = (text.find("(PLAN)"), text.find("(COVER)"));
+        assert!(plan_at.is_some() && cover_at.is_some());
+        // Pages with a template page keep their own number.
+        l.add_page(9, "Template").template_page = true;
+        assert_eq!(exchange_page(&mut l, 1, false), Some(0));
+        assert_eq!(l.page(9).map(|t| t.number), Some(9));
+        assert_eq!(
+            l.content_pages()
+                .iter()
+                .map(|p| p.number)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn a_layout_saves_as_a_template_and_new_layouts_start_from_the_default() {
+        let dir =
+            std::env::temp_dir().join(format!("plan-studio-lw-templates-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::dialogs::layout::set_layout_templates_dir_for_tests(Some(dir.clone()));
+        let (mut v, mut p) = view_with_layout();
+        let pages_before = v.layout().unwrap().pages.len();
+        assert!(v.add_page(&mut p, false));
+        v.add_text_box(&mut p, "SEE PLAN", 12.0).unwrap();
+        let pages = v.layout().unwrap().pages.len();
+        assert_eq!(pages, pages_before + 1);
+        // Save As Template (the default for this sheet size).
+        let said = v.save_template("My Set", true);
+        assert!(said.starts_with("Saved the layout template"), "{said}");
+        assert!(dir.join("My Set.layout.json").exists());
+        // A new layout of that sheet size starts from it.
+        let mut p2 = project();
+        let mut v2 = LayoutView::default();
+        assert!(v2.create(&mut p2, None));
+        assert_eq!(v2.layout().unwrap().pages.len(), pages);
+        assert!(
+            v2.layout().unwrap().name.ends_with("Layout"),
+            "keeps its own name"
+        );
+        // Without the default flag a new layout is the plain one.
+        let said = v.save_template("My Set", false);
+        assert!(said.starts_with("Saved"), "{said}");
+        let mut p3 = project();
+        let mut v3 = LayoutView::default();
+        assert!(v3.create(&mut p3, None));
+        assert_eq!(v3.layout().unwrap().pages.len(), pages_before);
+        // Apply Template replaces the layout in one undo step.
+        let t = crate::dialogs::layout::list_layout_templates(&dir).remove(0);
+        assert!(v3.apply_template(&mut p3, &t));
+        assert_eq!(v3.layout().unwrap().pages.len(), pages);
+        assert_eq!(v3.undo(&mut p3).as_deref(), Some("Apply Layout Template"));
+        assert_eq!(v3.layout().unwrap().pages.len(), pages_before);
+        // Boxes of this plan's cameras are not in the template.
+        let t = crate::dialogs::layout::list_layout_templates(&dir).remove(0);
+        assert!(t
+            .layout
+            .pages
+            .iter()
+            .flat_map(|p| &p.boxes)
+            .all(|b| !matches!(
+                b.source,
+                BoxSource::Camera { .. } | BoxSource::Perspective { .. }
+            )));
+        crate::dialogs::layout::set_layout_templates_dir_for_tests(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn perspective_boxes_are_lit_by_the_plans_point_lights() {
+        set_perspective_size(24, 16, 1);
+        let mut p = project();
+        let id = p.add_camera(plan_core::CameraObject::new(
+            plan_core::camera::CameraKind::FullCamera,
+            Point::new(100.0, 100.0),
+            0.0,
+            "Living",
+            0,
+        ));
+        let req = test_request(id);
+        let dark = perspective_image(&p, &req).expect("a render");
+        let mut light = plan_core::camera::PlanLight::new(Point::new(150.0, 100.0), 70.0);
+        light.intensity = 6.0;
+        p.add_light(0, light).unwrap();
+        let lit = perspective_image(&p, &req).expect("a render");
+        assert_eq!((dark.width, dark.height), (lit.width, lit.height));
+        assert_ne!(dark.rgba, lit.rgba, "the light changes the picture");
+        let sum = |i: &PerspectiveImage| i.rgba.iter().map(|&b| u64::from(b)).sum::<u64>();
+        assert!(sum(&lit) > sum(&dark), "and brightens it");
+        clear_perspective_size();
+    }
+
+    #[test]
+    fn a_leader_can_be_clicked_out_with_bends() {
+        let (ctx, mut v, mut cx, _) = interactive();
+        v.steps.clear();
+        v.run(&mut cx, LayoutCommand::Tool(LayoutTool::Leader), None);
+        // Tip, two bends, then a double-click where the text goes.
+        let mut t = 1.0;
+        for (x, y) in [(6.0, 8.0), (6.0, 10.0), (8.0, 11.0)] {
+            let at = paper_point_to_screen(&v, x, y);
+            t = click_at(&ctx, &mut v, &mut cx, at, t);
+        }
+        assert_eq!(v.poly.len(), 3);
+        let xf = v.last_xf.unwrap();
+        let end = xf.pt(11.0, 11.0);
+        v.click(&mut cx, &xf, end, false);
+        v.double_click(&mut cx, &xf, end);
+        assert!(v.poly.is_empty());
+        let mut spec = v.dialogs.leader.take().expect("the prompt").spec().clone();
+        assert!((spec.tip.x - 6.0).abs() < 0.1 && (spec.tip.y - 8.0).abs() < 0.1);
+        assert_eq!(spec.bends.len(), 2, "{spec:?}");
+        assert!((spec.elbow.x - 11.0).abs() < 0.1);
+        spec.text = "SEE NOTE 4".into();
+        assert!(v.apply_leader(&mut cx.project, &spec));
+        let l = &v.current_page().unwrap().leaders[0];
+        assert_eq!(l.bends.len(), 2);
+        assert_eq!(l.polylines()[0].len(), 5);
+        // Double-clicking it later keeps the bends.
+        v.run(&mut cx, LayoutCommand::Tool(LayoutTool::Select), None);
+        let xf = v.last_xf.unwrap();
+        let on = xf.pt(6.0, 9.0);
+        v.double_click(&mut cx, &xf, on);
+        assert_eq!(v.dialogs.leader.as_ref().unwrap().spec().bends.len(), 2);
+        // One click is not a leader.
+        v.dialogs.leader = None;
+        v.run(&mut cx, LayoutCommand::Tool(LayoutTool::Leader), None);
+        let at = paper_point_to_screen(&v, 3.0, 3.0);
+        click_at(&ctx, &mut v, &mut cx, at, 20.0);
+        let xf = v.last_xf.unwrap();
+        v.double_click(&mut cx, &xf, at);
+        assert!(v.dialogs.leader.is_none());
     }
 
     #[test]

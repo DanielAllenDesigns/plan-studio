@@ -7,6 +7,8 @@
 //! hole rings.
 
 use crate::builder::{MeshBuilder, MeshSet};
+use crate::cover::RoofDetail;
+use crate::eave::{eave_detail_meshes, EavePlane};
 use crate::mesh::{Material, Mesh};
 use crate::triangulate::ear_clip_with_holes;
 use plan_core::Point;
@@ -292,6 +294,136 @@ pub fn ceiling_plane_meshes(ceiling: &CeilingPlane) -> Vec<Mesh> {
     set.finish(None)
 }
 
+/// Does the edge `a -> b` lie along an edge of `poly` (collinear within half
+/// an inch, overlapping by more than an inch)?
+fn shares_edge(a: V3d, b: V3d, poly: &[V3d]) -> bool {
+    let d = sub(b, a);
+    let len = dot(d, d).sqrt();
+    if len < 1.0 {
+        return false;
+    }
+    let u = scale(d, 1.0 / len);
+    let off = |p: V3d| {
+        let w = sub(p, a);
+        let q = sub(w, scale(u, dot(w, u)));
+        dot(q, q).sqrt()
+    };
+    let m = poly.len();
+    (0..m).any(|j| {
+        let (c, e) = (poly[j], poly[(j + 1) % m]);
+        if off(c) > 0.5 || off(e) > 0.5 {
+            return false;
+        }
+        let (t0, t1) = (dot(sub(c, a), u), dot(sub(e, a), u));
+        t1.max(t0).min(len) - t0.min(t1).max(0.0) > 1.0
+    })
+}
+
+/// Solves `rows * x = rhs` for three planes (Cramer's rule); `None` when the
+/// planes do not meet in one point.
+fn solve3(rows: [V3d; 3], rhs: [f64; 3]) -> Option<V3d> {
+    let det = dot(rows[0], cross(rows[1], rows[2]));
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let x = add(
+        add(
+            scale(cross(rows[1], rows[2]), rhs[0]),
+            scale(cross(rows[2], rows[0]), rhs[1]),
+        ),
+        scale(cross(rows[0], rows[1]), rhs[2]),
+    );
+    Some(scale(x, 1.0 / det))
+}
+
+/// A ceiling plane whose edges meet the edges of `neighbours` in mitres.
+///
+/// Where this plane's edge runs along an edge of another ceiling plane (the
+/// ridge of a vaulted ceiling, a hip, a valley), the structure above it ends
+/// on the plane that bisects the two surfaces instead of on the plane
+/// square to its own surface, so the slabs of two planes meet in one line
+/// above the joint with no gap and no overlap. Edges nothing meets are cut
+/// square, as in [`ceiling_plane_meshes`], which this equals when there are
+/// no neighbours.
+pub fn ceiling_plane_meshes_joined(
+    ceiling: &CeilingPlane,
+    neighbours: &[CeilingPlane],
+) -> Vec<Mesh> {
+    let poly = ceiling.polygon3d();
+    let Some(up) = unit(newell(&poly)) else {
+        return Vec::new();
+    };
+    let t = ceiling.thickness;
+    let m = poly.len();
+    let others: Vec<(V3d, Vec<V3d>)> = neighbours
+        .iter()
+        .map(|n| (n.normal(), n.polygon3d()))
+        .filter(|(n, p)| dot(*n, up) < 1.0 - 1e-6 && p != &poly)
+        .collect();
+    // The direction each side face of the structure leans in: the plane's own
+    // normal for a square edge, the bisector of the two normals at a mitre.
+    let lean: Vec<V3d> = (0..m)
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % m]);
+            others
+                .iter()
+                .find(|(_, p)| shares_edge(a, b, p))
+                .and_then(|(n, _)| unit(add(up, *n)))
+                .unwrap_or(up)
+        })
+        .collect();
+    if m < 3 || t <= 1e-9 {
+        return ceiling_plane_meshes(ceiling);
+    }
+    // Top corners: the corner lifted `t` along the normal, slid along its two
+    // side planes (the planes through the edges that contain the lean).
+    let top: Vec<V3d> = (0..m)
+        .map(|i| {
+            let p = poly[i];
+            let prev = (i + m - 1) % m;
+            let side = |e: usize| cross(sub(poly[(e + 1) % m], poly[e]), lean[e]);
+            let (n1, n2) = (side(prev), side(i));
+            solve3([up, n1, n2], [dot(up, p) + t, dot(n1, p), dot(n2, p)])
+                .unwrap_or_else(|| add(p, scale(up, t)))
+        })
+        .collect();
+    let mut set = MeshSet::default();
+    let skin = Skin {
+        face: Material::WallInterior,
+        back: CEILING_FRAMING_MATERIAL,
+        side: CEILING_FRAMING_MATERIAL,
+    };
+    // Underside (face only), top, then the sides.
+    add_extruded(&mut set, skin, &poly, &[], scale(up, -1.0), 0.0);
+    add_extruded(&mut set, Skin::all(skin.back), &top, &[], up, 0.0);
+    let centre = scale(
+        poly.iter()
+            .chain(top.iter())
+            .fold([0.0; 3], |a, v| add(a, *v)),
+        1.0 / (2 * m) as f64,
+    );
+    let side_mesh = set.material(skin.side);
+    for i in 0..m {
+        let j = (i + 1) % m;
+        let (a, b, a2, b2) = (poly[i], poly[j], top[i], top[j]);
+        let Some(mut n) = unit(cross(sub(b, a), sub(a2, a))) else {
+            continue;
+        };
+        let mid = scale(add(add(a, b), add(a2, b2)), 0.25);
+        if dot(n, sub(mid, centre)) < 0.0 {
+            n = scale(n, -1.0);
+        }
+        let len = dot(sub(b, a), sub(b, a)).sqrt();
+        let u = (len / IN_PER_FT) as f32;
+        side_mesh.quad(
+            [a, b, b2, a2].map(f32v),
+            [[0.0, 0.0], [u, 0.0], [u, 1.0], [0.0, 1.0]],
+            f32v(n),
+        );
+    }
+    set.finish(None)
+}
+
 /// Inset of a four-corner rectangle by `f` on every side (corners in order
 /// around the perimeter).
 fn inset_rect(r: &[V3d], f: f64) -> Option<Vec<V3d>> {
@@ -375,10 +507,58 @@ pub fn dormer_meshes(dormer: &Dormer, wall_thickness: f64, roof_thickness: f64) 
     for wall in &dormer.side_walls {
         dormer_wall_into(&mut set, wall, None, wall_thickness);
     }
-    for plane in &dormer.roof_planes {
+    for plane in &dormer.overhang_planes {
         add_roof_plane(&mut set, plane, roof_thickness);
     }
     set.finish(None)
+}
+
+/// A vertical roof face (the triangle under a Dutch gable, see
+/// `plan_roof::build_roof_with_faces`) as a wall: `polygon` in roof space with
+/// its Newell normal pointing out, `thickness` deep, in [`Material::Stucco`]
+/// with the inside in [`Material::WallInterior`].
+pub fn gable_face_meshes(polygon: &[[f64; 3]], thickness: f64) -> Vec<Mesh> {
+    let Some(n) = unit(newell(polygon)) else {
+        return Vec::new();
+    };
+    let mut set = MeshSet::default();
+    add_extruded(
+        &mut set,
+        Skin {
+            face: Material::Stucco,
+            back: Material::WallInterior,
+            side: Material::Stucco,
+        },
+        polygon,
+        &[],
+        n,
+        thickness,
+    );
+    set.finish(None)
+}
+
+/// The eave detail of a dormer's roof: fascia and gutters on its eaves, rake
+/// boards, soffit under the overhang (`dormer.spec.overhang`), ridge and hip
+/// caps where the planes have them on. The valleys against the main roof get
+/// nothing. `detail` is the roof's detail (its fascia, soffit and so on).
+pub fn dormer_eave_meshes(dormer: &Dormer, detail: &RoofDetail) -> Vec<Mesh> {
+    let planes: Vec<EavePlane> = dormer
+        .overhang_planes
+        .iter()
+        .enumerate()
+        .map(|(k, plane)| {
+            let mut ep = EavePlane::bare(plane.clone());
+            ep.overhang = dormer.spec.overhang;
+            ep.skip = dormer
+                .valley_edges
+                .iter()
+                .filter(|(p, _)| *p == k)
+                .map(|(_, e)| *e)
+                .collect();
+            ep
+        })
+        .collect();
+    eave_detail_meshes(&planes, detail)
 }
 
 fn add_roof_plane(set: &mut MeshSet, plane: &RoofPlane, thickness: f64) {

@@ -1,6 +1,6 @@
 # Parity spec: 3D Views and Cameras (Chief Architect X18)
 
-> Status (2026-10-08): 71 ids: 31 Works, 25 Partial, 15 Missing, 0 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+> Status (2026-10-08, re-audited against HEAD 4c11b69): 71 ids: 40 Works, 26 Partial, 5 Missing, 0 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
 
 Scope: every camera tool, camera objects in plan and their edit handles, camera
 options, 3D navigation, rendering techniques, material tools, lighting and 3D

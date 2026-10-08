@@ -255,6 +255,7 @@ impl Member {
             indices,
             material: Material::Framing,
             object_id: self.wall_id,
+            color: None,
         }
     }
 }
@@ -392,6 +393,7 @@ impl Member {
             indices,
             material: Material::Framing,
             object_id: self.wall_id,
+            color: None,
         }
     }
 }

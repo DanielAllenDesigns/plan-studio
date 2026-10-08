@@ -96,7 +96,7 @@ pub const SLAB_FLOOR_THICKNESS: f64 = 4.0;
 pub struct FunctionDefaults {
     /// A floor platform under the room (off for Open Below, Attic, Courtyard).
     pub has_floor: bool,
-    /// A ceiling platform over the room (off for Deck and Porch).
+    /// A ceiling platform over the room (off for Deck, Porch and Courtyard).
     pub has_ceiling: bool,
     /// Floor height offset from the floor datum, inches (a Garage drops it).
     pub floor_height_offset: f64,
@@ -121,7 +121,7 @@ impl Default for FunctionDefaults {
 /// The platform defaults of a room with function `function` (a room type's
 /// function: Standard, Utility, Garage, Deck, Porch, Open Below) and room
 /// type `type_name` (an Attic or Courtyard has no floor platform whatever its
-/// function).
+/// function, and a Courtyard, open to the sky, has no ceiling either).
 pub fn function_defaults(function: &str, type_name: &str) -> FunctionDefaults {
     use crate::extras::StructureLayer as L;
     let mut d = FunctionDefaults::default();
@@ -152,6 +152,9 @@ pub fn function_defaults(function: &str, type_name: &str) -> FunctionDefaults {
     }
     if matches!(type_name, "Attic" | "Courtyard") {
         d.has_floor = false;
+    }
+    if type_name == "Courtyard" {
+        d.has_ceiling = false;
     }
     d
 }
@@ -773,7 +776,9 @@ mod tests {
         );
         assert!(!roof.floor_structure.is_empty());
         assert!(!function_defaults("Utility", "Attic").has_floor);
-        assert!(!function_defaults("Standard", "Courtyard").has_floor);
+        let court = function_defaults("Standard", "Courtyard");
+        assert!(!court.has_floor && !court.has_ceiling, "open to the sky");
+        assert!(function_defaults("Utility", "Attic").has_ceiling);
         assert_eq!(
             function_defaults("Standard", "Bath"),
             FunctionDefaults::default()

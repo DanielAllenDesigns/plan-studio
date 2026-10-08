@@ -135,6 +135,23 @@ pub fn build_roof_with_specs(
     specs: &[EdgeRoofSpec],
     baseline_elevation: f64,
 ) -> Roof {
+    build_roof_with_faces(footprint, specs, baseline_elevation).0
+}
+
+/// [`build_roof_with_specs`] and the vertical faces of its Dutch gables.
+///
+/// A Dutch gable (a hip below the break, a short gable above it) leaves a
+/// triangle of open wall above the cut of the hip. Each face is a roof-space
+/// polygon (`X = plan x`, `Y` up, `Z = -plan y`) with its Newell normal
+/// pointing out of the building: the sill is the cut of the end hip at the
+/// break, the sides the rakes of the upper roof. The faces are not roof
+/// planes (they are vertical); a renderer draws them as wall. Empty for a
+/// roof without Dutch gables.
+pub fn build_roof_with_faces(
+    footprint: &[Point],
+    specs: &[EdgeRoofSpec],
+    baseline_elevation: f64,
+) -> (Roof, Vec<Vec<V3>>) {
     let spec_of = |i: usize| specs.get(i).copied().unwrap_or_default();
     let edges: Vec<EdgeRoof> = (0..footprint.len())
         .map(|i| spec_of(i).to_edge_roof())
@@ -142,13 +159,18 @@ pub fn build_roof_with_specs(
     let staged = crate::staged::needs_break(specs)
         .then(|| crate::staged::build_staged(footprint, specs, baseline_elevation))
         .flatten();
-    let mut roof = staged.unwrap_or_else(|| build_roof(footprint, &edges, baseline_elevation));
+    let (mut roof, faces) = staged.unwrap_or_else(|| {
+        (
+            build_roof(footprint, &edges, baseline_elevation),
+            Vec::new(),
+        )
+    });
     for plane in &mut roof.planes {
         if let Some(d) = spec_of(plane.source_edge).extend_slope_downward {
             *plane = extend_downward(plane, d);
         }
     }
-    roof
+    (roof, faces)
 }
 
 /// The eave-tip elevation that seats a roof of `thickness` on the top plate
@@ -179,7 +201,18 @@ pub fn build_roof_at_plate(
     plate: f64,
     thickness: f64,
 ) -> Roof {
-    build_roof_with_specs(footprint, specs, plate_baseline(specs, plate, thickness))
+    build_roof_at_plate_with_faces(footprint, specs, plate, thickness).0
+}
+
+/// [`build_roof_at_plate`] and the Dutch gable faces
+/// ([`build_roof_with_faces`]).
+pub fn build_roof_at_plate_with_faces(
+    footprint: &[Point],
+    specs: &[EdgeRoofSpec],
+    plate: f64,
+    thickness: f64,
+) -> (Roof, Vec<Vec<V3>>) {
+    build_roof_with_faces(footprint, specs, plate_baseline(specs, plate, thickness))
 }
 
 /// A level roof plane over `outline` (a flat roof, the Flat Roof room
@@ -200,6 +233,37 @@ pub fn flat_roof_plane(outline: &[Point], height: f64) -> Option<RoofPlane> {
         baseline: (ring[0], ring[1]),
         source_edge: 0,
     })
+}
+
+/// [`flat_roof_plane`] with an overhang: edge `i` of `outline`
+/// (`outline[i] -> outline[i + 1]`) moves outward by `overhangs[i]` inches
+/// (missing entries and `0` keep the edge where it is; a partition edge has
+/// none). The result is level at `height` and counter-clockwise, its first
+/// edge the baseline.
+pub fn flat_roof_plane_with_overhang(
+    outline: &[Point],
+    height: f64,
+    overhangs: &[f64],
+) -> Option<RoofPlane> {
+    let mut ring = outline.to_vec();
+    let mut shifts = overhangs.to_vec();
+    if polygon_area(&ring) < 0.0 {
+        // Reversing turns edge i (p[i] -> p[i+1]) into edge n-2-i.
+        let n = ring.len();
+        ring.reverse();
+        let old = shifts.clone();
+        shifts = (0..n)
+            .map(|k| {
+                let i = (2 * n - 2 - k) % n;
+                old.get(i).copied().unwrap_or(0.0)
+            })
+            .collect();
+    }
+    if ring.len() < 3 || polygon_area(&ring).abs() < 1e-6 {
+        return None;
+    }
+    let ring = geom::offset_edges(&ring, &shifts);
+    flat_roof_plane(&ring, height)
 }
 
 #[cfg(test)]
@@ -368,5 +432,37 @@ mod tests {
         assert!((plane.projected_area() - 20_000.0).abs() < 1e-6);
         assert!((plane.height_at(Point::new(50.0, 50.0)).unwrap() - 110.0).abs() < 1e-9);
         assert!(flat_roof_plane(&cw[..2], 0.0).is_none());
+    }
+
+    #[test]
+    fn a_flat_roof_overhangs_only_the_edges_that_ask() {
+        let ccw = vec![
+            Point::new(0.0, 0.0),
+            Point::new(200.0, 0.0),
+            Point::new(200.0, 100.0),
+            Point::new(0.0, 100.0),
+        ];
+        // South and east edges overhang 12; north and west are partitions.
+        let plane = flat_roof_plane_with_overhang(&ccw, 110.0, &[12.0, 12.0, 0.0, 0.0]).unwrap();
+        let pts = plane.plan_polygon();
+        assert_eq!(pts.len(), 4);
+        let (lo_x, hi_x) = (
+            pts.iter().map(|p| p.x).fold(f64::MAX, f64::min),
+            pts.iter().map(|p| p.x).fold(f64::MIN, f64::max),
+        );
+        let (lo_y, hi_y) = (
+            pts.iter().map(|p| p.y).fold(f64::MAX, f64::min),
+            pts.iter().map(|p| p.y).fold(f64::MIN, f64::max),
+        );
+        assert_eq!((lo_x, hi_x, lo_y, hi_y), (0.0, 212.0, -12.0, 100.0));
+        assert!(plane.polygon3d.iter().all(|p| (p[1] - 110.0).abs() < 1e-9));
+        assert!(plane.normal()[1] > 0.99);
+        // Clockwise input gives the same plane; no overhang gives the room.
+        let cw: Vec<Point> = ccw.iter().rev().copied().collect();
+        // Reversed, edge i of the ccw ring is edge 2 - i of the cw ring.
+        let same = flat_roof_plane_with_overhang(&cw, 110.0, &[0.0, 0.0, 12.0, 12.0]).unwrap();
+        assert!((same.projected_area() - plane.projected_area()).abs() < 1e-6);
+        let none = flat_roof_plane_with_overhang(&ccw, 110.0, &[]).unwrap();
+        assert!((none.projected_area() - 20_000.0).abs() < 1e-6);
     }
 }

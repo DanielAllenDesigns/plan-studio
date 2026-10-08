@@ -324,6 +324,7 @@ fn cuboid(x: (f32, f32), y: (f32, f32), z: (f32, f32), material: Material, id: u
         indices,
         material,
         object_id: Some(id),
+        color: None,
     }
 }
 

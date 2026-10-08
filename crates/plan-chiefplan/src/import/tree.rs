@@ -212,6 +212,25 @@ pub(crate) fn cstring_at(b: &[u8], o: usize, max: usize) -> Option<(String, usiz
     Some((String::from_utf8_lossy(s).into_owned(), o + 5 + len))
 }
 
+/// Every length-prefixed printable string in `[from, to)`, in file order, as
+/// `(offset from `from`, text)`. Strings with non-ASCII bytes (the copyright
+/// sign in `Copyright\u{a9}2016`) are not returned.
+pub(crate) fn strings_in(b: &[u8], from: usize, to: usize, max: usize) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let to = to.min(b.len());
+    let mut i = from;
+    while i + 5 <= to {
+        match cstring_at(b, i, max) {
+            Some((s, next)) if next <= to => {
+                out.push((i - from, s));
+                i = next;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
 /// Bytes `[a, b)` that no child span covers, as ranges.
 pub(crate) fn gaps(start: usize, end: usize, spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
@@ -314,6 +333,26 @@ mod tests {
         assert!(tree.contains(wall, line));
         assert_eq!(tree.ancestor_of_class(line, 6), Some(wall));
         assert_eq!(tree.child_spans(wall).len(), 1);
+    }
+
+    #[test]
+    fn strings_in_skips_non_ascii_and_reports_offsets() {
+        let mut b = vec![0u8; 3];
+        b.extend(cstr("Copyright\u{a9} 2016"));
+        let at = b.len();
+        b.extend(cstr("Bancroft Bed"));
+        b.extend([0u8; 4]);
+        b.extend(cstr("bedroom"));
+        let got = strings_in(&b, 0, b.len(), 200);
+        assert_eq!(
+            got,
+            vec![
+                (at, "Bancroft Bed".to_string()),
+                (at + 17 + 4, "bedroom".to_string())
+            ]
+        );
+        // The range limits the search.
+        assert!(strings_in(&b, 0, at + 6, 200).is_empty());
     }
 
     #[test]

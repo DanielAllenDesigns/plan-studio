@@ -40,8 +40,8 @@ pub use eave::{
 pub use mesh::{Bounds, Material, Mesh, Scene, Vertex};
 pub use railing::post_count as railing_post_count;
 pub use roof::{
-    ceiling_plane_meshes, dormer_meshes, roof_meshes, roof_plane_meshes, skylight_meshes,
-    CEILING_FRAMING_MATERIAL,
+    ceiling_plane_meshes, ceiling_plane_meshes_joined, dormer_eave_meshes, dormer_meshes,
+    gable_face_meshes, roof_meshes, roof_plane_meshes, skylight_meshes, CEILING_FRAMING_MATERIAL,
 };
 pub use slab::{room_ceiling_top, slab_from_polygon};
 
@@ -411,9 +411,10 @@ fn add_wall(
         return;
     }
     if wall.flags.railing {
-        scene
-            .meshes
-            .extend(railing::build_railing(wall, floor.elevation));
+        scene.meshes.extend(railing::build_railing(
+            wall,
+            floor.elevation + wall.bottom_offset,
+        ));
         return;
     }
     let (mut drawn, look) = wall_as_drawn(wall, types);

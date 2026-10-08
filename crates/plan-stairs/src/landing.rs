@@ -119,6 +119,7 @@ pub fn polygon_slab(
         indices: Vec::new(),
         material,
         object_id: id,
+        color: None,
     };
     let flat = |p: [f32; 3]| [p[0] / 12.0, p[2] / 12.0];
     for [a, b, c] in tris {

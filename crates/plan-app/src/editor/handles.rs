@@ -93,7 +93,7 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
             };
             let mut out = vec![h(
                 HandleKind::PerpendicularMove,
-                w.point_at(o.center_offset),
+                w.point_along(o.center_offset),
                 resize_cursor(w.end.sub(w.start)),
             )];
             // Resize handles at the jambs (DW-26): the opposite jamb stays.
@@ -106,12 +106,16 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
             if o.start_offset() <= unit_lo + 1e-9 {
                 out.push(h(
                     HandleKind::ResizeStart,
-                    w.point_at(o.start_offset()),
+                    w.point_along(o.start_offset()),
                     resize,
                 ));
             }
             if o.end_offset() >= unit_hi - 1e-9 {
-                out.push(h(HandleKind::ResizeEnd, w.point_at(o.end_offset()), resize));
+                out.push(h(
+                    HandleKind::ResizeEnd,
+                    w.point_along(o.end_offset()),
+                    resize,
+                ));
             }
             // The swing handle sits at the free end of the leaf: click flips
             // the side, Shift-click moves the hinge (DW-33). Flavors without a
@@ -124,13 +128,10 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                     | OpeningStyle::Casement
             );
             if o.kind == OpeningKind::Door || o.style == OpeningStyle::Casement {
-                let side = if o.swing_flipped {
-                    w.normal() * -1.0
-                } else {
-                    w.normal()
-                };
+                let n = w.normal_along(o.center_offset);
+                let side = if o.swing_flipped { n * -1.0 } else { n };
                 let pos = if leaf_style {
-                    let hinge = w.point_at(if o.hinge_at_end {
+                    let hinge = w.point_along(if o.hinge_at_end {
                         o.end_offset()
                     } else {
                         o.start_offset()
@@ -142,7 +143,8 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                     };
                     hinge + side * reach
                 } else {
-                    w.point_at(o.center_offset) + side * (w.thickness * 0.5 + 6.0 / scale.max(1e-6))
+                    w.point_along(o.center_offset)
+                        + side * (w.thickness * 0.5 + 6.0 / scale.max(1e-6))
                 };
                 out.push(h(HandleKind::Swing, pos, CursorIcon::PointingHand));
             }

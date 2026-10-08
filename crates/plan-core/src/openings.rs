@@ -21,8 +21,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod spec;
 pub use spec::{
-    door_panel_count, Arch, ArchType, ExteriorSill, HandleStyle, Hardware, Lintel, LintelStyle,
-    LiteStyle, OpeningSpec, ShutterSides, ShutterStyle, Shutters, StandardWidths, StyleWidths,
+    door_panel_count, Arch, ArchType, CasingProfile, ExteriorSill, HandleStyle, Hardware, Lintel,
+    LintelStyle, LiteStyle, OpeningSpec, OpeningView3d, ShutterSides, ShutterStyle, Shutters,
+    StandardWidths, StyleWidths,
 };
 
 /// Minimum clear distance between an opening jamb and a wall end or another
@@ -30,6 +31,8 @@ pub use spec::{
 const OPENING_MARGIN: f64 = 2.0;
 /// Narrowest an opening can be resized to, inches.
 pub const MIN_OPENING_WIDTH: f64 = 6.0;
+/// The shortest transom, inches.
+pub const MIN_TRANSOM_HEIGHT: f64 = 6.0;
 /// Windows farther apart than this cannot be mulled, inches.
 pub const MULL_MAX_GAP: f64 = 12.0;
 /// The door styles that can be mulled with sidelite windows (DW-52).
@@ -598,10 +601,8 @@ pub fn door_defaults_for_pointer(
     pointer: Point,
     center_offset: f64,
 ) -> (bool, bool) {
-    let n = wall.normal();
-    let rel = pointer.sub(wall.start);
-    let side = rel.x * n.x + rel.y * n.y;
-    (side < 0.0, center_offset > wall.length() * 0.5)
+    let (_, side) = wall.locate(pointer);
+    (side < 0.0, center_offset > wall.path_length() * 0.5)
 }
 
 /// The side of `wall` that is the outside: `1.0` for the left (normal) side,
@@ -612,13 +613,149 @@ pub fn exterior_sign(wall: &Wall, rooms: &[Room]) -> f64 {
     if wall.kind == WallKind::Interior {
         return -1.0;
     }
-    let mid = wall.point_at(wall.length() * 0.5);
+    let s = wall.path_length() * 0.5;
+    let mid = wall.point_along(s);
     let reach = wall.thickness * 0.5 + 1.0;
-    let probe = mid + wall.normal() * reach;
+    let probe = mid + wall.normal_along(s) * reach;
     if rooms.iter().any(|r| point_in_polygon(probe, &r.polygon)) {
         -1.0
     } else {
         1.0
+    }
+}
+
+/// Whether two openings share no height: one starts at or above the top of
+/// the other, so they can stand over each other on the same stretch of wall
+/// (a window over a door, DW-52).
+pub fn vertically_apart(a: &Opening, b: &Opening) -> bool {
+    let (a0, a1) = (a.sill_height, a.sill_height + a.height);
+    let (b0, b1) = (b.sill_height, b.sill_height + b.height);
+    a0 >= b1 - 1e-6 || b0 >= a1 - 1e-6
+}
+
+/// Whether `a` and `b` (on the same wall) get in each other's way: they come
+/// closer than `margin` along the wall and share part of the wall face's
+/// height. Openings stacked one over the other never do.
+pub fn openings_conflict(a: &Opening, b: &Opening, margin: f64) -> bool {
+    a.start_offset() < b.end_offset() + margin
+        && a.end_offset() > b.start_offset() - margin
+        && !vertically_apart(a, b)
+}
+
+/// Whether `upper` stands directly over `lower`: they share stretch of wall
+/// and `upper` begins at or above the top of `lower`.
+pub fn stands_over(upper: &Opening, lower: &Opening) -> bool {
+    upper.id != lower.id
+        && upper.wall_id == lower.wall_id
+        && upper.start_offset() < lower.end_offset() - 1e-6
+        && upper.end_offset() > lower.start_offset() + 1e-6
+        && upper.sill_height >= lower.sill_height + lower.height - 1e-6
+}
+
+/// The member of `row` that `upper` stands over most (the widest overlap).
+fn row_member_under<'a>(row: &'a [Opening], upper: &Opening) -> Option<&'a Opening> {
+    row.iter().filter(|v| stands_over(upper, v)).max_by(|a, b| {
+        let ov = |v: &Opening| {
+            upper.end_offset().min(v.end_offset()) - upper.start_offset().max(v.start_offset())
+        };
+        ov(a).total_cmp(&ov(b))
+    })
+}
+
+/// The curve of a wall as openings see it: positions along the wall are arc
+/// lengths from its start, and a point `t` inches off the centerline is
+/// radial (DW-88).
+impl Wall {
+    /// The centerline point `s` inches along the wall (arc length).
+    pub fn point_along(&self, s: f64) -> Point {
+        if self.is_curved() {
+            self.frame_at(s).0
+        } else {
+            self.point_at(s)
+        }
+    }
+
+    /// The unit direction of travel at `s`.
+    pub fn tangent_along(&self, s: f64) -> Point {
+        if self.is_curved() {
+            self.frame_at(s).1
+        } else {
+            self.direction()
+        }
+    }
+
+    /// The unit left normal at `s`.
+    pub fn normal_along(&self, s: f64) -> Point {
+        self.tangent_along(s).perp()
+    }
+
+    /// The point `s` along the wall and `t` to its left.
+    pub fn point_offset(&self, s: f64, t: f64) -> Point {
+        self.point_along(s).add(self.normal_along(s).scale(t))
+    }
+
+    /// Where `p` stands against the wall: `(s, t)`, the arc length along the
+    /// centerline (clamped to the wall) and the signed distance to the left.
+    pub fn locate(&self, p: Point) -> (f64, f64) {
+        let len = self.path_length();
+        if !self.is_curved() {
+            let rel = p.sub(self.start);
+            return (
+                rel.dot(self.direction()).clamp(0.0, len),
+                rel.dot(self.normal()),
+            );
+        }
+        let (q, tangent) = self.closest_point(p);
+        let s = match self.arc_center_radius() {
+            Some((c, r)) => {
+                let sweep = self.curve.map_or(0.0, |k| k.sweep(self.start, self.end));
+                let a0 = self.start.sub(c).angle();
+                let a = q.sub(c).angle();
+                let round =
+                    if sweep >= 0.0 { a - a0 } else { a0 - a }.rem_euclid(std::f64::consts::TAU);
+                (round.min(sweep.abs()) * r).clamp(0.0, len)
+            }
+            None => 0.0,
+        };
+        (s, p.sub(q).dot(tangent.perp()))
+    }
+
+    /// The band between `t_lo` and `t_hi` off the centerline over `s0..s1` as
+    /// convex quads `[hi start, hi end, lo end, lo start]`: one when the wall is
+    /// straight, a strip following the arc when it is curved.
+    pub fn band_quads(&self, s0: f64, s1: f64, t_lo: f64, t_hi: f64) -> Vec<[Point; 4]> {
+        let n = if self.is_curved() {
+            let sweep_deg = self.arc_readout().map_or(0.0, |a| a.sweep_deg);
+            let share = (s1 - s0) / self.path_length().max(1e-9);
+            ((sweep_deg * share / 4.0).ceil() as usize).clamp(1, 64)
+        } else {
+            1
+        };
+        let at = |i: usize| s0 + (s1 - s0) * i as f64 / n as f64;
+        (0..n)
+            .map(|i| {
+                [
+                    self.point_offset(at(i), t_hi),
+                    self.point_offset(at(i + 1), t_hi),
+                    self.point_offset(at(i + 1), t_lo),
+                    self.point_offset(at(i), t_lo),
+                ]
+            })
+            .collect()
+    }
+
+    /// Outline of the band between `t_lo` and `t_hi` off the centerline over
+    /// `s0..s1`, following the arc of a curved wall (four corners when
+    /// straight). Used to clear the wall fill and to highlight an opening.
+    pub fn band(&self, s0: f64, s1: f64, t_lo: f64, t_hi: f64) -> Vec<Point> {
+        let quads = self.band_quads(s0, s1, t_lo, t_hi);
+        let mut out: Vec<Point> = quads.iter().map(|q| q[0]).collect();
+        if let Some(last) = quads.last() {
+            out.push(last[1]);
+            out.push(last[2]);
+        }
+        out.extend(quads.iter().rev().map(|q| q[3]));
+        out
     }
 }
 
@@ -696,7 +833,7 @@ impl Project {
         let Some(cur) = f.openings.iter().find(|o| o.id == id).cloned() else {
             return false;
         };
-        let Some(wall_len) = f.wall(cur.wall_id).map(|w| w.length()) else {
+        let Some(wall_len) = f.wall(cur.wall_id).map(|w| w.path_length()) else {
             return false;
         };
         let members = self.mull_members(floor, id);
@@ -708,14 +845,24 @@ impl Project {
         }
         let delta = (new_center - cur.center_offset)
             .clamp(OPENING_MARGIN - lo, wall_len - OPENING_MARGIN - hi);
-        let (nlo, nhi) = (lo + delta, hi + delta);
         let f = &self.floors[floor];
-        let overlaps = f.openings.iter().any(|o| {
-            !members.contains(&o.id)
-                && o.wall_id == cur.wall_id
-                && nlo < o.end_offset() + OPENING_MARGIN
-                && nhi > o.start_offset() - OPENING_MARGIN
-        });
+        // A member only collides with openings it shares wall face with: a
+        // window stacked above a door (a transom) slides along with it.
+        let overlaps = f
+            .openings
+            .iter()
+            .filter(|o| o.wall_id == cur.wall_id)
+            .any(|o| {
+                !members.contains(&o.id)
+                    && f.openings
+                        .iter()
+                        .filter(|m| members.contains(&m.id))
+                        .any(|m| {
+                            m.start_offset() + delta < o.end_offset() + OPENING_MARGIN
+                                && m.end_offset() + delta > o.start_offset() - OPENING_MARGIN
+                                && !vertically_apart(m, o)
+                        })
+            });
         if overlaps {
             return false;
         }
@@ -735,7 +882,7 @@ impl Project {
     pub fn free_span(&self, floor: usize, id: Id, as_unit: bool) -> Option<(f64, f64)> {
         let f = &self.floors[floor];
         let cur = f.openings.iter().find(|o| o.id == id)?;
-        let len = f.wall(cur.wall_id)?.length();
+        let len = f.wall(cur.wall_id)?.path_length();
         let (mut lo, mut hi) = (OPENING_MARGIN, len - OPENING_MARGIN);
         let members = self.mull_members(floor, id);
         for o in f.openings_on(cur.wall_id) {
@@ -744,6 +891,10 @@ impl Project {
             }
             let member = members.contains(&o.id);
             if member && as_unit {
+                continue;
+            }
+            // An opening stacked above or below does not limit this one.
+            if vertically_apart(cur, o) {
                 continue;
             }
             let gap = if member { 0.0 } else { OPENING_MARGIN };
@@ -880,10 +1031,28 @@ impl Project {
             return Err("The openings must be on the same wall".into());
         }
         units.sort_by(|a, b| a.center_offset.total_cmp(&b.center_offset));
+        // A window standing over another member (a transom over a door) is
+        // part of the unit without closing any gap: only the row at the
+        // bottom is laid out along the wall.
+        let (row, stacked): (Vec<Opening>, Vec<Opening>) = units
+            .iter()
+            .cloned()
+            .partition(|u| !units.iter().any(|v| stands_over(u, v)));
+        if stacked.iter().any(|u| {
+            !row.iter().any(|v| {
+                v.start_offset() < u.end_offset() - 1e-6 && v.end_offset() > u.start_offset() + 1e-6
+            })
+        }) {
+            return Err("A window over a door has to stand over the unit".into());
+        }
+        let units = row;
         // Nothing but the chosen windows may sit between them.
         let (first, last) = (units[0].start_offset(), units[units.len() - 1].end_offset());
         if f.openings_on(wall_id).any(|o| {
-            !all.contains(&o.id) && o.end_offset() > first - 1e-9 && o.start_offset() < last + 1e-9
+            !all.contains(&o.id)
+                && o.end_offset() > first - 1e-9
+                && o.start_offset() < last + 1e-9
+                && units.iter().any(|u| !vertically_apart(u, o))
         }) {
             return Err("Another opening is in between".into());
         }
@@ -907,6 +1076,18 @@ impl Project {
             shifts.push((u.id, -total));
             prev_end = u.end_offset();
         }
+        // The windows over the row move with the member they stand over.
+        let carried: Vec<(Id, f64)> = stacked
+            .iter()
+            .filter_map(|st| {
+                let under = row_member_under(&units, st)?.id;
+                shifts
+                    .iter()
+                    .find(|(id, _)| *id == under)
+                    .map(|(_, d)| (st.id, *d))
+            })
+            .collect();
+        shifts.extend(carried);
         let group = units[0].id;
         let mut p = self.floors[floor].openings.clone();
         for (id, d) in &shifts {
@@ -936,11 +1117,89 @@ impl Project {
         n
     }
 
+    /// Add a transom (DW-52): a fixed window directly over the unit `id`
+    /// belongs to, as wide as the whole unit, `height` inches tall (less if
+    /// the wall has no room), mulled into it so the unit shares one frame
+    /// and casing. Returns the new window.
+    pub fn add_transom(&mut self, floor: usize, id: Id, height: f64) -> Result<Id, String> {
+        let f = &self.floors[floor];
+        let Some(cur) = f.openings.iter().find(|o| o.id == id).cloned() else {
+            return Err("That opening is gone".into());
+        };
+        let Some(wall_h) = f.wall(cur.wall_id).map(|w| w.height) else {
+            return Err("That opening has no wall".into());
+        };
+        let members = self.mull_members(floor, id);
+        let in_unit: Vec<&Opening> = f
+            .openings
+            .iter()
+            .filter(|o| members.contains(&o.id))
+            .collect();
+        if in_unit
+            .iter()
+            .any(|o| stands_over(o, &cur) || in_unit.iter().any(|v| stands_over(o, v)))
+        {
+            return Err("There is a window over it already".into());
+        }
+        let top = in_unit
+            .iter()
+            .map(|o| o.sill_height + o.height)
+            .fold(0.0_f64, f64::max);
+        let room = wall_h - top;
+        if room < MIN_TRANSOM_HEIGHT - 1e-9 {
+            return Err("There is no room above it for a transom".into());
+        }
+        let (lo, hi) = in_unit.iter().fold((f64::MAX, f64::MIN), |(l, h), o| {
+            (l.min(o.start_offset()), h.max(o.end_offset()))
+        });
+        let before = self.floors[floor].openings.clone();
+        let new_id = self.alloc_id();
+        let mut win = Opening::default_window(new_id, cur.wall_id, (lo + hi) * 0.5);
+        win.width = hi - lo;
+        win.height = height.clamp(MIN_TRANSOM_HEIGHT, room);
+        win.sill_height = top;
+        win.style = OpeningStyle::Fixed;
+        win.swing_flipped = cur.swing_flipped;
+        win.casing = cur.casing;
+        win.extras.spec.casing_interior = cur.extras.spec.casing_interior;
+        win.extras.spec.casing_exterior = cur.extras.spec.casing_exterior;
+        win.extras.spec.casing_exterior_size = cur.extras.spec.casing_exterior_size;
+        win.extras.spec.casing_profile = cur.extras.spec.casing_profile;
+        self.floors[floor].openings.push(win);
+        match self.mull_openings(floor, &[id, new_id]) {
+            Ok(_) => Ok(new_id),
+            Err(e) => {
+                self.floors[floor].openings = before;
+                Err(e)
+            }
+        }
+    }
+
+    /// What the casing of opening `id` is drawn around: `None` when it is
+    /// drawn by another opening of its unit (a window standing over a
+    /// door), else the span of the unit it belongs to (`Some(None)` for an
+    /// opening on its own).
+    pub fn casing_unit(&self, floor: usize, id: Id) -> Option<Option<(f64, f64)>> {
+        let f = &self.floors[floor];
+        let o = f.openings.iter().find(|o| o.id == id)?;
+        if o.mull_group.is_none() {
+            return Some(None);
+        }
+        let members = self.mull_members(floor, id);
+        if f.openings
+            .iter()
+            .any(|v| members.contains(&v.id) && stands_over(o, v))
+        {
+            return None;
+        }
+        Some(self.unit_span(floor, id))
+    }
+
     /// The plan position of the opening center on its wall centerline.
     pub fn opening_position(&self, floor: usize, id: Id) -> Option<Point> {
         let f = &self.floors[floor];
         let o = f.openings.iter().find(|o| o.id == id)?;
-        Some(f.wall(o.wall_id)?.point_at(o.center_offset))
+        Some(f.wall(o.wall_id)?.point_along(o.center_offset))
     }
 }
 
@@ -1420,5 +1679,212 @@ mod tests {
             WallKind::Interior,
         );
         assert_eq!(exterior_sign(&iw, &[]), -1.0);
+    }
+
+    /// A 20' wall, 96" high, with a 36" door in the middle.
+    fn door_wall() -> (Project, Id, Id) {
+        let mut p = Project::new("t");
+        let w = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            4.5,
+            96.0,
+            WallKind::Exterior,
+        );
+        let d = p.add_opening(0, w, 120.0, OpeningKind::Door).unwrap();
+        (p, w, d)
+    }
+
+    #[test]
+    fn a_window_may_stand_directly_over_a_door_but_not_into_it() {
+        let (p, w, d) = door_wall();
+        let door = p.floors[0].openings[0].clone();
+        let mut win = Opening::default_window(99, w, 120.0);
+        win.width = 36.0;
+        // The default window (sill 24) runs into the door's 80" head.
+        assert!(openings_conflict(&win, &door, 2.0));
+        win.sill_height = 79.0;
+        assert!(openings_conflict(&win, &door, 2.0));
+        // From the head up the two are stacked.
+        win.sill_height = 80.0;
+        win.height = 16.0;
+        assert!(!openings_conflict(&win, &door, 2.0));
+        assert!(stands_over(&win, &door) && !stands_over(&door, &win));
+        // Side by side they still keep the clearance.
+        win.sill_height = 24.0;
+        win.center_offset = 150.0;
+        assert!(openings_conflict(&win, &door, 2.0));
+        win.center_offset = 160.0;
+        assert!(!openings_conflict(&win, &door, 2.0));
+        let _ = (p, d);
+    }
+
+    #[test]
+    fn a_transom_is_a_fixed_window_mulled_over_its_door() {
+        let (mut p, _, d) = door_wall();
+        let t = p.add_transom(0, d, 18.0).unwrap();
+        let door = p.floors[0].openings[0].clone();
+        let tr = p.floors[0].openings.iter().find(|o| o.id == t).unwrap();
+        // Over the door, its width, 16" high at most (96 - 80).
+        assert_eq!(tr.style, OpeningStyle::Fixed);
+        assert_eq!(
+            (tr.center_offset, tr.width, tr.sill_height, tr.height),
+            (120.0, 36.0, 80.0, 16.0)
+        );
+        assert!(stands_over(tr, &door));
+        assert_eq!(tr.mull_group, door.mull_group);
+        assert!(tr.mull_group.is_some());
+        // The unit's casing is the door's.
+        assert_eq!(p.casing_unit(0, t), None);
+        assert_eq!(p.casing_unit(0, d), Some(Some((102.0, 138.0))));
+        // Nothing fits over it a second time, and a window cannot be put in
+        // the transom's way.
+        assert!(p.add_transom(0, d, 6.0).is_err());
+        assert!(p.add_transom(0, t, 6.0).is_err());
+        // Sliding the door slides the transom with it, and the unit moves
+        // over a window beside it only if that clears the opening.
+        assert!(p.slide_opening(0, d, 150.0));
+        let moved = &p.floors[0].openings;
+        assert_eq!(moved[0].center_offset, 150.0);
+        assert_eq!(moved[1].center_offset, 150.0);
+        // Unmulled, the transom is a plain window again.
+        assert_eq!(p.unmull_openings(0, d), 2);
+        assert_eq!(p.casing_unit(0, t), Some(None));
+    }
+
+    #[test]
+    fn a_transom_needs_headroom_and_a_door_that_can_be_mulled() {
+        let (mut p, w, d) = door_wall();
+        p.floors[0].walls[0].height = 82.0;
+        assert!(p.add_transom(0, d, 18.0).unwrap_err().contains("no room"));
+        p.floors[0].walls[0].height = 96.0;
+        // A garage door cannot be mulled, so no transom is left behind.
+        let g = p.add_opening(0, w, 40.0, OpeningKind::Door).unwrap();
+        p.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == g)
+            .unwrap()
+            .style = OpeningStyle::Garage;
+        let before = p.floors[0].openings.len();
+        assert!(p.add_transom(0, g, 12.0).is_err());
+        assert_eq!(p.floors[0].openings.len(), before);
+    }
+
+    #[test]
+    fn a_door_with_a_sidelite_takes_one_transom_across_both() {
+        let (mut p, w, d) = door_wall();
+        // Sidelite on the right of the door, mulled with it.
+        let side = p.add_opening(0, w, 200.0, OpeningKind::Window).unwrap();
+        for o in &mut p.floors[0].openings {
+            if o.id == side {
+                o.width = 18.0;
+                o.center_offset = 147.0;
+                o.sill_height = 0.0;
+                o.height = 80.0;
+                o.style = OpeningStyle::Fixed;
+            }
+        }
+        p.mull_openings(0, &[d, side]).unwrap();
+        let t = p.add_transom(0, d, 12.0).unwrap();
+        let tr = p.floors[0].openings.iter().find(|o| o.id == t).unwrap();
+        // 102..156 across: the door's 36 plus the sidelite's 18.
+        assert_eq!((tr.start_offset(), tr.end_offset()), (102.0, 156.0));
+        // One casing for the whole unit, drawn by the door and its sidelite.
+        assert_eq!(p.casing_unit(0, t), None);
+        assert_eq!(p.casing_unit(0, d), Some(Some((102.0, 156.0))));
+        assert_eq!(p.casing_unit(0, side), Some(Some((102.0, 156.0))));
+        // Mulling the pieces by hand gives the same unit.
+        p.unmull_openings(0, d);
+        assert!(p.mull_openings(0, &[d, side, t]).is_ok());
+        assert_eq!(p.unit_span(0, t), Some((102.0, 156.0)));
+    }
+
+    #[test]
+    fn a_window_slides_over_a_door_only_at_head_height() {
+        let (mut p, w, d) = door_wall();
+        let win = p.add_opening(0, w, 40.0, OpeningKind::Window).unwrap();
+        // At sill 24 it cannot pass over the door.
+        assert!(!p.slide_opening(0, win, 120.0));
+        let o = p.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == win)
+            .unwrap();
+        o.sill_height = 80.0;
+        o.height = 12.0;
+        assert!(p.slide_opening(0, win, 120.0));
+        // Neither limits the other when resized.
+        assert!(p.set_opening_width(0, win, 60.0));
+        let (lo, hi) = p.free_span(0, d, false).unwrap();
+        assert_eq!((lo, hi), (2.0, 238.0));
+    }
+
+    /// A 20' chord bowed 60" (radius 150") with one door on it.
+    fn arc_project() -> (Project, Id, Id) {
+        let mut p = Project::new("arc");
+        let w = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        p.floors[0].walls[0].curve = Some(crate::walls::WallCurve { bulge: 60.0 });
+        let d = p.add_opening(0, w, 100.0, OpeningKind::Door).unwrap();
+        (p, w, d)
+    }
+
+    #[test]
+    fn positions_on_a_curved_wall_are_arc_lengths() {
+        let (p, w, d) = arc_project();
+        let wall = p.floors[0].wall(w).unwrap();
+        assert!(wall.path_length() > wall.length() + 10.0);
+        // An opening can sit beyond the chord's length: the wall is longer.
+        let mut q = p.clone();
+        q.floors[0].openings.clear();
+        let far = wall.path_length() - 40.0;
+        assert!(far > wall.length() - 40.0);
+        let id = q.add_opening(0, w, far, OpeningKind::Door).unwrap();
+        assert!((q.floors[0].openings[0].center_offset - far).abs() < 1e-9);
+        let _ = id;
+        // point_along / locate round-trip, on the centerline and off it.
+        for s in [0.0, 37.5, 100.0, wall.path_length() - 1.0] {
+            let c = wall.point_along(s);
+            let (back, lateral) = wall.locate(c);
+            assert!((back - s).abs() < 1e-6 && lateral.abs() < 1e-6, "{s}");
+            let off = wall.point_offset(s, 2.5);
+            let (back, lateral) = wall.locate(off);
+            assert!((back - s).abs() < 1e-6 && (lateral - 2.5).abs() < 1e-6);
+        }
+        // The position of the opening is its center on the arc.
+        let at = p.opening_position(0, d).unwrap();
+        assert!(at.dist(wall.point_along(100.0)) < 1e-9);
+        // The band over an opening follows the arc: every corner is on the
+        // arc offset by the band's edge.
+        let (c, r) = wall.arc_center_radius().unwrap();
+        let sweep_sign = wall.curve.unwrap().sweep(wall.start, wall.end).signum();
+        let quads = wall.band_quads(82.0, 118.0, -4.0, 4.0);
+        assert!(quads.len() > 1);
+        for q in &quads {
+            for (i, corner) in q.iter().enumerate() {
+                let t = if i < 2 { 4.0 } else { -4.0 };
+                let want = r - sweep_sign * t;
+                assert!((corner.sub(c).length() - want).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn the_pointer_side_of_a_curved_wall_picks_the_swing() {
+        let (p, w, _) = arc_project();
+        let wall = p.floors[0].wall(w).unwrap();
+        let at = wall.point_along(120.0);
+        let n = wall.normal_along(120.0);
+        let (flipped_left, _) = door_defaults_for_pointer(wall, at + n * 10.0, 120.0);
+        let (flipped_right, _) = door_defaults_for_pointer(wall, at - n * 10.0, 120.0);
+        assert!(!flipped_left && flipped_right);
     }
 }

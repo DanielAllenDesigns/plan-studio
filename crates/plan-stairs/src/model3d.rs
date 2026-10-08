@@ -71,7 +71,18 @@ pub fn tagged_meshes(stair: &Stair) -> Vec<(StairPart, Mesh)> {
                 let s1 = f64::from(j) * layout.tread_depth;
                 let s0 = s1 - layout.tread_depth - p.nosing;
                 let top = f.base + f64::from(j) * h;
-                let profile = ctx.flight_rect(f, s0, s1, top - p.tread_thickness);
+                let flared = if j == 1 && std::ptr::eq(f, &layout.flights[0]) {
+                    layout.apron(p)
+                } else {
+                    None
+                };
+                let profile = match flared {
+                    Some(apron) => apron
+                        .into_iter()
+                        .map(|uv| ctx.scene(uv, top - p.tread_thickness))
+                        .collect(),
+                    None => ctx.flight_rect(f, s0, s1, top - p.tread_thickness),
+                };
                 ctx.push(
                     StairPart::Tread,
                     Material::Floor,
@@ -134,7 +145,13 @@ pub fn tagged_meshes(stair: &Stair) -> Vec<(StairPart, Mesh)> {
         }
     }
 
-    if !layout.is_landing {
+    if layout.is_landing {
+        out.extend(
+            crate::railing::landing_railing(stair)
+                .into_iter()
+                .map(|m| (StairPart::Handrail, m)),
+        );
+    } else {
         for (side, kind) in [
             (RailSide::Left, p.left_side),
             (RailSide::Right, p.right_side),
@@ -339,8 +356,29 @@ impl Ctx<'_> {
         pts.iter().map(|&uv| self.scene(uv, y)).collect()
     }
 
+    /// The centre pole of a spiral stair: a 16-sided column from the floor
+    /// to a guard height above the top step.
+    fn pole(&mut self, c: &Curve, top: f64) {
+        let r = c.inner.max(1.0);
+        let profile: Vec<V3> = (0..16)
+            .map(|i| {
+                let a = std::f64::consts::TAU * f64::from(i) / 16.0;
+                self.scene((c.center.0 + r * a.cos(), c.center.1 + r * a.sin()), 0.0)
+            })
+            .collect();
+        self.push(
+            StairPart::Stringer,
+            Material::WallInterior,
+            &profile,
+            [0.0, top, 0.0],
+        );
+    }
+
     /// Treads, risers and stringers of a curved stair.
     fn curved(&mut self, c: &Curve, p: &StairParams, h: f64) {
+        if p.spiral {
+            self.pole(c, f64::from(c.risers) * h + crate::GUARD_HEIGHT);
+        }
         let nose = p.nosing / c.walk().max(1e-9);
         for j in 1..=c.treads {
             let a1 = c.step * f64::from(j);
@@ -439,6 +477,7 @@ pub(crate) fn solid(profile: &[V3], ext: V3, material: Material, id: Option<Id>)
         indices: Vec::new(),
         material,
         object_id: id,
+        color: None,
     };
     add_face(&mut mesh, profile, center);
     add_face(&mut mesh, &moved, center);

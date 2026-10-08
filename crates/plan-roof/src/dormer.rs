@@ -3,7 +3,9 @@
 //! A dormer is built on one roof plane from a handful of dimensions. The
 //! result is plain geometry: a front wall, two cheek (side) walls, the dormer
 //! roof planes, the hole to cut in the main roof, and an optional window
-//! opening on the front wall. No overhang, soffit or fascia is generated.
+//! opening on the front wall. An overhang (`DormerSpec::overhang`) lengthens
+//! the roof planes past the walls ([`Dormer::overhang_planes`]); the soffit and
+//! fascia are the 3D builder's (`plan-3d` eave detail).
 //!
 //! Frame: the main plane's eave (`baseline`) runs from `a` to `b`; `u` is the
 //! unit eave direction and `w = u.perp()` points up the slope. A dormer point
@@ -53,6 +55,12 @@ pub struct DormerSpec {
     pub pitch: f64,
     /// Window `(width, height)` centred on the front wall.
     pub window: Option<(f64, f64)>,
+    /// Horizontal overhang of the dormer roof past its walls (eaves and
+    /// rakes), inches. `0` keeps the roof flush with the walls. The roof
+    /// planes in [`Dormer::overhang_planes`] carry it; the hole in the main
+    /// roof is always the wall footprint.
+    #[serde(default)]
+    pub overhang: f64,
 }
 
 impl Default for DormerSpec {
@@ -68,6 +76,7 @@ impl Default for DormerSpec {
             setback_from_eave: 36.0,
             pitch: 8.0,
             window: None,
+            overhang: 0.0,
         }
     }
 }
@@ -109,8 +118,17 @@ pub struct Dormer {
     pub front_wall: DormerWall,
     /// The two cheek walls: left (toward the baseline start) then right.
     pub side_walls: Vec<DormerWall>,
-    /// Gable 2, shed 1, hip 3. Each polygon starts with its eave edge.
+    /// Gable 2, shed 1, hip 3. Each polygon starts with its eave edge. They
+    /// cover the hole in the main roof exactly (no overhang).
     pub roof_planes: Vec<RoofPlane>,
+    /// The roof planes with the spec's overhang: eaves and rakes pushed out by
+    /// `spec.overhang`, valleys, ridges and hips kept on their lines. The same
+    /// planes as `roof_planes` (same order, same edge indices) when the
+    /// overhang is zero.
+    pub overhang_planes: Vec<RoofPlane>,
+    /// `(plane, edge)` of every edge of `overhang_planes` that meets the main
+    /// roof (a valley): no fascia or soffit goes there.
+    pub valley_edges: Vec<(usize, usize)>,
     /// The footprint to cut in the main roof (`kind` is [`HoleKind::Hole`]).
     pub hole_in_main_roof: RoofHole,
     pub window_opening: Option<WindowOpening>,
@@ -137,7 +155,7 @@ pub fn explode_dormer(dormer: &Dormer) -> ExplodedDormer {
     walls.extend(dormer.side_walls.iter().cloned());
     ExplodedDormer {
         walls,
-        roof_planes: dormer.roof_planes.clone(),
+        roof_planes: dormer.overhang_planes.clone(),
         hole: dormer.hole_in_main_roof.clone(),
         window_opening: dormer.window_opening.clone(),
     }
@@ -342,6 +360,9 @@ pub fn auto_dormer(main_plane: &RoofPlane, spec: DormerSpec) -> Option<Dormer> {
         })
         .collect();
 
+    let (overhang_planes, valley_edges) =
+        overhang_roof(&roof_planes, main_plane, spec.overhang.max(0.0));
+
     let front_out = f.w.scale(-1.0);
     let front_wall = DormerWall {
         polygon3d: geom::orient_toward(front_poly, dir3(front_out)),
@@ -399,6 +420,8 @@ pub fn auto_dormer(main_plane: &RoofPlane, spec: DormerSpec) -> Option<Dormer> {
         front_wall,
         side_walls,
         roof_planes,
+        overhang_planes,
+        valley_edges,
         hole_in_main_roof: RoofHole {
             outline: hole_outline,
             kind: HoleKind::Hole,
@@ -408,6 +431,79 @@ pub fn auto_dormer(main_plane: &RoofPlane, spec: DormerSpec) -> Option<Dormer> {
         ridge_elevation: f.yb + ridge_rel,
         depth,
     })
+}
+
+/// The dormer roof planes with `overhang` inches of eave and rake, and the
+/// `(plane, edge)` pairs that meet `main` (valleys).
+///
+/// Each plane is offset edge by edge in plan: an edge no other dormer plane
+/// shares and that is not on the main roof (an eave or a rake) moves outward
+/// by `overhang`; ridges, hips and valleys stay on their lines, so a
+/// neighbouring pair of planes still meets along the same hip (mitred) and the
+/// valley stretches along the line where the plane meets the main roof. The
+/// new corners are the intersections of neighbouring edge lines, lifted onto
+/// the plane. The result has the same vertex and edge order as the input.
+fn overhang_roof(
+    planes: &[RoofPlane],
+    main: &RoofPlane,
+    overhang: f64,
+) -> (Vec<RoofPlane>, Vec<(usize, usize)>) {
+    let on_main = |p: V3| {
+        main.height_at(geom::to_plan(p))
+            .is_some_and(|y| (y - p[1]).abs() < 1e-4)
+    };
+    let same = |a: V3, b: V3| geom::sub3(a, b).iter().all(|c| c.abs() < 1e-4);
+    let mut valleys = Vec::new();
+    let mut out = Vec::with_capacity(planes.len());
+    for (k, pl) in planes.iter().enumerate() {
+        let poly = &pl.polygon3d;
+        let n = poly.len();
+        // Per edge: offset it (eave or rake)?
+        let moves: Vec<bool> = (0..n)
+            .map(|i| {
+                let (a, b) = (poly[i], poly[(i + 1) % n]);
+                if on_main(a) && on_main(b) {
+                    valleys.push((k, i));
+                    return false;
+                }
+                let shared = planes.iter().enumerate().any(|(l, q)| {
+                    l != k && {
+                        let m = q.polygon3d.len();
+                        (0..m).any(|j| {
+                            let (c, d) = (q.polygon3d[j], q.polygon3d[(j + 1) % m]);
+                            (same(a, c) && same(b, d)) || (same(a, d) && same(b, c))
+                        })
+                    }
+                });
+                !shared
+            })
+            .collect();
+        if overhang <= 1e-9 || n < 3 || !moves.iter().any(|&m| m) {
+            out.push(pl.clone());
+            continue;
+        }
+        let pts: Vec<Point> = poly.iter().map(|&p| geom::to_plan(p)).collect();
+        // Eaves and rakes move out of the (counter-clockwise) polygon.
+        let shifts: Vec<f64> = moves
+            .iter()
+            .map(|&m| if m { overhang } else { 0.0 })
+            .collect();
+        let new_pts = geom::offset_edges(&pts, &shifts);
+        let lifted: Option<Vec<V3>> = new_pts
+            .iter()
+            .map(|&p| pl.height_at(p).map(|y| geom::lift(p, y)))
+            .collect();
+        match lifted {
+            Some(polygon3d) => out.push(RoofPlane {
+                baseline: (geom::to_plan(polygon3d[0]), geom::to_plan(polygon3d[1])),
+                polygon3d,
+                pitch_in_12: pl.pitch_in_12,
+                source_edge: pl.source_edge,
+            }),
+            None => out.push(pl.clone()),
+        }
+    }
+    (out, valleys)
 }
 
 /// Pitch (rise in 12) of an upward-facing polygon from its normal.
@@ -442,6 +538,7 @@ mod tests {
             setback_from_eave: 30.0,
             pitch: 8.0,
             window: Some((30.0, 24.0)),
+            overhang: 0.0,
         }
     }
 
@@ -579,6 +676,116 @@ mod tests {
         assert_eq!(x.roof_planes.len(), 2);
         assert_eq!(x.hole, d.hole_in_main_roof);
         assert!(x.window_opening.is_some());
+    }
+
+    #[test]
+    fn a_dormer_stored_before_overhangs_loads_flush() {
+        let old = r#"{"kind":"Gable","width":72.0,"height_to_ridge":0.0,"wall_height":36.0,"position_along_eave":240.0,"setback_from_eave":30.0,"pitch":8.0,"window":null}"#;
+        let spec: DormerSpec = serde_json::from_str(old).unwrap();
+        assert_eq!(spec.overhang, 0.0);
+        let back: DormerSpec = serde_json::from_str(
+            &serde_json::to_string(&DormerSpec {
+                overhang: 9.0,
+                ..spec
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(back.overhang, 9.0);
+    }
+
+    #[test]
+    fn no_overhang_leaves_the_planes_as_they_are() {
+        let main = south();
+        for kind in [DormerKind::Gable, DormerKind::Hip, DormerKind::Shed] {
+            let d = auto_dormer(&main, spec(kind)).unwrap();
+            assert_eq!(d.overhang_planes, d.roof_planes, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_gable_dormer_overhangs_its_eaves_and_front_rake() {
+        let main = south();
+        let mut sp = spec(DormerKind::Gable);
+        sp.overhang = 12.0;
+        let d = auto_dormer(&main, sp).unwrap();
+        assert_eq!(d.overhang_planes.len(), 2);
+        let plan = |p: &RoofPlane| p.plan_polygon();
+        let xs = |p: &RoofPlane| plan(p).iter().map(|q| q.x).collect::<Vec<_>>();
+        // The dormer is 72 wide centred on 240: walls at x = 204 and 276.
+        let min_x = d
+            .overhang_planes
+            .iter()
+            .flat_map(xs)
+            .fold(f64::MAX, f64::min);
+        let max_x = d
+            .overhang_planes
+            .iter()
+            .flat_map(xs)
+            .fold(f64::MIN, f64::max);
+        assert!((min_x - 192.0).abs() < 1e-6, "{min_x}");
+        assert!((max_x - 288.0).abs() < 1e-6, "{max_x}");
+        // The front rake and ridge reach 12" past the front wall (y = 30).
+        let min_y = d
+            .overhang_planes
+            .iter()
+            .flat_map(|p| plan(p).into_iter().map(|q| q.y))
+            .fold(f64::MAX, f64::min);
+        assert!((min_y - 18.0).abs() < 1e-6, "{min_y}");
+        // Every corner stays on its plane, which keeps its pitch, and the
+        // ridge is still level and shared.
+        for (o, n) in d.roof_planes.iter().zip(&d.overhang_planes) {
+            assert!((o.pitch_in_12 - n.pitch_in_12).abs() < 1e-6);
+            let normal = n.normal();
+            for v in &n.polygon3d {
+                let off = geom::sub3(*v, o.polygon3d[0]);
+                assert!(geom::dot3(off, normal).abs() < 1e-6);
+            }
+            assert!(n.normal()[1] > 0.0);
+            assert!(n.projected_area() > o.projected_area());
+        }
+        // One valley edge per plane, on the main roof.
+        assert_eq!(d.valley_edges.len(), 2);
+        for &(k, e) in &d.valley_edges {
+            let p = &d.overhang_planes[k];
+            for v in [p.polygon3d[e], p.polygon3d[(e + 1) % p.polygon3d.len()]] {
+                let y = main.height_at(geom::to_plan(v)).unwrap();
+                assert!((y - v[1]).abs() < 1e-6, "valley corner off the main roof");
+            }
+        }
+        // The hole is still the wall footprint.
+        let plain = auto_dormer(&main, spec(DormerKind::Gable)).unwrap();
+        assert_eq!(d.hole_in_main_roof, plain.hole_in_main_roof);
+    }
+
+    #[test]
+    fn hip_and_shed_dormers_overhang_on_every_free_edge() {
+        let main = south();
+        for kind in [DormerKind::Hip, DormerKind::Shed] {
+            let mut sp = spec(kind);
+            sp.overhang = 10.0;
+            let d = auto_dormer(&main, sp).unwrap();
+            let plain = auto_dormer(&main, spec(kind)).unwrap();
+            let area = |d: &Dormer| d.overhang_planes.iter().map(RoofPlane::area).sum::<f64>();
+            assert!(area(&d) > area(&plain) + 100.0, "{kind:?}");
+            assert!(d.overhang_planes.iter().all(|p| p.normal()[1] > 0.0));
+            // Hip planes still meet along the same hip lines: planes share
+            // the corners the overhang left on them.
+            if kind == DormerKind::Hip {
+                let front = &d.overhang_planes[2];
+                let left = &d.overhang_planes[0];
+                let shared = front
+                    .polygon3d
+                    .iter()
+                    .filter(|v| {
+                        left.polygon3d
+                            .iter()
+                            .any(|w| geom::sub3(**v, *w).iter().all(|c| c.abs() < 1e-6))
+                    })
+                    .count();
+                assert_eq!(shared, 2, "the hip is one shared edge");
+            }
+        }
     }
 
     #[test]

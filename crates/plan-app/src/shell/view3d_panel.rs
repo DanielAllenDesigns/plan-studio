@@ -42,6 +42,7 @@
 //!
 //! Roof planes come from `crate::editor::roof_view::roof_meshes`.
 
+mod drag;
 mod pick;
 mod textures;
 
@@ -56,7 +57,7 @@ use crate::toolbar::ViewFlag;
 use crate::tools::camera::{self as camera_tool, CameraVariant};
 use crate::tools::{ToolId, ToolSet};
 use eframe::egui;
-use plan_3d::{build_scene, Material, Mesh, Scene, Vertex};
+use plan_3d::{build_scene_with, Material, Mesh, Scene, SceneOptions, Vertex};
 use plan_core::camera::{DEFAULT_EYE_HEIGHT, DEFAULT_FOV_DEG};
 use plan_core::geometry::Point;
 use plan_core::{CameraKind, CameraObject, Id, PlacedSymbol, Project};
@@ -331,6 +332,7 @@ pub fn technique_shows_textures(t: RenderingTechnique) -> bool {
 pub fn apply_fill(scene: &mut Scene, material: Material) {
     for m in &mut scene.meshes {
         m.material = material;
+        m.color = None;
     }
 }
 
@@ -454,6 +456,7 @@ pub fn clip_scene(scene: &Scene, cut: &SectionCut) -> Scene {
                 indices,
                 material: m.material,
                 object_id: m.object_id,
+                color: m.color,
             });
         }
     }
@@ -490,7 +493,8 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
         }
         _ => project,
     };
-    let mut scene = build_scene(proj);
+    // The plan's own opening display: casing, jambs and sills, doors open.
+    let mut scene = build_scene_with(proj, &SceneOptions::for_project(proj));
     // Walls already follow the roof (`build_scene` reads the roof records);
     // the planes themselves and their eave detail come on top.
     scene
@@ -560,6 +564,7 @@ pub fn symbol_box(symbol: &PlacedSymbol, floor_elevation: f64) -> Mesh {
         indices: Vec::new(),
         material: Material::Trim,
         object_id: Some(symbol.id),
+        color: None,
     };
     let mut quad = |c: [[f32; 3]; 4], n: [f32; 3]| {
         let base = mesh.vertices.len() as u32;
@@ -776,6 +781,7 @@ pub fn project_hash(p: &Project) -> u64 {
         let _ = write!(HashFmt(&mut h), "{:?}{:?}", f.framing, f.electrical);
     }
     p.wall_types.len().hash(&mut h);
+    let _ = write!(HashFmt(&mut h), "{:?}", p.opening_display);
     // Painted materials recolor the meshes of their objects.
     for o in &p.object_materials {
         let _ = write!(HashFmt(&mut h), "{o:?}");
@@ -1405,9 +1411,26 @@ pub struct View3dState {
     /// The cached scene as built (no pictures, no selection tint): what clicks
     /// ray-cast and what the overlay is added to.
     base_scene: Scene,
-    /// The overlay (pictures, selection tint) the viewport holds, by
-    /// [`pick::overlay_key`].
+    /// The overlay (pictures, selection and hover tints) the viewport holds,
+    /// by [`pick::overlay_key_with_hover`].
     overlay_key: u64,
+    /// Is the Select tool the active tool? Only then does a drag on a
+    /// selected object move it (the shell sets this before each frame).
+    pub select_tool: bool,
+    /// A press on a selected object that may become a move ([`drag`]).
+    obj_drag: Option<drag::ObjDrag>,
+    /// The object under the pointer (its mesh id) and when it was picked.
+    hover: Hover,
+}
+
+/// The hover highlight's state: the last pick, throttled by
+/// [`pick::hover_due`].
+#[derive(Default)]
+struct Hover {
+    object: Option<Id>,
+    last: Option<(egui::Pos2, f64)>,
+    /// How many ray casts the hover has made (tests watch the throttle).
+    picks: u32,
 }
 
 impl Default for View3dState {
@@ -1446,6 +1469,9 @@ impl View3dState {
             adjust_lights: None,
             base_scene: Scene::default(),
             overlay_key: pick::empty_overlay_key(),
+            select_tool: true,
+            obj_drag: None,
+            hover: Hover::default(),
         }
     }
 
@@ -1901,6 +1927,10 @@ impl View3dState {
         }
         self.scope().fill.hash(&mut h);
         self.textures_on.hash(&mut h);
+        // A painted object shows its material as it is now.
+        if !project.object_materials.is_empty() {
+            crate::tools::materials::library_revision().hash(&mut h);
+        }
         h.finish()
     }
 
@@ -1929,6 +1959,14 @@ impl View3dState {
         // Keep the user's view across rebuilds, except when about to be re-aimed.
         let keep_view = self.setup.is_none();
         self.queue(&scene, keep_view);
+        // Painted materials with a bitmap bring it along (flat ones are just
+        // the colour on the mesh).
+        if let Some(vp) = &mut self.viewport {
+            let store = vp.texture_store();
+            vp.set_surface_textures(crate::tools::materials::painted_textures(
+                project, &scene, &store,
+            ));
+        }
         self.base_scene = scene;
         // The viewport holds the bare model: the overlay is added by
         // `refresh_overlay`.
@@ -1948,10 +1986,12 @@ impl View3dState {
         }
     }
 
-    /// The pictures facing the camera and the tint over the selection, added to
-    /// the cached scene. Called every frame; the scene is only re-queued when
-    /// the overlay changed (a billboard turned by half an inch at its edge, the
-    /// selection changed), never for a plain redraw.
+    /// The pictures facing the camera, the tint over the selection and the
+    /// lighter one under the pointer, drawn over the cached scene. Called every
+    /// frame; the viewport's overlay is only replaced when it changed (a
+    /// billboard turned by half an inch at its edge, the selection or the
+    /// hovered object changed), never for a plain redraw, and the cached scene
+    /// is never re-queued for it.
     pub fn refresh_overlay(&mut self, project: &Project, selection: &Selection) {
         let Some(vp) = &self.viewport else {
             return;
@@ -1963,15 +2003,16 @@ impl View3dState {
             pictures.iter().filter_map(|m| m.object_id).collect();
         // The key covers everything the overlay is made of, so an unchanged
         // view costs a hash of the pictures, not a rebuild of the tint.
-        let key = pick::overlay_key(selection, &pictures, hide);
+        let hover = self.hover.object;
+        let key = pick::overlay_key_with_hover(selection, hover, &pictures, hide);
         if key == self.overlay_key {
             return;
         }
         self.overlay_key = key;
-        let overlay = pick::overlay_meshes(&self.base_scene, pictures, selection, hide);
-        let mut scene = self.base_scene.clone();
-        scene.meshes.extend(overlay);
-        self.queue(&scene, true);
+        let overlay = pick::overlay_with_hover(&self.base_scene, pictures, selection, hover, hide);
+        if let Some(vp) = &mut self.viewport {
+            vp.set_overlay(overlay);
+        }
         // Pictures draw their bitmaps (cached, so cheap when unchanged).
         let floors = scope
             .floor
@@ -2002,6 +2043,128 @@ impl View3dState {
             &self.base_scene,
             &pictures,
         )
+    }
+
+    /// A press on a selected object, with the Select tool, may become a drag
+    /// along the floor ([`drag`]): arms it, so the viewport leaves the drag
+    /// alone instead of orbiting. Called before the viewport sees the frame.
+    fn arm_drag(&mut self, ctx: &egui::Context, cx: &EditorContext, rect: egui::Rect) {
+        if self.obj_drag.is_some()
+            || !self.select_tool
+            || cx.selection.is_empty()
+            || crate::tools::materials::painter_active()
+            || self.walk.is_some_and(|w| w.playing)
+        {
+            return;
+        }
+        let (pressed, alt, pos) = ctx.input(|i| {
+            (
+                i.pointer.primary_pressed(),
+                i.modifiers.alt,
+                i.pointer.interact_pos(),
+            )
+        });
+        let Some(pos) = pos.filter(|p| pressed && !alt && rect.contains(*p)) else {
+            return;
+        };
+        // A toolbar or window floating over the view keeps its own clicks.
+        if ctx
+            .layer_id_at(pos)
+            .is_some_and(|l| l.order != egui::Order::Background)
+        {
+            return;
+        }
+        let Some((floor, obj)) = self.object_at(&cx.project, cx.floor, rect, pos) else {
+            return;
+        };
+        let Some(vp) = &self.viewport else { return };
+        if floor == cx.floor {
+            self.obj_drag = drag::ObjDrag::arm(cx, obj, &vp.camera, rect, pos, &self.base_scene);
+        }
+    }
+
+    /// Carries an armed drag on while the button is down and ends it when it
+    /// goes up (one undo step); Escape puts everything back.
+    fn drive_drag(&mut self, ctx: &egui::Context, cx: &mut EditorContext, rect: egui::Rect) {
+        let Some(mut d) = self.obj_drag.take() else {
+            return;
+        };
+        let (down, pos, shift, alt, esc) = ctx.input(|i| {
+            (
+                i.pointer.primary_down(),
+                i.pointer.latest_pos(),
+                i.modifiers.shift,
+                i.modifiers.alt,
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if esc {
+            d.cancel(cx);
+            return;
+        }
+        if !down {
+            d.finish(cx);
+            return;
+        }
+        if let (Some(pos), Some(vp)) = (pos, &self.viewport) {
+            d.update(cx, &vp.camera, rect, pos, (shift, alt));
+        }
+        self.obj_drag = Some(d);
+        ctx.request_repaint();
+    }
+
+    /// The hover highlight: picks the object under the pointer when the
+    /// pointer has moved and the last pick is old enough
+    /// ([`pick::hover_due`]); no pick at all while a button is down.
+    fn update_hover(&mut self, ctx: &egui::Context, cx: &EditorContext, resp: &egui::Response) {
+        let pos = ctx
+            .input(|i| {
+                (!i.pointer.any_down())
+                    .then(|| i.pointer.hover_pos())
+                    .flatten()
+            })
+            .filter(|_| resp.hovered() && self.obj_drag.is_none());
+        let Some(pos) = pos else {
+            self.hover.object = None;
+            self.hover.last = None;
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        if !pick::hover_due(self.hover.last, pos, now) {
+            return;
+        }
+        self.hover.last = Some((pos, now));
+        self.hover.picks += 1;
+        self.hover.object = pick::hover_id(self.object_at(&cx.project, cx.floor, resp.rect, pos));
+    }
+
+    /// Alt-click (C-39): the surface point under `pos` becomes the orbit
+    /// centre. Returns whether it did.
+    fn set_orbit_center_at(
+        &mut self,
+        project: &Project,
+        rect: egui::Rect,
+        pos: egui::Pos2,
+    ) -> bool {
+        let scope = self.scope();
+        let Some(vp) = &mut self.viewport else {
+            return false;
+        };
+        let pictures = pick::picture_meshes(project, &scope, vp.camera.eye());
+        pick::surface_point(&vp.camera, rect, pos, &self.base_scene, &pictures)
+            .is_some_and(|p| vp.camera.set_orbit_center(p))
+    }
+
+    /// Double-click on nothing: frame the whole building again, keeping the
+    /// viewing angle.
+    fn recenter_on_model(&mut self) -> bool {
+        match &mut self.viewport {
+            Some(vp) if vp.camera.mode != CameraMode::FullCamera && vp.bounds().is_some() => {
+                vp.fit_view();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Aims the viewport after a request (call after [`ensure_scene`](Self::ensure_scene)).
@@ -2489,7 +2652,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
 
     let tv = technique_view(st.technique);
     let sun = st.sun_light;
+    st.arm_drag(&ctx, cx, rect);
     let vp = st.viewport.get_or_insert_with(Viewport3d::new);
+    // A drag that moves an object must not also orbit the camera.
+    vp.drag_locked = st.obj_drag.is_some();
     apply_to_viewport(vp, &tv, sun);
     vp.set_point_lights(&render_lights(&cx.project));
     vp.textures_enabled = st.textures_on && technique_shows_textures(st.technique);
@@ -2516,7 +2682,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
         }
     }
     let gl_error = vp.gl_error();
+    st.drive_drag(&ctx, cx, resp.rect);
     handle_pointer_and_keys(&ctx, cx, st, &resp);
+    st.update_hover(&ctx, cx, &resp);
     st.refresh_overlay(&cx.project, &cx.selection);
     if let Some(e) = gl_error {
         ui.painter().text(
@@ -2617,8 +2785,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
 }
 
 /// Selection in the 3D view (C-43): a click selects the object under the
-/// pointer (Shift adds), a double-click also asks for its specification, and
-/// Delete deletes the selection.
+/// pointer (Shift adds), a double-click also asks for its specification (on
+/// nothing it frames the whole building again), Alt-click makes the clicked
+/// surface point the orbit centre (C-39), Delete deletes the selection and
+/// the arrow keys nudge it.
 fn handle_pointer_and_keys(
     ctx: &egui::Context,
     cx: &mut EditorContext,
@@ -2628,12 +2798,23 @@ fn handle_pointer_and_keys(
     let clicked = resp.double_clicked() || resp.clicked();
     if clicked {
         if let Some(pos) = resp.interact_pointer_pos() {
-            let add = ctx.input(|i| i.modifiers.shift);
-            let hit = st.object_at(&cx.project, cx.floor, resp.rect, pos);
-            if resp.double_clicked() {
-                pick::apply_open(cx, hit);
+            let (add, alt) = ctx.input(|i| (i.modifiers.shift, i.modifiers.alt));
+            if alt {
+                cx.status = if st.set_orbit_center_at(&cx.project, resp.rect, pos) {
+                    "Orbit center set to the clicked surface".into()
+                } else {
+                    "Alt-click a surface in the overview or doll house view to orbit it".into()
+                };
             } else {
-                pick::apply_pick(cx, hit, add);
+                let hit = st.object_at(&cx.project, cx.floor, resp.rect, pos);
+                if resp.double_clicked() {
+                    if hit.is_none() && st.recenter_on_model() {
+                        cx.status = "Centered on the building".into();
+                    }
+                    pick::apply_open(cx, hit);
+                } else {
+                    pick::apply_pick(cx, hit, add);
+                }
             }
             // The request is run, and the selection shown, next frame.
             ctx.request_repaint();
@@ -2650,6 +2831,45 @@ fn handle_pointer_and_keys(
     if wants_delete && !cx.selection.is_empty() {
         cx.delete_selection();
         ctx.request_repaint();
+    }
+    // Arrow keys nudge the selection by a snap unit (ten with Shift) along the
+    // plan axis nearest the arrow on screen; Full Camera walks with them.
+    let walking = st
+        .viewport
+        .as_ref()
+        .is_none_or(|v| v.camera.mode == CameraMode::FullCamera);
+    if (resp.hovered() || resp.has_focus())
+        && !other_has_focus
+        && !walking
+        && st.select_tool
+        && st.obj_drag.is_none()
+        && !cx.selection.is_empty()
+    {
+        let presses: Vec<(egui::Key, bool)> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if !modifiers.command => Some((*key, modifiers.shift)),
+                    _ => None,
+                })
+                .collect()
+        });
+        for (key, big) in presses {
+            let Some(cam) = st.viewport.as_ref().map(|v| &v.camera) else {
+                break;
+            };
+            if let Some(dir) = drag::nudge_dir(cam, key) {
+                let step = cx.snap_unit() * if big { 10.0 } else { 1.0 };
+                if drag::nudge(cx, dir * step) {
+                    ctx.request_repaint();
+                }
+            }
+        }
     }
 }
 
@@ -2874,6 +3094,7 @@ mod tests {
             indices: vec![0, 1, 2, 0, 2, 3],
             material: Material::WallExterior,
             object_id: None,
+            color: None,
         }
     }
 
@@ -4210,5 +4431,382 @@ mod tests {
         // The standard technique shows the GL scene again.
         st.technique = RenderingTechnique::Standard;
         assert!(st.vector_source(&p).is_none());
+    }
+
+    // ----- moving objects, the orbit centre, hover, the overlay (C-39, C-43) -----
+
+    /// Like `frame_with` with keyboard modifiers held.
+    fn frame_mods(
+        ctx: &egui::Context,
+        cx: &mut EditorContext,
+        st: &mut View3dState,
+        events: Vec<egui::Event>,
+        time: f64,
+        modifiers: egui::Modifiers,
+    ) {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            time: Some(time),
+            modifiers,
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            if st.frame(ctx, cx) {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| show(ui, cx, st));
+            }
+        });
+    }
+
+    /// A 24" base cabinet selected in an empty plan, seen in the overview.
+    fn view_of_a_cabinet() -> (EditorContext, View3dState, egui::Context, Id) {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = crate::editor::placed::add_cabinet(
+            &mut cx.project,
+            0,
+            plan_cabinets::Cabinet::base(24.0),
+        )
+        .unwrap();
+        cx.selection.set(crate::editor::ObjectRef::Cabinet(id));
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.active = true;
+        let ctx = egui::Context::default();
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 0.0);
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 0.1);
+        (cx, st, ctx, id)
+    }
+
+    /// The scene bounds of the meshes of `id`.
+    fn bounds_of(st: &View3dState, id: Id) -> ([f32; 3], [f32; 3]) {
+        let scene = Scene {
+            meshes: st
+                .base_scene
+                .meshes
+                .iter()
+                .filter(|m| m.object_id == Some(id))
+                .cloned()
+                .collect(),
+        };
+        scene.bounds().expect("the object has meshes")
+    }
+
+    #[test]
+    fn dragging_a_selected_cabinet_in_3d_moves_it_along_the_floor_in_one_undo_step() {
+        let (mut cx, mut st, ctx, id) = view_of_a_cabinet();
+        let before = placed_cabinet(&cx, id);
+        let (lo, hi) = bounds_of(&st, id);
+        let top = [(lo[0] + hi[0]) * 0.5, hi[1], (lo[2] + hi[2]) * 0.5];
+        let from = pixel(&st, top);
+        // Where the press ray meets the cabinet's base plane, and the pixel
+        // 60" further along plan x on that plane.
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let cam = st.viewport.as_ref().unwrap().camera.clone();
+        let p0 = drag::floor_point_at(&cam, rect, from, lo[1]).unwrap();
+        let to = pixel(&st, [(p0.x + 60.0) as f32, lo[1], -p0.y as f32]);
+        let mid = from + (to - from) * 0.5;
+        frame_with(
+            &ctx,
+            &mut cx,
+            &mut st,
+            vec![egui::Event::PointerMoved(from)],
+            1.0,
+        );
+        frame_with(&ctx, &mut cx, &mut st, vec![press(from, true)], 1.05);
+        for (k, at) in [mid, to].into_iter().enumerate() {
+            frame_with(
+                &ctx,
+                &mut cx,
+                &mut st,
+                vec![egui::Event::PointerMoved(at)],
+                1.1 + k as f64 * 0.05,
+            );
+        }
+        assert!(st.obj_drag.is_some(), "the press armed a drag");
+        frame_with(&ctx, &mut cx, &mut st, vec![press(to, false)], 1.3);
+        assert!(st.obj_drag.is_none());
+        let after = placed_cabinet(&cx, id);
+        let moved = after.position - before.position;
+        let unit = cx.snap_unit();
+        assert!(
+            (moved.x - 60.0).abs() <= unit && moved.y.abs() <= unit,
+            "moved {moved:?}"
+        );
+        // The camera did not orbit, the selection is the cabinet, and the
+        // whole drag is one undo step.
+        let yaw = st.viewport.as_ref().unwrap().camera.yaw;
+        assert_eq!(yaw, cam.yaw);
+        assert_eq!(
+            cx.selection.single(),
+            Some(crate::editor::ObjectRef::Cabinet(id))
+        );
+        assert_eq!(cx.undo_label(), Some(drag::LABEL));
+        cx.undo();
+        assert_eq!(placed_cabinet(&cx, id).position, before.position);
+        assert_ne!(cx.undo_label(), Some(drag::LABEL));
+    }
+
+    fn placed_cabinet(cx: &EditorContext, id: Id) -> plan_cabinets::Cabinet {
+        crate::editor::placed::cabinet_by_id(cx.floor(), id).unwrap()
+    }
+
+    #[test]
+    fn a_press_without_movement_or_off_the_selection_does_not_move_anything() {
+        let (mut cx, mut st, ctx, id) = view_of_a_cabinet();
+        let before = placed_cabinet(&cx, id);
+        let (lo, hi) = bounds_of(&st, id);
+        let top = pixel(&st, [(lo[0] + hi[0]) * 0.5, hi[1], (lo[2] + hi[2]) * 0.5]);
+        // A click on the selected cabinet: no move, no undo step.
+        let steps = cx.can_undo();
+        click(&ctx, &mut cx, &mut st, top, 1.0);
+        assert_eq!(placed_cabinet(&cx, id).position, before.position);
+        assert_eq!(cx.can_undo(), steps);
+        // With another tool active the drag orbits as it always did.
+        cx.selection.set(crate::editor::ObjectRef::Cabinet(id));
+        st.select_tool = false;
+        let yaw = st.viewport.as_ref().unwrap().camera.yaw;
+        frame_with(
+            &ctx,
+            &mut cx,
+            &mut st,
+            vec![egui::Event::PointerMoved(top)],
+            2.0,
+        );
+        frame_with(&ctx, &mut cx, &mut st, vec![press(top, true)], 2.05);
+        let away = top + egui::vec2(80.0, 0.0);
+        for (k, at) in [top + egui::vec2(40.0, 0.0), away].into_iter().enumerate() {
+            frame_with(
+                &ctx,
+                &mut cx,
+                &mut st,
+                vec![egui::Event::PointerMoved(at)],
+                2.1 + k as f64 * 0.05,
+            );
+        }
+        frame_with(&ctx, &mut cx, &mut st, vec![press(away, false)], 2.3);
+        assert_eq!(placed_cabinet(&cx, id).position, before.position);
+        assert_ne!(st.viewport.as_ref().unwrap().camera.yaw, yaw, "it orbited");
+    }
+
+    #[test]
+    fn arrow_keys_nudge_the_selection_in_3d_as_one_undo_step() {
+        let (mut cx, mut st, ctx, id) = view_of_a_cabinet();
+        let before = placed_cabinet(&cx, id).position;
+        let (lo, hi) = bounds_of(&st, id);
+        let over = pixel(&st, [(lo[0] + hi[0]) * 0.5, hi[1], (lo[2] + hi[2]) * 0.5]);
+        frame_with(
+            &ctx,
+            &mut cx,
+            &mut st,
+            vec![egui::Event::PointerMoved(over)],
+            1.0,
+        );
+        let key = |k, shift: bool| egui::Event::Key {
+            key: k,
+            physical_key: Some(k),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                shift,
+                ..egui::Modifiers::NONE
+            },
+        };
+        let unit = cx.snap_unit();
+        // The default overview looks toward plan +y at an angle: "right" is
+        // the nearest axis to the screen's right, "up" the one away from us.
+        let cam = st.viewport.as_ref().unwrap().camera.clone();
+        let right = drag::nudge_dir(&cam, egui::Key::ArrowRight).unwrap();
+        frame_with(
+            &ctx,
+            &mut cx,
+            &mut st,
+            vec![key(egui::Key::ArrowRight, false)],
+            1.1,
+        );
+        let moved = placed_cabinet(&cx, id).position - before;
+        assert!(
+            (moved.x - right.x * unit).abs() < 1e-6 && (moved.y - right.y * unit).abs() < 1e-6,
+            "{moved:?} for {right:?}"
+        );
+        assert_eq!(cx.undo_label(), Some(drag::LABEL));
+        frame_with(
+            &ctx,
+            &mut cx,
+            &mut st,
+            vec![key(egui::Key::ArrowRight, true)],
+            1.2,
+        );
+        let moved = placed_cabinet(&cx, id).position - before;
+        assert!(
+            (moved.x - right.x * unit * 11.0).abs() < 1e-6,
+            "Shift is ten units"
+        );
+        cx.undo();
+        cx.undo();
+        assert_eq!(placed_cabinet(&cx, id).position, before);
+    }
+
+    #[test]
+    fn alt_click_sets_the_orbit_centre_to_the_clicked_surface() {
+        let (mut cx, mut st, ctx, wall, on_wall) = view_of_a_wall();
+        let eye = st.viewport.as_ref().unwrap().camera.eye();
+        let mods = egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::NONE
+        };
+        frame_mods(
+            &ctx,
+            &mut cx,
+            &mut st,
+            vec![egui::Event::PointerMoved(on_wall)],
+            1.0,
+            mods,
+        );
+        let down = egui::Event::PointerButton {
+            pos: on_wall,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: mods,
+        };
+        let up = egui::Event::PointerButton {
+            pos: on_wall,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: mods,
+        };
+        frame_mods(&ctx, &mut cx, &mut st, vec![down], 1.05, mods);
+        frame_mods(&ctx, &mut cx, &mut st, vec![up], 1.1, mods);
+        let cam = &st.viewport.as_ref().unwrap().camera;
+        let hit = [120.0, 96.0, 0.0];
+        let off = plan_view3d::math::length(plan_view3d::math::sub(cam.target, hit));
+        assert!(
+            off < 1.5,
+            "target {:?} is {off} from the wall top",
+            cam.target
+        );
+        let now = cam.eye();
+        for k in 0..3 {
+            assert!((now[k] - eye[k]).abs() < 0.5, "the eye stays put");
+        }
+        // Nothing was selected by it.
+        assert!(cx.selection.is_empty(), "{wall}");
+        assert!(cx.status.contains("Orbit center"), "{}", cx.status);
+    }
+
+    #[test]
+    fn double_clicking_nothing_frames_the_building_again() {
+        let (mut cx, mut st, ctx, _wall, _on) = view_of_a_wall();
+        let centre = st.viewport.as_ref().unwrap().camera.target;
+        {
+            let cam = &mut st.viewport.as_mut().unwrap().camera;
+            cam.target = [900.0, 10.0, 400.0];
+            cam.distance *= 0.3;
+        }
+        click(&ctx, &mut cx, &mut st, egui::pos2(5.0, 5.0), 1.0);
+        click(&ctx, &mut cx, &mut st, egui::pos2(5.0, 5.0), 1.1);
+        let cam = &st.viewport.as_ref().unwrap().camera;
+        for (got, want) in cam.target.iter().zip(centre) {
+            assert!((got - want).abs() < 0.5, "{:?}", cam.target);
+        }
+    }
+
+    #[test]
+    fn the_hover_picks_are_throttled_and_tint_the_object_under_the_pointer() {
+        let (mut cx, mut st, ctx, wall, on_wall) = view_of_a_wall();
+        // Two spots on the wall's top, well apart on screen.
+        let along = pixel(&st, [170.0, 96.0, 0.0]);
+        assert!((along - on_wall).length() > 10.0);
+        let base = st.hover.picks;
+        let at = |p: egui::Pos2, t: f64, cx: &mut EditorContext, st: &mut View3dState| {
+            frame_with(&ctx, cx, st, vec![egui::Event::PointerMoved(p)], t);
+        };
+        at(on_wall, 1.0, &mut cx, &mut st);
+        assert_eq!(st.hover.picks, base + 1);
+        assert_eq!(st.hover.object, Some(wall));
+        // Still, then a one pixel wobble, then a real move too soon: no picks.
+        at(on_wall, 1.01, &mut cx, &mut st);
+        at(on_wall + egui::vec2(1.0, 0.0), 1.02, &mut cx, &mut st);
+        at(along, 1.03, &mut cx, &mut st);
+        assert_eq!(st.hover.picks, base + 1);
+        // The move is picked once the interval has passed, then a pointer
+        // that stays costs nothing more.
+        at(along, 1.2, &mut cx, &mut st);
+        assert_eq!(st.hover.picks, base + 2);
+        at(along, 1.3, &mut cx, &mut st);
+        at(along, 1.4, &mut cx, &mut st);
+        assert_eq!(st.hover.picks, base + 2, "a still pointer costs no pick");
+        at(along + egui::vec2(0.0, 4.0), 1.5, &mut cx, &mut st);
+        assert_eq!(st.hover.picks, base + 3);
+        // The tint is in the viewport's overlay, light blue, over the wall.
+        let tinted = |st: &View3dState| {
+            st.viewport
+                .as_ref()
+                .unwrap()
+                .overlay()
+                .iter()
+                .any(|m| m.object_id == Some(wall) && m.color == Some(pick::HOVER_RGB))
+        };
+        assert_eq!(st.hover.object, Some(wall));
+        assert!(tinted(&st));
+        // A selected object shows the selection tint, not the hover one.
+        cx.selection.set(crate::editor::ObjectRef::Wall(wall));
+        at(on_wall, 1.7, &mut cx, &mut st);
+        assert!(!tinted(&st));
+        // The pointer on nothing clears the highlight.
+        cx.selection.clear();
+        at(egui::pos2(5.0, 5.0), 2.0, &mut cx, &mut st);
+        assert_eq!(st.hover.object, None);
+        assert!(st.viewport.as_ref().unwrap().overlay().is_empty());
+    }
+
+    #[test]
+    fn the_selection_tint_goes_in_the_overlay_without_requeueing_the_scene() {
+        let (mut cx, mut st, ctx, wall, on_wall) = view_of_a_wall();
+        let meshes = st.viewport.as_ref().unwrap().scene_mesh_count();
+        assert_eq!(meshes, st.base_scene.meshes.len());
+        click(&ctx, &mut cx, &mut st, on_wall, 1.0);
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 1.2);
+        let vp = st.viewport.as_ref().unwrap();
+        assert_eq!(
+            vp.scene_mesh_count(),
+            meshes,
+            "the cached scene is untouched"
+        );
+        assert!(vp
+            .overlay()
+            .iter()
+            .any(|m| m.material == Material::Selection && m.object_id == Some(wall)));
+        // The camera was not re-framed by it either.
+        let cam = vp.camera.clone();
+        frame_with(&ctx, &mut cx, &mut st, Vec::new(), 1.4);
+        assert_eq!(st.viewport.as_ref().unwrap().camera, cam);
+    }
+
+    #[test]
+    fn a_painted_object_shows_the_exact_colour_and_its_bitmap() {
+        use plan_core::object_materials::WHOLE_OBJECT;
+        let mut p = project_with_wall();
+        let wall = p.floors[0].walls[0].id;
+        // A user material: a flat colour, and one with an image file.
+        let flat = plan_materials::MaterialDef::new("Test Teal", &["Custom"], [12, 140, 150]);
+        let mut user = plan_materials::MaterialLibrary::default();
+        user.add(flat);
+        crate::tools::materials::set_user_library_for_test(user);
+        p.set_object_material(wall, WHOLE_OBJECT, "Test Teal");
+        let scene = build_view_scene(&p, &ViewScope::default());
+        let painted: Vec<&Mesh> = scene
+            .meshes
+            .iter()
+            .filter(|m| m.object_id == Some(wall) && m.color.is_some())
+            .collect();
+        assert!(!painted.is_empty());
+        assert!(painted.iter().all(|m| m.color == Some([12, 140, 150])));
+        crate::tools::materials::set_user_library_for_test(
+            plan_materials::MaterialLibrary::default(),
+        );
     }
 }

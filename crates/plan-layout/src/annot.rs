@@ -31,6 +31,10 @@ pub struct PageLeader {
     pub height_in: f64,
     /// Draw an arrowhead at the tip.
     pub arrow: bool,
+    /// Bend points between the tip and the elbow, in order from the tip: a
+    /// multi-segment leader runs tip, bends, elbow, then the landing line.
+    #[serde(default)]
+    pub bends: Vec<Point>,
 }
 
 /// A revision cloud around a rectangle, tagged with a revision mark.
@@ -73,13 +77,25 @@ impl PageLeader {
         )
     }
 
-    /// The line from the tip to the elbow, then the landing line under the text.
+    /// The leader line before the landing: the tip, every bend, the elbow.
+    pub fn path(&self) -> Vec<Point> {
+        let mut pts = Vec::with_capacity(self.bends.len() + 2);
+        pts.push(self.tip);
+        pts.extend(self.bends.iter().copied());
+        pts.push(self.elbow);
+        pts
+    }
+
+    /// The line from the tip through the bends to the elbow, then the
+    /// landing line under the text.
     pub fn polylines(&self) -> Vec<Vec<Point>> {
         let land = Point::new(
             self.elbow.x + self.text_width_in() + self.height_in * 0.5,
             self.elbow.y,
         );
-        vec![vec![self.tip, self.elbow, land]]
+        let mut line = self.path();
+        line.push(land);
+        vec![line]
     }
 
     /// The arrowhead triangle at the tip, if the leader has one.
@@ -87,7 +103,9 @@ impl PageLeader {
         if !self.arrow {
             return None;
         }
-        let dir = self.elbow.sub(self.tip);
+        // The head points along the first segment.
+        let next = self.bends.first().copied().unwrap_or(self.elbow);
+        let dir = next.sub(self.tip);
         if dir.length() < 1e-9 {
             return None;
         }
@@ -108,6 +126,9 @@ impl PageLeader {
         let lines = self.text.lines().count().max(1) as f64;
         let w = self.text_width_in() + self.height_in * 0.5;
         let mut r = norm(self.tip, self.elbow);
+        for b in &self.bends {
+            r = [r[0].min(b.x), r[1].min(b.y), r[2].max(b.x), r[3].max(b.y)];
+        }
         r[0] = r[0].min(self.elbow.x);
         r[2] = r[2].max(self.elbow.x + w).max(tp.x + w);
         r[3] = r[3].max(tp.y + self.height_in * lines);
@@ -245,7 +266,25 @@ impl LayoutPage {
             text: text.to_string(),
             height_in,
             arrow: true,
+            bends: Vec::new(),
         });
+        id
+    }
+
+    /// Adds a multi-segment leader: the line runs from `tip` through each of
+    /// `bends` to `elbow`.
+    pub fn add_leader_bent(
+        &mut self,
+        tip: Point,
+        bends: Vec<Point>,
+        elbow: Point,
+        text: &str,
+        height_in: f64,
+    ) -> Id {
+        let id = self.add_leader(tip, elbow, text, height_in);
+        if let Some(l) = self.leaders.iter_mut().find(|l| l.id == id) {
+            l.bends = bends;
+        }
         id
     }
 
@@ -314,7 +353,7 @@ impl LayoutPage {
             offer(o.id, cad_distance(o, x, y));
         }
         for l in &self.leaders {
-            let line = dist_to_polyline(p, &[l.tip, l.elbow], false);
+            let line = dist_to_polyline(p, &l.path(), false);
             let b = l.bounds();
             let tp = l.text_pos();
             let tb = [tp.x, tp.y, b[2], b[3]];
@@ -342,6 +381,9 @@ impl LayoutPage {
                 if let Some(l) = self.leaders.iter_mut().find(|l| l.id == id) {
                     l.tip = l.tip.add(d);
                     l.elbow = l.elbow.add(d);
+                    for b in &mut l.bends {
+                        *b = b.add(d);
+                    }
                 }
                 true
             }
@@ -391,6 +433,9 @@ impl LayoutPage {
                 if let Some(l) = self.leaders.iter_mut().find(|l| l.id == id) {
                     l.tip = map(l.tip);
                     l.elbow = map(l.elbow);
+                    for b in &mut l.bends {
+                        *b = map(*b);
+                    }
                     l.height_in = (l.height_in * sy.abs()).clamp(0.03, 2.0);
                 }
                 true
@@ -605,6 +650,7 @@ mod tests {
             text: "KEYNOTE".into(),
             height_in: 0.125,
             arrow: true,
+            bends: Vec::new(),
         };
         let lines = l.polylines();
         assert_eq!(lines[0][0], l.tip);
@@ -669,5 +715,43 @@ mod tests {
         let mut p = page();
         let id = p.add_arc(Point::ZERO, 1.0, 0.0, 1.0);
         assert!(p.annotation_bounds(id).is_some());
+    }
+
+    #[test]
+    fn a_multi_segment_leader_runs_through_its_bends() {
+        let mut p = page();
+        let id = p.add_leader_bent(
+            Point::new(1.0, 1.0),
+            vec![Point::new(1.0, 3.0), Point::new(2.0, 4.0)],
+            Point::new(4.0, 4.0),
+            "KEYNOTE",
+            0.125,
+        );
+        let l = p.leaders.iter().find(|l| l.id == id).unwrap().clone();
+        let lines = l.polylines();
+        // Tip, two bends, elbow, landing.
+        assert_eq!(lines[0].len(), 5);
+        assert_eq!(lines[0][1], Point::new(1.0, 3.0));
+        assert_eq!(lines[0][3], l.elbow);
+        // The arrowhead points along the first segment (straight up).
+        let a = l.arrowhead().unwrap();
+        assert_eq!(a[0], l.tip);
+        assert!((a[1].y - a[2].y).abs() < 1e-9 && a[1].y > l.tip.y);
+        // Bounds, picking, moving and resizing follow the bends.
+        assert!(l.bounds()[3] >= 4.0);
+        assert_eq!(p.annotation_at(1.0, 2.0, 0.05), Some(id));
+        assert_eq!(p.annotation_at(1.5, 3.5, 0.05), Some(id));
+        assert_eq!(p.annotation_at(3.0, 1.0, 0.05), None);
+        assert!(p.move_annotation(id, 1.0, 0.5));
+        let m = p.leaders[0].clone();
+        assert_eq!(m.bends[0], Point::new(2.0, 3.5));
+        assert_eq!(m.tip, Point::new(2.0, 1.5));
+        let b = p.annotation_bounds(id).unwrap();
+        assert!(p.resize_annotation(id, [b[0], b[1], b[0] + (b[2] - b[0]) * 2.0, b[3]]));
+        assert!(p.leaders[0].bends[1].x > m.bends[1].x);
+        // Old files have no bends.
+        let json = r#"{"id":1,"tip":{"x":0.0,"y":0.0},"elbow":{"x":1.0,"y":1.0},"text":"A","height_in":0.1,"arrow":true}"#;
+        let old: PageLeader = serde_json::from_str(json).unwrap();
+        assert!(old.bends.is_empty());
     }
 }

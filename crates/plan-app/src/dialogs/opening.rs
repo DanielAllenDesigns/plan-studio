@@ -12,8 +12,8 @@ use plan_core::defaults::{OpeningDefaults, WindowDefaults};
 use plan_core::extras::OpeningExtras as StoredExtras;
 use plan_core::opening_symbol::{bifold_panels, plan_symbol, sliding_panels, PartKind, PROJECTION};
 use plan_core::openings::{
-    door_panel_count, ArchType, HandleStyle, LintelStyle, LiteStyle, OpeningSpec, ShutterSides,
-    ShutterStyle, StandardWidths,
+    door_panel_count, ArchType, CasingProfile, HandleStyle, LintelStyle, LiteStyle, OpeningSpec,
+    ShutterSides, ShutterStyle, StandardWidths,
 };
 use plan_core::{
     Casing, Id, LabelMode, LabelPlacement, LabelSettings, Opening, OpeningKind,
@@ -410,7 +410,7 @@ impl OpeningDialog {
     ) -> Self {
         let target = OpeningTarget::Placed(opening.id);
         let host = HostWall {
-            length: wall.length(),
+            length: wall.path_length(),
             thickness: wall.thickness,
             kind: wall.kind,
         };
@@ -447,6 +447,13 @@ impl OpeningDialog {
                     extras.casing_interior_width = c.width;
                     extras.casing_interior_depth = c.depth;
                     extras.casing_interior_reveal = c.reveal;
+                }
+                // The exterior casing is stored with the opening too; until
+                // it is, the one casing serves both faces.
+                if let Some(c) = draft.extras.spec.casing_exterior_size.or(draft.casing) {
+                    extras.casing_exterior_width = c.width;
+                    extras.casing_exterior_depth = c.depth;
+                    extras.casing_exterior_reveal = c.reveal;
                 }
             }
             _ => {
@@ -521,6 +528,16 @@ impl OpeningDialog {
         };
         if casing != Casing::default() || f.draft.casing.is_some() {
             f.draft.casing = Some(casing);
+        }
+        let outside = Casing {
+            width: f.extras.casing_exterior_width,
+            depth: f.extras.casing_exterior_depth,
+            reveal: f.extras.casing_exterior_reveal,
+        };
+        if f.draft.extras.spec.casing_exterior_size.is_some()
+            || (outside != casing && matches!(f.target, OpeningTarget::Placed(_)))
+        {
+            f.draft.extras.spec.casing_exterior_size = Some(outside);
         }
         if !matches!(f.target, OpeningTarget::Placed(_)) {
             f.extras.spec = f.draft.extras.spec.clone();
@@ -617,7 +634,7 @@ pub fn place_from_template(
     center_offset: f64,
     template: &Opening,
 ) -> Option<Id> {
-    let wall_len = project.floors[floor].wall(wall_id)?.length();
+    let wall_len = project.floors[floor].wall(wall_id)?.path_length();
     let half = template.width * 0.5;
     if wall_len < template.width + 2.0 * OPENING_MARGIN {
         return None;
@@ -659,8 +676,8 @@ fn plan_3d_arch_applies(kind: OpeningKind, style: OpeningStyle) -> bool {
 }
 
 fn overlap(a: &Opening, b: &Opening) -> bool {
-    a.start_offset() < b.end_offset() + OPENING_MARGIN
-        && a.end_offset() > b.start_offset() - OPENING_MARGIN
+    // A window standing over a door (a transom) shares no height with it.
+    plan_core::openings::openings_conflict(a, b, OPENING_MARGIN)
 }
 
 impl OpeningForm {
@@ -903,7 +920,7 @@ impl OpeningForm {
         section(ui, "Open/Close Display");
         ui.checkbox(&mut self.extras.show_open_2d, "Show Open in 2D")
             .on_hover_text("Draws the open leaf and swing; unchecked draws the door closed");
-        dis_check(ui, "Show Open in 3D", false);
+        self.show_open_3d(ui);
         if matches!(style, OpeningStyle::Hinged | OpeningStyle::DoubleDoor) {
             section(ui, "Door Panels");
             let calc = self.draft.extras.spec.calc_panels;
@@ -1015,10 +1032,29 @@ impl OpeningForm {
         session_check(ui, &mut self.extras.tempered, "Tempered Glass");
         section(ui, "Display");
         ui.checkbox(&mut self.extras.show_open_2d, "Show Open in 2D");
-        dis_check(ui, "Show Open in 3D", false);
+        self.show_open_3d(ui);
         ui.add_enabled_ui(false, |ui| {
             section(ui, "Recessed into Wall");
             dis_check(ui, "Recessed To Layer", true);
+        });
+    }
+
+    /// "Show Open in 3D" and its Open slider (`0..=100 %` of the swing angle
+    /// or of the way a sliding, pocket, bifold, barn or garage door travels).
+    fn show_open_3d(&mut self, ui: &mut Ui) {
+        let spec = &mut self.draft.extras.spec;
+        ui.checkbox(&mut spec.show_open_in_3d, "Show Open in 3D")
+            .on_hover_text("Builds this opening's leaf or panels open in the 3D view");
+        ui.add_enabled_ui(spec.show_open_in_3d, |ui| {
+            row(ui, "Open", |ui| {
+                let mut pct = (spec.open_fraction * 100.0).round();
+                if ui
+                    .add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix(" %"))
+                    .changed()
+                {
+                    spec.open_fraction = pct / 100.0;
+                }
+            });
         });
     }
 
@@ -1055,6 +1091,17 @@ impl OpeningForm {
         if !exterior_ok {
             ui.weak("Exterior casing is unavailable in an interior wall.");
         }
+        section(ui, "Profile");
+        let spec = &mut self.draft.extras.spec;
+        row(ui, "Casing profile", |ui| {
+            egui::ComboBox::from_id_salt("casing_profile")
+                .selected_text(spec.casing_profile.name())
+                .show_ui(ui, |ui| {
+                    for p in CasingProfile::ALL {
+                        ui.selectable_value(&mut spec.casing_profile, p, p.name());
+                    }
+                });
+        });
         section(ui, "Plan Display");
         ui.checkbox(
             &mut self.draft.extras.spec.casing_in_plan,

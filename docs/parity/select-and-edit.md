@@ -1,6 +1,6 @@
 # Parity spec: Select Objects and editing
 
-> Status (2026-10-08): 112 ids: 51 Works, 32 Partial, 28 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+> Status (2026-10-08, re-audited against HEAD 4c11b69): 112 ids: 87 Works, 18 Partial, 6 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
 
 Reference: Chief Architect X18 plan view. Written from Chief's Reference Manual and documented behavior plus
 our captures in `docs/chief-x18-*.md`. Lines marked **(verify in Chief)** are recalled but not confirmed against

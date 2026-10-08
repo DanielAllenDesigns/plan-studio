@@ -1,8 +1,9 @@
 //! Roof meshes: planes with holes, skylights, ceiling planes, dormers.
 
 use plan_3d::{
-    ceiling_plane_meshes, dormer_meshes, roof_meshes, roof_plane_meshes, skylight_meshes, Material,
-    Mesh, CEILING_FRAMING_MATERIAL,
+    ceiling_plane_meshes, ceiling_plane_meshes_joined, dormer_eave_meshes, dormer_meshes,
+    eave_elements, roof_meshes, roof_plane_meshes, skylight_meshes, EaveKind, EavePlane, Material,
+    Mesh, RoofDetail, CEILING_FRAMING_MATERIAL,
 };
 use plan_core::Point;
 use plan_roof::{
@@ -231,6 +232,7 @@ fn dormer_meshes_have_walls_roof_and_window_glass_and_cut_the_main_roof() {
         setback_from_eave: 30.0,
         pitch: 8.0,
         window: Some((30.0, 24.0)),
+        overhang: 0.0,
     };
     for kind in [DormerKind::Gable, DormerKind::Hip, DormerKind::Shed] {
         let d = auto_dormer(main, DormerSpec { kind, ..spec }).unwrap();
@@ -270,4 +272,172 @@ fn dormer_meshes_have_walls_roof_and_window_glass_and_cut_the_main_roof() {
             "{kind:?}"
         );
     }
+}
+
+fn overhanging_dormer(overhang: f64) -> plan_roof::Dormer {
+    let planes = gable_planes();
+    auto_dormer(
+        south(&planes),
+        DormerSpec {
+            kind: DormerKind::Gable,
+            width: 72.0,
+            height_to_ridge: 0.0,
+            wall_height: 36.0,
+            position_along_eave: 240.0,
+            setback_from_eave: 30.0,
+            pitch: 8.0,
+            window: None,
+            overhang,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_dormer_overhang_makes_the_roof_planes_longer_and_adds_fascia_and_soffit() {
+    let flush = overhanging_dormer(0.0);
+    let over = overhanging_dormer(12.0);
+    // The slabs follow the overhang planes.
+    let slab_extent = |d: &plan_roof::Dormer| {
+        let ms = dormer_meshes(d, 6.0, 5.0);
+        let roofs = of(&ms, Material::Roof);
+        let xs: Vec<f32> = roofs
+            .iter()
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[0]))
+            .collect();
+        xs.iter().cloned().fold(f32::MIN, f32::max) - xs.iter().cloned().fold(f32::MAX, f32::min)
+    };
+    assert!((slab_extent(&over) - slab_extent(&flush) - 24.0).abs() < 1e-3);
+    // The eave detail: no overhang, no soffit; with it, fascia, rake boards
+    // and soffit appear.
+    let detail = RoofDetail::default();
+    let count = |ms: &[Mesh]| ms.iter().map(|m| m.indices.len()).sum::<usize>();
+    let trim = dormer_eave_meshes(&over, &detail);
+    assert!(!of(&trim, Material::Trim).is_empty());
+    assert!(count(&trim) > count(&dormer_eave_meshes(&flush, &detail)));
+}
+
+#[test]
+fn a_dormer_valley_gets_no_rake_board() {
+    let d = overhanging_dormer(12.0);
+    let detail = RoofDetail::default();
+    let planes = |skip: bool| -> Vec<EavePlane> {
+        d.overhang_planes
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let mut ep = EavePlane::bare(p.clone());
+                ep.overhang = 12.0;
+                if skip {
+                    ep.skip = d
+                        .valley_edges
+                        .iter()
+                        .filter(|(q, _)| *q == k)
+                        .map(|(_, e)| *e)
+                        .collect();
+                }
+                ep
+            })
+            .collect()
+    };
+    let rakes = |skip| {
+        eave_elements(&planes(skip), &detail)
+            .iter()
+            .filter(|e| e.kind == EaveKind::RakeFascia)
+            .count()
+    };
+    // Each plane has the front rake; without the skip the valley is one too.
+    assert_eq!(rakes(true), 2);
+    assert_eq!(rakes(false), 4);
+}
+
+fn framing_vertices(meshes: &[Mesh]) -> Vec<[f32; 3]> {
+    of(meshes, CEILING_FRAMING_MATERIAL)
+        .iter()
+        .flat_map(|m| m.vertices.iter().map(|v| v.position))
+        .collect()
+}
+
+#[test]
+fn ceiling_planes_that_meet_at_a_ridge_are_mitred() {
+    let planes = gable_planes();
+    let ceil = ceiling_planes_for_vaulted_room(
+        &[
+            Point::new(0.0, 0.0),
+            Point::new(480.0, 0.0),
+            Point::new(480.0, 360.0),
+            Point::new(0.0, 360.0),
+        ],
+        &planes,
+        9.0,
+    );
+    assert_eq!(ceil.len(), 2);
+    // The ridge of the ceiling surface is at plan y = 180 (scene z = -180).
+    let ridge_y = ceil[0]
+        .polygon3d()
+        .iter()
+        .fold(f64::MIN, |m, p| m.max(p[1]));
+    let cos = 12.0 / (144.0f64 + 64.0).sqrt();
+    let want_top = ridge_y + 9.0 / cos;
+    let square: Vec<Vec<Mesh>> = ceil.iter().map(ceiling_plane_meshes).collect();
+    let mitred: Vec<Vec<Mesh>> = ceil
+        .iter()
+        .map(|c| ceiling_plane_meshes_joined(c, &ceil))
+        .collect();
+    let top_y = |ms: &[Mesh]| {
+        framing_vertices(ms)
+            .iter()
+            .fold(f64::MIN, |m, v| m.max(f64::from(v[1])))
+    };
+    for k in 0..2 {
+        // Cut square, each slab tops out at its own corner above the ridge.
+        assert!(
+            top_y(&square[k]) < want_top - 2.0,
+            "{} vs {want_top}",
+            top_y(&square[k])
+        );
+        // Mitred, both slabs reach the point where the two top planes meet.
+        assert!(
+            (top_y(&mitred[k]) - want_top).abs() < 1e-3,
+            "{} vs {want_top}",
+            top_y(&mitred[k])
+        );
+        // The mitre plane is the vertical one through the ridge: the slab
+        // never crosses to the other plane's side (south is z > -180).
+        let across = framing_vertices(&mitred[k])
+            .iter()
+            .filter(|v| {
+                if k == 0 {
+                    v[2] < -180.0 - 1e-3
+                } else {
+                    v[2] > -180.0 + 1e-3
+                }
+            })
+            .count();
+        assert_eq!(across, 0, "plane {k} crosses the ridge");
+    }
+    // The slabs meet in the same line above the ridge.
+    let apex = |ms: &[Mesh]| -> Vec<[f32; 3]> {
+        framing_vertices(ms)
+            .into_iter()
+            .filter(|v| (f64::from(v[1]) - want_top).abs() < 1e-3)
+            .collect()
+    };
+    let (a0, a1) = (apex(&mitred[0]), apex(&mitred[1]));
+    assert!(!a0.is_empty() && !a1.is_empty());
+    for v in &a0 {
+        assert!((f64::from(v[2]) + 180.0).abs() < 1e-3, "{v:?}");
+    }
+    // Same volume above the underside as the square slabs, a little less
+    // under the ridge, never more than 9" of plane thickness.
+    assert!(mitred.iter().all(|m| !m.is_empty()));
+    // No neighbours: equal to the square cut.
+    let alone = ceiling_plane_meshes_joined(&ceil[0], &[]);
+    assert_eq!(alone.len(), square[0].len());
+    assert_eq!(
+        alone.iter().map(Mesh::triangle_count).sum::<usize>(),
+        square[0].iter().map(Mesh::triangle_count).sum::<usize>()
+    );
+    // The underside keeps its materials.
+    assert!(!of(&mitred[0], Material::WallInterior).is_empty());
 }

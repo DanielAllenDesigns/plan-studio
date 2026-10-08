@@ -387,6 +387,12 @@ pub(crate) fn stairs(ctx: &Ctx, out: &mut Vec<Finding>) {
             }
             continue;
         }
+        // A spiral stair follows R311.7.10.1: 9 1/2" risers, 6 3/4" treads at
+        // the walking line, 26" clear width, 6'-6" headroom, no 2R+T rule.
+        if p.spiral && matches!(p.shape, StairShape::Curved { .. }) {
+            spiral_stair(p, &sol, &on, out);
+            continue;
+        }
         let riser = sol.riser_height.max(p.riser_height_target);
         if riser > o.riser_max + EPS {
             out.push(on(finding(
@@ -471,6 +477,59 @@ pub(crate) fn stairs(ctx: &Ctx, out: &mut Vec<Finding>) {
                 "Adjust riser or tread so 2R+T falls between 24\" and 25\".",
             )));
         }
+    }
+}
+
+/// IRC R311.7.10.1 spiral stairways, as `plan_stairs::solve` judges them.
+fn spiral_stair(
+    p: &plan_stairs::StairParams,
+    sol: &plan_stairs::StairSolution,
+    on: &dyn Fn(Finding) -> Finding,
+    out: &mut Vec<Finding>,
+) {
+    use plan_stairs::{SPIRAL_MAX_RISER, SPIRAL_MIN_HEADROOM, SPIRAL_MIN_TREAD, SPIRAL_MIN_WIDTH};
+    let riser = sol.riser_height.max(p.riser_height_target);
+    let rule = "IRC R311.7.10.1 spiral stairways";
+    if riser > SPIRAL_MAX_RISER + EPS {
+        out.push(on(finding(
+            rule,
+            Severity::Error,
+            format!("Riser height {riser:.2}\" exceeds the 9 1/2\" maximum of a spiral stair."),
+            "Use more risers so each is 9 1/2\" or less.",
+        )));
+    }
+    if p.tread_depth < SPIRAL_MIN_TREAD - EPS {
+        out.push(on(finding(
+            rule,
+            Severity::Error,
+            format!(
+                "Tread depth {:.2}\" at the walking line is under the 6 3/4\" minimum.",
+                p.tread_depth
+            ),
+            "Widen the spiral or use fewer treads to the turn.",
+        )));
+    }
+    if p.width < SPIRAL_MIN_WIDTH - EPS {
+        out.push(on(finding(
+            rule,
+            Severity::Error,
+            format!(
+                "Clear width {:.1}\" is under the 26\" minimum of a spiral stair.",
+                p.width
+            ),
+            "Make the outside radius at least 28\" plus the pole.",
+        )));
+    }
+    if p.headroom_min < SPIRAL_MIN_HEADROOM - EPS {
+        out.push(on(finding(
+            rule,
+            Severity::Error,
+            format!(
+                "Headroom {:.1}\" is under the 78\" minimum of a spiral stair.",
+                p.headroom_min
+            ),
+            "Raise the ceiling or move the opening to give 6'-6\" headroom.",
+        )));
     }
 }
 

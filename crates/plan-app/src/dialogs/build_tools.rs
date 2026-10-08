@@ -255,6 +255,18 @@ fn save_text(default_name: &str, ext: &str, text: &str) -> String {
     write_file(&path, text.as_bytes())
 }
 
+/// Asks for a file name and writes `bytes` there (an Excel workbook).
+fn save_bytes(default_name: &str, ext: &str, bytes: &[u8]) -> String {
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(default_name)
+        .add_filter(ext, &[ext])
+        .save_file()
+    else {
+        return "Export cancelled".into();
+    };
+    write_file(&path, bytes)
+}
+
 fn write_file(path: &Path, bytes: &[u8]) -> String {
     match std::fs::write(path, bytes) {
         Ok(()) => format!("Saved {}", path.display()),
@@ -364,6 +376,7 @@ fn schedule_window(
     let sched = schedule_for(cx, kind);
     let mut open = true;
     let mut export = false;
+    let mut export_xlsx = false;
     let mut place = false;
     let mut clicked = None;
     egui::Window::new(sched.title.clone())
@@ -390,6 +403,7 @@ fn schedule_window(
                     )
                     .clicked();
                 export = ui.button("Export CSV\u{2026}").clicked();
+                export_xlsx = ui.button("Export Excel\u{2026}").clicked();
             });
         });
     if let Some(row) = clicked {
@@ -413,6 +427,10 @@ fn schedule_window(
         let name = format!("{}.csv", sched.title.replace(' ', "_"));
         cx.status = save_text(&name, "csv", &sched.to_csv());
     }
+    if export_xlsx {
+        let name = format!("{}.xlsx", sched.title.replace(' ', "_"));
+        cx.status = save_bytes(&name, "xlsx", &sched.to_xlsx());
+    }
     open
 }
 
@@ -431,6 +449,7 @@ fn placed_window(
     let sched = schedule_view::table_for(cx, def, floor);
     let mut open = true;
     let mut export = false;
+    let mut export_xlsx = false;
     let mut clicked = None;
     egui::Window::new(sched.title.clone())
         .id(egui::Id::new(("placed_schedule", id)))
@@ -446,7 +465,10 @@ fn placed_window(
             );
             ui.weak("Click a row to select the object in the plan.");
             ui.separator();
-            export = ui.button("Export CSV\u{2026}").clicked();
+            ui.horizontal(|ui| {
+                export = ui.button("Export CSV\u{2026}").clicked();
+                export_xlsx = ui.button("Export Excel\u{2026}").clicked();
+            });
         });
     if let Some(row) = clicked {
         let rooms = (floor == cx.floor).then_some((floor, cx.rooms.as_slice()));
@@ -458,6 +480,10 @@ fn placed_window(
     if export {
         let name = format!("{}.csv", sched.title.replace(' ', "_"));
         cx.status = save_text(&name, "csv", &sched.to_csv());
+    }
+    if export_xlsx {
+        let name = format!("{}.xlsx", sched.title.replace(' ', "_"));
+        cx.status = save_bytes(&name, "xlsx", &sched.to_xlsx());
     }
     open
 }
@@ -835,12 +861,16 @@ impl Windows {
                 schedule_view::replace(cx, d.floor(), d.draft().clone());
                 send_schedule_to_layout(cx, d.floor(), d.id());
             }
-            if actions.export_csv || actions.open_window {
+            if actions.export_csv || actions.export_xlsx || actions.open_window {
                 // Preview the unsaved edits in the table that is exported.
                 let table = schedule_view::table_for(cx, d.draft(), d.floor());
                 if actions.export_csv {
                     let name = format!("{}.csv", table.title.replace(' ', "_"));
                     cx.status = save_text(&name, "csv", &table.to_csv());
+                }
+                if actions.export_xlsx {
+                    let name = format!("{}.xlsx", table.title.replace(' ', "_"));
+                    cx.status = save_bytes(&name, "xlsx", &table.to_xlsx());
                 }
                 if actions.open_window {
                     // The window reads the stored schedule, so store the edits.
@@ -1074,6 +1104,15 @@ mod tests {
         ] {
             let csv = schedule_for(&cx, kind).to_csv();
             assert!(csv.lines().count() >= 2, "{kind:?}: {csv}");
+            // The same table as an Excel workbook: a zip with the sheet in it.
+            let xlsx = schedule_for(&cx, kind).to_xlsx();
+            let parts = plan_library::archive::read_zip(&xlsx).expect("a workbook");
+            let sheet = parts
+                .iter()
+                .find(|(n, _)| n == "xl/worksheets/sheet1.xml")
+                .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+                .expect("a sheet");
+            assert!(sheet.matches("<row ").count() >= 2, "{kind:?}");
         }
         assert!(materials_csv(&cx).lines().count() >= 2);
     }

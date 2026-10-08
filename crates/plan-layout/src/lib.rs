@@ -29,6 +29,7 @@ mod model;
 mod print;
 mod render;
 mod send;
+mod template;
 mod textfit;
 mod titleblock;
 
@@ -61,6 +62,7 @@ pub use send::{
     default_construction_set_with, fit_largest_scale, plan_label, send_camera_to_layout,
     send_to_layout, send_to_layout_auto, AUTO_SCALE_CEILING,
 };
+pub use template::{template_file_stem, LayoutTemplate, TEMPLATE_EXTENSION, TEMPLATE_VERSION};
 pub use textfit::{fit_text_box, wrap_lines, FittedText, TextFit, MIN_SHRINK_PT};
 pub use titleblock::{
     long_date, MacroContext, TitleBlockStyle, TitleBlockTemplate, DANIEL_REVISION_ROWS,
@@ -70,6 +72,8 @@ pub use extent::source_size_in;
 
 #[cfg(test)]
 mod feature_tests;
+#[cfg(test)]
+mod font_tests;
 #[cfg(test)]
 mod page_tools_tests;
 #[cfg(test)]

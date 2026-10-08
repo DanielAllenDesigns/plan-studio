@@ -9,8 +9,12 @@ use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::extras::WallExtras as StoredExtras;
 use plan_core::geometry::Point;
 use plan_core::units::fmt_ft_in;
-use plan_core::walls::{DEFAULT_HALF_WALL_HEIGHT, DEFAULT_PONY_SPLIT};
-use plan_core::{FenceStyle, Id, Opening, Wall, WallClass, WallCurve, WallKind, WallTypeDef};
+use plan_core::walls::{
+    scale_opening_offset, ArcLock, DEFAULT_HALF_WALL_HEIGHT, DEFAULT_PONY_SPLIT,
+};
+use plan_core::{
+    FenceStyle, Id, Opening, ResizeAbout, Wall, WallClass, WallCurve, WallKind, WallTypeDef,
+};
 
 /// Values a Roof tab control starts with when it is switched on.
 const ROOF_PITCH_DEFAULT: f64 = 8.0;
@@ -203,6 +207,15 @@ impl WallExtras {
     }
 }
 
+/// The reference lines the Radius field can measure to (W-66).
+const RADIUS_TO: [(ResizeAbout, &str); 5] = [
+    (ResizeAbout::OuterSurface, "Outer Surface"),
+    (ResizeAbout::MainLayerOutside, "Main Layer Outside"),
+    (ResizeAbout::WallCenter, "Wall Center"),
+    (ResizeAbout::MainLayerInside, "Main Layer Inside"),
+    (ResizeAbout::InnerSurface, "Inner Surface"),
+];
+
 /// Which wall point stays put when the length is edited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WallLock {
@@ -224,6 +237,13 @@ struct WallForm {
     openings: Vec<Opening>,
     orig_start: Point,
     lock: WallLock,
+    /// The reference line the Radius field measures to ("Radius to").
+    radius_to: ResizeAbout,
+    /// What a radius or arc angle edit holds fixed ("Lock", W-66).
+    arc_lock: ArcLock,
+    /// How much the arc edits made so far changed the path length by; the
+    /// openings keep their proportion along the wall.
+    arc_scale: f64,
     default_height: f64,
     default_top: bool,
     fields: Fields,
@@ -269,6 +289,9 @@ impl WallDialog {
                 extras,
                 openings,
                 lock: WallLock::Start,
+                radius_to: ResizeAbout::WallCenter,
+                arc_lock: ArcLock::Ends,
+                arc_scale: 1.0,
                 default_height,
                 default_top,
                 fields: Fields::default(),
@@ -389,17 +412,43 @@ impl WallForm {
         }
     }
 
+    /// The openings after the edits: a straight wall keeps their distance
+    /// from the locked end; a curved one scales them with the path length
+    /// (making a wall curved, or changing its radius, stretches the
+    /// centerline) so each keeps its proportion along the wall.
     fn adjusted_openings(&self) -> Vec<Opening> {
         let dir = self.draft.direction();
-        let shift = self.orig_start.sub(self.draft.start).dot(dir);
+        let shift = if self.draft.is_curved() {
+            0.0
+        } else {
+            self.orig_start.sub(self.draft.start).dot(dir)
+        };
+        let k = self.arc_scale;
+        let len = self.draft.path_length();
         self.openings
             .iter()
             .map(|o| {
                 let mut o = o.clone();
                 o.center_offset += shift;
+                if (k - 1.0).abs() > 1e-9 {
+                    scale_opening_offset(&mut o, k, len);
+                }
                 o
             })
             .collect()
+    }
+
+    /// The wall type the draft stands on, for the layer positions.
+    fn draft_type(&self) -> Option<&WallTypeDef> {
+        let name = self.draft.wall_type.as_deref()?;
+        self.types.iter().find(|t| t.name == name)
+    }
+
+    /// Notes that an arc edit changed the path length from `old`.
+    fn track_path(&mut self, old: f64) {
+        if old > 1e-9 {
+            self.arc_scale *= self.draft.path_length() / old;
+        }
     }
 
     /// Direction of the draft; +x for a degenerate wall.
@@ -910,7 +959,10 @@ impl WallForm {
                 return;
             };
             let chord = self.draft.length();
-            let mut radius = c.radius(chord).unwrap_or(0.0);
+            let mut radius = self
+                .draft
+                .radius_to(self.draft_type(), self.radius_to)
+                .unwrap_or(0.0);
             if self
                 .fields
                 .length_row(ui, "Radius", "arc_radius", &mut radius)
@@ -949,55 +1001,74 @@ impl WallForm {
             }
             ui.weak("The ends stay put; Wall Length is the chord.");
         });
-        ui.add_enabled_ui(false, |ui| {
+        ui.add_enabled_ui(!is_default && self.draft.is_curved(), |ui| {
             row(ui, "Radius to", |ui| {
-                dis_radio(ui, "Outer Surface", false);
-                dis_radio(ui, "Main Layer Outside", true);
+                for (about, label) in RADIUS_TO {
+                    ui.radio_value(&mut self.radius_to, about, label);
+                }
             });
             row(ui, "Lock", |ui| {
-                dis_radio(ui, "Arc Center", false);
-                dis_radio(ui, "Ends", true);
+                ui.radio_value(&mut self.arc_lock, ArcLock::Center, "Arc Center")
+                    .on_hover_text("A new radius or arc angle keeps the arc center; the ends move");
+                ui.radio_value(&mut self.arc_lock, ArcLock::Ends, "Ends")
+                    .on_hover_text("A new radius or arc angle keeps the wall's ends");
             });
+        });
+        ui.add_enabled_ui(false, |ui| {
             dis_check(ui, "Automatic Facet Angle", true);
         });
     }
 
-    /// Straight to arc (a quarter of the chord for the rise) and back.
+    /// Straight to arc (a quarter of the chord for the rise) and back. The
+    /// openings keep their proportion along the longer or shorter wall.
     fn set_curved(&mut self, on: bool) {
+        let old = self.draft.path_length();
         self.draft.curve = on.then(|| WallCurve {
             bulge: self.draft.length() * 0.25,
         });
+        self.track_path(old);
     }
 
     fn arc_left(&self) -> bool {
         self.draft.curve.is_none_or(|c| c.bulge >= 0.0)
     }
 
-    /// The radius over the chord; below half the chord it stays at half
-    /// (a semicircle).
+    /// The radius to the chosen reference line; below half the chord it
+    /// stays at half (a semicircle). With the Arc Center lock the ends move.
     fn set_radius(&mut self, radius: f64) {
-        let chord = self.draft.length();
-        let r = radius.max(chord * 0.5);
-        if let Some(c) = WallCurve::from_radius(chord, r, self.arc_left()) {
-            self.draft.curve = Some(c);
+        let old = self.draft.path_length();
+        let ty = self.draft_type().cloned();
+        let (about, lock) = (self.radius_to, self.arc_lock);
+        if self
+            .draft
+            .set_radius_to(ty.as_ref(), about, radius, lock)
+            .is_some()
+        {
+            self.track_path(old);
         }
     }
 
     /// The arc angle in degrees, 1 to 340.
     fn set_sweep_deg(&mut self, deg: f64) {
-        let chord = self.draft.length();
-        let rad = deg.clamp(1.0, 340.0).to_radians();
-        if let Some(c) = WallCurve::from_sweep(chord, rad, self.arc_left()) {
-            self.draft.curve = Some(c);
+        let old = self.draft.path_length();
+        let lock = self.arc_lock;
+        if self
+            .draft
+            .set_sweep_locked(deg.to_radians(), lock)
+            .is_some()
+        {
+            self.track_path(old);
         }
     }
 
     /// The rise (sagitta) over the chord: 0 makes the wall straight.
     fn set_rise(&mut self, rise: f64) {
+        let old = self.draft.path_length();
         let rise = rise.max(0.0);
         self.draft.curve = (rise > 1e-9).then(|| WallCurve {
             bulge: if self.arc_left() { rise } else { -rise },
         });
+        self.track_path(old);
     }
 
     fn set_side(&mut self, left: bool) {
@@ -1312,7 +1383,7 @@ impl SpecPages for WallForm {
                 return Some("Upper pitch must be greater than zero".into());
             }
         }
-        let len = self.draft.length();
+        let len = self.draft.path_length();
         let too_short = self.adjusted_openings().iter().any(|o| {
             o.start_offset() < OPENING_MARGIN - 1e-6 || o.end_offset() > len - OPENING_MARGIN + 1e-6
         });
@@ -1455,6 +1526,9 @@ mod tests {
             extras: WallExtras::default(),
             openings: vec![opening],
             lock,
+            radius_to: ResizeAbout::WallCenter,
+            arc_lock: ArcLock::Ends,
+            arc_scale: 1.0,
             default_height: 109.125,
             default_top: true,
             fields: Fields::default(),
@@ -1690,5 +1764,58 @@ mod tests {
         f.set_curved(true);
         f.set_curved(false);
         assert!(f.draft.curve.is_none());
+    }
+
+    #[test]
+    fn making_a_wall_curved_rescales_its_openings_and_straightening_restores_them() {
+        let mut f = form(WallLock::Start);
+        assert_eq!(f.adjusted_openings()[0].center_offset, 50.0);
+        f.set_curved(true);
+        let len = f.draft.path_length();
+        assert!(len > 100.0);
+        let o = &f.adjusted_openings()[0];
+        assert!((o.center_offset - 50.0 * len / 100.0).abs() < 1e-9);
+        // A deeper bend stretches them further; the proportion stays 1/2.
+        f.set_rise(40.0);
+        let o = &f.adjusted_openings()[0];
+        assert!((o.center_offset / f.draft.path_length() - 0.5).abs() < 1e-9);
+        assert!(f.error().is_none());
+        // Back to a straight wall: the original offsets return.
+        f.set_curved(false);
+        assert!((f.adjusted_openings()[0].center_offset - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_radius_is_measured_to_the_chosen_reference_line() {
+        let mut f = form(WallLock::Start);
+        f.set_curved(true);
+        let (_, r) = f.draft.arc_center_radius().unwrap();
+        f.radius_to = ResizeAbout::OuterSurface;
+        let outer = f.draft.radius_to(f.draft_type(), f.radius_to).unwrap();
+        // The default wall's exterior is its left side, the bulge side.
+        assert!((outer - (r + 2.25)).abs() < 1e-9);
+        f.set_radius(outer + 50.0);
+        let (_, r2) = f.draft.arc_center_radius().unwrap();
+        assert!((r2 - (r + 50.0)).abs() < 1e-9);
+        assert_eq!(f.draft.start, Point::new(10.0, 10.0), "ends locked");
+    }
+
+    #[test]
+    fn the_arc_center_lock_moves_the_ends_and_the_openings_follow() {
+        let mut f = form(WallLock::Start);
+        f.set_curved(true);
+        let (c0, r0) = f.draft.arc_center_radius().unwrap();
+        f.arc_lock = ArcLock::Center;
+        f.set_radius(r0 * 2.0);
+        let (c1, r1) = f.draft.arc_center_radius().unwrap();
+        assert!(c1.dist(c0) < 1e-9 && (r1 - 2.0 * r0).abs() < 1e-9);
+        assert_ne!(f.draft.start, Point::new(10.0, 10.0));
+        let o = &f.adjusted_openings()[0];
+        assert!((o.center_offset / f.draft.path_length() - 0.5).abs() < 1e-9);
+        // The arc angle swings the end about the center.
+        let sweep = f.draft.curve.unwrap().sweep_abs(f.draft.length());
+        f.set_sweep_deg(sweep.to_degrees() / 2.0);
+        let (c2, r2) = f.draft.arc_center_radius().unwrap();
+        assert!(c2.dist(c0) < 1e-6 && (r2 - 2.0 * r0).abs() < 1e-6);
     }
 }

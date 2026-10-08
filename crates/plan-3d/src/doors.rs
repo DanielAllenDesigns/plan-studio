@@ -96,7 +96,7 @@ fn door_lite(ctx: &Ctx, width: f64) -> Option<Lite> {
 }
 
 fn open_angle(ctx: &Ctx) -> f64 {
-    ctx.opts.display().open_angle_deg
+    ctx.open_angle()
 }
 
 fn hinged(ctx: &Ctx, set: &mut MeshSet, angle: f64) {
@@ -141,9 +141,9 @@ fn sliding(ctx: &Ctx, set: &mut MeshSet) {
         let movable = kk % 2 == 1;
         let track = if movable { off } else { -off };
         let at = h.s0 + k as f64 * step - if k > 0 { 0.5 } else { 0.0 };
-        let shift = if movable && ctx.opts.doors_open {
+        let shift = if movable {
             let dir = if mirror { 1.0 } else { -1.0 };
-            dir * (step - 1.0)
+            dir * (step - 1.0) * ctx.open_fraction()
         } else {
             0.0
         };
@@ -170,11 +170,7 @@ fn pocket(ctx: &Ctx, set: &mut MeshSet) {
     } else {
         h.s0
     };
-    let shift = if ctx.opts.doors_open {
-        (w - 1.0).min(room - 0.5).max(0.0)
-    } else {
-        0.0
-    };
+    let shift = (w - 1.0).min(room - 0.5).max(0.0) * ctx.open_fraction();
     let dir = if toward_end { 1.0 } else { -1.0 };
     let leaf = Leaf::new((h.s0 + dir * shift, 0.0), (1.0, 0.0));
     let t = DOOR_THICKNESS * 0.5;
@@ -248,39 +244,84 @@ fn double(ctx: &Ctx, set: &mut MeshSet, angle: f64) {
     }
 }
 
-/// Four stacked sections with metal rails; lites in the top section.
+/// Four stacked sections with metal rails; lites in the top section. Open,
+/// the sections ride up the jambs and roll back overhead on the room side
+/// (the door travels `open_fraction` of its way along the track).
 fn garage(ctx: &Ctx, set: &mut MeshSet) {
     let h = ctx.hole;
     let w = h.s1 - h.s0;
     let leaf = Leaf::new((h.s0, 0.0), (1.0, 0.0));
     let t = (GARAGE_THICKNESS.min(ctx.wall.thickness) * 0.5).max(0.25);
-    let section = (h.h1 - h.h0) / GARAGE_SECTIONS as f64;
+    let height = h.h1 - h.h0;
+    let section = height / GARAGE_SECTIONS as f64;
     let top = GARAGE_SECTIONS - 1;
+    // How far along the track the door has run: up the jambs for the height
+    // of the opening, then back overhead for the height of the door.
+    let travel = ctx.open_fraction() * height * 2.0;
+    let back = ctx.interior;
+    let overhead = |ctx: &Ctx, set: &mut MeshSet, k: usize, lite: Option<&Lite>| {
+        // Distance of the section's lower edge along the track.
+        let a = k as f64 * section + travel;
+        let b = a + section;
+        let up = (a.min(height), b.min(height));
+        if up.1 - up.0 > 1e-6 {
+            let hh = (h.h0 + up.0 + 0.25, h.h0 + up.1 - 0.25);
+            panel(
+                &ctx.frame,
+                set,
+                &leaf,
+                (0.0, w),
+                hh,
+                (-t, t),
+                if up.1 - up.0 >= section - 1e-6 {
+                    lite
+                } else {
+                    None
+                },
+            );
+        }
+        let flat = ((a - height).max(0.0), (b - height).max(0.0));
+        if flat.1 - flat.0 > 1e-6 {
+            // Lying flat under the ceiling above the head, run back into the room.
+            let tt = if back > 0.0 {
+                (ctx.half() + flat.0, ctx.half() + flat.1)
+            } else {
+                (-ctx.half() - flat.1, -ctx.half() - flat.0)
+            };
+            let slab = set.material(Material::DoorPanel);
+            leaf.boxed(
+                &ctx.frame,
+                slab,
+                (0.0, w),
+                tt,
+                (h.h1 + 0.25, h.h1 + 0.25 + 2.0 * t),
+            );
+        }
+    };
     for k in 0..GARAGE_SECTIONS {
         let (a, b) = (h.h0 + k as f64 * section, h.h0 + (k + 1) as f64 * section);
         let lite = (k == top)
             .then(|| glazing(ctx))
             .flatten()
             .map(|(cols, rows)| Lite {
-                grid: lite_grid(ctx, (cols, rows), (3.0, w - 3.0), (a + 4.0, b - 3.0)),
+                grid: lite_grid(
+                    ctx,
+                    (cols, rows),
+                    (3.0, w - 3.0),
+                    (a + 4.0 + travel.min(height), b - 3.0 + travel.min(height)),
+                ),
                 glass: Material::WindowGlass,
                 bars: Material::DoorPanel,
             });
-        panel(
-            &ctx.frame,
-            set,
-            &leaf,
-            (0.0, w),
-            (a + 0.25, b - 0.25),
-            (-t, t),
-            lite.as_ref(),
-        );
+        overhead(ctx, set, k, lite.as_ref());
     }
     let rail_t = (-t - 0.125, t + 0.125);
     let metal = set.material(Material::Metal);
     for k in 0..GARAGE_SECTIONS {
         let a = h.h0 + k as f64 * section;
-        leaf.boxed(&ctx.frame, metal, (0.0, w), rail_t, (a, a + 1.5));
+        if travel <= 1e-6 {
+            leaf.boxed(&ctx.frame, metal, (0.0, w), rail_t, (a, a + 1.5));
+        }
     }
 }
 
@@ -292,7 +333,7 @@ fn barn(ctx: &Ctx, set: &mut MeshSet) {
     let center = sign * (ctx.half() + 0.5 + DOOR_THICKNESS * 0.5);
     let pw = w + 2.0;
     let dir = if ctx.opening.hinge_at_end { 1.0 } else { -1.0 };
-    let shift = if ctx.opts.doors_open { w } else { 0.0 };
+    let shift = w * ctx.open_fraction();
     let start = h.s0 - 1.0 + dir * shift;
     let leaf = Leaf::new((start, center), (1.0, 0.0));
     let t = DOOR_THICKNESS * 0.5;
@@ -470,11 +511,7 @@ fn hardware(ctx: &Ctx, set: &mut MeshSet, style: OpeningStyle) {
             } else {
                 h.s0
             };
-            let shift = if ctx.opts.doors_open {
-                (w - 1.0).min(room - 0.5).max(0.0)
-            } else {
-                0.0
-            };
+            let shift = (w - 1.0).min(room - 0.5).max(0.0) * ctx.open_fraction();
             let dir = if toward_end { 1.0 } else { -1.0 };
             // The latch edge is the one that leads into the pocket.
             let leaf = if toward_end {

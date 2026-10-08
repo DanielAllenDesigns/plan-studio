@@ -19,6 +19,8 @@ const TABS: &[Tab] = &[on("General"), on("Labels"), on("Text Style"), on("Layer"
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpecActions {
     pub export_csv: bool,
+    /// Save the table as an Excel workbook.
+    pub export_xlsx: bool,
     pub open_window: bool,
     /// Put the schedule on a layout page as a box.
     pub send_to_layout: bool,
@@ -241,6 +243,9 @@ impl Form {
         ui.horizontal(|ui| {
             if ui.button("Export CSV\u{2026}").clicked() {
                 self.actions.export_csv = true;
+            }
+            if ui.button("Export Excel\u{2026}").clicked() {
+                self.actions.export_xlsx = true;
             }
             if ui.button("Open in Window").clicked() {
                 self.actions.open_window = true;
@@ -480,7 +485,9 @@ mod tests {
     fn actions_are_raised_once() {
         let mut d = dialog();
         d.form.actions.export_csv = true;
-        assert!(d.take_actions().export_csv);
+        d.form.actions.export_xlsx = true;
+        let a = d.take_actions();
+        assert!(a.export_csv && a.export_xlsx);
         assert!(!d.take_actions().export_csv);
     }
 }

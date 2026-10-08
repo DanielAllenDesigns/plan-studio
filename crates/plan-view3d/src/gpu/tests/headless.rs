@@ -12,7 +12,7 @@ use plan_materials::textures::TextureStore;
 use super::super::{FrameParams, GpuScene};
 use crate::camera::Camera;
 use crate::quality::{Look, Quality, ViewLight, ViewSettings};
-use crate::texturing::ImageTexture;
+use crate::texturing::{ImageTexture, SurfaceTexture};
 use crate::Lighting;
 
 #[link(name = "OpenGL", kind = "framework")]
@@ -75,6 +75,7 @@ fn quad(
         indices: vec![0, 1, 2, 0, 2, 3],
         material,
         object_id,
+        color: None,
     }
 }
 
@@ -134,6 +135,18 @@ impl Setup {
 /// Renders `scene` and returns the RGBA pixels, bottom row first. Without a
 /// camera in `setup` it looks from the front (+Z).
 fn render(gl: &glow::Context, gpu: &mut GpuScene, scene: &Scene, setup: &Setup) -> Vec<u8> {
+    render_with(gl, gpu, scene, setup, &|_, _| {})
+}
+
+/// [`render`] with `prepare` run after the scene is uploaded and before the
+/// frames are painted (to set an overlay, painted bitmaps...).
+fn render_with(
+    gl: &glow::Context,
+    gpu: &mut GpuScene,
+    scene: &Scene,
+    setup: &Setup,
+    prepare: &dyn Fn(&mut GpuScene, &glow::Context),
+) -> Vec<u8> {
     let (w, h) = (setup.size, setup.size);
     unsafe {
         let fbo = gl.create_framebuffer().unwrap();
@@ -166,6 +179,7 @@ fn render(gl: &glow::Context, gpu: &mut GpuScene, scene: &Scene, setup: &Setup) 
         gl.clear(glow::COLOR_BUFFER_BIT);
 
         gpu.upload(gl, scene);
+        prepare(gpu, gl);
         let bounds = scene.bounds().unwrap();
         let cam = setup.camera.clone().unwrap_or_else(|| {
             let mut cam = Camera::default();
@@ -798,5 +812,164 @@ fn frame_cost_on_a_busy_scene() {
         eprintln!("{name}: {ms:.1} ms per frame");
     }
     assert!(results.iter().all(|(_, ms)| *ms < 1000.0));
+    gpu.destroy(&gl);
+}
+
+// ----- mesh colours, the overlay and painted bitmaps -----
+
+fn front_wall(material: Material, object_id: Option<u64>) -> Mesh {
+    quad(
+        [
+            [0.0, 0.0, 0.0],
+            [96.0, 0.0, 0.0],
+            [96.0, 96.0, 0.0],
+            [0.0, 96.0, 0.0],
+        ],
+        [0.0, 0.0, 1.0],
+        material,
+        object_id,
+    )
+}
+
+/// A camera straight in front of the 96 inch wall.
+fn front_camera() -> Camera {
+    let mut cam = Camera::default();
+    cam.fit_to_bounds([0.0; 3], [96.0, 96.0, 0.0]);
+    cam.yaw = 0.0;
+    cam.pitch = 0.0;
+    cam
+}
+
+fn front_setup() -> Setup {
+    Setup {
+        camera: Some(front_camera()),
+        ..Setup::flat(true)
+    }
+}
+
+fn centre(px: &[u8]) -> [u8; 3] {
+    let o = ((H / 2 * W + W / 2) * 4) as usize;
+    [px[o], px[o + 1], px[o + 2]]
+}
+
+#[test]
+#[ignore = "needs an OpenGL context (macOS CGL)"]
+fn mesh_colours_overlays_and_painted_bitmaps_render_through_real_gl() {
+    let Some(gl) = context() else {
+        eprintln!("no OpenGL context available; skipping");
+        return;
+    };
+    let mut gpu = GpuScene::with_store(Arc::new(TextureStore::with_dirs(Vec::new())));
+
+    // A mesh colour is the colour drawn, and it keeps a textured material's
+    // bitmap off the mesh.
+    let plain = Scene {
+        meshes: vec![front_wall(Material::Brick, None)],
+    };
+    let mut red = front_wall(Material::Brick, None);
+    red.color = Some([220, 20, 20]);
+    let painted = Scene { meshes: vec![red] };
+    let before = centre(&render_with(
+        &gl,
+        &mut gpu,
+        &plain,
+        &front_setup(),
+        &|_, _| {},
+    ));
+    assert_eq!(gpu.material_texture_count(), 1, "plain brick is textured");
+    let mut gpu = GpuScene::with_store(Arc::new(TextureStore::with_dirs(Vec::new())));
+    let px = render_with(&gl, &mut gpu, &painted, &front_setup(), &|_, _| {});
+    let c = centre(&px);
+    assert_eq!(
+        gpu.material_texture_count(),
+        0,
+        "no bitmap for a coloured mesh"
+    );
+    assert!(c[0] > 2 * c[1] && c[0] > 2 * c[2], "red wall drawn {c:?}");
+    assert_ne!(c, before);
+    assert!(spread(&px) < 1.5, "a mesh colour is flat ({})", spread(&px));
+
+    // The overlay is drawn over the cached scene without touching it.
+    let wall = Scene {
+        meshes: vec![front_wall(Material::WallInterior, Some(3))],
+    };
+    let mut gpu = GpuScene::with_store(Arc::new(TextureStore::with_dirs(Vec::new())));
+    let bare = render_with(&gl, &mut gpu, &wall, &front_setup(), &|_, _| {});
+    let version = gpu.mesh_version;
+    let mut green = quad(
+        [
+            [28.0, 28.0, 2.0],
+            [68.0, 28.0, 2.0],
+            [68.0, 68.0, 2.0],
+            [28.0, 68.0, 2.0],
+        ],
+        [0.0, 0.0, 1.0],
+        Material::Trim,
+        Some(4),
+    );
+    green.color = Some([10, 220, 10]);
+    let overlay = vec![green];
+    let with = render_with(&gl, &mut gpu, &wall, &front_setup(), &|g, gl| {
+        g.set_overlay(gl, &overlay)
+    });
+    let c = centre(&with);
+    assert_eq!(gpu.overlay_count(), 1);
+    assert_eq!(gpu.mesh_count(), 1, "the cached scene is untouched");
+    assert!(c[1] > 2 * c[0] && c[1] > 2 * c[2], "overlay drawn {c:?}");
+    assert_ne!(with, bare);
+    // Replacing the overlay leaves the scene's mesh version (and so its
+    // shadow map) alone; clearing it brings the bare picture back.
+    let after_upload = gpu.mesh_version;
+    assert!(after_upload > version, "render_with re-uploads the scene");
+    gpu.set_overlay(&gl, &overlay);
+    gpu.set_overlay(&gl, &[]);
+    assert_eq!(gpu.mesh_version, after_upload);
+    assert_eq!(gpu.overlay_count(), 0);
+    let cleared = render_with(&gl, &mut gpu, &wall, &front_setup(), &|_, _| {});
+    assert_eq!(cleared, bare, "an upload starts with an empty overlay");
+
+    // A painted material's bitmap binds to the meshes of its object, any
+    // mesh of it or only the ones drawn as one scene material.
+    let bitmap = |key: u64, material: Option<Material>, rgb: [u8; 3]| SurfaceTexture {
+        object_id: 3,
+        material,
+        key,
+        width: 2,
+        height: 2,
+        rgba: Arc::new(
+            [rgb[0], rgb[1], rgb[2], 255]
+                .iter()
+                .copied()
+                .cycle()
+                .take(16)
+                .collect(),
+        ),
+        scale_in: [24.0, 24.0],
+    };
+    let blue = bitmap(1, None, [20, 40, 230]);
+    let px = render_with(&gl, &mut gpu, &wall, &front_setup(), &|g, gl| {
+        g.set_surface_textures(gl, std::slice::from_ref(&blue))
+    });
+    let c = centre(&px);
+    assert_eq!(gpu.surface_texture_count(), 1);
+    assert!(c[2] > 2 * c[0], "bitmap drawn {c:?}");
+    let other = bitmap(2, Some(Material::Brick), [230, 40, 20]);
+    let px = render_with(&gl, &mut gpu, &wall, &front_setup(), &|g, gl| {
+        g.set_surface_textures(gl, std::slice::from_ref(&other))
+    });
+    assert_eq!(gpu.surface_texture_count(), 1, "the old key was freed");
+    assert_eq!(
+        centre(&px),
+        centre(&bare),
+        "a bitmap for another scene material does not apply"
+    );
+    gpu.set_surface_textures(&gl, &[]);
+    assert_eq!(gpu.surface_texture_count(), 0);
+
+    // Context loss clears all of it.
+    gpu.forget_context();
+    assert_eq!(gpu.overlay_count(), 0);
+    assert_eq!(gpu.surface_texture_count(), 0);
+    assert_eq!(unsafe { gl.get_error() }, 0);
     gpu.destroy(&gl);
 }

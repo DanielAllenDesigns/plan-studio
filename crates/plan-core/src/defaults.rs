@@ -810,6 +810,8 @@ pub enum EditBehavior {
     Concentric,
     /// Dragging a polyline corner rounds it with a fillet.
     Fillet,
+    /// Dragging a polyline corner cuts it off with a chamfer.
+    Chamfer,
     /// A body drag moves along the dominant axis only.
     Alternate,
     /// A body drag leaves the original and places copies at the drag delta.
@@ -817,11 +819,12 @@ pub enum EditBehavior {
 }
 
 impl EditBehavior {
-    pub const ALL: [EditBehavior; 6] = [
+    pub const ALL: [EditBehavior; 7] = [
         EditBehavior::Default,
         EditBehavior::Resize,
         EditBehavior::Concentric,
         EditBehavior::Fillet,
+        EditBehavior::Chamfer,
         EditBehavior::Alternate,
         EditBehavior::Replicate,
     ];
@@ -832,6 +835,7 @@ impl EditBehavior {
             EditBehavior::Resize => "Resize",
             EditBehavior::Concentric => "Concentric",
             EditBehavior::Fillet => "Fillet",
+            EditBehavior::Chamfer => "Chamfer",
             EditBehavior::Alternate => "Alternate",
             EditBehavior::Replicate => "Replicate",
         }
@@ -851,10 +855,16 @@ pub struct EditBehaviorSettings {
     pub concentric_copies: u32,
     /// Fillet: radius, inches; 0 follows the drag.
     pub fillet_radius: f64,
+    /// Chamfer: distance cut back along both sides of the corner, inches;
+    /// 0 follows the drag.
+    pub chamfer_distance: f64,
     /// Alternate: lock the move to the dominant axis.
     pub alternate_lock_axis: bool,
     /// Replicate: copies placed, each one more delta along.
     pub replicate_copies: u32,
+    /// Replicate: after the drag, open Transform/Replicate Object with the
+    /// drag as its Move and the copy count, instead of placing the copies.
+    pub replicate_dialog: bool,
 }
 
 impl Default for EditBehaviorSettings {
@@ -865,8 +875,10 @@ impl Default for EditBehaviorSettings {
             concentric_distance: 0.0,
             concentric_copies: 1,
             fillet_radius: 0.0,
+            chamfer_distance: 0.0,
             alternate_lock_axis: true,
             replicate_copies: 1,
+            replicate_dialog: false,
         }
     }
 }
@@ -1652,7 +1664,7 @@ mod tests {
         d.editing.snap_center = false;
         let back: PlanDefaults = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         assert_eq!(back.editing, d.editing);
-        assert_eq!(EditBehavior::ALL.len(), 6);
+        assert_eq!(EditBehavior::ALL.len(), 7);
         assert_eq!(EditBehavior::Concentric.label(), "Concentric");
     }
 

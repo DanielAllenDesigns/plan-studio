@@ -16,6 +16,14 @@ pub const MULL: &str = "opening.mull";
 pub const UNMULL: &str = "opening.unmull";
 pub const REVERSE_SIDE: &str = "opening.reverse_side";
 pub const RESET_LABEL: &str = "opening.reset_label";
+/// Add a transom over the selected door or window.
+pub const ADD_TRANSOM: &str = "opening.add_transom";
+/// 3D menu: show every door open / closed.
+pub const DOORS_OPEN: &str = "opening.doors_open_3d";
+/// 3D menu: casing, jambs, sills and thresholds on / off.
+pub const CASING_3D: &str = "opening.casing_3d";
+/// Height of a new transom, inches.
+const TRANSOM_HEIGHT: f64 = 18.0;
 /// Flip Hinge is run by the shared edit commands (`edit.flip_hinge`).
 const FLIP_HINGE: &str = "edit.flip_hinge";
 
@@ -183,6 +191,11 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
     if !mull_set(cx).is_empty() {
         v.push(button(MULL, "Mull", "", true));
     }
+    if let [one] = sel.as_slice() {
+        if find(one).is_some_and(mullable) && transom_fits(cx, *one) {
+            v.push(button(ADD_TRANSOM, "Add Transom", "", true));
+        }
+    }
     if sel
         .iter()
         .filter_map(find)
@@ -207,9 +220,90 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         UNMULL => unmull(cx),
         REVERSE_SIDE => reverse_side(cx),
         RESET_LABEL => reset_label(cx),
+        ADD_TRANSOM => add_transom(cx),
+        DOORS_OPEN => toggle_doors_open(cx),
+        CASING_3D => toggle_casing(cx),
         _ => return false,
     }
     true
+}
+
+/// Show every door of the plan open (or closed again) in the 3D view; kept
+/// in the plan (`Project::opening_display`).
+pub fn toggle_doors_open(cx: &mut EditorContext) {
+    cx.begin_change("Show Doors Open");
+    let d = &mut cx.project.opening_display;
+    d.doors_open = !d.doors_open;
+    cx.status = if d.doors_open {
+        "Doors are shown open in 3D".into()
+    } else {
+        "Doors are shown closed in 3D".into()
+    };
+    cx.mark_dirty();
+}
+
+/// Casing, jambs, window sills and thresholds in the 3D view on or off.
+pub fn toggle_casing(cx: &mut EditorContext) {
+    cx.begin_change("Casing in 3D");
+    let d = &mut cx.project.opening_display;
+    d.casing = !d.casing;
+    cx.status = if d.casing {
+        "Casing, jambs and sills are shown in 3D".into()
+    } else {
+        "Casing, jambs and sills are hidden in 3D".into()
+    };
+    cx.mark_dirty();
+}
+
+/// Add a transom over the selected door or window (DW-52): a fixed window as
+/// wide as its unit, mulled into it so the two share one frame and casing.
+pub fn add_transom(cx: &mut EditorContext) {
+    let sel = selected_openings(cx);
+    let [id] = sel.as_slice() else {
+        cx.status = "Select one door or window".into();
+        return;
+    };
+    if locked(cx, &sel) {
+        return;
+    }
+    cx.begin_change("Add Transom");
+    let fl = cx.floor;
+    match cx.project.add_transom(fl, *id, TRANSOM_HEIGHT) {
+        Ok(new) => {
+            cx.selection.items = vec![ObjectRef::Opening(new)];
+            cx.mark_dirty();
+            cx.status = "Added a transom".into();
+        }
+        Err(e) => {
+            cx.cancel_change();
+            cx.status = e;
+        }
+    }
+}
+
+/// Whether a transom fits over the unit of `id`: no window over it yet and
+/// room between its top and the top of the wall.
+fn transom_fits(cx: &EditorContext, id: Id) -> bool {
+    let f = cx.floor();
+    let members = cx.project.mull_members(cx.floor, id);
+    let in_unit: Vec<&plan_core::Opening> = f
+        .openings
+        .iter()
+        .filter(|o| members.contains(&o.id))
+        .collect();
+    let Some(wall) = in_unit.first().and_then(|o| f.wall(o.wall_id)) else {
+        return false;
+    };
+    let top = in_unit
+        .iter()
+        .map(|o| o.sill_height + o.height)
+        .fold(0.0_f64, f64::max);
+    let covered = f.openings_on(wall.id).any(|o| {
+        in_unit
+            .iter()
+            .any(|u| plan_core::openings::stands_over(o, u))
+    });
+    !covered && wall.height - top >= plan_core::openings::MIN_TRANSOM_HEIGHT
 }
 
 /// Puts the labels of the selected openings back on their default spots.
@@ -547,5 +641,91 @@ mod tests {
         assert_eq!(cx.undo_label(), Some("Reset Label Position"));
         cx.undo();
         assert_eq!(cx.floor().openings[0].extras.spec.label_offset, (5.0, -4.0));
+    }
+
+    #[test]
+    fn a_door_offers_a_transom_that_is_one_undo_step() {
+        let (mut cx, _) = windows();
+        let w = cx.floor().openings[0].wall_id;
+        let door = cx
+            .project
+            .add_opening(0, w, 20.0, OpeningKind::Door)
+            .unwrap();
+        cx.selection.set(ObjectRef::Opening(door));
+        let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
+        assert!(labels.contains(&"Add Transom"), "{labels:?}");
+        assert!(run_command(&mut cx, ADD_TRANSOM));
+        assert_eq!(cx.undo_label(), Some("Add Transom"));
+        // The new window stands over the door, mulled with it, and is the
+        // selection; the door keeps its place.
+        let ObjectRef::Opening(t) = cx.selection.items[0] else {
+            panic!("the transom is selected");
+        };
+        let tr = cx.floor().openings.iter().find(|o| o.id == t).unwrap();
+        let d = cx.floor().openings.iter().find(|o| o.id == door).unwrap();
+        assert!(plan_core::openings::stands_over(tr, d));
+        assert_eq!(tr.mull_group, d.mull_group);
+        assert_eq!((tr.start_offset(), tr.end_offset()), (2.0, 38.0));
+        // Only one transom: the button is gone from the door and the transom.
+        for id in [door, t] {
+            cx.selection.set(ObjectRef::Opening(id));
+            assert!(edit_actions(&cx).iter().all(|e| e.label != "Add Transom"));
+        }
+        cx.undo();
+        assert_eq!(cx.floor().openings.len(), 3);
+    }
+
+    #[test]
+    fn the_3d_menu_toggles_are_kept_in_the_plan() {
+        let (mut cx, _) = windows();
+        assert!(cx.project.opening_display.casing && !cx.project.opening_display.doors_open);
+        assert!(run_command(&mut cx, DOORS_OPEN));
+        assert!(cx.project.opening_display.doors_open);
+        assert!(cx.status.contains("open"), "{}", cx.status);
+        assert!(run_command(&mut cx, CASING_3D));
+        assert!(!cx.project.opening_display.casing);
+        // Each is an undo step.
+        cx.undo();
+        assert!(cx.project.opening_display.casing);
+        cx.undo();
+        assert!(!cx.project.opening_display.doors_open);
+    }
+
+    #[test]
+    fn the_editors_3d_view_builds_what_the_plan_asks_for() {
+        use crate::shell::view3d_panel::{build_view_scene, ViewScope};
+        use plan_3d::Material;
+        let (mut cx, _) = windows();
+        let w = cx.floor().openings[0].wall_id;
+        let door = cx
+            .project
+            .add_opening(0, w, 20.0, OpeningKind::Door)
+            .unwrap();
+        let door_z = |cx: &EditorContext| {
+            let scene = build_view_scene(&cx.project, &ViewScope::default());
+            let count = |m: Material| {
+                scene
+                    .meshes
+                    .iter()
+                    .filter(|x| x.object_id == Some(door) && x.material == m)
+                    .map(plan_3d::Mesh::triangle_count)
+                    .sum::<usize>()
+            };
+            let reach = scene
+                .meshes
+                .iter()
+                .filter(|x| x.object_id == Some(door) && x.material == Material::DoorPanel)
+                .flat_map(|x| x.vertices.iter().map(|v| v.position[2].abs()))
+                .fold(0.0_f32, f32::max);
+            (count(Material::Trim), reach)
+        };
+        // A new plan shows the casing, the jambs and the threshold, doors closed.
+        let (trim, reach) = door_z(&cx);
+        assert!(trim >= 13 * 12, "{trim}");
+        assert!(reach < 1.0);
+        assert!(run_command(&mut cx, DOORS_OPEN));
+        assert!(door_z(&cx).1 > 25.0, "the door stands open");
+        assert!(run_command(&mut cx, CASING_3D));
+        assert_eq!(door_z(&cx).0, 0);
     }
 }

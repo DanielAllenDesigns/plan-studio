@@ -764,6 +764,95 @@ impl Project {
         self.plan_views.len() == 1 && self.plan_views[0].name == DEFAULT_PLAN_VIEW_NAME
     }
 
+    /// Points every place that names text style `old` at `new_name` (`None`
+    /// clears it, so the thing falls back to its layer's or the default
+    /// style): the plan's layers, the layer sets' overrides, the saved plan
+    /// views, CAD text attributes, dimensions and placed schedules. Returns
+    /// how many references changed.
+    fn repoint_text_style(&mut self, old: &str, new_name: Option<&str>) -> usize {
+        let mut n = 0;
+        let as_string = |s: Option<&str>| s.unwrap_or("").to_string();
+        for l in &mut self.layers.layers {
+            if l.text_style == old {
+                l.text_style = as_string(new_name);
+                n += 1;
+            }
+        }
+        for set in &mut self.layer_sets.sets {
+            for st in &mut set.states {
+                if st.text_style.as_deref() == Some(old) {
+                    st.text_style = new_name.map(str::to_string);
+                    n += 1;
+                }
+            }
+        }
+        for v in &mut self.plan_views {
+            if v.text_style == old {
+                v.text_style = as_string(new_name);
+                n += 1;
+            }
+        }
+        for f in &mut self.floors {
+            for a in &mut f.cad_attrs {
+                if a.text_style.as_deref() == Some(old) {
+                    a.text_style = new_name.map(str::to_string);
+                    n += 1;
+                }
+            }
+            for d in &mut f.dimensions {
+                if d.text_style.as_deref() == Some(old) {
+                    d.text_style = new_name.map(str::to_string);
+                    n += 1;
+                }
+            }
+            let mut layer = crate::schedules::ScheduleLayer::load(f);
+            let mut changed = false;
+            for sc in &mut layer.schedules {
+                if sc.text_style == old {
+                    sc.text_style = as_string(new_name);
+                    changed = true;
+                    n += 1;
+                }
+            }
+            if changed {
+                layer.store(f);
+            }
+        }
+        n
+    }
+
+    /// Renames text style `old` to `new_name` and everything that used it
+    /// follows (see `repoint_text_style`), so a rename never leaves a layer
+    /// quietly set in the default style. `false` when `old` does not exist,
+    /// is the Default Text Style, or `new_name` is empty or taken.
+    pub fn rename_text_style(&mut self, old: &str, new_name: &str) -> bool {
+        let new_name = new_name.trim();
+        if new_name.is_empty()
+            || new_name == old
+            || old == crate::text_styles::DEFAULT_TEXT_STYLE_NAME
+            || self.text_styles.get(new_name).is_some()
+        {
+            return false;
+        }
+        let Some(style) = self.text_styles.styles.iter_mut().find(|s| s.name == old) else {
+            return false;
+        };
+        style.name = new_name.to_string();
+        self.repoint_text_style(old, Some(new_name));
+        true
+    }
+
+    /// Removes text style `name`; the layers, overrides, views, texts,
+    /// dimensions and schedules that used it go back to inheriting. `false`
+    /// when it does not exist or is the Default Text Style.
+    pub fn remove_text_style(&mut self, name: &str) -> bool {
+        if !self.text_styles.remove(name) {
+            return false;
+        }
+        self.repoint_text_style(name, None);
+        true
+    }
+
     /// Renames a layer set and repoints the plan views that used it.
     pub fn rename_layer_set(&mut self, old: &str, new_name: &str) -> bool {
         if !self.layer_sets.rename(old, new_name) {
@@ -1222,5 +1311,105 @@ mod tests {
         let def: LayerSetDef = serde_json::from_str(r#"{"name":"S"}"#).unwrap();
         assert!(def.reference.is_empty());
         assert!(!serde_json::to_string(&def).unwrap().contains("reference"));
+    }
+
+    #[test]
+    fn renaming_a_text_style_repoints_everything_that_named_it() {
+        use crate::text_styles::DEFAULT_TEXT_STYLE_NAME;
+        let mut p = Project::new("t");
+        let old = "1/4\" Text Style";
+        p.layers.layers[0].text_style = old.into();
+        p.layer_sets.sets[0].states[0].text_style = Some(old.into());
+        p.plan_views[0].text_style = old.into();
+        let id = p.add_cad(
+            0,
+            "Text",
+            crate::CadItem::Text {
+                pos: crate::Point::ZERO,
+                text: "x".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        p.floors[0].cad_attrs.push(crate::cad::CadAttrs {
+            target: id,
+            text_style: Some(old.into()),
+            ..crate::cad::CadAttrs::default()
+        });
+        let mut sched = crate::schedules::Schedule::new(
+            crate::schedules::ScheduleKind::Door,
+            crate::Point::ZERO,
+        );
+        sched.text_style = old.into();
+        let mut layer = crate::schedules::ScheduleLayer::load(&p.floors[0]);
+        layer.schedules.push(sched);
+        layer.store(&mut p.floors[0]);
+
+        assert!(p.rename_text_style(old, "Presentation Text"));
+        assert!(
+            p.text_styles.get(old).is_none() && p.text_styles.get("Presentation Text").is_some()
+        );
+        assert_eq!(p.layers.layers[0].text_style, "Presentation Text");
+        assert_eq!(
+            p.layer_sets.sets[0].states[0].text_style.as_deref(),
+            Some("Presentation Text")
+        );
+        assert_eq!(p.plan_views[0].text_style, "Presentation Text");
+        assert_eq!(
+            p.floors[0].cad_attrs[0].text_style.as_deref(),
+            Some("Presentation Text")
+        );
+        let layer = crate::schedules::ScheduleLayer::load(&p.floors[0]);
+        assert_eq!(layer.schedules[0].text_style, "Presentation Text");
+        // The default style and taken or empty names are refused.
+        assert!(!p.rename_text_style(DEFAULT_TEXT_STYLE_NAME, "X"));
+        assert!(!p.rename_text_style("Presentation Text", "Room Label Style"));
+        assert!(!p.rename_text_style("Presentation Text", "  "));
+        assert!(!p.rename_text_style("No Such Style", "Y"));
+        // Removing one sends the things that used it back to inheriting.
+        assert!(p.remove_text_style("Presentation Text"));
+        assert_eq!(p.layers.layers[0].text_style, "");
+        assert_eq!(p.layer_sets.sets[0].states[0].text_style, None);
+        assert_eq!(p.plan_views[0].text_style, "");
+        assert_eq!(p.floors[0].cad_attrs[0].text_style, None);
+        let layer = crate::schedules::ScheduleLayer::load(&p.floors[0]);
+        assert_eq!(layer.schedules[0].text_style, "");
+        assert!(!p.remove_text_style(DEFAULT_TEXT_STYLE_NAME));
+    }
+
+    /// The 20 template plan views and the layer set each is paired with name
+    /// things that exist in Daniel's template: the views are the template's
+    /// saved plan views and every set is one of its 47 layer sets
+    /// (`docs/daniel-template-inventory.md`). The pairing itself is by name:
+    /// the saved view's link to its set is inside the binary plan and is not
+    /// decoded.
+    #[test]
+    fn the_template_plan_view_pairings_name_things_in_the_template() {
+        let doc = include_str!("../../../docs/daniel-template-inventory.md");
+        let views = doc
+            .split("### Saved plan views (20)")
+            .nth(1)
+            .and_then(|t| t.split("###").next())
+            .expect("the inventory lists the saved plan views");
+        let sets_line = doc
+            .lines()
+            .find(|l| l.contains("`Presentation Layer Set`") && l.contains("`Working Layer Set`"))
+            .expect("the inventory lists the layer sets");
+        assert_eq!(TEMPLATE_PLAN_VIEWS.len(), 20);
+        for (view, set) in TEMPLATE_PLAN_VIEWS {
+            assert!(views.contains(&format!("`{view}`")), "plan view {view}");
+            assert!(sets_line.contains(&format!("`{set}`")), "layer set {set}");
+        }
+        // Each view is listed once; only the two porch views share a set.
+        let mut names: Vec<&str> = TEMPLATE_PLAN_VIEWS.iter().map(|v| v.0).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 20);
+        let mut sets: Vec<&str> = TEMPLATE_PLAN_VIEWS.iter().map(|v| v.1).collect();
+        sets.sort_unstable();
+        sets.dedup();
+        assert_eq!(sets.len(), 19);
+        // All 20 views of the template are covered.
+        assert_eq!(views.matches('`').count(), 40);
     }
 }

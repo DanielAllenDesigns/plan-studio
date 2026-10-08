@@ -18,6 +18,9 @@ pub fn plan_height_for_printed(printed_in: f64, inches_per_foot: f64) -> f64 {
 pub struct TextStyle {
     pub name: String,
     pub font: String,
+    /// The face inside the family the template names ("Book", "Heavy");
+    /// empty: the bold and italic flags choose the face.
+    pub font_style: String,
     /// Character height in plan inches (6" is 1/8" on paper at 1/4" scale).
     pub height_in: f64,
     pub bold: bool,
@@ -45,6 +48,7 @@ impl TextStyle {
         Self {
             name: name.into(),
             font: "Arial".into(),
+            font_style: String::new(),
             height_in,
             bold,
             italic: false,
@@ -59,6 +63,27 @@ impl TextStyle {
     pub fn with_font(mut self, font: impl Into<String>) -> Self {
         self.font = font.into();
         self
+    }
+
+    /// The same style naming a face inside its family (`Heavy`).
+    pub fn with_font_style(mut self, style: impl Into<String>) -> Self {
+        self.font_style = style.into();
+        self
+    }
+
+    /// The family the font names: `Avenir` for `Avenir` and for `Avenir Book`.
+    pub fn font_family(&self) -> &str {
+        split_font_name(&self.font).0
+    }
+
+    /// The face style asked for by name: `font_style`, else the style words
+    /// that end the font name (`Book` of `Avenir Book`); empty when neither.
+    pub fn font_face_style(&self) -> &str {
+        if self.font_style.trim().is_empty() {
+            split_font_name(&self.font).1
+        } else {
+            self.font_style.trim()
+        }
     }
 
     /// The same style with italic set or cleared.
@@ -131,6 +156,44 @@ impl TextStyle {
     }
 }
 
+/// Words that end a font name as a face style (`Avenir Book`). `Black` is
+/// left out: `Arial Black` is a family.
+const FACE_STYLE_WORDS: [&str; 9] = [
+    "Book", "Heavy", "Roman", "Regular", "Light", "Medium", "Bold", "Italic", "Oblique",
+];
+
+/// Splits a font name into its family and a trailing face style:
+/// `Avenir Book` is `("Avenir", "Book")`, `Arial` is `("Arial", "")`.
+pub fn split_font_name(name: &str) -> (&str, &str) {
+    let name = name.trim();
+    if let Some((family, last)) = name.rsplit_once(' ') {
+        if !family.trim().is_empty()
+            && FACE_STYLE_WORDS
+                .iter()
+                .any(|w| w.eq_ignore_ascii_case(last.trim()))
+        {
+            return (family.trim(), last.trim());
+        }
+    }
+    (name, "")
+}
+
+/// A font name reduced to letters and digits in lower case, to compare
+/// names (`Helvetica Neue` and `helveticaneue`).
+pub fn normalize_font_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Do two font names name the same family (`Avenir` and `Avenir Book`)?
+pub fn same_font_family(a: &str, b: &str) -> bool {
+    let (na, nb) = (normalize_font_name(a), normalize_font_name(b));
+    na == nb
+        || normalize_font_name(split_font_name(a).0) == normalize_font_name(split_font_name(b).0)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextStyles {
@@ -167,6 +230,38 @@ impl TextStyles {
 
     pub fn names(&self) -> Vec<&str> {
         self.styles.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// The font families the styles use, sorted, each once (first spelling).
+    pub fn fonts_used(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in &self.styles {
+            let fam = s.font_family();
+            if !fam.is_empty() && !out.iter().any(|o| same_font_family(o, fam)) {
+                out.push(fam.to_string());
+            }
+        }
+        out.sort_by_key(|f| normalize_font_name(f));
+        out
+    }
+
+    /// Replace Fonts (Chief TXT-12): every style set in the family `from`
+    /// is set in `to` instead (its face style is dropped, the bold and
+    /// italic flags pick the face). Returns the number of styles changed.
+    pub fn replace_font(&mut self, from: &str, to: &str) -> usize {
+        let to = to.trim();
+        if to.is_empty() || from.trim().is_empty() || same_font_family(from, to) {
+            return 0;
+        }
+        let mut n = 0;
+        for s in &mut self.styles {
+            if same_font_family(&s.font, from) {
+                s.font = to.to_string();
+                s.font_style.clear();
+                n += 1;
+            }
+        }
+        n
     }
 
     /// Adds a style if its name is new and non-empty.
@@ -1030,6 +1125,51 @@ mod tests {
         assert_eq!(t.next_number("Framing Note", texts), 1);
         assert!(t.add("Plumbing Note", "P") && !t.add("Plumbing Note", "Q") && !t.add("x", "a b"));
         assert!(t.remove("Plumbing Note") && !t.remove("General Note"));
+    }
+
+    #[test]
+    fn font_names_split_into_family_and_face_style() {
+        assert_eq!(split_font_name("Avenir Book"), ("Avenir", "Book"));
+        assert_eq!(split_font_name("avenir heavy"), ("avenir", "heavy"));
+        assert_eq!(split_font_name("Arial"), ("Arial", ""));
+        assert_eq!(split_font_name("Arial Black"), ("Arial Black", ""));
+        assert_eq!(split_font_name("Book"), ("Book", ""));
+        let s = TextStyle::plan_sized("x", 6.0, false).with_font("Avenir Book");
+        assert_eq!((s.font_family(), s.font_face_style()), ("Avenir", "Book"));
+        let s = TextStyle::plan_sized("x", 6.0, true)
+            .with_font("Avenir")
+            .with_font_style("Heavy");
+        assert_eq!((s.font_family(), s.font_face_style()), ("Avenir", "Heavy"));
+        assert!(same_font_family("Avenir", "AVENIR book"));
+        assert!(!same_font_family("Arial", "Arial Narrow"));
+    }
+
+    #[test]
+    fn replace_font_changes_every_style_of_the_family() {
+        let mut t = TextStyles::chief_defaults();
+        t.styles[1].font = "Avenir".into();
+        t.styles[1].font_style = "Heavy".into();
+        t.styles[2].font = "Avenir Book".into();
+        assert_eq!(t.fonts_used(), vec!["Arial", "Avenir"]);
+        assert_eq!(t.replace_font("Arial", "Helvetica Neue"), 4);
+        assert_eq!(t.replace_font("avenir", "Georgia"), 2);
+        assert!(t
+            .styles
+            .iter()
+            .all(|s| s.font != "Arial" && s.font != "Avenir"));
+        assert!(t.styles[1].font_style.is_empty());
+        assert_eq!(t.fonts_used(), vec!["Georgia", "Helvetica Neue"]);
+        // Nothing to do for the same family or an empty target.
+        assert_eq!(t.replace_font("Georgia", "georgia"), 0);
+        assert_eq!(t.replace_font("Georgia", " "), 0);
+    }
+
+    #[test]
+    fn a_style_without_a_font_style_field_loads() {
+        let s: TextStyle = serde_json::from_str(r#"{"name":"A","font":"Avenir"}"#).unwrap();
+        assert!(s.font_style.is_empty());
+        let back: TextStyle = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
     }
 
     #[test]

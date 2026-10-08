@@ -150,6 +150,7 @@ pub fn mesh_from_triangles(
         indices: out,
         material,
         object_id,
+        color: None,
     }
 }
 
@@ -211,6 +212,7 @@ pub fn transform_mesh(
         indices,
         material: mesh.material,
         object_id: mesh.object_id,
+        color: mesh.color,
     }
 }
 
@@ -385,6 +387,7 @@ mod tests {
             indices: vec![],
             material: mat(),
             object_id: None,
+            color: None,
         };
         // +90 degrees yaw (counter-clockwise in plan): +X goes to plan +Y = scene -Z.
         let t = transform_mesh(
@@ -488,6 +491,7 @@ mod tests {
             indices: vec![],
             material: mat(),
             object_id: None,
+            color: None,
         };
         assert!(fit_mesh_to_box(&empty, 1.0, 1.0, 1.0).vertices.is_empty());
     }

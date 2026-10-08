@@ -8,7 +8,9 @@
 
 use crate::clip::{clip_polygon, clip_segment, contains, Pt, Rect};
 use plan_core::LineStyle;
+use plan_docs::pdf::FontSpec;
 use plan_docs::{PdfColor, PdfDoc};
+use std::sync::Arc;
 
 pub(crate) const BLACK: PdfColor = PdfColor::Gray(0.0);
 
@@ -113,6 +115,9 @@ pub(crate) enum Prim {
         /// Counter-clockwise radians about `(x, y)`.
         angle: f64,
         text: String,
+        /// The font a text style names (embedded in the PDF when it is
+        /// installed); `None`: Helvetica, bold as `bold` says.
+        font: Option<Arc<FontSpec>>,
     },
     /// RGBA pixels (`px.0 * px.1 * 4` bytes) scaled into `rect`.
     Image {
@@ -202,6 +207,8 @@ fn turn_rect(r: Rect, c: Pt, turns: u8) -> Rect {
 #[derive(Default)]
 pub(crate) struct Canvas {
     pub prims: Vec<Prim>,
+    /// The font later text is set in (see [`Canvas::set_font`]).
+    font: Option<Arc<FontSpec>>,
 }
 
 impl Canvas {
@@ -255,8 +262,24 @@ impl Canvas {
                 bold,
                 angle,
                 text: text.to_string(),
+                font: self.font.clone(),
             });
         }
+    }
+
+    /// Sets the font text drawn from here on is set in (`None`: Helvetica
+    /// again). A text style's font is set around the text it styles.
+    pub(crate) fn set_font(&mut self, font: Option<FontSpec>) {
+        self.font = font.map(Arc::new);
+    }
+
+    /// Width of `text` in the font set now (the installed font's metrics),
+    /// else in Helvetica.
+    pub(crate) fn text_width(&self, text: &str, size: f64, bold: bool) -> f64 {
+        self.font
+            .as_deref()
+            .and_then(|f| plan_docs::pdf::text_width_in(f, text, size))
+            .unwrap_or_else(|| text_w(text, size, bold))
     }
 
     pub(crate) fn text(&mut self, x: f64, y: f64, size: f64, color: PdfColor, text: &str) {
@@ -277,12 +300,12 @@ impl Canvas {
         bold: bool,
         text: &str,
     ) {
-        let w = text_w(text, size, bold);
+        let w = self.text_width(text, size, bold);
         self.text_full((cx - w * 0.5, y), size, color, bold, 0.0, text);
     }
 
     pub(crate) fn text_right(&mut self, rx: f64, y: f64, size: f64, color: PdfColor, text: &str) {
-        let w = text_w(text, size, false);
+        let w = self.text_width(text, size, false);
         self.text_full((rx - w, y), size, color, false, 0.0, text);
     }
 }
@@ -360,10 +383,14 @@ pub(crate) fn soft_clip_with(prims: Vec<Prim>, partial_text: bool) -> Vec<Prim> 
                     bold,
                     angle,
                     text,
+                    font,
                 },
                 Some(r),
             ) => {
-                let w = text_w(&text, size, bold);
+                let w = font
+                    .as_deref()
+                    .and_then(|f| plan_docs::pdf::text_width_in(f, &text, size))
+                    .unwrap_or_else(|| text_w(&text, size, bold));
                 let corners = text_corners(x, y, size, angle, w);
                 let keep = if partial_text {
                     let xs = corners.iter().map(|c| c.0);
@@ -389,6 +416,7 @@ pub(crate) fn soft_clip_with(prims: Vec<Prim>, partial_text: bool) -> Vec<Prim> 
                         bold,
                         angle,
                         text,
+                        font,
                     });
                 }
             }
@@ -453,12 +481,20 @@ pub(crate) fn emit(doc: &mut PdfDoc, prims: &[Prim]) {
                 bold,
                 angle,
                 text,
+                font,
             } => {
                 if st.fill != Some(*color) {
                     doc.set_fill_color(*color);
                     st.fill = Some(*color);
                 }
-                doc.set_font_bold(*bold);
+                // An installed font is embedded; otherwise Helvetica, bold
+                // as the text (or its style) says.
+                match font {
+                    Some(f) => {
+                        doc.use_font(Some(f));
+                    }
+                    None => doc.set_font_bold(*bold),
+                }
                 if angle.abs() < 1e-9 {
                     doc.text(*x, *y, *size, text);
                 } else {
@@ -525,6 +561,7 @@ mod tests {
             bold: false,
             angle: std::f64::consts::FRAC_PI_2,
             text: "ABCDEFGH".into(),
+            font: None,
         };
         // About 27 pt long when vertical: never fits a 10 pt box.
         assert!(soft_clip(vec![Prim::ClipBegin(r), t(0.0)]).is_empty());

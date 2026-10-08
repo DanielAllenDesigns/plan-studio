@@ -12,7 +12,7 @@ use crate::tools::camera as camera_tool;
 use plan_core::cad::CadItem;
 use plan_core::details::DetailsLayer;
 use plan_core::foundation::FoundationLayer;
-use plan_core::geometry::{dist_to_segment, point_in_polygon, project_on_segment, Point};
+use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
 use plan_core::{CadObject, DimensionKind, Floor, Id, LayerSet, OpeningKind, Project};
 use std::f64::consts::TAU;
 
@@ -359,12 +359,11 @@ pub fn cad_distance(item: &CadItem, p: Point) -> f64 {
 /// thickness (plus `slop`).
 pub fn hit_opening(floor: &Floor, p: Point, slop: f64) -> Option<Id> {
     for w in &floor.walls {
-        let perp = p.sub(w.start).dot(w.normal()).abs();
-        if perp > w.thickness * 0.5 + slop {
+        // Along the wall is the arc length on a curved wall (DW-88).
+        let (along, lateral) = w.locate(p);
+        if lateral.abs() > w.thickness * 0.5 + slop {
             continue;
         }
-        let (t, _) = project_on_segment(p, w.start, w.end);
-        let along = t * w.length();
         if let Some(o) = floor
             .openings_on(w.id)
             .find(|o| along >= o.start_offset() && along <= o.end_offset())
@@ -384,12 +383,10 @@ fn open_hits(
     let mut out = Vec::new();
     // Openings win over their host wall (S-4).
     for w in &floor.walls {
-        let perp = p.sub(w.start).dot(w.normal()).abs();
-        if perp > w.thickness * 0.5 + tol * 0.5 {
+        let (along, lateral) = w.locate(p);
+        if lateral.abs() > w.thickness * 0.5 + tol * 0.5 {
             continue;
         }
-        let (t, _) = project_on_segment(p, w.start, w.end);
-        let along = t * w.length();
         for o in floor.openings_on(w.id) {
             let r = ObjectRef::Opening(o.id);
             if along >= o.start_offset() && along <= o.end_offset() && visible(r) {

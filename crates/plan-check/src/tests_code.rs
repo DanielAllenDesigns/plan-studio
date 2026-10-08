@@ -180,6 +180,68 @@ fn a_landing_gets_no_handrail_finding() {
     assert!(!has(&f, "IRC R311.7.8 handrails"));
 }
 
+#[test]
+fn a_spiral_stair_is_judged_by_the_spiral_code() {
+    let p = Project::new("t");
+    let check = |params: StairParams| {
+        plan_check(&p, 0, &[], &[], &[stair(params)], &CheckOptions::default())
+    };
+    let spiral = |width: f64, tread: f64, headroom: f64| StairParams {
+        shape: StairShape::Curved { inner_radius: 2.0 },
+        spiral: true,
+        width,
+        tread_depth: tread,
+        headroom_min: headroom,
+        total_rise: 109.125,
+        ..StairParams::default()
+    };
+    let rule = "IRC R311.7.10.1 spiral stairways";
+    // 28" wide, 8 1/2" treads, 80" headroom: fine as a spiral, though the
+    // straight-stair width, tread and 2R+T rules would all complain.
+    let ok = check(spiral(28.0, 8.5, 80.0));
+    assert!(!has(&ok, rule), "{ok:?}");
+    for straight in [
+        "IRC R311.7.5.2 tread depth",
+        "IRC R311.7.1 stair width",
+        "IRC R311.7.5 stair comfort (2R+T)",
+    ] {
+        assert!(!has(&ok, straight), "{straight}");
+    }
+    // The same numbers on an ordinary curved stair trip them.
+    let plain = check(StairParams {
+        spiral: false,
+        ..spiral(28.0, 8.5, 80.0)
+    });
+    assert_eq!(
+        sev(&plain, "IRC R311.7.5.2 tread depth"),
+        Some(Severity::Error)
+    );
+    assert_eq!(
+        sev(&plain, "IRC R311.7.1 stair width"),
+        Some(Severity::Error)
+    );
+    // Too narrow, too shallow, too low a ceiling, too tall a riser.
+    assert_eq!(
+        sev(&check(spiral(24.0, 8.5, 80.0)), rule),
+        Some(Severity::Error)
+    );
+    assert_eq!(
+        sev(&check(spiral(28.0, 6.0, 80.0)), rule),
+        Some(Severity::Error)
+    );
+    assert_eq!(
+        sev(&check(spiral(28.0, 8.5, 76.0)), rule),
+        Some(Severity::Error)
+    );
+    let tall = StairParams {
+        riser_height_target: 11.0,
+        total_rise: 120.0,
+        ..spiral(28.0, 8.5, 80.0)
+    };
+    // The solver adds risers to stay within 9 1/2"; the target alone is an error.
+    assert_eq!(sev(&check(tall), rule), Some(Severity::Error));
+}
+
 // ----- decks, exterior doors -----
 
 fn put_deck(p: &mut Project, outline: Vec<Point>, elevation: f64, railing: bool) {

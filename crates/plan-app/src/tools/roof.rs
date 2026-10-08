@@ -44,7 +44,7 @@ use crate::dialogs::roof::{BuildRoofDialog, DormerDialog, ReturnDialog, RoofPlan
 use crate::dialogs::Outcome;
 use crate::editor::roof_view::{
     self, auto_rebuild, build_floor, delete_all, load, manual_plane_geometry, rebuild,
-    rect_polygon, store, toggle_gable, RoofPlaneRecord, RoofSettings,
+    rect_polygon, store, toggle_gable, PlaneHandle, RoofPlaneRecord, RoofSettings,
 };
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext};
 use eframe::egui::{self, Align2, FontId, Pos2, Stroke, Vec2};
@@ -194,6 +194,16 @@ enum Gesture {
     Vertex {
         id: Id,
         idx: usize,
+        began: bool,
+    },
+    /// A handle that works from the plane as it was when it was grabbed
+    /// (RF-38): the pitch arrow, the rotate knob and an edge.
+    Handle {
+        handle: PlaneHandle,
+        /// The plane before the drag.
+        orig: Box<RoofPlaneRecord>,
+        /// Where the handle was grabbed.
+        start: Point,
         began: bool,
     },
 }
@@ -795,17 +805,25 @@ impl RoofTool {
         let set = load(cx.floor());
         if let Some(rec) = self.selected.and_then(|id| set.plane(id)) {
             let tol = cx.pick_tol();
-            let hit = rec
-                .plan_polygon()
-                .iter()
-                .position(|v| v.dist(p.world) <= tol);
-            if let Some(idx) = hit {
-                self.gesture.0 = Gesture::Vertex {
-                    id: rec.id,
-                    idx,
-                    began: false,
-                };
-                return;
+            match rec.handle_at(p.world, tol) {
+                Some((PlaneHandle::Vertex(idx), _)) => {
+                    self.gesture.0 = Gesture::Vertex {
+                        id: rec.id,
+                        idx,
+                        began: false,
+                    };
+                    return;
+                }
+                Some((handle, at)) => {
+                    self.gesture.0 = Gesture::Handle {
+                        handle,
+                        orig: Box::new(rec.clone()),
+                        start: at,
+                        began: false,
+                    };
+                    return;
+                }
+                None => {}
             }
         }
         match set.record_at(p.world) {
@@ -824,6 +842,55 @@ impl RoofTool {
     /// Applies a drag step of Move / Vertex; the first step starts the undo step.
     fn drag_step(&mut self, cx: &mut EditorContext, to: Point) {
         let fi = cx.floor;
+        if let Gesture::Handle {
+            handle,
+            orig,
+            start,
+            began,
+        } = &mut self.gesture.0
+        {
+            let mut rec = (**orig).clone();
+            let drag = to.sub(*start);
+            let (label, readout) = match handle {
+                PlaneHandle::Pitch => {
+                    rec.drag_pitch(drag.dot(orig.up_slope()));
+                    ("Change Roof Pitch", format!("Pitch: {}", rec.pitch_label()))
+                }
+                PlaneHandle::Rotate => {
+                    let pivot = orig.centroid();
+                    let a0 = start.sub(pivot).angle();
+                    let a1 = to.sub(pivot).angle();
+                    // Whole degrees; Esc-free: the original is kept until OK.
+                    let turn = ((a1 - a0).to_degrees()).round().to_radians();
+                    rec.rotate(turn, pivot);
+                    (
+                        "Rotate Roof Plane",
+                        format!("Rotation: {:.0} degrees", turn.to_degrees()),
+                    )
+                }
+                PlaneHandle::Edge(i) => {
+                    let poly = orig.plan_polygon();
+                    let n = poly.len();
+                    let d = poly[(*i + 1) % n].sub(poly[*i]).normalized();
+                    let by = drag.dot(Point::new(d.y, -d.x));
+                    rec.move_edge(*i, by);
+                    ("Move Roof Edge", format!("Edge moved {}", cx.fmt_dim(by)))
+                }
+                PlaneHandle::Vertex(_) => return,
+            };
+            if !*began {
+                cx.begin_change(label);
+            }
+            *began = true;
+            let mut set = load(&cx.project.floors[fi]);
+            if let Some(r) = set.plane_mut(rec.id) {
+                *r = rec;
+            }
+            store(&mut cx.project, fi, &mut set);
+            cx.mark_dirty();
+            cx.readout = Some(readout);
+            return;
+        }
         let (id, began, delta, idx) = match &self.gesture.0 {
             Gesture::Move { id, last, began } => (*id, *began, Some(to.sub(*last)), 0),
             Gesture::Vertex { id, idx, began } => (*id, *began, None, *idx),
@@ -1017,7 +1084,7 @@ impl Tool for RoofTool {
                 let d = p.snapped.sub(*a).dot(b.sub(*a).normalized().perp()).abs();
                 cx.readout = Some(format!("Run: {}", cx.fmt_dim(d)));
             }
-            Gesture::Move { .. } | Gesture::Vertex { .. } if p.down => {
+            Gesture::Move { .. } | Gesture::Vertex { .. } | Gesture::Handle { .. } if p.down => {
                 self.drag_step(cx, p.snapped);
             }
             _ => {}
@@ -1066,6 +1133,19 @@ impl Tool for RoofTool {
                     res = ToolResult::committed("Reshape Roof Plane");
                 }
             }
+            Gesture::Handle {
+                handle,
+                began: true,
+                ..
+            } => {
+                cx.readout = None;
+                res = ToolResult::committed(match handle {
+                    PlaneHandle::Pitch => "Change Roof Pitch",
+                    PlaneHandle::Rotate => "Rotate Roof Plane",
+                    _ => "Move Roof Edge",
+                });
+            }
+            Gesture::Handle { .. } => {}
             other @ Gesture::Draft { .. } => self.gesture.0 = other,
             Gesture::None => return Self::with_pre(pre, ToolResult::ignored()),
         }
@@ -1184,12 +1264,41 @@ impl Tool for RoofTool {
                 }
             }
             if let Some(rec) = set.plane(id) {
-                for q in rec.plan_polygon() {
-                    painter.rect_filled(
-                        egui::Rect::from_center_size(scr(q), Vec2::splat(7.0)),
-                        0.0,
-                        accent,
-                    );
+                for (h, q) in rec.handles() {
+                    match h {
+                        PlaneHandle::Vertex(_) => {
+                            painter.rect_filled(
+                                egui::Rect::from_center_size(scr(q), Vec2::splat(7.0)),
+                                0.0,
+                                accent,
+                            );
+                        }
+                        PlaneHandle::Edge(_) => {
+                            painter.rect_stroke(
+                                egui::Rect::from_center_size(scr(q), Vec2::splat(7.0)),
+                                0.0,
+                                Stroke::new(1.5_f32, accent),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        PlaneHandle::Pitch => {
+                            // An arrow up the slope from the centre.
+                            let (c, tip) = (scr(rec.centroid()), scr(q));
+                            painter.line_segment([c, tip], Stroke::new(1.5_f32, accent));
+                            painter.circle_filled(tip, 5.0, accent);
+                            painter.text(
+                                tip + Vec2::new(10.0, -8.0),
+                                Align2::LEFT_CENTER,
+                                rec.pitch_label(),
+                                FontId::proportional(12.0),
+                                pal.dimension_text,
+                            );
+                        }
+                        PlaneHandle::Rotate => {
+                            painter.circle_stroke(scr(q), 6.0, Stroke::new(1.5_f32, accent));
+                            painter.circle_filled(scr(q), 2.0, accent);
+                        }
+                    }
                 }
                 painter.circle_stroke(scr(rec.centroid()), 5.0, Stroke::new(1.5_f32, accent));
             }
@@ -1526,6 +1635,89 @@ mod tests {
         drag(t, cx, (0.0, 0.0), (240.0, 0.0));
         click(t, cx, 120.0, 120.0);
         assert_eq!(planes(cx).len(), before + 1);
+    }
+
+    /// The plane made by `with_plane`, selected in Edit mode.
+    fn select_plane(cx: &mut EditorContext, t: &mut RoofTool) -> RoofPlaneRecord {
+        with_plane(cx, t);
+        t.set_mode(RoofMode::Edit);
+        click(t, cx, 120.0, 60.0);
+        let rec = planes(cx)[0].clone();
+        assert_eq!(t.selected(), Some(rec.id));
+        rec
+    }
+
+    #[test]
+    fn the_pitch_arrow_and_rotate_knob_and_edge_handles_drag_in_one_undo_step() {
+        let mut cx = new_cx();
+        let mut t = RoofTool::default();
+        let rec = select_plane(&mut cx, &mut t);
+        let at = |rec: &RoofPlaneRecord, h: PlaneHandle| {
+            rec.handles().into_iter().find(|(k, _)| *k == h).unwrap().1
+        };
+        // Pitch: 8 inches up the slope from the arrow is 2:12 steeper.
+        let arrow = at(&rec, PlaneHandle::Pitch);
+        let up = rec.up_slope();
+        let to = arrow.add(up.scale(8.0));
+        drag(&mut t, &mut cx, (arrow.x, arrow.y), (to.x, to.y));
+        let after = planes(&cx)[0].clone();
+        assert!(
+            (after.pitch - (rec.pitch + 2.0)).abs() < 1e-9,
+            "{}",
+            after.pitch
+        );
+        assert_eq!(cx.undo_label(), Some("Change Roof Pitch"));
+        cx.undo();
+        assert_eq!(planes(&cx)[0].pitch, rec.pitch);
+        // Rotate: a quarter turn about the centre.
+        let rec = planes(&cx)[0].clone();
+        let knob = at(&rec, PlaneHandle::Rotate);
+        let c = rec.centroid();
+        let r = knob.sub(c);
+        let to = c.add(Point::new(-r.y, r.x));
+        drag(&mut t, &mut cx, (knob.x, knob.y), (to.x, to.y));
+        let turned = planes(&cx)[0].clone();
+        assert_eq!(cx.undo_label(), Some("Rotate Roof Plane"));
+        let (a, b) = (turned.baseline.0, turned.baseline.1);
+        assert!(
+            b.sub(a).x.abs() < 1e-6 && b.sub(a).y.abs() > 100.0,
+            "{a:?} {b:?}"
+        );
+        cx.undo();
+        assert_eq!(planes(&cx)[0].baseline, rec.baseline);
+        // Edge: drag the baseline edge's middle 10" down.
+        let mid = at(&rec, PlaneHandle::Edge(0));
+        drag(
+            &mut t,
+            &mut cx,
+            (mid.x, mid.y),
+            (mid.x + 30.0, mid.y - 10.0),
+        );
+        let moved = planes(&cx)[0].clone();
+        assert_eq!(cx.undo_label(), Some("Move Roof Edge"));
+        // Only the part square to the edge counts: 10" out, none sideways.
+        assert!((moved.baseline.0.y - (rec.baseline.0.y - 10.0)).abs() < 1e-6);
+        assert!((moved.baseline.0.x - rec.baseline.0.x).abs() < 1e-6);
+        assert!(!moved.auto);
+        cx.undo();
+        assert_eq!(planes(&cx)[0].baseline, rec.baseline);
+    }
+
+    #[test]
+    fn a_click_on_a_handle_without_a_drag_changes_nothing() {
+        let mut cx = new_cx();
+        let mut t = RoofTool::default();
+        let rec = select_plane(&mut cx, &mut t);
+        let arrow = rec
+            .handles()
+            .into_iter()
+            .find(|(k, _)| *k == PlaneHandle::Pitch)
+            .unwrap()
+            .1;
+        let before = cx.undo_label().map(str::to_string);
+        click(&mut t, &mut cx, arrow.x, arrow.y);
+        assert_eq!(planes(&cx)[0], rec);
+        assert_eq!(cx.undo_label().map(str::to_string), before);
     }
 
     #[test]
@@ -2024,7 +2216,7 @@ mod tests {
         let floor = cx.floor();
         assert_eq!(floor.walls.len(), 3);
         let default_type = cx.defaults.exterior_wall.wall_type.clone();
-        for (w, dw) in floor.walls.iter().zip(&geom_walls) {
+        for (i, (w, dw)) in floor.walls.iter().zip(&geom_walls).enumerate() {
             assert!(
                 (w.bottom_offset - (dw.base_elevation - floor.elevation)).abs() < 1e-9,
                 "{} vs {}",
@@ -2032,7 +2224,15 @@ mod tests {
                 dw.base_elevation
             );
             assert!(w.bottom_offset > 0.0, "the roof is above the floor");
-            assert_eq!(w.height, spec.wall_height);
+            if i == 0 {
+                // The gable end stands to the ridge and rises to the roof.
+                assert_eq!(w.height, dw.height);
+                assert!(w.height > spec.wall_height);
+                assert_eq!(w.roof.kind, plan_core::defaults::RoofWallKind::FullGable);
+            } else {
+                assert_eq!(w.height, spec.wall_height);
+                assert_eq!(w.roof.kind, plan_core::defaults::RoofWallKind::Hip);
+            }
             assert_eq!(w.kind, WallKind::Exterior);
             assert_eq!(w.wall_type.as_deref(), Some(default_type.as_str()));
             assert_eq!(w.thickness, cx.defaults.exterior_thickness());
@@ -2052,14 +2252,52 @@ mod tests {
         let low = floor.walls[0].bottom_offset as f32 + floor.elevation as f32;
         assert!(!ys.is_empty());
         assert!((ys.iter().copied().fold(f32::MAX, f32::min) - low).abs() < 1e-3);
-        assert!(
-            (ys.iter().copied().fold(f32::MIN, f32::max) - low - spec.wall_height as f32).abs()
-                < 1e-3
-        );
+        // The gable triangle: the front wall climbs above the cheek walls'
+        // height, to the underside of the dormer roof at the ridge.
+        let top = ys.iter().copied().fold(f32::MIN, f32::max) - low;
+        assert!(top > spec.wall_height as f32 + 1.0, "{top}");
+        assert!(top < geom_walls[0].height as f32, "{top}");
         assert_eq!(cx.undo_label(), Some("Explode Dormer"));
         cx.undo();
         assert_eq!(load(cx.floor()).dormers.len(), 1);
         assert!(cx.floor().walls.is_empty(), "undo takes the walls back");
+    }
+
+    #[test]
+    fn a_dormer_overhang_is_drawn_with_fascia_and_soffit() {
+        let tris = |overhang: f64| {
+            let mut cx = new_cx();
+            let mut t = RoofTool::default();
+            with_plane(&mut cx, &mut t);
+            let spec = DormerSpec {
+                position_along_eave: 120.0,
+                setback_from_eave: 40.0,
+                overhang,
+                ..DormerSpec::default()
+            };
+            make_dormer(&mut t, &mut cx, spec);
+            let id = load(cx.floor()).dormers[0].id;
+            let set = load(cx.floor());
+            let g = roof_view::dormer_geometry(&set, &set.dormers[0]).unwrap();
+            let detail: usize = roof_view::roof_detail_meshes(&cx.project)
+                .iter()
+                .filter(|m| m.object_id == Some(id))
+                .map(plan_3d::Mesh::triangle_count)
+                .sum();
+            (detail, g)
+        };
+        let (flush, g0) = tris(0.0);
+        let (over, g1) = tris(12.0);
+        assert!(flush > 0, "fascia even without an overhang");
+        assert!(over > flush, "{over} vs {flush}: soffit and rake boards");
+        // The plan outline and picking follow the overhang planes.
+        let area = |g: &plan_roof::Dormer| {
+            g.overhang_planes
+                .iter()
+                .map(|p| plan_core::geometry::polygon_area(&p.plan_polygon()).abs())
+                .sum::<f64>()
+        };
+        assert!(area(&g1) > area(&g0) + 100.0);
     }
 
     fn polygon_center(p: &[Point]) -> Point {

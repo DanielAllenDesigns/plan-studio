@@ -178,6 +178,71 @@ pub fn roof_plane_with_holes(plane: &RoofPlane, holes: &[RoofHole]) -> RoofPolyg
     out
 }
 
+/// How far a hole piece is drawn back from the plane boundary it shares with
+/// the neighbouring plane, inches. Holes must lie inside the plane they cut.
+const PIECE_SETBACK: f64 = 0.02;
+
+/// A hole that crosses several planes, cut into one piece per plane.
+///
+/// `outline` (a roofless room, for instance) is clipped to each plane's plan
+/// outline; a plane that the outline only touches gets nothing. Each piece is
+/// pulled `0.02` inches inside the plane it belongs to where it meets the
+/// plane's boundary (a ridge or hip shared with the next piece), so
+/// [`roof_plane_with_holes`] accepts it: together the pieces leave the roof
+/// open over the whole outline, with a sliver no wider than the setback at
+/// the joints.
+///
+/// Returns `(index into planes, piece outline)` for every plane the outline
+/// reaches. A concave plane is clipped triangle by triangle; planes with fewer
+/// than three corners are skipped.
+pub fn hole_pieces(planes: &[RoofPlane], outline: &[Point]) -> Vec<(usize, Vec<Point>)> {
+    let ring = geom::ccw(outline);
+    let mut out = Vec::new();
+    if ring.len() < 3 {
+        return out;
+    }
+    for (k, plane) in planes.iter().enumerate() {
+        let poly = geom::ccw(&plane.plan_polygon());
+        if poly.len() < 3 || plane.normal()[1] < 1e-6 {
+            continue;
+        }
+        let clips: Vec<Vec<Point>> = if geom::is_convex(&poly) {
+            vec![poly.clone()]
+        } else {
+            geom::ear_triangles(&poly)
+                .into_iter()
+                .map(|t| t.to_vec())
+                .collect()
+        };
+        for clip in clips {
+            let piece = geom::clip_convex(&ring, &clip);
+            if piece.len() < 3 || polygon_area(&piece).abs() < 1.0 {
+                continue;
+            }
+            let centroid = plan_core::geometry::polygon_centroid(&piece);
+            let moved: Vec<Point> = piece
+                .iter()
+                .map(|&p| {
+                    if geom::boundary_dist(p, &poly) < PIECE_SETBACK * 2.0 {
+                        let toward = centroid.sub(p);
+                        if toward.length() > 1e-9 {
+                            return p.add(toward.normalized().scale(PIECE_SETBACK * 2.0));
+                        }
+                    }
+                    p
+                })
+                .collect();
+            let ok = moved
+                .iter()
+                .all(|&p| geom::strictly_inside(p, &poly, INSIDE_TOL));
+            if ok {
+                out.push((k, moved));
+            }
+        }
+    }
+    out
+}
+
 /// Build the skylight record: the curb ring and the frame-inset glass ring.
 fn skylight_on(plane: &RoofPlane, ring: &[V3], normal: V3, spec: SkylightSpec) -> Skylight {
     let spec = SkylightSpec {
@@ -244,6 +309,42 @@ pub(crate) mod tests {
         edges[1].kind = EdgeKind::Gable;
         edges[3].kind = EdgeKind::Gable;
         build_roof(&fp, &edges, 108.0).planes
+    }
+
+    #[test]
+    fn a_hole_over_the_ridge_is_cut_into_one_piece_per_plane() {
+        let planes = gable_roof_planes();
+        // 80 x 120 inches straddling the ridge (y = 180) between the gables.
+        let room = RoofHole::rect(Point::new(200.0, 120.0), Point::new(280.0, 240.0));
+        // The plain hole straddles two planes, so neither takes it.
+        for p in &planes {
+            let r = roof_plane_with_holes(p, &[RoofHole::hole(room.clone())]);
+            assert_eq!(r.skipped_holes, vec![0]);
+        }
+        let pieces = hole_pieces(&planes, &room);
+        assert_eq!(pieces.len(), 2);
+        let mut area = 0.0;
+        for (k, piece) in &pieces {
+            let r = roof_plane_with_holes(&planes[*k], &[RoofHole::hole(piece.clone())]);
+            assert!(r.skipped_holes.is_empty(), "plane {k} refused its piece");
+            assert_eq!(r.holes.len(), 1);
+            area += polygon_area(piece).abs();
+        }
+        // The pieces cover the outline but for the sliver at the ridge.
+        let want = 80.0 * 120.0;
+        assert!(area <= want + 1e-6 && area > want - 80.0 * 0.2, "{area}");
+    }
+
+    #[test]
+    fn a_hole_inside_one_plane_stays_one_piece_and_a_far_hole_none() {
+        let planes = gable_roof_planes();
+        let inside = RoofHole::rect(Point::new(200.0, 40.0), Point::new(260.0, 100.0));
+        let pieces = hole_pieces(&planes, &inside);
+        assert_eq!(pieces.len(), 1);
+        assert!((polygon_area(&pieces[0].1).abs() - 3600.0).abs() < 1e-6);
+        let away = RoofHole::rect(Point::new(2000.0, 0.0), Point::new(2050.0, 40.0));
+        assert!(hole_pieces(&planes, &away).is_empty());
+        assert!(hole_pieces(&planes, &away[..2]).is_empty());
     }
 
     #[test]

@@ -704,6 +704,110 @@ pub fn stair_railing_geometry(
     g
 }
 
+/// The plan paths of a side railing between flights: the rail that joins the
+/// top of one flight to the start of the next across the landing or the turn
+/// (a corner for an L stair, around the far edge for a U stair). One polyline
+/// per pair of flights; empty for landings, ramps' straight joins and curved
+/// stairs. The path starts at the end of the first flight's rail and ends at
+/// the start of the next one's.
+pub(crate) fn landing_rail_paths(stair: &Stair, side: RailSide) -> Vec<Vec<Point>> {
+    let layout = Layout::build(stair);
+    if layout.is_landing || layout.curve.is_some() {
+        return Vec::new();
+    }
+    let ends: Vec<Option<FlightEnd>> = layout
+        .flights
+        .iter()
+        .map(|f| {
+            let lat = match side {
+                RailSide::Left => 0.0,
+                RailSide::Right => f.width,
+            };
+            (f.len >= 1e-9).then(|| FlightEnd {
+                start: layout.frame.uv(f.at(0.0, lat)),
+                e_start: 0.0,
+                end: layout.frame.uv(f.at(f.len, lat)),
+                e_end: 0.0,
+                dir: layout.frame.vector(f.dir).normalized(),
+                foot_top: 0.0,
+            })
+        })
+        .collect();
+    let landing = effective_landing(&stair.params);
+    ends.windows(2)
+        .filter_map(|pair| match (&pair[0], &pair[1]) {
+            (Some(a), Some(b)) => Some(landing_path(a, b, landing)),
+            _ => None,
+        })
+        .filter(|path| path.len() >= 2)
+        .collect()
+}
+
+/// The edges of a landing's outline that face `side` of the direction of
+/// travel (their outward normals within about 45 degrees of the side), in
+/// plan. These are the open sides a landing railing guards; the ends, where
+/// the flights arrive and leave, are not included. Empty for anything that
+/// is not a landing.
+pub fn landing_edges(stair: &Stair, side: RailSide) -> Vec<(Point, Point)> {
+    let layout = Layout::build(stair);
+    let Some(slab) = layout.slabs.first().filter(|_| layout.is_landing) else {
+        return Vec::new();
+    };
+    let mut pts: Vec<Point> = slab.poly.iter().map(|&p| layout.frame.uv(p)).collect();
+    if plan_core::geometry::polygon_area(&pts) < 0.0 {
+        pts.reverse();
+    }
+    let travel = Point::new(stair.direction.cos(), stair.direction.sin());
+    let left = travel.perp();
+    let want = match side {
+        RailSide::Left => left,
+        RailSide::Right => left * -1.0,
+    };
+    let n = pts.len();
+    (0..n)
+        .filter_map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            let d = (b - a).normalized();
+            let outward = Point::new(d.y, -d.x);
+            (a.dist(b) > 1e-6 && outward.dot(want) > 0.7).then_some((a, b))
+        })
+        .collect()
+}
+
+/// 3D meshes of the guard along the open sides of a landing: the Left and
+/// Right sides as the stair's `left_side` / `right_side` ask (a railing, or
+/// a half wall that is a railing on a half-height wall). A full wall is not
+/// drawn on a landing. The rail stands on the landing's top.
+pub(crate) fn landing_railing(stair: &Stair) -> Vec<Mesh> {
+    let layout = Layout::build(stair);
+    let Some(top) = layout
+        .slabs
+        .first()
+        .map(|s| s.top)
+        .filter(|_| layout.is_landing)
+    else {
+        return Vec::new();
+    };
+    let elevation = stair.bottom_elevation() + top;
+    let mut out = Vec::new();
+    for (side, kind) in [
+        (RailSide::Left, stair.params.left_side),
+        (RailSide::Right, stair.params.right_side),
+    ] {
+        let mut params = stair.params.railing;
+        match kind {
+            crate::SideKind::Railing => {}
+            crate::SideKind::HalfWall => {
+                params.half_wall = Some(params.half_wall.unwrap_or(GUARD_HEIGHT * 0.5));
+            }
+            _ => continue,
+        }
+        let runs = landing_edges(stair, side);
+        out.extend(run_meshes(&runs, elevation, &params, Some(stair.id)));
+    }
+    out
+}
+
 /// Rail, newel and baluster layout along the edge of a curved stair.
 fn curved_geometry(
     layout: &Layout,

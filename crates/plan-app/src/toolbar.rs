@@ -1019,6 +1019,11 @@ pub fn stairs() -> Flyout {
                 K::Curved.name(),
                 Action::SetTool(ToolId::StairsVariant(K::Curved)),
             ),
+            item(
+                "stairs_curved",
+                K::Spiral.name(),
+                Action::SetTool(ToolId::StairsVariant(K::Spiral)),
+            ),
             st("landing", K::Landing, "\u{2303}\u{2325}\u{21E7}\u{2318}G"),
             st("ramp", K::Ramp, "\u{2303}\u{2325}\u{21E7}\u{2318}H"),
         ],

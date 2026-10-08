@@ -37,11 +37,13 @@ const STAIR_TABS: &[Tab] = &[
     on("Line Style"),
     on("Fill Style"),
     on("Materials"),
+    on("Components"),
     on("Label"),
 ];
 
 const LANDING_TABS: &[Tab] = &[
     on("General"),
+    on("Rails"),
     on("Line Style"),
     on("Fill Style"),
     on("Materials"),
@@ -302,11 +304,19 @@ impl StairForm {
             }
             StairShape::Curved { inner_radius } => {
                 let mut r = *inner_radius;
-                if self
-                    .fields
-                    .length_row(ui, "Inside Radius", "inner_radius", &mut r)
-                {
+                let label = if self.draft.stair.params.spiral {
+                    "Pole Radius"
+                } else {
+                    "Inside Radius"
+                };
+                if self.fields.length_row(ui, label, "inner_radius", &mut r) {
                     *inner_radius = r.max(0.0);
+                }
+                if self.draft.stair.params.spiral {
+                    let outside = r + self.draft.stair.params.width;
+                    row(ui, "Outside Radius", |ui| {
+                        ui.label(super::fmt_short(outside))
+                    });
                 }
             }
             StairShape::Straight | StairShape::Landing { .. } => {}
@@ -334,6 +344,18 @@ impl StairForm {
                 }
             }
             _ => {}
+        }
+        if let StairShape::Curved { inner_radius } = &mut self.draft.stair.params.shape {
+            // A spiral: wedge treads round a centre pole, judged by the
+            // spiral-stair code (9 1/2" risers, 6 3/4" treads, 26" wide).
+            let before = self.draft.stair.params.spiral;
+            ui.checkbox(
+                &mut self.draft.stair.params.spiral,
+                "Spiral stair (wedge treads round a centre pole)",
+            );
+            if self.draft.stair.params.spiral && !before {
+                *inner_radius = plan_stairs::SPIRAL_POLE_RADIUS;
+            }
         }
         if matches!(
             self.draft.stair.params.shape,
@@ -396,6 +418,18 @@ impl StairForm {
             .length_row(ui, "Nosing", "nosing", &mut p.nosing);
         self.fields
             .length_row(ui, "Tread Thickness", "tread_t", &mut p.tread_thickness);
+        if matches!(
+            p.shape,
+            StairShape::Straight
+                | StairShape::LShaped { .. }
+                | StairShape::UShaped { .. }
+                | StairShape::Winder { .. }
+        ) {
+            self.fields
+                .length_row(ui, "Flared Bottom Tread", "flare", &mut p.flare);
+            ui.weak("The bottom tread reaches this far past the stair on each side, in a half-round end. 0 keeps it square.");
+            p.flare = p.flare.max(0.0);
+        }
         self.fields
             .length_row(ui, "Riser Thickness", "riser_t", &mut p.riser_thickness);
         section(ui, "Stringers");
@@ -519,6 +553,23 @@ impl StairForm {
         ui.checkbox(&mut self.draft.x.dashed, "Dashed lines");
         if !self.draft.is_landing() {
             ui.checkbox(&mut self.draft.x.break_line, "Break line");
+            if self.draft.x.break_line && !self.draft.is_ramp() {
+                row(ui, "Break Line At", |ui| {
+                    let mut pct = self.draft.x.break_at * 100.0;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut pct)
+                                .range(view::MIN_BREAK_AT * 100.0..=view::MAX_BREAK_AT * 100.0)
+                                .suffix("% of the run")
+                                .speed(0.5),
+                        )
+                        .changed()
+                    {
+                        self.draft.x.break_at = pct / 100.0;
+                    }
+                });
+                ui.weak("Where the floor above cuts the stair; Chief draws it two thirds of the way up.");
+            }
             ui.checkbox(&mut self.draft.x.show_risers, "Show number of risers");
             let has_well = self.draft.x.stairwell_hole.is_some();
             ui.add_enabled(
@@ -554,6 +605,30 @@ impl StairForm {
                 ui.add(egui::TextEdit::singleline(material).desired_width(160.0));
             });
         }
+    }
+
+    /// What the stair is made of: the parts, how many of each and their
+    /// sizes, with the material of the Materials tab.
+    fn components(&mut self, ui: &mut Ui) {
+        section(ui, "Components");
+        let rows = view::components(&self.draft);
+        egui::Grid::new("stair_components")
+            .num_columns(4)
+            .spacing([14.0, 4.0])
+            .show(ui, |ui| {
+                for h in ["Component", "Count", "Size", "Material"] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                for c in &rows {
+                    ui.label(&c.name);
+                    ui.label(c.count.to_string());
+                    ui.label(&c.size);
+                    ui.label(&c.material);
+                    ui.end_row();
+                }
+            });
+        ui.weak("Counts and sizes come from the solved layout; change them on the General, Style and Rails tabs.");
     }
 
     fn label(&mut self, ui: &mut Ui) {
@@ -632,6 +707,7 @@ impl SpecPages for StairForm {
             "Line Style" => self.line_style(ui),
             "Fill Style" => self.fill_style(ui),
             "Materials" => self.materials(ui),
+            "Components" => self.components(ui),
             "Label" => self.label(ui),
             _ => {}
         }
@@ -824,6 +900,7 @@ mod tests {
                 "Line Style",
                 "Fill Style",
                 "Materials",
+                "Components",
                 "Label"
             ]
         );
@@ -833,7 +910,14 @@ mod tests {
         let names: Vec<_> = d.form.tabs().iter().map(|t| t.name).collect();
         assert_eq!(
             names,
-            ["General", "Line Style", "Fill Style", "Materials", "Label"]
+            [
+                "General",
+                "Rails",
+                "Line Style",
+                "Fill Style",
+                "Materials",
+                "Label"
+            ]
         );
     }
 
@@ -856,7 +940,21 @@ mod tests {
         }
         let mut landing = o.clone();
         landing.set_landing_depth(48.0);
+        let mut railed = landing.clone();
+        railed.stair.params.left_side = SideKind::Railing;
+        objs.push(railed);
         objs.push(landing);
+        let mut flared = o.clone();
+        flared.stair.params.flare = 6.0;
+        objs.push(flared);
+        objs.push(view::build(
+            &cx.project,
+            0,
+            StairKind::Spiral,
+            Turn::Left,
+            Point::new(100.0, 100.0),
+            None,
+        ));
         let mut polygon = view::build_polygon_landing(
             &cx.project,
             0,

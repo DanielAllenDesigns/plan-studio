@@ -28,9 +28,10 @@ pub fn describe(mode: EditBehavior) -> &'static str {
             "Dragging a polyline, line, circle or arc leaves it and adds offset copies."
         }
         EditBehavior::Fillet => "Dragging a polyline corner handle rounds that corner.",
+        EditBehavior::Chamfer => "Dragging a polyline corner handle cuts that corner off.",
         EditBehavior::Alternate => "Dragging moves along the dominant axis only.",
         EditBehavior::Replicate => {
-            "Dragging leaves the originals and places copies, each one more drag along."
+            "Dragging leaves the originals and places copies, each one more drag along; or hands the drag to Transform/Replicate Object."
         }
     }
 }
@@ -43,6 +44,7 @@ pub fn apply(cx: &mut EditorContext, draft: &EditBehaviorSettings) {
     b.replicate_copies = b.replicate_copies.clamp(1, MAX_COPIES);
     b.concentric_distance = b.concentric_distance.max(0.0);
     b.fillet_radius = b.fillet_radius.max(0.0);
+    b.chamfer_distance = b.chamfer_distance.max(0.0);
     cx.status = format!("Edit behavior: {}", b.mode.label());
     cx.defaults.editing.behavior = b;
 }
@@ -103,6 +105,13 @@ impl EditBehaviorsDialog {
                         });
                         ui.weak("0 follows the drag.");
                     }
+                    EditBehavior::Chamfer => {
+                        super::row(ui, "Chamfer Distance", |ui| {
+                            self.fields
+                                .length(ui, "chamfer_distance", &mut b.chamfer_distance)
+                        });
+                        ui.weak("0 follows the drag.");
+                    }
                     EditBehavior::Alternate => {
                         ui.checkbox(&mut b.alternate_lock_axis, "Lock to the dominant axis");
                     }
@@ -112,6 +121,10 @@ impl EditBehaviorsDialog {
                                 egui::DragValue::new(&mut b.replicate_copies).range(1..=MAX_COPIES),
                             );
                         });
+                        ui.checkbox(
+                            &mut b.replicate_dialog,
+                            "Open Transform/Replicate after the drag",
+                        );
                     }
                 }
                 ui.horizontal(|ui| {

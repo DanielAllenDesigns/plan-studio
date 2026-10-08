@@ -72,6 +72,7 @@ fn quads(pts: &[[f32; 3]], quads: &[[usize; 4]], material: Material, id: Option<
         indices,
         material,
         object_id: id,
+        color: None,
     }
 }
 

@@ -480,15 +480,32 @@ fn door_and_sidelite(wall: WallKind) -> (Project, Id, Id) {
     (p, door, side)
 }
 
+/// Triangles of the casing boards of an object: the trim boxes standing
+/// proud of the wall faces (the jamb boards lie inside the wall).
+fn casing_tris(scene: &Scene, id: Id) -> usize {
+    scene
+        .meshes
+        .iter()
+        .filter(|m| m.object_id == Some(id) && m.material == Material::Trim)
+        .map(|m| {
+            m.indices
+                .chunks(36)
+                .filter(|c| {
+                    c.iter()
+                        .any(|&i| m.vertices[i as usize].position[2].abs() > 2.3)
+                })
+                .count()
+                * 12
+        })
+        .sum()
+}
+
 #[test]
 fn a_door_and_its_sidelite_share_one_casing_loop() {
     let (mut p, door, side) = door_and_sidelite(WallKind::Interior);
     let trim = |p: &Project| {
         let s = build_scene_with(p, &casing_on());
-        (
-            tris(&s, door, Material::Trim),
-            tris(&s, side, Material::Trim),
-        )
+        (casing_tris(&s, door), casing_tris(&s, side))
     };
     let (d0, s0) = trim(&p);
     // Apart: each has its own legs and head on both faces (plus the

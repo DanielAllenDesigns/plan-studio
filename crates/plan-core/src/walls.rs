@@ -732,6 +732,158 @@ impl Wall {
     }
 }
 
+/// Moves an opening's center in proportion along a wall whose path length
+/// changed by `k` to `new_len` (a straight wall made curved, a radius
+/// edit), clamped so the opening still fits.
+pub fn scale_opening_offset(o: &mut crate::model::Opening, k: f64, new_len: f64) {
+    let half = o.width * 0.5;
+    let c = o.center_offset * k;
+    o.center_offset = if new_len > o.width {
+        c.clamp(half, new_len - half)
+    } else {
+        new_len * 0.5
+    };
+}
+
+/// What stays put when a curved wall's radius or arc angle is typed in the
+/// Wall Specification (W-66, "Lock").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArcLock {
+    /// The wall's start and end stay; the arc bends between them.
+    #[default]
+    Ends,
+    /// The arc center stays; a new radius moves both ends along their radii
+    /// and a new arc angle swings the end about the center.
+    Center,
+}
+
+impl Wall {
+    /// Lateral position (along the +normal) of the reference line `about`,
+    /// resolved against the wall type `ty` (W-26).
+    pub fn reference_lateral(&self, ty: Option<&WallTypeDef>, about: ResizeAbout) -> f64 {
+        reference_lateral(self, ty, about)
+    }
+
+    /// The radius of the arc measured to the reference line `about` (W-66
+    /// "Radius to"): the centerline radius for [`ResizeAbout::WallCenter`],
+    /// larger toward the outside of the bend. `None` for a straight wall.
+    pub fn radius_to(&self, ty: Option<&WallTypeDef>, about: ResizeAbout) -> Option<f64> {
+        let (_, r) = self.arc_center_radius()?;
+        let sign = self.curve?.bulge.signum();
+        Some((r + sign * self.reference_lateral(ty, about)).max(0.0))
+    }
+
+    /// Scales the arc about its center so the centerline radius becomes
+    /// `radius`, keeping the arc angle (the Arc Center lock). Returns the
+    /// factor the path length grew by, or `None` for a straight wall or a
+    /// radius below 1/8 inch.
+    fn scale_about_center(&mut self, radius: f64) -> Option<f64> {
+        let (c, r) = self.arc_center_radius()?;
+        if radius < 0.125 || r < 1e-9 {
+            return None;
+        }
+        let k = radius / r;
+        let curve = self.curve?;
+        self.start = c + (self.start - c) * k;
+        self.end = c + (self.end - c) * k;
+        self.curve = Some(WallCurve {
+            bulge: curve.bulge * k,
+        });
+        Some(k)
+    }
+
+    /// Makes the radius to the reference line `about` equal `radius`
+    /// (W-66). With [`ArcLock::Ends`] the ends stay and the arc is re-fitted
+    /// (a radius under half the chord falls back to the semicircle, and a
+    /// bend of over 180 degrees stays the long way round); with
+    /// [`ArcLock::Center`] the arc center and angle stay and the ends move.
+    /// Returns the factor the path length changed by (the openings follow),
+    /// or `None` when the wall is straight or the radius cannot be used.
+    pub fn set_radius_to(
+        &mut self,
+        ty: Option<&WallTypeDef>,
+        about: ResizeAbout,
+        radius: f64,
+        lock: ArcLock,
+    ) -> Option<f64> {
+        let curve = self.curve.filter(|c| !c.is_straight())?;
+        let sign = curve.bulge.signum();
+        let centerline = radius - sign * self.reference_lateral(ty, about);
+        let old_len = self.path_length();
+        match lock {
+            ArcLock::Center => self.scale_about_center(centerline),
+            ArcLock::Ends => {
+                let chord = self.length();
+                let half = chord * 0.5;
+                let r = centerline.max(half);
+                let long_way = curve.sweep_abs(chord) > PI;
+                let root = (r * r - half * half).max(0.0).sqrt();
+                let s = if long_way { r + root } else { r - root };
+                self.curve = Some(WallCurve { bulge: sign * s });
+                Some(self.path_length() / old_len.max(1e-9))
+            }
+        }
+    }
+
+    /// Sets the arc angle (radians, 1 to 340 degrees). With
+    /// [`ArcLock::Ends`] the chord stays; with [`ArcLock::Center`] the start,
+    /// the center and the radius stay and the end swings about the center.
+    /// Returns the factor the path length changed by, or `None` for a
+    /// straight wall or an unusable angle.
+    pub fn set_sweep_locked(&mut self, sweep: f64, lock: ArcLock) -> Option<f64> {
+        let curve = self.curve.filter(|c| !c.is_straight())?;
+        let left = curve.bulge > 0.0;
+        let sweep = sweep.clamp(1f64.to_radians(), 340f64.to_radians());
+        let old_len = self.path_length();
+        let new_curve = match lock {
+            ArcLock::Ends => WallCurve::from_sweep(self.length(), sweep, left)?,
+            ArcLock::Center => {
+                let (c, r) = self.arc_center_radius()?;
+                // The sweep is counter-clockwise for a right-hand bulge.
+                let signed = if left { -sweep } else { sweep };
+                let a = self.start.sub(c).angle() + signed;
+                self.end = Point::new(c.x + r * a.cos(), c.y + r * a.sin());
+                WallCurve::from_sweep(self.length(), sweep, left)?
+            }
+        };
+        self.curve = Some(new_curve);
+        Some(self.path_length() / old_len.max(1e-9))
+    }
+
+    /// Where a point of the wall's plane lands when the centerline moves
+    /// `lateral` inches toward the +normal: straight walls slide sideways,
+    /// arcs keep their center and change radius.
+    pub fn laterally_shifted(&self, p: Point, lateral: f64) -> Point {
+        match (self.arc_center_radius(), self.curve) {
+            (Some((c, r)), Some(curve)) => {
+                let radius = (r + curve.bulge.signum() * lateral).max(0.125);
+                c + (p - c).normalized() * radius
+            }
+            _ => p + self.normal() * lateral,
+        }
+    }
+
+    /// Moves the centerline `lateral` inches toward the +normal (an arc
+    /// keeps its center). Returns the factor the path length changed by.
+    pub fn shift_laterally(&mut self, lateral: f64) -> f64 {
+        if lateral.abs() < 1e-9 {
+            return 1.0;
+        }
+        match (self.arc_center_radius(), self.curve) {
+            (Some((_, r)), Some(curve)) => {
+                let radius = (r + curve.bulge.signum() * lateral).max(0.125);
+                self.scale_about_center(radius).unwrap_or(1.0)
+            }
+            _ => {
+                let d = self.normal() * lateral;
+                self.start = self.start + d;
+                self.end = self.end + d;
+                1.0
+            }
+        }
+    }
+}
+
 impl Default for Wall {
     fn default() -> Self {
         Wall::new(
@@ -933,15 +1085,75 @@ impl Project {
         Some((id, new_id))
     }
 
-    /// Reverse Layers on one wall (W-23). False for an unknown wall.
+    /// Reverse Layers on one wall (W-23). False for an unknown wall. The
+    /// layer stack swaps faces and the main layer keeps its place: the
+    /// centerline moves by twice the main layer's offset from it, and the
+    /// ends of connected walls follow (a T-junction end slides with the
+    /// wall it butts into). A wall whose main layer is centered does not
+    /// move.
     pub fn reverse_wall_layers(&mut self, floor: usize, id: Id) -> bool {
-        match self.floors[floor].wall_mut(id) {
-            Some(w) => {
-                w.reverse_layers();
-                true
+        let Some(wall) = self.floors[floor].wall(id).cloned() else {
+            return false;
+        };
+        let ty = wall
+            .wall_type
+            .as_deref()
+            .and_then(|n| self.wall_type_def(n))
+            .cloned();
+        let main_center = wall_layer_bands(&wall, ty.as_ref())
+            .iter()
+            .find(|b| b.is_main)
+            .map_or(0.0, |b| (b.outer + b.inner) * 0.5);
+        let shift = 2.0 * main_center;
+        // The neighbour ends that follow, found before anything moves: the
+        // end of a corner or straight-on neighbour nearest our end, and the
+        // end of a wall butting into this one. (A tee where this wall butts
+        // into another leaves the through wall alone.)
+        let mut follow: Vec<(Id, WallEnd)> = Vec::new();
+        for c in self.wall_connections(floor, id) {
+            if c.kind == joins::ConnectionKind::Tee {
+                continue;
             }
-            None => false,
+            let at = if c.at == WallEnd::Start {
+                wall.start
+            } else {
+                wall.end
+            };
+            if let Some(o) = self.floors[floor].wall(c.other) {
+                let end = if o.start.dist(at) <= o.end.dist(at) {
+                    WallEnd::Start
+                } else {
+                    WallEnd::End
+                };
+                follow.push((c.other, end));
+            }
         }
+        follow.extend(self.walls_butting_into(floor, id));
+        let f = &mut self.floors[floor];
+        let Some(w) = f.wall_mut(id) else {
+            return false;
+        };
+        w.reverse_layers();
+        if shift.abs() < 1e-9 {
+            return true;
+        }
+        let before = w.clone();
+        let k = w.shift_laterally(shift);
+        for (other, end) in follow {
+            if let Some(o) = f.wall_mut(other) {
+                match end {
+                    WallEnd::Start => o.start = before.laterally_shifted(o.start, shift),
+                    WallEnd::End => o.end = before.laterally_shifted(o.end, shift),
+                }
+            }
+        }
+        if (k - 1.0).abs() > 1e-9 {
+            let new_len = f.wall(id).map_or(0.0, |w| w.path_length());
+            for o in f.openings.iter_mut().filter(|o| o.wall_id == id) {
+                scale_opening_offset(o, k, new_len);
+            }
+        }
+        true
     }
 
     /// Sets (or clears) the curve of a wall, keeping its openings in
@@ -958,13 +1170,7 @@ impl Project {
         if old_len > 1e-9 && (new_len - old_len).abs() > 1e-9 {
             let k = new_len / old_len;
             for o in f.openings.iter_mut().filter(|o| o.wall_id == id) {
-                let half = o.width * 0.5;
-                let c = o.center_offset * k;
-                o.center_offset = if new_len > o.width {
-                    c.clamp(half, new_len - half)
-                } else {
-                    new_len * 0.5
-                };
+                scale_opening_offset(o, k, new_len);
             }
         }
         true
@@ -1853,5 +2059,209 @@ mod tests {
         );
         assert!(line.arc_readout().is_none());
         assert_eq!(line.offset_curve(3.0, 2)[1], Point::new(30.0, 3.0));
+    }
+
+    /// A 6" type with its 3" main layer toward the interior: siding 2",
+    /// main 3", drywall 1".
+    fn off_centre_type() -> WallTypeDef {
+        use crate::defaults::WallLayer;
+        WallTypeDef {
+            name: "Off-3".into(),
+            layers: vec![
+                WallLayer::new("Siding", 2.0, false, "Siding"),
+                WallLayer::new("Frame", 3.0, true, "Framing"),
+                WallLayer::new("Drywall", 1.0, false, "Drywall"),
+            ],
+            kind: WallKind::Exterior,
+        }
+    }
+
+    fn arc_wall() -> Wall {
+        let mut w = Wall::new(
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        w.curve = WallCurve::from_radius(240.0, 200.0, true);
+        w
+    }
+
+    #[test]
+    fn radius_to_adds_the_reference_offset() {
+        let w = arc_wall();
+        let ty = off_centre_type();
+        let (_, r) = w.arc_center_radius().unwrap();
+        let to = |a| w.radius_to(Some(&ty), a).unwrap();
+        assert!((to(ResizeAbout::WallCenter) - r).abs() < 1e-9);
+        // The wall bulges left and its exterior is the left side, so the
+        // outer surface is the larger circle.
+        assert!((to(ResizeAbout::OuterSurface) - (r + 3.0)).abs() < 1e-9);
+        assert!((to(ResizeAbout::InnerSurface) - (r - 3.0)).abs() < 1e-9);
+        assert!((to(ResizeAbout::MainLayerOutside) - (r + 1.0)).abs() < 1e-9);
+        assert!((to(ResizeAbout::MainLayerInside) - (r - 2.0)).abs() < 1e-9);
+        let line = Wall::default();
+        assert!(line.radius_to(None, ResizeAbout::WallCenter).is_none());
+    }
+
+    #[test]
+    fn set_radius_with_the_ends_locked_refits_the_arc() {
+        let mut w = arc_wall();
+        let ty = off_centre_type();
+        let (s, e) = (w.start, w.end);
+        let before = w.path_length();
+        let k = w
+            .set_radius_to(Some(&ty), ResizeAbout::OuterSurface, 303.0, ArcLock::Ends)
+            .unwrap();
+        assert_eq!((w.start, w.end), (s, e));
+        let got = w.radius_to(Some(&ty), ResizeAbout::OuterSurface).unwrap();
+        assert!((got - 303.0).abs() < 1e-6, "{got}");
+        assert!((k - w.path_length() / before).abs() < 1e-9 && k < 1.0);
+        // Below half the chord the arc is a semicircle, never a failure.
+        w.set_radius_to(None, ResizeAbout::WallCenter, 10.0, ArcLock::Ends)
+            .unwrap();
+        assert!((w.arc_center_radius().unwrap().1 - 120.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_long_way_round_arc_stays_that_way() {
+        let mut w = arc_wall();
+        w.curve = WallCurve::from_sweep(240.0, 250f64.to_radians(), true);
+        let chord = w.length();
+        assert!(w.curve.unwrap().sweep_abs(chord) > PI);
+        w.set_radius_to(None, ResizeAbout::WallCenter, 180.0, ArcLock::Ends)
+            .unwrap();
+        assert!(w.curve.unwrap().sweep_abs(chord) > PI);
+        assert!((w.arc_center_radius().unwrap().1 - 180.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn set_radius_with_the_center_locked_moves_the_ends() {
+        let mut w = arc_wall();
+        let (c0, _) = w.arc_center_radius().unwrap();
+        let sweep0 = w.curve.unwrap().sweep_abs(w.length());
+        let len0 = w.path_length();
+        let k = w
+            .set_radius_to(None, ResizeAbout::WallCenter, 300.0, ArcLock::Center)
+            .unwrap();
+        let (c1, r1) = w.arc_center_radius().unwrap();
+        assert!(c1.dist(c0) < 1e-9 && (r1 - 300.0).abs() < 1e-9);
+        assert!((w.curve.unwrap().sweep_abs(w.length()) - sweep0).abs() < 1e-9);
+        assert!((k - 1.5).abs() < 1e-9 && (w.path_length() - len0 * 1.5).abs() < 1e-6);
+        assert!((w.start.dist(c1) - 300.0).abs() < 1e-9 && (w.end.dist(c1) - 300.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_sweep_with_the_center_locked_swings_the_end() {
+        let mut w = arc_wall();
+        let (c0, r0) = w.arc_center_radius().unwrap();
+        let start = w.start;
+        w.set_sweep_locked(90f64.to_radians(), ArcLock::Center)
+            .unwrap();
+        let (c1, r1) = w.arc_center_radius().unwrap();
+        assert_eq!(w.start, start);
+        assert!(c1.dist(c0) < 1e-6 && (r1 - r0).abs() < 1e-6);
+        assert!((w.curve.unwrap().sweep_abs(w.length()).to_degrees() - 90.0).abs() < 1e-6);
+        assert!(w.curve.unwrap().bulge > 0.0, "still bulges left");
+        // With the ends locked the chord stays.
+        let chord = w.length();
+        w.set_sweep_locked(120f64.to_radians(), ArcLock::Ends)
+            .unwrap();
+        assert!((w.length() - chord).abs() < 1e-9);
+        assert!((w.curve.unwrap().sweep_abs(chord).to_degrees() - 120.0).abs() < 1e-6);
+        assert!(Wall::default()
+            .set_sweep_locked(1.0, ArcLock::Ends)
+            .is_none());
+    }
+
+    #[test]
+    fn reverse_layers_keeps_the_main_layer_in_place() {
+        let (mut p, id) = proj_with_wall(6.0, WallKind::Exterior);
+        let ty = off_centre_type();
+        p.register_wall_type(ty.clone());
+        p.floors[0].wall_mut(id).unwrap().wall_type = Some(ty.name.clone());
+        // A wall running north from the end of the first, and an opening.
+        let n = p.add_wall(
+            0,
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 200.0),
+            6.0,
+            DEFAULT_CEILING_HEIGHT,
+            WallKind::Exterior,
+        );
+        let o = p
+            .add_opening(0, id, 120.0, crate::model::OpeningKind::Window)
+            .unwrap();
+        let main_abs = |p: &Project| {
+            let w = p.floors[0].wall(id).unwrap();
+            let ty = p.wall_type_def("Off-3");
+            let b = wall_layer_bands(w, ty);
+            let m = b.iter().find(|b| b.is_main).unwrap();
+            w.start.y + (m.outer + m.inner) * 0.5
+        };
+        let before = main_abs(&p);
+        assert!(p.reverse_wall_layers(0, id));
+        let after = main_abs(&p);
+        assert!((before - after).abs() < 1e-9, "{before} {after}");
+        let w = p.floors[0].wall(id).unwrap();
+        assert!(w.start.y.abs() > 0.9, "the centerline moved");
+        assert_eq!(w.start.y, w.end.y);
+        // The wall that met the end follows it.
+        let north = p.floors[0].wall(n).unwrap();
+        assert!(north.start.dist(w.end) < 1e-9);
+        assert_eq!(north.end, Point::new(240.0, 200.0));
+        assert_eq!(
+            p.floors[0]
+                .openings
+                .iter()
+                .find(|x| x.id == o)
+                .unwrap()
+                .center_offset,
+            120.0
+        );
+        // Reversing twice puts everything back.
+        assert!(p.reverse_wall_layers(0, id));
+        let w = p.floors[0].wall(id).unwrap();
+        assert!(w.start.y.abs() < 1e-9 && w.exterior_side == Side::Left);
+        assert!(
+            p.floors[0]
+                .wall(n)
+                .unwrap()
+                .start
+                .dist(Point::new(240.0, 0.0))
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn reverse_layers_on_an_arc_shifts_it_concentrically() {
+        let (mut p, id) = proj_with_wall(6.0, WallKind::Exterior);
+        let ty = off_centre_type();
+        p.register_wall_type(ty.clone());
+        {
+            let w = p.floors[0].wall_mut(id).unwrap();
+            w.wall_type = Some(ty.name.clone());
+            w.curve = WallCurve::from_radius(240.0, 200.0, true);
+        }
+        let o = p
+            .add_opening(0, id, 100.0, crate::model::OpeningKind::Window)
+            .unwrap();
+        let (c0, r0) = p.floors[0].wall(id).unwrap().arc_center_radius().unwrap();
+        let len0 = p.floors[0].wall(id).unwrap().path_length();
+        assert!(p.reverse_wall_layers(0, id));
+        let w = p.floors[0].wall(id).unwrap();
+        let (c1, r1) = w.arc_center_radius().unwrap();
+        assert!(c1.dist(c0) < 1e-6);
+        // Left bulge: the shift is -1" toward the +normal, which is toward the center.
+        assert!((r1 - (r0 - 1.0)).abs() < 1e-6, "{r0} {r1}");
+        let k = w.path_length() / len0;
+        let off = p.floors[0]
+            .openings
+            .iter()
+            .find(|x| x.id == o)
+            .unwrap()
+            .center_offset;
+        assert!((off - 100.0 * k).abs() < 1e-6);
     }
 }

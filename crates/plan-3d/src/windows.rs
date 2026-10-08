@@ -186,8 +186,8 @@ fn sliding_window(ctx: &Ctx, set: &mut MeshSet) {
         let kk = if mirror { 1 - k } else { k };
         let movable = kk == 1;
         let at = h.s0 + fw + if k == 0 { 0.0 } else { inner * 0.5 - 0.5 };
-        let shift = if movable && ctx.opts.doors_open {
-            (if mirror { 1.0 } else { -1.0 }) * (inner * 0.5 - 0.5)
+        let shift = if movable {
+            (if mirror { 1.0 } else { -1.0 }) * (inner * 0.5 - 0.5) * ctx.open_fraction()
         } else {
             0.0
         };

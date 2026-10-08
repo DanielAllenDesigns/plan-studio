@@ -118,6 +118,7 @@ pub fn image_mesh(sym: &PlacedSymbol, floor_elevation: f64, eye: Eye) -> Option<
         indices: Vec::new(),
         material,
         object_id: Some(sym.id),
+        color: None,
     };
     let y0 = (floor_elevation + sym.elevation) as f32;
     let at = |p: Point, y: f32| [p.x as f32, y, -p.y as f32];

@@ -7,9 +7,11 @@
 //! * Concentric: a body drag of a circle, arc, line or polyline leaves it and
 //!   adds offset copies (the drag sets the distance, or the dialog does);
 //! * Fillet: dragging a polyline corner handle rounds that corner;
+//! * Chamfer: dragging a polyline corner cuts it off with a chamfer;
 //! * Alternate: a body drag moves along the dominant axis only;
 //! * Replicate: a body drag leaves the originals and places copies, each one
-//!   more drag delta along.
+//!   more drag delta along (or, with `replicate_dialog`, releasing the drag
+//!   opens Transform/Replicate Object with the drag as its Move).
 //!
 //! The Select tool calls [`apply_group`] and [`apply_vertex`] before its own
 //! drag code, with the project already reset to the drag's starting state, so
@@ -22,6 +24,13 @@ use plan_core::cad::{self, CadItem};
 use plan_core::defaults::EditBehavior;
 use plan_core::geometry::{project_on_segment, Point};
 use plan_core::Id;
+use std::cell::Cell;
+
+thread_local! {
+    /// The Replicate drag waiting to be handed to the Transform dialog on
+    /// release: the drag delta and the copy count.
+    static HANDOFF: Cell<Option<(Point, u32)>> = const { Cell::new(None) };
+}
 
 /// Smallest scale a Resize drag may reach.
 const MIN_SCALE: f64 = 0.05;
@@ -314,6 +323,16 @@ fn replicate(cx: &mut EditorContext, items: &[ObjectRef], start: Point, world: P
         .behavior
         .replicate_copies
         .clamp(1, MAX_COPIES);
+    if cx.defaults.editing.behavior.replicate_dialog {
+        // The drag only measures the move; the dialog places the copies.
+        HANDOFF.with(|h| h.set(Some((delta, copies))));
+        cx.status = format!(
+            "Release to replicate {} x {}",
+            plan_core::units::fmt_ft_in(delta.x),
+            plan_core::units::fmt_ft_in(delta.y)
+        );
+        return true;
+    }
     let fl = cx.floor;
     let mut any = false;
     for o in items {
@@ -357,23 +376,43 @@ fn replicate(cx: &mut EditorContext, items: &[ObjectRef], start: Point, world: P
     true
 }
 
-/// Dragging a polyline corner handle under Fillet rounds the corner instead
-/// of moving it. True when the mode took the drag.
+/// Called when a body drag of the selection is released: a Replicate drag
+/// with the dialog hand-off on opens Transform/Replicate Object with the
+/// drag as its Move. True when the dialog opened.
+pub fn finish_group(cx: &mut EditorContext) -> bool {
+    let Some((delta, copies)) = HANDOFF.with(Cell::take) else {
+        return false;
+    };
+    if delta.length() < 1e-6 || mode(cx) != EditBehavior::Replicate {
+        return false;
+    }
+    crate::dialogs::transform::open_replicate(cx, delta, copies);
+    true
+}
+
+/// Dragging a polyline corner handle under Fillet or Chamfer rounds or cuts
+/// the corner instead of moving it. True when the mode took the drag.
 pub fn apply_vertex(
     cx: &mut EditorContext,
     id: Id,
     kind: super::handles::HandleKind,
     world: Point,
 ) -> bool {
-    if mode(cx) != EditBehavior::Fillet {
-        return false;
-    }
+    let chamfer = match mode(cx) {
+        EditBehavior::Fillet => false,
+        EditBehavior::Chamfer => true,
+        _ => return false,
+    };
     let super::handles::HandleKind::Reshape(i) = kind else {
         return false;
     };
     let fl = cx.floor;
     let unit = cx.snap_unit();
-    let fixed = cx.defaults.editing.behavior.fillet_radius;
+    let fixed = if chamfer {
+        cx.defaults.editing.behavior.chamfer_distance
+    } else {
+        cx.defaults.editing.behavior.fillet_radius
+    };
     let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) else {
         return false;
     };
@@ -391,9 +430,13 @@ pub fn apply_vertex(
     if radius < 0.5 {
         return true;
     }
-    if let Some(rounded) = cad::fillet_polyline_vertex(points, *closed, i, radius, FILLET_STEP_DEG)
-    {
-        *points = rounded;
+    let cut = if chamfer {
+        cad::chamfer_polyline_vertex(points, *closed, i, radius, radius)
+    } else {
+        cad::fillet_polyline_vertex(points, *closed, i, radius, FILLET_STEP_DEG)
+    };
+    if let Some(cut) = cut {
+        *points = cut;
         cx.mark_dirty();
     }
     true
@@ -694,5 +737,79 @@ mod tests {
         assert!(
             matches!(t, CadItem::Text { pos, height, .. } if pos == Point::new(40.0, 40.0) && (height - 12.0).abs() < 1e-9)
         );
+    }
+
+    #[test]
+    fn chamfer_cuts_a_dragged_corner() {
+        let mut cx = cx_with(EditBehavior::Chamfer);
+        let id = square(&mut cx, Point::new(0.0, 0.0), 100.0);
+        cx.selection.set(ObjectRef::Cad(id));
+        // Grab the corner at (100, 100) and drag 20" away: distance 20.
+        drag(
+            &mut cx,
+            Point::new(100.0, 100.0),
+            Point::new(112.0, 116.0),
+            false,
+        );
+        let CadItem::Polyline { points, .. } = &cx.floor().cad[0].item else {
+            panic!("polyline");
+        };
+        assert_eq!(points.len(), 5, "one corner became two points");
+        assert!(!points.contains(&Point::new(100.0, 100.0)));
+        assert!(points.contains(&Point::new(80.0, 100.0)));
+        assert!(points.contains(&Point::new(100.0, 80.0)));
+        // A fixed distance from the dialog wins over the drag.
+        cx.undo();
+        cx.defaults.editing.behavior.chamfer_distance = 10.0;
+        drag(
+            &mut cx,
+            Point::new(100.0, 100.0),
+            Point::new(180.0, 180.0),
+            false,
+        );
+        let CadItem::Polyline { points, .. } = &cx.floor().cad[0].item else {
+            panic!("polyline");
+        };
+        assert!(points.contains(&Point::new(90.0, 100.0)));
+        assert!(points.contains(&Point::new(100.0, 90.0)));
+    }
+
+    #[test]
+    fn replicate_can_hand_the_drag_to_the_transform_dialog() {
+        let mut cx = cx_with(EditBehavior::Replicate);
+        cx.defaults.editing.behavior.replicate_dialog = true;
+        cx.defaults.editing.behavior.replicate_copies = 3;
+        let id = square(&mut cx, Point::new(0.0, 0.0), 40.0);
+        cx.selection.set(ObjectRef::Cad(id));
+        crate::dialogs::transform::close_for_tests();
+        drag(
+            &mut cx,
+            Point::new(20.0, 20.0),
+            Point::new(80.0, 20.0),
+            false,
+        );
+        // Nothing was placed by the drag itself.
+        assert_eq!(cx.floor().cad.len(), 1);
+        let d = crate::dialogs::transform::current().expect("the dialog opened");
+        assert!(d.make_copies && d.copies == 3);
+        assert_eq!(plan_core::units::parse_ft_in(&d.move_x), Some(60.0));
+        assert_eq!(plan_core::units::parse_ft_in(&d.move_y), Some(0.0));
+        // Apply from the dialog places the copies, one undo step.
+        let mut d = d;
+        assert!(d.apply(&mut cx));
+        assert_eq!(cx.floor().cad.len(), 4);
+        // Without the switch a drag places copies at once and opens nothing.
+        crate::dialogs::transform::close_for_tests();
+        cx.defaults.editing.behavior.replicate_dialog = false;
+        cx.project.floors[0].cad.truncate(1);
+        cx.selection.set(ObjectRef::Cad(id));
+        drag(
+            &mut cx,
+            Point::new(20.0, 20.0),
+            Point::new(80.0, 20.0),
+            false,
+        );
+        assert!(!crate::dialogs::transform::is_open());
+        assert_eq!(cx.floor().cad.len(), 4);
     }
 }

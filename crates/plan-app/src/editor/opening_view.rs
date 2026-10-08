@@ -8,8 +8,8 @@ use super::{Camera, EditorContext};
 use crate::theme::Palette;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::geometry::Point;
-use plan_core::opening_symbol::{plan_symbol, PartKind, SymbolPart};
-use plan_core::{exterior_sign, Id, LabelPlacement, Opening, OpeningKind, Wall};
+use plan_core::opening_symbol::{plan_symbol_in, PartKind, SymbolPart};
+use plan_core::{exterior_sign, Floor, Id, LabelPlacement, Opening, OpeningKind, Wall};
 use plan_docs::schedule_kinds::Callout;
 use std::collections::HashMap;
 
@@ -71,42 +71,68 @@ pub fn draw_opening(
     exterior: f64,
     ghost: bool,
 ) {
+    draw_opening_in(painter, cam, wall, o, pal, exterior, ghost, false);
+}
+
+/// [`draw_opening`] for an opening of `floor`: one that stands over another
+/// opening of its wall (a transom over a door) is drawn dashed, as what is
+/// above the plan's cut plane, and does not clear the wall again.
+pub fn draw_floor_opening(
+    painter: &egui::Painter,
+    cam: &Camera,
+    floor: &Floor,
+    wall: &Wall,
+    o: &Opening,
+    pal: &Palette,
+    exterior: f64,
+) {
+    let over = floor
+        .openings_on(wall.id)
+        .any(|v| plan_core::openings::stands_over(o, v));
+    draw_opening_in(painter, cam, wall, o, pal, exterior, false, over);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_opening_in(
+    painter: &egui::Painter,
+    cam: &Camera,
+    wall: &Wall,
+    o: &Opening,
+    pal: &Palette,
+    exterior: f64,
+    ghost: bool,
+    over: bool,
+) {
     let (line_col, arc_col) = if ghost {
         (pal.ghost_stroke, pal.ghost_stroke)
     } else {
         (pal.opening_line, pal.door_arc)
     };
-    let sym = plan_symbol(wall, o, exterior);
-    let n = wall.normal();
+    let sym = plan_symbol_in(wall, o, exterior, over);
     let half = wall.thickness * 0.5;
-    let over = half + 1.0 + 1.0 / cam.px_per_in;
-    let (pa, pb) = (
-        wall.point_at(o.start_offset()),
-        wall.point_at(o.end_offset()),
-    );
-    // A canvas-colored quad hides the wall fill and its stroke across the
-    // opening; a niche only clears the band it is cut into.
+    let reach = half + 1.0 + 1.0 / cam.px_per_in;
+    // A canvas-colored band hides the wall fill and its stroke across the
+    // opening (along the arc on a curved wall); a niche only clears the band
+    // it is cut into.
     let lo = if sym.cut.0 <= -half + 1e-9 {
-        -over
+        -reach
     } else {
         sym.cut.0
     };
     let hi = if sym.cut.1 >= half - 1e-9 {
-        over
+        reach
     } else {
         sym.cut.1
     };
-    let gap = [
-        pa.add(n.scale(hi)),
-        pb.add(n.scale(hi)),
-        pb.add(n.scale(lo)),
-        pa.add(n.scale(lo)),
-    ];
-    painter.add(Shape::convex_polygon(
-        screen(cam, &gap),
-        pal.background,
-        Stroke::NONE,
-    ));
+    if !over {
+        for quad in wall.band_quads(o.start_offset(), o.end_offset(), lo, hi) {
+            painter.add(Shape::convex_polygon(
+                screen(cam, &quad),
+                pal.background,
+                Stroke::NONE,
+            ));
+        }
+    }
     for part in &sym.parts {
         draw_part(painter, cam, part, line_col, arc_col);
     }
@@ -150,13 +176,13 @@ pub fn label_anchor(
     text_w: f64,
     text_h: f64,
 ) -> Point {
-    let c = wall.point_at(o.center_offset);
+    let c = wall.point_along(o.center_offset);
     let side = match placement {
         LabelPlacement::Center => return c,
         LabelPlacement::Interior => -exterior,
         LabelPlacement::Exterior => exterior,
     };
-    let n = wall.normal();
+    let n = wall.normal_along(o.center_offset);
     let reach = wall.thickness * 0.5 + 1.5 + n.x.abs() * text_w * 0.5 + n.y.abs() * text_h * 0.5;
     c.add(n.scale(side * reach))
 }
@@ -185,8 +211,9 @@ fn label_base(
 
 /// Where the dragged offset (along the wall, across it) puts a label.
 pub fn apply_label_offset(wall: &Wall, at: Point, offset: (f64, f64)) -> Point {
-    at.add(wall.direction().scale(offset.0))
-        .add(wall.normal().scale(offset.1))
+    let s = wall.locate(at).0;
+    at.add(wall.tangent_along(s).scale(offset.0))
+        .add(wall.normal_along(s).scale(offset.1))
 }
 
 /// Whether the labels of openings of `kind` are shown: both the object layer
@@ -254,7 +281,8 @@ pub fn drag_label(cx: &mut EditorContext, id: Id, to: Point) -> bool {
         return false;
     };
     let d = to.sub(base);
-    let offset = (d.dot(wall.direction()), d.dot(wall.normal()));
+    let s = wall.locate(base).0;
+    let offset = (d.dot(wall.tangent_along(s)), d.dot(wall.normal_along(s)));
     let fl = cx.floor;
     match cx.project.floors[fl]
         .openings
@@ -288,9 +316,11 @@ fn draw_casing(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         let Some(wall) = floor.wall(o.wall_id) else {
             continue;
         };
-        let unit = o
-            .mull_group
-            .and_then(|_| cx.project.unit_span(cx.floor, o.id));
+        // A window over a door has no casing of its own: the unit's is drawn
+        // once, by the member below.
+        let Some(unit) = cx.project.casing_unit(cx.floor, o.id) else {
+            continue;
+        };
         let ext = exterior_sign(wall, &cx.rooms);
         for part in plan_core::opening_symbol::casing_parts(wall, o, unit, ext) {
             let pts = screen(cam, &part.points);
@@ -606,5 +636,86 @@ mod tests {
         drag_label(&mut cx, d, to);
         let l = labels_of(&mut cx);
         assert!(l[0].is_mark && l[0].at.dist(to) < 1e-9);
+    }
+
+    /// A 20' chord bowed 60" (radius 150") with a 36" door at arc length 100.
+    fn curved_cx() -> (EditorContext, Id, Id) {
+        let (mut cx, w) = cx_with_wall();
+        cx.project.floors[0].walls[0].curve = Some(plan_core::walls::WallCurve { bulge: 60.0 });
+        let d = cx
+            .project
+            .add_opening(0, w, 100.0, OpeningKind::Door)
+            .unwrap();
+        (cx, w, d)
+    }
+
+    #[test]
+    fn the_hit_test_and_the_labels_follow_the_arc() {
+        let (mut cx, w, d) = curved_cx();
+        let wall = cx.floor().wall(w).unwrap().clone();
+        // The middle of the door on the arc hits it; the chord point at the
+        // same distance along does not (it is far off the wall).
+        let on_arc = wall.point_along(100.0);
+        assert_eq!(
+            super::super::selection::hit_opening(cx.floor(), on_arc, 1.0),
+            Some(d)
+        );
+        let on_chord = wall.point_at(100.0);
+        assert_eq!(
+            super::super::selection::hit_opening(cx.floor(), on_chord, 1.0),
+            None
+        );
+        // Just inside the jamb on the arc hits, just past it does not.
+        assert_eq!(
+            super::super::selection::hit_opening(cx.floor(), wall.point_along(83.0), 0.5),
+            Some(d)
+        );
+        assert_eq!(
+            super::super::selection::hit_opening(cx.floor(), wall.point_along(80.0), 0.5),
+            None
+        );
+        // The label sits on the arc at the door's center, and a dragged offset
+        // is measured along the tangent there.
+        let l = labels_of(&mut cx);
+        let at = l.iter().find(|x| x.opening == d).unwrap().at;
+        let (s, lateral) = wall.locate(at);
+        assert!((s - 100.0).abs() < 1e-6, "{s}");
+        assert!(lateral.abs() > wall.thickness * 0.5, "{lateral}");
+        let moved = apply_label_offset(&wall, at, (10.0, 0.0));
+        assert!((wall.locate(moved).0 - 110.0).abs() < 0.6);
+    }
+
+    #[test]
+    fn the_width_dimension_reads_the_arc() {
+        let (cx, w, d) = curved_cx();
+        let wall = cx.floor().wall(w).unwrap();
+        let o = cx.floor().openings.iter().find(|o| o.id == d).unwrap();
+        let dims = super::super::tempdim::opening_temp_dims(
+            cx.floor(),
+            wall,
+            o,
+            super::super::selection::ObjectRef::Opening(d),
+            &super::super::tempdim::TempLocate::default(),
+        );
+        let width = dims
+            .iter()
+            .find(|x| x.kind == super::super::tempdim::TempDimKind::OpeningWidth)
+            .unwrap();
+        // 36" of arc, between the jambs on the centerline arc (a shorter chord).
+        assert_eq!(width.value, 36.0);
+        assert!(width.a.dist(wall.point_along(82.0)) < 1e-9);
+        assert!(width.b.dist(wall.point_along(118.0)) < 1e-9);
+        assert!(width.a.dist(width.b) < 36.0);
+        // The distance to the wall start reads the arc too, not the chord.
+        let to_start = dims
+            .iter()
+            .find(|x| x.kind == super::super::tempdim::TempDimKind::OpeningToStart)
+            .unwrap();
+        assert_eq!(to_start.value, 82.0);
+        let to_end = dims
+            .iter()
+            .find(|x| x.kind == super::super::tempdim::TempDimKind::OpeningToEnd)
+            .unwrap();
+        assert!((to_end.value - (wall.path_length() - 118.0)).abs() < 1e-9);
     }
 }

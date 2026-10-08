@@ -19,6 +19,7 @@ fn quad(a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], material: Material) 
         indices: vec![0, 1, 2, 0, 2, 3],
         material,
         object_id: None,
+        color: None,
     }
 }
 

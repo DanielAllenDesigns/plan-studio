@@ -565,14 +565,23 @@ impl WallTool {
         if let Some(layer) = class_layer(&spec.class) {
             cx.project.layers.add(layer);
         }
+        // Standard walls go on the active layer of the exterior or interior
+        // wall tool (Tools > Layer Settings); classes with a layer of their
+        // own (railing, fence, divider...) keep it.
+        let tool_layer = cx.project.layers.tool_layer(match spec.kind {
+            WallKind::Exterior => "walls_exterior",
+            WallKind::Interior => "walls_interior",
+        });
         if let Some(w) = cx.project.floors[fl].wall_mut(id) {
             if typed {
                 w.wall_type = Some(spec.wall_type.clone());
             }
             w.curve = curve;
             w.foundation_height = spec.foundation_height;
-            if let Some(layer) = spec.class.default_layer() {
-                w.layer = layer.to_string();
+            match spec.class.default_layer() {
+                Some(layer) => w.layer = layer.to_string(),
+                None if !tool_layer.is_empty() => w.layer = tool_layer,
+                None => {}
             }
             if !spec.class.is_standard() {
                 w.set_class(spec.class.clone());
@@ -1208,6 +1217,52 @@ mod tests {
             assert_eq!(cx.undo().as_deref(), Some("Draw Wall"));
             assert!(cx.floor().walls.is_empty());
         }
+    }
+
+    #[test]
+    fn walls_go_on_the_active_layer_of_their_tool() {
+        use plan_core::Layer;
+        let mut cx = new_cx();
+        cx.project
+            .layers
+            .add(Layer::new("Walls, Exterior", [0, 0, 0], 50));
+        cx.project
+            .layers
+            .add(Layer::new("Walls, Partitions", [0, 0, 0], 25));
+        assert!(cx
+            .project
+            .layers
+            .set_tool_layer("walls_exterior", "Walls, Exterior"));
+        assert!(cx
+            .project
+            .layers
+            .set_tool_layer("walls_interior", "Walls, Partitions"));
+        for (style, want) in [
+            (WallStyle::Exterior, "Walls, Exterior"),
+            (WallStyle::Interior, "Walls, Partitions"),
+        ] {
+            let mut t = variant_tool(style, false);
+            let before = cx.floor().walls.len();
+            drag(
+                &mut t,
+                &mut cx,
+                (0.0, 1000.0 * before as f64),
+                (120.0, 1000.0 * before as f64),
+            );
+            assert_eq!(cx.floor().walls.last().unwrap().layer, want, "{style:?}");
+        }
+        // A class with a layer of its own keeps it, and a tool back on its
+        // default layer draws on "Walls, Normal".
+        let mut t = variant_tool(WallStyle::Fencing, false);
+        drag(&mut t, &mut cx, (0.0, 5000.0), (120.0, 5000.0));
+        assert_eq!(cx.floor().walls.last().unwrap().layer, "Fencing");
+        assert!(cx
+            .project
+            .layers
+            .set_tool_layer("walls_exterior", "Walls, Normal"));
+        let mut t = variant_tool(WallStyle::Exterior, false);
+        drag(&mut t, &mut cx, (0.0, 7000.0), (120.0, 7000.0));
+        assert_eq!(cx.floor().walls.last().unwrap().layer, "Walls, Normal");
     }
 
     #[test]

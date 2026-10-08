@@ -389,8 +389,10 @@ pub fn opening_temp_dims(
     target: ObjectRef,
     loc: &TempLocate,
 ) -> Vec<TempDim> {
-    let len = w.length();
-    let u = w.direction();
+    // Along the wall is the arc length on a curved wall (DW-88): the width
+    // reads the arc, the line stands at the opening's tangent.
+    let len = w.path_length();
+    let u = w.tangent_along(o.center_offset);
     let mut out = Vec::new();
     // The unit this opening belongs to: itself, or every member of its group.
     let members: Vec<&Opening> = match o.mull_group {
@@ -434,8 +436,8 @@ pub fn opening_temp_dims(
     };
     out.push(TempDim {
         kind: TempDimKind::OpeningWidth,
-        a: w.point_at(o.start_offset()),
-        b: w.point_at(o.end_offset()),
+        a: w.point_along(o.start_offset()),
+        b: w.point_along(o.end_offset()),
         value: o.width,
         axis: u,
         target,
@@ -445,8 +447,8 @@ pub fn opening_temp_dims(
     if !members.is_empty() {
         out.push(TempDim {
             kind: TempDimKind::OpeningUnitWidth,
-            a: w.point_at(lo),
-            b: w.point_at(hi),
+            a: w.point_along(lo),
+            b: w.point_along(hi),
             value: hi - lo,
             axis: u,
             target,
@@ -456,8 +458,8 @@ pub fn opening_temp_dims(
     }
     out.push(TempDim {
         kind: TempDimKind::OpeningToStart,
-        a: w.point_at(left),
-        b: w.point_at(from_lo),
+        a: w.point_along(left),
+        b: w.point_along(from_lo),
         value: from_lo - left,
         axis: u,
         target,
@@ -466,8 +468,8 @@ pub fn opening_temp_dims(
     });
     out.push(TempDim {
         kind: TempDimKind::OpeningToEnd,
-        a: w.point_at(from_hi),
-        b: w.point_at(right),
+        a: w.point_along(from_hi),
+        b: w.point_along(right),
         value: right - from_hi,
         axis: u * -1.0,
         target,

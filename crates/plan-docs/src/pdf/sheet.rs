@@ -252,7 +252,23 @@ pub fn plan_sheet_with(
         };
         if let Some(w) = f.wall(o.wall_id) {
             if ctx.layers.is_visible(layer) && ctx.layers.is_visible(&w.layer) {
-                draw_opening(&mut doc, w, o, &tp, &ctx, ctx.pen(layer));
+                let over = f
+                    .openings_on(w.id)
+                    .any(|v| plan_core::openings::stands_over(o, v));
+                draw_opening(&mut doc, w, o, &tp, &ctx, ctx.pen(layer), over);
+                // Casing in plan: one loop around a mulled unit, none of its
+                // own for a window over a door.
+                if let Some(unit) = project.casing_unit(floor, o.id) {
+                    doc.set_rgb_stroke(0, 0, 0);
+                    let ext = plan_core::exterior_sign(w, &[]);
+                    for part in plan_core::opening_symbol::casing_parts(w, o, unit, ext) {
+                        let pts: Vec<(f64, f64)> = part.points.iter().map(|q| tp(*q)).collect();
+                        for (i, a) in pts.iter().enumerate() {
+                            let b = pts[(i + 1) % pts.len()];
+                            doc.line(a.0, a.1, b.0, b.1, ctx.pen(layer) * 0.5);
+                        }
+                    }
+                }
             }
         }
     }
@@ -407,14 +423,16 @@ fn draw_opening(
     tp: &impl Fn(Point) -> (f64, f64),
     ctx: &Ctx,
     pen: f64,
+    stands_over: bool,
 ) {
-    use plan_core::opening_symbol::{plan_symbol, PartKind};
+    use plan_core::opening_symbol::{plan_symbol_in, PartKind};
     let k = ctx.k;
-    let (n, half) = (w.normal(), w.thickness * 0.5);
+    let half = w.thickness * 0.5;
     let (s, e) = (o.start_offset(), o.end_offset());
     // Without rooms the outside is the wall's left face (right for interior
-    // walls), like the plan view without detected rooms.
-    let sym = plan_symbol(w, o, plan_core::exterior_sign(w, &[]));
+    // walls), like the plan view without detected rooms. A window over a door
+    // (a transom) is drawn dashed and leaves the door's clearing alone.
+    let sym = plan_symbol_in(w, o, plan_core::exterior_sign(w, &[]), stands_over);
     // The gap overshoots the faces a little so the outline strokes vanish; a
     // niche only clears the band it is cut into.
     let g = half + 1.5 / k;
@@ -428,12 +446,12 @@ fn draw_opening(
     } else {
         sym.cut.0
     };
-    let at = |off: f64, side: f64| w.point_at(off).add(n.scale(side));
-    doc.polygon(
-        &pt_list(&[at(s, hi), at(e, hi), at(e, lo), at(s, lo)], tp),
-        Some(PdfColor::WHITE),
-        None,
-    );
+    if !stands_over {
+        // Along the arc on a curved wall.
+        for quad in w.band_quads(s, e, lo, hi) {
+            doc.polygon(&pt_list(&quad, tp), Some(PdfColor::WHITE), None);
+        }
+    }
     doc.set_rgb_stroke(0, 0, 0);
     for part in &sym.parts {
         let mut pts: Vec<(f64, f64)> = part.points.iter().map(|q| tp(*q)).collect();
@@ -1087,5 +1105,49 @@ mod tests {
         let r = plan_sheet(&p, 0, &rooms, SheetSize::IsoA4, Scale::Ratio(20), &tb());
         assert!(!r.fitted);
         assert!(matches!(r.scale_used, Scale::Ratio(n) if n > 20));
+    }
+
+    #[test]
+    fn casing_in_plan_prints_once_per_unit_and_never_for_a_transom() {
+        let mut p = house();
+        assert!(!p.floors[0].openings.is_empty());
+        let lines = |p: &plan_core::Project| {
+            let r = plan_sheet(p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+            text_of(&r.pdf).matches(" l S Q").count()
+        };
+        let plain = lines(&p);
+        for o in &mut p.floors[0].openings {
+            o.extras.spec.casing_in_plan = true;
+        }
+        let cased = lines(&p);
+        // Two rectangles (four edges each) beside each jamb pair, on each face.
+        assert_eq!(cased, plain + p.floors[0].openings.len() * 4 * 4);
+        // A transom over a door adds its own jambs and head lines but no
+        // casing: the door's loop is the unit's.
+        let door = p.floors[0]
+            .openings
+            .iter()
+            .find(|o| o.kind == plan_core::OpeningKind::Door)
+            .unwrap()
+            .id;
+        let t = p.add_transom(0, door, 12.0).unwrap();
+        p.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == t)
+            .unwrap()
+            .extras
+            .spec
+            .casing_in_plan = true;
+        let with_transom = lines(&p);
+        let transom_lines = {
+            let mut q = p.clone();
+            q.floors[0]
+                .openings
+                .iter_mut()
+                .for_each(|o| o.extras.spec.casing_in_plan = false);
+            lines(&q) - plain
+        };
+        assert_eq!(with_transom, transom_lines + cased);
     }
 }

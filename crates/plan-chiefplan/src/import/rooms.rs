@@ -22,6 +22,13 @@
 //! position was not decoded; those rooms import without a name.
 //! The centre is the centre of the bounding box and can lie outside an
 //! L-shaped room.
+//!
+//! X17 files use the same layout with the type string at `+0x109` and the
+//! anchor 68 to 90 bytes after the end of the type string (the search span is
+//! 0x200). Checked on one X17 job: 14 of 14 first-floor rooms give a centre
+//! inside the walls' box, e.g. `future bedrm` 164 x 168.5 at `(1004.5, 598.4)`.
+//! A room whose box was not stored (the `-541265.15` marker) reads garbage there
+//! and can import with a wrong anchor.
 
 use super::tree::{cstring_at, fin, ObjectTree};
 
@@ -31,7 +38,7 @@ pub const ROOM: u8 = 23;
 const TYPE_FROM: usize = 0x100;
 const TYPE_TO: usize = 0x200;
 /// Bytes searched after the type string for the centre anchor.
-const ANCHOR_SPAN: usize = 0x140;
+const ANCHOR_SPAN: usize = 0x200;
 
 /// One decoded room.
 #[derive(Debug, Clone, PartialEq)]

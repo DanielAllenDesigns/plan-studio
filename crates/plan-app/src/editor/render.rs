@@ -3,7 +3,7 @@
 //! highlights. Layer visibility comes from `project.layers`. Tools draw their
 //! own overlays on top (`Tool::draw_overlay`).
 
-use super::opening_view::{draw_opening, draw_opening_labels};
+use super::opening_view::{draw_floor_opening, draw_opening_labels};
 use super::restyle;
 use super::selection::ObjectRef;
 use super::sheet;
@@ -40,6 +40,50 @@ thread_local! {
     /// Milliseconds spent per `draw_plan` stage since the last reset.
     pub(crate) static SECTION_MS: std::cell::RefCell<std::collections::BTreeMap<&'static str, f64>> =
         const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+thread_local! {
+    /// The font CAD text and dimension numbers are drawn in now: the text
+    /// style of the object being drawn (see [`set_text_face`]).
+    static TEXT_FACE: std::cell::RefCell<Option<plan_docs::pdf::FontSpec>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Sets the font [`draw_cad`] and the dimension numbers draw in; `None` is
+/// the bundled proportional font.
+pub fn set_text_face(face: Option<plan_docs::pdf::FontSpec>) {
+    TEXT_FACE.with(|f| *f.borrow_mut() = face);
+}
+
+/// The font of `style` as a text face (`None` when it names no font).
+fn face_of(style: Option<&plan_core::TextStyle>) -> Option<plan_docs::pdf::FontSpec> {
+    plan_docs::pdf::FontSpec::of_style(style?)
+}
+
+/// The font for text drawn at `size` px: the current text face's installed
+/// font, else the bundled one.
+fn text_font(painter: &egui::Painter, size: f32) -> FontId {
+    match TEXT_FACE.with(|f| f.borrow().clone()) {
+        Some(spec) => crate::fonts::font_id(painter.ctx(), &spec, size),
+        None => FontId::proportional(size),
+    }
+}
+
+/// The text style a dimension's number is set in, as [`DimLook::of`] finds
+/// it: the dimension's own, else the active set's, else "Dimension Text
+/// Style"; the plan's styles before the defaults'.
+fn dimension_style<'a>(cx: &'a EditorContext, d: &Dimension) -> Option<&'a plan_core::TextStyle> {
+    let set = &cx.defaults.dimensions;
+    let name = d
+        .text_style
+        .as_deref()
+        .filter(|n| !n.is_empty())
+        .or(Some(set.text_style.as_str()).filter(|n| !n.is_empty()))
+        .unwrap_or("Dimension Text Style");
+    cx.project
+        .text_styles
+        .resolve(name)
+        .or_else(|| cx.defaults.text_styles.resolve(name))
 }
 
 /// Everything under the tool overlay.
@@ -96,7 +140,7 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 if cx.layers().is_visible(opening_layer(o)) {
                     let ext = *outside.get_or_insert_with(|| exterior_sign(wall, &cx.rooms));
                     weighted(cx, painter, opening_layer(o), || {
-                        draw_opening(painter, cam, wall, o, pal, ext, false)
+                        draw_floor_opening(painter, cam, floor, wall, o, pal, ext)
                     });
                 }
             }
@@ -122,6 +166,7 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             };
             if cx.layers().is_visible(layer) {
                 let look = DimLook::of(cx, d);
+                set_text_face(face_of(dimension_style(cx, d)));
                 weighted(cx, painter, layer, || {
                     draw_dimension_look(
                         painter,
@@ -133,13 +178,29 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                         &look,
                     )
                 });
+                set_text_face(None);
             }
         }
     );
     section!("cad", let attrs = floor.cad_attr_map();
+    // Text objects are drawn in their text style's font; anything drawn
+    // after them (tool previews) in the Default Text Style's.
+    let default_face = face_of(
+        cx.project
+            .text_styles
+            .resolve(plan_core::text_styles::DEFAULT_TEXT_STYLE_NAME),
+    );
     for c in &floor.cad {
         if !cx.layers().is_visible(&c.layer) {
             continue;
+        }
+        if matches!(c.item, CadItem::Text { .. }) {
+            let style = cx.project.text_styles.style_of_text(
+                cx.layers(),
+                &c.layer,
+                attrs.get(&c.id).and_then(|a| a.text_style.as_deref()),
+            );
+            set_text_face(face_of(style));
         }
         // Text in a printed-size style is drawn at its size on paper for
         // the sheet's scale.
@@ -151,7 +212,8 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
             }),
         }
-    });
+    }
+    set_text_face(default_face));
     section!(
         "space boxes",
         crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam)
@@ -168,6 +230,18 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     draw_sheet(cx, painter, cam);
     if !cx.view_flags.contains(&ViewFlag::Color) {
         restyle::restyle_from(painter, content, restyle::monochrome);
+    }
+    // Print Preview shows the colour mode the Print dialog chose.
+    if cx.view_flags.contains(&ViewFlag::PrintPreview) {
+        match sheet::preview_color() {
+            plan_layout::PrintColor::Color => {}
+            plan_layout::PrintColor::Grayscale => {
+                restyle::restyle_from(painter, content, restyle::monochrome);
+            }
+            plan_layout::PrintColor::BlackWhite => {
+                restyle::restyle_from(painter, content, restyle::black_and_white);
+            }
+        }
     }
     if let Some(h) = cx.hover.filter(|h| !cx.selection.contains(*h)) {
         highlight(cx, painter, cam, h, Stroke::new(2.0_f32, pal.hover));
@@ -279,7 +353,14 @@ fn draw_rooms(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 cam.world_to_screen(crate::editor::rooms_edit::label_position(cx, room)),
                 Align2::CENTER_CENTER,
                 crate::editor::rooms_edit::room_label_text(cx, room),
-                FontId::proportional(crate::editor::rooms_edit::LABEL_FONT_PX as f32),
+                match face_of(cx.project.text_styles.resolve("Room Label Style")) {
+                    Some(spec) => crate::fonts::font_id(
+                        painter.ctx(),
+                        &spec,
+                        crate::editor::rooms_edit::LABEL_FONT_PX as f32,
+                    ),
+                    None => FontId::proportional(crate::editor::rooms_edit::LABEL_FONT_PX as f32),
+                },
                 pal.room_label,
             );
         }
@@ -366,6 +447,13 @@ fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         }
         // Invisible walls (stairwell dividers) are room boundaries only.
         if wall.flags.invisible {
+            continue;
+        }
+        // A wall raised 48" or more off the floor is drawn dashed.
+        if wall.bottom_offset >= plan_core::walls::ROOM_BOUNDARY_MAX_BOTTOM {
+            weighted(cx, painter, &wall.layer, || {
+                draw_raised_wall(cx, painter, cam, wall)
+            });
             continue;
         }
         weighted(cx, painter, &wall.layer, || {
@@ -519,6 +607,18 @@ fn draw_room_divider(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, 
         .map(|p| cam.world_to_screen(*p))
         .collect();
     let stroke = Stroke::new(0.75_f32, cx.palette.wall_stroke.gamma_multiply(0.7));
+    painter.extend(Shape::dashed_line(&pts, stroke, 6.0, 4.0));
+}
+
+/// A wall that starts [`plan_core::walls::ROOM_BOUNDARY_MAX_BOTTOM`] or more
+/// above the floor (a transom wall, a soffit, a bridge): it is overhead, so
+/// the plan shows its outline dashed and unfilled, like Chief.
+fn draw_raised_wall(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall: &Wall) {
+    let mut pts = quad(cam, &wall_polygon_at(cx, wall, cam.px_per_in));
+    if let Some(first) = pts.first().copied() {
+        pts.push(first);
+    }
+    let stroke = Stroke::new(1.0_f32, cx.palette.wall_stroke.gamma_multiply(0.8));
     painter.extend(Shape::dashed_line(&pts, stroke, 6.0, 4.0));
 }
 
@@ -763,10 +863,15 @@ fn draw_sheet(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
     let stroke = Stroke::new(1.5_f32, cx.palette.text.gamma_multiply(0.8));
     painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+    let mut caption = cx.sheet.caption();
+    let mode = sheet::preview_color_label(sheet::preview_color());
+    if preview && !mode.is_empty() {
+        caption = format!("{caption}  \u{b7}  {mode}");
+    }
     painter.text(
         rect.left_top() + Vec2::new(6.0, 4.0),
         Align2::LEFT_TOP,
-        cx.sheet.caption(),
+        caption,
         FontId::proportional(12.0),
         cx.palette.text.gamma_multiply(0.8),
     );
@@ -992,7 +1097,7 @@ pub fn draw_dimension_look(
     let font_px = (look.text_h as f32 * px).clamp(6.0, 200.0);
     let galley = painter.layout_no_wrap(
         d.label(fmt),
-        FontId::proportional(font_px),
+        text_font(painter, font_px),
         pal.dimension_text,
     );
     let size = galley.size();
@@ -1090,7 +1195,10 @@ pub fn draw_cad(
                 sc(*pos),
                 Align2::LEFT_BOTTOM,
                 text,
-                FontId::proportional(((*height * cam.px_per_in) as f32).clamp(6.0, 200.0)),
+                text_font(
+                    painter,
+                    ((*height * cam.px_per_in) as f32).clamp(6.0, 200.0),
+                ),
                 pal.text,
             );
         }
@@ -1119,10 +1227,13 @@ fn highlight(
             let Some(w) = floor.wall(op.wall_id) else {
                 return;
             };
-            let n = w.normal().scale(w.thickness * 0.5 + 1.0);
-            let (pa, pb) = (w.point_at(op.start_offset()), w.point_at(op.end_offset()));
+            // The outline follows the arc on a curved wall (DW-88).
+            let reach = w.thickness * 0.5 + 1.0;
             painter.add(Shape::closed_line(
-                quad(cam, &[pa.add(n), pb.add(n), pb.sub(n), pa.sub(n)]),
+                quad(
+                    cam,
+                    &w.band(op.start_offset(), op.end_offset(), -reach, reach),
+                ),
                 stroke,
             ));
             // The host wall, softly (S-110).
@@ -1523,8 +1634,70 @@ mod tests {
         let _ = colored(&cx);
     }
 
+    #[test]
+    fn print_preview_shows_the_colour_mode_of_the_print_dialog() {
+        use plan_layout::PrintColor;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        cx.refresh();
+        // The colours of the lines the plan draws.
+        let line_colors = |cx: &EditorContext| {
+            let mut out = Vec::new();
+            let egui_ctx = egui::Context::default();
+            let _ = egui_ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (_, painter) =
+                        ui.allocate_painter(Vec2::new(400.0, 300.0), egui::Sense::hover());
+                    let mut cam = Camera::default_view();
+                    cam.rect = painter.clip_rect();
+                    draw_plan(cx, &painter, &cam);
+                    painter.for_each_shape(|cs| {
+                        if let Shape::LineSegment { stroke, .. } = &cs.shape {
+                            if stroke.color.a() > 0 {
+                                out.push(stroke.color);
+                            }
+                        }
+                    });
+                });
+            });
+            out
+        };
+        let is_gray = |c: &Color32| c.r() == c.g() && c.g() == c.b();
+        let is_bw = |c: &Color32| is_gray(c) && (c.r() == 0 || c.r() == 255);
+        // Without Print Preview the mode is not applied.
+        sheet::set_preview_color(PrintColor::BlackWhite);
+        assert!(!line_colors(&cx).iter().all(is_gray));
+        cx.view_flags.insert(ViewFlag::PrintPreview);
+        cx.view_flags.insert(ViewFlag::DrawingSheet);
+        let bw = line_colors(&cx);
+        assert!(!bw.is_empty() && bw.iter().all(is_bw), "{bw:?}");
+        sheet::set_preview_color(PrintColor::Grayscale);
+        let g = line_colors(&cx);
+        assert!(g.iter().all(is_gray) && !g.iter().all(is_bw), "{g:?}");
+        sheet::set_preview_color(PrintColor::Color);
+        assert!(!line_colors(&cx).iter().all(is_gray));
+        // The caption names the mode.
+        assert_eq!(
+            sheet::preview_color_label(PrintColor::Grayscale),
+            "Grayscale"
+        );
+        assert_eq!(sheet::preview_color_label(PrintColor::Color), "");
+    }
+
     /// Plan shapes of one 240" wall of `class`: (filled paths, line segments).
     fn wall_shapes(class: WallClass, curved: bool) -> (usize, usize) {
+        wall_shapes_raised(class, curved, 0.0)
+    }
+
+    /// [`wall_shapes`] for a wall starting `bottom` inches above the floor.
+    fn wall_shapes_raised(class: WallClass, curved: bool, bottom: f64) -> (usize, usize) {
         let mut cx = EditorContext::new(plan_defaults::embedded());
         let id = cx.project.add_wall(
             0,
@@ -1540,6 +1713,7 @@ mod tests {
         }
         w.set_class(class);
         w.wall_type = Some("Stucco-6".into());
+        w.bottom_offset = bottom;
         if curved {
             w.curve = Some(plan_core::WallCurve { bulge: 40.0 });
         }
@@ -1608,6 +1782,23 @@ mod tests {
             let _ = wall_shapes(class, true);
         }
         assert!(wall_shapes(WallClass::Standard, true).0 > 4, "arc facets");
+    }
+
+    #[test]
+    fn a_wall_raised_48_inches_or_more_is_drawn_dashed_and_unfilled() {
+        let (fill, lines) = wall_shapes_raised(WallClass::Standard, false, 0.0);
+        assert!(fill >= 1 && lines > 0);
+        // Just under 48" is still an ordinary wall.
+        let (fill, _) = wall_shapes_raised(WallClass::Standard, false, 47.0);
+        assert!(fill >= 1);
+        // From 48" up: no fill, and the outline is many short dashes.
+        let (fill, lines) = wall_shapes_raised(WallClass::Standard, false, 48.0);
+        assert_eq!(fill, 0);
+        assert!(lines > 10, "{lines} dashes");
+        // Curved walls too.
+        let (fill, lines) = wall_shapes_raised(WallClass::Standard, true, 84.0);
+        assert_eq!(fill, 0);
+        assert!(lines > 10);
     }
 
     #[test]

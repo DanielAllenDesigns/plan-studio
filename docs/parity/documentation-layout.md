@@ -1,6 +1,8 @@
 # Parity spec: Documentation and Layout (Chief Architect X18)
 
-> Status (2026-10-08, after the layout round): 47 ids: 17 Works, 24 Partial, 5 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+> Status (2026-10-08, re-audited against HEAD 4c11b69): 47 ids: 22 Works, 21 Partial, 3 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
+>
+> Since that count (Round 13): L-10 Save As Template and Apply Template for layouts (JSON under `~/.plan-studio/templates`, a default per sheet size for new layouts); L-9/L-11 revision clouds add rows to the REVISIONS table, and the sheet index follows page reorders without shifting the numbering; plan boxes print the opening labels; leaders can have bends; schedules and the Materials List export to Excel (.xlsx); perspective boxes and Print Model are lit by the plan's point lights; Print Preview shows the Print dialog's colour mode. Still open: the OS print panel (out of scope) and a separate editor for page templates per sheet type (the saved layout templates and the Page Template page flag cover it).
 
 Scope: Layout (Send to Layout, layout boxes, line weights, sheet sizes, title
 blocks, pages, plot plans), Printing and PDF, Schedules, Materials List, Plan

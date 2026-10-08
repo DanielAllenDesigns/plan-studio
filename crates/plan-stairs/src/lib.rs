@@ -24,9 +24,9 @@ pub use landing::polygon_slab;
 pub use model3d::{meshes, tagged_meshes, StairPart};
 pub use plan::{plan_symbol, Stroke};
 pub use railing::{
-    plan_symbol_railing, railing_meshes, railing_segments, stair_railing, stair_railing_geometry,
-    NewelParams, RailSide, RailStyle, RailingGeometry, RailingParams, StairRailingGeometry,
-    GUARD_HEIGHT, MAX_BALUSTER_CLEAR, STAIR_RAIL_HEIGHT,
+    landing_edges, plan_symbol_railing, railing_meshes, railing_segments, stair_railing,
+    stair_railing_geometry, NewelParams, RailSide, RailStyle, RailingGeometry, RailingParams,
+    StairRailingGeometry, GUARD_HEIGHT, MAX_BALUSTER_CLEAR, STAIR_RAIL_HEIGHT,
 };
 
 /// Maximum riser height, IRC R311.7.5.1.
@@ -47,6 +47,16 @@ pub const RAMP_MAX_RISE: f64 = 30.0;
 pub const RAMP_LANDING: f64 = 60.0;
 /// Narrowest tread of a curved stair at the inside edge, IRC R311.7.5.2.1 (6").
 pub const MIN_CURVED_TREAD_INSIDE: f64 = 6.0;
+/// Spiral stairs, IRC R311.7.10.1: maximum riser (9 1/2").
+pub const SPIRAL_MAX_RISER: f64 = 9.5;
+/// Spiral stairs: minimum tread depth at the walking line (6 3/4").
+pub const SPIRAL_MIN_TREAD: f64 = 6.75;
+/// Spiral stairs: minimum clear width (26").
+pub const SPIRAL_MIN_WIDTH: f64 = 26.0;
+/// Spiral stairs: minimum headroom (6'-6").
+pub const SPIRAL_MIN_HEADROOM: f64 = 78.0;
+/// Radius of the centre pole of a spiral stair the tools draw, inches.
+pub const SPIRAL_POLE_RADIUS: f64 = 2.0;
 
 /// Which way a flight turns at a landing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +203,15 @@ pub struct StairParams {
     /// The corners of a polygon landing in plan (empty: a rectangle `width`
     /// by the landing depth).
     pub outline: Vec<Point>,
+    /// A flared bottom tread (the apron): the first tread bulges this far
+    /// past the stair on each side in a quarter-ellipse. `0` is a plain
+    /// tread. Straight, L, U and winder stairs only.
+    pub flare: f64,
+    /// A spiral stair: a [`StairShape::Curved`] stair around a centre pole
+    /// (`inner_radius` is the pole's radius) that follows the spiral-stair
+    /// code limits (9 1/2" risers, 6 3/4" treads at the walking line, 26"
+    /// clear width) and gets a pole in 3D.
+    pub spiral: bool,
 }
 
 impl Default for StairParams {
@@ -218,6 +237,8 @@ impl Default for StairParams {
             railing: RailingParams::default(),
             slab_thickness: 3.5,
             outline: Vec::new(),
+            flare: 0.0,
+            spiral: false,
         }
     }
 }
@@ -384,51 +405,65 @@ pub fn solve(params: &StairParams) -> StairSolution {
     }
 
     let rise = params.total_rise.max(0.0);
+    let spiral = params.spiral && matches!(params.shape, StairShape::Curved { .. });
+    let (max_riser, min_tread, min_width, min_headroom) = if spiral {
+        (
+            SPIRAL_MAX_RISER,
+            SPIRAL_MIN_TREAD,
+            SPIRAL_MIN_WIDTH,
+            SPIRAL_MIN_HEADROOM,
+        )
+    } else {
+        (MAX_RISER, MIN_TREAD, MIN_WIDTH, MIN_HEADROOM)
+    };
     let target = if params.riser_height_target > 0.0 {
         params.riser_height_target
     } else {
         7.5
     };
-    let min_risers = ((rise / MAX_RISER - EPS).ceil().max(1.0)) as u32;
+    let min_risers = ((rise / max_riser - EPS).ceil().max(1.0)) as u32;
     let max_risers = ((rise / MIN_RISER + EPS).floor().max(1.0)) as u32;
     let risers =
         ((rise / target).round().max(1.0) as u32).clamp(min_risers, max_risers.max(min_risers));
     let riser_height = rise / f64::from(risers);
 
-    if riser_height > MAX_RISER + EPS {
+    if riser_height > max_riser + EPS {
         code_ok = false;
-        warnings.push(format!(
-            "riser {riser_height:.3}\" exceeds the 7 3/4\" maximum"
-        ));
+        warnings.push(if spiral {
+            format!("riser {riser_height:.3}\" exceeds the 9 1/2\" maximum of a spiral stair")
+        } else {
+            format!("riser {riser_height:.3}\" exceeds the 7 3/4\" maximum")
+        });
     }
     if riser_height < MIN_RISER - EPS {
         warnings.push(format!(
             "riser {riser_height:.3}\" is below the 4\" minimum"
         ));
     }
-    if params.tread_depth < MIN_TREAD - EPS {
+    if params.tread_depth < min_tread - EPS {
         code_ok = false;
         warnings.push(format!(
-            "tread depth {:.2}\" is below the 10\" minimum",
-            params.tread_depth
+            "tread depth {:.2}\" is below the {} minimum",
+            params.tread_depth,
+            if spiral { "6 3/4\"" } else { "10\"" }
         ));
     }
-    if params.width < MIN_WIDTH - EPS {
+    if params.width < min_width - EPS {
         code_ok = false;
         warnings.push(format!(
-            "width {:.2}\" is below the 36\" minimum",
-            params.width
+            "width {:.2}\" is below the {}\" minimum",
+            params.width, min_width
         ));
     }
-    if params.headroom_min < MIN_HEADROOM - EPS {
+    if params.headroom_min < min_headroom - EPS {
         code_ok = false;
         warnings.push(format!(
-            "headroom {:.2}\" is below the 80\" minimum",
-            params.headroom_min
+            "headroom {:.2}\" is below the {}\" minimum",
+            params.headroom_min, min_headroom
         ));
     }
     let comfort = 2.0 * riser_height + params.tread_depth;
-    if !(24.0 - EPS..=25.0 + EPS).contains(&comfort) {
+    if !spiral && !(24.0 - EPS..=25.0 + EPS).contains(&comfort) {
         warnings.push(format!(
             "2R+T = {comfort:.2}\" is outside the 24-25\" comfort range"
         ));
@@ -436,7 +471,7 @@ pub fn solve(params: &StairParams) -> StairSolution {
 
     let treads = risers - 1;
     let straight_run = f64::from(treads) * params.tread_depth;
-    if let StairShape::Curved { inner_radius } = params.shape {
+    if let (StairShape::Curved { inner_radius }, false) = (params.shape, spiral) {
         let walk = inner_radius.max(0.0) + params.width / 2.0;
         let inside = params.tread_depth * inner_radius.max(0.0) / walk.max(1e-9);
         if inside < MIN_CURVED_TREAD_INSIDE - EPS {

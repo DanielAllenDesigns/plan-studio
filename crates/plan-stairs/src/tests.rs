@@ -1,4 +1,5 @@
 use super::*;
+use crate::railing::landing_rail_paths;
 use plan_3d::Material;
 use plan_core::geometry::polygon_area;
 use std::f64::consts::FRAC_PI_6;
@@ -889,4 +890,311 @@ fn a_section_on_a_landing_starts_at_its_base_height() {
         r#"{"id":3,"origin":{"x":1.0,"y":2.0},"direction":0.0,"params":{},"floor_elevation":5.0}"#;
     let s: Stair = serde_json::from_str(old).unwrap();
     assert!(close(s.bottom_elevation(), 5.0));
+}
+
+// ----- flared bottom tread, spiral stairs, railings on landings -----
+
+fn lateral_extent(mesh: &plan_3d::Mesh) -> f64 {
+    // Direction 0: the lateral axis is plan y, scene -z.
+    let zs: Vec<f64> = mesh
+        .vertices
+        .iter()
+        .map(|v| f64::from(v.position[2]))
+        .collect();
+    zs.iter().cloned().fold(f64::MIN, f64::max) - zs.iter().cloned().fold(f64::MAX, f64::min)
+}
+
+fn lowest_y(mesh: &plan_3d::Mesh) -> f64 {
+    mesh.vertices
+        .iter()
+        .map(|v| f64::from(v.position[1]))
+        .fold(f64::MAX, f64::min)
+}
+
+#[test]
+fn a_flared_bottom_tread_reaches_past_the_stair_on_both_sides() {
+    let plain = stair(params(109.125));
+    let flared = stair(StairParams {
+        flare: 6.0,
+        ..params(109.125)
+    });
+    let treads = |s: &Stair| {
+        let mut t: Vec<plan_3d::Mesh> = tagged_meshes(s)
+            .into_iter()
+            .filter(|(p, _)| *p == StairPart::Tread)
+            .map(|(_, m)| m)
+            .collect();
+        t.sort_by(|a, b| lowest_y(a).total_cmp(&lowest_y(b)));
+        t
+    };
+    let (p, f) = (treads(&plain), treads(&flared));
+    assert_eq!(p.len(), f.len());
+    assert!(close(lateral_extent(&p[0]), 36.0));
+    assert!(
+        close(lateral_extent(&f[0]), 48.0),
+        "{}",
+        lateral_extent(&f[0])
+    );
+    // Only the bottom tread flares, and it keeps its height.
+    for (a, b) in p.iter().zip(&f).skip(1) {
+        assert!(close(lateral_extent(a), lateral_extent(b)));
+    }
+    assert!(close(lowest_y(&p[0]), lowest_y(&f[0])));
+    // The plan symbol draws the apron outline, a closed shape wider than the stair.
+    let apron = plan_symbol(&flared, None)
+        .into_iter()
+        .filter_map(|s| match s {
+            Stroke::Polyline(pts, true) if pts.len() > 8 => Some(pts),
+            _ => None,
+        })
+        .next()
+        .expect("an apron outline");
+    let (lo, hi) = (
+        apron.iter().map(|p| p.y).fold(f64::MAX, f64::min),
+        apron.iter().map(|p| p.y).fold(f64::MIN, f64::max),
+    );
+    // Stair from y = 50 (left) to y = 14 (right): 6" past each.
+    assert!(close(hi, 56.0) && close(lo, 8.0), "{lo} {hi}");
+    assert!(plan_symbol(&plain, None)
+        .iter()
+        .all(|s| !matches!(s, Stroke::Polyline(p, true) if p.len() > 8)));
+    // Winders, curves, ramps and landings ignore it.
+    for shape in [
+        StairShape::Curved { inner_radius: 30.0 },
+        StairShape::Ramp { slope_1_in: 12.0 },
+        StairShape::Landing { depth: 36.0 },
+    ] {
+        let a = stair(StairParams {
+            shape,
+            flare: 6.0,
+            ..params(60.0)
+        });
+        let b = stair(StairParams {
+            shape,
+            ..params(60.0)
+        });
+        assert_eq!(plan_symbol(&a, None), plan_symbol(&b, None), "{shape:?}");
+    }
+}
+
+fn spiral(radius: f64, rise: f64) -> Stair {
+    let walk = (SPIRAL_POLE_RADIUS + radius) * 0.5;
+    stair(StairParams {
+        shape: StairShape::Curved {
+            inner_radius: SPIRAL_POLE_RADIUS,
+        },
+        spiral: true,
+        width: radius - SPIRAL_POLE_RADIUS,
+        tread_depth: walk * 0.5,
+        ..params(rise)
+    })
+}
+
+#[test]
+fn a_spiral_stair_follows_the_spiral_code_not_the_straight_one() {
+    // 60" across: 28" clear width, 8 1/2" treads at the walking line.
+    let st = spiral(30.0, 109.125);
+    let sol = solve(&st.params);
+    assert!(sol.code_ok, "{:?}", sol.warnings);
+    assert!(sol.riser_height <= SPIRAL_MAX_RISER);
+    // The same numbers on an ordinary curved stair break the 10" tread and
+    // 36" width limits.
+    let plain = StairParams {
+        spiral: false,
+        ..st.params.clone()
+    };
+    assert!(!solve(&plain).code_ok);
+    // A 9" riser is fine on a spiral, never on a stair.
+    let tall = StairParams {
+        riser_height_target: 9.0,
+        ..st.params.clone()
+    };
+    assert!(solve(&tall).code_ok, "{:?}", solve(&tall).warnings);
+    assert!(solve(&tall).riser_height > MAX_RISER);
+    // Too narrow, too shallow or too steep fails the spiral code.
+    for bad in [
+        StairParams {
+            width: 24.0,
+            ..st.params.clone()
+        },
+        StairParams {
+            tread_depth: 6.0,
+            ..st.params.clone()
+        },
+        StairParams {
+            headroom_min: 76.0,
+            ..st.params.clone()
+        },
+    ] {
+        assert!(!solve(&bad).code_ok, "{bad:?}");
+    }
+}
+
+#[test]
+fn a_spiral_stair_turns_more_than_once_around_a_centre_pole() {
+    let st = spiral(30.0, 109.125);
+    let sweep = curve_sweep(&st).unwrap();
+    assert!(sweep > std::f64::consts::TAU, "{sweep}");
+    let centre = curve_center(&st).unwrap();
+    // Treads are wedges around the centre: every tread corner is between
+    // the pole and the outside radius.
+    let parts = tagged_meshes(&st);
+    let treads = count(&parts, StairPart::Tread);
+    assert_eq!(treads as u32, solve(&st.params).treads);
+    for (part, m) in &parts {
+        if *part != StairPart::Tread {
+            continue;
+        }
+        for v in &m.vertices {
+            let p = Point::new(f64::from(v.position[0]), -f64::from(v.position[2]));
+            let r = p.dist(centre);
+            assert!(r > SPIRAL_POLE_RADIUS - 1e-3 && r < 30.0 + 1e-3, "{r}");
+        }
+    }
+    // The pole stands from the floor above the top step; an ordinary curved
+    // stair has none.
+    let pole = parts
+        .iter()
+        .filter(|(p, _)| *p == StairPart::Stringer)
+        .map(|(_, m)| m)
+        .find(|m| {
+            m.vertices.iter().all(|v| {
+                Point::new(f64::from(v.position[0]), -f64::from(v.position[2])).dist(centre)
+                    < SPIRAL_POLE_RADIUS + 1e-3
+            })
+        })
+        .expect("a centre pole");
+    let top = pole
+        .vertices
+        .iter()
+        .map(|v| f64::from(v.position[1]))
+        .fold(f64::MIN, f64::max);
+    assert!(top > solve(&st.params).riser_height * f64::from(solve(&st.params).risers));
+    let no_pole = StairParams {
+        spiral: false,
+        ..st.params.clone()
+    };
+    assert!(tagged_meshes(&stair(no_pole)).len() < parts.len());
+    // The plan symbol has the pole as a circle at the centre.
+    assert!(plan_symbol(&st, None).iter().any(|s| matches!(
+        s,
+        Stroke::Arc { center, radius, .. }
+            if center.dist(centre) < 1e-6 && close(*radius, SPIRAL_POLE_RADIUS)
+    )));
+    // It round-trips.
+    let back: Stair = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
+    assert_eq!(back, st);
+}
+
+fn rail_landing(left: SideKind, right: SideKind) -> Stair {
+    stair(StairParams {
+        shape: StairShape::Landing { depth: 48.0 },
+        left_side: left,
+        right_side: right,
+        ..params(48.0)
+    })
+}
+
+#[test]
+fn a_landing_railing_guards_the_open_sides_not_the_ends() {
+    let st = rail_landing(SideKind::Railing, SideKind::None);
+    // Direction 0: the left side is the edge at the origin's y.
+    let left = landing_edges(&st, RailSide::Left);
+    assert_eq!(left.len(), 1);
+    assert!(close(left[0].0.y, 50.0) && close(left[0].1.y, 50.0));
+    assert!(close(left[0].0.dist(left[0].1), 48.0));
+    let right = landing_edges(&st, RailSide::Right);
+    assert_eq!(right.len(), 1);
+    assert!(close(right[0].0.y, 14.0));
+    // Meshes: a railing on the left only; its newels stand on the landing top.
+    let parts = tagged_meshes(&st);
+    let rails: Vec<&plan_3d::Mesh> = parts
+        .iter()
+        .filter(|(p, _)| *p == StairPart::Handrail)
+        .map(|(_, m)| m)
+        .collect();
+    assert!(!rails.is_empty());
+    for m in &rails {
+        for v in &m.vertices {
+            let y = -f64::from(v.position[2]);
+            assert!(y > 50.0 - 4.0 && y < 50.0 + 4.0, "rail strays to y={y}");
+        }
+    }
+    let ys: Vec<f64> = rails
+        .iter()
+        .flat_map(|m| m.vertices.iter().map(|v| f64::from(v.position[1])))
+        .collect();
+    let (lo, hi) = (
+        ys.iter().cloned().fold(f64::MAX, f64::min),
+        ys.iter().cloned().fold(f64::MIN, f64::max),
+    );
+    assert!(close(lo, 48.0), "{lo}");
+    assert!(hi >= 48.0 + GUARD_HEIGHT - 2.0, "{hi}");
+    // Both sides doubles it; none leaves the landing bare.
+    let both = rail_landing(SideKind::Railing, SideKind::Railing);
+    assert!(tagged_meshes(&both).len() > parts.len());
+    let bare = rail_landing(SideKind::None, SideKind::None);
+    assert_eq!(count(&tagged_meshes(&bare), StairPart::Handrail), 0);
+    // The plan symbol shows the railing as double lines with newel squares.
+    let strokes = |s: &Stair| plan_symbol(s, None).len();
+    assert!(strokes(&st) > strokes(&bare) + 2);
+    // A half wall is a railing on a low wall: the same edges, more solid.
+    let half = rail_landing(SideKind::HalfWall, SideKind::None);
+    assert!(count(&tagged_meshes(&half), StairPart::Handrail) > 0);
+    // Edges of anything but a landing are none.
+    assert!(landing_edges(&stair(params(100.0)), RailSide::Left).is_empty());
+}
+
+#[test]
+fn a_polygon_landing_railing_follows_the_sides_that_face_left_and_right() {
+    let outline = vec![
+        Point::new(100.0, 50.0),
+        Point::new(100.0, 14.0),
+        Point::new(148.0, 14.0),
+        Point::new(148.0, 50.0),
+    ];
+    let st = stair(StairParams {
+        shape: StairShape::Landing { depth: 48.0 },
+        outline,
+        left_side: SideKind::Railing,
+        ..params(48.0)
+    });
+    let left = landing_edges(&st, RailSide::Left);
+    assert_eq!(left.len(), 1);
+    assert!(close(left[0].0.y, 50.0) && close(left[0].1.y, 50.0));
+}
+
+#[test]
+fn the_rail_of_an_l_stair_carries_across_the_landing_in_plan() {
+    let base = StairParams {
+        shape: StairShape::LShaped {
+            treads_before_landing: 6,
+        },
+        turn: Turn::Left,
+        ..params(109.125)
+    };
+    let bare = stair(base.clone());
+    let railed = stair(StairParams {
+        left_side: SideKind::Railing,
+        right_side: SideKind::Railing,
+        ..base
+    });
+    // Turning left, the left rail is the inside one: the two flights'
+    // rails meet at the corner. The right (outside) rail runs around it.
+    assert!(landing_rail_paths(&railed, RailSide::Left).is_empty());
+    let outside = landing_rail_paths(&railed, RailSide::Right);
+    assert_eq!(outside.len(), 1);
+    assert!(outside[0].len() >= 3, "{:?}", outside[0]);
+    // Every landing rail line is drawn: more strokes than the two flights'
+    // rails alone, and some line runs across the landing region.
+    let layout_u = 6.0 * 10.0;
+    let landing_lines = plan_symbol(&railed, None)
+        .into_iter()
+        .filter(|s| !plan_symbol(&bare, None).contains(s))
+        .filter(|s| match s {
+            Stroke::Line(a, b) => a.x.min(b.x) >= 100.0 + layout_u - 1e-6 && a.dist(*b) > 10.0,
+            _ => false,
+        })
+        .count();
+    assert!(landing_lines >= 4, "{landing_lines}");
 }

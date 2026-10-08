@@ -802,6 +802,8 @@ impl SpecPages for DormerPages {
             Some("The dormer walls must be at least 6 inches tall".into())
         } else if self.spec.pitch < MIN_PITCH || self.spec.pitch > MAX_PITCH {
             Some("Pitch must be between 0.5 and 24 in 12".into())
+        } else if self.spec.overhang < 0.0 {
+            Some("The overhang cannot be negative".into())
         } else {
             None
         }
@@ -852,6 +854,9 @@ impl SpecPages for DormerPages {
                     &mut self.spec.height_to_ridge,
                 );
                 ui.weak("A ridge higher than the walls sets the pitch; 0 uses the pitch above.");
+                self.fields
+                    .length_row(ui, "Overhang", "dormer_overhang", &mut self.spec.overhang);
+                ui.weak("The roof reaches this far past the walls; the Roof Defaults give it fascia and soffit.");
             }
             _ => {
                 section(ui, "Window");

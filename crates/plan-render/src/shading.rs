@@ -82,6 +82,40 @@ impl Surface {
         })
     }
 
+    /// The table of [`Surface::table`] followed by one entry for each
+    /// `(material, colour)` pair of `custom` (a mesh's own `color`): the
+    /// material's surface with its base colour replaced. Clay and ambient
+    /// occlusion ignore colour, so those entries are the material's own.
+    pub fn table_with(technique: Technique, custom: &[(Material, [u8; 3])]) -> Vec<Surface> {
+        let mut table = Self::table(technique).to_vec();
+        for &(m, rgb) in custom {
+            let base = table[m.index()];
+            table.push(base.recolored(technique, m, rgb));
+        }
+        table
+    }
+
+    /// This surface with its base colour replaced by `rgb` (sRGB bytes,
+    /// converted to linear light).
+    fn recolored(self, technique: Technique, m: Material, rgb: [u8; 3]) -> Surface {
+        if technique != Technique::PhysicallyBased {
+            return self;
+        }
+        let [r, g, b] = plan_3d::Mesh::linear_rgb(rgb);
+        let c = V3::new(r, g, b);
+        match self.kind {
+            Kind::Opaque => Surface { albedo: c, ..self },
+            Kind::Glass => {
+                let a = m.color()[3];
+                Surface {
+                    tint: V3::ONE - (V3::ONE - c) * a,
+                    ..self
+                }
+            }
+            Kind::Clear => self,
+        }
+    }
+
     fn alpha2(&self) -> f32 {
         let a = (self.roughness * self.roughness).max(0.02);
         a * a

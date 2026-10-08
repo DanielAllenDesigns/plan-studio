@@ -74,6 +74,7 @@ impl MeshBuilder {
             indices: self.indices,
             material: self.material,
             object_id,
+            color: None,
         }
     }
 }

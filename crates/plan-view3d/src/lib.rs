@@ -34,7 +34,7 @@ pub use quality::{
 };
 pub use texturing::{
     glsl_planar_uv, needed_materials, next_uploads, pending_uploads, planar_uv, projection,
-    ImageTexture, Projection, MAX_PICTURE_SIDE, MAX_UPLOADS_PER_FRAME,
+    ImageTexture, Projection, SurfaceTexture, MAX_PICTURE_SIDE, MAX_UPLOADS_PER_FRAME,
 };
 pub use viewport::{Lighting, Viewport3d};
 pub use walkthrough::{preview_poses, KeyFrame, Walkthrough, WalkthroughPath, WalkthroughSource};

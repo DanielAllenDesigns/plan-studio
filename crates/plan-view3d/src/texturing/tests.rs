@@ -12,6 +12,7 @@ fn mesh(material: Material) -> Mesh {
         indices: vec![0, 1, 2],
         material,
         object_id: None,
+        color: None,
     }
 }
 

@@ -49,33 +49,48 @@ impl TexBinding {
     }
 }
 
-/// The per-material bindings (index = `Material::index()`); all `None` when
-/// textures are off or the technique ignores colors.
+/// The per-material bindings (index = `Material::index()`), followed by a
+/// `None` for each recoloured entry past [`MATERIAL_COUNT`] (a mesh with its
+/// own colour is drawn flat); all `None` when textures are off or the
+/// technique ignores colors.
 pub(crate) fn table(
     store: &TextureStore,
     enabled: bool,
     technique: Technique,
-    surfaces: &[Surface; MATERIAL_COUNT],
-) -> [Option<TexBinding>; MATERIAL_COUNT] {
-    Material::ALL.map(|m| {
-        if !enabled
-            || technique != Technique::PhysicallyBased
-            || surfaces[m.index()].kind != Kind::Opaque
-        {
-            return None;
-        }
-        let tex = store.material(m)?;
-        let flat = m.color();
-        let flat_luma = luma([flat[0], flat[1], flat[2]]);
-        let gain = (flat_luma / luma(tex.average).max(1e-4)).clamp(GAIN_RANGE.0, GAIN_RANGE.1);
-        Some(TexBinding {
-            inv_scale: [
-                1.0 / tex.scale_in[0].max(1e-3),
-                1.0 / tex.scale_in[1].max(1e-3),
-            ],
-            proj: projection(m),
-            gain,
-            tex,
-        })
+    surfaces: &[Surface],
+) -> Vec<Option<TexBinding>> {
+    let mut out: Vec<Option<TexBinding>> = Material::ALL
+        .map(|m| binding(store, enabled, technique, surfaces, m))
+        .into_iter()
+        .collect();
+    out.resize_with(surfaces.len().max(MATERIAL_COUNT), || None);
+    out
+}
+
+fn binding(
+    store: &TextureStore,
+    enabled: bool,
+    technique: Technique,
+    surfaces: &[Surface],
+    m: Material,
+) -> Option<TexBinding> {
+    if !enabled
+        || technique != Technique::PhysicallyBased
+        || surfaces[m.index()].kind != Kind::Opaque
+    {
+        return None;
+    }
+    let tex = store.material(m)?;
+    let flat = m.color();
+    let flat_luma = luma([flat[0], flat[1], flat[2]]);
+    let gain = (flat_luma / luma(tex.average).max(1e-4)).clamp(GAIN_RANGE.0, GAIN_RANGE.1);
+    Some(TexBinding {
+        inv_scale: [
+            1.0 / tex.scale_in[0].max(1e-3),
+            1.0 / tex.scale_in[1].max(1e-3),
+        ],
+        proj: projection(m),
+        gain,
+        tex,
     })
 }

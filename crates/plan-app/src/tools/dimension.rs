@@ -1498,7 +1498,9 @@ impl DimensionTool {
             return ToolResult::consumed();
         };
         self.reset();
-        match add_cad_items(cx, MANUAL_LAYER, items, "Angular Dimension") {
+        // CAD items: they go on the active layer of the dimension tools.
+        let layer = cx.project.layers.tool_layer("dimensions");
+        match add_cad_items(cx, &layer, items, "Angular Dimension") {
             Some(_) => {
                 cx.status = format!("Angle: {deg:.1}\u{b0}");
                 ToolResult::committed("Angular Dimension")
@@ -2783,6 +2785,24 @@ mod tests {
         assert_eq!(cx.floor().cad.len(), 4);
         assert_eq!(cx.floor().groups.len(), 1);
         assert_eq!(cx.floor().cad[0].layer, MANUAL_LAYER);
+        // The active layer of the dimension tools wins.
+        let mut cx = new_cx();
+        cx.project
+            .layers
+            .add(plan_core::Layer::new("Dimensions, Notes", [0, 0, 0], 18));
+        assert!(cx
+            .project
+            .layers
+            .set_tool_layer("dimensions", "Dimensions, Notes"));
+        let mut t = tool(DimMode::Angular);
+        for (x, y) in [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (45.0, 0.0)] {
+            click(&mut t, &mut cx, x, y);
+        }
+        assert!(cx
+            .floor()
+            .cad
+            .iter()
+            .all(|c| c.layer == "Dimensions, Notes"));
     }
 
     #[test]

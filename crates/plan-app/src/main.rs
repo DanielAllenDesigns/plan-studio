@@ -10,6 +10,7 @@
 mod dialogs;
 mod editor;
 mod files;
+mod fonts;
 mod icons;
 #[cfg(target_os = "macos")]
 mod mac_open;
@@ -651,6 +652,19 @@ impl PlanApp {
             // The 3D view has no selection to delete.
             return;
         }
+        let arrow = [
+            egui::Key::ArrowUp,
+            egui::Key::ArrowDown,
+            egui::Key::ArrowLeft,
+            egui::Key::ArrowRight,
+        ]
+        .into_iter()
+        .any(|a| k.is(a));
+        if arrow && self.view3d.active {
+            // The 3D view reads the arrows itself: they nudge the selection
+            // along the axes as seen from the camera, or walk Full Camera.
+            return;
+        }
         let res = self.tools.active_mut().key(&mut self.cx, k);
         self.finish_tool_call(ctx, &res);
         if !res.consumed {
@@ -961,6 +975,7 @@ impl PlanApp {
                 }
                 shell::docks::DockRequest::SwitchFloor(_) => {}
                 shell::docks::DockRequest::SelectCamera(id) => self.select_camera(id),
+                shell::docks::DockRequest::PanTo(at) => self.camera.center = at,
                 shell::docks::DockRequest::ActivatePlanView(i) => self.activate_plan_view(i),
                 shell::docks::DockRequest::Run(a) => self.apply(a),
             }
@@ -1594,6 +1609,8 @@ impl eframe::App for PlanApp {
         self.dock_panel(ctx);
         self.tools.frame(&mut self.cx, ctx);
         self.process_requests();
+        // The plan-view tabs are a panel of their own above the drawing area.
+        shell::docks::plan_view_tab_strip(ctx, &mut self.cx);
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
@@ -1601,6 +1618,9 @@ impl eframe::App for PlanApp {
                 if shell::layout_window::is_active() {
                     shell::layout_window::show_central(ctx, ui, &mut self.cx);
                 } else if self.view3d.frame(ctx, &mut self.cx) {
+                    // Dragging a selected object in the 3D view needs the
+                    // Select tool.
+                    self.view3d.select_tool = self.tools.active_id().base() == ToolId::Select;
                     shell::view3d_panel::show(ui, &mut self.cx, &mut self.view3d);
                 } else {
                     self.canvas(ctx, ui);

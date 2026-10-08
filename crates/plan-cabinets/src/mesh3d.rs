@@ -117,6 +117,7 @@ impl Builder {
             indices,
             material,
             object_id: Some(self.id),
+            color: None,
         });
     }
 

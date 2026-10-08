@@ -9,8 +9,9 @@ use crate::lighting::{AreaLight, Environment, PointLight};
 use crate::png::write_png;
 use crate::settings::RenderSettings;
 use crate::settings::Technique;
+use crate::shading::MATERIAL_COUNT;
 use crate::vec3::V3;
-use plan_3d::{build_scene, Scene};
+use plan_3d::{build_scene, Material, Scene};
 use plan_core::Project;
 use plan_materials::textures::TextureStore;
 use std::io;
@@ -29,14 +30,30 @@ pub struct Renderer {
     bvh: Bvh,
     diagonal: f32,
     textures: Arc<TextureStore>,
+    /// The `(material, colour)` pairs of meshes with their own `color`; a
+    /// triangle's material index `MATERIAL_COUNT + i` means `custom[i]`.
+    custom: Vec<(Material, [u8; 3])>,
 }
 
 impl Renderer {
     /// Flatten every mesh triangle into a BVH. Degenerate triangles are dropped.
+    /// A mesh with a [`plan_3d::Mesh::color`] is shaded with that colour as its
+    /// albedo in place of its material's.
     pub fn new(scene: &Scene) -> Renderer {
         let mut tris = Vec::with_capacity(scene.triangle_count());
+        let mut custom: Vec<(Material, [u8; 3])> = Vec::new();
         for mesh in &scene.meshes {
-            let material = mesh.material.index() as u32;
+            let material = match mesh.color {
+                None => mesh.material.index() as u32,
+                Some(rgb) => {
+                    let key = (mesh.material, rgb);
+                    let at = custom.iter().position(|c| *c == key).unwrap_or_else(|| {
+                        custom.push(key);
+                        custom.len() - 1
+                    });
+                    (MATERIAL_COUNT + at) as u32
+                }
+            };
             let vertex = |i: u32| V3::from_array(mesh.vertices[i as usize].position);
             for t in mesh.indices.as_chunks::<3>().0 {
                 tris.extend(Tri::new(vertex(t[0]), vertex(t[1]), vertex(t[2]), material));
@@ -49,6 +66,7 @@ impl Renderer {
             bvh: Bvh::build(tris),
             diagonal,
             textures: TextureStore::shared(),
+            custom,
         }
     }
 
@@ -129,7 +147,7 @@ impl Renderer {
             env,
             lights,
             settings,
-            &self.textures,
+            (&self.textures, &self.custom),
         );
         let (w, h) = (
             settings.width.max(1) as usize,

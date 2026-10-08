@@ -2,7 +2,8 @@
 //! and the break line Chief draws where the floor above cuts the flight.
 
 use crate::layout::{Curve, Flight, Layout, Uv};
-use crate::{SideKind, Stair};
+use crate::railing::{landing_edges, landing_rail_paths, plan_symbol_railing};
+use crate::{RailSide, SideKind, Stair};
 use plan_core::Point;
 
 /// Radius of the circle at the foot of the direction arrow.
@@ -49,7 +50,7 @@ pub fn plan_symbol(stair: &Stair, cut_at: Option<f64>) -> Vec<Stroke> {
     let layout = Layout::build(stair);
     let to_plan = |p: Uv| layout.frame.uv(p);
     if layout.is_landing {
-        return landing_symbol(&layout);
+        return landing_symbol(stair, &layout);
     }
     if let Some(c) = &layout.curve {
         return curved_symbol(stair, &layout, c, cut_at);
@@ -103,13 +104,20 @@ pub fn plan_symbol(stair: &Stair, cut_at: Option<f64>) -> Vec<Stroke> {
         }
     }
 
+    if let Some(apron) = layout.apron(&stair.params) {
+        out.push(Stroke::Polyline(
+            apron.into_iter().map(to_plan).collect(),
+            true,
+        ));
+    }
     out.extend(side_strokes(stair, &layout, last, cut));
     out.extend(direction_arrow(stair, &layout, last, cut.map(|(_, s)| s)));
     out
 }
 
-/// A landing: its outline and, for a rectangle, the crossed diagonals.
-fn landing_symbol(layout: &Layout) -> Vec<Stroke> {
+/// A landing: its outline and, for a rectangle, the crossed diagonals, and a
+/// railing symbol along each open side that has one.
+fn landing_symbol(stair: &Stair, layout: &Layout) -> Vec<Stroke> {
     let poly: Vec<Point> = layout
         .footprint
         .iter()
@@ -119,6 +127,26 @@ fn landing_symbol(layout: &Layout) -> Vec<Stroke> {
     if poly.len() == 4 {
         out.push(Stroke::Line(poly[0], poly[2]));
         out.push(Stroke::Line(poly[1], poly[3]));
+    }
+    let p = &stair.params;
+    for (side, kind) in [
+        (RailSide::Left, p.left_side),
+        (RailSide::Right, p.right_side),
+    ] {
+        if kind == SideKind::None {
+            continue;
+        }
+        for (a, b) in landing_edges(stair, side) {
+            if kind == SideKind::Railing {
+                out.extend(plan_symbol_railing(a, b, &p.railing));
+            } else {
+                // A wall or half wall: a closed band on the outside.
+                let t = if kind == SideKind::Wall { 4.5 } else { 5.5 };
+                let out_n = (b - a).normalized();
+                let n = Point::new(out_n.y, -out_n.x) * t;
+                out.push(Stroke::Polyline(vec![a, b, b + n, a + n], true));
+            }
+        }
     }
     out
 }
@@ -185,6 +213,36 @@ fn side_strokes(
                     let t = if kind == SideKind::Wall { 4.5 } else { 5.5 };
                     out.push(Stroke::Polyline(
                         vec![edge(0.0, 0.0), edge(len, 0.0), edge(len, t), edge(0.0, t)],
+                        true,
+                    ));
+                }
+            }
+        }
+        if kind == SideKind::Railing && last > 0 {
+            let side = if right_side {
+                RailSide::Right
+            } else {
+                RailSide::Left
+            };
+            let half = p.railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
+            let n = p.railing.newel.size / 2.0;
+            // The rail that carries across each landing or turn: a double
+            // line along the path and a newel square at each corner.
+            for path in landing_rail_paths(stair, side).iter().take(last) {
+                for w in path.windows(2) {
+                    let d = (w[1] - w[0]).normalized();
+                    let off = d.perp() * half;
+                    out.push(Stroke::Line(w[0] + off, w[1] + off));
+                    out.push(Stroke::Line(w[0] - off, w[1] - off));
+                }
+                for &c in &path[1..path.len() - 1] {
+                    out.push(Stroke::Polyline(
+                        vec![
+                            c + Point::new(n, n),
+                            c + Point::new(-n, n),
+                            c + Point::new(-n, -n),
+                            c + Point::new(n, -n),
+                        ],
                         true,
                     ));
                 }
@@ -259,6 +317,16 @@ fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>)
             layout.footprint.iter().map(|&p| to_plan(p)).collect(),
             true,
         ));
+    }
+
+    // The centre pole of a spiral stair.
+    if stair.params.spiral {
+        out.push(Stroke::Arc {
+            center: to_plan(c.center),
+            radius: c.inner.max(1.0),
+            start_deg: 0.0,
+            end_deg: 360.0,
+        });
     }
 
     // Direction arrow along the walking line, circle at the foot.

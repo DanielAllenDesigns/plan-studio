@@ -49,6 +49,32 @@ impl SheetSetup {
     }
 }
 
+thread_local! {
+    /// The colour mode View > Print Preview shows: the Print dialog's Color,
+    /// Grayscale or Black and white, as last previewed.
+    static PREVIEW_COLOR: std::cell::Cell<plan_layout::PrintColor> =
+        const { std::cell::Cell::new(plan_layout::PrintColor::Color) };
+}
+
+/// Sets the colour mode Print Preview shows.
+pub fn set_preview_color(c: plan_layout::PrintColor) {
+    PREVIEW_COLOR.with(|p| p.set(c));
+}
+
+/// The colour mode Print Preview shows.
+pub fn preview_color() -> plan_layout::PrintColor {
+    PREVIEW_COLOR.with(std::cell::Cell::get)
+}
+
+/// What the preview's caption says about the colour mode; empty for colour.
+pub fn preview_color_label(c: plan_layout::PrintColor) -> &'static str {
+    match c {
+        plan_layout::PrintColor::Color => "",
+        plan_layout::PrintColor::Grayscale => "Grayscale",
+        plan_layout::PrintColor::BlackWhite => "Black and white",
+    }
+}
+
 /// The center of the floor's walls (the middle of their bounding box), or
 /// the origin when there are none.
 pub fn plan_center(floor: &Floor) -> Point {

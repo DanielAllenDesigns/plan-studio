@@ -9,7 +9,7 @@ use crate::mesh::{Material, Mesh};
 use crate::wall::Hole;
 use crate::windows;
 use crate::SceneOptions;
-use plan_core::{Opening, OpeningKind, OpeningStyle, Wall, WallKind};
+use plan_core::{Opening, OpeningKind, OpeningStyle, Project, Wall, WallKind};
 
 /// The mulled unit an opening belongs to (DW-51, DW-52): a window beside a
 /// window, or a door beside its sidelites. The members share one frame post
@@ -25,6 +25,11 @@ pub struct Unit {
     pub h: (f64, f64),
     /// A door is one of the members.
     pub door: bool,
+    /// This opening stands over another member (a transom over a door): the
+    /// member below draws the casing of the whole unit.
+    pub covered: bool,
+    /// Another member stands over this one.
+    pub capped: bool,
 }
 
 impl Unit {
@@ -36,6 +41,8 @@ impl Unit {
             span: (hole.s0, hole.s1),
             h: (hole.h0, hole.h1),
             door: opening.kind == OpeningKind::Door,
+            covered: false,
+            capped: false,
         }
     }
 
@@ -53,6 +60,14 @@ impl Unit {
             unit.span = (unit.span.0.min(h.s0), unit.span.1.max(h.s1));
             unit.h = (unit.h.0.min(h.h0), unit.h.1.max(h.h1));
             unit.door |= o.kind == OpeningKind::Door;
+            // Standing over a member: shares its stretch of wall, begins at
+            // or above its top.
+            if h.s0 < hole.s1 - 1e-6 && h.s1 > hole.s0 + 1e-6 && hole.h0 >= h.h1 - 1e-6 {
+                unit.covered = true;
+            }
+            if h.s0 < hole.s1 - 1e-6 && h.s1 > hole.s0 + 1e-6 && h.h0 >= hole.h1 - 1e-6 {
+                unit.capped = true;
+            }
             if h.s1 <= hole.s0 + 1e-6 {
                 unit.left = true;
             }
@@ -67,6 +82,21 @@ impl Unit {
     /// casing: the first member from the wall start.
     pub fn draws_head(&self) -> bool {
         !self.left
+    }
+}
+
+impl SceneOptions {
+    /// The options the editor's 3D view builds with: the plan's own opening
+    /// display (`Project::opening_display`: casing, jambs, sills and
+    /// thresholds on or off, doors open or closed).
+    pub fn for_project(project: &Project) -> Self {
+        let d = project.opening_display;
+        Self {
+            doors_open: d.doors_open,
+            show_casing: d.casing,
+            open_angle_deg: d.open_angle_deg,
+            ..Self::default()
+        }
     }
 }
 
@@ -167,6 +197,35 @@ impl Ctx<'_> {
         match (self.opening.kind, self.opening.effective_style()) {
             (OpeningKind::Window, OpeningStyle::Sliding) => OpeningStyle::SlidingWindow,
             (_, s) => s,
+        }
+    }
+
+    /// How far this opening is shown open, `0..=1`: its own "Show Open in
+    /// 3D" slider, else all the way when the plan shows its doors open.
+    pub fn open_fraction(&self) -> f64 {
+        let spec = &self.opening.extras.spec;
+        if spec.show_open_in_3d {
+            spec.open_fraction.clamp(0.0, 1.0)
+        } else if self.opts.doors_open {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// The angle a hinged leaf stands open at, degrees: the opening's Swing
+    /// Angle scaled by its Open slider, else the plan's open angle.
+    pub fn open_angle(&self) -> f64 {
+        let spec = &self.opening.extras.spec;
+        if spec.show_open_in_3d {
+            self.opening
+                .extras
+                .swing_angle_deg
+                .unwrap_or(90.0)
+                .clamp(0.0, 180.0)
+                * self.open_fraction()
+        } else {
+            self.opts.display().open_angle_deg
         }
     }
 
@@ -286,12 +345,22 @@ pub fn build_opening_in_wall(
     }
     if opts.show_casing && opening.style != OpeningStyle::WallNiche {
         casing::add_casing(&ctx, &mut set);
+        casing::add_jambs(&ctx, &mut set);
         if wall.kind == WallKind::Exterior {
             casing::add_threshold(&ctx, &mut set);
         }
     }
     casing::add_lintel(&ctx, &mut set);
     casing::add_exterior_sill(&ctx, &mut set);
-    casing::add_shutters(&ctx, &mut set);
-    set.finish(Some(opening.id))
+    let mut meshes = set.finish(Some(opening.id));
+    // Shutters carry their paint color on the mesh (the nearest scene
+    // material is only what an export without colors falls back to).
+    let mut shutters = MeshSet::default();
+    casing::add_shutters(&ctx, &mut shutters);
+    let paint = opening.extras.spec.shutters.color;
+    meshes.extend(shutters.finish(Some(opening.id)).into_iter().map(|mut m| {
+        m.color = Some(paint);
+        m
+    }));
+    meshes
 }

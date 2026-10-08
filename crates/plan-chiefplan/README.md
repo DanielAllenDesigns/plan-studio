@@ -17,7 +17,7 @@ Read-only reader for Chief Architect `.plan` and `.layout` template files, so Pl
 | `values` | Phase B: per-layer colour, line weight, display and lock flags; wall stack search; `calibrate` across files |
 | `decode` | Phase C: the object stream. `TemplateSummary` with wall types (layer stacks), text styles, rich text defaults, dimension defaults, materials, default heights, paper sizes, layout info. Filled into `TemplateInventory::summary` |
 | `bridge` | `seed_defaults(&inv, PlanDefaults) -> TemplateSeed` (`.defaults` is the seeded `PlanDefaults`), `to_json`; `wall_type_defs`, `text_styles_from_template`, `dimension_defaults_from_template` |
-| `import` | Phase D: `import_plan(path, &ImportOptions) -> ImportResult { project, report }`; submodules `tree` (object nesting), `floors`, `walls`, `openings`, `rooms`, `dims`, `texts` |
+| `import` | Phase D: `import_plan(path, &ImportOptions) -> ImportResult { project, report }`; submodules `tree` (object nesting), `floors`, `walls`, `openings`, `rooms`, `dims`, `texts`, and the object stage: `blocks` (placement record), `lines` (outline chains), `cabinets`, `symbols`, `electrical`, `stairs`, `roofs`, `labels` |
 | `redact` | client-string redaction |
 | `lib.rs` | `build_inventory`, `scan_daniel_templates`, `write_inventory_json(dir, out)` |
 
@@ -28,7 +28,7 @@ cargo run -p plan-chiefplan --example inventory -- [dir] out.json # redacted inv
 cargo run --release -p plan-chiefplan --example summary -- [file] [--json]  # Phase C decode of one template
 cargo run --release -p plan-chiefplan --example import -- house.plan [--json] [--no-seed] [--project out.json]  # Phase D import
 cargo run --release -p plan-chiefplan --example object_survey -- house.plan   # class histogram of a project
-CHIEF_PLAN_A=... cargo test -p plan-chiefplan --release --test real_import -- --ignored --nocapture   # real projects (env vars name the files; skips if unset)
+CHIEF_PLAN_A=... cargo test -p plan-chiefplan --release --test real_import --test real_objects -- --ignored --nocapture   # real projects (env vars name the files; skips if unset)
 ```
 
 ## Phase A: what the scanner relies on
@@ -126,7 +126,9 @@ Decoded numbers disagree with two built-ins in `plan-core`: the stock Chief temp
 
 `import::import_plan(path, &ImportOptions::default())` reads a project `.plan` (X17 or X18) into a `plan_core::Project`: floors (elevation, ceiling), walls with their own wall type definitions (thickness from the layer stack, exterior side, class, layer, height, curved walls), doors and windows (centre, width, height, sill, hinge side and swing for doors), named rooms with anchors, linear dimension strings and text notes. The report lists counts per kind, per floor, the classes on the floors that were not imported (with a label and confidence) and the warnings (assumed dimension offsets, positional floor names, undecodable variants). The format, evidence and confidence of every field are in `docs/chief-plan-format.md`. Nothing is written back, and tests build their own bytes; the real-project tests are `#[ignore]` and skip cleanly.
 
-Real results (an X18 construction set, job A in `docs/chief-plan-format.md`): 4 floors, 228 walls (one curved), 46 door objects, 34 windows (the 34 of its window schedule), 19 named rooms, 174 dimensions, 137 notes, in 0.3 s. Not imported: cabinets, library symbols, roof planes, stairs, electrical devices, framing, moldings (classes identified by counts and strings only) and everything that has no Plan Studio equivalent.
+Real results (an X18 construction set, job A in `docs/chief-plan-format.md`): 4 floors, 228 walls (one curved), 46 door objects, 34 windows (the 34 of its window schedule), 19 named rooms, 174 dimensions, 137 notes, in 0.3 s.
+
+The object stage adds, on the same job: 65 cabinet boxes and 2 island countertops (`Floor.cabinets`), 62 library objects (`Floor.symbols`, named `chief-plan.<name>` because the plan stores no catalog link; `ImportOptions::symbol_resolver` maps a name and tags to a real catalog id), 401 electrical devices with a host wall for all 268 wall devices (`Floor.electrical`), 7 stair flights and 3 landings (`Floor.stairs`), 31 roof planes with pitch and baseline height (`Floor.roofs`), and 7 more room names from typed labels. Cabinets, devices, stairs and roofs are written as the JSON their owning crates serialize (this crate cannot depend on them); the decoders and their evidence are in `docs/chief-plan-format.md` sections 4.8 to 4.14. Not imported: framing, moldings, molding polylines, floor/ceiling surfaces, circuits and switch connections, stair stacking heights and everything that has no Plan Studio equivalent. Each stage has an `ImportOptions` switch.
 
 ## Bridge
 
@@ -152,7 +154,7 @@ Gaps found while bridging (plan-core is read-only for this crate, so the bridge 
 
 ## Open questions
 
-- Phase D: floor names, door style (doorway vs hinged), window kind, the dimension line position, room labels (class 48), text size and rotation, and the position fields of cabinets (class 15), roof planes (18), stairs and library symbols; X17 rooms and dimensions. See `docs/chief-plan-format.md` section 6.
+- Phase D: floor names, door style (doorway vs hinged), window kind, the dimension line position, text size and rotation, cabinet labels and exact face layouts, the catalog link of placed library objects, electrical circuits and switch connections, the stacking heights of stair flights, per-edge hips and gables of roof planes. See `docs/chief-plan-format.md` section 6.
 
 - Per-floor elevation and ceiling are now found in the class 30 floor objects (Daniel's template: foundation -125.875/109.125, first 0/121.125, second 137.875/109.125, third 252.5/97.125); still open: where foundation, rough ceiling and stem wall heights live, what the floor header's third value (111.625, 111.625, 114.5, 23.25) is, and what the second room-type `f64` (23.25, 83.375, 84.875, 4.0) means.
 - Text colour, arrow style, leader style; the 12 text style flag bytes.

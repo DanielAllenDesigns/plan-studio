@@ -157,6 +157,39 @@ pub(crate) fn offset_polygon(poly: &[Point], d: f64) -> Option<Vec<Point>> {
     Some(res)
 }
 
+/// A counter-clockwise polygon with edge `i` (`pts[i] -> pts[i + 1]`) moved
+/// outward by `shifts[i]` (inward for a negative shift; missing entries are
+/// zero). Each new corner is where the two moved edge lines meet; two
+/// parallel edges slide the corner by the larger shift. The vertex count and
+/// order stay the same.
+pub(crate) fn offset_edges(pts: &[Point], shifts: &[f64]) -> Vec<Point> {
+    let n = pts.len();
+    let shift = |i: usize| shifts.get(i).copied().unwrap_or(0.0);
+    // Edge line i: a point on it and its direction.
+    let line = |i: usize| {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let d = b.sub(a).normalized();
+        (a.add(Point::new(d.y, -d.x).scale(shift(i))), d)
+    };
+    (0..n)
+        .map(|i| {
+            let prev = (i + n - 1) % n;
+            let ((po, dp), (qo, dq)) = (line(prev), line(i));
+            let denom = dp.cross(dq);
+            if denom.abs() < 1e-9 {
+                let (k, d) = if shift(i).abs() >= shift(prev).abs() {
+                    (shift(i), dq)
+                } else {
+                    (shift(prev), dp)
+                };
+                pts[i].add(Point::new(d.y, -d.x).scale(k))
+            } else {
+                po.add(dp.scale(qo.sub(po).cross(dq) / denom))
+            }
+        })
+        .collect()
+}
+
 /// Distance from `p` to the boundary of `poly`.
 pub(crate) fn boundary_dist(p: Point, poly: &[Point]) -> f64 {
     let n = poly.len();

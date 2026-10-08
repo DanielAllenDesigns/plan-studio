@@ -293,6 +293,12 @@ impl PrintDialog {
         self.s.copies.max(1)
     }
 
+    /// Picks the colour mode as the radio buttons would (tests).
+    #[cfg(test)]
+    pub fn set_color(&mut self, color: PrintColor) {
+        self.s.color = color;
+    }
+
     /// The print options the dialog describes.
     pub fn options(&self) -> PrintOptions {
         let s = &self.s;

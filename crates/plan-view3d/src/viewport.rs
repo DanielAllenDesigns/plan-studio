@@ -6,13 +6,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use eframe::egui::{self, Key, PointerButton, Sense};
 use eframe::egui_glow;
 use eframe::glow;
-use plan_3d::{Bounds, Scene};
+use plan_3d::{Bounds, Mesh, Scene};
 use plan_materials::textures::TextureStore;
 
 use crate::camera::{Camera, CameraMode};
 use crate::gpu::{FrameParams, GpuScene};
 use crate::quality::{nearest_lights, Look, ViewLight, ViewSettings, MAX_POINT_LIGHTS};
-use crate::texturing::{self, ImageTexture};
+use crate::texturing::{self, ImageTexture, SurfaceTexture};
 use crate::walkthrough::Walkthrough;
 
 /// Orbit sensitivity, radians per dragged pixel.
@@ -77,6 +77,14 @@ pub struct Viewport3d {
     last_scene: Option<Arc<Scene>>,
     pending_pictures: Arc<Mutex<Option<Vec<ImageTexture>>>>,
     last_pictures: Vec<ImageTexture>,
+    pending_overlay: Arc<Mutex<Option<Arc<Vec<Mesh>>>>>,
+    last_overlay: Arc<Vec<Mesh>>,
+    pending_surface: Arc<Mutex<Option<Vec<SurfaceTexture>>>>,
+    last_surface: Vec<SurfaceTexture>,
+    /// While true a drag does not move the camera (the caller is using the
+    /// drag for something else, such as moving an object); scrolling still
+    /// zooms.
+    pub drag_locked: bool,
     store: Arc<TextureStore>,
     context_lost: Arc<AtomicBool>,
     /// Material textures the last frame still had to upload.
@@ -135,6 +143,11 @@ impl Viewport3d {
             last_scene: None,
             pending_pictures: Arc::new(Mutex::new(None)),
             last_pictures: Vec::new(),
+            pending_overlay: Arc::new(Mutex::new(None)),
+            last_overlay: Arc::new(Vec::new()),
+            pending_surface: Arc::new(Mutex::new(None)),
+            last_surface: Vec::new(),
+            drag_locked: false,
             store,
             context_lost: Arc::new(AtomicBool::new(false)),
             pending_textures: Arc::new(AtomicUsize::new(0)),
@@ -198,6 +211,47 @@ impl Viewport3d {
     pub fn set_image_textures(&mut self, images: Vec<ImageTexture>) {
         self.last_pictures = images.clone();
         *lock(&self.pending_pictures) = Some(images);
+    }
+
+    /// Set the overlay: meshes drawn after, and over, the cached scene (the
+    /// selection tint, the hover tint, billboards that turn with the camera).
+    /// The list replaces the previous one. Unlike [`Viewport3d::queue_scene`]
+    /// it does not touch the cached scene, the camera framing or the shadow
+    /// map, and its meshes cast no shadows, so it is cheap to call whenever
+    /// the selection or the pointer changes. A new scene clears the overlay
+    /// on the GPU; the last overlay is put back with it.
+    pub fn set_overlay(&mut self, meshes: Vec<Mesh>) {
+        let meshes = Arc::new(meshes);
+        self.last_overlay = Arc::clone(&meshes);
+        *lock(&self.pending_overlay) = Some(meshes);
+    }
+
+    /// The meshes of the overlay last set.
+    pub fn overlay(&self) -> &[Mesh] {
+        &self.last_overlay
+    }
+
+    /// Meshes in the scene last handed over (not counting the overlay).
+    pub fn scene_mesh_count(&self) -> usize {
+        self.last_scene.as_ref().map_or(0, |s| s.meshes.len())
+    }
+
+    /// Set the bitmaps of painted materials (see [`SurfaceTexture`]); the
+    /// list replaces the previous one. Uploaded on the next paint, only for
+    /// keys not already resident.
+    pub fn set_surface_textures(&mut self, textures: Vec<SurfaceTexture>) {
+        self.last_surface = textures.clone();
+        *lock(&self.pending_surface) = Some(textures);
+    }
+
+    /// Painted-material bitmaps resident on the GPU.
+    pub fn uploaded_surface_textures(&self) -> usize {
+        lock(&self.gpu).surface_texture_count()
+    }
+
+    /// Overlay meshes resident on the GPU.
+    pub fn uploaded_overlay_meshes(&self) -> usize {
+        lock(&self.gpu).overlay_count()
     }
 
     /// Tell the viewport the OpenGL context was replaced or lost: every GL
@@ -303,6 +357,8 @@ impl Viewport3d {
     pub fn destroy(&mut self, gl: &glow::Context) {
         *lock(&self.pending) = None;
         *lock(&self.pending_pictures) = None;
+        *lock(&self.pending_overlay) = None;
+        *lock(&self.pending_surface) = None;
         lock(&self.gpu).destroy(gl);
     }
 
@@ -353,27 +409,44 @@ impl Viewport3d {
         let gpu = Arc::clone(&self.gpu);
         let pending = Arc::clone(&self.pending);
         let pending_pictures = Arc::clone(&self.pending_pictures);
+        let pending_overlay = Arc::clone(&self.pending_overlay);
+        let pending_surface = Arc::clone(&self.pending_surface);
         let lost = Arc::clone(&self.context_lost);
         let (last_scene, last_pictures) = (self.last_scene.clone(), self.last_pictures.clone());
+        let (last_overlay, last_surface) =
+            (Arc::clone(&self.last_overlay), self.last_surface.clone());
         let pending_textures = Arc::clone(&self.pending_textures);
         let callback = egui_glow::CallbackFn::new(move |info, painter| {
             let gl = painter.gl().as_ref();
             let mut gpu = lock(&gpu);
             let mut scene = lock(&pending).take();
             let mut pictures = lock(&pending_pictures).take();
+            let mut surface = lock(&pending_surface).take();
+            let mut overlay = lock(&pending_overlay).take();
             if lost.swap(false, Ordering::SeqCst) || gpu.context_was_replaced(gl) {
                 // The context's objects are gone: start over from the last
-                // scene and pictures.
+                // scene, pictures, painted bitmaps and overlay.
                 gpu.forget_context();
                 scene = scene.or_else(|| last_scene.clone());
                 pictures = pictures.or_else(|| Some(last_pictures.clone()));
+                surface = surface.or_else(|| Some(last_surface.clone()));
             }
             match scene {
-                Some(scene) => gpu.upload(gl, &scene),
+                Some(scene) => {
+                    gpu.upload(gl, &scene);
+                    // The upload cleared the overlay: put the last one back.
+                    overlay = overlay.or_else(|| Some(Arc::clone(&last_overlay)));
+                }
                 None => gpu.ensure_program(gl),
             }
             if let Some(list) = pictures {
                 gpu.set_pictures(gl, &list);
+            }
+            if let Some(list) = surface {
+                gpu.set_surface_textures(gl, &list);
+            }
+            if let Some(meshes) = overlay {
+                gpu.set_overlay(gl, &meshes);
             }
             let vp = info.viewport_in_pixels();
             let clip = info.clip_rect_in_pixels();
@@ -422,7 +495,9 @@ impl Viewport3d {
             || (primary && shift);
         let mode = self.camera.mode;
 
-        if pan_drag || (primary && mode.is_orthographic()) {
+        if self.drag_locked {
+            // The drag belongs to the caller.
+        } else if pan_drag || (primary && mode.is_orthographic()) {
             self.camera.pan(delta.x, delta.y, height_px);
         } else if primary {
             if mode == CameraMode::FullCamera {
@@ -534,6 +609,7 @@ mod tests {
                 indices: vec![0, 1, 2],
                 material: Material::Floor,
                 object_id: None,
+                color: None,
             }],
         };
         let mut vp = Viewport3d::new();

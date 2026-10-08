@@ -448,6 +448,10 @@ pub struct Project {
     /// Materials); see [`crate::object_materials`].
     #[serde(default)]
     pub object_materials: Vec<crate::object_materials::ObjectMaterial>,
+    /// How the 3D view shows doors and windows: casing on or off, doors
+    /// open or closed (`SceneOptions::for_project`).
+    #[serde(default)]
+    pub opening_display: crate::openings::OpeningView3d,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -474,6 +478,7 @@ impl Project {
             text_macros: crate::text_styles::TextMacros::default(),
             note_types: crate::text_styles::NoteTypes::default(),
             object_materials: Vec::new(),
+            opening_display: crate::openings::OpeningView3d::default(),
         }
     }
 
@@ -614,7 +619,7 @@ impl Project {
             OpeningKind::Window => Opening::default_window(id, wall_id, center_offset),
         };
         let f = &mut self.floors[floor];
-        let wall_len = f.wall(wall_id)?.length();
+        let wall_len = f.wall(wall_id)?.path_length();
         let half = opening.width * 0.5;
         if wall_len < opening.width + 2.0 * OPENING_MARGIN {
             return None;
@@ -622,10 +627,9 @@ impl Project {
         opening.center_offset = opening
             .center_offset
             .clamp(half + OPENING_MARGIN, wall_len - half - OPENING_MARGIN);
-        let overlaps = f.openings_on(wall_id).any(|o| {
-            opening.start_offset() < o.end_offset() + OPENING_MARGIN
-                && opening.end_offset() > o.start_offset() - OPENING_MARGIN
-        });
+        let overlaps = f
+            .openings_on(wall_id)
+            .any(|o| crate::openings::openings_conflict(&opening, o, OPENING_MARGIN));
         if overlaps {
             return None;
         }

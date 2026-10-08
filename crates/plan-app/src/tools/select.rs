@@ -35,9 +35,7 @@ use eframe::egui::{self, Key, Pos2, Rect, Shape, Stroke};
 use plan_core::cad::CadItem;
 use plan_core::details::DetailsLayer;
 use plan_core::foundation::FoundationLayer;
-use plan_core::geometry::{
-    dist_to_segment, point_in_polygon, project_on_segment, segment_intersection, Point,
-};
+use plan_core::geometry::{point_in_polygon, segment_intersection, Point};
 use plan_core::{Id, Jamb, OpeningKind, Project, WallEnd};
 
 /// Pixels the pointer must travel before a press becomes a drag (S-26).
@@ -190,7 +188,11 @@ fn slide_opening_by(cx: &mut EditorContext, id: Id, delta: Point) {
     let Some(o) = cx.floor().openings.iter().find(|o| o.id == id).cloned() else {
         return;
     };
-    let Some(dir) = cx.floor().wall(o.wall_id).map(|w| w.direction()) else {
+    let Some(dir) = cx
+        .floor()
+        .wall(o.wall_id)
+        .map(|w| w.tangent_along(o.center_offset))
+    else {
         return;
     };
     let center = snap_unit_round(o.center_offset + delta.dot(dir), unit);
@@ -376,10 +378,9 @@ fn objects_in_rect(cx: &EditorContext, a: Point, b: Point) -> Vec<ObjectRef> {
             out.push(r);
         }
         for o in floor.openings_on(w.id) {
-            let n = w.normal().scale(w.thickness * 0.5);
-            let (pa, pb) = (w.point_at(o.start_offset()), w.point_at(o.end_offset()));
+            let half = w.thickness * 0.5;
             let r = ObjectRef::Opening(o.id);
-            if usable(r) && hit(&[pa.add(n), pb.add(n), pb.sub(n), pa.sub(n)]) {
+            if usable(r) && hit(&w.band(o.start_offset(), o.end_offset(), -half, half)) {
                 out.push(r);
             }
         }
@@ -555,15 +556,23 @@ impl SelectTool {
                     .walls
                     .iter()
                     .filter(|w| w.id != o.wall_id && cx.layers().is_visible(&w.layer))
-                    .map(|w| (w, dist_to_segment(p.world, w.start, w.end)))
+                    .map(|w| (w, w.closest_point(p.world).0.dist(p.world)))
                     .filter(|(_, d)| *d <= tol)
                     .min_by(|x, y| x.1.total_cmp(&y.1))
-                    .map(|(w, _)| (w.id, w.length(), w.start, w.end));
-                if let Some((wid, len, s0, s1)) = other {
-                    let (t, _) = project_on_segment(p.world, s0, s1);
-                    let center = snap_unit_round(t * len, unit);
+                    .map(|(w, _)| (w.id, w.locate(p.world).0));
+                if let Some((wid, along)) = other {
+                    let center = snap_unit_round(along, unit);
                     ops::place_opening_at(&mut cx.project, fl, id, wid, center);
                 } else if let Some(center) = typed_slide_center(cx, id) {
+                    cx.project.slide_opening(fl, id, center);
+                } else if let Some(along) = cx
+                    .floor()
+                    .wall(o.wall_id)
+                    .filter(|w| w.is_curved())
+                    .map(|w| w.locate(p.world).0 - w.locate(a.start).0)
+                {
+                    // On a curved wall the opening follows the pointer along the arc.
+                    let center = snap_unit_round(o.center_offset + along, unit);
                     cx.project.slide_opening(fl, id, center);
                 } else {
                     slide_opening_by(cx, id, total);
@@ -577,7 +586,7 @@ impl SelectTool {
                 let Some(w) = cx.floor().wall(o.wall_id).cloned() else {
                     return;
                 };
-                let t = p.world.sub(w.start).dot(w.direction());
+                let t = w.locate(p.world).0;
                 let mut edge = if alt { t } else { snap_unit_round(t, unit) };
                 // With the standard widths on, the width lands on the nearest
                 // manufacturer width of the style (DW-27); Alt skips it.
@@ -884,6 +893,10 @@ impl SelectTool {
         }
         cx.last_snap = None;
         cx.mark_dirty();
+        // A Replicate drag may hand its move to Transform/Replicate Object.
+        if matches!(a.op, Op::Group) {
+            behaviors::finish_group(cx);
+        }
         if a.original.to_json().ok() == cx.project.to_json().ok() {
             cx.cancel_change();
             return ToolResult::consumed();

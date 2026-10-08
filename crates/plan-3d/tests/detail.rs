@@ -207,8 +207,9 @@ fn exterior_doors_get_a_threshold_only_with_casing() {
     let without = tris(&build_scene(&p), id, Material::Trim);
     let with = tris(&build_scene_with(&p, &casing_on()), id, Material::Trim);
     assert_eq!(without, 0);
-    // Two legs + head on two faces (6 boxes) plus the threshold.
-    assert_eq!(with, 7 * 12);
+    // Two legs + head on two faces (6 boxes), the jamb boards beside the
+    // leaf (legs and head, on two sides: 6 more) and the threshold.
+    assert_eq!(with, 13 * 12);
 }
 
 #[test]
@@ -300,6 +301,24 @@ fn railing_wall_has_ceil_length_over_96_plus_one_posts() {
             .iter()
             .all(|m| m.material != Material::WallInterior));
     }
+}
+
+#[test]
+fn a_railing_wall_stands_on_its_bottom_offset() {
+    let mut p = Project::new("r");
+    p.add_wall(
+        0,
+        Point::ZERO,
+        Point::new(120.0, 0.0),
+        4.5,
+        100.0,
+        WallKind::Interior,
+    );
+    p.floors[0].walls[0].flags.railing = true;
+    p.floors[0].walls[0].bottom_offset = 12.0;
+    let (lo, hi) = build_scene(&p).bounds().unwrap();
+    assert!((lo[1] - 12.0).abs() < 1e-4, "{lo:?}");
+    assert!((hi[1] - 48.0).abs() < 1e-4, "{hi:?}");
 }
 
 #[test]

@@ -329,6 +329,9 @@ impl TextForm {
                 self.set_format(|r| set(r, on));
             }
         }
+        // The installed face the style's font and these toggles map to.
+        let (bold, italic) = (self.all_runs(|r| r.bold), self.all_runs(|r| r.italic));
+        crate::fonts::face_preview(ui, &crate::fonts::spec_named(&self.font, bold, italic));
         ui.weak("Mixed formats inside one text are typed as markup on the Text tab.");
     }
 

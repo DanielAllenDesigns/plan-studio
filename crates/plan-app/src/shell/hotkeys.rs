@@ -396,12 +396,45 @@ impl HotkeyMap {
         let mut daniel: Bindings = BTreeMap::new();
         let mut unmapped = Vec::new();
         let mut stats = DanielStats::default();
+        // Off the Mac, Control and Command fold onto one Ctrl key, so two of
+        // Daniel's chords can land on the same sequence (Control+Z Down One
+        // Floor and Command+Z Undo). The Command chord wins, matching Chief's
+        // Windows defaults; the loser is reported as unmapped.
+        let mut owner: HashMap<Vec<Chord>, (String, bool)> = HashMap::new();
         for pb in to_plan_studio_bindings(&cfg.hotkeys) {
             stats.named += 1;
             let name = canonical(&pb.command_name).to_string();
             let seq: Option<Vec<Chord>> = pb.keys.iter().map(Chord::from_config).collect();
+            let uses_command = pb.keys.iter().any(|k| k.meta);
             match (commands.iter().find(|c| c.name == name), seq) {
                 (Some(cmd), Some(seq)) => {
+                    if let Some((prev_name, prev_command)) = owner.get(&seq).cloned() {
+                        if prev_name != name {
+                            let (loser, loser_text) = if uses_command && !prev_command {
+                                // The new chord takes over; the previous owner loses it.
+                                if let Some(list) = daniel.get_mut(&prev_name) {
+                                    list.retain(|s| *s != seq);
+                                }
+                                owner.insert(seq.clone(), (name.clone(), uses_command));
+                                push_unique(daniel.entry(name.clone()).or_default(), seq);
+                                stats.mapped += 1;
+                                if cmd.is_live() {
+                                    stats.live += 1;
+                                }
+                                stats.mapped -= 1;
+                                (prev_name, pb.chord_text.clone())
+                            } else {
+                                (pb.command_name.clone(), pb.chord_text.clone())
+                            };
+                            stats.unmapped += 1;
+                            unmapped.push(UnmappedBinding {
+                                name: loser,
+                                chord_text: format!("{loser_text} (shared off macOS)"),
+                            });
+                            continue;
+                        }
+                    }
+                    owner.insert(seq.clone(), (name.clone(), uses_command));
                     stats.mapped += 1;
                     if cmd.is_live() {
                         stats.live += 1;

@@ -4,6 +4,8 @@
 >
 > Builder update (2026-10-08, roofs round): built since the audit, each with tests: **dormer overhang** (`DormerSpec::overhang`, eaves and rakes pushed out per edge with hips and valleys kept on their lines, fascia/rake boards/soffit from the eave detail, the hole stays the wall footprint); **gable triangle** above an exploded gable dormer's front wall (Full Gable wall, rises to the dormer roof); a **roofless room across planes** gets a hole piece in every plane it reaches (`plan_roof::hole_pieces`); the **flat roof overhangs** its exterior edges (`flat_roof_plane_with_overhang`); the **Dutch gable's vertical face** (`build_roof_with_faces`, a wall-like face stored with the roof, not a plane); **ceiling planes mitre** where they meet (`ceiling_plane_meshes_joined`); roof plane **edge, pitch-arrow and rotate handles** in Edit Roof Planes (RF-38). Still open: a dormer that spans two planes, a break per edge on a staged roof, curved roofs, Build Roof per group (framing).
 
+> Builder update (2026-10-08, roofs round 14): **Roof Styles** in Build Roof (Hip, Gable, Shed, Gambrel, Dutch Gable, Half Hip) write the exterior walls' roof directives before the build (`roof_view::{RoofStyle, apply_style}`, one undo step with the build), and the Edit toolbar sets Hip / Full Gable / High Shed / Knee / Dutch Gable Wall on a selection of exterior walls (`set_walls_roof_kind`, `run_wall_command`); a **half hip** is a Full Gable wall with an Upper Pitch (its Starts at Height is where the small hip begins; `plan-roof/src/halfhip.rs`). **Wings** (RF-9): rooms standing at different plate heights, and first-floor rooms the floor above does not cover, each get their own roof at their own plate (`floor_levels`, `wing_regions`, `region_roof`, `make_wing_planes`); an edge against a taller wall or an upper floor rises to it as a high shed with no overhang; Auto Rebuild watches the walls of the floors below (`project_signature`). **Extend Slope Downward** reaches down to the wall below when the wall gives no drop (`wall_below_drop`). **Roof plane editing**: pitch, edge and rotate handles listed under Select (`HandleKind::{Pitch, EdgeMove}`, `roof_view::apply_handle_drag`), **Edit All Roof Planes** (`AllPlanesDialog`, `AllPlanesEdit`), polygon roof holes (click corners; `add_hole_polygon`, pieces across a ridge), **Structure > Define** on the plane (`RoofStructure`; thickness and rafter size reach 3D through `EaveOverrides`). **Dormers**: the Auto Dormer tools outline the dormer under the pointer and a dragged dormer moves onto the plane it is carried over (`slide_dormer`). **Bay, box and bow windows** have a hip or shed roof (`plan_3d::bay_roof_into`). Still open: a dormer spanning two planes, a break per edge on a staged roof, curved roofs, Build Roof per group (framing), the Select tool's drag of the new plane handles (select.rs), pitch / overhang / none options for the bay roof (fields on the opening).
+
 Scope: Build Roof dialog, auto roof generation rules, per-wall roof directives,
 manual roof planes and their edit handles, Join Roof Planes, Roof Hole, Skylight,
 Gable/Roof Line, dormers, roof returns, ceiling planes, attic walls, and roof
@@ -351,3 +353,13 @@ underlayment, ridge cap, gutters, fascia) and the roof pitch diagram.
 | RF-60 Roof quantities to Materials List | `materials_list` has no roof lines | Med | Add roof area, ridge/hip/valley length, fascia length from planes |
 | 3D roof mesh with correct materials, thickness | `Material::Roof` unused | Critical | `plan-3d::roof` module producing top, underside, edges per plane |
 | Test coverage vs Chief for tricky footprints (concave, 45-degree walls, disjoint) | Tests cover rect, L, T, U, mixed pitch | Med | Add curved-wall footprints (facets), 45-degree hips, multi-building |
+
+<!-- coverage-audit:start -->
+## Coverage audit additions (2026-10-08)
+
+Rows added by the Round 14 coverage audit (`docs/chief-feature-coverage.md`): Chief X18 features found in the menu, toolbar, sub-tool and dialog captures, or known from the product, that no row above covered. Status comes from a code search, not a Chief session; "verify in Chief" marks behavior known only from the product. Variants of one flyout or tab share one row.
+
+| ID | Chief behavior | Status | Evidence |
+|---|---|---|---|
+| RF-61 | Curved roofs / curved roof planes: Barrel and bell-curve roof planes on curved baselines. (Not captured; verify in Chief.) | Missing | roof planes are planar; curved walls give faceted eaves only (grep curved roof finds nothing) |
+<!-- coverage-audit:end -->

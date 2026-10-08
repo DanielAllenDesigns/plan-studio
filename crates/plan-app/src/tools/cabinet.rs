@@ -50,8 +50,8 @@ use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, EditorReq
 use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Key, Pos2};
 use plan_cabinets::{
-    fit_between, wall_polygon, Backsplash, BlindSide, Cabinet, CabinetKind, CabinetPreset,
-    CornerSpec, CornerTreatment, EdgeProfile, FaceLayout, HandleStyle,
+    fit_between, push_run, run_bounds, wall_polygon, Backsplash, BlindSide, Cabinet, CabinetKind,
+    CabinetPreset, CornerSpec, CornerTreatment, EdgeProfile, FaceLayout, HandleStyle,
 };
 use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
 use plan_core::{Floor, Id};
@@ -78,6 +78,9 @@ pub const FIT_TOLERANCE: f64 = 2.0;
 const ISLAND_REACH: f64 = 6.0;
 /// A blind cabinet hides its end this close to a perpendicular wall, in.
 const BLIND_REACH: f64 = 30.0;
+/// A resized edge dragged this close to a wall or the next cabinet snaps to
+/// it (the cabinet fills the gap), inches.
+pub const EDGE_SNAP: f64 = 4.0;
 
 /// The Cabinet flyout, in order; Tab cycles through it. Custom Counter Hole
 /// is a tool-only kind that cuts a hole instead of placing a cabinet.
@@ -714,6 +717,12 @@ struct EditDrag {
     start: Point,
     screen: Pos2,
     begun: bool,
+    /// The floor's cabinets when the drag began, kept for a Move in Push
+    /// mode: every step pushes from these, so dragging back lets the
+    /// pushed neighbours return.
+    snapshot: Option<Vec<Cabinet>>,
+    /// The cabinets the last step pushed.
+    pushed: Vec<Id>,
 }
 
 /// A polygon or path being drawn (Custom Countertop, Backsplash, Counter Hole).
@@ -1057,13 +1066,70 @@ fn op_label(op: HandleKind) -> &'static str {
     }
 }
 
+/// What a dragged cabinet does when it meets other cabinets (Chief's
+/// Bumping/Pushing setting, CB-4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BumpMode {
+    /// It stops against them, butted and lined up with their back (default).
+    #[default]
+    Bump,
+    /// It pushes the cabinets of its run along ahead of it.
+    Push,
+    /// It passes over them.
+    Off,
+}
+
+impl BumpMode {
+    pub const ALL: [BumpMode; 3] = [BumpMode::Bump, BumpMode::Push, BumpMode::Off];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BumpMode::Bump => "Bump",
+            BumpMode::Push => "Push",
+            BumpMode::Off => "Off",
+        }
+    }
+
+    /// The Edit toolbar label that shows this mode and cycles to the next.
+    pub fn toolbar_label(self) -> &'static str {
+        match self {
+            BumpMode::Bump => "Neighbors: Bump",
+            BumpMode::Push => "Neighbors: Push",
+            BumpMode::Off => "Neighbors: Pass Through",
+        }
+    }
+
+    pub fn next(self) -> BumpMode {
+        match self {
+            BumpMode::Bump => BumpMode::Push,
+            BumpMode::Push => BumpMode::Off,
+            BumpMode::Off => BumpMode::Bump,
+        }
+    }
+}
+
+/// The Edit toolbar / menu command that cycles [`BumpMode`].
+pub const BUMP_MODE_COMMAND: &str = "cabinet.bump_mode";
+
 thread_local! {
+    /// Edit > Snap Settings > Bumping/Pushing (cabinets).
+    static BUMP_MODE: std::cell::Cell<BumpMode> = const { std::cell::Cell::new(BumpMode::Bump) };
     /// Preferences > Architectural: fit a dragged cabinet to the gap it is in.
     static FIT_TO_GAP: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
     /// A gap within this many inches of a cabinet's width is filled.
     static FIT_TOLERANCE_IN: std::cell::Cell<f64> = const { std::cell::Cell::new(FIT_TOLERANCE) };
     /// The library type the next `set_variant` places.
     static REQUESTED_PRESET: std::cell::Cell<Option<CabinetPreset>> = const { std::cell::Cell::new(None) };
+}
+
+/// Sets the Bumping/Pushing mode of dragged cabinets.
+pub fn set_bump_mode(mode: BumpMode) {
+    BUMP_MODE.with(|m| m.set(mode));
+}
+
+/// The Bumping/Pushing mode of dragged cabinets.
+pub fn bump_mode() -> BumpMode {
+    BUMP_MODE.with(std::cell::Cell::get)
 }
 
 /// Sets how far a gap may differ from a cabinet's width and still be filled
@@ -1124,15 +1190,31 @@ pub fn fit_to_gap_enabled() -> bool {
 /// Fit to gap: sizes `c` to the gap it sits in when that gap is within
 /// [`FIT_TOLERANCE`] of its width. True when it changed.
 pub fn fit_gap(cx: &EditorContext, c: &mut Cabinet) -> bool {
+    let others = load_cabinets(cx.floor());
+    fit_gap_among(cx, &others, c)
+}
+
+/// [`fit_gap`] among the given cabinets.
+fn fit_gap_among(cx: &EditorContext, others: &[Cabinet], c: &mut Cabinet) -> bool {
     if !fit_to_gap_enabled() || c.kind.is_custom() || c.kind.is_filler() {
         return false;
     }
-    let others = load_cabinets(cx.floor());
-    plan_cabinets::fit_to_gap(c, &others, &wall_polys(cx), fit_tolerance())
+    plan_cabinets::fit_to_gap(c, others, &wall_polys(cx), fit_tolerance())
         .is_some_and(|w| w >= MIN_WIDTH)
 }
 
+/// The result of dragging a handle: the edited cabinet and, in Push mode,
+/// the neighbours it pushed out of the way (at their new places).
+#[derive(Debug, Clone)]
+pub struct Edited {
+    pub cab: Cabinet,
+    pub pushed: Vec<Cabinet>,
+}
+
 /// The cabinet after dragging handle `op` from `start` to `p` (CB-8, CB-9).
+/// Dragging into neighbours bumps ([`BumpMode::Push`] counts as bump here:
+/// the pushed neighbours are the Cabinet tool's to move, see
+/// [`apply_edit_mode`]).
 pub fn apply_edit(
     cx: &EditorContext,
     op: HandleKind,
@@ -1140,6 +1222,33 @@ pub fn apply_edit(
     start: Point,
     p: &PointerEvent,
 ) -> Cabinet {
+    let mode = match bump_mode() {
+        BumpMode::Push => BumpMode::Bump,
+        m => m,
+    };
+    apply_edit_mode(cx, mode, op, orig, start, p, None).cab
+}
+
+/// [`apply_edit`] under an explicit Bumping/Pushing `mode`. `others` are the
+/// cabinets as they were when the drag began (the floor's when `None`).
+pub fn apply_edit_mode(
+    cx: &EditorContext,
+    mode: BumpMode,
+    op: HandleKind,
+    orig: &Cabinet,
+    start: Point,
+    p: &PointerEvent,
+    others: Option<&[Cabinet]>,
+) -> Edited {
+    let owned;
+    let others: &[Cabinet] = match others {
+        Some(o) => o,
+        None => {
+            owned = load_cabinets(cx.floor());
+            &owned
+        }
+    };
+    let mut pushed: Vec<Cabinet> = Vec::new();
     let mut c = orig.clone();
     let alt = p.modifiers.alt;
     let u = Point::new(orig.angle.cos(), orig.angle.sin());
@@ -1170,7 +1279,7 @@ pub fn apply_edit(
                     orig.id,
                 );
             } else {
-                settle(
+                place_flush(
                     cx,
                     &mut c,
                     anchor,
@@ -1178,22 +1287,53 @@ pub fn apply_edit(
                     WALL_REACH + orig.depth * 0.5,
                     !ctrl,
                     alt,
-                    orig.id,
                 );
+                match mode {
+                    BumpMode::Off => {}
+                    BumpMode::Bump => bump(others, &mut c, orig.id),
+                    BumpMode::Push => match push_run(&c, others, &wall_polys(cx)) {
+                        Some(run) => {
+                            pushed = run;
+                            if pushed.is_empty() {
+                                // Nothing of the run in the way: islands and
+                                // peninsulas still line up.
+                                bump(others, &mut c, orig.id);
+                            }
+                        }
+                        // The run cannot give way (a wall): stop against it.
+                        None => bump(others, &mut c, orig.id),
+                    },
+                }
                 // Between a wall and a cabinet (or two cabinets) with a gap
                 // within 2" of its width, the cabinet takes the gap (CB-5).
-                if !alt && !orig.kind.is_corner() && !orig.kind.is_blind() {
-                    fit_gap(cx, &mut c);
+                if !alt
+                    && pushed.is_empty()
+                    && mode != BumpMode::Off
+                    && !orig.kind.is_corner()
+                    && !orig.kind.is_blind()
+                {
+                    fit_gap_among(cx, others, &mut c);
                 }
             }
         }
         HandleKind::ResizeEnd => {
             let s = p.world.sub(orig.position).dot(u);
-            c.width = snap_to(s, WIDTH_STEP, alt).max(MIN_WIDTH);
+            let mut w = snap_to(s, WIDTH_STEP, alt).max(MIN_WIDTH);
+            if let (false, Some(r)) = (alt, edge_bounds(cx, orig, others).1) {
+                if (s - r).abs() <= EDGE_SNAP && r >= MIN_WIDTH {
+                    w = r;
+                }
+            }
+            c.width = w;
         }
         HandleKind::ResizeStart => {
             let s = p.world.sub(orig.position).dot(u);
-            let w = snap_to(orig.width - s, WIDTH_STEP, alt).max(MIN_WIDTH);
+            let mut w = snap_to(orig.width - s, WIDTH_STEP, alt).max(MIN_WIDTH);
+            if let (false, Some(l)) = (alt, edge_bounds(cx, orig, others).0) {
+                if (s - l).abs() <= EDGE_SNAP && orig.width - l >= MIN_WIDTH {
+                    w = orig.width - l;
+                }
+            }
             c.width = w;
             c.position = orig.position + u * (orig.width - w);
         }
@@ -1213,11 +1353,25 @@ pub fn apply_edit(
                 placed::DEPTH_FRONT | placed::CORNER_FRONT_LEFT | placed::CORNER_FRONT_RIGHT
             );
             let mut shift = Point::ZERO;
+            let (wall_l, wall_r) = if alt || !(drag_left || drag_right) {
+                (None, None)
+            } else {
+                edge_bounds(cx, orig, others)
+            };
             if drag_right {
-                c.width = snap_to(sx, WIDTH_STEP, alt).max(MIN_WIDTH);
+                let mut w = snap_to(sx, WIDTH_STEP, alt).max(MIN_WIDTH);
+                if let Some(r) = wall_r.filter(|r| (sx - r).abs() <= EDGE_SNAP && *r >= MIN_WIDTH) {
+                    w = r;
+                }
+                c.width = w;
             }
             if drag_left {
-                let w = snap_to(orig.width - sx, WIDTH_STEP, alt).max(MIN_WIDTH);
+                let mut w = snap_to(orig.width - sx, WIDTH_STEP, alt).max(MIN_WIDTH);
+                if let Some(l) =
+                    wall_l.filter(|l| (sx - l).abs() <= EDGE_SNAP && orig.width - l >= MIN_WIDTH)
+                {
+                    w = orig.width - l;
+                }
                 c.width = w;
                 shift = shift + u * (orig.width - w);
             }
@@ -1253,7 +1407,21 @@ pub fn apply_edit(
         }
         _ => {}
     }
-    c
+    Edited { cab: c, pushed }
+}
+
+/// Where the nearest wall or cabinet stops `orig` on each side along its
+/// width: `(left, right)` offsets from its position; `None` where nothing
+/// does. A resized edge snaps to them (the cabinet fills the gap).
+fn edge_bounds(
+    cx: &EditorContext,
+    orig: &Cabinet,
+    others: &[Cabinet],
+) -> (Option<f64>, Option<f64>) {
+    if orig.kind.is_custom() {
+        return (None, None);
+    }
+    run_bounds(orig, others, &wall_polys(cx)).unwrap_or((None, None))
 }
 
 impl Tool for CabinetTool {
@@ -1332,11 +1500,36 @@ impl Tool for CabinetTool {
                     cx.begin_change(op_label(e.op));
                     e.begun = true;
                 }
-                let next = apply_edit(cx, e.op, &e.original, e.start, &p);
+                let mode = if e.op == HandleKind::Move {
+                    bump_mode()
+                } else {
+                    BumpMode::Bump
+                };
+                let edited = apply_edit_mode(
+                    cx,
+                    mode,
+                    e.op,
+                    &e.original,
+                    e.start,
+                    &p,
+                    e.snapshot.as_deref(),
+                );
                 let fl = cx.floor;
-                replace_cabinet(&mut cx.project, fl, &next);
+                // The neighbours the last step pushed go back first.
+                if let Some(snap) = &e.snapshot {
+                    for id in e.pushed.drain(..) {
+                        if let Some(orig) = snap.iter().find(|c| c.id == id) {
+                            replace_cabinet(&mut cx.project, fl, orig);
+                        }
+                    }
+                }
+                replace_cabinet(&mut cx.project, fl, &edited.cab);
+                for q in &edited.pushed {
+                    replace_cabinet(&mut cx.project, fl, q);
+                }
+                e.pushed = edited.pushed.iter().map(|q| q.id).collect();
                 cx.mark_dirty();
-                cx.readout = Some(format!("Width: {}", cx.fmt_dim(next.width)));
+                cx.readout = Some(format!("Width: {}", cx.fmt_dim(edited.cab.width)));
                 return ToolResult::consumed();
             }
             let (kind, preset) = (self.kind, self.preset);
@@ -1396,12 +1589,16 @@ impl Tool for CabinetTool {
             hit_handle(&Self::handles(cx), p.world, tol),
         ) {
             if let Some(original) = cabinet_by_id(cx.floor(), id) {
+                let snapshot = (h.kind == HandleKind::Move && bump_mode() == BumpMode::Push)
+                    .then(|| load_cabinets(cx.floor()));
                 self.edit = Some(EditDrag {
                     op: h.kind,
                     original,
                     start: p.world,
                     screen: p.screen,
                     begun: false,
+                    snapshot,
+                    pushed: Vec::new(),
                 });
                 return ToolResult::consumed();
             }
@@ -1576,6 +1773,19 @@ impl Tool for CabinetTool {
 
     fn edit_toolbar(&self, cx: &EditorContext) -> Vec<EditAction> {
         let mut v = cx.common_edit_actions();
+        if placed::selection_has_closed_polyline(cx) {
+            v.push(EditAction::new(EditActionKind::Custom {
+                id: placed::SOFFIT_FROM_POLYLINE,
+                label: "Convert Polyline to Soffit",
+                icon: "",
+            }));
+        }
+        // Bumping/Pushing: shows the mode, a click goes to the next.
+        v.push(EditAction::new(EditActionKind::Custom {
+            id: BUMP_MODE_COMMAND,
+            label: bump_mode().toolbar_label(),
+            icon: "",
+        }));
         if cx
             .selection
             .items
@@ -2811,5 +3021,276 @@ mod tests {
             .unwrap();
         assert!((left.value - 6.0).abs() < 1e-9, "{}", left.value);
         assert!(c.width == 24.0);
+    }
+
+    // ----- Bumping/Pushing, edge snapping, Convert Polyline to Soffit (round 14) -----
+
+    /// Presses the handle `kind` of cabinet `id`, moves through `path` and
+    /// releases at its end; the pointer positions are plan points.
+    fn drag_through(
+        t: &mut CabinetTool,
+        cx: &mut EditorContext,
+        id: Id,
+        kind: HandleKind,
+        path: &[Point],
+    ) -> ToolResult {
+        let h = placed_handles(cx.floor(), PlacedRef::Cabinet(id), cx.px_per_in)
+            .into_iter()
+            .find(|h| h.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind:?} handle"));
+        let mut down = PointerEvent::at(cx, h.pos).with_down(true);
+        down.screen = Pos2::new(0.0, 0.0);
+        t.pointer_down(cx, down);
+        let mut last = down;
+        for (i, p) in path.iter().enumerate() {
+            let mut mv = PointerEvent::at(cx, *p).with_down(true);
+            mv.screen = Pos2::new(50.0 + 10.0 * i as f32, 50.0);
+            t.pointer_move(cx, mv);
+            last = mv;
+        }
+        t.pointer_up(cx, last)
+    }
+
+    fn base_at(cx: &mut EditorContext, x: f64, width: f64) -> Id {
+        let mut c = default_cabinet(cx, CabinetKind::Base);
+        c.width = width;
+        c.countertop = None;
+        put(cx, c, x, 3.0, 0.0)
+    }
+
+    fn x_of(cx: &EditorContext, id: Id) -> f64 {
+        cabinet_by_id(cx.floor(), id).unwrap().position.x
+    }
+
+    #[test]
+    fn pushing_moves_the_run_ahead_of_a_dragged_cabinet_and_lets_it_back() {
+        set_bump_mode(BumpMode::Push);
+        placed::set_auto_join(false);
+        let mut cx = setup();
+        let a = base_at(&mut cx, 20.0, 24.0);
+        let b = base_at(&mut cx, 44.0, 24.0);
+        let d = base_at(&mut cx, 120.0, 24.0);
+        cx.selection.set(ObjectRef::Cabinet(d));
+        let mut t = CabinetTool::default();
+        // D's centre handle moves 60" left (from 132 to 72): D ends at 60..84?
+        // Drag so D's left edge lands at 60: a 60" move left.
+        let y = 15.0;
+        let start = cabinet_by_id(cx.floor(), d)
+            .unwrap()
+            .to_plan(Point::new(12.0, 12.0));
+        let left60 = Point::new(start.x - 60.0, y);
+        let back = Point::new(start.x, y);
+        // Out and back in one drag: the pushed cabinets return.
+        let r = drag_through(&mut t, &mut cx, d, HandleKind::Move, &[left60, back]);
+        assert_eq!(r.commit.as_deref(), Some("Move Cabinet"));
+        assert_eq!(
+            (x_of(&cx, a), x_of(&cx, b), x_of(&cx, d)),
+            (20.0, 44.0, 120.0)
+        );
+        // Out and stay: D at 60..84 pushes B (44..68) to 36..60 and A to 12..36.
+        let r = drag_through(&mut t, &mut cx, d, HandleKind::Move, &[left60]);
+        assert_eq!(r.commit.as_deref(), Some("Move Cabinet"));
+        assert_eq!(x_of(&cx, d), 60.0);
+        assert_eq!(x_of(&cx, b), 36.0);
+        assert_eq!(x_of(&cx, a), 12.0);
+        // One undo step puts all three back.
+        assert_eq!(cx.undo().as_deref(), Some("Move Cabinet"));
+        assert_eq!(
+            (x_of(&cx, a), x_of(&cx, b), x_of(&cx, d)),
+            (20.0, 44.0, 120.0)
+        );
+        set_bump_mode(BumpMode::Bump);
+    }
+
+    #[test]
+    fn a_wall_that_stops_the_pushed_run_makes_the_cabinet_bump_instead() {
+        set_bump_mode(BumpMode::Push);
+        placed::set_auto_join(false);
+        let mut cx = setup();
+        vertical_wall(&mut cx, 84.0); // faces at x = 81 and 87
+        let b = base_at(&mut cx, 30.0, 24.0);
+        let c = base_at(&mut cx, 54.0, 24.0);
+        let d = base_at(&mut cx, -80.0, 24.0);
+        cx.selection.set(ObjectRef::Cabinet(d));
+        let mut t = CabinetTool::default();
+        let start = cabinet_by_id(cx.floor(), d)
+            .unwrap()
+            .to_plan(Point::new(12.0, 12.0));
+        // D to 18..42 would push B and C into the wall: it stops against B.
+        let to = Point::new(start.x + 98.0, 15.0);
+        drag_through(&mut t, &mut cx, d, HandleKind::Move, &[to]);
+        assert_eq!(x_of(&cx, b), 30.0);
+        assert_eq!(x_of(&cx, c), 54.0);
+        assert_eq!(x_of(&cx, d), 6.0, "butted against B");
+        set_bump_mode(BumpMode::Bump);
+    }
+
+    #[test]
+    fn bump_mode_stops_and_off_passes_through() {
+        placed::set_auto_join(false);
+        for (mode, expect) in [(BumpMode::Bump, 68.0), (BumpMode::Off, 50.0)] {
+            set_bump_mode(mode);
+            let mut cx = setup();
+            let b = base_at(&mut cx, 44.0, 24.0);
+            let d = base_at(&mut cx, 120.0, 24.0);
+            cx.selection.set(ObjectRef::Cabinet(d));
+            let mut t = CabinetTool::default();
+            let start = cabinet_by_id(cx.floor(), d)
+                .unwrap()
+                .to_plan(Point::new(12.0, 12.0));
+            drag_through(
+                &mut t,
+                &mut cx,
+                d,
+                HandleKind::Move,
+                &[Point::new(start.x - 70.0, 15.0)],
+            );
+            assert_eq!(x_of(&cx, b), 44.0, "{mode:?}: B stays");
+            assert_eq!(x_of(&cx, d), expect, "{mode:?}");
+        }
+        set_bump_mode(BumpMode::Bump);
+    }
+
+    #[test]
+    fn the_edit_toolbar_cycles_the_bumping_mode() {
+        set_bump_mode(BumpMode::Bump);
+        let mut cx = setup();
+        let t = CabinetTool::default();
+        let label = |cx: &EditorContext| {
+            t.edit_toolbar(cx)
+                .into_iter()
+                .find(|a| matches!(a.kind, EditActionKind::Custom { id, .. } if id == BUMP_MODE_COMMAND))
+                .map(|a| a.label)
+        };
+        assert_eq!(label(&cx), Some("Neighbors: Bump"));
+        cx.run_custom(BUMP_MODE_COMMAND);
+        assert_eq!(bump_mode(), BumpMode::Push);
+        assert_eq!(label(&cx), Some("Neighbors: Push"));
+        cx.run_custom(BUMP_MODE_COMMAND);
+        assert_eq!(bump_mode(), BumpMode::Off);
+        cx.run_custom(BUMP_MODE_COMMAND);
+        assert_eq!(bump_mode(), BumpMode::Bump);
+        assert!(cx.status.contains("Bump"), "{}", cx.status);
+    }
+
+    #[test]
+    fn a_resized_edge_dragged_near_a_wall_or_cabinet_snaps_to_it() {
+        placed::set_auto_join(false);
+        set_fit_to_gap(false);
+        let mut cx = setup();
+        vertical_wall(&mut cx, 65.0); // left face at x = 62
+        let a = base_at(&mut cx, 20.0, 24.0);
+        let mut t = CabinetTool::default();
+        cx.selection.set(ObjectRef::Cabinet(a));
+        // The end handle dragged to 59 (3" off the wall): 42" wide, flush.
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            a,
+            HandleKind::ResizeEnd,
+            Point::new(59.0, 10.0),
+        );
+        let c = cabinet_by_id(cx.floor(), a).unwrap();
+        assert_eq!(c.width, 42.0);
+        assert_eq!(c.position.x, 20.0);
+        // 12" off the wall it keeps the 3" grid.
+        cx.undo();
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            a,
+            HandleKind::ResizeEnd,
+            Point::new(50.0, 10.0),
+        );
+        assert_eq!(cabinet_by_id(cx.floor(), a).unwrap().width, 30.0);
+        // The start handle snaps to a cabinet on its left.
+        cx.undo();
+        let n = base_at(&mut cx, -10.0, 24.0); // -10..14
+        cx.selection.set(ObjectRef::Cabinet(a));
+        drag_handle_to(
+            &mut t,
+            &mut cx,
+            a,
+            HandleKind::ResizeStart,
+            Point::new(17.0, 10.0),
+        );
+        let c = cabinet_by_id(cx.floor(), a).unwrap();
+        assert_eq!((c.position.x, c.width), (14.0, 30.0), "grew to touch N");
+        assert_eq!(x_of(&cx, n), -10.0);
+        // Alt turns the snap off.
+        cx.undo();
+        let h = placed_handles(cx.floor(), PlacedRef::Cabinet(a), cx.px_per_in)
+            .into_iter()
+            .find(|h| h.kind == HandleKind::ResizeEnd)
+            .unwrap();
+        let orig = cabinet_by_id(cx.floor(), a).unwrap();
+        let mut ev = PointerEvent::at(&cx, Point::new(59.0, 10.0));
+        ev.modifiers.alt = true;
+        let free = apply_edit(&cx, HandleKind::ResizeEnd, &orig, h.pos, &ev);
+        assert_eq!(free.width, 39.0);
+        set_fit_to_gap(true);
+    }
+
+    #[test]
+    fn a_closed_polyline_becomes_a_polygon_soffit_in_one_undo_step() {
+        let mut cx = setup();
+        let ring = vec![
+            Point::new(0.0, 20.0),
+            Point::new(48.0, 20.0),
+            Point::new(48.0, 44.0),
+            Point::new(24.0, 56.0),
+            Point::new(0.0, 44.0),
+        ];
+        let poly = cx.project.add_cad(
+            0,
+            "CAD, Default",
+            plan_core::CadItem::Polyline {
+                points: ring.clone(),
+                closed: true,
+            },
+        );
+        let open = cx.project.add_cad(
+            0,
+            "CAD, Default",
+            plan_core::CadItem::Polyline {
+                points: ring.clone(),
+                closed: false,
+            },
+        );
+        // An open polyline is not offered and not converted.
+        cx.selection.set(ObjectRef::Cad(open));
+        assert!(!placed::selection_has_closed_polyline(&cx));
+        cx.run_custom(placed::SOFFIT_FROM_POLYLINE);
+        assert!(cabs(&cx).is_empty());
+        assert!(cx.status.contains("closed polyline"), "{}", cx.status);
+        // The closed one is.
+        cx.selection.set(ObjectRef::Cad(poly));
+        assert!(placed::selection_has_closed_polyline(&cx));
+        let t = CabinetTool::default();
+        assert!(t.edit_toolbar(&cx).iter().any(
+            |a| matches!(a.kind, EditActionKind::Custom { id, .. } if id == placed::SOFFIT_FROM_POLYLINE)
+        ));
+        cx.run_custom(placed::SOFFIT_FROM_POLYLINE);
+        let soffits = cabs(&cx);
+        assert_eq!(soffits.len(), 1);
+        let s = &soffits[0];
+        assert_eq!(s.kind, CabinetKind::Soffit);
+        let outline = &s.custom.as_ref().expect("a polygon outline").outline;
+        assert_eq!(outline.len(), 5);
+        let area = plan_cabinets::ring_area(outline).abs();
+        assert!(
+            (area - (48.0 * 24.0 + 0.5 * 48.0 * 12.0)).abs() < 1e-6,
+            "{area}"
+        );
+        assert!(
+            cx.floor().cad.iter().all(|c| c.id != poly),
+            "the polyline is replaced"
+        );
+        assert!(cx.floor().cad.iter().any(|c| c.id == open));
+        assert_eq!(cx.selection.items, vec![ObjectRef::Cabinet(s.id)]);
+        assert_eq!(cx.undo_label(), Some("Convert Polyline to Soffit"));
+        cx.undo();
+        assert!(cabs(&cx).is_empty());
+        assert!(cx.floor().cad.iter().any(|c| c.id == poly));
     }
 }

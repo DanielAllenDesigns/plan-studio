@@ -4,8 +4,17 @@
 //!   end at the same two corner points, so there is no overlap or gap.
 //! * A wall ending on the interior of another wall (T-junction) is extended or
 //!   trimmed so its end lies on the near face of the through wall.
-//! * Collinear continuations, free ends and junctions of three or more walls
-//!   keep plain square ends.
+//! * Collinear continuations and free ends keep plain square ends.
+//! * Three or more walls ending at one point (W-34, W-36, W-103): the most
+//!   nearly collinear pair runs through with square ends and every other wall
+//!   butts the near face of the through walls, the faces stepping where the
+//!   through walls differ in thickness. When several pairs qualify (a `+`
+//!   junction, or the two halves of a crossing that was cut) the pair with the
+//!   better wall wins: exterior over interior, then the thicker, then the
+//!   earlier drawn. With no near-collinear pair (a `Y`) the neighbours in
+//!   angular order are mitered pairwise.
+//! * A wall with Through Wall At Start/End (W-39) runs past that corner with a
+//!   square end flush with the other wall's far face; the other walls butt it.
 //! * A miter longer than [`MITER_LIMIT`] times the wall thickness (very sharp
 //!   angles) falls back to square ends.
 //! * [`wall_layer_outlines`] applies the same rules to every layer boundary of
@@ -15,7 +24,7 @@
 
 use crate::defaults::WallTypeDef;
 use crate::geometry::{BoxGrid, Point};
-use crate::model::{Id, Wall, WallEnd};
+use crate::model::{Id, Wall, WallEnd, WallKind};
 
 /// Maximum miter length as a multiple of the thicker wall.
 pub const MITER_LIMIT: f64 = 4.0;
@@ -104,6 +113,7 @@ fn wall_eq(a: &Wall, b: &Wall) -> bool {
         foundation_height,
         is_deck_edge,
         bottom_offset,
+        spec,
     } = a;
     *id == b.id
         && *start == b.start
@@ -123,6 +133,7 @@ fn wall_eq(a: &Wall, b: &Wall) -> bool {
         && *foundation_height == b.foundation_height
         && *is_deck_edge == b.is_deck_edge
         && *bottom_offset == b.bottom_offset
+        && *spec == b.spec
 }
 
 /// Walls found by position, for the join queries that look for neighbours of
@@ -298,13 +309,10 @@ pub fn curved_end_miters(walls: &[Wall], id: Id, tol: f64) -> Option<[Option<(Po
     ])
 }
 
-/// Joined `(left, right)` face points at one end, or `None` for a square end.
-fn end_faces(walls: &[Wall], near: &Near, i: usize, e: End, tol: f64) -> Option<(Point, Point)> {
-    let w = &walls[i];
-    if w.length() <= tol {
-        return None;
-    }
-    let p = end_point(w, e);
+/// The ends (wall index, which end) of other walls that lie within `tol` of
+/// end `e` of `walls[i]`.
+fn touching_ends(walls: &[Wall], near: &Near, i: usize, e: End, tol: f64) -> Vec<(usize, End)> {
+    let p = end_point(&walls[i], e);
     let mut touching = Vec::new();
     let mut candidates = Vec::new();
     near.around(p, &mut candidates);
@@ -319,10 +327,295 @@ fn end_faces(walls: &[Wall], near: &Near, i: usize, e: End, tol: f64) -> Option<
             }
         }
     }
-    match touching.len() {
-        1 => miter_faces(walls, i, e, touching[0].0, touching[0].1),
-        0 => t_faces(walls, near, i, e, p, tol),
-        _ => None,
+    touching
+}
+
+/// Joined `(left, right)` face points at one end, or `None` for a square end.
+fn end_faces(walls: &[Wall], near: &Near, i: usize, e: End, tol: f64) -> Option<(Point, Point)> {
+    let w = &walls[i];
+    if w.length() <= tol {
+        return None;
+    }
+    let p = end_point(w, e);
+    let touching = touching_ends(walls, near, i, e, tol);
+    if touching.is_empty() {
+        return t_faces(walls, near, i, e, p, tol);
+    }
+    role_faces(walls, i, e, end_role(walls, i, e, &touching))
+}
+
+// ----- junctions of one or more walls ending at a point -----
+
+/// Is Through Wall set at end `e` of `w` (W-39)?
+fn through_flag(w: &Wall, e: End) -> bool {
+    match e {
+        End::Start => w.spec.structure.through_at_start,
+        End::End => w.spec.structure.through_at_end,
+    }
+}
+
+/// One wall end of a junction: the wall, which end, and the unit direction
+/// pointing from the junction back along the wall.
+#[derive(Clone, Copy)]
+struct Arm {
+    i: usize,
+    e: End,
+    d: Point,
+}
+
+/// The face of a through wall that a butting wall stops at.
+#[derive(Clone, Copy)]
+struct Face {
+    pt: Point,
+    dir: Point,
+    thickness: f64,
+}
+
+/// What an end does at a junction.
+#[derive(Clone, Copy)]
+enum Role {
+    /// Keeps its square end.
+    Square,
+    /// Runs past the junction by this much with a square end (Through Wall).
+    Extend(f64),
+    /// Mitered with one other wall.
+    Miter(usize, End),
+    /// Butts the near faces of the through walls: `plus` is the face its
+    /// `+perp(away direction)` side stops at, `minus` the other side's.
+    Butt { plus: Face, minus: Face },
+    /// Mitered with the neighbours in angular order (`ccw` on its plus side,
+    /// `cw` on its minus side); `None` where the gap to the neighbour is a
+    /// straight angle or wider, which leaves that side square.
+    Star {
+        ccw: Option<(usize, End)>,
+        cw: Option<(usize, End)>,
+    },
+}
+
+/// A near-collinear pair has `|sin|` of the bend at most this (30 degrees).
+const MAX_PAIR_SIN: f64 = 0.5;
+
+/// How much better a wall is at a junction: Through Wall first, then
+/// exterior over interior, then the thicker, then the earlier drawn.
+fn rank(walls: &[Wall], a: &Arm) -> (bool, bool, i64, i64) {
+    let w = &walls[a.i];
+    (
+        through_flag(w, a.e),
+        w.kind == WallKind::Exterior,
+        (w.thickness * 1000.0).round() as i64,
+        -(a.i as i64),
+    )
+}
+
+/// The face of through arm `host`, on the side facing `d_me`, at junction `p`.
+fn host_face(walls: &[Wall], p: Point, host: &Arm, d_me: Point) -> Option<Face> {
+    let h = &walls[host.i];
+    if host.d.cross(d_me).abs() < MIN_SIN {
+        return None;
+    }
+    let side = if host.d.perp().dot(d_me) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    Some(Face {
+        pt: p + host.d.perp() * (side * h.thickness * 0.5),
+        dir: host.d,
+        thickness: h.thickness,
+    })
+}
+
+/// The role of end `e` of `walls[i]` where `touching` other ends meet it.
+/// `touching` is not empty. Every end of the junction reaches the same
+/// decision, because it depends on the set of walls and their ranks only.
+fn end_role(walls: &[Wall], i: usize, e: End, touching: &[(usize, End)]) -> Role {
+    let p = end_point(&walls[i], e);
+    let mut arms = vec![Arm {
+        i,
+        e,
+        d: away_dir(&walls[i], e),
+    }];
+    for &(j, oe) in touching {
+        arms.push(Arm {
+            i: j,
+            e: oe,
+            d: away_dir(&walls[j], oe),
+        });
+    }
+    let me = 0;
+    let best = |idx: &[usize]| -> usize {
+        idx.iter()
+            .copied()
+            .max_by_key(|&k| rank(walls, &arms[k]))
+            .unwrap_or(0)
+    };
+
+    // A wall with Through Wall set runs past the others, which butt it.
+    let flagged: Vec<usize> = (0..arms.len())
+        .filter(|&k| through_flag(&walls[arms[k].i], arms[k].e))
+        .collect();
+    if !flagged.is_empty() {
+        let a = best(&flagged);
+        if a == me {
+            let u = -arms[me].d;
+            let ext = arms
+                .iter()
+                .skip(1)
+                .map(|o| walls[o.i].thickness * 0.5 * o.d.perp().dot(u).abs())
+                .fold(0.0, f64::max);
+            return Role::Extend(ext);
+        }
+        return match host_face(walls, p, &arms[a], arms[me].d) {
+            Some(f) => Role::Butt { plus: f, minus: f },
+            None => Role::Square,
+        };
+    }
+
+    if arms.len() == 2 {
+        return Role::Miter(arms[1].i, arms[1].e);
+    }
+
+    // The through pair: the most nearly collinear, the better wall breaking ties.
+    let mut pairs: Vec<(usize, usize, f64)> = Vec::new();
+    for a in 0..arms.len() {
+        for b in a + 1..arms.len() {
+            let (da, db) = (arms[a].d, arms[b].d);
+            let sin = da.cross(db).abs();
+            if da.dot(db) < 0.0 && sin <= MAX_PAIR_SIN {
+                pairs.push((a, b, sin));
+            }
+        }
+    }
+    let exact: Vec<_> = pairs.iter().filter(|p| p.2 < MIN_SIN).copied().collect();
+    let pool = if exact.is_empty() { &pairs } else { &exact };
+    let pair = pool.iter().copied().min_by(|x, y| {
+        // Smaller bend first (only matters when none is exactly straight),
+        // then the pair holding the better wall.
+        let bend = if exact.is_empty() {
+            x.2.total_cmp(&y.2)
+        } else {
+            std::cmp::Ordering::Equal
+        };
+        let key = |p: &(usize, usize, f64)| {
+            let (ra, rb) = (rank(walls, &arms[p.0]), rank(walls, &arms[p.1]));
+            if ra >= rb {
+                (ra, rb)
+            } else {
+                (rb, ra)
+            }
+        };
+        bend.then_with(|| key(y).cmp(&key(x)))
+    });
+
+    if let Some((a, b, sin)) = pair {
+        if me == a || me == b {
+            let other = if me == a { b } else { a };
+            return if sin < MIN_SIN {
+                Role::Square
+            } else {
+                Role::Miter(arms[other].i, arms[other].e)
+            };
+        }
+        let (ha, hb) = (&arms[a], &arms[b]);
+        let d = arms[me].d;
+        let perp = d.perp();
+        let pick = |plus: bool| -> Option<Face> {
+            let (x, y) = (ha, hb);
+            let (dx, dy) = (x.d.dot(perp), y.d.dot(perp));
+            let host = if (dx >= dy) == plus { x } else { y };
+            host_face(walls, p, host, d)
+        };
+        return match (pick(true), pick(false)) {
+            (Some(plus), Some(minus)) => Role::Butt { plus, minus },
+            _ => Role::Square,
+        };
+    }
+
+    // No pair: neighbours in angular order.
+    let ang = |a: &Arm| a.d.y.atan2(a.d.x);
+    let mut order: Vec<usize> = (0..arms.len()).collect();
+    order.sort_by(|&x, &y| ang(&arms[x]).total_cmp(&ang(&arms[y])));
+    let at = order.iter().position(|&k| k == me).unwrap_or(0);
+    let n = order.len();
+    let next = order[(at + 1) % n];
+    let prev = order[(at + n - 1) % n];
+    let tau = std::f64::consts::TAU;
+    let gap = |from: usize, to: usize| (ang(&arms[to]) - ang(&arms[from])).rem_euclid(tau);
+    let straight = std::f64::consts::PI - 1e-6;
+    let ccw = (gap(me, next) < straight).then_some((arms[next].i, arms[next].e));
+    let cw = (gap(prev, me) < straight).then_some((arms[prev].i, arms[prev].e));
+    Role::Star { ccw, cw }
+}
+
+/// One side of a mitered corner: the point where the `s` side of wall A
+/// (`s = 1`: `+perp(da)`) meets the facing side of wall B, or `None` when the
+/// walls are parallel or the miter is longer than [`MITER_LIMIT`] allows.
+fn side_point(p: Point, da: Point, ta: f64, db: Point, tb: f64, s: f64) -> Option<Point> {
+    let cross = da.cross(db);
+    if cross.abs() < MIN_SIN {
+        return None;
+    }
+    let pa = p + da.perp() * (s * ta * 0.5);
+    let pb = p + db.perp() * (-s * tb * 0.5);
+    let u = (pb - pa).cross(db) / cross;
+    let m = pa + da * u;
+    (m.dist(p) <= MITER_LIMIT * ta.max(tb)).then_some(m)
+}
+
+/// The `(plus, minus)` points of a butting end against `plus` / `minus`.
+fn butt_points(p: Point, d: Point, t: f64, plus: &Face, minus: &Face) -> Option<(Point, Point)> {
+    let mut out = [Point::ZERO; 2];
+    for (k, (s, f)) in [(1.0, plus), (-1.0, minus)].into_iter().enumerate() {
+        let cross = d.cross(f.dir);
+        if cross.abs() < MIN_SIN {
+            return None;
+        }
+        let wp = p + d.perp() * (s * t * 0.5);
+        let u = (f.pt - wp).cross(f.dir) / cross;
+        let m = wp + d * u;
+        if m.dist(p) > MITER_LIMIT * t.max(f.thickness) {
+            return None;
+        }
+        out[k] = m;
+    }
+    Some((out[0], out[1]))
+}
+
+/// The `(left, right)` face points of end `e` of `walls[i]` for its `role`.
+fn role_faces(walls: &[Wall], i: usize, e: End, role: Role) -> Option<(Point, Point)> {
+    let w = &walls[i];
+    let p = end_point(w, e);
+    let d = away_dir(w, e);
+    let ls = left_sign(e);
+    let order = |plus: Point, minus: Point| {
+        let at = |s: f64| if s > 0.0 { plus } else { minus };
+        Some((at(ls), at(-ls)))
+    };
+    match role {
+        Role::Square => None,
+        Role::Extend(ext) => {
+            let out = -d * ext;
+            order(
+                p + d.perp() * (w.thickness * 0.5) + out,
+                p - d.perp() * (w.thickness * 0.5) + out,
+            )
+        }
+        Role::Miter(j, oe) => miter_faces(walls, i, e, j, oe),
+        Role::Butt { plus, minus } => {
+            let (a, b) = butt_points(p, d, w.thickness, &plus, &minus)?;
+            order(a, b)
+        }
+        Role::Star { ccw, cw } => {
+            let square = |s: f64| p + d.perp() * (s * w.thickness * 0.5);
+            let side = |nb: Option<(usize, End)>, s: f64| -> Point {
+                nb.and_then(|(j, oe)| {
+                    let o = &walls[j];
+                    side_point(p, d, w.thickness, away_dir(o, oe), o.thickness, s)
+                })
+                .unwrap_or_else(|| square(s))
+            };
+            order(side(ccw, 1.0), side(cw, -1.0))
+        }
     }
 }
 
@@ -652,26 +945,13 @@ fn layer_end_points(
     if w.length() <= tol {
         return square();
     }
-    let mut touching = Vec::new();
-    let mut candidates = Vec::new();
-    near.around(p, &mut candidates);
-    for &j in &candidates {
-        let o = &walls[j];
-        if j == i || o.length() <= tol {
-            continue;
-        }
-        for oe in [End::Start, End::End] {
-            if end_point(o, oe).dist(p) <= tol {
-                touching.push((j, oe));
-            }
-        }
-    }
+    let touching = touching_ends(walls, near, i, e, tol);
+    let role = (!touching.is_empty()).then(|| end_role(walls, i, e, &touching));
     let dw = away_dir(w, e);
     // Boundary laterals in the away frame (perp of `dw`).
     let (a_lat, a_lo, a_hi) = boundaries(&stacks[i], qa);
-    match touching.len() {
-        1 => {
-            let (j, oe) = touching[0];
+    match role {
+        Some(Role::Miter(j, oe)) => {
             let o = &walls[j];
             let db = away_dir(o, oe);
             let cross = dw.cross(db);
@@ -723,7 +1003,28 @@ fn layer_end_points(
             // away frame, which only reorders by the sign of `qa`.
             pts
         }
-        0 => {
+        Some(Role::Extend(ext)) => own.iter().map(|l| p + normal * *l - dw * ext).collect(),
+        Some(Role::Butt { plus, minus }) => {
+            let limit = MITER_LIMIT * w.thickness.max(plus.thickness).max(minus.thickness);
+            let mut pts = Vec::with_capacity(a_lat.len());
+            for &la in &a_lat {
+                let f = if la >= 0.0 { &plus } else { &minus };
+                let cross = dw.cross(f.dir);
+                if cross.abs() < MIN_SIN {
+                    return square();
+                }
+                let wp = p + dw.perp() * la;
+                let u = (f.pt - wp).cross(f.dir) / cross;
+                let m = wp + dw * u;
+                if m.dist(p) > limit {
+                    return square();
+                }
+                pts.push(m);
+            }
+            pts
+        }
+        Some(Role::Square) | Some(Role::Star { .. }) => square(),
+        None => {
             let Some((tj, q, dt)) = tee_host(walls, near, i, p, tol) else {
                 return square();
             };
@@ -747,7 +1048,6 @@ fn layer_end_points(
             }
             pts
         }
-        _ => square(),
     }
 }
 
@@ -872,6 +1172,166 @@ pub fn curved_layer_outlines(
     ))
 }
 
+// ----- Crossings that stay whole (W-36) -----
+
+/// Two straight walls that cross each other's middle and were left whole
+/// (`split_on_tee` off in Walls Connect): the plan draws one merged outline
+/// where they overlap, so no line runs through the crossing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossingMerge {
+    pub wall_ids: [Id; 2],
+    /// Where the two outlines overlap (a convex polygon).
+    pub overlap: Vec<Point>,
+    /// The outline of the two walls together, one closed polygon.
+    pub outline: Vec<Point>,
+}
+
+/// The polygon counter-clockwise.
+fn ccw(poly: &[Point]) -> Vec<Point> {
+    let mut v = poly.to_vec();
+    if crate::geometry::polygon_area(&v) < 0.0 {
+        v.reverse();
+    }
+    v
+}
+
+/// The part of the convex polygon `subject` inside the convex polygon `clip`
+/// (Sutherland-Hodgman); empty when they do not overlap.
+pub fn convex_overlap(subject: &[Point], clip: &[Point]) -> Vec<Point> {
+    let clip = ccw(clip);
+    let mut out = ccw(subject);
+    for i in 0..clip.len() {
+        let (a, b) = (clip[i], clip[(i + 1) % clip.len()]);
+        let side = |p: Point| (b - a).cross(p - a);
+        let input = std::mem::take(&mut out);
+        for j in 0..input.len() {
+            let (p, q) = (input[j], input[(j + 1) % input.len()]);
+            let (sp, sq) = (side(p), side(q));
+            if sp >= 0.0 {
+                out.push(p);
+            }
+            if (sp >= 0.0) != (sq >= 0.0) {
+                let t = sp / (sp - sq);
+                out.push(Point::lerp(p, q, t));
+            }
+        }
+        if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
+/// The outline of two overlapping simple polygons together, `None` when they
+/// do not overlap or the boundary does not close into one loop (one inside
+/// the other, or touching only along an edge).
+pub fn polygon_union(a: &[Point], b: &[Point]) -> Option<Vec<Point>> {
+    let (a, b) = (ccw(a), ccw(b));
+    let mut pieces: Vec<(Point, Point)> = Vec::new();
+    for (p, q) in [(&a, &b), (&b, &a)] {
+        for i in 0..p.len() {
+            let (p0, p1) = (p[i], p[(i + 1) % p.len()]);
+            let mut ts = vec![0.0, 1.0];
+            for k in 0..q.len() {
+                if let Some((t, _)) =
+                    crate::geometry::segment_intersection(p0, p1, q[k], q[(k + 1) % q.len()])
+                {
+                    ts.push(t);
+                }
+            }
+            ts.sort_by(f64::total_cmp);
+            ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+            for w in ts.windows(2) {
+                let (u, v) = (Point::lerp(p0, p1, w[0]), Point::lerp(p0, p1, w[1]));
+                if u.dist(v) < 1e-9 {
+                    continue;
+                }
+                if !crate::geometry::point_in_polygon(Point::lerp(u, v, 0.5), q) {
+                    pieces.push((u, v));
+                }
+            }
+        }
+    }
+    if pieces.len() < 3 {
+        return None;
+    }
+    let mut used = vec![false; pieces.len()];
+    used[0] = true;
+    let mut loop_pts = vec![pieces[0].0];
+    let mut at = pieces[0].1;
+    let mut count = 1;
+    while at.dist(pieces[0].0) > 1e-6 {
+        let next = (0..pieces.len()).find(|&i| !used[i] && pieces[i].0.dist(at) < 1e-6)?;
+        used[next] = true;
+        count += 1;
+        loop_pts.push(pieces[next].0);
+        at = pieces[next].1;
+    }
+    (count == pieces.len() && loop_pts.len() >= 3).then_some(loop_pts)
+}
+
+/// Crossing walls of `walls` that cross in the middle of both (not at an end
+/// or a T) and overlap, each with the merged outline (W-36). Only straight,
+/// visible walls take part. `tol` is the connection tolerance.
+pub fn crossing_merges(walls: &[Wall], tol: f64) -> Vec<CrossingMerge> {
+    let live: Vec<&Wall> = walls
+        .iter()
+        .filter(|w| !w.is_curved() && !w.flags.invisible && w.length() > tol)
+        .collect();
+    let boxes: Vec<(Point, Point)> = live
+        .iter()
+        .map(|w| {
+            let f = w.footprint();
+            let lo = f.iter().fold(f[0], |m, p| Point::new(m.x.min(p.x), m.y.min(p.y)));
+            let hi = f.iter().fold(f[0], |m, p| Point::new(m.x.max(p.x), m.y.max(p.y)));
+            (lo, hi)
+        })
+        .collect();
+    let grid = BoxGrid::new(&boxes);
+    let mut near = Vec::new();
+    let mut out = Vec::new();
+    for (i, a) in live.iter().enumerate() {
+        grid.query(boxes[i].0, boxes[i].1, &mut near);
+        for &j in &near {
+            if j <= i {
+                continue;
+            }
+            let b = live[j];
+            if a.direction().cross(b.direction()).abs() < MIN_SIN {
+                continue;
+            }
+            let Some((t, u)) = crate::geometry::segment_intersection(a.start, a.end, b.start, b.end)
+            else {
+                continue;
+            };
+            // In the middle of both: clear of the ends by the other wall's
+            // half thickness.
+            let clear_a = b.thickness * 0.5 + tol;
+            let clear_b = a.thickness * 0.5 + tol;
+            if t * a.length() <= clear_a
+                || (1.0 - t) * a.length() <= clear_a
+                || u * b.length() <= clear_b
+                || (1.0 - u) * b.length() <= clear_b
+            {
+                continue;
+            }
+            let (fa, fb) = (a.footprint(), b.footprint());
+            let overlap = convex_overlap(&fa, &fb);
+            if overlap.len() < 3 {
+                continue;
+            }
+            if let Some(outline) = polygon_union(&fa, &fb) {
+                out.push(CrossingMerge {
+                    wall_ids: [a.id, b.id],
+                    overlap,
+                    outline,
+                });
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn collinear_and_three_way_junctions_stay_square() {
+    fn collinear_continuations_stay_square() {
         let walls = vec![
             wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
             wall(2, 100.0, 0.0, 200.0, 0.0, 6.0),
@@ -984,17 +1444,220 @@ mod tests {
                 assert!(a.dist(*b) < 1e-9);
             }
         }
-        // Three walls meeting at one point: all square.
+    }
+
+    fn ys(poly: &[Point]) -> Vec<f64> {
+        poly.iter().map(|p| (p.y * 1e6).round() / 1e6).collect()
+    }
+
+    #[test]
+    fn a_three_way_junction_runs_the_straight_pair_through_and_butts_the_third() {
+        // A and B are one line meeting at (100, 0); C leaves it northward.
         let walls = vec![
             wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
             wall(2, 100.0, 0.0, 100.0, 100.0, 6.0),
             wall(3, 100.0, 0.0, 200.0, 0.0, 6.0),
         ];
         let o = wall_outlines(&walls, 0.01);
-        for (w, out) in walls.iter().zip(&o) {
-            for (a, b) in out.polygon.iter().zip(w.footprint().iter()) {
-                assert!(a.dist(*b) < 1e-9);
+        // The through pair keeps its square ends.
+        for k in [0, 2] {
+            for (a, b) in o[k].polygon.iter().zip(walls[k].footprint().iter()) {
+                assert!(a.dist(*b) < 1e-9, "wall {k}");
             }
+        }
+        // C stops at the north face of the line instead of overlapping it.
+        let c = &o[1].polygon;
+        assert!(c[0].dist(Point::new(97.0, 3.0)) < 1e-9, "{c:?}");
+        assert!(c[3].dist(Point::new(103.0, 3.0)) < 1e-9, "{c:?}");
+        assert!(c[1].dist(Point::new(97.0, 100.0)) < 1e-9);
+    }
+
+    #[test]
+    fn a_four_way_junction_butts_both_cross_walls_to_the_through_line() {
+        let walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 200.0, 0.0, 6.0),
+            wall(3, 100.0, -100.0, 100.0, 0.0, 6.0),
+            wall(4, 100.0, 0.0, 100.0, 100.0, 6.0),
+        ];
+        let o = wall_outlines(&walls, 0.01);
+        // Wall 1 is the earliest of equals, so the horizontal pair runs through.
+        assert!(o[0].polygon[1].dist(Point::new(100.0, 3.0)) < 1e-9);
+        assert!(o[1].polygon[0].dist(Point::new(100.0, 3.0)) < 1e-9);
+        // South wall ends on the south face (its end is its far point).
+        let south = ys(&o[2].polygon);
+        assert_eq!(south[1], -3.0);
+        assert_eq!(south[2], -3.0);
+        let north = ys(&o[3].polygon);
+        assert_eq!(north[0], 3.0);
+        assert_eq!(north[3], 3.0);
+    }
+
+    #[test]
+    fn exterior_runs_through_over_interior_and_thicker_over_thinner() {
+        // Exterior pair C-D crosses an interior pair A-B drawn first.
+        let mut walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 200.0, 0.0, 6.0),
+            wall(3, 100.0, -100.0, 100.0, 0.0, 8.0),
+            wall(4, 100.0, 0.0, 100.0, 100.0, 8.0),
+        ];
+        walls[2].kind = WallKind::Exterior;
+        walls[3].kind = WallKind::Exterior;
+        let o = wall_outlines(&walls, 0.01);
+        // The vertical exterior pair is square; the horizontal ones butt it.
+        for k in [2, 3] {
+            for (a, b) in o[k].polygon.iter().zip(walls[k].footprint().iter()) {
+                assert!(a.dist(*b) < 1e-9, "wall {k}");
+            }
+        }
+        assert!(o[0].polygon[1].dist(Point::new(96.0, 3.0)) < 1e-9);
+        assert!(o[1].polygon[0].dist(Point::new(104.0, 3.0)) < 1e-9);
+
+        // Both interior: the 8" pair beats the 6" pair even drawn later.
+        let walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 200.0, 0.0, 6.0),
+            wall(3, 100.0, -100.0, 100.0, 0.0, 8.0),
+            wall(4, 100.0, 0.0, 100.0, 100.0, 8.0),
+        ];
+        let o = wall_outlines(&walls, 0.01);
+        assert!(o[0].polygon[1].dist(Point::new(96.0, 3.0)) < 1e-9);
+        assert!(o[2].polygon[1].dist(walls[2].footprint()[1]) < 1e-9);
+    }
+
+    #[test]
+    fn faces_step_where_the_through_walls_differ_in_thickness() {
+        // 6" and 4" halves of one line with a 6" wall butting from the north.
+        let walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 200.0, 0.0, 4.0),
+            wall(3, 100.0, 0.0, 100.0, 100.0, 6.0),
+        ];
+        let o = wall_outlines(&walls, 0.01);
+        // The line steps at x = 100: both halves keep square ends.
+        assert!(o[0].polygon[1].dist(Point::new(100.0, 3.0)) < 1e-9);
+        assert!(o[1].polygon[0].dist(Point::new(100.0, 2.0)) < 1e-9);
+        // The butting wall's left face meets the 6" face, its right face the 4".
+        let c = &o[2].polygon;
+        assert!(c[0].dist(Point::new(97.0, 3.0)) < 1e-9, "{c:?}");
+        assert!(c[3].dist(Point::new(103.0, 2.0)) < 1e-9, "{c:?}");
+    }
+
+    #[test]
+    fn a_y_junction_miters_the_neighbours_in_angular_order() {
+        let r = 100.0;
+        let a = |deg: f64| {
+            let t = deg.to_radians();
+            (r * t.cos(), r * t.sin())
+        };
+        let (p1, p2, p3) = (a(90.0), a(210.0), a(330.0));
+        let walls = vec![
+            wall(1, 0.0, 0.0, p1.0, p1.1, 6.0),
+            wall(2, 0.0, 0.0, p2.0, p2.1, 6.0),
+            wall(3, 0.0, 0.0, p3.0, p3.1, 6.0),
+        ];
+        let o = wall_outlines(&walls, 0.01);
+        // Every arm's two end points are on the miter circle (3 / sin 60 = 3.46
+        // from the center) and each point is shared with the next arm.
+        let ends: Vec<[Point; 2]> = o.iter().map(|x| [x.polygon[0], x.polygon[3]]).collect();
+        for e in &ends {
+            for p in e {
+                assert!((p.dist(Point::ZERO) - 3.0 / 60f64.to_radians().sin()).abs() < 1e-9);
+            }
+        }
+        for e in &ends {
+            let shared = ends
+                .iter()
+                .filter(|o| !std::ptr::eq(*o, e))
+                .any(|o| o.iter().any(|q| e.iter().any(|p| p.dist(*q) < 1e-9)));
+            assert!(shared);
+        }
+    }
+
+    #[test]
+    fn walls_cut_at_a_crossing_form_the_same_four_way_junction() {
+        // An X crossing cut into four walls meeting at (100, 100).
+        let walls = vec![
+            wall(1, 0.0, 100.0, 100.0, 100.0, 6.0),
+            wall(2, 100.0, 100.0, 200.0, 100.0, 6.0),
+            wall(3, 100.0, 0.0, 100.0, 100.0, 6.0),
+            wall(4, 100.0, 100.0, 100.0, 200.0, 6.0),
+        ];
+        let o = wall_outlines(&walls, 0.01);
+        // Square through pair, the other two butt its faces.
+        assert!(o[0].polygon[1].dist(Point::new(100.0, 103.0)) < 1e-9);
+        assert!(o[1].polygon[0].dist(Point::new(100.0, 103.0)) < 1e-9);
+        assert_eq!(ys(&o[2].polygon)[1], 97.0);
+        assert_eq!(ys(&o[3].polygon)[0], 103.0);
+    }
+
+    #[test]
+    fn through_wall_runs_past_the_corner_and_the_other_wall_butts_it() {
+        let mut walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 100.0, 100.0, 8.0),
+        ];
+        // Mitered by default.
+        let m = wall_outlines(&walls, 0.01);
+        assert!(m[0].polygon[1].dist(Point::new(96.0, 3.0)) < 1e-9);
+        assert!(m[0].polygon[2].dist(Point::new(104.0, -3.0)) < 1e-9);
+        // Wall 1 runs through its end.
+        walls[0].spec.structure.through_at_end = true;
+        let o = wall_outlines(&walls, 0.01);
+        // Flush with wall 2's far face (x = 104), square.
+        assert!(
+            o[0].polygon[1].dist(Point::new(104.0, 3.0)) < 1e-9,
+            "{:?}",
+            o[0].polygon
+        );
+        assert!(o[0].polygon[2].dist(Point::new(104.0, -3.0)) < 1e-9);
+        // Wall 2 butts the north face of wall 1.
+        let b = &o[1].polygon;
+        assert!(b[0].dist(Point::new(96.0, 3.0)) < 1e-9, "{b:?}");
+        assert!(b[3].dist(Point::new(104.0, 3.0)) < 1e-9, "{b:?}");
+        // Through at the start of wall 2 reverses the roles.
+        walls[0].spec.structure.through_at_end = false;
+        walls[1].spec.structure.through_at_start = true;
+        let r = wall_outlines(&walls, 0.01);
+        // Wall 2 extends 3" below y = 0 (half of wall 1) and wall 1 butts it.
+        assert!(
+            r[1].polygon[0].dist(Point::new(96.0, -3.0)) < 1e-9,
+            "{:?}",
+            r[1].polygon
+        );
+        assert!(
+            (r[0].polygon[1].x - 96.0).abs() < 1e-9,
+            "{:?}",
+            r[0].polygon
+        );
+    }
+
+    #[test]
+    fn layers_butt_the_through_walls_at_a_three_way_junction() {
+        let ty = stucco();
+        let walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 100.0, 100.0, 6.0),
+            wall(3, 100.0, 0.0, 200.0, 0.0, 6.0),
+        ];
+        let mut walls = walls;
+        for w in &mut walls {
+            w.wall_type = Some(ty.name.clone());
+            w.thickness = ty.thickness();
+        }
+        let half = walls[0].thickness * 0.5;
+        let layers = wall_layer_outlines(&walls, std::slice::from_ref(&ty), 0.01);
+        // Every layer of the butting wall starts on the north face of the line.
+        for l in layers.iter().filter(|l| l.wall_id == 2) {
+            let near_ys = [l.polygon[0].y, l.polygon[3].y];
+            for y in near_ys {
+                assert!((y - half).abs() < 1e-9, "{} {y}", l.name);
+            }
+        }
+        // The through walls stay square.
+        for l in layers.iter().filter(|l| l.wall_id == 1) {
+            assert!((l.polygon[1].x - 100.0).abs() < 1e-9);
         }
     }
 
@@ -1594,5 +2257,62 @@ mod tests {
         let small = crate::walls::WallCurve::from_radius(120.0, 60.0, true).unwrap();
         let (e, f) = (Point::new(960.0, 0.0), Point::new(120.0, 0.0));
         assert!(big.facet_count_for_sag(a, e, 0.05) > small.facet_count_for_sag(a, f, 0.05));
+    }
+
+    #[test]
+    fn two_crossing_walls_merge_into_a_plus_outline() {
+        let walls = vec![
+            wall(1, 0.0, 0.0, 200.0, 0.0, 6.0),
+            wall(2, 100.0, -100.0, 100.0, 100.0, 4.0),
+        ];
+        let m = crossing_merges(&walls, 0.5);
+        assert_eq!(m.len(), 1);
+        let c = &m[0];
+        assert_eq!(c.wall_ids, [1, 2]);
+        // The overlap is the 4" by 6" square at the crossing.
+        let area = crate::geometry::polygon_area(&ccw(&c.overlap));
+        assert!((area - 24.0).abs() < 1e-9, "{area}");
+        // A plus has twelve corners, and its area is the two bars less the square.
+        assert_eq!(c.outline.len(), 12);
+        let plus = crate::geometry::polygon_area(&ccw(&c.outline));
+        assert!((plus - (200.0 * 6.0 + 200.0 * 4.0 - 24.0)).abs() < 1e-6, "{plus}");
+    }
+
+    #[test]
+    fn corners_and_tees_are_not_crossings() {
+        let corner = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 100.0, 100.0, 6.0),
+        ];
+        assert!(crossing_merges(&corner, 0.5).is_empty());
+        let tee = vec![
+            wall(1, 0.0, 0.0, 200.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 100.0, 100.0, 4.0),
+        ];
+        assert!(crossing_merges(&tee, 0.5).is_empty());
+        // Parallel walls never cross; an invisible wall is skipped.
+        let par = vec![
+            wall(1, 0.0, 0.0, 200.0, 0.0, 6.0),
+            wall(2, 0.0, 3.0, 200.0, 3.0, 6.0),
+        ];
+        assert!(crossing_merges(&par, 0.5).is_empty());
+        let mut hidden = vec![
+            wall(1, 0.0, 0.0, 200.0, 0.0, 6.0),
+            wall(2, 100.0, -100.0, 100.0, 100.0, 4.0),
+        ];
+        hidden[1].flags.invisible = true;
+        assert!(crossing_merges(&hidden, 0.5).is_empty());
+    }
+
+    #[test]
+    fn an_oblique_crossing_merges_too() {
+        let walls = vec![
+            wall(1, 0.0, 0.0, 200.0, 0.0, 6.0),
+            wall(2, 40.0, -80.0, 160.0, 80.0, 4.0),
+        ];
+        let m = crossing_merges(&walls, 0.5);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].outline.len(), 12);
+        assert!(polygon_union(&walls[0].footprint(), &[Point::new(900.0, 900.0), Point::new(901.0, 900.0), Point::new(901.0, 901.0)]).is_none());
     }
 }

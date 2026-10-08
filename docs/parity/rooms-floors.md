@@ -4,6 +4,8 @@
 >
 > Since that count (Round 13): R-40 a Courtyard has no ceiling as well as no floor; layers and plan views (LAY-6, LAY-8): the Project Browser's jumps to a schedule or a CAD detail pan the plan there, the plan-view tab strip is a top panel of its own, the Active Layer by Tool table is read by the Text tools, the Angular Dimension and the wall tools (not yet by doors, windows, cabinets, devices, stairs, roofs, framing or Dimension objects, which take their layer from their kind), text styles can be renamed or removed with every layer, override, plan view, CAD text, dimension and schedule following (`Project::rename_text_style`; the Text Styles editor does not call it yet), and the 20 template plan views are checked by name against the template inventory (a tab switch is navigation, not an undo step: DECISIONS).
 
+> Round 14 (rooms, floors and foundations): R-18, R-25, R-27, R-31, R-34, R-38, R-46, R-61, R-62 now Works and R-36, R-52, R-68 are further along (statuses and evidence in [../parity-status.md](../parity-status.md); decisions 300 to 311 in `DECISIONS.md`). Build Foundation builds Walls with Footings (footing under the walls, a basement or crawl space room on floor 0 with its slab and a ceiling taken from the first floor's platform), Monolithic Slab (slab thickness and stem wall height) and Grade Beams on Piers (piers and grade beams); a room has a Monolithic Slab Foundation flag, a Rough Ceiling and ceiling finish thickness that lift the ceiling platform in 3D, Moldings from a library (base, chair rail, crown; mitered, broken at doors), Materials for floor, ceiling and walls (per room, else the floor's Floor Defaults), a label text style and a label position; the Room Types list has Copy, Select All, Clear All and an In Use column; an Open Below room opens only the rooms wholly under it; the attic floor is built from Build New Floor ("Also build an attic floor") or kept current by Build Roof. Still open: the Room Specification's Deck tab, the platform-edge and underside materials, the "No Room Moldings" wall options, a permanent living-area readout (the status line shows it after a room is specified and after Plan Footprint) and a Build Roof checkbox that creates the attic floor.
+
 Scope: automatic room detection, Room Specification, room types, room labels,
 living area, floors (Build New Floor, Foundation, Reference Display, Exchange,
 Floor Defaults, Attic). Walls, doors and windows are specified elsewhere
@@ -384,3 +386,29 @@ Rooms are detected from wall centerlines with interior, standard and centerline 
 | R-68 Attic floor and attic walls | Missing | Med | Tie to Build Roof (roofs.md RF-31) |
 | R-69 Platform intersections between floors | Walls end at their own height; no platforms | High | Floor/ceiling platform model in `plan-3d`, driven by wall Structure options |
 | R-71 Elevation cascade from floor heights | `Floor.elevation` is stored, not derived | Med | Derive at load/edit from structure + ceiling heights; keep stored as cache |
+
+<!-- coverage-audit:start -->
+## Coverage audit additions (2026-10-08)
+
+Rows added by the Round 14 coverage audit (`docs/chief-feature-coverage.md`): Chief X18 features found in the menu, toolbar, sub-tool and dialog captures, or known from the product, that no row above covered. Status comes from a code search, not a Chief session; "verify in Chief" marks behavior known only from the product. Variants of one flyout or tab share one row.
+
+| ID | Chief behavior | Status | Evidence |
+|---|---|---|---|
+| R-72 | Floor Material Region: Polygon on the floor with its own material and fill. | Works | tools/details.rs DetailsVariant::FloorMaterialRegion; toolbar.rs floor() |
+| R-73 | Hole in Floor Platform: Cut a hole in a floor platform (stairwell, open to below). | Works | tools/foundation.rs FoundationVariant::FloorHole |
+| R-74 | Hole in Ceiling Platform: Cut a hole in a ceiling platform (attic stair, chase). | Works | tools/foundation.rs FoundationVariant::CeilingHole |
+| R-75 | Slab: Slab polyline with thickness, fill and a footing option (no parity spec: manual chapter 16 only). | Works | tools/foundation.rs FoundationVariant::Slab; docs/manual/16-foundation-slabs.md |
+| R-76 | Slab with Footing: Slab with a perimeter footing. | Works | FoundationVariant::SlabFooting; dialogs/foundation.rs |
+| R-77 | Slab Hole: Hole cut in a slab, optionally with its own footing. Also covers: Slab Hole with Footing. | Works | FoundationVariant::SlabHole, SlabHoleFooting |
+| R-78 | Square Pad: Footing pad and pier placed under posts and beams. Also covers: Round Pier. | Works | FoundationVariant::SquarePad, RoundPier |
+| R-79 | Space Planning ▸ Space Planning Assistant…: Questionnaire to colored room boxes, arrange, then build the house plan. Also covers: Space Planning Assistant. | Works | plan-spaceplan crate (questionnaire, room boxes, bump, validate, build_house); menus.rs tools_menu |
+| R-80 | Space Planning ▸ Room Planner / Space Planning Configuration toolbar (not captured): Space Planning toolbar configuration; Room Planner to import a room-planner sketch. (Not captured; verify in Chief.) | Partial | room boxes exist; the Space Planning toolbar configuration toggle is a stub (toolbar.rs config_space_planning) |
+| R-81 | Slab flyout: Slab and pier tools flyout. | Works | toolbar.rs slab() |
+| R-82 | Foundation defaults: Footing size, slab thickness, stem wall height defaults used by Build Foundation. | Missing | not in the tree; Build Foundation dialog (dialogs/foundation.rs) takes the values per build |
+| R-83 | Slab defaults: Slab thickness, footing and fill defaults. | Missing | not in the tree |
+| R-84 | Wall Covering tab (room wall coverings): Wall coverings applied to every wall of a room (wainscot, tile). (Not captured; verify in Chief.) | Partial | dialogs/room.rs "Wall Covering" tab live; walls cannot yet carry their own coverings (see Wall dialog) |
+| R-85 | Slab / Footing / Pad / Pier specification: Slab specification (General, Fill Style, Line Style, Layer). (Not captured; verify in Chief.) | Works | dialogs/foundation.rs SLAB_TABS, HOLE_TABS, PAD_TABS |
+| R-86 | Split-level floors (floors at different heights on one level): Two or more floor platforms on one story at different elevations joined by stairs. (Not captured; verify in Chief.) | Partial (verify in Chief) | rooms carry their own Floor Height (R-23); `plan_core::split_level::level_steps` finds where two rooms meet at different heights, the plan marks the step (`fireplace_view::deck::draw`), 3D closes the raised platform with a riser where no solid wall stands (`plan_3d::split_level`), Add Steps at Level Changes builds a stair per step (`deck::add_steps`); tests `split_level.rs`, scenarios s44 `rooms_at_different_heights_get_a_marked_level_change_and_a_riser`, `add_steps_puts_a_stair_between_the_levels_in_one_undo_step`. Gap: walls that step with the floor (short walls) are not built |
+| R-87 | Room Planner import: Import a room-planner layout and build walls from its room outlines. (Not captured; verify in Chief.) | Missing | no Room Planner or Space Planning import beyond the Assistant |
+| R-88 | Stepped footings (footing steps down a sloping lot): Footings that step in height along a foundation wall on a sloping lot, with the step shown in plan and 3D. (Not captured; verify in Chief.) | Missing | no footing steps in plan-core rooms.rs / dialogs/foundation.rs (grep stepped footing finds nothing) |
+<!-- coverage-audit:end -->

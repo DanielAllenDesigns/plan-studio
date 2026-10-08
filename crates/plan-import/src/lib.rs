@@ -10,26 +10,38 @@
 //! * [`walls`]: [`cad_to_walls`] turns pairs of parallel lines into wall
 //!   proposals, and [`apply_walls`] adds them to a project.
 //!
-//! * [`obj`] and [`gltf`]: readers for 3D library symbols (Wavefront OBJ,
-//!   glTF 2.0 `.gltf` / `.glb`) that produce a
-//!   [`ImportedModel`] in inches with Y up.
+//! * [`obj`], [`gltf`], [`stl`], [`tds`] and [`dae`]: readers for 3D library
+//!   symbols (Wavefront OBJ, glTF 2.0 `.gltf` / `.glb`, STL binary and ASCII,
+//!   Autodesk 3DS, COLLADA) that produce a [`ImportedModel`] in inches with Y
+//!   up. [`formats`] is the one entry point ([`parse_3d`]) with the unit and
+//!   up-axis guesses ([`suggest`]) and the SketchUp message; [`shape`] turns
+//!   and resizes a model for the Import 3D Symbol dialog; [`xml`] is the
+//!   small XML reader COLLADA needs.
 //!
 //! All lengths are inches once converted; the reader itself keeps the raw
 //! drawing units.
 
 pub mod convert;
+pub mod dae;
 pub mod dxf;
+pub mod formats;
 pub mod gltf;
 pub mod model;
 pub mod obj;
+pub mod shape;
+pub mod stl;
+pub mod tds;
 pub mod walls;
+pub mod xml;
 
 pub use convert::{
     apply_cad, to_cad_objects, to_cad_objects_with, to_inches_factor, ImportOptions, LayerMapping,
     LayerTarget,
 };
 pub use dxf::{parse_dxf, DxfBlock, DxfDrawing, DxfEntity, DxfLayer, DxfUnits};
+pub use formats::{is_3d_extension, parse_3d, suggest, Suggestion, SKP_MESSAGE};
 pub use model::{ImportedModel, ImportedPart, ModelError, ModelOptions, UpAxis};
+pub use shape::Facing;
 pub use walls::{apply_walls, cad_to_walls, CadToWallsOptions, CadToWallsResult, WallProposal};
 
 /// Why a drawing could not be imported.

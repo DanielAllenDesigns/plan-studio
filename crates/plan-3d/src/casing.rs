@@ -35,7 +35,7 @@ const JAMB_MIN: f64 = 0.5;
 /// the interior casing (width, depth, reveal), the outside face of an
 /// exterior wall the exterior casing; the profile (Casing tab) adds a head
 /// cap or plinth blocks.
-pub fn add_casing(ctx: &Ctx, set: &mut MeshSet) {
+pub fn add_casing(ctx: &Ctx, set: &mut MeshSet, sill_set: &mut MeshSet) {
     if ctx.unit.covered {
         return;
     }
@@ -131,9 +131,10 @@ pub fn add_casing(ctx: &Ctx, set: &mut MeshSet) {
                 bottom - SILL_THICKNESS - width.min(bottom - SILL_THICKNESS),
                 bottom - SILL_THICKNESS,
             );
+            let sill_trim = sill_set.material(Material::Trim);
             if apron.1 - apron.0 > 1e-6 && ctx.opening.style != OpeningStyle::PassThrough {
                 ctx.frame
-                    .cuboid(trim, (s_lo, s_hi), t, (apron.0.max(0.0), apron.1));
+                    .cuboid(sill_trim, (s_lo, s_hi), t, (apron.0.max(0.0), apron.1));
             }
             // The stool: on the room side it projects into the room; the
             // outside of an exterior wall gets one standing off its casing.
@@ -148,8 +149,12 @@ pub fn add_casing(ctx: &Ctx, set: &mut MeshSet) {
                 } else {
                     (-half - reach, half)
                 };
-                ctx.frame
-                    .cuboid(trim, (s_lo, s_hi), ts, (bottom - SILL_THICKNESS, bottom));
+                ctx.frame.cuboid(
+                    sill_trim,
+                    (s_lo, s_hi),
+                    ts,
+                    (bottom - SILL_THICKNESS, bottom),
+                );
             }
         }
     }

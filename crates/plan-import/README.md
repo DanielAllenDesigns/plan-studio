@@ -8,3 +8,4 @@ Brings outside drawings into Plan Studio, like Chief's Import Drawing and CAD to
 - `apply_walls` / `apply_cad` add the results to a `Project` with fresh ids.
 - DWG and binary DXF are not supported; convert to ASCII DXF first.
 - Round-trips `plan_core::write_dxf` output. Test with `cargo test -p plan-import`.
+- 3D symbols: `parse_3d(ext, ...)` reads OBJ, glTF/GLB, STL (binary and ASCII), 3DS and COLLADA (.dae, own XML reader) into an `ImportedModel` in inches, Y up, with part colors, material names and texture file names. `suggest` gives the file's own unit and axis (COLLADA, glTF) or the format's axis (STL/3DS are Z up) and a size-based unit guess; `shape` turns (Symbol faces direction) and resizes (3D bounding box). SketchUp `.skp` is refused with how to export instead.

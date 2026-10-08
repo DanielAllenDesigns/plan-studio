@@ -23,6 +23,9 @@ pub struct Calibration {
     pub id: Id,
     pub a: Option<Point>,
     pub b: Option<Point>,
+    /// Rotate to Align instead of Point to Point Resize: the second click
+    /// turns the picture at once, there is no distance to type.
+    pub align: bool,
 }
 
 #[derive(Default)]
@@ -77,12 +80,23 @@ pub fn calibration() -> Option<Calibration> {
 /// Starts a two-point calibration of `id`: the next two clicks of the
 /// Underlay tool are the points.
 pub fn begin_calibration(id: Id) {
+    begin_trace(id, false);
+}
+
+/// Starts Rotate to Align of `id`: the next two clicks of the Underlay tool
+/// are the ends of a line that should be level.
+pub fn begin_alignment(id: Id) {
+    begin_trace(id, true);
+}
+
+fn begin_trace(id: Id, align: bool) {
     state(|s| {
         s.active = Some(id);
         s.calibration = Some(Calibration {
             id,
             a: None,
             b: None,
+            align,
         });
     });
     TEXTS.with(|t| t.borrow_mut().distance.clear());
@@ -164,6 +178,10 @@ fn edit(cx: &mut EditorContext, id: Id, label: &str, merged: bool, f: impl FnOnc
 
 /// Draws the window when it is open.
 pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext) {
+    // The picture and CAD detail windows are drawn from here too: this is
+    // the one per-frame hook of the images and details owner.
+    super::images::show_windows(ctx, cx);
+    super::details::show_windows(ctx, cx);
     if !is_open() {
         return;
     }
@@ -309,11 +327,19 @@ fn selected(ui: &mut egui::Ui, cx: &mut EditorContext, u: &Underlay) {
     ));
     ui.horizontal(|ui| {
         if ui
-            .button("Calibrate\u{2026}")
+            .button("Point to Point Resize\u{2026}")
             .on_hover_text("Click two points on the picture, then type their real distance")
             .clicked()
         {
             begin_calibration(id);
+            cx.requests.push(EditorRequest::SetTool(ToolId::Underlay));
+        }
+        if ui
+            .button("Rotate to Align\u{2026}")
+            .on_hover_text("Click the ends of a line that should be level (or plumb)")
+            .clicked()
+        {
+            begin_alignment(id);
             cx.requests.push(EditorRequest::SetTool(ToolId::Underlay));
         }
         if ui
@@ -364,7 +390,11 @@ fn calibration_pane(ui: &mut egui::Ui, cx: &mut EditorContext, id: Id) {
         return;
     };
     ui.separator();
-    ui.strong("Calibration");
+    ui.strong(if c.align {
+        "Rotate to Align"
+    } else {
+        "Point to Point Resize"
+    });
     let mark = |p: Option<Point>| if p.is_some() { "set" } else { "click it" };
     ui.label(format!("Point A: {}   Point B: {}", mark(c.a), mark(c.b)));
     let (Some(a), Some(b)) = (c.a, c.b) else {
@@ -399,7 +429,7 @@ fn calibration_pane(ui: &mut egui::Ui, cx: &mut EditorContext, id: Id) {
     if apply {
         let text = TEXTS.with(|t| t.borrow().distance.clone());
         match parse_ft_in(&text) {
-            Some(real) if tool::apply_calibration(cx, id, a, b, real) => cancel_calibration(),
+            Some(real) if tool::trace::resize_underlay(cx, id, a, b, real) => cancel_calibration(),
             Some(_) => {}
             None => cx.status = "Type the real distance, such as 24'-0\"".into(),
         }

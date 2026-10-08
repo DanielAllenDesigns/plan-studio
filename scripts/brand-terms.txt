@@ -1,0 +1,7 @@
+# Names of the original product, one Python regex per line, matched case-insensitively
+# by scripts/brand-sweep.py. Blank lines and lines starting with # are ignored.
+Chief Architect
+\bChief\b
+chiefarchitect\.com
+Home Designer
+\bX1[5-8]\b

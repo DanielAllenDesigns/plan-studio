@@ -6,7 +6,8 @@
 
 use super::{draw_shell, Sim};
 use crate::dialogs::layout::{
-    LeaderSpec, PageChoice, PageSetup, Placement, SendSource, SendSpec, TextBoxSpec,
+    LayoutTarget, LeaderSpec, PageChoice, PageSetup, Placement, SendSource, SendSpec, SheetSizes,
+    SnapshotSpec, TextBoxSpec,
 };
 use crate::shell::layout_window::{self as lw, LayoutCommand, LayoutView};
 use crate::toolbar::Action;
@@ -14,7 +15,10 @@ use crate::tools::ToolId;
 use plan_core::geometry::Point;
 use plan_core::{Id, Project};
 use plan_docs::{materials_total, MasterList, Scale, SheetSize};
-use plan_layout::{BoxSource, PaperSize, PrintOptions, PrintScale};
+use plan_layout::{
+    AlignEdge, BoxSource, CustomSheetSize, PaperSize, PreviewItem, PrintColor, PrintOptions,
+    PrintScale, SheetChoice, Spread,
+};
 use std::sync::Once;
 
 const W: f64 = 480.0;
@@ -328,10 +332,13 @@ fn page_setup_changes_the_sheet_and_the_printed_page_size() {
     let mut sim = house();
     let mut v = view(&mut sim);
     let setup = v.page_setup().expect("a page setup");
-    assert_eq!(setup.sheet, SheetSize::ArchC);
+    assert_eq!(
+        setup.sheet,
+        plan_layout::SheetChoice::Standard(SheetSize::ArchC)
+    );
     let before = lw::print_bytes(v.layout().unwrap(), &sim.app.cx.project, None);
     let wider = PageSetup {
-        sheet: SheetSize::ArchD,
+        sheet: plan_layout::SheetChoice::Standard(SheetSize::ArchD),
         margins_in: 0.75,
         ..setup.clone()
     };
@@ -479,4 +486,540 @@ fn the_construction_set_installs_ten_pages_with_a_sheet_index() {
     // One undo step removes the whole set.
     assert_eq!(sim.app.cx.undo_label(), Some("Create Construction Set"));
     let _ = LayoutCommand::ShowPlan;
+}
+
+// ---------------------------------------------------------------- round 14 --
+
+/// Three small text boxes on the first printed page, selected together.
+fn three_boxes(sim: &mut Sim, v: &mut LayoutView) -> [Id; 3] {
+    let p = &mut sim.app.cx.project;
+    let a = v.add_text_box_in(p, [1.0, 1.0, 3.0, 2.0]).unwrap();
+    let b = v.add_text_box_in(p, [4.0, 5.0, 8.0, 7.0]).unwrap();
+    let c = v.add_text_box_in(p, [2.0, 9.0, 3.0, 10.0]).unwrap();
+    v.select_boxes(&[a, b, c]);
+    [a, b, c]
+}
+
+fn rect_of(v: &LayoutView, id: Id) -> [f64; 4] {
+    let b = v
+        .current_page()
+        .unwrap()
+        .boxes
+        .iter()
+        .find(|b| b.id == id)
+        .unwrap();
+    let (a, c) = b.rect_in;
+    [a.x.min(c.x), a.y.min(c.y), a.x.max(c.x), a.y.max(c.y)]
+}
+
+#[test]
+fn page_specification_sets_number_title_flags_and_a_sheet_of_its_own() {
+    let mut sim = house();
+    let mut v = view(&mut sim);
+    v.send(&mut sim.app.cx.project, &plan_spec(0), None)
+        .unwrap();
+    let mut spec = v.page_spec().expect("a page specification");
+    assert_eq!((spec.number, spec.title.as_str()), (1, "Page 1"));
+    assert_eq!(spec.sheet, None, "the page follows the layout's sheet");
+    spec.title = "Presentation Plan".into();
+    spec.number = 7;
+    spec.sheet = Some(SheetChoice::Standard(SheetSize::ArchD));
+    let at = v.page;
+    assert_eq!(
+        v.apply_page_spec(&mut sim.app.cx.project, at, &spec),
+        Ok(true)
+    );
+    assert_eq!(v.undo_label(), Some("Page Specification"));
+    let l = v.layout().unwrap();
+    assert_eq!(l.pages[at].sheet_number(), "A-7");
+    assert_eq!(l.page_sheet_inches(&l.pages[at]), (36.0, 24.0));
+    assert_eq!(l.sheet_inches(), (24.0, 18.0), "the layout is untouched");
+    let pdf = lw::print_bytes(l, &sim.app.cx.project, None);
+    assert!(
+        has(&pdf, "/MediaBox [0 0 2592 1728]"),
+        "the page's own sheet"
+    );
+    // The dialog reads the page back the way it was set.
+    let again = v.page_spec().unwrap();
+    assert_eq!(again.sheet, Some(SheetChoice::Standard(SheetSize::ArchD)));
+    assert!(!again.portrait);
+    assert_eq!(
+        v.apply_page_spec(&mut sim.app.cx.project, at, &again),
+        Ok(false),
+        "nothing changed"
+    );
+    // A number another page has is refused and nothing changes.
+    v.add_page(&mut sim.app.cx.project, false);
+    let here = v.page;
+    let mut clash = v.page_spec().unwrap();
+    clash.number = 7;
+    assert_eq!(
+        v.apply_page_spec(&mut sim.app.cx.project, here, &clash),
+        Err("Another page already has that sheet number")
+    );
+    assert_ne!(v.layout().unwrap().pages[here].number, 7);
+    // Portrait turns the page's sheet upright; None follows the layout again.
+    let mut up = v.page_spec().unwrap();
+    up.sheet = Some(SheetChoice::Standard(SheetSize::Tabloid));
+    up.portrait = true;
+    up.no_title_block = true;
+    assert_eq!(
+        v.apply_page_spec(&mut sim.app.cx.project, here, &up),
+        Ok(true)
+    );
+    let l = v.layout().unwrap();
+    assert_eq!(l.page_sheet_inches(&l.pages[here]), (11.0, 17.0));
+    assert!(l.pages[here].no_title_block);
+    assert_eq!(v.page_spec().unwrap(), up);
+    up.sheet = None;
+    assert_eq!(
+        v.apply_page_spec(&mut sim.app.cx.project, here, &up),
+        Ok(true)
+    );
+    assert_eq!(v.layout().unwrap().pages[here].size_override_in, None);
+}
+
+#[test]
+fn customize_sheet_sizes_add_a_poster_size_that_page_setup_and_print_use() {
+    let mut sim = house();
+    let mut v = view(&mut sim);
+    let poster = CustomSheetSize::new("Poster", 40.0, 30.0);
+    let sizes = SheetSizes {
+        custom: vec![poster.clone()],
+        hidden: SheetSize::ALL
+            .into_iter()
+            .filter(|s| s.label().starts_with("ISO"))
+            .collect(),
+    };
+    assert!(v.apply_sheet_sizes(&mut sim.app.cx.project, &sizes));
+    assert_eq!(v.undo_label(), Some("Customize Sheet Sizes"));
+    assert!(
+        !v.apply_sheet_sizes(&mut sim.app.cx.project, &sizes),
+        "the same answers change nothing"
+    );
+    let labels: Vec<String> = v
+        .layout()
+        .unwrap()
+        .size_choices()
+        .iter()
+        .map(SheetChoice::label)
+        .collect();
+    assert!(
+        labels.contains(&"Poster (30 x 40)".to_string()),
+        "{labels:?}"
+    );
+    assert!(labels.contains(&"ARCH C (18 x 24)".to_string()));
+    assert!(!labels.iter().any(|n| n.starts_with("ISO")), "{labels:?}");
+    // Page Setup picks the poster size; the PDF page is 40 x 30 inches.
+    let mut setup = v.page_setup().unwrap();
+    setup.sheet = SheetChoice::Custom(poster.clone());
+    assert!(v.apply_page_setup(&mut sim.app.cx.project, &setup));
+    assert_eq!(v.layout().unwrap().sheet_inches(), (40.0, 30.0));
+    let pdf = lw::print_bytes(v.layout().unwrap(), &sim.app.cx.project, None);
+    assert!(has(&pdf, "/MediaBox [0 0 2880 2160]"));
+    // Boxes sent now pack into the new area.
+    let id = v
+        .send(&mut sim.app.cx.project, &plan_spec(0), None)
+        .unwrap();
+    let l = v.layout().unwrap();
+    let hi = l.drawing_area().1;
+    let r = l.pages[1]
+        .boxes
+        .iter()
+        .find(|b| b.id == id)
+        .unwrap()
+        .bounds_in();
+    assert!(r[2] <= hi.x + 1e-9 && r[3] <= hi.y + 1e-9);
+    // Page Setup remembers the custom sheet as its choice.
+    assert_eq!(v.page_setup().unwrap().sheet, SheetChoice::Custom(poster));
+    // Undo puts the ARCH C sheet back.
+    assert!(v.undo(&mut sim.app.cx.project).is_some());
+    assert!(v.undo(&mut sim.app.cx.project).is_some());
+    assert_eq!(v.layout().unwrap().sheet_inches(), (24.0, 18.0));
+}
+
+#[test]
+fn boxes_align_spread_and_copy_as_single_undo_steps() {
+    let mut sim = house();
+    let mut v = view(&mut sim);
+    let [a, b, c] = three_boxes(&mut sim, &mut v);
+    assert_eq!(v.selection_ids(), vec![a, b, c]);
+    let p = &mut sim.app.cx.project;
+    assert_eq!(v.align_selected(p, AlignEdge::Left), 2);
+    assert_eq!(v.undo_label(), Some("Align Left"));
+    for id in [a, b, c] {
+        assert_eq!(rect_of(&v, id)[0], 1.0, "box {id}");
+    }
+    // Spread bottom to top: a (1..2), b (5..7), c (9..10) get equal gaps.
+    assert_eq!(v.distribute_selected(p, Spread::Vertical), 1);
+    assert_eq!(v.undo_label(), Some("Distribute Boxes Vertically"));
+    let (ra, rb, rc) = (rect_of(&v, a), rect_of(&v, b), rect_of(&v, c));
+    assert!(((rb[1] - ra[3]) - (rc[1] - rb[3])).abs() < 1e-9);
+    // One box lines up with the drawing area.
+    v.select_boxes(&[a]);
+    assert_eq!(v.align_selected(p, AlignEdge::Right), 1);
+    let area = v.layout().unwrap().drawing_area();
+    assert!((rect_of(&v, a)[2] - area.1.x).abs() < 1e-9);
+    // Copy to a second page and duplicate on the same page.
+    v.add_page(p, false);
+    let second = v.current_page().unwrap().number;
+    v.set_page(1);
+    v.select_boxes(&[a, b, c]);
+    assert_eq!(v.copy_selected_to(p, second), 3);
+    assert_eq!(v.undo_label(), Some("Copy Layout Boxes"));
+    assert_eq!(v.current_page().unwrap().number, second, "the copies show");
+    assert_eq!(v.current_page().unwrap().boxes.len(), 3);
+    let copies = v.selection_ids();
+    assert_eq!(copies.len(), 3);
+    assert!(copies.iter().all(|id| ![a, b, c].contains(id)));
+    assert_eq!(v.duplicate_here(p), 3);
+    assert_eq!(v.current_page().unwrap().boxes.len(), 6);
+    // Ids stay unique across the layout.
+    let mut ids: Vec<Id> = v
+        .layout()
+        .unwrap()
+        .pages
+        .iter()
+        .flat_map(|pg| pg.boxes.iter().map(|b| b.id))
+        .collect();
+    let n = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), n);
+    // Each is one undo step.
+    assert_eq!(v.undo(p).as_deref(), Some("Copy Layout Boxes"));
+    assert_eq!(v.current_page().unwrap().boxes.len(), 3);
+}
+
+#[test]
+fn a_plan_holds_several_layout_files_and_send_to_picks_the_file() {
+    let mut sim = house();
+    let mut v = view(&mut sim);
+    let p = &mut sim.app.cx.project;
+    v.send(p, &plan_spec(0), None).unwrap();
+    let first = lw::layout_names(p)[0].clone();
+    assert_eq!(first, "Maple Court Residence Layout");
+    // A second file opens and parks the first.
+    assert!(v.new_layout_file(p, "Presentation Set", None));
+    assert_eq!(v.undo_label(), Some("New Layout File"));
+    assert_eq!(
+        lw::layout_names(p),
+        vec!["Presentation Set".to_string(), first.clone()]
+    );
+    assert_eq!(p.layout_files.len(), 1);
+    assert!(v.layout().unwrap().pages[1].boxes.is_empty());
+    assert!(!v.new_layout_file(p, " presentation set ", None), "taken");
+    assert!(!v.new_layout_file(p, "  ", None), "empty");
+    // Send to the first file by name: it opens, the box lands on a new page,
+    // and the whole action is one undo step.
+    let spec = SendSpec {
+        page: PageChoice::New,
+        ..plan_spec(0)
+    };
+    let id = v
+        .send_to(p, &spec, &LayoutTarget::Existing(first.clone()), None, None)
+        .unwrap();
+    assert_eq!(lw::layout_names(p)[0], first);
+    let l = v.layout().unwrap();
+    assert!(l
+        .pages
+        .iter()
+        .flat_map(|pg| pg.boxes.iter())
+        .any(|b| b.id == id));
+    assert_eq!(v.undo_label(), Some("Send to Layout"));
+    assert_eq!(v.undo(p).as_deref(), Some("Send to Layout"));
+    assert_eq!(lw::layout_names(p)[0], "Presentation Set");
+    assert_eq!(v.layout().unwrap().name, "Presentation Set");
+    // The parked file and the open one survive a save and open.
+    let back = Project::from_json(&p.to_json().unwrap()).unwrap();
+    assert_eq!(lw::layout_names(&back), lw::layout_names(p));
+    // A new file made by Send to Layout.
+    let made = v
+        .send_to(
+            p,
+            &spec,
+            &LayoutTarget::New("Permit Set".into()),
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(lw::layout_names(p)[0], "Permit Set");
+    assert!(v
+        .layout()
+        .unwrap()
+        .pages
+        .iter()
+        .flat_map(|pg| pg.boxes.iter())
+        .any(|b| b.id == made));
+    assert_eq!(p.layout_files.len(), 2);
+    // A name that is taken is refused and nothing changes.
+    let before = lw::layout_names(p);
+    assert!(v
+        .send_to(
+            p,
+            &spec,
+            &LayoutTarget::New("Permit Set".into()),
+            None,
+            None
+        )
+        .is_err());
+    assert_eq!(lw::layout_names(p), before);
+    // Switching is an undo step too.
+    assert!(v.switch_layout(p, 1));
+    assert_eq!(v.undo_label(), Some("Open Layout"));
+    assert_ne!(lw::layout_names(p)[0], "Permit Set");
+    assert!(!v.switch_layout(p, 0) && !v.switch_layout(p, 9));
+}
+
+#[test]
+fn print_preview_draws_the_page_in_the_chosen_colour_mode() {
+    let mut sim = house();
+    let mut v = view(&mut sim);
+    v.send(&mut sim.app.cx.project, &plan_spec(0), None)
+        .unwrap();
+    let opts = PrintOptions {
+        paper: PaperSize::Standard(SheetSize::ArchC),
+        scale: PrintScale::Actual,
+        margin_in: 0.0,
+        color: PrintColor::BlackWhite,
+        ..PrintOptions::default()
+    };
+    let pages = v.print_preview_pages(&sim.app.cx.project, &opts);
+    assert_eq!(pages.len(), 1);
+    let page = &pages[0];
+    assert_eq!(page.caption, "A-1 Page 1");
+    let ink: Vec<[u8; 3]> = page
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            PreviewItem::Stroke { color, .. }
+            | PreviewItem::Fill { color, .. }
+            | PreviewItem::Text { color, .. } => Some(*color),
+            _ => None,
+        })
+        .collect();
+    assert!(ink.len() > 50, "the plan and the title block draw");
+    assert!(ink.iter().all(|c| *c == [0, 0, 0] || *c == [255, 255, 255]));
+    // Colour keeps its colours; the same options print a PDF page of the
+    // same paper.
+    let colour = v.print_preview_pages(
+        &sim.app.cx.project,
+        &PrintOptions {
+            color: PrintColor::Color,
+            ..opts.clone()
+        },
+    );
+    assert!(colour[0]
+        .items
+        .iter()
+        .any(|i| matches!(i, PreviewItem::Fill { color, .. } if color[0] != color[2])));
+    let pdf = lw::print_with(v.layout().unwrap(), &sim.app.cx.project, &opts);
+    assert!(has(&pdf, "/MediaBox [0 0 1728 1296]"));
+    assert_eq!(page.paper_in, (24.0, 18.0));
+}
+
+#[test]
+fn schedule_tables_export_to_csv_and_excel() {
+    let mut sim = house();
+    let mut v = view(&mut sim);
+    let p = &mut sim.app.cx.project;
+    let door = v
+        .add_source_box(
+            p,
+            "Add Schedule",
+            BoxSource::Schedule {
+                kind: plan_layout::ScheduleKind::Door,
+            },
+        )
+        .unwrap();
+    let window = v
+        .add_source_box(
+            p,
+            "Add Schedule",
+            BoxSource::Schedule {
+                kind: plan_layout::ScheduleKind::Window,
+            },
+        )
+        .unwrap();
+    // The selected box alone.
+    v.select_boxes(&[door]);
+    let (name, csv) = v.tables_file(p, false).expect("a table");
+    assert_eq!(name, "Door Schedule");
+    let text = String::from_utf8(csv).unwrap();
+    assert!(text.lines().count() >= 2, "{text}");
+    let (_, xlsx) = v.tables_file(p, true).unwrap();
+    assert!(xlsx.starts_with(b"PK"), "a zip");
+    let parts = plan_library::archive::read_zip(&xlsx).unwrap();
+    assert!(parts.iter().any(|(n, _)| n == "xl/worksheets/sheet1.xml"));
+    assert!(!parts.iter().any(|(n, _)| n == "xl/worksheets/sheet2.xml"));
+    // With nothing selected every table on the page goes, a sheet each.
+    v.select_boxes(&[]);
+    let (name, xlsx) = v.tables_file(p, true).unwrap();
+    assert_eq!(name, "Page 1");
+    let parts = plan_library::archive::read_zip(&xlsx).unwrap();
+    assert!(parts.iter().any(|(n, _)| n == "xl/worksheets/sheet2.xml"));
+    let wb = parts
+        .iter()
+        .find(|(n, _)| n == "xl/workbook.xml")
+        .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+        .unwrap();
+    assert!(
+        wb.contains("Door Schedule") && wb.contains("Window Schedule"),
+        "{wb}"
+    );
+    // Several tables in a CSV: each under its title.
+    let (_, csv) = v.tables_file(p, false).unwrap();
+    let text = String::from_utf8(csv).unwrap();
+    assert!(text.contains("Door Schedule\n") && text.contains("Window Schedule\n"));
+    // A page without tables has nothing to export.
+    v.add_page(p, false);
+    assert!(v.tables_file(p, true).is_none());
+    let _ = window;
+}
+
+#[test]
+fn the_construction_set_prints_the_plans_other_schedules_and_door_boxes_follow_the_spec() {
+    use plan_core::schedules::{Schedule, ScheduleKind, ScheduleLayer};
+    let mut sim = house();
+    let mut layer = ScheduleLayer::default();
+    layer.add(Schedule::new(ScheduleKind::Cabinet, Point::new(0.0, -80.0)));
+    let mut door = Schedule::new(ScheduleKind::Door, Point::new(100.0, -80.0));
+    let hidden = door
+        .columns
+        .iter()
+        .find(|c| c.field == "swing")
+        .map(|c| c.title.clone())
+        .expect("a swing column");
+    layer.add(door.clone());
+    layer.store(&mut sim.app.cx.project.floors[0]);
+    sim.action(Action::FileNewLayout);
+    let msg = lw::install_construction_set(&mut sim.app.cx);
+    assert!(msg.starts_with("Added the construction set"), "{msg}");
+    let layout = lw::load(&sim.app.cx.project).unwrap();
+    let sched = layout
+        .pages
+        .iter()
+        .find(|p| p.title == "Schedules")
+        .unwrap();
+    assert!(
+        sched
+            .boxes
+            .iter()
+            .any(|b| matches!(b.source, BoxSource::PlacedSchedule { .. })),
+        "the cabinet schedule follows the plan"
+    );
+    let pdf = lw::print_bytes(&layout, &sim.app.cx.project, None);
+    assert!(has(&pdf, "(Cabinet Schedule)"));
+    assert!(
+        has(&pdf, &format!("({hidden})")),
+        "the door box shows Swing"
+    );
+    // Hiding the column in the plan's door schedule hides it on the sheet.
+    for c in &mut door.columns {
+        if c.field == "swing" {
+            c.visible = false;
+        }
+    }
+    let mut layer = ScheduleLayer::load(&sim.app.cx.project.floors[0]);
+    layer.schedules.retain(|s| s.kind != ScheduleKind::Door);
+    layer.add(door);
+    layer.store(&mut sim.app.cx.project.floors[0]);
+    let pdf = lw::print_bytes(&layout, &sim.app.cx.project, None);
+    assert!(!has(&pdf, &format!("({hidden})")), "{hidden} is gone");
+    assert!(has(&pdf, "(Door Schedule)"));
+}
+
+#[test]
+fn a_picture_of_the_3d_view_goes_to_the_layout_and_into_the_pdf() {
+    let mut sim = house();
+    let mut v = view(&mut sim);
+    let p = &mut sim.app.cx.project;
+    let view3d = crate::shell::view3d_panel::Snapshot3d {
+        scene: lw::view_scene(p),
+        camera: plan_render::Camera::from_plan(Point::new(240.0, -300.0), 90.0, 66.0, 50.0),
+    };
+    let snap = SnapshotSpec {
+        width_in: 4.0,
+        dpi: 20,
+        samples: 1,
+    };
+    let id = v
+        .send_to(
+            p,
+            &plan_spec(0),
+            &LayoutTarget::Current,
+            Some((snap, view3d)),
+            None,
+        )
+        .unwrap();
+    assert_eq!(v.undo_label(), Some("Send 3D View to Layout"));
+    let l = v.layout().unwrap();
+    let b = l.pages[1].boxes.iter().find(|b| b.id == id).unwrap();
+    let BoxSource::ImageData {
+        width,
+        height,
+        rgba,
+    } = &b.source
+    else {
+        panic!("a picture box, not {:?}", b.source);
+    };
+    assert_eq!((*width, *height), (80, 60), "4 x 3 inches at 20 dpi");
+    assert_eq!(rgba.len(), 80 * 60 * 4);
+    assert!(rgba.iter().any(|v| *v != 0), "something was drawn");
+    assert_eq!(b.size_in(), (4.0, 3.0));
+    assert_eq!(b.label.as_deref(), Some("3D VIEW"));
+    let pdf = lw::print_bytes(l, p, None);
+    assert!(has(&pdf, "/Subtype/Image"), "the picture is in the PDF");
+    // The picture saves with the plan as text, not as a list of numbers.
+    let layout_json = serde_json::to_string(l).unwrap();
+    assert!(
+        layout_json.len() < rgba.len() * 2,
+        "{} bytes of layout JSON for {} bytes of pixels",
+        layout_json.len(),
+        rgba.len()
+    );
+    let json = p.to_json().unwrap();
+    let back = Project::from_json(&json).unwrap();
+    assert_eq!(lw::load(&back).unwrap(), *l);
+    // An empty view has nothing to send.
+    let empty = crate::shell::view3d_panel::Snapshot3d {
+        scene: plan_3d::Scene::default(),
+        camera: plan_render::Camera::from_plan(Point::ZERO, 0.0, 66.0, 50.0),
+    };
+    assert!(v
+        .send_to(
+            p,
+            &plan_spec(0),
+            &LayoutTarget::Current,
+            Some((snap, empty)),
+            None
+        )
+        .is_err());
+}
+
+#[test]
+fn layout_drawings_use_the_3d_views_scene() {
+    let mut sim = house();
+    let p = &mut sim.app.cx.project;
+    let plain = plan_3d::build_scene(p).meshes.len();
+    let stair = plan_stairs::Stair::new(
+        p.alloc_id(),
+        Point::new(100.0, 100.0),
+        0.0,
+        plan_stairs::StairParams::default(),
+    );
+    p.floors[0].set_stairs(&[stair]).unwrap();
+    let with = lw::view_scene(p).meshes.len();
+    assert!(
+        with > plain,
+        "the stair is in the layout scene: {with} vs {plain}"
+    );
+    // The render context the layout prints with builds its scene that way:
+    // an elevation box sized from it is at least as large as from walls alone.
+    let rcx = lw::render_context(p);
+    let src = BoxSource::Elevation {
+        dir: plan_elevation::ViewDir::Front,
+    };
+    let (w, h) = plan_layout::source_size_in(&src, Scale::QuarterInch, &rcx);
+    assert!(w > 0.0 && h > 0.0);
 }

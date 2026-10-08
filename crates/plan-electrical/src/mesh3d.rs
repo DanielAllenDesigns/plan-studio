@@ -18,6 +18,8 @@ use plan_core::{Point, Project, Wall, DEFAULT_CEILING_HEIGHT};
 
 /// Cover plate size: 2.75" wide, 4.5" tall, 0.25" proud of the wall.
 const PLATE: (f64, f64, f64) = (2.75, 4.5, 0.25);
+/// Weatherproof in-use cover: 5" wide, 5.5" tall, 1.5" proud of the wall.
+const WP_COVER: (f64, f64, f64) = (5.0, 5.5, 1.5);
 /// Panel box: 14" wide, 20" tall, 4" deep.
 const PANEL: (f64, f64, f64) = (14.0, 20.0, 4.0);
 /// Flush ceiling fixture disc: 12" across, 2" thick, hanging from its height.
@@ -251,6 +253,7 @@ fn plate_details(parts: &mut Parts, face: Point, n: Point, y: f64) {
             dark(1.1, 1.0, 1.3);
             dark(-1.1, 1.0, 1.3);
         }
+        DeviceKind::OutletDedicated => dark(0.0, 1.0, 1.3),
         DeviceKind::Outlet110Quad => {
             dark(1.6, 1.0, 1.0);
             dark(-1.6, 1.0, 1.0);
@@ -295,6 +298,19 @@ fn device_parts<'a>(
                     parts
                         .body()
                         .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
+                }
+                DeviceKind::OutletWp => {
+                    let (w, h, t) = WP_COVER;
+                    parts
+                        .body()
+                        .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
+                    // The dark flap opening of the in-use cover.
+                    let o = face + n * (t - 0.01);
+                    parts.soup(Material::Asphalt).prism(
+                        &rect(o, u, n, w * 0.6, DETAIL + 0.01),
+                        y - 0.6,
+                        y + 0.6,
+                    );
                 }
                 _ => {
                     let (w, h, t) = PLATE;

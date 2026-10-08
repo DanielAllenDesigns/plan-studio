@@ -729,6 +729,8 @@ pub enum Pending {
     Close,
     Quit,
     Revert,
+    /// File > Import > Chief Plan...: the import replaces the open plan.
+    ImportChief,
 }
 
 impl Pending {
@@ -739,6 +741,7 @@ impl Pending {
             Pending::Close => "close it",
             Pending::Quit => "quit",
             Pending::Revert => "revert",
+            Pending::ImportChief => "import a Chief plan",
         }
     }
 }
@@ -897,6 +900,12 @@ impl FileState {
     /// Nothing is unsaved any more.
     fn mark_saved(&mut self, cx: &EditorContext) {
         self.rebaseline(cx);
+    }
+
+    /// Is `p` cleared to run (no unsaved changes stood in its way)?
+    #[cfg(test)]
+    pub(crate) fn is_ready_for(&self, p: &Pending) -> bool {
+        self.ready.as_ref() == Some(p)
     }
 
     /// Whether any request is waiting on the user.
@@ -1156,6 +1165,7 @@ impl PlanApp {
             }
             Pending::Open(Some(path)) => self.open_path(path),
             Pending::Open(None) => self.open_dialog(),
+            Pending::ImportChief => self.import_chief_plan(),
             Pending::Revert => {
                 if let Some(path) = self.path.clone() {
                     self.open_path(path);

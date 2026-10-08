@@ -1,5 +1,5 @@
 use super::*;
-use plan_core::{detect_rooms, Floor, Opening, Point, Room, Wall, WallKind};
+use plan_core::{detect_rooms, Floor, Id, Opening, Point, Room, Wall, WallKind};
 use std::f64::consts::FRAC_PI_2;
 
 fn wall(id: u64, a: (f64, f64), b: (f64, f64)) -> Wall {
@@ -145,14 +145,14 @@ fn auto_outlets_respect_spacing_and_doors() {
 }
 
 #[test]
-fn kitchen_gets_gfci_counter_outlets_at_42() {
+fn kitchen_gets_gfci_counter_outlets_at_44() {
     let (floor, rooms) = room_20x12();
     let types = vec![(rooms[0].label.clone(), RoomFunction::Kitchen)];
     let devices = auto_place_outlets(&floor, &rooms, &types, &AutoOutletOptions::default());
     assert!(!devices.is_empty());
     assert!(devices
         .iter()
-        .all(|d| d.kind == DeviceKind::Gfci && d.height == 42.0 && d.wall_id.is_some()));
+        .all(|d| d.kind == DeviceKind::Gfci && d.height == 44.0 && d.wall_id.is_some()));
     for w in &floor.walls {
         let mut here: Vec<f64> = devices
             .iter()
@@ -680,12 +680,12 @@ fn default_heights_per_kind() {
         assert_eq!(k.default_height(), 48.0, "{k:?}");
     }
     assert_eq!(K::OutletFloor.default_height(), 0.0);
-    assert_eq!(COUNTER_OUTLET_HEIGHT, 42.0);
+    assert_eq!(COUNTER_OUTLET_HEIGHT, 44.0);
     // Every kind except the rope light is in `all` once and wall/ceiling are exclusive.
     for k in DeviceKind::all() {
         assert!(!(k.is_wall_mounted() && k.is_ceiling()), "{k:?}");
     }
-    assert_eq!(DeviceKind::all().len(), 23);
+    assert_eq!(DeviceKind::all().len(), 25);
 }
 
 #[test]
@@ -874,7 +874,7 @@ fn outlets_on_the_40x30_shell_follow_the_nec_rules() {
         );
     }
 
-    // Kitchen: 42" GFCI counter outlets at most 4' apart on every wall.
+    // Kitchen: 44" GFCI counter outlets at most 4' apart on every wall.
     let kitchen = auto_place_outlets(
         &floor,
         &rooms,
@@ -883,7 +883,7 @@ fn outlets_on_the_40x30_shell_follow_the_nec_rules() {
     );
     assert!(kitchen
         .iter()
-        .all(|d| d.kind == DeviceKind::Gfci && d.height == 42.0));
+        .all(|d| d.kind == DeviceKind::Gfci && d.height == 44.0));
     for w in &floor.walls {
         let mut here: Vec<f64> = kitchen
             .iter()
@@ -906,4 +906,247 @@ fn outlets_on_the_40x30_shell_follow_the_nec_rules() {
         .iter()
         .all(|d| d.kind == DeviceKind::Gfci && d.height == 12.0));
     assert_eq!(bath.len(), devices.len());
+}
+
+// ----- round 14: flags, defaults, multi-way switches, exterior outlets -----
+
+#[test]
+fn flags_voltage_and_symbols_of_the_outlet_kinds() {
+    use DeviceKind as K;
+    assert_eq!(K::Outlet110.flags(), ["110V"]);
+    assert_eq!(K::Outlet220.flags(), ["220V", "Dedicated"]);
+    assert_eq!(K::Gfci.flags(), ["110V", "GFCI"]);
+    assert_eq!(K::OutletWp.flags(), ["110V", "GFCI", "WP"]);
+    assert_eq!(K::OutletDedicated.flags(), ["110V", "Dedicated"]);
+    assert!(K::Switch.flags().is_empty() && K::Switch.voltage().is_none());
+    let tag = |k: K, t: &str| {
+        k.symbol()
+            .iter()
+            .any(|s| matches!(s, Stroke::Text { text, .. } if text == t))
+    };
+    assert!(tag(K::Gfci, "GFCI") && tag(K::OutletWp, "WP"));
+    assert!(tag(K::Outlet220, "220V") && tag(K::OutletDedicated, "DED"));
+    // Every outlet is a wall outlet except the floor one, all on the outlet family.
+    assert!(K::OutletWp.is_wall_mounted() && K::OutletDedicated.is_wall_mounted());
+    assert!(K::Outlet110.family().contains(&K::OutletWp));
+    assert_eq!(K::OutletWp.default_height(), 18.0);
+}
+
+#[test]
+fn default_heights_are_stored_in_the_project() {
+    use DeviceKind as K;
+    let mut project = plan_core::Project::new("x");
+    let mut defaults = ElectricalDefaults::load(&project);
+    assert_eq!(defaults.height(K::Outlet110), 12.0);
+    assert_eq!(defaults.height(K::Switch), 48.0);
+    assert_eq!(defaults.counter_height(), 44.0);
+    defaults.set_height(K::Outlet110, 18.0);
+    defaults.set_counter_height(40.0);
+    defaults.set_height(K::Switch, 48.0); // the built-in height stores nothing
+    defaults.store(&mut project);
+    let back = ElectricalDefaults::load(&project);
+    assert_eq!(back.height(K::Outlet110), 18.0);
+    assert_eq!(back.height(K::Gfci), 12.0);
+    assert_eq!(back.counter_height(), 40.0);
+    assert!(back.is_builtin(K::Switch) && !back.is_builtin(K::Outlet110));
+    let json = project.to_json().unwrap();
+    let again = plan_core::Project::from_json(&json).unwrap();
+    assert_eq!(ElectricalDefaults::load(&again), back);
+    // Auto Place Outlets honors the heights.
+    let (floor, rooms) = room_20x12();
+    let opts = AutoOutletOptions::with_defaults(&back);
+    let general = auto_place_outlets(&floor, &rooms, &[], &opts);
+    assert!(general.iter().all(|d| d.height == 18.0));
+    let label = rooms[0].label.clone();
+    let kitchen = auto_place_outlets(&floor, &rooms, &[(label, RoomFunction::Kitchen)], &opts);
+    assert!(kitchen.iter().all(|d| d.height == 40.0));
+    // A cleared record is not stored.
+    ElectricalDefaults::default().store(&mut project);
+    assert!(project.electrical_defaults.is_none());
+}
+
+fn light_with_switches(n: usize) -> (ElectricalLayer, Vec<Id>, Id) {
+    let mut layer = ElectricalLayer::default();
+    let light = layer.add(place_free(
+        DeviceKind::CeilingLight,
+        Point::new(100.0, 100.0),
+    ));
+    let sw: Vec<Id> = (0..n)
+        .map(|i| {
+            layer.add(place_free(
+                DeviceKind::Switch,
+                Point::new(i as f64 * 80.0, 0.0),
+            ))
+        })
+        .collect();
+    (layer, sw, light)
+}
+
+#[test]
+fn a_light_with_two_switches_gets_3_way_switches_and_three_gets_a_4_way() {
+    let (mut layer, sw, light) = light_with_switches(3);
+    let kind = |l: &ElectricalLayer, i: usize| l.device(sw[i]).unwrap().kind;
+    assert!(connect(&mut layer, sw[0], light));
+    assert_eq!(
+        kind(&layer, 0),
+        DeviceKind::Switch,
+        "one switch stays single"
+    );
+    assert!(connect(&mut layer, sw[1], light));
+    assert_eq!(kind(&layer, 0), DeviceKind::Switch3Way);
+    assert_eq!(kind(&layer, 1), DeviceKind::Switch3Way);
+    assert_eq!(kind(&layer, 2), DeviceKind::Switch, "not wired yet");
+    assert!(connect(&mut layer, sw[2], light));
+    // The first and last to control the light are 3-way, the middle one 4-way.
+    assert_eq!(kind(&layer, 0), DeviceKind::Switch3Way);
+    assert_eq!(kind(&layer, 1), DeviceKind::Switch4Way);
+    assert_eq!(kind(&layer, 2), DeviceKind::Switch3Way);
+    // The S3 / S4 symbols carry the number.
+    let label = |k: DeviceKind| {
+        k.symbol().iter().find_map(|s| match s {
+            Stroke::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(label(DeviceKind::Switch3Way).as_deref(), Some("3"));
+    assert_eq!(label(DeviceKind::Switch4Way).as_deref(), Some("4"));
+    assert_eq!(label(DeviceKind::Switch), None);
+    // Disconnecting one switch turns the others back.
+    assert!(disconnect(&mut layer, sw[1], light));
+    assert_eq!(kind(&layer, 0), DeviceKind::Switch3Way);
+    assert_eq!(
+        kind(&layer, 1),
+        DeviceKind::Switch4Way,
+        "no longer wired: kept"
+    );
+    assert_eq!(kind(&layer, 2), DeviceKind::Switch3Way);
+    assert!(disconnect(&mut layer, sw[2], light));
+    assert_eq!(kind(&layer, 0), DeviceKind::Switch, "alone again");
+    // Removing a device does the same.
+    let (mut layer, sw, light) = light_with_switches(2);
+    connect(&mut layer, sw[0], light);
+    connect(&mut layer, sw[1], light);
+    layer.remove(sw[1]);
+    assert_eq!(layer.device(sw[0]).unwrap().kind, DeviceKind::Switch);
+    // A dimmer keeps its kind.
+    let (mut layer, sw, light) = light_with_switches(2);
+    layer.device_mut(sw[0]).unwrap().kind = DeviceKind::SwitchDimmer;
+    connect(&mut layer, sw[0], light);
+    connect(&mut layer, sw[1], light);
+    assert_eq!(layer.device(sw[0]).unwrap().kind, DeviceKind::SwitchDimmer);
+    assert_eq!(layer.device(sw[1]).unwrap().kind, DeviceKind::Switch3Way);
+}
+
+#[test]
+fn exterior_receptacles_go_on_the_outside_front_and_back() {
+    let (mut floor, rooms) = room_20x12();
+    for w in &mut floor.walls {
+        w.kind = WallKind::Exterior;
+    }
+    floor.openings = vec![Opening::default_door(10, 2, 72.0)];
+    let opts = AutoOutletOptions::default();
+    let wp = auto_place_exterior_outlets(&floor, &rooms, &opts);
+    assert_eq!(wp.len(), 2, "front and back");
+    assert!(wp
+        .iter()
+        .all(|d| d.kind == DeviceKind::OutletWp && d.height == 18.0));
+    // The longest wall (south, 240") is the front, the north wall the back.
+    let on = |id: Id| wp.iter().find(|d| d.wall_id == Some(id)).unwrap();
+    let (south, north) = (on(1), on(3));
+    // Outside: below the south wall (y < 0) and above the north wall (y > 144).
+    assert!(south.position.y < -2.0, "{:?}", south.position);
+    assert!(north.position.y > 146.0, "{:?}", north.position);
+    // Facing away from the house.
+    assert!(south.angle.sin() < -0.99 && north.angle.sin() > 0.99);
+    // Not inside any room.
+    assert!(wp.iter().all(|d| !rooms[0].polygon.is_empty()
+        && !plan_core::geometry::point_in_polygon(d.position, &rooms[0].polygon)));
+    // Interior walls get none.
+    let (interior, rooms2) = room_20x12();
+    assert!(auto_place_exterior_outlets(&interior, &rooms2, &opts).is_empty());
+}
+
+#[test]
+fn a_tiny_bath_still_gets_a_gfci() {
+    let mut floor = Floor::new("1st Floor", 0.0);
+    floor.walls = vec![
+        wall(1, (0.0, 0.0), (28.0, 0.0)),
+        wall(2, (28.0, 0.0), (28.0, 28.0)),
+        wall(3, (28.0, 28.0), (0.0, 28.0)),
+        wall(4, (0.0, 28.0), (0.0, 0.0)),
+    ];
+    let rooms = detect_rooms(&floor.walls, 0.5);
+    let types = [(rooms[0].label.clone(), RoomFunction::Bath)];
+    let none = AutoOutletOptions {
+        min_wet_segment: 40.0,
+        ..AutoOutletOptions::default()
+    };
+    assert!(auto_place_outlets(&floor, &rooms, &types, &none).is_empty());
+    let placed = auto_place_outlets(&floor, &rooms, &types, &AutoOutletOptions::default());
+    assert_eq!(placed.len(), 1);
+    assert_eq!(placed[0].kind, DeviceKind::Gfci);
+}
+
+#[test]
+fn the_schedule_rows_carry_mark_type_height_circuit_and_flags() {
+    let mut layer = ElectricalLayer::default();
+    let a = layer.add(place_free(DeviceKind::OutletWp, Point::ZERO));
+    let b = layer.add(place_free(DeviceKind::Outlet220, Point::new(60.0, 0.0)));
+    layer.device_mut(b).unwrap().circuit = Some(7);
+    let rows = schedule_rows(&layer);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].id, a);
+    assert_eq!(rows[0].mark, "E-01");
+    assert_eq!(rows[0].kind, "WP Outlet");
+    assert_eq!(rows[0].height, 18.0);
+    assert_eq!(rows[0].flags, "110V, GFCI, WP");
+    assert_eq!(rows[1].mark, "E-02");
+    assert_eq!(rows[1].circuit, "7");
+    assert_eq!(rows[1].flags, "220V, Dedicated");
+    // The dedicated kinds each get a circuit of their own.
+    let mut layer = ElectricalLayer::default();
+    layer.add(place_free(DeviceKind::OutletDedicated, Point::ZERO));
+    layer.add(place_free(DeviceKind::Outlet220, Point::new(30.0, 0.0)));
+    layer.add(place_free(DeviceKind::Outlet110, Point::new(60.0, 0.0)));
+    let list = circuits(&layer, &CircuitOptions::default());
+    assert_eq!(list.len(), 3);
+    assert!(list[0].description.starts_with("Dedicated"));
+}
+
+#[test]
+fn wall_devices_are_modeled_facing_out_of_their_wall() {
+    // A WP cover and a plate on the north wall of a room stand proud of the
+    // wall face on the room side, not on the far side.
+    let mut layer = ElectricalLayer::default();
+    let w = wall(1, (0.0, 100.0), (200.0, 100.0));
+    for (k, x) in [(DeviceKind::Outlet110, 50.0), (DeviceKind::OutletWp, 150.0)] {
+        // Room side of the north wall is -y (the left normal of an eastward wall is +y).
+        layer.add(place_on_wall(k, &w, x, WallSide::Right));
+    }
+    let meshes = meshes(&layer, std::slice::from_ref(&w), 0.0);
+    assert!(!meshes.is_empty());
+    for m in &meshes {
+        // Scene Z = -plan y; the room side is plan y < 98 -> scene z > -98.
+        let nearest_wall = m
+            .vertices
+            .iter()
+            .map(|v| f64::from(v.position[2]))
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            nearest_wall >= -98.0 - 1e-3,
+            "starts on the room side: {nearest_wall}"
+        );
+    }
+    // The WP cover is deeper than the plate.
+    let depth = |k: DeviceKind| {
+        let mut l = ElectricalLayer::default();
+        l.add(place_on_wall(k, &w, 50.0, WallSide::Right));
+        let zs: Vec<f64> = super::meshes(&l, std::slice::from_ref(&w), 0.0)
+            .iter()
+            .flat_map(|m| m.vertices.iter().map(|v| f64::from(v.position[2])))
+            .collect();
+        zs.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+            - zs.iter().cloned().fold(f64::INFINITY, f64::min)
+    };
+    assert!(depth(DeviceKind::OutletWp) > depth(DeviceKind::Outlet110) + 0.5);
 }

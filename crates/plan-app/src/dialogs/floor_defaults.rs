@@ -183,6 +183,12 @@ impl FloorDefaultsDialog {
                             .desired_width(200.0),
                     );
                 });
+                row(ui, "Wall Material", |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.settings.wall_material)
+                            .desired_width(200.0),
+                    );
+                });
                 if matches!(self.target, FloorDefaultsTarget::ThisFloor(_)) {
                     ui.add_space(4.0);
                     ui.checkbox(

@@ -10,7 +10,8 @@
 
 use super::{on, row, section, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_FAINT, PV_INK};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, StrokeKind, Ui};
-use plan_core::schedules::{FloorScope, Numbering, Schedule, ScheduleKind};
+use plan_core::props::PropDef;
+use plan_core::schedules::{ColumnSpec, FloorScope, Numbering, Schedule, ScheduleKind};
 use plan_core::Id;
 
 const TABS: &[Tab] = &[on("General"), on("Labels"), on("Text Style"), on("Layer")];
@@ -24,6 +25,11 @@ pub struct SpecActions {
     pub open_window: bool,
     /// Put the schedule on a layout page as a box.
     pub send_to_layout: bool,
+    /// Save the schedule as a workbook made for editing in Excel
+    /// (`plan_docs::props_exchange`).
+    pub export_for_editing: bool,
+    /// Read property data back from a workbook or CSV.
+    pub import_props: bool,
 }
 
 pub struct ScheduleSpecDialog {
@@ -35,6 +41,8 @@ struct Form {
     /// Floor the schedule is placed on.
     floor: usize,
     def: Schedule,
+    /// The plan's custom property definitions, for the property columns.
+    prop_defs: Vec<PropDef>,
     text_styles: Vec<String>,
     layers: Vec<String>,
     actions: SpecActions,
@@ -50,11 +58,22 @@ impl ScheduleSpecDialog {
             form: Form {
                 floor,
                 def,
+                prop_defs: Vec::new(),
                 text_styles,
                 layers,
                 actions: SpecActions::default(),
             },
         }
+    }
+
+    /// The plan's custom property definitions (`Project.props.defs`): the
+    /// ones of this kind of schedule are listed as columns, hidden unless
+    /// flagged "show in schedule", and can be shown, moved and sorted by like
+    /// any other.
+    pub fn with_props(mut self, defs: Vec<PropDef>) -> Self {
+        self.form.prop_defs = defs;
+        self.form.sync_prop_columns();
+        self
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -104,6 +123,52 @@ fn combo<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, value: &mut T, options: &
 }
 
 impl Form {
+    /// Lists a column for every custom property of the schedule's kind that
+    /// the columns lack, and drops the columns of properties that are gone.
+    fn sync_prop_columns(&mut self) {
+        let kind = plan_docs::schedule_kinds::prop_kind_of(self.def.kind);
+        let wanted: Vec<&PropDef> = self
+            .prop_defs
+            .iter()
+            .filter(|d| Some(d.kind) == kind)
+            .collect();
+        self.def.columns.retain(|c| {
+            !c.field.starts_with(plan_core::props::COLUMN_PREFIX)
+                || wanted.iter().any(|d| d.column_id() == c.field)
+        });
+        for d in wanted {
+            if !self.def.columns.iter().any(|c| c.field == d.column_id()) {
+                self.def.columns.push(ColumnSpec::new(
+                    &d.column_id(),
+                    &d.name,
+                    d.show_in_schedule,
+                ));
+            }
+        }
+    }
+
+    /// Shows every field of the schedule's kind, keeping order and headings.
+    fn show_all_columns(&mut self) {
+        for c in &mut self.def.columns {
+            c.visible = true;
+        }
+    }
+
+    /// The kind's default columns, headings and order; the sort and the
+    /// grouping go back too when their field is not shown any more.
+    fn reset_columns(&mut self) {
+        self.def.columns = self.def.kind.default_columns();
+        self.def.reconcile_columns();
+        self.sync_prop_columns();
+        let shown = |f: &str, d: &Schedule| d.columns.iter().any(|c| c.field == f);
+        if !shown(&self.def.sort.field, &self.def) {
+            self.def.sort.field.clear();
+        }
+        if !shown(&self.def.group_by, &self.def) {
+            self.def.group_by.clear();
+        }
+    }
+
     fn general(&mut self, ui: &mut Ui) {
         section(ui, "General");
         row(ui, "Title", |ui| {
@@ -132,6 +197,7 @@ impl Form {
             combo(ui, "schedule_kind", &mut kind, &options);
             if kind != self.def.kind {
                 self.def.set_kind(kind);
+                self.sync_prop_columns();
             }
         });
         row(ui, "Floors", |ui| {
@@ -190,6 +256,27 @@ impl Form {
         if let Some((i, up)) = pending {
             self.def.move_column(i, up);
         }
+        ui.horizontal(|ui| {
+            if ui
+                .button("Show All")
+                .on_hover_text("Show every field of this kind of schedule")
+                .clicked()
+            {
+                self.show_all_columns();
+            }
+            if ui
+                .button("Reset Columns")
+                .on_hover_text("Back to the default columns, headings and order")
+                .clicked()
+            {
+                self.reset_columns();
+            }
+            ui.weak(format!(
+                "{} of {} fields shown; a layout schedule box of this kind follows these columns",
+                self.def.visible_columns().count(),
+                self.def.columns.len()
+            ));
+        });
         if !self.def.columns.iter().any(|c| c.visible) {
             ui.colored_label(super::ERROR_RED, "Show at least one column");
         }
@@ -252,6 +339,25 @@ impl Form {
             }
             if ui.button("Send to Layout").clicked() {
                 self.actions.send_to_layout = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .button("Export for Editing (XLSX)\u{2026}")
+                .on_hover_text(
+                    "A workbook with a hidden PlanStudio ID column: edit names, marks and \
+                     properties in Excel, then import it back",
+                )
+                .clicked()
+            {
+                self.actions.export_for_editing = true;
+            }
+            if ui
+                .button("Import Property Data\u{2026}")
+                .on_hover_text("Read an edited workbook or CSV back into the plan")
+                .clicked()
+            {
+                self.actions.import_props = true;
             }
         });
     }
@@ -449,6 +555,34 @@ mod tests {
     }
 
     #[test]
+    fn show_all_and_reset_columns_rebuild_the_column_list() {
+        let mut d = dialog();
+        let fields = d.draft().kind.fields().len();
+        let defaults = d.draft().visible_columns().count();
+        assert!(defaults < fields, "some fields start hidden");
+        d.form.show_all_columns();
+        assert_eq!(d.draft().visible_columns().count(), fields);
+        // Rename and reorder, sort by a field, then reset.
+        d.draft_mut().columns[0].title = "Door No.".into();
+        d.draft_mut().move_column(0, false);
+        let field = d.draft().columns[1].field.clone();
+        d.draft_mut().sort.field = field;
+        d.form.reset_columns();
+        assert_eq!(d.draft().visible_columns().count(), defaults);
+        assert_eq!(d.draft().columns.len(), fields);
+        assert!(d.draft().columns.iter().all(|c| c.title != "Door No."));
+        assert_eq!(
+            d.draft().columns[0].field,
+            d.draft().kind.default_columns()[0].field
+        );
+        // A sort on a field that is still there stays.
+        let first = d.draft().columns[0].field.clone();
+        d.draft_mut().sort.field = first.clone();
+        d.form.reset_columns();
+        assert_eq!(d.draft().sort.field, first);
+    }
+
+    #[test]
     fn hiding_every_column_blocks_ok() {
         let mut d = dialog();
         for c in &mut d.draft_mut().columns {
@@ -478,6 +612,37 @@ mod tests {
                 });
             });
         }
+        assert_eq!(d.take_actions(), SpecActions::default());
+    }
+
+    #[test]
+    fn custom_property_columns_are_listed_for_the_kind_and_follow_it() {
+        use plan_core::props::{PropKind, PropType};
+        let mut flagged = PropDef::new(PropKind::Door, "Fire Rating", PropType::Text);
+        flagged.show_in_schedule = true;
+        let hidden = PropDef::new(PropKind::Door, "Notes", PropType::Text);
+        let window = PropDef::new(PropKind::Window, "Glazing", PropType::Text);
+        let mut d = dialog().with_props(vec![flagged, hidden, window]);
+        let col = |d: &ScheduleSpecDialog, f: &str| {
+            d.draft().columns.iter().find(|c| c.field == f).cloned()
+        };
+        assert!(col(&d, "prop:Fire Rating").unwrap().visible);
+        assert!(!col(&d, "prop:Notes").unwrap().visible);
+        assert!(col(&d, "prop:Glazing").is_none(), "a window property");
+        assert!(d.draft().visible_columns().any(|c| c.field == "prop:Fire Rating"));
+        // Changing the kind swaps the property columns for the new kind's.
+        d.draft_mut().set_kind(ScheduleKind::Window);
+        d.form.sync_prop_columns();
+        assert!(col(&d, "prop:Fire Rating").is_none());
+        assert!(col(&d, "prop:Glazing").is_some());
+        // Reset Columns keeps the kind's property columns, hidden unless flagged.
+        d.form.reset_columns();
+        assert!(col(&d, "prop:Glazing").is_some());
+        // The new buttons raise their requests once.
+        d.form.actions.export_for_editing = true;
+        d.form.actions.import_props = true;
+        let a = d.take_actions();
+        assert!(a.export_for_editing && a.import_props);
         assert_eq!(d.take_actions(), SpecActions::default());
     }
 

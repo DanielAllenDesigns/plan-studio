@@ -13,8 +13,9 @@ use plan_terrain::{
         LAYER_BEDS, LAYER_BREAKS, LAYER_FEATURES, LAYER_GRASS, LAYER_PLANTS, LAYER_SPRINKLERS,
         LAYER_STONES, LAYER_WALLS, LAYER_WATER,
     },
-    landscape_meshes, terrain_object_id, terrain_object_of, ElevationLine, Feature, Landscape,
-    PlanItem, PlanShape, RoadStrip, Terrain, TerrainBreak, TerrainPart, TerrainWall,
+    landscape_meshes, terrain_object_id, terrain_object_of, ElevationLine, ElevationPoint,
+    ElevationRegion, Feature, Landscape, Modifier, ModifierKind, PlanItem, PlanShape, RoadStrip,
+    Terrain, TerrainBreak, TerrainPart, TerrainWall,
 };
 
 /// An element of the terrain that has its own specification dialog.
@@ -26,12 +27,18 @@ pub enum TerrainObject {
     Landscape(Landscape),
     Road(RoadStrip),
     Line(ElevationLine),
+    Point(ElevationPoint),
+    Region(ElevationRegion),
+    Modifier(Modifier),
 }
 
 impl TerrainObject {
     /// The title of its specification.
     pub fn title(&self) -> &'static str {
         match self {
+            TerrainObject::Feature(f) if f.kind == plan_terrain::FeatureKind::Hole => {
+                "Terrain Hole Specification"
+            }
             TerrainObject::Feature(_) => "Terrain Feature Specification",
             TerrainObject::Break(_) => "Terrain Break Specification",
             TerrainObject::Wall(w) if w.kind == plan_terrain::WallKind::Curb => {
@@ -46,22 +53,38 @@ impl TerrainObject {
                 plan_terrain::LandscapeKind::Plants => "Plant Specification",
                 plan_terrain::LandscapeKind::Sprinklers => "Sprinkler Specification",
             },
-            TerrainObject::Road(_) => "Road Specification",
+            TerrainObject::Road(r) => match r.kind {
+                plan_terrain::RoadKind::Road => "Road Specification",
+                plan_terrain::RoadKind::Driveway => "Driveway Specification",
+                plan_terrain::RoadKind::Sidewalk => "Sidewalk Specification",
+                plan_terrain::RoadKind::Marking => "Road Marking Specification",
+            },
             TerrainObject::Line(_) => "Elevation Line Specification",
+            TerrainObject::Point(_) => "Elevation Point Specification",
+            TerrainObject::Region(_) => "Elevation Region Specification",
+            TerrainObject::Modifier(m) => match m.kind {
+                ModifierKind::Hill => "Hill Specification",
+                ModifierKind::Valley => "Valley Specification",
+                ModifierKind::RaisedRegion => "Raised Region Specification",
+                ModifierKind::LoweredRegion => "Lowered Region Specification",
+                ModifierKind::FlatRegion => "Flat Region Specification",
+            },
         }
     }
 }
 
-/// The element a hit names, as an editable copy (`None` for elements without
-/// a dialog of their own: the perimeter, points, regions and modifiers).
+/// The element a hit names, as an editable copy (`None` for the perimeter,
+/// whose specification is the Terrain Specification itself).
 pub fn object_at(t: &Terrain, hit: TerrainHit) -> Option<TerrainObject> {
     match hit {
-        TerrainHit::Feature(i) => t
-            .features
+        TerrainHit::Feature(i) => t.features.get(i).cloned().map(TerrainObject::Feature),
+        TerrainHit::Point(i) => t.elevation_points.get(i).cloned().map(TerrainObject::Point),
+        TerrainHit::Region(i) => t
+            .elevation_regions
             .get(i)
-            .filter(|f| f.kind != plan_terrain::FeatureKind::Hole)
             .cloned()
-            .map(TerrainObject::Feature),
+            .map(TerrainObject::Region),
+        TerrainHit::Modifier(i) => t.modifiers.get(i).cloned().map(TerrainObject::Modifier),
         TerrainHit::Break(i) => t.breaks.get(i).cloned().map(TerrainObject::Break),
         TerrainHit::Wall(i) => t.walls.get(i).cloned().map(TerrainObject::Wall),
         TerrainHit::Landscape(i) => t.landscape.get(i).cloned().map(TerrainObject::Landscape),
@@ -83,6 +106,9 @@ pub fn replace_object(t: &mut Terrain, hit: TerrainHit, obj: TerrainObject) -> b
         (TerrainHit::Landscape(i), TerrainObject::Landscape(x)) => put(&mut t.landscape, i, x),
         (TerrainHit::Road(i), TerrainObject::Road(x)) => put(&mut t.roads, i, x),
         (TerrainHit::Line(i), TerrainObject::Line(x)) => put(&mut t.elevation_lines, i, x),
+        (TerrainHit::Point(i), TerrainObject::Point(x)) => put(&mut t.elevation_points, i, x),
+        (TerrainHit::Region(i), TerrainObject::Region(x)) => put(&mut t.elevation_regions, i, x),
+        (TerrainHit::Modifier(i), TerrainObject::Modifier(x)) => put(&mut t.modifiers, i, x),
         _ => false,
     }
 }
@@ -128,6 +154,7 @@ pub fn move_terrain_element(t: &mut Terrain, hit: TerrainHit, delta: Point) -> b
             .map(|f| {
                 shift(&mut f.polygon, delta);
                 shift(&mut f.control, delta);
+                f.center = f.center + delta;
             })
             .is_some(),
         TerrainHit::Road(i) => t
@@ -299,7 +326,11 @@ pub fn move_terrain_vertex(t: &mut Terrain, hit: TerrainHit, n: usize, to: Point
             .get_mut(i)
             .is_some_and(|m| put(&mut m.polygon, n, to)),
         TerrainHit::Feature(i) => t.features.get_mut(i).is_some_and(|f| {
-            if f.control.is_empty() {
+            if f.kind == plan_terrain::FeatureKind::Round {
+                // A round feature: a handle drags the edge, which sets the radius.
+                f.set_radius_through(to);
+                n < f.polygon.len()
+            } else if f.control.is_empty() {
                 put(&mut f.polygon, n, to)
             } else {
                 let moved = put(&mut f.control, n, to);
@@ -349,6 +380,11 @@ pub fn hit_layer(t: &Terrain, hit: TerrainHit) -> Option<String> {
             .get(i)
             .map(|w| w.style.layer_or(w.default_layer()).to_string()),
         TerrainHit::Landscape(i) => t.landscape.get(i).map(|l| l.layer().to_string()),
+        TerrainHit::Road(i) => t
+            .roads
+            .get(i)
+            .and_then(|r| r.own_layer())
+            .map(str::to_string),
         _ => None,
     }
 }

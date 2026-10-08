@@ -12,9 +12,18 @@
 //! map; Import of a Chief `UserHotkeys.xml` (again, over the current keys);
 //! Export of the keys as JSON or CSV; and Print List, which writes the
 //! assigned keys as a two-column PDF and opens it in the system viewer.
+//!
+//! Round 14 adds: the list grouped by Chief's menus (File, Edit, Build ...)
+//! with the search opening the groups it hits; a "Collide on Windows and
+//! Linux" list, where Control and Command are one key and two sequences that
+//! differ on the Mac land on the same key; one-click conflict resolution
+//! (keep the key for one command, take it from the others); Export of Chief's
+//! own `UserHotkeys.xml`; and two resets, Chief's defaults and Daniel's file.
 
 use super::Outcome;
-use crate::shell::hotkeys::{sequence_label, Chord, Command, HotkeyMap, MAX_SEQUENCE};
+use crate::shell::hotkeys::{
+    sequence_label, Chord, Command, ExportStats, FoldedCollision, HotkeyMap, MAX_SEQUENCE,
+};
 use eframe::egui::{self, Align, Align2, Color32, Event, Key, Layout, RichText, Vec2};
 use std::collections::{HashMap, HashSet};
 
@@ -58,6 +67,9 @@ impl FilterMode {
     }
 }
 
+/// Commands with the key sequence of each that is in play.
+pub type Owners = Vec<(String, Vec<Chord>)>;
+
 /// Commands whose keys clash: the same sequence, or one that is the start of
 /// another (`D` and `D, H`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +78,8 @@ pub struct Conflict {
     pub sequence: String,
     /// The commands involved, by name.
     pub commands: Vec<String>,
+    /// Each command with the sequence of its that clashes.
+    pub owners: Owners,
 }
 
 /// Every clash in `map`.
@@ -77,7 +91,9 @@ pub fn find_conflicts(map: &HotkeyMap) -> Vec<Conflict> {
         }
     }
     let mut out: Vec<Conflict> = Vec::new();
-    let mut add = |sequence: String, mut names: Vec<String>| {
+    // `parts` are (command, its sequence) pairs of the clash.
+    let mut add = |sequence: String, parts: Vec<(String, Vec<Chord>)>| {
+        let mut names: Vec<String> = parts.iter().map(|(n, _)| n.clone()).collect();
         names.sort();
         names.dedup();
         if names.len() > 1
@@ -85,9 +101,13 @@ pub fn find_conflicts(map: &HotkeyMap) -> Vec<Conflict> {
                 .iter()
                 .any(|c| c.sequence == sequence && c.commands == names)
         {
+            let mut parts = parts;
+            parts.sort_by(|a, b| a.0.cmp(&b.0));
+            parts.dedup();
             out.push(Conflict {
                 sequence,
                 commands: names,
+                owners: parts,
             });
         }
     };
@@ -95,19 +115,244 @@ pub fn find_conflicts(map: &HotkeyMap) -> Vec<Conflict> {
         // The same sequence on two commands.
         add(
             sequence_label(seq),
-            names.iter().map(|n| n.to_string()).collect(),
+            names.iter().map(|n| (n.to_string(), seq.clone())).collect(),
         );
         // This sequence starts with another command's sequence.
         for n in 1..seq.len() {
             if let Some(short) = owners.get(&seq[..n]) {
-                let mut all: Vec<String> = short.iter().map(|n| n.to_string()).collect();
-                all.extend(names.iter().map(|n| n.to_string()));
+                let mut all: Vec<(String, Vec<Chord>)> = short
+                    .iter()
+                    .map(|c| (c.to_string(), seq[..n].to_vec()))
+                    .collect();
+                all.extend(names.iter().map(|c| (c.to_string(), seq.clone())));
                 add(sequence_label(&seq[..n]), all);
             }
         }
     }
     out.sort_by(|a, b| a.sequence.cmp(&b.sequence));
     out
+}
+
+/// The top-level menus of Chief X18 that hold commands, in menu-bar order.
+/// Commands Plan Studio has that sit in no menu of Chief's (toolbar-only
+/// buttons) are listed under the last entry.
+pub const MENU_ORDER: [&str; 12] = [
+    "File", "Edit", "Build", "Terrain", "Library", "3D", "CAD", "Layout", "View", "Window",
+    "Tools", "Help",
+];
+
+/// The Chief menu a command belongs to. Plan Studio's menus are code, not
+/// data, so this reads the command's flyout group and name against the
+/// menu contents recorded in `docs/chief-x18-menus.md`; it is a close guess,
+/// not a mirror (verify in Chief).
+pub fn menu_of(c: &Command) -> &'static str {
+    let name = c.name.to_lowercase();
+    let group = c.group.to_lowercase();
+    let has = |hay: &str, words: &[&str]| words.iter().any(|w| hay.contains(w));
+    let both = format!("{group} {name}");
+    if has(&name, &["help", "about", "release notes"]) {
+        return "Help";
+    }
+    if has(
+        &name,
+        &[
+            "quit",
+            "new plan",
+            "open plan",
+            "save",
+            "print",
+            "export",
+            "import",
+            "recent",
+            "close view",
+            "send to layout",
+            "template",
+            "archive",
+        ],
+    ) && !has(&name, &["view", "saved view"])
+        || group == "file"
+    {
+        return "File";
+    }
+    if has(&both, &["layout", "page ", "sheet", "plot"]) && !has(&name, &["send to"]) {
+        return "Layout";
+    }
+    if has(
+        &group,
+        &[
+            "terrain",
+            "road",
+            "driveway",
+            "sidewalk",
+            "plant",
+            "sprinkler",
+            "garden",
+            "grass",
+            "water feature",
+            "stepping",
+        ],
+    ) || has(&name, &["terrain", "elevation data"])
+    {
+        return "Terrain";
+    }
+    if has(&both, &["library", "catalog"]) {
+        return "Library";
+    }
+    if has(
+        &both,
+        &[
+            "camera",
+            "3d view",
+            "ray trace",
+            "render",
+            "perspective",
+            "overview",
+            "walkthrough",
+            "orbit",
+            "glass house",
+            "adjust lights",
+            "full camera",
+            "sun angle",
+        ],
+    ) {
+        return "3D";
+    }
+    if has(
+        &group,
+        &[
+            "point",
+            "line",
+            "arc",
+            "circle",
+            "box",
+            "dimension",
+            "text",
+            "cad",
+            "spline",
+            "cloud",
+            "block",
+            "detail",
+            "polyline",
+            "symbol",
+        ],
+    ) || has(
+        &name,
+        &[
+            "cad ",
+            "dimension",
+            "revision cloud",
+            "spline",
+            "auto detail",
+        ],
+    ) {
+        return "CAD";
+    }
+    if group == "edit"
+        || has(
+            &name,
+            &[
+                "undo",
+                "redo",
+                "cut",
+                "copy",
+                "paste",
+                "delete",
+                "select",
+                "duplicate",
+                "group",
+                "snap",
+                "align",
+                "mirror",
+                "move",
+                "rotate",
+                "resize",
+                "replicate",
+                "transform",
+                "find",
+                "stretch",
+                "default settings",
+                "reset to defaults",
+            ],
+        )
+    {
+        return "Edit";
+    }
+    if has(
+        &name,
+        &[
+            "zoom",
+            "pan",
+            "fit",
+            "grid",
+            "toolbar",
+            "status bar",
+            "full screen",
+            "view",
+            "layer",
+            "display",
+            "reference",
+            "label",
+        ],
+    ) || group == "view"
+    {
+        return "View";
+    }
+    if has(&name, &["tile windows", "cascade", "browser", "dock"]) {
+        return "Window";
+    }
+    if has(
+        &group,
+        &[
+            "wall",
+            "door",
+            "window",
+            "floor",
+            "roof",
+            "slab",
+            "framing",
+            "trim",
+            "stair",
+            "cabinet",
+            "electrical",
+            "railing",
+            "fenc",
+            "deck",
+            "3d solid",
+            "image",
+            "distributed",
+            "room",
+            "ceiling",
+            "foundation",
+            "build",
+            "dormer",
+            "column",
+            "beam",
+            "post",
+            "appliance",
+            "fixture",
+            "furniture",
+        ],
+    ) || has(
+        &name,
+        &[
+            "wall",
+            "door",
+            "window",
+            "floor",
+            "roof",
+            "stair",
+            "cabinet",
+            "room",
+            "ceiling",
+            "foundation",
+            "railing",
+            "deck",
+            "framing",
+        ],
+    ) {
+        return "Build";
+    }
+    "Tools"
 }
 
 /// What an import of a Chief `UserHotkeys.xml` did.
@@ -145,6 +390,8 @@ pub struct HotkeyDialog {
     /// The assigned sequence picked for Remove.
     chosen: Option<usize>,
     message: String,
+    /// List the commands under Chief's menus instead of one flat table.
+    grouped: bool,
 }
 
 impl HotkeyDialog {
@@ -159,7 +406,87 @@ impl HotkeyDialog {
             conflict: None,
             chosen: None,
             message: String::new(),
+            grouped: true,
         }
+    }
+
+    /// The visible commands under Chief's menus, in menu-bar order; a menu
+    /// with none left by the search is left out.
+    pub fn grouped_commands(&self) -> Vec<(&'static str, Vec<&Command>)> {
+        let visible = self.visible_commands();
+        MENU_ORDER
+            .iter()
+            .filter_map(|menu| {
+                let cmds: Vec<&Command> = visible
+                    .iter()
+                    .copied()
+                    .filter(|c| menu_of(c) == *menu)
+                    .collect();
+                (!cmds.is_empty()).then_some((*menu, cmds))
+            })
+            .collect()
+    }
+
+    /// Sequences that are two keys here and one key without a Command key.
+    pub fn folded_collisions(&self) -> Vec<FoldedCollision> {
+        self.draft.folded_collisions()
+    }
+
+    /// Resolves a clash by keeping the key for `keep`: the clashing
+    /// sequences of the other commands are removed. Returns how many.
+    pub fn resolve(&mut self, owners: &[(String, Vec<Chord>)], keep: &str) -> usize {
+        let mut removed = 0;
+        for (name, seq) in owners {
+            if name != keep && self.draft.sequences(name).contains(seq) {
+                self.draft.remove(name, seq);
+                removed += 1;
+            }
+        }
+        self.chosen = None;
+        self.conflict = None;
+        self.message = format!("Kept the key for {keep}; took it from {removed} other command(s)");
+        removed
+    }
+
+    /// Resolves every clash in the map in favor of the command that comes
+    /// first in the clash (by name). Returns how many sequences were removed.
+    pub fn resolve_all(&mut self) -> usize {
+        let mut removed = 0;
+        let found = find_conflicts(&self.draft);
+        for c in &found {
+            if let Some(keep) = c.commands.first().cloned() {
+                removed += self.resolve(&c.owners, &keep);
+            }
+        }
+        self.message = format!(
+            "Settled {} clash(es) by taking {removed} key(s) from the later commands",
+            found.len()
+        );
+        removed
+    }
+
+    /// Reset to Chief's own defaults, without Daniel's `UserHotkeys.xml`.
+    pub fn reset_to_chief(&mut self) {
+        self.draft.reset_to_chief_defaults();
+        self.chosen = None;
+        self.conflict = None;
+        self.message = "Hotkeys reset to Chief's defaults".into();
+    }
+
+    /// The keys as a Chief `UserHotkeys.xml`, and what it could not carry.
+    pub fn export_chief_xml(&self) -> (String, ExportStats) {
+        self.draft.to_chief_xml()
+    }
+
+    /// The hotkeys of a command in the edited map, as the table shows them.
+    #[cfg(test)]
+    pub fn draft_hotkeys(&self, name: &str) -> String {
+        self.draft.hotkey_text(name)
+    }
+
+    /// Is the edited map what Reset gives (Chief plus Daniel's file)?
+    pub fn is_default(&self) -> bool {
+        self.draft.is_default()
     }
 
     /// The commands whose name, group or hotkey contains the filter and that
@@ -443,12 +770,12 @@ impl HotkeyDialog {
         self.chosen = Some(index);
     }
 
-    /// Reset Hotkeys: Chief's and Daniel's defaults again.
+    /// Reset Hotkeys: Chief's defaults with Daniel's file over them again.
     pub fn reset(&mut self) {
         self.draft.reset();
         self.chosen = None;
         self.conflict = None;
-        self.message = "Hotkeys reset to the defaults".into();
+        self.message = "Hotkeys reset to Chief's defaults and Daniel's file".into();
     }
 
     /// OK: copies the edited map into `target` and saves it to
@@ -537,44 +864,29 @@ impl HotkeyDialog {
         ui.add_space(4.0);
 
         let mut picked: Option<String> = None;
+        let mut resolve: Option<(Owners, String)> = None;
+        let folded = self.folded_collisions();
         egui::ScrollArea::vertical()
             .id_salt("hotkey_table")
             .max_height((ui.available_height() - 230.0).max(120.0))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                egui::Grid::new("hotkey_grid")
-                    .num_columns(3)
-                    .striped(true)
-                    .spacing(Vec2::new(16.0, 3.0))
-                    .show(ui, |ui| {
-                        ui.strong("Command Name");
-                        ui.strong("Hotkey");
-                        ui.strong("Group");
-                        ui.end_row();
-                        for c in self.visible_commands() {
-                            let selected = self.selected.as_deref() == Some(c.name.as_str());
-                            let text = if c.is_live() {
-                                RichText::new(&c.name)
-                            } else {
-                                RichText::new(&c.name).weak()
-                            };
-                            let resp = ui.selectable_label(selected, text);
-                            if resp.clicked() {
-                                picked = Some(c.name.clone());
-                            }
-                            if !c.is_live() {
-                                resp.on_hover_text("Not built yet; the key is kept for later");
-                            }
-                            let keys = self.draft.hotkey_text(&c.name);
-                            if clashing.contains(c.name.as_str()) {
-                                ui.label(RichText::new(format!("{keys}  (conflict)")).color(WARN));
-                            } else {
-                                ui.label(keys);
-                            }
-                            ui.weak(&c.group);
-                            ui.end_row();
-                        }
-                    });
+                let searching =
+                    !self.filter.trim().is_empty() || self.filter_mode == FilterMode::Conflicts;
+                if self.grouped {
+                    for (menu, cmds) in self.grouped_commands() {
+                        egui::CollapsingHeader::new(format!("{menu} ({})", cmds.len()))
+                            .id_salt(("hotkey_menu", menu))
+                            .default_open(searching || menu == "File")
+                            .open(searching.then_some(true))
+                            .show(ui, |ui| {
+                                self.rows(ui, menu, &cmds, &clashing, &mut picked);
+                            });
+                    }
+                } else {
+                    let cmds = self.visible_commands();
+                    self.rows(ui, "all", &cmds, &clashing, &mut picked);
+                }
                 if !conflicts.is_empty() {
                     ui.add_space(6.0);
                     egui::CollapsingHeader::new(
@@ -585,6 +897,52 @@ impl HotkeyDialog {
                     .show(ui, |ui| {
                         for c in &conflicts {
                             ui.label(format!("{}: {}", c.sequence, c.commands.join(", ")));
+                            ui.horizontal_wrapped(|ui| {
+                                for name in &c.commands {
+                                    if ui
+                                        .small_button(format!("Keep for {name}"))
+                                        .on_hover_text("Takes the key from the other commands")
+                                        .clicked()
+                                    {
+                                        resolve = Some((c.owners.clone(), name.clone()));
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+                if !folded.is_empty() {
+                    ui.add_space(6.0);
+                    egui::CollapsingHeader::new(
+                        RichText::new(format!(
+                            "Collide on Windows and Linux ({})",
+                            folded.len()
+                        ))
+                        .color(WARN),
+                    )
+                    .id_salt("hotkey_folded")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.weak(
+                            "There Control and Command are one key, so these differ here but not there.",
+                        );
+                        for c in &folded {
+                            ui.label(format!(
+                                "{}: {} ({})",
+                                c.sequence,
+                                c.commands.join(", "),
+                                c.as_typed().join(" / ")
+                            ));
+                            ui.horizontal_wrapped(|ui| {
+                                for name in &c.commands {
+                                    if ui
+                                        .small_button(format!("Keep for {name}"))
+                                        .clicked()
+                                    {
+                                        resolve = Some((c.owners.clone(), name.clone()));
+                                    }
+                                }
+                            });
                         }
                     });
                 }
@@ -615,14 +973,44 @@ impl HotkeyDialog {
         if let Some(name) = picked {
             self.select(&name);
         }
+        if let Some((owners, keep)) = resolve {
+            self.resolve(&owners, &keep);
+        }
 
         ui.separator();
         self.assign_area(ui);
 
         ui.separator();
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Reset Hotkeys").clicked() {
+            ui.checkbox(&mut self.grouped, "Group by menu");
+            if self.is_default() {
+                ui.weak("Chief's defaults with Daniel's file");
+            } else {
+                ui.weak("changed");
+            }
+            if ui
+                .button("Reset Hotkeys")
+                .on_hover_text("Chief's defaults with Daniel's UserHotkeys.xml over them")
+                .clicked()
+            {
                 self.reset();
+            }
+            if ui
+                .button("Reset to Chief Defaults")
+                .on_hover_text("Chief's own default keys, without Daniel's file")
+                .clicked()
+            {
+                self.reset_to_chief();
+            }
+            if ui
+                .add_enabled(
+                    !conflicts.is_empty(),
+                    egui::Button::new("Resolve All Conflicts"),
+                )
+                .on_hover_text("Keeps each clashing key for the first command by name")
+                .clicked()
+            {
+                self.resolve_all();
             }
             if ui
                 .button("Import Chief Hotkeys\u{2026}")
@@ -631,7 +1019,11 @@ impl HotkeyDialog {
             {
                 self.import_file_dialog();
             }
-            if ui.button("Export\u{2026}").clicked() {
+            if ui
+                .button("Export\u{2026}")
+                .on_hover_text("UserHotkeys.xml (Chief's format), JSON or CSV")
+                .clicked()
+            {
                 self.export_file_dialog();
             }
             if ui
@@ -657,6 +1049,50 @@ impl HotkeyDialog {
         });
     }
 
+    /// One menu's (or the flat) table of command, hotkey and group.
+    fn rows(
+        &self,
+        ui: &mut egui::Ui,
+        id: &str,
+        cmds: &[&Command],
+        clashing: &HashSet<&str>,
+        picked: &mut Option<String>,
+    ) {
+        egui::Grid::new(("hotkey_grid", id))
+            .num_columns(3)
+            .striped(true)
+            .spacing(Vec2::new(16.0, 3.0))
+            .show(ui, |ui| {
+                ui.strong("Command Name");
+                ui.strong("Hotkey");
+                ui.strong("Group");
+                ui.end_row();
+                for c in cmds {
+                    let selected = self.selected.as_deref() == Some(c.name.as_str());
+                    let text = if c.is_live() {
+                        RichText::new(&c.name)
+                    } else {
+                        RichText::new(&c.name).weak()
+                    };
+                    let resp = ui.selectable_label(selected, text);
+                    if resp.clicked() {
+                        *picked = Some(c.name.clone());
+                    }
+                    if !c.is_live() {
+                        resp.on_hover_text("Not built yet; the key is kept for later");
+                    }
+                    let keys = self.draft.hotkey_text(&c.name);
+                    if clashing.contains(c.name.as_str()) {
+                        ui.label(RichText::new(format!("{keys}  (conflict)")).color(WARN));
+                    } else {
+                        ui.label(keys);
+                    }
+                    ui.weak(&c.group);
+                    ui.end_row();
+                }
+            });
+    }
+
     fn import_file_dialog(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .set_title("Import Chief hotkeys")
@@ -678,23 +1114,30 @@ impl HotkeyDialog {
     fn export_file_dialog(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .set_title("Export hotkeys")
-            .set_file_name("hotkeys.json")
+            .set_file_name("UserHotkeys.xml")
+            .add_filter("Chief hotkeys (UserHotkeys.xml)", &["xml"])
             .add_filter("Plan Studio hotkeys (JSON)", &["json"])
             .add_filter("Spreadsheet (CSV)", &["csv"])
             .save_file()
         else {
             return;
         };
-        let csv = path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("csv"));
-        let text = if csv {
+        let ext = |e: &str| path.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
+        let mut note = None;
+        let text = if ext("csv") {
             self.export_csv()
+        } else if ext("xml") {
+            let (xml, stats) = self.export_chief_xml();
+            note = Some(stats.summary());
+            xml
         } else {
             self.export_json()
         };
         self.message = match std::fs::write(&path, text) {
-            Ok(()) => format!("Exported to {}", path.display()),
+            Ok(()) => match note {
+                Some(n) => format!("Exported to {}. {n}", path.display()),
+                None => format!("Exported to {}", path.display()),
+            },
             Err(e) => format!("Could not write {}: {e}", path.display()),
         };
     }

@@ -357,7 +357,10 @@ pub fn layout(table: Table, def: &Schedule, h: f64) -> Layout {
     let h = h.max(0.5);
     let visible: Vec<_> = def
         .visible_columns()
-        .filter(|c| def.kind.fields().iter().any(|f| f.id == c.field))
+        .filter(|c| {
+            def.kind.fields().iter().any(|f| f.id == c.field)
+                || c.field.starts_with(plan_core::props::COLUMN_PREFIX)
+        })
         .collect();
     let col_w: Vec<f64> = table
         .columns

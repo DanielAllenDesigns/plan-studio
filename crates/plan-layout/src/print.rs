@@ -203,6 +203,79 @@ fn scale_factor(opts: &PrintOptions, sheet: (f64, f64)) -> f64 {
     }
 }
 
+/// Where one paper page shows a sheet: the scale and the shift that put the
+/// sheet's window on the printable area.
+struct Tile {
+    col: usize,
+    row: usize,
+    cols: usize,
+    rows: usize,
+    /// 1-based number of this tile and how many the sheet takes.
+    no: usize,
+    total: usize,
+    /// Printed scale of the sheet.
+    scale: f64,
+    /// Translation of the scaled sheet on the paper, points.
+    e: f64,
+    f: f64,
+}
+
+/// The paper pages `sheet` takes under `opts`: one, or a grid of overlapping
+/// tiles when tiling is on.
+fn tiles_of(sheet: &Sheet, opts: &PrintOptions) -> Vec<Tile> {
+    let m = opts.margin_in;
+    let (print_w, print_h) = opts.printable_in();
+    let s = scale_factor(opts, (sheet.w_in, sheet.h_in));
+    let (big_w, big_h) = (sheet.w_in * s, sheet.h_in * s);
+    let grid = if opts.tiling {
+        tile_grid(
+            (sheet.w_in, sheet.h_in),
+            s,
+            (print_w, print_h),
+            opts.overlap_in,
+        )
+    } else {
+        TileGrid {
+            cols: 1,
+            rows: 1,
+            scale: s,
+        }
+    };
+    let overlap = opts.overlap_in.clamp(0.0, print_w.min(print_h) * 0.5);
+    let n = grid.count();
+    let mut out = Vec::with_capacity(n);
+    let mut no = 0;
+    for row in 0..grid.rows {
+        for col in 0..grid.cols {
+            no += 1;
+            // The window of the printed sheet shown on this page, inches
+            // from its left edge and from its top edge.
+            let (x0, y_top) = if opts.tiling {
+                (
+                    col as f64 * (print_w - overlap),
+                    row as f64 * (print_h - overlap),
+                )
+            } else {
+                // Centred (or, when larger than the paper, cut around its centre).
+                ((big_w - print_w) * 0.5, (big_h - print_h) * 0.5)
+            };
+            out.push(Tile {
+                col,
+                row,
+                cols: grid.cols,
+                rows: grid.rows,
+                no,
+                total: n,
+                scale: s,
+                e: (m - x0) * 72.0,
+                // Content y runs up from the bottom of the printed sheet.
+                f: (m - (big_h - y_top - print_h)) * 72.0,
+            });
+        }
+    }
+    out
+}
+
 /// Puts `sheets` on paper pages of `opts`, one page or one tile grid each.
 fn paginate(sheets: &[Sheet], opts: &PrintOptions) -> Vec<u8> {
     let (pw, ph) = opts.paper.inches(opts.landscape);
@@ -212,76 +285,222 @@ fn paginate(sheets: &[Sheet], opts: &PrintOptions) -> Vec<u8> {
     let (print_w, print_h) = opts.printable_in();
     let mut first_page = true;
     for sheet in sheets {
-        let s = scale_factor(opts, (sheet.w_in, sheet.h_in));
-        let (big_w, big_h) = (sheet.w_in * s, sheet.h_in * s);
-        let grid = if opts.tiling {
-            tile_grid(
-                (sheet.w_in, sheet.h_in),
-                s,
-                (print_w, print_h),
-                opts.overlap_in,
-            )
-        } else {
-            TileGrid {
-                cols: 1,
-                rows: 1,
-                scale: s,
+        for tile in tiles_of(sheet, opts) {
+            if !first_page {
+                doc.new_page();
             }
-        };
-        let overlap = opts.overlap_in.clamp(0.0, print_w.min(print_h) * 0.5);
-        let n = grid.count();
-        let mut tile_no = 0;
-        for row in 0..grid.rows {
-            for col in 0..grid.cols {
-                tile_no += 1;
-                if !first_page {
-                    doc.new_page();
-                }
-                first_page = false;
-                if tile_no == 1 {
-                    doc.add_bookmark(&sheet.bookmark);
-                }
-                // The window of the printed sheet shown on this page, inches
-                // from its left edge and from its top edge.
-                let (x0, y_top) = if opts.tiling {
-                    (
-                        col as f64 * (print_w - overlap),
-                        row as f64 * (print_h - overlap),
-                    )
-                } else {
-                    // Centred (or, when larger than the paper, cut around its centre).
-                    ((big_w - print_w) * 0.5, (big_h - print_h) * 0.5)
-                };
-                let e = (m - x0) * 72.0;
-                // Content y runs up from the bottom of the printed sheet.
-                let f = (m - (big_h - y_top - print_h)) * 72.0;
-                doc.set_uniform_line_width(None);
-                doc.save_state();
-                doc.clip_rect(m * 72.0, m * 72.0, print_w * 72.0, print_h * 72.0);
-                doc.transform([s, 0.0, 0.0, s, e, f]);
-                if !opts.line_weights {
-                    doc.set_uniform_line_width(Some(0.5 / s));
-                }
-                if let Some(bg) = sheet.background {
-                    doc.fill_rect(0.0, 0.0, sheet.w_in * 72.0, sheet.h_in * 72.0, bg);
-                }
-                emit(&mut doc, &sheet.prims);
-                doc.restore_state();
-                doc.set_uniform_line_width(None);
-                if opts.tiling && n > 1 {
-                    tile_marks(
-                        &mut doc,
-                        opts,
-                        (col, row),
-                        (grid.cols, grid.rows),
-                        tile_no,
-                        n,
-                    );
-                }
+            first_page = false;
+            if tile.no == 1 {
+                doc.add_bookmark(&sheet.bookmark);
+            }
+            let s = tile.scale;
+            doc.set_uniform_line_width(None);
+            doc.save_state();
+            doc.clip_rect(m * 72.0, m * 72.0, print_w * 72.0, print_h * 72.0);
+            doc.transform([s, 0.0, 0.0, s, tile.e, tile.f]);
+            if !opts.line_weights {
+                doc.set_uniform_line_width(Some(0.5 / s));
+            }
+            if let Some(bg) = sheet.background {
+                doc.fill_rect(0.0, 0.0, sheet.w_in * 72.0, sheet.h_in * 72.0, bg);
+            }
+            emit(&mut doc, &sheet.prims);
+            doc.restore_state();
+            doc.set_uniform_line_width(None);
+            if opts.tiling && tile.total > 1 {
+                tile_marks(
+                    &mut doc,
+                    opts,
+                    (tile.col, tile.row),
+                    (tile.cols, tile.rows),
+                    tile.no,
+                    tile.total,
+                );
             }
         }
     }
     doc.finish()
+}
+
+// ----------------------------------------------------------------- preview --
+
+/// One thing on a [`PreviewPage`]: points on the paper, y up from the
+/// paper's bottom-left corner, colours already turned into the print's colour
+/// mode (grayscale or black and white) and widths already scaled to the
+/// printed size, so the preview is a picture of the page as it prints.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreviewItem {
+    Fill {
+        pts: Vec<(f64, f64)>,
+        color: [u8; 3],
+    },
+    Stroke {
+        pts: Vec<(f64, f64)>,
+        closed: bool,
+        /// Pen width on the paper, points.
+        width_pt: f64,
+        color: [u8; 3],
+        /// On/off lengths on the paper, points; empty for solid.
+        dash: Vec<f64>,
+    },
+    Text {
+        x: f64,
+        y: f64,
+        size_pt: f64,
+        color: [u8; 3],
+        bold: bool,
+        /// Counter-clockwise radians about `(x, y)`.
+        angle: f64,
+        text: String,
+    },
+    /// RGBA pixels (`px.0 * px.1 * 4`, rows top to bottom) in `rect`
+    /// (`[x0, y0, x1, y1]`).
+    Image {
+        rect: [f64; 4],
+        px: (u32, u32),
+        rgba: Vec<u8>,
+    },
+    /// Clip what follows to the rectangle, until the matching `ClipEnd`.
+    ClipBegin([f64; 4]),
+    ClipEnd,
+}
+
+/// One paper page of a print as it will come out: the sheet scaled and
+/// placed on the paper (or one tile of it), in the chosen colour mode, with
+/// the pen weights the print uses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviewPage {
+    /// The paper, `(width, height)` in inches.
+    pub paper_in: (f64, f64),
+    /// The printable area, `[x0, y0, x1, y1]` points on the paper.
+    pub printable_pt: [f64; 4],
+    pub items: Vec<PreviewItem>,
+    /// `A-1 PLAN`, with `TILE 2 OF 4` when the sheet is cut into tiles.
+    pub caption: String,
+    /// The sheet's scale on the paper (1 = its own size).
+    pub scale: f64,
+    pub color: PrintColor,
+}
+
+fn preview_rgb(mode: PdfColorMode, c: PdfColor, area: bool) -> [u8; 3] {
+    (if area { mode.area(c) } else { mode.ink(c) }).rgb8()
+}
+
+fn preview_of(sheet: &Sheet, tile: &Tile, opts: &PrintOptions) -> PreviewPage {
+    let mode: PdfColorMode = opts.color.into();
+    let (pw, ph) = opts.paper.inches(opts.landscape);
+    let m = opts.margin_in * 72.0;
+    let (print_w, print_h) = opts.printable_in();
+    let printable = [m, m, m + print_w * 72.0, m + print_h * 72.0];
+    let (s, e, f) = (tile.scale, tile.e, tile.f);
+    let at = |p: &(f64, f64)| (p.0 * s + e, p.1 * s + f);
+    let rect_at = |r: &[f64; 4]| {
+        let (a, b) = (at(&(r[0], r[1])), at(&(r[2], r[3])));
+        [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
+    };
+    let mut items = vec![PreviewItem::ClipBegin(printable)];
+    if let Some(bg) = sheet.background {
+        let r = rect_at(&[0.0, 0.0, sheet.w_in * 72.0, sheet.h_in * 72.0]);
+        items.push(PreviewItem::Fill {
+            pts: vec![(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])],
+            color: preview_rgb(mode, bg, true),
+        });
+    }
+    for p in &sheet.prims {
+        match p {
+            Prim::Stroke { pts, closed, pen } => items.push(PreviewItem::Stroke {
+                pts: pts.iter().map(at).collect(),
+                closed: *closed,
+                // Without line weights every pen prints as a 0.5 pt hairline.
+                width_pt: if opts.line_weights {
+                    pen.width * s
+                } else {
+                    0.5
+                },
+                color: preview_rgb(mode, pen.color, false),
+                dash: pen.dash.pattern().iter().map(|d| d * s).collect(),
+            }),
+            Prim::Fill { pts, color } => items.push(PreviewItem::Fill {
+                pts: pts.iter().map(at).collect(),
+                color: preview_rgb(mode, *color, true),
+            }),
+            Prim::Text {
+                x,
+                y,
+                size,
+                color,
+                bold,
+                angle,
+                text,
+                ..
+            } => {
+                let (x, y) = at(&(*x, *y));
+                items.push(PreviewItem::Text {
+                    x,
+                    y,
+                    size_pt: size * s,
+                    color: preview_rgb(mode, *color, false),
+                    bold: *bold,
+                    angle: *angle,
+                    text: text.clone(),
+                });
+            }
+            Prim::Image { rect, px, rgba } => {
+                let mut out = rgba.clone();
+                if mode != PdfColorMode::Color {
+                    for p in out.as_chunks_mut::<4>().0 {
+                        let v = mode.pixel([p[0], p[1], p[2]]);
+                        p[..3].copy_from_slice(&v);
+                    }
+                }
+                items.push(PreviewItem::Image {
+                    rect: rect_at(rect),
+                    px: *px,
+                    rgba: out,
+                });
+            }
+            Prim::ClipBegin(r) => items.push(PreviewItem::ClipBegin(rect_at(r))),
+            Prim::ClipEnd => items.push(PreviewItem::ClipEnd),
+        }
+    }
+    items.push(PreviewItem::ClipEnd);
+    let caption = if tile.total > 1 {
+        format!("{}  TILE {} OF {}", sheet.bookmark, tile.no, tile.total)
+    } else {
+        sheet.bookmark.clone()
+    };
+    PreviewPage {
+        paper_in: (pw, ph),
+        printable_pt: printable,
+        items,
+        caption,
+        scale: s,
+        color: opts.color,
+    }
+}
+
+fn preview_pages(sheets: &[Sheet], opts: &PrintOptions) -> Vec<PreviewPage> {
+    sheets
+        .iter()
+        .flat_map(|sheet| {
+            tiles_of(sheet, opts)
+                .into_iter()
+                .map(move |t| preview_of(sheet, &t, opts))
+        })
+        .collect()
+}
+
+/// Print Preview of the layout under `opts`: one [`PreviewPage`] per paper
+/// page (a sheet cut into tiles takes several), drawn the way
+/// [`print_layout_pdf`] prints it: the chosen colour mode, the pen weights
+/// (or hairlines when line weights are off), hatches at the box scales, the
+/// page placed and scaled on the paper.
+pub fn layout_print_preview(
+    layout: &Layout,
+    cx: &LayoutRenderContext,
+    opts: &PrintOptions,
+) -> Vec<PreviewPage> {
+    preview_pages(&layout_sheets(layout, cx, opts), opts)
 }
 
 /// Corner marks of the printable area and the tile's place in the grid.
@@ -334,8 +553,14 @@ fn selected<T>(items: Vec<T>, range: Option<(usize, usize)>) -> Vec<T> {
 /// Prints the layout's pages (template pages are not printed) with `opts`.
 /// The PDF has one bookmark per sheet, `A-1 TITLE`.
 pub fn print_layout_pdf(layout: &Layout, cx: &LayoutRenderContext, opts: &PrintOptions) -> Vec<u8> {
+    paginate(&layout_sheets(layout, cx, opts), opts)
+}
+
+/// The sheets of the layout's printed pages in `opts.range`, each at its own
+/// size (a page can have a sheet of its own in Page Specification).
+fn layout_sheets(layout: &Layout, cx: &LayoutRenderContext, opts: &PrintOptions) -> Vec<Sheet> {
     let (w_in, h_in) = layout.sheet_inches();
-    let scenes = SceneSource::new(cx.scene);
+    let scenes = SceneSource::for_context(cx);
     let background = layout.page_background.then_some(PdfColor::Rgb(
         CHIEF_SHEET_BACKGROUND.0,
         CHIEF_SHEET_BACKGROUND.1,
@@ -347,6 +572,7 @@ pub fn print_layout_pdf(layout: &Layout, cx: &LayoutRenderContext, opts: &PrintO
     for index in indices {
         let mut cv = Canvas::new();
         draw_page(&mut cv, layout, &pages, index, cx, &scenes);
+        let (w_in, h_in) = layout.page_sheet_inches(pages[index]);
         sheets.push(Sheet {
             w_in,
             h_in,
@@ -364,7 +590,7 @@ pub fn print_layout_pdf(layout: &Layout, cx: &LayoutRenderContext, opts: &PrintO
             bookmark: layout.name.clone(),
         });
     }
-    paginate(&sheets, opts)
+    sheets
 }
 
 /// The drawing scale a plan view prints at under `opts`: the explicit scale,
@@ -399,16 +625,16 @@ pub fn plan_print_scale(
     }
 }
 
-/// Prints floor `floor` of the plan at a drawing scale. Returns the PDF and
-/// the scale used. The printed sheet is the plan (walls, openings, dimensions,
-/// CAD) with its margin; the scale is printed under it.
-pub fn print_plan_view_pdf(
+/// The sheet of floor `floor` at its print scale, and the options to place
+/// it with (a plan view prints at its drawing scale: the sheet is not scaled
+/// again).
+fn plan_view_sheet(
     cx: &LayoutRenderContext,
     floor: usize,
     layer_set: &str,
     title: &str,
     opts: &PrintOptions,
-) -> (Vec<u8>, Scale) {
+) -> (Sheet, PrintOptions, Scale) {
     let source = BoxSource::PlanView {
         floor,
         layer_set: layer_set.to_string(),
@@ -424,7 +650,7 @@ pub fn print_plan_view_pdf(
     );
     b.border = false;
     b.clip = false;
-    let scenes = SceneSource::new(cx.scene);
+    let scenes = SceneSource::for_context(cx);
     let mut prims = box_prims(&b, cx, &scenes, &crate::layers::LayoutLayers::default());
     let mut cv = Canvas::new();
     cv.text(
@@ -443,10 +669,37 @@ pub fn print_plan_view_pdf(
         background: None,
         bookmark: title.to_string(),
     };
-    // A plan view prints at its drawing scale: the sheet is not scaled again.
     let mut o = opts.clone();
     o.scale = PrintScale::Actual;
+    (sheet, o, scale)
+}
+
+/// Prints floor `floor` of the plan at a drawing scale. Returns the PDF and
+/// the scale used. The printed sheet is the plan (walls, openings, dimensions,
+/// CAD) with its margin; the scale is printed under it.
+pub fn print_plan_view_pdf(
+    cx: &LayoutRenderContext,
+    floor: usize,
+    layer_set: &str,
+    title: &str,
+    opts: &PrintOptions,
+) -> (Vec<u8>, Scale) {
+    let (sheet, o, scale) = plan_view_sheet(cx, floor, layer_set, title, opts);
     (paginate(&[sheet], &o), scale)
+}
+
+/// Print Preview of floor `floor` under `opts`: the page as
+/// [`print_plan_view_pdf`] prints it, in the chosen colour mode and pen
+/// weights, and the scale used.
+pub fn plan_view_print_preview(
+    cx: &LayoutRenderContext,
+    floor: usize,
+    layer_set: &str,
+    title: &str,
+    opts: &PrintOptions,
+) -> (Vec<PreviewPage>, Scale) {
+    let (sheet, o, scale) = plan_view_sheet(cx, floor, layer_set, title, opts);
+    (preview_pages(&[sheet], &o), scale)
 }
 
 /// A copy of `layout` whose perspective boxes render at `dpi` dots per inch
@@ -493,7 +746,7 @@ pub fn print_model_pdf(
     b.clip = true;
     b.dpi = dpi;
     b.samples = samples;
-    let scenes = SceneSource::new(cx.scene);
+    let scenes = SceneSource::for_context(cx);
     let mut prims = box_prims(&b, cx, &scenes, &crate::layers::LayoutLayers::default());
     let mut cv = Canvas::new();
     let (px_w, px_h) = crate::perspective_pixels(w, h, dpi);

@@ -9,9 +9,9 @@ use crate::lighting::{AreaLight, Environment, PointLight};
 use crate::png::write_png;
 use crate::settings::RenderSettings;
 use crate::settings::Technique;
-use crate::shading::MATERIAL_COUNT;
+use crate::shading::{Custom, MATERIAL_COUNT};
 use crate::vec3::V3;
-use plan_3d::{build_scene, Material, Scene};
+use plan_3d::{build_scene, Scene};
 use plan_core::Project;
 use plan_materials::textures::TextureStore;
 use std::io;
@@ -30,23 +30,30 @@ pub struct Renderer {
     bvh: Bvh,
     diagonal: f32,
     textures: Arc<TextureStore>,
-    /// The `(material, colour)` pairs of meshes with their own `color`; a
-    /// triangle's material index `MATERIAL_COUNT + i` means `custom[i]`.
-    custom: Vec<(Material, [u8; 3])>,
+    /// The looks of meshes with their own `color` (and the surface the
+    /// Material Painter gave them); a triangle's material index
+    /// `MATERIAL_COUNT + i` means `custom[i]`.
+    custom: Vec<Custom>,
 }
 
 impl Renderer {
     /// Flatten every mesh triangle into a BVH. Degenerate triangles are dropped.
     /// A mesh with a [`plan_3d::Mesh::color`] is shaded with that colour as its
-    /// albedo in place of its material's.
+    /// albedo in place of its material's, and with the roughness, metalness,
+    /// transparency and glow the Material Painter gave it
+    /// ([`plan_3d::Mesh::paint_surface`]).
     pub fn new(scene: &Scene) -> Renderer {
         let mut tris = Vec::with_capacity(scene.triangle_count());
-        let mut custom: Vec<(Material, [u8; 3])> = Vec::new();
+        let mut custom: Vec<Custom> = Vec::new();
         for mesh in &scene.meshes {
             let material = match mesh.color {
                 None => mesh.material.index() as u32,
                 Some(rgb) => {
-                    let key = (mesh.material, rgb);
+                    let key = Custom {
+                        material: mesh.material,
+                        color: rgb,
+                        paint: mesh.paint_surface(),
+                    };
                     let at = custom.iter().position(|c| *c == key).unwrap_or_else(|| {
                         custom.push(key);
                         custom.len() - 1

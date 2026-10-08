@@ -3,12 +3,18 @@
 //! Pad and Pier Specification (General, Layer) and Platform Hole
 //! Specification. Opened by a double-click on the object; the dialog edits a
 //! [`Draft`] clone that the tool stores on OK as one undo step.
+//!
+//! Also the options of the Build Foundation dialog ([`build_options`], R-61,
+//! R-62): Walls with Footings, Monolithic Slab and Grade Beams on Piers, each
+//! with its own sizes, and the basement or crawl space room to make.
 
 use super::{
     on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_FAINT,
     PV_INK, PV_WALL,
 };
+use crate::editor::rooms_edit::{FoundationSpec, FoundationType};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, Ui};
+use plan_core::floors::{FoundationRooms, BASEMENT_MIN_CLEAR_HEIGHT};
 use plan_core::foundation::{
     bounds, Footing, FoundationLayer, FoundationRef, Pad, Pier, PlatformHole, PlatformKind, Slab,
     SlabHole,
@@ -150,6 +156,83 @@ impl FoundationDialog {
     }
 }
 
+/// The Foundation Type list and the options of the chosen type (the body of
+/// the Build Foundation dialog; the OK and Cancel buttons are the caller's).
+pub fn build_options(ui: &mut Ui, spec: &mut FoundationSpec, fields: &mut Fields) {
+    ui.label(egui::RichText::new("Foundation Type").strong());
+    for t in FoundationType::ALL {
+        ui.radio_value(&mut spec.kind, t, t.name());
+    }
+    match spec.kind {
+        FoundationType::WallsWithFootings => {
+            section(ui, "Walls with Footings");
+            fields.length_row(ui, "Stem Wall Height", "stem_h", &mut spec.stem_height);
+            fields.length_row(
+                ui,
+                "Minimum Stem Wall",
+                "stem_min",
+                &mut spec.min_stem_height,
+            );
+            row(ui, "Footing", |ui| {
+                ui.checkbox(&mut spec.footing, "Footing under the walls")
+            });
+            if spec.footing {
+                fields.length_row(ui, "Footing Width", "footing_w", &mut spec.footing_width);
+                let (min_w, min_t) = crate::editor::code::footing_limits(spec.stem_height.max(spec.min_stem_height));
+                super::code_notice::code_notice(ui, "IRC R403.1.1 footing width (Table R403.1(1))", &mut spec.footing_width, min_w, super::code_notice::LimitKind::Min);
+                fields.length_row(ui, "Footing Depth", "footing_d", &mut spec.footing_depth);
+                super::code_notice::code_notice(ui, "IRC R403.1.4 / R403.1.1 footing thickness to the frost depth", &mut spec.footing_depth, min_t, super::code_notice::LimitKind::Min);
+            }
+            section(ui, "Room");
+            for (value, label) in [
+                (
+                    FoundationRooms::Auto,
+                    "Automatic (basement from 6' clear, else crawl space)",
+                ),
+                (FoundationRooms::Basement, "Basement"),
+                (FoundationRooms::CrawlSpace, "Crawl Space"),
+                (FoundationRooms::None, "No room"),
+            ] {
+                ui.radio_value(&mut spec.rooms, value, label);
+            }
+            let clear = spec.stem_height.max(spec.min_stem_height) - rooms_platform_hint();
+            ui.weak(format!(
+                "Clear height under the first floor about {} ({}).",
+                fmt_ft_in(clear.max(0.0)),
+                if clear >= BASEMENT_MIN_CLEAR_HEIGHT {
+                    "a basement"
+                } else {
+                    "a crawl space"
+                }
+            ));
+        }
+        FoundationType::MonolithicSlab => {
+            section(ui, "Monolithic Slab");
+            fields.length_row(ui, "Slab Thickness", "slab_t", &mut spec.slab_thickness);
+            fields.length_row(
+                ui,
+                "Stem Wall Height",
+                "slab_stem",
+                &mut spec.slab_stem_height,
+            );
+            ui.weak("A thickened edge under the exterior walls and a slab inside it.");
+        }
+        FoundationType::Piers => {
+            section(ui, "Grade Beams on Piers");
+            fields.length_row(ui, "Grade Beam Height", "beam_h", &mut spec.beam_height);
+            fields.length_row(ui, "Pier Height", "pier_h", &mut spec.pier_height);
+            fields.length_row(ui, "Pier Spacing", "pier_s", &mut spec.pier_spacing);
+            ui.weak("Piers at every corner and along the walls, a grade beam on top.");
+        }
+    }
+}
+
+/// The first floor's platform, which the clear height of a basement loses
+/// (the dialog only has the plan defaults at hand).
+fn rooms_platform_hint() -> f64 {
+    plan_core::floors::FLOOR_PLATFORM_THICKNESS
+}
+
 fn material_combo(ui: &mut Ui, salt: &str, value: &mut String) {
     egui::ComboBox::from_id_salt(salt)
         .selected_text(value.clone())
@@ -174,6 +257,7 @@ fn footing_rows(fields: &mut Fields, ui: &mut Ui, footing: &mut Option<Footing>,
         };
         fields.length_row(ui, width, "footing_width", &mut f.width);
         fields.length_row(ui, "Footing depth", "footing_depth", &mut f.depth);
+        super::code_notice::code_notice(ui, "IRC R403.1.1 footing thickness", &mut f.depth, crate::editor::code::active().footing_min_thickness, super::code_notice::LimitKind::Min);
     }
 }
 

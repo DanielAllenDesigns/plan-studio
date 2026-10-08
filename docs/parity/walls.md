@@ -200,3 +200,33 @@ Walls carry thickness, height, kind, layer, a wall type with a layer stack (Wall
 | W-93 invisible layer hidden but still defines rooms | `Wall.layer` ignored in drawing and rooms | Medium | Honor `layers.is_visible` in `draw()`; keep rooms independent of visibility |
 | W-96 duplicate-wall detection | Overlapping duplicate walls allowed silently | Low | Check on add_wall; offer merge |
 | W-97..W-100 acceptance scenarios | Scenarios 97 partly (no joins drawn), 98 partly (no T-clean in draw), 99/100 impossible today | n/a | Turn each into an integration test in `plan-core` once the features exist |
+
+## Round 14 (walls builder): junctions, multi-wall Open Object, Structure / Foundation / Wall Cap tabs
+
+- W-34, W-103: `joins.rs` solves any number of walls ending at one point (`end_role`): the most nearly collinear pair runs through with square ends, the rest butt the through walls' near faces (faces step where the through walls differ in thickness), a `Y` is mitered pairwise; exterior beats interior, then thicker, then earlier. Layer outlines follow (Y falls back to square layer ends).
+- W-36: cut crossings are the same four-way; with `split_on_tee` off a crossing stays two whole walls.
+- W-39: Through Wall At Start/End (`Wall.spec.structure`) extends the wall past the corner in plan; the other wall butts it.
+- W-30, W-83: Open Object with several walls opens one Wall Specification (General, Structure, Foundation, Wall Types, Wall Cap, Layer); mixed fields are blank or indeterminate, only edited fields are written, one undo step; thickness cannot go below the type's fixed layers plus 1/8 in.
+- W-52, W-60, W-62, W-63, R-69: `Wall.spec` (`plan_core::walls::spec`): Default Wall Top/Bottom Height, Ceiling Platform (Automatic / Stop at Ceiling Above / Balloon Through Ceiling Above / Hang Floor Platform Above), Floor Platform (Automatic / Stop at Floor Below / Balloon Through Floor Below), footing, sill plate and wall cap; plan-3d moves the wall's top and bottom and builds footing, sill and cap. See DECISIONS 45-51.
+
+<!-- coverage-audit:start -->
+## Coverage audit additions (2026-10-08)
+
+Rows added by the Round 14 coverage audit (`docs/chief-feature-coverage.md`): Chief X18 features found in the menu, toolbar, sub-tool and dialog captures, or known from the product, that no row above covered. Status comes from a code search, not a Chief session; "verify in Chief" marks behavior known only from the product. Variants of one flyout or tab share one row.
+
+| ID | Chief behavior | Status | Evidence |
+|---|---|---|---|
+| W-106 | Straight Deck Edge: Deck edge wall that defines the deck outline, floor platform and fascia. Also covers: Curved Deck Edge. | Works | tools/wall.rs WallStyle::DeckEdge; toolbar.rs railing_deck() |
+| W-107 | Polygon Shaped Deck…: Deck from a polygon with a deck-edge wall and a floor platform. | Works | tools/details.rs DetailsVariant::PolygonDeck; toolbar.rs railing_deck() |
+| W-108 | Straight Fencing: Fence wall type with posts, rails and pickets. Also covers: Curved Fencing. | Works | tools/wall.rs WallStyle::Fencing; toolbar.rs fencing(); plan-3d wall_kinds |
+| W-109 | Corner Boards: Exterior corner trim placed by hand or around every corner. Also covers: Auto Place Corner Boards. | Works | tools/details.rs DetailsVariant::CornerBoards, AutoCornerBoards; manual 17 |
+| W-110 | Quoins: Stone or brick corner blocks. Also covers: Auto Place Quoins. | Works | DetailsVariant::Quoins, AutoQuoins |
+| W-111 | Molding Line: Crown, base, chair rail or exterior trim drawn along a line or polyline from a profile. Also covers: Molding Polyline. | Works | DetailsVariant::MoldingLine, MoldingPolyline; plan-3d details.rs mitering |
+| W-112 | Trim flyout: Trim tools flyout. | Works | toolbar.rs trim() |
+| W-113 | Corner Trim defaults: Corner board and quoin size and material defaults. | Missing | not in the tree; the trim tools use built-in sizes (tools/details.rs) |
+| W-114 | Wall Cap tab (profile table, position): Cap profile table, vertical and horizontal position, rotation, reflect, materials-list count. | Partial | dialogs/wall.rs "Wall Cap" tab live for half walls (W-54 cap); profile library and Add to Library are not wired |
+| W-115 | Wall Covering tab (coverings, position, options): Interior/exterior wall coverings (tile wainscot, paneling) with top/bottom offsets, per wall side. | Missing | tab disabled in WALL_TABS |
+| W-116 | Newels/Balusters tab (railing wall): Newel and baluster style, spacing and count for railing walls. | Missing | tab disabled |
+| W-117 | Rails tab (railing wall): Top rail, bottom rail and handrail profiles for railing walls. | Missing | tab disabled |
+| W-118 | Object Information tab (code, comment, manufacturer, supplier): Descriptive fields and custom fields carried to schedules. | Missing | tab disabled in the Wall dialog (the Room dialog has it) |
+<!-- coverage-audit:end -->

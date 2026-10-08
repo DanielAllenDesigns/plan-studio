@@ -48,10 +48,16 @@ pub enum ImageMode {
     PolylineRegion,
     SplinePath,
     SplineRegion,
+    /// Click a picture, then two points a known distance apart, then type
+    /// that distance: the picture is scaled to match (tracing).
+    PointToPointResize,
+    /// Click a picture, then the two ends of a line that should be level:
+    /// the picture is turned to the nearest axis (tracing).
+    RotateToAlign,
 }
 
 impl ImageMode {
-    pub const ALL: [ImageMode; 8] = [
+    pub const ALL: [ImageMode; 10] = [
         ImageMode::CreateImage,
         ImageMode::BillboardImage,
         ImageMode::ImageLibrary,
@@ -60,6 +66,8 @@ impl ImageMode {
         ImageMode::PolylineRegion,
         ImageMode::SplinePath,
         ImageMode::SplineRegion,
+        ImageMode::PointToPointResize,
+        ImageMode::RotateToAlign,
     ];
 
     /// Chief's name for the tool (the flyout entry).
@@ -73,7 +81,17 @@ impl ImageMode {
             ImageMode::PolylineRegion => "Polyline Distribution Region",
             ImageMode::SplinePath => "Spline Distribution Path",
             ImageMode::SplineRegion => "Spline Distribution Region",
+            ImageMode::PointToPointResize => "Point to Point Resize",
+            ImageMode::RotateToAlign => "Rotate to Align",
         }
+    }
+
+    /// The two tracing modes.
+    pub fn is_trace(self) -> bool {
+        matches!(
+            self,
+            ImageMode::PointToPointResize | ImageMode::RotateToAlign
+        )
     }
 
     /// Kind and spline flag for the distribution modes.
@@ -130,8 +148,19 @@ fn average_color(img: &png::Rgba) -> [u8; 3] {
     [(acc[0] / n) as u8, (acc[1] / n) as u8, (acc[2] / n) as u8]
 }
 
-/// Reads the header (and, for PNG, the pixels' average colour) of the
-/// picture at `path`.
+/// Decodes PNG or JPEG bytes (every PNG type; baseline, progressive and CMYK
+/// JPEG) through the shared decoder.
+fn decode_bytes(bytes: &[u8]) -> Result<png::Rgba, String> {
+    plan_library::image::decode(bytes)
+        .map(|i| png::Rgba {
+            width: i.width as usize,
+            height: i.height as usize,
+            pixels: i.rgba,
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Reads the header and the pixels' average colour of the picture at `path`.
 pub fn load_spec(path: &str) -> Result<ImageSpec, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
     let (w, h, format) = plan_core::images::image_size(&bytes)
@@ -140,24 +169,36 @@ pub fn load_spec(path: &str) -> Result<ImageSpec, String> {
     spec.format = format;
     spec.note.clear();
     match format {
-        ImageFormat::Png => match png::decode(&bytes) {
+        ImageFormat::Png => match decode_bytes(&bytes) {
             Ok(img) => spec.color = average_color(&img),
             Err(e) => spec.note = format!("PNG could not be decoded ({e}); drawn as a frame"),
         },
-        ImageFormat::Jpeg => spec.note = JPEG_NOTE.to_string(),
+        ImageFormat::Jpeg => match decode_bytes(&bytes) {
+            Ok(img) => spec.color = average_color(&img),
+            Err(_) => spec.note = JPEG_NOTE.to_string(),
+        },
         ImageFormat::Other => {}
     }
     Ok(spec)
 }
 
+/// The colour of the top-left pixel of the picture at `path` (a background
+/// that is a good transparency key); `None` when it cannot be read.
+pub fn corner_color(path: &str) -> Option<[u8; 3]> {
+    let bytes = std::fs::read(path).ok()?;
+    let img = decode_bytes(&bytes).ok()?;
+    let px = img.pixels.get(..3)?;
+    Some([px[0], px[1], px[2]])
+}
+
 /// Pixels of the picture with the transparency key applied, at most
-/// `max_side` on the long side. `None` for formats without a decoder.
+/// `max_side` on the long side. `None` for a file that cannot be decoded.
 fn decode_pixels(spec: &ImageSpec, max_side: usize) -> Option<png::Rgba> {
-    if spec.format != ImageFormat::Png {
+    if spec.format == ImageFormat::Other {
         return None;
     }
     let bytes = std::fs::read(&spec.path).ok()?;
-    let mut img = png::decode(&bytes).ok()?.downscaled(max_side);
+    let mut img = decode_bytes(&bytes).ok()?.downscaled(max_side);
     if let Some(key) = spec.transparency {
         let tol = i32::from(spec.tolerance);
         for px in img.pixels.as_chunks_mut::<4>().0 {
@@ -404,6 +445,53 @@ pub fn save_to_library(
     Ok(id)
 }
 
+// ----- Import Picture -----
+
+/// Command id: File > Import > Picture...
+pub const IMPORT_PICTURE: &str = "images.import_picture";
+
+/// Runs an image command by id (`EditorContext::run_custom`); false when the
+/// id is not one of ours.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    match id {
+        IMPORT_PICTURE => {
+            import_picture(cx);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// File > Import > Picture: the Picture File box (a PNG or JPEG), then the
+/// picture is placed flat in the middle of the plan and its Image
+/// Specification opens (size, keep aspect, rotation, transparent colour,
+/// layer). One undo step. Returns the new picture's id; `None` when the box
+/// is cancelled or the file is not a picture.
+pub fn import_picture(cx: &mut EditorContext) -> Option<Id> {
+    let Some(path) = pick_image_file() else {
+        cx.status = "No picture chosen".into();
+        return None;
+    };
+    let spec = match load_spec(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            cx.status = e;
+            return None;
+        }
+    };
+    cx.begin_change("Import Picture");
+    let at = super::underlay::plan_center(cx);
+    let id = place_image(cx, &spec, at, false);
+    cx.selection.set(ObjectRef::Symbol(id));
+    cx.mark_dirty();
+    cx.requests
+        .push(crate::editor::EditorRequest::OpenSpec(ObjectRef::Symbol(
+            id,
+        )));
+    cx.status = format!("Imported {}", file_name(&spec.path));
+    Some(id)
+}
+
 // ----- placing -----
 
 /// Places `spec` with its centre on `at`. Returns the new symbol's id.
@@ -463,6 +551,16 @@ pub struct ImagesTool {
     /// Points of the path or region being drawn.
     points: Vec<Point>,
     hover: Option<Point>,
+    /// The picture and first point of a tracing mode (Point to Point Resize,
+    /// Rotate to Align).
+    trace: TraceState,
+}
+
+/// Progress of Point to Point Resize and Rotate to Align.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TraceState {
+    target: Option<Id>,
+    a: Option<Point>,
 }
 
 impl Default for ImagesTool {
@@ -472,8 +570,27 @@ impl Default for ImagesTool {
             pending: None,
             points: Vec::new(),
             hover: None,
+            trace: TraceState::default(),
         }
     }
+}
+
+/// The topmost visible picture symbol under `p` (inside it, or within 3
+/// inches of its edge, which is how a thin billboard is hit).
+pub fn picture_at(cx: &EditorContext, p: Point) -> Option<Id> {
+    cx.floor()
+        .symbols
+        .iter()
+        .rev()
+        .filter(|s| s.image.is_some() && cx.layers().is_visible(&s.layer))
+        .find(|s| {
+            let foot = s.footprint();
+            plan_core::geometry::point_in_polygon(p, &foot)
+                || (0..4).any(|i| {
+                    plan_core::geometry::dist_to_segment(p, foot[i], foot[(i + 1) % 4]) <= 3.0
+                })
+        })
+        .map(|s| s.id)
 }
 
 impl ImagesTool {
@@ -577,6 +694,42 @@ impl ImagesTool {
         ToolResult::committed("3D Solid Feature")
     }
 
+    /// A click of Point to Point Resize or Rotate to Align: first the
+    /// picture, then the two points on it.
+    fn trace_click(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        let Some(id) = self.trace.target else {
+            match picture_at(cx, p.world) {
+                Some(id) => {
+                    self.trace.target = Some(id);
+                    cx.selection.set(ObjectRef::Symbol(id));
+                    cx.status = self.hint();
+                }
+                None => cx.status = format!("{}: click a picture first", self.mode.name()),
+            }
+            return ToolResult::consumed();
+        };
+        let Some(a) = self.trace.a else {
+            self.trace.a = Some(p.snapped);
+            cx.status = self.hint();
+            return ToolResult::consumed();
+        };
+        let b = p.snapped;
+        self.trace = TraceState::default();
+        if self.mode == ImageMode::RotateToAlign {
+            if super::underlay::trace::align_picture(cx, id, a, b) {
+                return ToolResult::committed("Rotate to Align");
+            }
+            return ToolResult::consumed();
+        }
+        if a.dist(b) < super::underlay::trace::MIN_SEPARATION {
+            cx.status = "Point to Point Resize needs two different points".into();
+            return ToolResult::consumed();
+        }
+        crate::dialogs::images::begin_resize_prompt(id, a, b);
+        cx.status = "Point to Point Resize: type the real distance between the points".into();
+        ToolResult::consumed()
+    }
+
     fn add_point(&mut self, p: Point) {
         if self.points.last().is_none_or(|l| l.dist(p) > 0.5) {
             self.points.push(p);
@@ -676,6 +829,19 @@ impl Tool for ImagesTool {
                 Some(i) => format!("3D Solid Feature: click to place {} as a solid", i.name),
                 None => "3D Solid Feature: pick an item in the Library Browser first".into(),
             },
+            ImageMode::PointToPointResize | ImageMode::RotateToAlign => {
+                let name = self.mode.name();
+                let what = if self.mode == ImageMode::RotateToAlign {
+                    "the other end of the line that should be level"
+                } else {
+                    "the second point, then type the real distance"
+                };
+                match (self.trace.target, self.trace.a) {
+                    (None, _) => format!("{name}: click the picture"),
+                    (Some(_), None) => format!("{name}: click the first point on the picture"),
+                    (Some(_), Some(_)) => format!("{name}: click {what}"),
+                }
+            }
             _ => match active_item().and_then(|id| find_item(&id)) {
                 Some(i) => format!(
                     "{}: click points, Enter or double-click to finish ({})",
@@ -699,6 +865,7 @@ impl Tool for ImagesTool {
             if m != self.mode {
                 self.points.clear();
                 self.hover = None;
+                self.trace = TraceState::default();
                 if !matches!(m, ImageMode::CreateImage | ImageMode::BillboardImage) {
                     self.pending = None;
                 }
@@ -714,18 +881,36 @@ impl Tool for ImagesTool {
     fn activate(&mut self, cx: &mut EditorContext) {
         self.points.clear();
         self.hover = None;
+        self.trace = TraceState::default();
+        if self.mode.is_trace() {
+            // A picture that is already selected is the one to trace.
+            let pics: Vec<Id> = cx
+                .selection
+                .items
+                .iter()
+                .filter_map(|o| match o {
+                    ObjectRef::Symbol(id) => Some(*id),
+                    _ => None,
+                })
+                .filter(|id| cx.floor().symbol(*id).is_some_and(|s| s.image.is_some()))
+                .collect();
+            if let [only] = pics.as_slice() {
+                self.trace.target = Some(*only);
+            }
+        }
         cx.status = self.hint();
     }
 
     fn deactivate(&mut self, _cx: &mut EditorContext) {
         self.points.clear();
         self.hover = None;
+        self.trace = TraceState::default();
     }
 
     fn pointer_move(&mut self, _cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         self.hover = Some(p.snapped);
         ToolResult {
-            repaint: self.mode.distribution().is_some(),
+            repaint: self.mode.distribution().is_some() || self.mode.is_trace(),
             ..ToolResult::default()
         }
     }
@@ -735,6 +920,7 @@ impl Tool for ImagesTool {
             ImageMode::CreateImage | ImageMode::BillboardImage => self.place_picture(cx, &p),
             ImageMode::ImageLibrary => self.library_save(cx, &p),
             ImageMode::SolidFeature => self.place_solid(cx, &p),
+            ImageMode::PointToPointResize | ImageMode::RotateToAlign => self.trace_click(cx, &p),
             _ => {
                 if active_item().and_then(|id| find_item(&id)).is_none() {
                     cx.status = self.hint();
@@ -756,6 +942,11 @@ impl Tool for ImagesTool {
 
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
         if k.is(Key::Escape) {
+            if self.trace != TraceState::default() {
+                self.trace = TraceState::default();
+                cx.status = self.hint();
+                return ToolResult::consumed();
+            }
             if !self.points.is_empty() {
                 self.points.clear();
                 return ToolResult::consumed();
@@ -778,6 +969,30 @@ impl Tool for ImagesTool {
     }
 
     fn draw_overlay(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+        if self.mode.is_trace() {
+            let pal = &cx.palette;
+            if let Some(s) = self.trace.target.and_then(|id| cx.floor().symbol(id)) {
+                let pts: Vec<Pos2> = s
+                    .footprint()
+                    .iter()
+                    .map(|p| cam.world_to_screen(*p))
+                    .collect();
+                painter.add(Shape::closed_line(pts, Stroke::new(1.5_f32, pal.selection)));
+            }
+            if let Some(a) = self.trace.a {
+                let sa = cam.world_to_screen(a);
+                painter.circle_filled(sa, 4.0, pal.selection);
+                if let Some(h) = self.hover {
+                    painter.add(Shape::dashed_line(
+                        &[sa, cam.world_to_screen(h)],
+                        Stroke::new(1.2_f32, pal.ghost_stroke),
+                        6.0,
+                        4.0,
+                    ));
+                }
+            }
+            return;
+        }
         if self.mode.distribution().is_none() {
             return;
         }
@@ -1181,6 +1396,94 @@ pub(crate) mod tests {
             .unwrap()
             .position;
         assert!(moved.dist(first + Point::new(60.0, 30.0)) < 1e-6);
+    }
+
+    #[test]
+    fn the_tracing_modes_are_in_the_image_flyout_and_ask_for_a_picture_first() {
+        let names: Vec<_> = crate::toolbar::image()
+            .entries
+            .iter()
+            .map(|e| e.name)
+            .collect();
+        assert!(names.contains(&"Point to Point Resize"));
+        assert!(names.contains(&"Rotate to Align"));
+        assert!(ImageMode::PointToPointResize.is_trace() && !ImageMode::CreateImage.is_trace());
+        let mut cx = ctx();
+        let spec = load_spec(&fixture_file("trace.png")).unwrap();
+        let id = place_image(&mut cx, &spec, Point::new(100.0, 100.0), false);
+        let mut t = ImagesTool::new(ImageMode::PointToPointResize);
+        t.activate(&mut cx);
+        assert!(t.hint().contains("click the picture"), "{}", t.hint());
+        // Empty space is not a picture.
+        click(&mut t, &mut cx, 900.0, 900.0);
+        assert!(cx.status.contains("click a picture first"), "{}", cx.status);
+        // Click on it, then the first point.
+        click(&mut t, &mut cx, 100.0, 100.0);
+        assert_eq!(t.trace.target, Some(id));
+        assert!(t.hint().contains("first point"), "{}", t.hint());
+        assert!(picture_at(&cx, Point::new(100.0, 100.0)).is_some());
+        click(&mut t, &mut cx, 90.0, 100.0);
+        assert!(t.hint().contains("second point"), "{}", t.hint());
+        // Esc forgets the first point, then the picture.
+        assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
+        assert_eq!(t.trace, TraceState::default());
+        assert!(!t.key(&mut cx, KeyEvent::escape()).consumed);
+        // A selected picture is taken at once when the tool starts.
+        cx.selection.set(ObjectRef::Symbol(id));
+        t.activate(&mut cx);
+        assert_eq!(t.trace.target, Some(id));
+        // Two equal points make no prompt.
+        click(&mut t, &mut cx, 95.0, 100.0);
+        click(&mut t, &mut cx, 95.0, 100.0);
+        assert!(!crate::dialogs::images::resize_prompt_open());
+        assert!(cx.status.contains("two different points"), "{}", cx.status);
+    }
+
+    #[test]
+    fn import_picture_places_flat_in_the_middle_selects_and_asks_for_the_specification() {
+        let mut cx = ctx();
+        // Walls to find the middle of.
+        cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(200.0, 0.0),
+            6.0,
+            96.0,
+            plan_core::WallKind::Exterior,
+        );
+        cx.project.add_wall(
+            0,
+            Point::new(200.0, 0.0),
+            Point::new(200.0, 100.0),
+            6.0,
+            96.0,
+            plan_core::WallKind::Exterior,
+        );
+        let path = fixture_file("import.png");
+        inject_pick(Some(&path));
+        let id = import_picture(&mut cx).unwrap();
+        let s = cx.floor().symbol(id).unwrap();
+        assert!(!s.image.as_ref().unwrap().billboard);
+        let c = placed::symbol_center(s);
+        assert!(c.dist(Point::new(100.0, 50.0)) < 1e-6, "{c:?}");
+        assert_eq!(cx.selection.items, vec![ObjectRef::Symbol(id)]);
+        assert!(matches!(
+            cx.requests.last(),
+            Some(crate::editor::EditorRequest::OpenSpec(ObjectRef::Symbol(i))) if *i == id
+        ));
+        assert_eq!(cx.undo().as_deref(), Some("Import Picture"));
+        assert!(cx.floor().symbols.is_empty());
+        // Cancelled or not a picture: nothing happens, with a reason.
+        inject_pick(None);
+        assert!(import_picture(&mut cx).is_none());
+        assert!(cx.status.contains("No picture"));
+        let junk =
+            std::env::temp_dir().join(format!("plan-studio-junk-{}.png", std::process::id()));
+        std::fs::write(&junk, b"nope").unwrap();
+        inject_pick(Some(&junk.to_string_lossy()));
+        assert!(import_picture(&mut cx).is_none());
+        assert!(cx.status.contains("Not a PNG"), "{}", cx.status);
+        assert!(!run_command(&mut cx, "nope"));
     }
 
     #[test]

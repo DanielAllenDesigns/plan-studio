@@ -109,3 +109,4 @@ OK is refused with a reason for a size of zero or less.
 - Wall material regions are not drawn on curved walls.
 - Pyramid is an extra solid beyond Chief's list; **3D Solid Feature** (chapter 6.7) places a library item as a solid rather than drawing a primitive.
 - Trim follows a wall only when Select Objects moves it (17.3).
+- A **wall cap** (the Wall Cap tab of the Wall Specification, chapter 2.6: Flat Cap, Overhanging Cap or Thick Coping on the top of a wall, usually a half wall) is part of the wall, not a molding object; it is built in 3D on straight walls.

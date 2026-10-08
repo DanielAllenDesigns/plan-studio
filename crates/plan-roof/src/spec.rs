@@ -47,6 +47,14 @@ pub struct EdgeRoofSpec {
     pub break_rise: Option<f64>,
     /// Dutch gable (RF-21): a hip below the break, a short gable above it.
     pub dutch_gable: bool,
+    /// Half hip (RF-3): a gable end (`full_gable_wall` or `gable`) whose peak
+    /// is clipped by a hip of this pitch (rise per 12); see the `halfhip`
+    /// module. `None` is a plain gable.
+    pub half_hip_pitch: Option<f64>,
+    /// Height of the half hip's clip above the eave tips of the gable end,
+    /// inches; `None` keeps [`DEFAULT_CLIP_FRACTION`](crate::halfhip::DEFAULT_CLIP_FRACTION)
+    /// of the gable's height.
+    pub half_hip_rise: Option<f64>,
 }
 
 impl Default for EdgeRoofSpec {
@@ -62,6 +70,8 @@ impl Default for EdgeRoofSpec {
             upper_pitch: None,
             break_rise: None,
             dutch_gable: false,
+            half_hip_pitch: None,
+            half_hip_rise: None,
         }
     }
 }
@@ -165,6 +175,22 @@ pub fn build_roof_with_faces(
             Vec::new(),
         )
     });
+    // Half hips clip the gable ends of the finished roof.
+    let n = footprint.len();
+    if n >= 3 && polygon_area(footprint) > 0.0 {
+        for (i, s) in specs.iter().enumerate().take(n) {
+            if let (Some(pitch), true) = (s.half_hip_pitch, s.gable || s.full_gable_wall) {
+                crate::halfhip::clip_gable_end(
+                    &mut roof,
+                    (footprint[i], footprint[(i + 1) % n]),
+                    s.overhang,
+                    pitch,
+                    s.half_hip_rise,
+                    i,
+                );
+            }
+        }
+    }
     for plane in &mut roof.planes {
         if let Some(d) = spec_of(plane.source_edge).extend_slope_downward {
             *plane = extend_downward(plane, d);

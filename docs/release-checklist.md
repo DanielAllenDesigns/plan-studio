@@ -10,7 +10,7 @@ Sections 4.7 (textures), 4.11 (file management) and 4.12 (Round 12: Plan Check, 
 
 ## 1. The gate (must be green before you tag)
 
-The release workflow runs `cargo test --workspace` on every matrix runner before it builds or packages (a failing test stops the release), but CI is the full gate. Make sure the commit you will tag has passed CI on `main`
+The release workflow first checks the tag and the changelog, then runs `cargo test --workspace --locked` on Ubuntu, macOS and Windows before it builds or packages anything (a failing test stops the release), but CI is the full gate. Make sure the commit you will tag has passed CI on `main`
 (`.github/workflows/ci.yml`: fmt, clippy and tests on Ubuntu, macOS and Windows), and run the
 same three commands locally on the machine you are releasing from:
 
@@ -21,13 +21,14 @@ cargo test --workspace
 ```
 
 - [ ] CI is green on the exact commit to tag, on all three operating systems.
-- [ ] The three commands above pass locally.
+- [ ] The three commands above pass locally, and so does `scripts/test-packaging.sh` (the packaging scripts against a stand-in binary: ICO, Windows zip, Linux tarball and AppImage staging, changelog extraction; seconds, no compile).
 - [ ] `git status` is clean and you are on `main`, up to date with `origin/main`.
 - [ ] The hotkey list is current: the `plan-config` test fails if `docs/chief-hotkeys-resolved.md` is stale
       (regenerate with `cargo run -p plan-config --example gen_hotkeys_md > docs/chief-hotkeys-resolved.md`).
 - [ ] Section 4 (manual QA, including 4.12) is done and its findings are fixed or written down as known issues in the release notes.
 - [ ] The manual builds into the program: `cargo build -p plan-app` embeds `docs/manual/*.md` (`crates/plan-app/build.rs`); open Help > Launch Help and see all 18 chapters in the tree.
 - [ ] Section 3 (licensing) is confirmed.
+- [ ] `python3 scripts/parity-score.py --check-totals` passes (the Totals table in `docs/parity-status.md` must match its per-id rows), and `python3 scripts/brand-sweep.py --strict` has been run with every listed `literal` and `doc` hit reviewed: anything that reads as a marketing comparison rather than naming a file format or an import source is reworded, or added to `scripts/brand-sweep-allow.txt` with a reason.
 
 ## 2. Cut the release
 
@@ -44,7 +45,9 @@ The version lives in one place that matters to cargo, and in two that do not fol
    `version.workspace = true`, so this one edit versions every crate. The program's About dialog prints it
    (`env!("CARGO_PKG_VERSION")`).
 2. `scripts/macos-bundle.sh` reads the version from the workspace `Cargo.toml` (the `version = "..."` line) and writes it
-   into `CFBundleVersion` and `CFBundleShortVersionString`, so there is nothing to edit there. The release workflow runs it
+   into `CFBundleVersion` and `CFBundleShortVersionString`, so there is nothing to edit there. The Windows zip name
+   (`scripts/windows-package.sh`), the Linux file names and the release workflow's tag check all read the same line through
+   `scripts/version.sh`, so one edit versions every package. The release workflow runs it
    to build the `.app`, and `scripts/macos-dmg.sh` packs the signed app. If the app icon changed, run
    `cargo run -p plan-app --example gen_app_icon` and commit the files it writes in `crates/plan-app/assets/icons/app/`.
 3. `Cargo.lock` records every workspace crate's version. After step 1 run `cargo check --workspace` and commit
@@ -53,7 +56,7 @@ The version lives in one place that matters to cargo, and in two that do not fol
    `docs/manual/01-getting-started.md`.
 
 - [ ] Version bumped in `Cargo.toml` and `Cargo.lock`.
-- [ ] `CHANGELOG.md`: rename `[Unreleased]` to the new version and date, and open a fresh empty `[Unreleased]`.
+- [ ] `CHANGELOG.md`: rename `[Unreleased]` to the new version and date (`## [0.1.0] - 2026-MM-DD`), and open a fresh empty `[Unreleased]`. The release workflow publishes that section as the release notes and **fails the `verify` job if it is missing** (for a final release; a pre-release tag such as `v0.2.0-rc1` falls back to `[Unreleased]`). Check it locally: `sh scripts/release-notes.sh 0.1.0`.
 - [ ] Commit ("Release vX.Y.Z") and push to `main`; wait for CI.
 
 ### 2.3 Tag and push
@@ -69,50 +72,78 @@ Actions tab. If a build fails, fix it on `main`, delete the tag locally and on t
 
 ### 2.4 What the workflow produces
 
-The workflow has two jobs.
+The workflow has four jobs, in this order. Nothing is published unless every earlier job succeeded.
 
-**Job `build`** runs four times in parallel (`fail-fast: false`, so one failing platform does not cancel the
-others), each time `cargo build --release -p plan-app --target <triple>` on a fresh runner with the stable Rust
-toolchain. The release profile is thin LTO with one codegen unit (`Cargo.toml`). Packages, where
-`$TAG` is the tag you pushed (for example `v0.1.0`):
+1. **`verify`** (Ubuntu, seconds): the tag, minus its `v` and any `-rc` suffix, must equal the workspace version in `Cargo.toml`
+   (`scripts/version.sh`); `scripts/release-notes.sh` must find a `CHANGELOG.md` section for it; and `scripts/test-packaging.sh` must pass.
+2. **`test`** (Ubuntu, macOS, Windows): `cargo test --workspace --locked`. `--locked` means a `Cargo.lock` that is out of step with the
+   `Cargo.toml` files fails the release, so commit the updated lock file (section 2.2). The suite runs once per operating system here, not once per package.
+3. **`build`** runs four times in parallel (`fail-fast: false`, so one failing platform does not cancel the
+   others), each time `cargo build --release --locked -p plan-app --target <triple>` on a fresh runner with the stable Rust
+   toolchain. The release profile is thin LTO with one codegen unit (`Cargo.toml`). Packages, where
+   `$TAG` is the tag you pushed (for example `v0.1.0`) and `<version>` is the same without the `v`:
 
 | Matrix name | Runner and target | File produced | Contents |
 |---|---|---|---|
 | `macos-arm64` | `macos-latest`, `aarch64-apple-darwin` | `plan-studio-$TAG-macos-arm64.zip` and `plan-studio-$TAG-macos-arm64.dmg` | `Plan Studio.app` made by `scripts/macos-bundle.sh` (binary `plan-studio`, `AppIcon.icns`, and an Info.plist with identifier `com.danielallendesigns.plan-studio`, declaring the `.psplan` document type so Finder opens plans in it), ad hoc signed with `codesign --force --deep -s -`, zipped with `ditto`; the `.dmg` (made by `scripts/macos-dmg.sh` with `hdiutil`) holds the same signed app and an Applications shortcut |
 | `macos-x86_64` | `macos-latest`, `x86_64-apple-darwin` (cross-compiled; the runner is Apple silicon) | `plan-studio-$TAG-macos-x86_64.zip` and `plan-studio-$TAG-macos-x86_64.dmg` | The same `.app` layout and disk image for Intel Macs |
-| `windows-x86_64` | `windows-latest`, `x86_64-pc-windows-msvc` | `plan-studio-$TAG-windows-x86_64.zip` | `plan-studio.exe` alone |
-| `linux-x86_64` | `ubuntu-latest`, `x86_64-unknown-linux-gnu` (after installing `libgtk-3-dev`, `libxkbcommon-dev`, `libwayland-dev`, the xcb render, shape and xfixes dev packages and `libgl1-mesa-dev`) | `plan-studio-$TAG-linux-x86_64.tar.gz` | A folder `plan-studio-$TAG-linux-x86_64/` holding the `plan-studio` binary and `plan-studio.desktop` (install notes are in the `.desktop` file: copy the binary to `~/.local/bin` and the `.desktop` file to `~/.local/share/applications`; its note about opening `.psplan` files by double-click refers to `scripts/linux/plan-studio-psplan.xml`, which is in the repository but not in the tarball) |
+| `windows-x86_64` | `windows-latest`, `x86_64-pc-windows-msvc` | `Plan Studio-<version>-windows-x64.zip` (published as `Plan.Studio-<version>-windows-x64.zip`, see the `release` job) | One folder with `plan-studio.exe`, `plan-studio.ico` (packed from the PNG sizes in `crates/plan-app/assets/icons/app/` by `scripts/make-ico.py`, standard library only), `LICENSE` and a `README.txt`; made by `scripts/windows-package.sh` under Git Bash |
+| `linux-x86_64` | `ubuntu-latest`, `x86_64-unknown-linux-gnu` (after installing `libgtk-3-dev`, `libxkbcommon-dev`, `libwayland-dev`, the xcb render, shape and xfixes dev packages and `libgl1-mesa-dev`) | `plan-studio-$TAG-linux-x86_64.tar.gz`, and `plan-studio-$TAG-linux-x86_64.AppImage` when the AppImage step works | The tarball holds a folder with `plan-studio`, `plan-studio.desktop`, `plan-studio.png`, `plan-studio-psplan.xml` (the `.psplan` MIME type), `install.sh` (per-user install into `~/.local`, `--uninstall` to remove) and `LICENSE`; made by `scripts/linux-appimage.sh`. The AppImage is built by the same script when `appimagetool` is available: the workflow downloads `appimagetool` 1.9.0 from its GitHub release in a **best-effort** step (`continue-on-error`), and if the download or the build fails the release carries the tarball only and the build log shows a warning |
 
 Each package is also kept as a workflow artifact named `plan-studio-<matrix name>` (`if-no-files-found: error`).
 
-**Job `release`** runs after **all four** build jobs succeed (`needs: build`; if any build fails, nothing is published).
-It downloads the four artifacts into `dist/` and, with `softprops/action-gh-release@v2`, creates a **GitHub Release for the tag**
-with these files attached:
+4. **`release`** runs after **all four** build jobs succeed (`needs: build`; if any build fails, nothing is published).
+   It downloads the four artifacts into `dist/`, replaces the spaces in file names with dots (the name GitHub would give the
+   Windows zip anyway, so the names match the checksums), writes `dist/SHA256SUMS.txt`, and with `softprops/action-gh-release@v2` creates a **GitHub Release for the tag**
+   named "Plan Studio <tag>" with these files attached:
 
-- the four packages above (and the two `.dmg` disk images next to the macOS ones), and
+- the packages above (the two `.dmg` images, the macOS and Windows zips, the Linux tarball and, if built, the AppImage),
+- `SHA256SUMS.txt`, and
 - the three sample plans: `samples/ranch-3bed.psplan`, `samples/studio-adu.psplan`, `samples/two-story-colonial.psplan`.
 
-The release notes are the ones GitHub **generates** from the commits and pull requests since the previous release
-(`generate_release_notes: true`); the workflow does not read `CHANGELOG.md`. It is marked a pre-release when the tag contains a hyphen.
-The job has `contents: write`; the build jobs have read-only access. `fail_on_unmatched_files: true` makes the job fail rather than publish
+The release notes are the **`CHANGELOG.md` section for the version** (`scripts/release-notes.sh`, which drops link-reference lines), followed by the install notes in
+`scripts/release-footer.md` (Gatekeeper, SmartScreen, Linux libraries; edit that file to change them). GitHub's generated notes are switched off. It is marked a pre-release when the tag contains a hyphen.
+The `release` job has `contents: write`; the others have read-only access. `fail_on_unmatched_files: true` makes the job fail rather than publish
 a release with a missing file.
 
-What the workflow does **not** produce: no Windows or Linux installer (`.msi`, `.deb`, AppImage), no notarized macOS build or disk image,
-no signed Windows binary, no checksums, and no ARM builds for Windows or Linux. Consequences to put in the release notes:
+Pull requests and `main` are checked too (`ci.yml`): the packaging scripts self-test runs on Ubuntu and Windows for every pull request, and a
+`release-smoke` job (push to `main` and manual runs only, because the thin-LTO release build is slow) does `cargo build --release --locked -p plan-app` and then
+the real packaging step on Ubuntu, macOS and Windows, so a release-profile or packaging break shows up on `main` and not on the day of the tag.
+Caches are keyed per job (`ci-test`, `ci-release-smoke`, `release-test`, `release-<triple>`) on top of the action's own OS, toolchain and `Cargo.lock` keys, and
+only `main` writes the CI caches.
+
+What the workflow does **not** produce: no `.msi`, `.deb` or `.rpm`, no notarized macOS build or disk image,
+no signed Windows binary, and no ARM builds for Windows or Linux. The Windows `.exe` has no embedded icon (embedding needs a resource compiler step such as the `winres` crate, which is not in the workspace graph; the `.ico` ships next to the exe for shortcuts). Consequences, all repeated in the release footer:
 
 - The Mac app is ad hoc signed, not notarized. Gatekeeper will refuse a downloaded copy until the user right-clicks it and chooses Open
   (or clears the quarantine flag with `xattr -dr com.apple.quarantine "Plan Studio.app"`).
 - Windows SmartScreen will warn about the unsigned `plan-studio.exe`.
-- The Linux binary needs the GTK 3, xkbcommon, Wayland or X11 and OpenGL runtime libraries of the distribution.
+- The Linux binary and the AppImage need the GTK 3, xkbcommon, Wayland or X11 and OpenGL runtime libraries of the distribution.
 
 ### 2.5 After the workflow finishes
 
-- [ ] The release page lists exactly the four packages, the two `.dmg` images and three `.psplan` samples.
+- [ ] The release page lists the macOS zips and `.dmg` images (both architectures), the Windows zip, the Linux tarball (and the AppImage, or the build log says why not), `SHA256SUMS.txt` and the three `.psplan` samples; the body is the changelog section plus the install notes. `sha256sum -c SHA256SUMS.txt` passes in a folder holding the downloads.
 - [ ] Open a `.dmg` on a Mac: it shows `Plan Studio.app` and an Applications shortcut; drag the app to Applications and launch it from there (right-click > Open the first time). The app has the Plan Studio icon in the Dock, in Finder and on `.psplan` files; Help > Launch Help opens the manual inside the program with a chapter tree on the left, and Help > About Plan Studio shows the new version, the MIT license and the Chief notice. The release page has both `plan-studio-$TAG-macos-arm64.dmg` and `plan-studio-$TAG-macos-x86_64.dmg`; open the one that matches your Mac.
-- [ ] Edit the release body: paste the new `CHANGELOG.md` section above the generated notes, and add the Gatekeeper and SmartScreen notes.
+- [ ] Read the release body: it already holds the `CHANGELOG.md` section and the Gatekeeper and SmartScreen notes; fix typos there and in `CHANGELOG.md`.
 - [ ] Download each package you can run. The About dialog shows the new version; File > Open Plan loads a sample; a wall, a door and a save and reopen work.
 - [ ] Windows and Linux are built by CI but have **not** been tried by hand yet (ROADMAP). Do not announce them as supported until someone has run section 4 on each.
 - [ ] Announce, and bump any download link.
+
+### 2.6 Dry run for v0.1.0 (do this before the real tag)
+
+Nothing here creates a tag or a release on `origin`.
+
+1. **Scripts, locally (a minute)**: `scripts/test-packaging.sh` prints five `ok:` lines. On a Mac also run the real bundle:
+   `cargo build --release -p plan-app`, `scripts/macos-bundle.sh release /tmp/pkg`, `scripts/macos-dmg.sh /tmp/pkg /tmp/pkg test.dmg`, open the image, delete `/tmp/pkg`.
+2. **Changelog**: `sh scripts/release-notes.sh 0.1.0` prints the section you expect (after renaming `[Unreleased]`) and the exit code is 0.
+3. **Version**: `sh scripts/version.sh` prints `0.1.0`.
+4. **Lock file**: `cargo check --workspace --locked` passes (the release uses `--locked`).
+5. **Whole pipeline on a throwaway tag** (optional, on a fork or after deleting afterwards): push a pre-release tag such as `v0.1.0-rc1` after setting
+   the workspace version to `0.1.0` (the tag check ignores the `-rc1` suffix; a pre-release tag falls back to `[Unreleased]` if the changelog has no section for it).
+   The run produces a pre-release; check that each package opens (section 2.5), then delete the release and the tag
+   (`git push origin :refs/tags/v0.1.0-rc1`). The first run is also the first test of the `appimagetool` download, the Git Bash packaging of the Windows zip
+   and the `--locked` builds on the runners; none of those have run yet, so expect to fix something on the first try.
+6. **Then** the real `v0.1.0`: section 2.3.
 
 ## 3. Licensing note (check before every release)
 

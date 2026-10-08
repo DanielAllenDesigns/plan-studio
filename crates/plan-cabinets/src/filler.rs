@@ -26,11 +26,15 @@ fn vertical_overlap(a: &Cabinet, b: &Cabinet) -> bool {
 }
 
 /// The free stretch of `cab`'s own depth strip around its centre, as
-/// `(left, right)` offsets along its width axis from its position, bounded on
-/// each side by a wall (`walls` are plan polygons, see [`wall_polygon`]) or by
-/// another cabinet at the same height. `None` when a side is open or the
-/// centre lies inside an obstacle.
-fn gap_bounds(cab: &Cabinet, others: &[Cabinet], walls: &[Vec<Point>]) -> Option<(f64, f64)> {
+/// `(left, right)` offsets along its width axis from its position; `None` on
+/// a side that nothing blocks (a wall, or another cabinet at the same height,
+/// blocks it). `None` for the whole when the centre lies inside an obstacle.
+/// The resize handles snap to these edges.
+pub fn run_bounds(
+    cab: &Cabinet,
+    others: &[Cabinet],
+    walls: &[Vec<Point>],
+) -> Option<(Option<f64>, Option<f64>)> {
     let u = Point::new(cab.angle.cos(), cab.angle.sin());
     let v = u.perp();
     let mut obstacles: Vec<Vec<Point>> = walls.to_vec();
@@ -40,7 +44,7 @@ fn gap_bounds(cab: &Cabinet, others: &[Cabinet], walls: &[Vec<Point>]) -> Option
             .filter(|o| o.id != cab.id && !o.kind.is_custom() && vertical_overlap(o, cab))
             .map(Cabinet::footprint),
     );
-    let (left, right) = geom::free_span(
+    geom::free_span(
         &obstacles,
         cab.position,
         u,
@@ -48,7 +52,12 @@ fn gap_bounds(cab: &Cabinet, others: &[Cabinet], walls: &[Vec<Point>]) -> Option
         (STRIP_INSET, cab.depth - STRIP_INSET),
         cab.width / 2.0,
     )
-    .ok()?;
+    .ok()
+}
+
+/// [`run_bounds`] when both sides are blocked: the gap the cabinet sits in.
+fn gap_bounds(cab: &Cabinet, others: &[Cabinet], walls: &[Vec<Point>]) -> Option<(f64, f64)> {
+    let (left, right) = run_bounds(cab, others, walls)?;
     Some((left?, right?))
 }
 

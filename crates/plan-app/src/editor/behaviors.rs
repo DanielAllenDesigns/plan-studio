@@ -43,6 +43,27 @@ pub fn mode(cx: &EditorContext) -> EditBehavior {
     cx.defaults.editing.behavior.mode
 }
 
+/// The status-bar indicator of the active behavior ("Edit Behavior: Resize"),
+/// `None` under Default (S-66).
+pub fn indicator(cx: &EditorContext) -> Option<String> {
+    match mode(cx) {
+        EditBehavior::Default => None,
+        m => Some(format!("Edit Behavior: {}", m.label())),
+    }
+}
+
+/// Back to the Default behavior, as Chief does when the tool changes from
+/// Select Objects (S-66). True when something was reset.
+pub fn reset(cx: &mut EditorContext) -> bool {
+    if mode(cx) == EditBehavior::Default {
+        return false;
+    }
+    cx.defaults.editing.behavior.mode = EditBehavior::Default;
+    HANDOFF.with(|h| h.set(None));
+    cx.status = "Edit Behavior reset to Default".into();
+    true
+}
+
 /// The undo label of a body drag of the selection.
 pub fn group_label(cx: &EditorContext) -> &'static str {
     match mode(cx) {
@@ -811,5 +832,19 @@ mod tests {
         );
         assert!(!crate::dialogs::transform::is_open());
         assert_eq!(cx.floor().cad.len(), 4);
+    }
+    #[test]
+    fn the_indicator_names_the_behavior_and_leaving_select_resets_it() {
+        let mut cx = cx_with(EditBehavior::Default);
+        assert_eq!(indicator(&cx), None);
+        cx.defaults.editing.behavior.mode = EditBehavior::Resize;
+        assert_eq!(indicator(&cx).as_deref(), Some("Edit Behavior: Resize"));
+        // Switching away from Select Objects resets it (S-66).
+        let mut tool = SelectTool::default();
+        tool.deactivate(&mut cx);
+        assert_eq!(mode(&cx), EditBehavior::Default);
+        assert_eq!(indicator(&cx), None);
+        assert!(cx.status.contains("reset"));
+        assert!(!reset(&mut cx));
     }
 }

@@ -17,3 +17,10 @@ Chief-style "Build Framing" for Plan Studio. Lengths are inches; the 3D frame is
 - `layout` (`JoistDirectionLine`, `RoofTrussDirection`, `BearingLine`, `ReferenceMarker`, `TrussBase`): `frame_floor_directed` (joists run perpendicular to the direction line; a bearing line splits them and adds a beam), `layout_trusses` over a truss base, `frame_wall_with_marker` (first stud on the marker).
 - `manual_takeoff`, `combined_takeoff` and `MaterialList::to_csv`: board feet (nominal for sawn, actual for engineered), counts by size and length.
 - Not covered: connectors and notches, rim joists in `frame_floor_directed`, truss-to-truss girder placement, truss webs at engineered (non-panel) points, beam sizing.
+
+## Build Framing options (round 14)
+
+- `build` (`BuildOptions`, `Group`, `GroupFlags`, `merge_rebuild`, `merge_groups`, `fingerprint`): the Build Framing dialog's data. Per group (floor, ceiling, wall, roof) Build, Auto rebuild and Retain; `retain_walls` for Retain Wall Framing; the Posts (`PostDefaults`) and Trusses (`TrussDefaults`) tabs. `keeps` says whether an existing member survives a rebuild; `due` says which groups an automatic rebuild must redo from the stored input fingerprints.
+- `frame_ceiling`: ceiling joists on the top plates. `FramingDefaults` gained `joist_direction`, `rim_plies` (double rim), `bearing` (`BearingMode`), and the ceiling joist size, spacing and direction.
+- `span` (`allowable_span`, `smallest_for`, `check_spans`): a bending and deflection span check (Douglas Fir-Larch No. 2) for floor joists, ceiling joists and rafters. A planning aid, not a code check.
+- `wall_detail_dims`: the dimensions of Chief's Wall Detail (length, height, stud spacing, rough opening, header and sill heights).

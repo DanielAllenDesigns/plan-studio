@@ -133,12 +133,12 @@ fn landing_symbol(stair: &Stair, layout: &Layout) -> Vec<Stroke> {
         (RailSide::Left, p.left_side),
         (RailSide::Right, p.right_side),
     ] {
-        if kind == SideKind::None {
+        if matches!(kind, SideKind::None | SideKind::Handrail) {
             continue;
         }
         for (a, b) in landing_edges(stair, side) {
             if kind == SideKind::Railing {
-                out.extend(plan_symbol_railing(a, b, &p.railing));
+                out.extend(plan_symbol_railing(a, b, &p.railing_for(side)));
             } else {
                 // A wall or half wall: a closed band on the outside.
                 let t = if kind == SideKind::Wall { 4.5 } else { 5.5 };
@@ -153,6 +153,8 @@ fn landing_symbol(stair: &Stair, layout: &Layout) -> Vec<Stroke> {
 
 /// Half the line gap of a railing in plan (the top rail is this wide).
 const RAIL_PLAN_WIDTH: f64 = 3.5;
+/// A wall handrail's line sits this far inside the stair's edge in plan.
+const HANDRAIL_PLAN_INSET: f64 = 1.5;
 
 /// Railing, wall and half-wall symbols along the straight flights: a double
 /// line with newel squares for a railing, a closed band for a wall.
@@ -168,6 +170,11 @@ fn side_strokes(
         if kind == SideKind::None {
             continue;
         }
+        let railing = p.railing_for(if right_side {
+            RailSide::Right
+        } else {
+            RailSide::Left
+        });
         for (i, f) in layout.flights.iter().enumerate().take(last + 1) {
             if f.len < 1e-9 {
                 continue;
@@ -186,12 +193,20 @@ fn side_strokes(
             };
             match kind {
                 SideKind::None => {}
+                SideKind::Handrail => {
+                    // One thin line a little inside the edge: a handrail on
+                    // the wall, with no newels.
+                    out.push(Stroke::Line(
+                        edge(0.0, -HANDRAIL_PLAN_INSET),
+                        edge(len, -HANDRAIL_PLAN_INSET),
+                    ));
+                }
                 SideKind::Railing => {
-                    let half = p.railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
+                    let half = railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
                     for off in [-half, half] {
                         out.push(Stroke::Line(edge(0.0, off), edge(len, off)));
                     }
-                    let n = p.railing.newel.size / 2.0;
+                    let n = railing.newel.size / 2.0;
                     let ends: &[f64] = if clipped.is_some() {
                         &[0.0]
                     } else {
@@ -224,8 +239,8 @@ fn side_strokes(
             } else {
                 RailSide::Left
             };
-            let half = p.railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
-            let n = p.railing.newel.size / 2.0;
+            let half = railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
+            let n = railing.newel.size / 2.0;
             // The rail that carries across each landing or turn: a double
             // line along the path and a newel square at each corner.
             for path in landing_rail_paths(stair, side).iter().take(last) {

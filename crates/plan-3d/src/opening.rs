@@ -11,6 +11,9 @@ use crate::windows;
 use crate::SceneOptions;
 use plan_core::{Opening, OpeningKind, OpeningStyle, Project, Wall, WallKind};
 
+pub(crate) mod shape;
+mod treatments;
+
 /// The mulled unit an opening belongs to (DW-51, DW-52): a window beside a
 /// window, or a door beside its sidelites. The members share one frame post
 /// between them and one casing around the whole unit.
@@ -110,6 +113,9 @@ pub struct Ctx<'a> {
     pub interior: f64,
     pub opts: &'a SceneOptions,
     pub unit: Unit,
+    /// Sash and muntin pieces of a window, kept apart from the frame so the
+    /// Materials tab can give them a material of their own.
+    pub sash: std::cell::RefCell<MeshSet>,
 }
 
 /// An arched head laid over the hole (Arch tab), in wall-local `(s, h)`.
@@ -155,12 +161,22 @@ impl Ctx<'_> {
         }
     }
 
+    /// How far a recessed door's leaf stands in from the centerline toward
+    /// the outside, wall-local `t` (the Options tab's Recessed To Layer).
+    pub fn recess_t(&self) -> f64 {
+        match self.opening.extras.spec.recess_depth {
+            Some(d) => -self.interior * (self.half() - d.clamp(0.0, self.wall.thickness)),
+            None => 0.0,
+        }
+    }
+
     /// The arched head of the hole, with the frame band `fw` wide inside the
     /// outer curve; `None` for a square head, a style an arch does not shape,
     /// or an arch too small to draw.
     pub fn arch(&self, fw: f64) -> Option<ArchGeom> {
         let o = self.opening;
-        if !arch_applies(o.kind, self.style()) {
+        // A shaped window has its outline from the Shape tab instead.
+        if !arch_applies(o.kind, self.style()) || o.is_shaped() {
             return None;
         }
         let h = self.hole;
@@ -316,6 +332,7 @@ pub fn build_opening_in_wall(
         interior,
         opts,
         unit: Unit::among(opening, hole, siblings),
+        sash: Default::default(),
     };
     let mut set = MeshSet::default();
     match ctx.style() {
@@ -340,27 +357,104 @@ pub fn build_opening_in_wall(
         | OpeningStyle::BoxWindow => windows::build(&ctx, &mut set),
         OpeningStyle::PassThrough | OpeningStyle::WallNiche => {}
     }
-    if let Some(arch) = ctx.arch(opening.frame_width()) {
+    if ctx.opening.is_shaped() && windows_take_shape(ctx.style()) {
+        shape::spandrel(&ctx, &mut set);
+    } else if let Some(arch) = ctx.arch(opening.frame_width()) {
         spandrel(&ctx, &mut set, &arch);
     }
+    // Trim comes in sets of its own so the Materials tab can paint each.
+    let mut casing_set = MeshSet::default();
+    let mut sill_set = MeshSet::default();
+    let mut jamb_set = MeshSet::default();
+    let mut threshold_set = MeshSet::default();
     if opts.show_casing && opening.style != OpeningStyle::WallNiche {
-        casing::add_casing(&ctx, &mut set);
-        casing::add_jambs(&ctx, &mut set);
+        casing::add_casing(&ctx, &mut casing_set, &mut sill_set);
+        casing::add_jambs(&ctx, &mut jamb_set);
         if wall.kind == WallKind::Exterior {
-            casing::add_threshold(&ctx, &mut set);
+            casing::add_threshold(&ctx, &mut threshold_set);
         }
     }
-    casing::add_lintel(&ctx, &mut set);
-    casing::add_exterior_sill(&ctx, &mut set);
-    let mut meshes = set.finish(Some(opening.id));
+    casing::add_lintel(&ctx, &mut casing_set);
+    casing::add_exterior_sill(&ctx, &mut sill_set);
+    let id = Some(opening.id);
+    let paint = &opening.extras.spec.materials;
+    let window = opening.kind == OpeningKind::Window;
+    let mut meshes = set.finish(id);
+    // The unit's own pieces take the paint of their component.
+    for m in &mut meshes {
+        let part = match (window, m.material) {
+            (true, Material::WindowFrame) => Some("Frame"),
+            (true, Material::WindowGlass) => Some("Glass"),
+            (false, Material::DoorPanel) => Some("Door Panel"),
+            (false, Material::Metal) => Some("Hardware"),
+            _ => None,
+        };
+        m.color = part.and_then(|p| paint.color(p));
+    }
+    let sash = std::mem::take(&mut *ctx.sash.borrow_mut());
+    for (set, part) in [
+        (sash, "Sash"),
+        (casing_set, "Casing"),
+        (sill_set, "Sill"),
+        (jamb_set, if window { "Frame" } else { "Jamb" }),
+        (threshold_set, "Threshold"),
+    ] {
+        let rgb = paint.color(part);
+        meshes.extend(set.finish(id).into_iter().map(|mut m| {
+            m.color = rgb;
+            m
+        }));
+    }
     // Shutters carry their paint color on the mesh (the nearest scene
     // material is only what an export without colors falls back to).
     let mut shutters = MeshSet::default();
     casing::add_shutters(&ctx, &mut shutters);
-    let paint = opening.extras.spec.shutters.color;
-    meshes.extend(shutters.finish(Some(opening.id)).into_iter().map(|mut m| {
-        m.color = Some(paint);
+    let shutter_paint = opening.extras.spec.shutters.color;
+    meshes.extend(shutters.finish(id).into_iter().map(|mut m| {
+        m.color = Some(shutter_paint);
         m
     }));
-    meshes
+    // Window treatments: colored cloth, slats and leaves inside, millwork
+    // outside (3D only: the plan omits them).
+    let (inside, millwork) = treatments::build(&ctx);
+    meshes.extend(inside);
+    let millwork_paint = paint.color("Casing");
+    meshes.extend(millwork.into_iter().map(|mut m| {
+        m.color = millwork_paint;
+        m
+    }));
+    merge_meshes(meshes)
+}
+
+/// One mesh per material and color: the component sets above only differ
+/// where the Materials tab gave a component its own color.
+fn merge_meshes(meshes: Vec<Mesh>) -> Vec<Mesh> {
+    let mut out: Vec<Mesh> = Vec::new();
+    for m in meshes {
+        match out
+            .iter_mut()
+            .find(|t| t.material == m.material && t.color == m.color && t.object_id == m.object_id)
+        {
+            Some(t) => {
+                let base = t.vertices.len() as u32;
+                t.vertices.extend(m.vertices);
+                t.indices.extend(m.indices.into_iter().map(|i| i + base));
+            }
+            None => out.push(m),
+        }
+    }
+    out
+}
+
+/// Whether a window of this style is glazed to its Shape tab outline.
+fn windows_take_shape(style: OpeningStyle) -> bool {
+    matches!(
+        style,
+        OpeningStyle::Window
+            | OpeningStyle::Fixed
+            | OpeningStyle::Casement
+            | OpeningStyle::SlidingWindow
+            | OpeningStyle::Awning
+            | OpeningStyle::Hopper
+    )
 }

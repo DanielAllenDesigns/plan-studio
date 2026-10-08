@@ -1,0 +1,102 @@
+name: Bug report
+description: Something in Plan Studio does not work, crashes, or differs from Chief Architect X18 where it should match.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a security problem (a crafted file that crashes or exploits the program) do not use this form; see [SECURITY.md](https://github.com/DanielAllenDesigns/plan-studio/blob/main/SECURITY.md).
+
+        Please do not attach Chief Architect files, textures, templates or library content. Describe them instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did and what went wrong. One problem per report.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps from a new plan or one of the sample plans, including the tool, hotkey or menu you used.
+      placeholder: |
+        1. File > Open Plan > two-story-colonial
+        2. Press W, draw ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened. If Chief Architect X18 behaves differently, say how, and the parity id (for example W-21) if you know it.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Walls
+        - Select and edit
+        - Doors and windows
+        - Rooms and floors
+        - Roofs
+        - Dimensions, text and CAD
+        - Cabinets, stairs, framing, terrain, electrical
+        - Library and symbols
+        - 3D views, cameras and rendering
+        - Layout, schedules, print and export
+        - Files, import and Chief templates
+        - Dialogs, menus, hotkeys and toolbars
+        - Packaging and installation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Help > About Plan Studio, or the release tag, or the git commit you built.
+      placeholder: "0.1.0 (commit abc1234)"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux (X11)
+        - Linux (Wayland)
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version and graphics
+      description: For example "macOS 15.2, Apple M2" or "Ubuntu 24.04, Intel UHD, Mesa 24".
+  - type: textarea
+    id: plan
+    attributes:
+      label: Plan file or screenshot
+      description: Drag in a small `.psplan` that shows the problem, or a screenshot. Remove anything private first.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or crash text
+      description: Anything printed in the terminal if you started the program from one.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and [docs/qa-findings.md](https://github.com/DanielAllenDesigns/plan-studio/blob/main/docs/qa-findings.md).
+          required: true
+        - label: I did not attach any Chief Architect content.
+          required: true

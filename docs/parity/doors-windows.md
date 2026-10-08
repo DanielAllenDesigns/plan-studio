@@ -100,7 +100,7 @@ Hinged Door (`D, H`) and Window (`Shift+W`) are placement tools with a ghost pre
 - DW-62: Specify Label replaces the automatic text; macros like `%width%`, `%height%` can be inserted (Insert macro menu in the Label tab).
 - DW-63: Label placement: centered over the opening on the interior side by default, with a relative offset and angle controlled in the Label tab; labels are on their own layer ("Doors, Labels" or the type's layer) and can be dragged with a label-handle (verify in Chief).
 - DW-64: **Tab** with an opening selected cycles selection through objects stacked at the same pointer location (the opening, its casing, the host wall) (S-34); while a temporary-dimension edit is active, Tab moves between the jamb-to-end fields.
-- DW-65: The hover tooltip/status for an opening shows its description and size, e.g. "Hinged Door 3068".
+- DW-65: The hover tooltip/status for an opening shows its description and size, e.g. "Hinged Door 3068". **Round 14:** built. The hover tooltip and the status bar read "Hinged Door 3068" (style and size label) for a door or window under the pointer; test `hover_and_selection_are_described_in_the_status_bar`.
 
 ## 10. Interaction with wall layers and rooms
 
@@ -196,3 +196,30 @@ Hinged Door (`D, H`) and Window (`Shift+W`) are placement tools with a ghost pre
 | DW-101..DW-106 dialog behaviors | Implemented: preview, clamp, size-format radios, OK/Cancel | Low (done) | Keep; add live label preview text |
 | DW-107..DW-110 hotkeys and flyout face | Only D,H and Shift+W bound; other door hotkeys are `todo_k` stubs | Medium | Bind remaining keys when styles exist; update flyout face to last used |
 | DW-95..DW-100 acceptance scenarios | Not testable yet (no ghost, no drag, no persistence of style) | n/a | Convert to tests after the model changes above; DW-100 is the first (persistence) |
+
+## 18. Round 14 status (2026-10-08)
+
+Built: DW-3 (the "no" cursor and no ghost where nothing fits), DW-4 (touching windows), DW-5 (click then drag, one undo step), DW-10 and DW-75 (alignment snaps), DW-87 (2 in clearance off the face of a wall that meets the host), DW-35 (Swings Both Directions), DW-57 (Recessed To Layer, plan only), DW-61 (Renumber Schedule), DW-81 (threshold line), DW-82 (door jambs in plan, Size Includes Frame in plan), DW-83 (Opening Indicators), DW-85 (sill line), L-26 and L-29 for doors and windows (callouts with Renumber, Schedule tab). The rules and their open points ("verify in Chief") are in DECISIONS.md and in the Doors and windows, round 14 section of `docs/integration-queue.md`. Code: `tools/opening.rs` and `tools/opening/place.rs` (placement), `plan-core/opening_symbol.rs` (the new `PartKind`s Threshold, Sill and Indicator, and `OpeningSymbol::span`), `editor/opening_edit.rs` (Renumber), `dialogs/opening.rs` (the Sill/Threshold, Opening Indicators and Schedule tabs); scenarios in `scenarios/s26_openings_r14.rs`.
+
+
+<!-- coverage-audit:start -->
+## Coverage audit additions (2026-10-08)
+
+Rows added by the Round 14 coverage audit (`docs/chief-feature-coverage.md`): Chief X18 features found in the menu, toolbar, sub-tool and dialog captures, or known from the product, that no row above covered. Status comes from a code search, not a Chief session; "verify in Chief" marks behavior known only from the product. Variants of one flyout or tab share one row.
+
+| ID | Chief behavior | Status | Evidence |
+|---|---|---|---|
+| DW-111 | Lintel tab: Lintel profile above the opening with extend and wrap. | Works | dialogs/opening.rs DOOR_TABS "Lintel" live; plan-3d openings |
+| DW-112 | Lites tab: Divided lites in a door panel. | Works | dialogs/opening.rs "Lites" live (lites across/vertical, muntin width) |
+| DW-113 | Arch tab: Arched head options for the door. | Works | dialogs/opening.rs "Arch" live |
+| DW-114 | Framing tab (header, trimmers, king studs, sills): Header construction, trimmer and king stud counts per opening. | Works | dialogs/opening/tabs.rs framing (Framing tab: Include Header, Construction lumber or LVL, Count, Depth or Calculate from Width, Trimmer and King Stud counts, Include Sill); plan-core spec/tabs.rs OpeningFraming; plan-framing wall.rs frame_opening and supports; tests framing::wall::an_opening_overrides_the_header_trimmers_and_king_studs, a_window_sill_can_be_left_out, s42 framing_tab_overrides_reach_plan_framing. Header placement top-of-wall and Combine Headers are not built (verify in Chief) |
+| DW-115 | Energy Values tab (U-factor, SHGC): Door type, U-factor and solar heat gain for energy reports. | Works | dialogs/opening/tabs.rs energy_values (door type or glazing, U-Factor, SHGC); spec.energy; plan-docs schedule_kinds U-Factor and SHGC columns; tests schedule_kinds::rough_opening_energy_and_object_information_reach_the_schedule, s42 energy_layer_and_object_information_are_stored_and_undone |
+| DW-116 | Layer tab: Layer and drawing group of the door. | Partial | dialogs/opening/tabs.rs layer_tab and spec.layer stored with the opening, Opening::layer_name(); the plan, hit test and layout still draw an opening on its kind's Doors or Windows layer (integration queue: editor/render.rs opening_layer, selection.rs layer_of); test the_layer_follows_the_tab_and_falls_back_to_the_kind |
+| DW-117 | Materials tab: Material per door component (panel, frame, casing, glass). | Works | dialogs/opening/tabs.rs materials_tab (library search per component); spec.materials; plan-3d opening.rs paints the unit, sash, casing, sill, jamb and threshold sets; Project::sync_opening_materials hands it to the Material Painter paint; tests plan-3d opening_tabs::the_materials_tab_paints_each_component, s42 materials_paint_the_components_in_3d_and_reach_the_project |
+| DW-118 | Object Information tab: Code, comment, manufacturer, supplier and custom fields. | Works | dialogs/opening/tabs.rs object_information (ID, Description, Manufacturer, Model Number, Supplier, Notes shared with the Schedule tab); spec.info; schedule ID and Description columns; test s42 energy_layer_and_object_information_are_stored_and_undone |
+| DW-119 | Sash tab: Sash widths, depth, inset, curved options. | Works | dialogs/opening.rs WINDOW_TABS "Sash" live |
+| DW-120 | Lites tab: Window lites, muntin width, round-top arch rays. | Works | dialogs/opening.rs "Lites" live |
+| DW-121 | Shape tab (heights, corners): Custom window shapes: raked sides, angled top corners and bottom corners. | Works | dialogs/opening/tabs.rs shape_tab (Rectangle, Half Round, Quarter Round, Trapezoid, Triangle, Custom with side heights and corner cuts, Revert All, lite pattern); plan-core spec/shape.rs WindowShape; plan-3d opening/shape.rs; opening_symbol.rs add_arch_marks; tests shape::tests, plan-3d opening_tabs::a_shaped_window_is_glazed_to_its_outline_and_the_wall_fills_the_rest, s42 a_window_shape_changes_the_3d_glazing_and_the_plan_head_marks |
+| DW-122 | Arch tab: Arched head options. | Works | dialogs/opening.rs "Arch" live |
+| DW-123 | Treatments tab (curtains, blinds, exterior millwork): Curtains, blinds and millwork above and below the casing with library styles. Also covers: Window treatments (curtains, blinds). | Partial | dialogs/opening/tabs.rs treatments_tab (curtains, blinds, interior shutters, exterior millwork above and below); plan-3d opening/treatments.rs; plan omits them; tests plan-3d opening_tabs::curtains_blinds_shutters_and_millwork_are_built_on_their_sides, s42 treatments_are_built_in_3d_and_left_out_of_the_plan. Library styles and the Library... buttons are not built |
+<!-- coverage-audit:end -->

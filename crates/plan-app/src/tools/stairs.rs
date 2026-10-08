@@ -1838,4 +1838,129 @@ mod tests {
             .iter()
             .any(|r| r.kind == plan_elevation::RegionKind::Cut && r.object_id == Some(o.id())));
     }
+
+    // ----- hidden treads on the floor above, handrails, bullnose (round 14) -----
+
+    /// Four walls round the footprint of `o` on floor 1: a room.
+    fn room_around(cx: &mut EditorContext, o: &StairObj) {
+        let (lo, hi) = plan_core::foundation::bounds(&o.footprint());
+        let (a, b) = (
+            Point::new(lo.x - 30.0, lo.y - 30.0),
+            Point::new(hi.x + 30.0, hi.y + 30.0),
+        );
+        let c = [a, Point::new(b.x, a.y), b, Point::new(a.x, b.y)];
+        for i in 0..4 {
+            cx.project
+                .add_wall(1, c[i], c[(i + 1) % 4], 4.0, 96.0, WallKind::Interior);
+        }
+    }
+
+    #[test]
+    fn the_treads_below_the_break_show_dashed_on_the_floor_above_through_the_stairwell() {
+        let mut cx = new_cx();
+        add_floor_above(&mut cx);
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let o = only_stair(&cx);
+        // No opening yet: the floor above shows only the part beyond the break.
+        assert!(!view::open_to_floor_above(&cx.project, 0, &o));
+        let well = view::well_strokes(&o);
+        assert!(!well.is_empty(), "the lower treads exist");
+        assert!(well.iter().all(|s| matches!(s, PlanStroke::Line(..))));
+        // Every one of them is a line of the symbol the stair's own floor draws.
+        let own = view::symbol_strokes(&o);
+        for s in &well {
+            assert!(own.contains(s), "{s:?}");
+        }
+        // Auto Stairwell cuts the opening: now the floor above sees through it.
+        assert!(view::run_command(&mut cx, StairCommand::AutoStairwell));
+        let o = only_stair(&cx);
+        assert!(view::open_to_floor_above(&cx.project, 0, &o));
+        // And it draws more on the floor above (the dashed treads) than before.
+        let count_shapes = |cx: &EditorContext| {
+            let ctx = egui::Context::default();
+            let mut n = 0;
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (_, painter) =
+                        ui.allocate_painter(egui::Vec2::new(600.0, 400.0), egui::Sense::hover());
+                    let mut cam = crate::editor::Camera::default_view();
+                    cam.rect = painter.clip_rect();
+                    view::draw_stairs(cx, &painter, &cam);
+                });
+            });
+            for c in &out.shapes {
+                n += shape_count(&c.shape);
+            }
+            n
+        };
+        fn shape_count(s: &egui::Shape) -> usize {
+            match s {
+                egui::Shape::Vec(v) => v.iter().map(shape_count).sum(),
+                _ => 1,
+            }
+        }
+        cx.floor = 1;
+        let with_well = count_shapes(&cx);
+        // Take the opening away again (undo) and compare.
+        cx.floor = 0;
+        cx.undo();
+        cx.floor = 1;
+        let without = count_shapes(&cx);
+        assert!(with_well > without, "{with_well} vs {without}");
+    }
+
+    #[test]
+    fn an_open_below_room_above_the_stair_counts_as_an_opening_too() {
+        let mut cx = new_cx();
+        add_floor_above(&mut cx);
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let o = only_stair(&cx);
+        room_around(&mut cx, &o);
+        let centre = plan_core::geometry::polygon_centroid(&o.footprint());
+        // A room with a floor is not an opening.
+        let mut name = plan_core::RoomName::new(centre, "Hall", "Hall");
+        cx.project.floors[1].room_names.push(name.clone());
+        assert!(!view::open_to_floor_above(&cx.project, 0, &o));
+        // The same room with no floor (Open Below) is.
+        name.has_floor = false;
+        cx.project.floors[1].room_names[0] = name;
+        assert!(view::open_to_floor_above(&cx.project, 0, &o));
+        // Landings and ramps never are.
+        let mut landing = o.clone();
+        landing.set_landing_depth(36.0);
+        assert!(!view::open_to_floor_above(&cx.project, 0, &landing));
+        assert!(view::well_strokes(&landing).is_empty());
+    }
+
+    #[test]
+    fn a_handrail_side_and_a_bullnose_reach_the_plan_and_the_3d_scene() {
+        use plan_stairs::{Bullnose, SideKind, StairPart};
+        let mut cx = new_cx();
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
+        let id = only_stair(&cx).id();
+        let rails = |cx: &EditorContext| view::scene_meshes(cx.floor()).len();
+        let before = rails(&cx);
+        let strokes = view::symbol_strokes(&only_stair(&cx)).len();
+        assert!(view::update(&mut cx.project, 0, id, |o| {
+            o.stair.params.left_side = SideKind::Handrail;
+            o.stair.params.bullnose = Bullnose::Both;
+        }));
+        let o = only_stair(&cx);
+        assert_eq!(
+            plan_stairs::tagged_meshes(&o.stair)
+                .iter()
+                .filter(|(p, _)| *p == StairPart::Handrail)
+                .count(),
+            1,
+            "one handrail, on the left"
+        );
+        assert!(rails(&cx) > before, "the scene carries the rail");
+        // The plan: the handrail's line and the rounded bottom tread.
+        assert!(view::symbol_strokes(&o).len() > strokes);
+        // A left Handrail does not count as a guard for the plan checker.
+        assert!(!o.stair.params.left_side.is_guard());
+    }
 }

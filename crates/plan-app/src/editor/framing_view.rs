@@ -46,12 +46,14 @@ use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
 use plan_core::{
     detect_rooms, DxfExport, Floor, FloorKind, Id, Layer, Opening, Project, Room, Wall,
 };
+use plan_framing::span::{check_spans, SpanIssue};
 use plan_framing::{
-    frame_floor_directed, frame_floor_holes, frame_roof_eaves, frame_wall_with_marker_joined,
-    layout_trusses, manual_takeoff, roof_framing_takeoff, BearingLine, EaveSpec, FramingDefaults,
-    FramingMember, JoistDirection, JoistDirectionLine, ManualMemberKind, MaterialList, Member,
-    MemberKind, ReferenceMarker, RoofFramingDefaults, RoofTrussDirection, TailCut, Takeoff,
-    TrussBase, TrussSpec, TrussType, WallJoints,
+    fingerprint, frame_ceiling, frame_floor_directed, frame_floor_holes, frame_roof_eaves,
+    frame_wall_with_marker_joined, group_of_manual, layout_trusses, manual_takeoff, merge_groups,
+    merge_rebuild, roof_framing_takeoff, BearingLine, BearingMode, BuildOptions, EaveSpec,
+    FramingDefaults, FramingMember, Group, JoistDirectionLine, ManualMemberKind, MaterialList,
+    Member, MemberKind, ReferenceMarker, RoofFramingDefaults, RoofTrussDirection, TailCut, Takeoff,
+    TrussBase, TrussDefaults, TrussSpec, WallJoints,
 };
 use plan_roof::{Roof, RoofPlane, DEFAULT_FASCIA_HEIGHT};
 use serde::{Deserialize, Serialize};
@@ -68,17 +70,20 @@ pub struct BuildSummary {
     pub walls: usize,
     pub floor: usize,
     pub roof: usize,
+    /// Ceiling joists (the Ceiling group of Build Framing).
+    pub ceiling: usize,
 }
 
 impl BuildSummary {
     pub fn total(&self) -> usize {
-        self.walls + self.floor + self.roof
+        self.walls + self.floor + self.roof + self.ceiling
     }
 
     fn add(&mut self, o: BuildSummary) {
         self.walls += o.walls;
         self.floor += o.floor;
         self.roof += o.roof;
+        self.ceiling += o.ceiling;
     }
 }
 
@@ -137,6 +142,13 @@ pub struct FramingSettings {
     /// 48" wall blocking on).
     pub walls: FramingDefaults,
     pub roof: RoofFramingDefaults,
+    /// The Build Framing dialog: which groups to build, Retain Framing,
+    /// auto rebuild, the Posts and Trusses tabs.
+    pub build: BuildOptions,
+    /// Set by the Build Framing dialog: [`set_settings`] builds after storing
+    /// (`Some(true)` every floor, `Some(false)` the active floor). Never saved.
+    #[serde(skip)]
+    pub build_on_ok: Option<bool>,
 }
 
 impl Default for FramingSettings {
@@ -144,6 +156,8 @@ impl Default for FramingSettings {
         Self {
             walls: FramingDefaults::house(),
             roof: RoofFramingDefaults::default(),
+            build: BuildOptions::default(),
+            build_on_ok: None,
         }
     }
 }
@@ -170,20 +184,32 @@ fn is_settings(v: &Value) -> bool {
 
 /// Stores the framing defaults as one undo step. Existing framing stays as
 /// built until the next Build Framing.
-pub fn set_settings(cx: &mut EditorContext, new: FramingSettings) {
+pub fn set_settings(cx: &mut EditorContext, mut new: FramingSettings) {
+    // The Build Framing dialog: store its options and build, as one step.
+    if let Some(all) = new.build_on_ok.take() {
+        build_with(cx, all, Some(new));
+        return;
+    }
     if settings(&cx.project) == new {
         return;
     }
     cx.begin_change("Framing Defaults");
-    let floor = &mut cx.project.floors[0];
+    store_settings(&mut cx.project, &new);
+    cx.mark_dirty();
+    cx.status = "Framing defaults saved; Build Framing applies them".into();
+}
+
+/// Writes the settings into the first floor's `framing` slot, with no undo
+/// step of its own (a build or an auto rebuild records its fingerprints
+/// inside the step it belongs to).
+fn store_settings(project: &mut Project, new: &FramingSettings) {
+    let floor = &mut project.floors[0];
     floor.framing.retain(|v| !is_settings(v));
-    if let Ok(v) = serde_json::to_value(&new) {
+    if let Ok(v) = serde_json::to_value(new) {
         let mut o = serde_json::Map::new();
         o.insert(SETTINGS_KEY.to_string(), v);
         floor.framing.push(Value::Object(o));
     }
-    cx.mark_dirty();
-    cx.status = "Framing defaults saved; Build Framing applies them".into();
 }
 
 /// The Floor Hole outlines of `floor`'s platform (stairwells and hand-made
@@ -225,12 +251,15 @@ pub fn eave_specs(floor: &Floor) -> Vec<EaveSpec> {
 /// What Build Framing makes for one floor.
 #[derive(Clone, Debug, Default)]
 pub struct FloorBuild {
-    /// Automatic members (walls, undirected floors, roofs).
+    /// Automatic members (walls, undirected floors, ceilings, roofs).
     pub members: Vec<Member>,
     /// Members made from layout lines (directed joists, beams, trusses); their
     /// ids are 0 until [`build`] stores them.
     pub built: Vec<FramingMember>,
     pub summary: BuildSummary,
+    /// Joists and rafters that carry more than their size allows
+    /// ([`plan_framing::span`]), as sentences for the build report.
+    pub warnings: Vec<String>,
 }
 
 /// Reach of a Framing Reference Marker to a wall's centre line, inches.
@@ -301,15 +330,59 @@ impl Layout {
     }
 }
 
-/// Frames floor `fi` of `project`: the walls, the floor platforms, the roof
-/// stored on that floor (with `with_roof`) and the trusses of its Truss
-/// Bases, honoring Joist Direction, Bearing Line, Reference Marker and Truss
-/// Base lines.
+/// The outlines of the Open Below rooms of `above` (rooms with no floor
+/// platform): the floor under them has no ceiling there.
+fn open_below_outlines(above: Option<&Floor>) -> Vec<Vec<Point>> {
+    let Some(above) = above else {
+        return Vec::new();
+    };
+    if above.room_names.iter().all(|n| n.has_floor) {
+        return Vec::new();
+    }
+    detect_rooms(&above.walls, 0.5)
+        .into_iter()
+        .filter(|r| {
+            r.name_entry(&above.room_names)
+                .is_some_and(|n| !n.has_floor)
+        })
+        .map(|r| r.polygon)
+        .collect()
+}
+
+/// The rooms whose platforms are framed on `floor`: every room, or with
+/// [`BearingMode::ExteriorAndBearingLines`] the rooms the exterior walls
+/// alone enclose (interior partitions do not carry joists).
+fn platform_rooms(floor: &Floor, d: &FramingDefaults) -> Vec<Room> {
+    if d.bearing == BearingMode::ExteriorAndBearingLines {
+        let exterior: Vec<Wall> = floor
+            .walls
+            .iter()
+            .filter(|w| w.kind == plan_core::WallKind::Exterior)
+            .cloned()
+            .collect();
+        let rooms = detect_rooms(&exterior, 0.5);
+        if !rooms.is_empty() {
+            return rooms;
+        }
+    }
+    detect_rooms(&floor.walls, 0.5)
+}
+
+/// Frames floor `fi` of `project`: the walls, the floor platforms, the
+/// ceilings, the roof stored on that floor (with `with_roof`) and the trusses
+/// of its Truss Bases, honoring Joist Direction, Bearing Line, Reference
+/// Marker and Truss Base lines and the Build Framing options. A group that is
+/// off or retained is not built (a build keeps what that group has), nor is a
+/// wall whose framing is retained. Rooms with no floor platform (Open Below,
+/// decks) get no floor joists, and rooms with no ceiling, or open to the
+/// floor above, get no ceiling joists.
 pub fn frame_floor_all(project: &Project, fi: usize, with_roof: bool) -> FloorBuild {
     let floor = &project.floors[fi];
     let FramingSettings {
         walls: d,
         roof: roof_d,
+        build: opts,
+        ..
     } = settings(project);
     let layout = Layout::from_records(&load_records(floor));
     let mut out = FloorBuild::default();
@@ -320,7 +393,7 @@ pub fn frame_floor_all(project: &Project, fi: usize, with_roof: bool) -> FloorBu
         .filter(|w| !w.flags.invisible && !w.flags.room_divider && !w.flags.railing)
         .cloned()
         .collect();
-    for wall in &framed {
+    for wall in framed.iter().filter(|w| opts.builds_wall(w.id)) {
         let openings: Vec<&Opening> = floor.openings_on(wall.id).collect();
         let marker = layout.marker_near_segment(wall.start, wall.end);
         let joints = WallJoints::of(wall, &framed);
@@ -335,56 +408,80 @@ pub fn frame_floor_all(project: &Project, fi: usize, with_roof: bool) -> FloorBu
         out.summary.walls += m.len();
         out.members.extend(m);
     }
-    if floor.kind != FloorKind::Foundation {
-        for room in detect_rooms(&floor.walls, 0.5) {
+    let floor_group = !opts.group_frozen(Group::Floor);
+    let ceiling_group = !opts.group_frozen(Group::Ceiling)
+        && !roof_d.ceiling_joists
+        && !roof_d.trusses
+        && floor.kind != FloorKind::Foundation;
+    if (floor_group || ceiling_group) && floor.kind != FloorKind::Foundation {
+        let open = open_below_outlines(project.floors.get(fi + 1));
+        let plate = floor.elevation + wall_height(floor);
+        for room in platform_rooms(floor, &d) {
             if room.area_sq_ft() < 1.0 {
                 continue;
             }
-            let dir = layout.direction_in(&room.polygon);
-            let bearing = layout.bearing_in(&room.polygon);
-            let marker = layout.marker_in(&room.polygon);
-            if dir.is_none() && bearing.is_empty() && marker.is_none() {
-                // Stairwells in this floor's platform get headers and trimmers.
-                let holes: Vec<Vec<Point>> = floor_holes(floor)
-                    .into_iter()
-                    .filter(|h| h.iter().all(|p| point_in_polygon(*p, &room.polygon)))
-                    .collect();
-                let m = frame_floor_holes(&room, floor.elevation, &d, JoistDirection::Auto, &holes);
-                out.summary.floor += m.len();
+            let named = room.name_entry(&floor.room_names);
+            if floor_group && named.is_none_or(|n| n.has_floor) {
+                let dir = layout.direction_in(&room.polygon);
+                let bearing = layout.bearing_in(&room.polygon);
+                let marker = layout.marker_in(&room.polygon);
+                if dir.is_none() && bearing.is_empty() && marker.is_none() {
+                    // Stairwells in this floor's platform get headers and trimmers.
+                    let holes: Vec<Vec<Point>> = floor_holes(floor)
+                        .into_iter()
+                        .filter(|h| h.iter().all(|p| point_in_polygon(*p, &room.polygon)))
+                        .collect();
+                    let m =
+                        frame_floor_holes(&room, floor.elevation, &d, d.joist_direction, &holes);
+                    out.summary.floor += m.len();
+                    out.members.extend(m);
+                } else {
+                    let m = frame_floor_directed(
+                        &room,
+                        floor.elevation,
+                        &d,
+                        dir.as_ref(),
+                        &bearing,
+                        marker.as_ref(),
+                        0,
+                    );
+                    out.summary.floor += m.len();
+                    out.built.extend(m);
+                }
+            }
+            let covered = open
+                .iter()
+                .any(|h| plan_core::rooms::polygon_inside(&room.polygon, h, 1.0));
+            if ceiling_group && named.is_none_or(|n| n.has_ceiling) && !covered {
+                let m = frame_ceiling(&room, plate, &d);
+                out.summary.ceiling += m.len();
                 out.members.extend(m);
-            } else {
-                let m = frame_floor_directed(
-                    &room,
-                    floor.elevation,
-                    &d,
-                    dir.as_ref(),
-                    &bearing,
-                    marker.as_ref(),
-                    0,
-                );
-                out.summary.floor += m.len();
-                out.built.extend(m);
             }
         }
     }
-    if with_roof {
+    if with_roof && !opts.group_frozen(Group::Roof) {
         if let Some(roof) = roof_of(floor) {
             let m = frame_roof_eaves(&roof, &roof_d, &eave_specs(floor));
             out.summary.roof += m.len();
             out.members.extend(m);
         }
         for base in &layout.bases {
-            let m = truss_layout(base, &layout);
+            let m = truss_layout(base, &layout, &opts.trusses);
             out.summary.roof += m.len();
             out.built.extend(m);
         }
     }
+    out.warnings = check_spans(&out.members, &d, &roof_d)
+        .iter()
+        .map(SpanIssue::message)
+        .collect();
     out
 }
 
 /// Trusses over one base: its Roof Truss Direction (the one whose middle lies
-/// in the base, else spaced 24" across the longer side) and Reference Marker.
-fn truss_layout(base: &TrussBase, layout: &Layout) -> Vec<FramingMember> {
+/// in the base, else spaced across the longer side) and Reference Marker,
+/// of the Trusses tab's type, pitch, heel, overhang and spacing.
+fn truss_layout(base: &TrussBase, layout: &Layout, tr: &TrussDefaults) -> Vec<FramingMember> {
     let dir = layout
         .truss_directions
         .iter()
@@ -398,10 +495,12 @@ fn truss_layout(base: &TrussBase, layout: &Layout) -> Vec<FramingMember> {
             } else {
                 (lo, Point::new(lo.x, hi.y))
             };
-            RoofTrussDirection::new((a, b), 0.0)
+            RoofTrussDirection::new((a, b), tr.spacing)
         });
     let marker = layout.marker_in(&base.points);
-    let spec = TrussSpec::new(TrussType::Fink, 0.0, 6.0);
+    let mut spec = TrussSpec::new(tr.kind, 0.0, tr.pitch);
+    spec.heel_height = tr.heel_height;
+    spec.overhang = tr.overhang;
     layout_trusses(base, &dir, &spec, marker.as_ref(), 0)
 }
 
@@ -427,22 +526,41 @@ pub fn frame_floor_members(
 }
 
 /// Build Framing (active floor) or Build All Framing (every floor) as one
-/// undo step. Turns the Framing layer on so the result shows. Manual members
-/// and layout lines stay; members an earlier build made from them are
-/// replaced.
+/// undo step, with the options of the Build Framing dialog: the groups that
+/// are off or retained keep their members, retained walls keep theirs, and
+/// everything else is replaced. Turns the framing layers on when the options
+/// say so (the layers are off in a new plan, like Chief's). Manual members and
+/// layout lines stay; members an earlier build made from them are replaced.
+/// The status line reports spans the lumber does not carry.
 pub fn build(cx: &mut EditorContext, all_floors: bool) -> BuildSummary {
+    build_with(cx, all_floors, None)
+}
+
+/// [`build`] with new settings (the Build Framing dialog's OK) stored in the
+/// same undo step.
+fn build_with(
+    cx: &mut EditorContext,
+    all_floors: bool,
+    new: Option<FramingSettings>,
+) -> BuildSummary {
     cx.begin_change(if all_floors {
         "Build All Framing"
     } else {
         "Build Framing"
     });
+    if let Some(n) = &new {
+        store_settings(&mut cx.project, n);
+    }
     let floors: Vec<usize> = if all_floors {
         (0..cx.project.floors.len()).collect()
     } else {
         vec![cx.floor]
     };
     let mut total = BuildSummary::default();
+    let mut warnings: Vec<String> = Vec::new();
     let mut built_layers: Vec<String> = Vec::new();
+    let mut st = settings(&cx.project);
+    let stored = st.clone();
     for fi in floors {
         let mut fb = frame_floor_all(&cx.project, fi, true);
         for m in &mut fb.built {
@@ -450,21 +568,191 @@ pub fn build(cx: &mut EditorContext, all_floors: bool) -> BuildSummary {
             m.layer_name = layer_for(m.kind).to_string();
         }
         built_layers.extend(fb.built.iter().map(|m| m.layer_name.clone()));
-        store_auto(&mut cx.project.floors[fi], &fb.members, fb.built);
+        let old = load(&cx.project.floors[fi]);
+        let members = merge_rebuild(old, fb.members, &st.build);
+        store_auto(
+            &mut cx.project.floors[fi],
+            &members,
+            fb.built,
+            &st.build,
+            None,
+        );
+        // The fingerprints only matter to Auto Rebuild; a plan that does not use
+        // it keeps no settings object in its framing slot.
+        if st.build.auto_rebuild.any() {
+            st.build.record_built(fi, group_prints(&cx.project, fi));
+        }
         total.add(fb.summary);
+        warnings.extend(fb.warnings);
     }
-    ensure_layer(&mut cx.project);
+    if st != stored {
+        store_settings(&mut cx.project, &st);
+    }
+    ensure_layer(&mut cx.project, st.build.show_layers);
     ensure_manual_layers(&mut cx.project);
-    for layer in built_layers {
-        show_layer(&mut cx.project, &layer);
+    if st.build.show_layers {
+        for layer in built_layers {
+            show_layer(&mut cx.project, &layer);
+        }
     }
     cx.mark_dirty();
     cx.refresh();
     cx.status = format!(
-        "Built framing: {} wall, {} floor and {} roof members",
-        total.walls, total.floor, total.roof
+        "Built framing: {} wall, {} floor, {} ceiling and {} roof members",
+        total.walls, total.floor, total.ceiling, total.roof
     );
+    if let Some(w) = warnings.first() {
+        cx.status.push_str(&format!(
+            ". Check spans: {w}{}",
+            if warnings.len() > 1 { " and more" } else { "" }
+        ));
+    }
     total
+}
+
+// ----- auto rebuild and retain -----
+
+/// A fingerprint of the inputs of each group of floor `fi`, in
+/// [`Group::ALL`] order (floor, ceiling, wall, roof): what the group's
+/// framing is built from. Floor and ceiling framing follow the walls, the
+/// room names and the layout lines (and the floor's holes); wall framing the
+/// walls and their openings and the reference markers; roof framing the roof
+/// planes and the truss layout lines.
+pub fn group_prints(project: &Project, fi: usize) -> [u64; 4] {
+    let floor = &project.floors[fi];
+    let records = load_records(floor);
+    let lines = |keep: fn(&Record) -> bool| -> String {
+        records
+            .iter()
+            .filter(|r| keep(r))
+            .map(|r| format!("{r:?}"))
+            .collect()
+    };
+    let walls = format!("{:?}", floor.walls);
+    let openings = format!("{:?}", floor.openings);
+    let above = project
+        .floors
+        .get(fi + 1)
+        .map(|f| format!("{:?}{:?}", f.walls, f.room_names))
+        .unwrap_or_default();
+    let floor_lines = lines(|r| {
+        matches!(
+            r,
+            Record::JoistDirection { .. } | Record::BearingLine { .. } | Record::Marker { .. }
+        )
+    });
+    let truss_lines = lines(|r| {
+        matches!(
+            r,
+            Record::TrussDirection { .. } | Record::TrussBase { .. } | Record::Marker { .. }
+        )
+    });
+    let rooms = format!("{:?}{:?}", floor.room_names, floor_holes(floor));
+    let roof = format!("{:?}", roof_view::load(floor).planes);
+    let print = |parts: &[&str]| fingerprint(&parts.join("|"));
+    let mut out = [0; 4];
+    for g in Group::ALL {
+        out[group_index(g)] = match g {
+            Group::Floor => print(&[&walls, &rooms, &floor_lines]),
+            Group::Ceiling => print(&[&walls, &rooms, &floor_lines, &above]),
+            Group::Wall => print(&[&walls, &openings, &floor_lines]),
+            Group::Roof => print(&[&roof, &truss_lines]),
+        };
+    }
+    out
+}
+
+fn group_index(g: Group) -> usize {
+    Group::ALL.iter().position(|x| *x == g).unwrap_or(0)
+}
+
+thread_local! {
+    /// The editor revision auto rebuild last looked at.
+    static AUTO_CHECKED: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Auto Rebuild Framing: rebuilds the groups whose Build Framing option
+/// "Auto rebuild" is on and whose inputs changed since the last build or
+/// rebuild (see [`group_prints`]). Only floors that were built are touched.
+/// Retained groups and retained walls keep their members. Returns whether
+/// anything was rebuilt. The shell may call it once a frame; like
+/// `roof_view::auto_rebuild` it makes no undo step of its own, so the
+/// rebuild is undone together with the edit that caused it.
+pub fn auto_rebuild(cx: &mut EditorContext) -> bool {
+    let mut st = settings(&cx.project);
+    if !st.build.auto_rebuild.any() {
+        return false;
+    }
+    let key = cx.cache_key();
+    if AUTO_CHECKED.with(|c| c.replace(key)) == key {
+        return false;
+    }
+    let mut changed = false;
+    for fi in 0..cx.project.floors.len() {
+        let now = group_prints(&cx.project, fi);
+        let due = st.build.due(fi, now);
+        if due.is_empty() {
+            continue;
+        }
+        let mut fb = frame_floor_all(&cx.project, fi, true);
+        for m in &mut fb.built {
+            m.id = cx.project.alloc_id();
+            m.layer_name = layer_for(m.kind).to_string();
+        }
+        let old = load(&cx.project.floors[fi]);
+        let members = merge_groups(old, fb.members, &st.build, &due);
+        store_auto(
+            &mut cx.project.floors[fi],
+            &members,
+            fb.built,
+            &st.build,
+            Some(&due),
+        );
+        for g in &due {
+            st.build.record_group(fi, *g, now[group_index(*g)]);
+        }
+        changed = true;
+    }
+    if changed {
+        store_settings(&mut cx.project, &st);
+        ensure_manual_layers(&mut cx.project);
+        cx.mark_dirty();
+        cx.refresh();
+        cx.status = "Framing rebuilt".into();
+    }
+    changed
+}
+
+/// Retain Wall Framing on the walls `ids` (or off): the next Build Framing
+/// and every auto rebuild leave those walls' framing as it is, so edits made
+/// to it survive. One undo step. Returns how many walls changed.
+pub fn set_walls_retained(cx: &mut EditorContext, ids: &[Id], retained: bool) -> usize {
+    let mut st = settings(&cx.project);
+    let before = st.build.retain_walls.clone();
+    for id in ids {
+        st.build.set_wall_retained(*id, retained);
+    }
+    let n = ids
+        .iter()
+        .filter(|id| before.contains(id) != retained)
+        .count();
+    if n == 0 {
+        return 0;
+    }
+    cx.begin_change("Retain Wall Framing");
+    store_settings(&mut cx.project, &st);
+    cx.mark_dirty();
+    cx.status = if retained {
+        format!("Retaining the framing of {n} wall(s)")
+    } else {
+        format!("{n} wall(s) rebuild with Build Framing again")
+    };
+    n
+}
+
+/// Whether Build Framing leaves wall `id`'s framing alone.
+pub fn wall_retained(project: &Project, id: Id) -> bool {
+    settings(project).build.retain_walls.contains(&id)
 }
 
 /// Removes the built framing of the active floor (one undo step); members and
@@ -480,19 +768,41 @@ pub fn clear(cx: &mut EditorContext) -> usize {
         return 0;
     }
     cx.begin_change("Delete Framing");
-    store_auto(cx.floor_mut(), &[], Vec::new());
+    store_auto(cx.floor_mut(), &[], Vec::new(), &everything(), None);
     cx.mark_dirty();
     cx.refresh();
     cx.status = format!("Deleted {n} framing members");
     n
 }
 
-/// Makes sure the Framing layer exists and is shown.
-fn ensure_layer(project: &mut Project) {
+/// Options under which nothing is kept: every group is built and none is
+/// retained (Delete Framing).
+fn everything() -> BuildOptions {
+    BuildOptions {
+        build: plan_framing::GroupFlags {
+            floor: true,
+            ceiling: true,
+            wall: true,
+            roof: true,
+        },
+        ..BuildOptions::default()
+    }
+}
+
+/// Makes sure the Framing layer exists; with `show` it is turned on, and a
+/// layer made here starts hidden otherwise (framing layers are off until
+/// something uses them, like Chief's).
+fn ensure_layer(project: &mut Project, show: bool) {
     match project.layers.get_mut(LAYER) {
-        Some(l) => l.display = true,
+        Some(l) => {
+            if show {
+                l.display = true;
+            }
+        }
         None => {
-            project.layers.add(Layer::new(LAYER, [180, 140, 60], 18));
+            let mut l = Layer::new(LAYER, [180, 140, 60], 18);
+            l.display = show;
+            project.layers.add(l);
         }
     }
 }
@@ -660,6 +970,71 @@ struct Hull {
     pts: Vec<Point>,
     lo: Point,
     hi: Point,
+    style: PlanStyle,
+}
+
+/// How a built member is drawn in plan.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanStyle {
+    /// Dash and gap lengths in screen points; `None` is a solid outline.
+    pub dash: Option<(f32, f32)>,
+    /// Alpha of the fill (0 draws the outline alone).
+    pub fill_alpha: u8,
+    /// Outline width in points.
+    pub width: f32,
+}
+
+/// Chief's plan line styles for built framing, by member kind: the walls'
+/// plates, studs and headers are solid and filled; floor joists, rims and
+/// blocking solid with a light fill; ceiling joists dashed; rafters, ridge,
+/// hips, valleys and fascia long-dashed (they lie above the plan); truss
+/// chords long-dashed and webs dotted. Wall blocking is drawn lighter. (Chief's
+/// exact dash pattern is not documented; DECISIONS 114, verify in Chief.)
+pub fn plan_style(m: &Member) -> PlanStyle {
+    use MemberKind as K;
+    let solid = |fill_alpha, width| PlanStyle {
+        dash: None,
+        fill_alpha,
+        width,
+    };
+    match m.kind {
+        K::Stud
+        | K::KingStud
+        | K::TrimmerStud
+        | K::CrippleStud
+        | K::CornerStud
+        | K::TeeStud
+        | K::TopPlate
+        | K::BottomPlate
+        | K::Header
+        | K::Sill => solid(70, 0.75),
+        K::Blocking if m.wall_id.is_some() => solid(35, 0.5),
+        K::Blocking | K::Joist | K::RimJoist | K::TrimmerJoist | K::HeaderJoist | K::Ledger => {
+            solid(40, 0.75)
+        }
+        K::CeilingJoist => PlanStyle {
+            dash: Some((6.0, 4.0)),
+            fill_alpha: 0,
+            width: 0.75,
+        },
+        K::Rafter
+        | K::Ridge
+        | K::Hip
+        | K::Valley
+        | K::Fascia
+        | K::CollarTie
+        | K::TrussTopChord
+        | K::TrussBottomChord => PlanStyle {
+            dash: Some((10.0, 5.0)),
+            fill_alpha: 0,
+            width: 0.75,
+        },
+        K::TrussWeb => PlanStyle {
+            dash: Some((2.0, 3.0)),
+            fill_alpha: 0,
+            width: 0.5,
+        },
+    }
 }
 
 /// What drawing the framing of the active floor derives from the stored data:
@@ -712,7 +1087,12 @@ fn built_hulls(cx: &EditorContext) -> Rc<Vec<Hull>> {
                     lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
                     hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
                 }
-                Hull { pts, lo, hi }
+                Hull {
+                    pts,
+                    lo,
+                    hi,
+                    style: plan_style(m),
+                }
             })
             .collect(),
     );
@@ -734,8 +1114,6 @@ fn draw_built(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         return;
     }
     let [r, g, b] = cx.layers().get(LAYER).map_or([180, 140, 60], |l| l.color);
-    let fill = Color32::from_rgba_unmultiplied(r, g, b, 70);
-    let edge = Stroke::new(0.75_f32, Color32::from_rgb(r, g, b));
     let view = cam.rect.expand(2.0);
     for h in built_hulls(cx).iter() {
         // Members outside the canvas draw nothing visible.
@@ -744,14 +1122,23 @@ fn draw_built(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             continue;
         }
         let pts: Vec<Pos2> = h.pts.iter().map(|p| cam.world_to_screen(*p)).collect();
+        let edge = Stroke::new(h.style.width, Color32::from_rgb(r, g, b));
+        let fill = Color32::from_rgba_unmultiplied(r, g, b, h.style.fill_alpha);
         match pts.len() {
             0 | 1 => {}
             2 => {
                 painter.line_segment([pts[0], pts[1]], edge);
             }
-            _ => {
-                painter.add(Shape::convex_polygon(pts, fill, edge));
-            }
+            _ => match h.style.dash {
+                None => {
+                    painter.add(Shape::convex_polygon(pts, fill, edge));
+                }
+                Some((dash, gap)) => {
+                    let mut ring = pts;
+                    ring.push(ring[0]);
+                    painter.extend(Shape::dashed_line(&ring, edge, dash, gap));
+                }
+            },
         }
     }
 }
@@ -1031,12 +1418,26 @@ pub fn store_records(floor: &mut Floor, records: &[Record]) {
 
 /// Replaces the automatic members and the members built from layout lines,
 /// keeping `Manual` members and the layout lines.
-fn store_auto(floor: &mut Floor, members: &[Member], built: Vec<FramingMember>) {
+fn store_auto(
+    floor: &mut Floor,
+    members: &[Member],
+    built: Vec<FramingMember>,
+    opts: &BuildOptions,
+    only: Option<&[Group]>,
+) {
+    let kept = |m: &FramingMember| {
+        let g = group_of_manual(m.kind);
+        // The groups outside an auto rebuild, and frozen groups, keep theirs.
+        opts.group_frozen(g) || only.is_some_and(|o| !o.contains(&g))
+    };
     let mut records: Vec<Record> = load_records(floor)
         .into_iter()
-        .filter(|r| !matches!(r, Record::Built(_)))
+        .filter(|r| match r {
+            Record::Built(m) => kept(m),
+            _ => true,
+        })
         .collect();
-    records.extend(built.into_iter().map(Record::Built));
+    records.extend(built.into_iter().filter(|m| !kept(m)).map(Record::Built));
     let mut values: Vec<Value> = members
         .iter()
         .filter_map(|m| serde_json::to_value(m).ok())
@@ -1063,10 +1464,14 @@ pub fn find(floor: &Floor, id: Id) -> Option<Record> {
     load_records(floor).into_iter().find(|r| r.id() == id)
 }
 
-/// Makes sure the five manual framing layers exist (a hidden one stays hidden).
+/// Makes sure the five manual framing layers exist. A layer made here starts
+/// hidden, like Chief's framing layers; placing or building a member turns on
+/// the layer it lands on ([`show_layer`]). A hidden one stays hidden.
 pub fn ensure_manual_layers(project: &mut Project) {
     for (name, color) in MANUAL_LAYERS {
-        project.layers.add(Layer::new(name, color, 18));
+        let mut l = Layer::new(name, color, 18);
+        l.display = false;
+        project.layers.add(l);
     }
 }
 
@@ -1131,6 +1536,33 @@ pub fn new_member(
         }
         K::Post | K::PostWithFooting if !floor.walls.is_empty() => m.height = wall_height(floor),
         _ => {}
+    }
+    m
+}
+
+/// [`new_member`] with the Posts tab of Build Framing applied: a new post takes
+/// the size and material set there, and becomes a post with footing when the
+/// tab asks for footings.
+pub fn new_member_in(
+    cx: &EditorContext,
+    kind: ManualMemberKind,
+    start: Point,
+    end: Point,
+) -> FramingMember {
+    use ManualMemberKind as K;
+    let is_post = matches!(kind, K::Post | K::PostWithFooting);
+    let kind = if kind == K::Post && settings(&cx.project).build.posts.footing {
+        K::PostWithFooting
+    } else {
+        kind
+    };
+    let mut m = new_member(cx.floor(), kind, start, end);
+    if is_post {
+        let p = settings(&cx.project).build.posts;
+        m.lumber = p.size;
+        m.depth = p.size.depth();
+        m.width = p.size.width();
+        m.material = p.material;
     }
     m
 }
@@ -1533,6 +1965,130 @@ pub fn wall_framing_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
         .collect()
 }
 
+/// The scene of the Framing Overview camera (a Perspective Overview of the
+/// framing): every automatic and manual framing member of every floor, and
+/// nothing else, so the walls, floors and roof surfaces do not hide them. It
+/// ignores the framing layers' display (they are off in a new plan): the
+/// camera exists to show them.
+pub fn overview_scene(project: &Project) -> plan_3d::Scene {
+    let mut scene = plan_3d::Scene::default();
+    for floor in &project.floors {
+        scene.meshes.extend(load(floor).iter().map(Member::mesh));
+        for m in manual_members(floor) {
+            scene
+                .meshes
+                .extend(m.to_boxes().iter().map(|b| b.mesh(Some(m.id))));
+        }
+    }
+    scene
+}
+
+// ----- Wall Detail -----
+
+/// The framing elevation of one wall with its dimensions (Chief's Wall
+/// Detail): the strokes and dimensions of `plan_framing::{wall_detail,
+/// wall_detail_dims}` in the wall's elevation frame, X along the wall from its
+/// start and Y up from the bottom plate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WallDetail {
+    pub wall: Id,
+    pub length: f64,
+    pub height: f64,
+    pub strokes: Vec<plan_framing::Stroke>,
+    pub dims: Vec<plan_framing::DetailDim>,
+}
+
+/// The wall detail of wall `wall` on floor `fi`, from its stored framing;
+/// `None` when the wall has no framing yet (Build Framing first).
+pub fn wall_detail_of(project: &Project, fi: usize, wall: Id) -> Option<WallDetail> {
+    let floor = project.floors.get(fi)?;
+    let w = floor.walls.iter().find(|w| w.id == wall)?;
+    let members = load(floor);
+    if !members.iter().any(|m| m.wall_id == Some(wall)) {
+        return None;
+    }
+    Some(WallDetail {
+        wall,
+        length: w.length(),
+        height: w.height,
+        strokes: plan_framing::wall_detail(w, &members),
+        dims: plan_framing::wall_detail_dims(w, &members),
+    })
+}
+
+/// Draws a wall detail in `rect`, scaled to fit with room for the
+/// dimensions: members as outlines, labels, and each dimension as a line with
+/// end ticks and its text.
+pub fn paint_wall_detail(painter: &egui::Painter, rect: egui::Rect, d: &WallDetail, ink: Color32) {
+    use plan_framing::Stroke as S;
+    const MARGIN: f64 = 36.0;
+    let (w, h) = (d.length.max(1.0), d.height.max(1.0));
+    let scale = ((f64::from(rect.width()) - 2.0 * MARGIN) / w)
+        .min((f64::from(rect.height()) - 2.0 * MARGIN) / h)
+        .max(0.01);
+    let at = |p: Point| {
+        Pos2::new(
+            rect.min.x + MARGIN as f32 + (p.x * scale) as f32,
+            rect.max.y - MARGIN as f32 - (p.y * scale) as f32,
+        )
+    };
+    let line = Stroke::new(0.75_f32, ink);
+    for s in &d.strokes {
+        match s {
+            S::Line(a, b) => {
+                painter.line_segment([at(*a), at(*b)], line);
+            }
+            S::Rect { min, max } => {
+                painter.rect_stroke(
+                    egui::Rect::from_two_pos(at(*min), at(*max)),
+                    0.0,
+                    line,
+                    egui::StrokeKind::Middle,
+                );
+            }
+            S::Text { pos, text, height } => {
+                painter.text(
+                    at(*pos),
+                    Align2::CENTER_CENTER,
+                    text,
+                    FontId::proportional(((height * scale) as f32).clamp(6.0, 11.0)),
+                    ink,
+                );
+            }
+        }
+    }
+    let dim = Stroke::new(1.0_f32, Color32::from_rgb(180, 0, 0));
+    for dm in &d.dims {
+        let horizontal = (dm.b.y - dm.a.y).abs() < (dm.b.x - dm.a.x).abs();
+        let off = if horizontal {
+            Point::new(0.0, dm.offset)
+        } else {
+            Point::new(dm.offset, 0.0)
+        };
+        let (a, b) = (at(dm.a + off), at(dm.b + off));
+        painter.line_segment([a, b], dim);
+        for p in [a, b] {
+            let tick = if horizontal {
+                egui::vec2(0.0, 3.0)
+            } else {
+                egui::vec2(3.0, 0.0)
+            };
+            painter.line_segment([p - tick, p + tick], dim);
+        }
+        painter.text(
+            a + (b - a) * 0.5,
+            if horizontal {
+                Align2::CENTER_BOTTOM
+            } else {
+                Align2::RIGHT_CENTER
+            },
+            &dm.text,
+            FontId::proportional(9.0),
+            Color32::from_rgb(180, 0, 0),
+        );
+    }
+}
+
 // ----- Framing Overview -----
 
 /// Name of the saved plan view, and of its layer set, that shows the framing
@@ -1564,7 +2120,7 @@ pub fn overview_layer_set(layers: &plan_core::LayerSet) -> plan_core::layer_sets
 /// was added. The set is rebuilt when layers were added since, so a layer
 /// made later never leaks into the overview.
 pub fn install_overview(project: &mut Project) -> bool {
-    ensure_layer(project);
+    ensure_layer(project, true);
     ensure_manual_layers(project);
     let set = overview_layer_set(&project.layers);
     let mut added = false;
@@ -1604,7 +2160,14 @@ pub fn activate_overview(cx: &mut EditorContext) {
             m.id = cx.project.alloc_id();
             m.layer_name = layer_for(m.kind).to_string();
         }
-        store_auto(&mut cx.project.floors[fi], &fb.members, fb.built);
+        let opts = settings(&cx.project).build;
+        store_auto(
+            &mut cx.project.floors[fi],
+            &fb.members,
+            fb.built,
+            &opts,
+            None,
+        );
     }
     cx.project.activate_plan_view(OVERVIEW);
     cx.mark_dirty();
@@ -2706,5 +3269,453 @@ mod tests {
         assert!(all.len() >= load(cx.floor()).len());
         cx.project.layers.get_mut(LAYER).unwrap().display = false;
         assert!(manual_framing_meshes(&cx.project).len() < all.len());
+    }
+
+    // ----- Round 14: Build Framing options -----
+
+    fn members_of_wall(cx: &EditorContext, wall: Id) -> Vec<Member> {
+        cx.framing
+            .iter()
+            .filter(|m| m.wall_id == Some(wall))
+            .cloned()
+            .collect()
+    }
+
+    fn with_build(cx: &mut EditorContext, edit: impl FnOnce(&mut FramingSettings)) {
+        let mut st = settings(&cx.project);
+        edit(&mut st);
+        set_settings(cx, st);
+    }
+
+    #[test]
+    fn a_retained_wall_keeps_its_framing_through_a_rebuild() {
+        let mut cx = house();
+        build(&mut cx, false);
+        let ids: Vec<Id> = cx.floor().walls.iter().map(|w| w.id).collect();
+        let kept = members_of_wall(&cx, ids[1]);
+        assert!(!kept.is_empty());
+        assert_eq!(set_walls_retained(&mut cx, &[ids[1]], true), 1);
+        assert_eq!(cx.undo_label(), Some("Retain Wall Framing"));
+        assert_eq!(
+            set_walls_retained(&mut cx, &[ids[1]], true),
+            0,
+            "already retained"
+        );
+        assert!(wall_retained(&cx.project, ids[1]));
+        // Lower every wall and rebuild: the retained wall keeps its tall studs.
+        for w in &mut cx.project.floors[0].walls {
+            w.height = 96.0;
+        }
+        build(&mut cx, false);
+        assert_eq!(members_of_wall(&cx, ids[1]), kept);
+        fn studs(cx: &EditorContext, id: Id) -> f64 {
+            members_of_wall(cx, id)
+                .iter()
+                .filter(|m| m.kind == MemberKind::Stud)
+                .map(|m| m.length)
+                .fold(0.0, f64::max)
+        }
+        assert!(studs(&cx, ids[2]) < 95.0, "the others were rebuilt at 96\"");
+        assert!(studs(&cx, ids[1]) > 100.0);
+        // Not retained any more: the next build frames it again.
+        set_walls_retained(&mut cx, &[ids[1]], false);
+        build(&mut cx, false);
+        assert!(studs(&cx, ids[1]) < 95.0);
+    }
+
+    #[test]
+    fn a_group_that_is_off_or_retained_keeps_what_it_has() {
+        let mut cx = house();
+        build(&mut cx, false);
+        let joists = count_kind(&cx.framing, MemberKind::Joist);
+        assert!(joists > 5);
+        // Floor framing off: a tighter spacing is not applied.
+        with_build(&mut cx, |st| {
+            st.walls.joist_spacing = 8.0;
+            st.build.build.floor = false;
+        });
+        build(&mut cx, false);
+        assert_eq!(count_kind(&cx.framing, MemberKind::Joist), joists);
+        // On again: rebuilt at 8".
+        with_build(&mut cx, |st| st.build.build.floor = true);
+        build(&mut cx, false);
+        let tight = count_kind(&cx.framing, MemberKind::Joist);
+        assert!(tight > joists);
+        // Retained: a wider spacing is not applied either, the walls still rebuild.
+        with_build(&mut cx, |st| {
+            st.walls.joist_spacing = 24.0;
+            st.build.retain.floor = true;
+        });
+        let walls = count_kind(&cx.framing, MemberKind::Stud);
+        build(&mut cx, false);
+        assert_eq!(count_kind(&cx.framing, MemberKind::Joist), tight);
+        assert_eq!(count_kind(&cx.framing, MemberKind::Stud), walls);
+    }
+
+    #[test]
+    fn the_build_dialog_settings_and_the_build_are_one_undo_step() {
+        let mut cx = house();
+        let mut st = settings(&cx.project);
+        st.build.auto_rebuild.wall = true;
+        st.build_on_ok = Some(false);
+        let before = cx.action_history().0.len();
+        set_settings(&mut cx, st);
+        assert_eq!(cx.action_history().0.len(), before + 1);
+        assert_eq!(cx.undo_label(), Some("Build Framing"));
+        assert!(!cx.framing.is_empty());
+        assert!(settings(&cx.project).build.auto_rebuild.wall);
+        assert_eq!(settings(&cx.project).build_on_ok, None, "never saved");
+        cx.undo();
+        assert!(cx.floor().framing.is_empty());
+        assert!(!settings(&cx.project).build.auto_rebuild.wall);
+    }
+
+    #[test]
+    fn the_ceiling_group_frames_ceiling_joists_on_the_plates() {
+        let mut cx = house();
+        build(&mut cx, false);
+        assert_eq!(
+            count_kind(&cx.framing, MemberKind::CeilingJoist),
+            0,
+            "off by default"
+        );
+        with_build(&mut cx, |st| st.build.build.ceiling = true);
+        let s = build(&mut cx, false);
+        let n = count_kind(&cx.framing, MemberKind::CeilingJoist);
+        assert!(n > 5 && s.ceiling == n, "{s:?}");
+        for m in cx
+            .framing
+            .iter()
+            .filter(|m| m.kind == MemberKind::CeilingJoist)
+        {
+            let bottom = m.transform.origin[1] - m.lumber.depth / 2.0;
+            assert!((bottom - 109.125).abs() < 1e-6, "{bottom}");
+        }
+        // Trusses bring their own bottom chords.
+        with_build(&mut cx, |st| st.roof.trusses = true);
+        build(&mut cx, false);
+        assert_eq!(count_kind(&cx.framing, MemberKind::CeilingJoist), 0);
+    }
+
+    #[test]
+    fn open_below_rooms_get_no_floor_joists_and_the_rooms_under_them_no_ceiling() {
+        let mut cx = house();
+        with_build(&mut cx, |st| st.build.build.ceiling = true);
+        cx.project.build_new_floor(true);
+        let both = frame_floor_all(&cx.project, 0, false);
+        assert!(both.summary.ceiling > 0 && both.summary.floor > 0);
+        let upper = frame_floor_all(&cx.project, 1, false);
+        assert!(upper.summary.floor > 0, "{:?}", upper.summary);
+        let mut open = plan_core::RoomName::new(Point::new(120.0, 96.0), "Foyer", "Foyer");
+        open.has_floor = false;
+        cx.project.floors[1].room_names.push(open);
+        let after_up = frame_floor_all(&cx.project, 1, false);
+        assert_eq!(after_up.summary.floor, 0, "no floor platform to frame");
+        let after_down = frame_floor_all(&cx.project, 0, false);
+        assert_eq!(
+            after_down.summary.ceiling, 0,
+            "the room under it is open to it"
+        );
+        assert!(after_down.summary.floor > 0);
+        // A room with no ceiling of its own gets none either.
+        let mut cx = house();
+        with_build(&mut cx, |st| st.build.build.ceiling = true);
+        let mut deck = plan_core::RoomName::new(Point::new(120.0, 96.0), "Deck", "Deck");
+        deck.has_ceiling = false;
+        cx.project.floors[0].room_names.push(deck);
+        assert_eq!(frame_floor_all(&cx.project, 0, false).summary.ceiling, 0);
+    }
+
+    #[test]
+    fn bearing_mode_lets_joists_run_across_interior_partitions() {
+        let mut cx = house();
+        cx.project.add_wall(
+            0,
+            Point::new(120.0, 0.0),
+            Point::new(120.0, 192.0),
+            4.5,
+            109.125,
+            WallKind::Interior,
+        );
+        cx.refresh();
+        let longest = |cx: &EditorContext| {
+            frame_floor_all(&cx.project, 0, false)
+                .members
+                .iter()
+                .filter(|m| m.kind == MemberKind::Joist)
+                .map(|m| m.length)
+                .fold(0.0, f64::max)
+        };
+        let every = longest(&cx);
+        assert!(every < 125.0, "two 120\" rooms: {every}");
+        with_build(&mut cx, |st| {
+            st.walls.bearing = BearingMode::ExteriorAndBearingLines;
+        });
+        let exterior = longest(&cx);
+        assert!(exterior > 180.0, "one 240 x 192 platform: {exterior}");
+    }
+
+    #[test]
+    fn the_joist_direction_and_a_double_rim_come_from_the_build_options() {
+        let mut cx = house();
+        let run = |cx: &EditorContext| {
+            frame_floor_all(&cx.project, 0, false)
+                .members
+                .into_iter()
+                .filter(|m| m.kind == MemberKind::Joist)
+                .collect::<Vec<_>>()
+        };
+        // 240 x 192: Auto spans the short side, 192.
+        assert!(run(&cx).iter().all(|m| m.length > 180.0));
+        with_build(&mut cx, |st| {
+            st.walls.joist_direction = plan_framing::JoistDirection::AlongX
+        });
+        assert!(run(&cx).iter().all(|m| m.length > 230.0));
+        let rims = |cx: &EditorContext| {
+            frame_floor_all(&cx.project, 0, false)
+                .members
+                .iter()
+                .filter(|m| m.kind == MemberKind::RimJoist)
+                .count()
+        };
+        let single = rims(&cx);
+        with_build(&mut cx, |st| st.walls.rim_plies = 2);
+        assert_eq!(rims(&cx), single * 2);
+    }
+
+    #[test]
+    fn auto_rebuild_follows_edits_for_automatic_groups_only() {
+        let mut cx = house();
+        with_build(&mut cx, |st| st.build.auto_rebuild.wall = true);
+        // Nothing is built yet: nothing to rebuild.
+        cx.refresh();
+        assert!(!auto_rebuild(&mut cx));
+        build(&mut cx, false);
+        cx.refresh();
+        assert!(!auto_rebuild(&mut cx), "the build is current");
+        let joists = count_kind(&cx.framing, MemberKind::Joist);
+        let ids: Vec<Id> = cx.floor().walls.iter().map(|w| w.id).collect();
+        for w in &mut cx.project.floors[0].walls {
+            w.height = 96.0;
+        }
+        cx.mark_dirty();
+        cx.refresh();
+        assert!(auto_rebuild(&mut cx));
+        let stud = members_of_wall(&cx, ids[2])
+            .iter()
+            .filter(|m| m.kind == MemberKind::Stud)
+            .map(|m| m.length)
+            .fold(0.0, f64::max);
+        assert!(stud < 95.0);
+        assert_eq!(
+            count_kind(&cx.framing, MemberKind::Joist),
+            joists,
+            "floors are not automatic"
+        );
+        cx.refresh();
+        assert!(!auto_rebuild(&mut cx), "up to date again");
+        // Retained walls stay put even when due.
+        set_walls_retained(&mut cx, &[ids[2]], true);
+        for w in &mut cx.project.floors[0].walls {
+            w.height = 100.0;
+        }
+        cx.mark_dirty();
+        cx.refresh();
+        assert!(auto_rebuild(&mut cx));
+        let after = members_of_wall(&cx, ids[2])
+            .iter()
+            .filter(|m| m.kind == MemberKind::Stud)
+            .map(|m| m.length)
+            .fold(0.0, f64::max);
+        assert_eq!(after, stud);
+    }
+
+    #[test]
+    fn framing_layers_start_off_and_a_build_turns_on_what_it_uses() {
+        let mut project = Project::new("t");
+        ensure_manual_layers(&mut project);
+        for (name, _) in MANUAL_LAYERS {
+            assert!(!project.layers.is_visible(name), "{name}");
+        }
+        let mut cx = house();
+        ensure_manual_layers(&mut cx.project);
+        place(
+            &mut cx,
+            ManualMemberKind::Joist,
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+        );
+        assert!(cx.layers().is_visible(LAYER_JOISTS));
+        assert!(!cx.layers().is_visible(LAYER_RAFTERS));
+        // Show layers off: a build leaves the Framing layer as it is.
+        cx.project.layers.get_mut(LAYER).unwrap().display = false;
+        with_build(&mut cx, |st| st.build.show_layers = false);
+        build(&mut cx, false);
+        assert!(!cx.layers().is_visible(LAYER));
+    }
+
+    #[test]
+    fn plan_styles_follow_the_member_kind() {
+        let mut cx = house();
+        with_build(&mut cx, |st| st.build.build.ceiling = true);
+        let roof = roof_view::RoofSettings::from_defaults(&cx.defaults);
+        roof_view::rebuild(&mut cx.project, 0, roof, false).unwrap();
+        build(&mut cx, false);
+        let style_of = |k: MemberKind| {
+            cx.framing
+                .iter()
+                .find(|m| m.kind == k)
+                .map(plan_style)
+                .unwrap_or_else(|| panic!("no {k:?}"))
+        };
+        let stud = style_of(MemberKind::Stud);
+        assert!(stud.dash.is_none() && stud.fill_alpha > 0);
+        let joist = style_of(MemberKind::Joist);
+        assert!(joist.dash.is_none());
+        let ceiling = style_of(MemberKind::CeilingJoist);
+        assert!(ceiling.dash.is_some() && ceiling.fill_alpha == 0);
+        let rafter = style_of(MemberKind::Rafter);
+        assert!(rafter
+            .dash
+            .is_some_and(|(d, _)| d > ceiling.dash.unwrap().0));
+        let blocking = cx
+            .framing
+            .iter()
+            .find(|m| m.kind == MemberKind::Blocking && m.wall_id.is_some())
+            .map(plan_style)
+            .unwrap();
+        assert!(blocking.fill_alpha < stud.fill_alpha);
+    }
+
+    #[test]
+    fn spans_the_lumber_cannot_carry_are_reported_in_the_build() {
+        let mut cx = house();
+        with_build(&mut cx, |st| {
+            st.walls.joist_size = plan_framing::TWO_BY_TWELVE
+        });
+        let fine = frame_floor_all(&cx.project, 0, false);
+        assert!(fine.warnings.is_empty(), "{:?}", fine.warnings);
+        with_build(&mut cx, |st| st.walls.joist_size = plan_framing::TWO_BY_SIX);
+        let fb = frame_floor_all(&cx.project, 0, false);
+        assert_eq!(fb.warnings.len(), 1, "{:?}", fb.warnings);
+        assert!(fb.warnings[0].contains("2x6"), "{}", fb.warnings[0]);
+        build(&mut cx, false);
+        assert!(cx.status.contains("Check spans"), "{}", cx.status);
+    }
+
+    #[test]
+    fn new_posts_take_the_posts_tab_and_trusses_the_trusses_tab() {
+        let mut cx = house();
+        let p = Point::new(10.0, 10.0);
+        assert_eq!(
+            new_member_in(&cx, ManualMemberKind::Post, p, p).kind,
+            ManualMemberKind::Post
+        );
+        with_build(&mut cx, |st| {
+            st.build.posts.size = plan_framing::LumberSize::SIX_BY_SIX;
+            st.build.posts.footing = true;
+        });
+        let post = new_member_in(&cx, ManualMemberKind::Post, p, p);
+        assert_eq!(post.kind, ManualMemberKind::PostWithFooting);
+        assert_eq!(post.lumber, plan_framing::LumberSize::SIX_BY_SIX);
+        assert!((post.width - 5.5).abs() < 1e-9);
+        // Trusses over a base: type and spacing.
+        let rect = vec![
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        add_record(&mut cx, "Base", |id| Record::TrussBase {
+            id,
+            base: TrussBase::new(rect, 109.125),
+        });
+        build(&mut cx, false);
+        let fink = built_of(&cx, ManualMemberKind::RoofTruss);
+        assert!(fink
+            .iter()
+            .all(|t| t.truss.as_ref().unwrap().kind == plan_framing::TrussType::Fink));
+        with_build(&mut cx, |st| {
+            st.build.trusses.kind = plan_framing::TrussType::Howe;
+            st.build.trusses.spacing = 48.0;
+            st.build.trusses.overhang = 18.0;
+        });
+        build(&mut cx, false);
+        let howe = built_of(&cx, ManualMemberKind::RoofTruss);
+        assert!(
+            !howe.is_empty() && howe.len() < fink.len(),
+            "{} vs {}",
+            howe.len(),
+            fink.len()
+        );
+        let spec = howe[0].truss.as_ref().unwrap();
+        assert_eq!(spec.kind, plan_framing::TrussType::Howe);
+        assert_eq!(spec.overhang, 18.0);
+    }
+
+    #[test]
+    fn the_overview_scene_is_the_framing_alone_even_with_the_layers_off() {
+        let mut cx = house();
+        place(
+            &mut cx,
+            ManualMemberKind::Joist,
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+        );
+        build(&mut cx, false);
+        for name in [LAYER, LAYER_JOISTS] {
+            cx.project.layers.get_mut(name).unwrap().display = false;
+        }
+        let scene = overview_scene(&cx.project);
+        assert!(scene.meshes.len() > cx.framing.len());
+        assert!(scene
+            .meshes
+            .iter()
+            .all(|m| m.material == plan_3d::Material::Framing));
+        let full = plan_3d::build_scene(&cx.project);
+        assert!(full
+            .meshes
+            .iter()
+            .any(|m| m.material != plan_3d::Material::Framing));
+    }
+
+    #[test]
+    fn a_wall_detail_carries_dimensions_and_paints() {
+        let mut cx = house();
+        build(&mut cx, false);
+        let walls: Vec<(Id, usize)> = cx
+            .floor()
+            .walls
+            .iter()
+            .map(|w| (w.id, cx.floor().openings_on(w.id).count()))
+            .collect();
+        let (door_wall, _) = *walls.iter().find(|(_, n)| *n > 0).unwrap();
+        let (plain_wall, _) = *walls.iter().find(|(_, n)| *n == 0).unwrap();
+        let d = wall_detail_of(&cx.project, 0, door_wall).unwrap();
+        assert!(d
+            .dims
+            .iter()
+            .any(|x| x.kind == plan_framing::DimKind::RoughWidth));
+        assert!(!d.strokes.is_empty());
+        let p = wall_detail_of(&cx.project, 0, plain_wall).unwrap();
+        assert!(!p
+            .dims
+            .iter()
+            .any(|x| x.kind == plan_framing::DimKind::RoughWidth));
+        assert!(p
+            .dims
+            .iter()
+            .any(|x| x.kind == plan_framing::DimKind::StudSpacing));
+        // No framing, no detail.
+        clear(&mut cx);
+        assert!(wall_detail_of(&cx.project, 0, door_wall).is_none());
+        // It paints.
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                paint_wall_detail(ui.painter(), ui.max_rect(), &d, Color32::BLACK);
+            });
+        });
+        assert!(out.shapes.len() > 1);
     }
 }

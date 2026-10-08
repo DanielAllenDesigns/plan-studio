@@ -102,6 +102,8 @@ impl EditorContext {
             .any(|o| matches!(o, ObjectRef::Cabinet(_) | ObjectRef::Symbol(_)))
         {
             n += placed::delete_placed(self);
+            // A deleted fireplace takes its specification with it.
+            super::fireplace_view::drop_orphans(self);
         }
         let devices = self.selected_ids(|o| match o {
             ObjectRef::Device(i) => Some(i),
@@ -230,6 +232,10 @@ impl EditorContext {
         v.extend(super::wall_edit::edit_actions(self));
         // Center on Wall Segment, Mull, Unmull.
         v.extend(super::opening_edit::edit_actions(self));
+        // Hip / Full Gable / High Shed / Knee / Dutch Gable Wall (RF-4).
+        v.extend(roof_view::wall_edit_actions(self));
+        // Fireplace Specification, deck framing and steps at level changes.
+        v.extend(super::fireplace_view::edit_actions(self));
         let Some(one) = self.selection.single() else {
             return v;
         };
@@ -311,7 +317,20 @@ impl EditorContext {
         if super::wall_edit::run_command(self, id) {
             return;
         }
+        // Match Properties and Object Painter Modes.
+        if crate::tools::painters::run_command(self, id)
+            || crate::dialogs::spell_check::run_command(self, id)
+        {
+            return;
+        }
+        // Fireplace Specification, Build Deck Framing, Add Steps (CB-86, CB-87, R-86).
+        if super::fireplace_view::run_command(self, id) {
+            return;
+        }
         if super::opening_edit::run_command(self, id) {
+            return;
+        }
+        if roof_view::run_wall_command(self, id) {
             return;
         }
         match id {

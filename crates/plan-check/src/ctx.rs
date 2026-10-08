@@ -1,7 +1,7 @@
 //! Per-run context: rooms with their types, and openings with the rooms on
 //! either side of them.
 
-use plan_core::{Floor, Opening, OpeningKind, Point, Room, Wall, WallKind};
+use plan_core::{Floor, Opening, OpeningKind, Point, Project, Room, Wall, WallKind, WallTypeDef};
 use plan_stairs::Stair;
 
 use crate::CheckOptions;
@@ -64,6 +64,10 @@ pub(crate) struct Ctx<'a> {
     /// Lower-case type of each room; empty when the room is unnamed.
     pub types: Vec<String>,
     pub ops: Vec<OpInfo<'a>>,
+    /// The plan's wall types (layers), by name.
+    pub wall_types: &'a [WallTypeDef],
+    /// Normal floors in the plan (storeys), for the footing width table.
+    pub stories: usize,
 }
 
 impl<'a> Ctx<'a> {
@@ -91,7 +95,21 @@ impl<'a> Ctx<'a> {
             opts,
             types,
             ops,
+            wall_types: &[],
+            stories: 1,
         }
+    }
+
+    /// Reads the plan-wide data the rules need beyond the floor.
+    pub fn with_project(mut self, project: &'a Project) -> Self {
+        self.wall_types = &project.wall_types;
+        self.stories = project
+            .floors
+            .iter()
+            .filter(|f| f.kind == plan_core::FloorKind::Normal)
+            .count()
+            .max(1);
+        self
     }
 
     /// True for the grade (ground) floor, where the smaller egress area applies.

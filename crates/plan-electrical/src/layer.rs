@@ -62,6 +62,7 @@ impl ElectricalLayer {
         for d in &mut self.devices {
             d.switched_by.retain(|s| *s != id);
         }
+        normalize_switch_kinds(self, true);
     }
 
     /// The curved dashed line for a connection: an [`Stroke::Arc`] through both
@@ -252,7 +253,57 @@ fn link(
         }
     }
     layer.spread_switches();
+    normalize_switch_kinds(layer, false);
     true
+}
+
+/// Gives every wired switch the symbol its wiring needs (S, S3 or S4).
+///
+/// A load controlled by two or more switches (directly or through a
+/// traveler pair) is a multi-way circuit: the first and last switch that
+/// control it are 3-way switches and the ones between are 4-way switches.
+/// With `demote`, a switch that is connected to loads but is the only control
+/// of each goes back to a plain single-pole switch (used after a connection
+/// or device is removed; a new connection only ever promotes, so a 3-way
+/// switch can be wired to its light before its partner). Dimmers, switches
+/// that are not wired to any load and every other device are left alone.
+pub fn normalize_switch_kinds(layer: &mut ElectricalLayer, demote: bool) {
+    use crate::DeviceKind as K;
+    use std::collections::BTreeMap;
+    // 0 = single, 1 = 4-way (middle), 2 = 3-way (end); the highest wins.
+    let mut role: BTreeMap<Id, u8> = BTreeMap::new();
+    for load in layer.devices.iter().filter(|d| !d.kind.is_switch()) {
+        let sw: Vec<Id> = load
+            .switched_by
+            .iter()
+            .copied()
+            .filter(|s| layer.device(*s).is_some_and(|d| d.kind.is_switch()))
+            .collect();
+        let last = sw.len().saturating_sub(1);
+        for (i, s) in sw.iter().enumerate() {
+            let r = if sw.len() < 2 {
+                0
+            } else if i == 0 || i == last {
+                2
+            } else {
+                1
+            };
+            let e = role.entry(*s).or_insert(0);
+            *e = (*e).max(r);
+        }
+    }
+    for (id, r) in role {
+        let Some(d) = layer.device_mut(id) else {
+            continue;
+        };
+        if matches!(d.kind, K::Switch | K::Switch3Way | K::Switch4Way) && (demote || r > 0) {
+            d.kind = match r {
+                2 => K::Switch3Way,
+                1 => K::Switch4Way,
+                _ => K::Switch,
+            };
+        }
+    }
 }
 
 /// Removes the connection from `from` to `to` (either direction between two
@@ -278,6 +329,7 @@ pub fn disconnect(layer: &mut ElectricalLayer, from: Id, to: Id) -> bool {
         d.switched_by
             .retain(|s| keep.contains(s) || !group.contains(s));
     }
+    normalize_switch_kinds(layer, true);
     true
 }
 

@@ -69,6 +69,10 @@ pub struct HotkeyFile {
     /// Number of `<command>` records in the file, bound or not (2,284 for Daniel).
     #[serde(default)]
     pub total_commands: usize,
+    /// The id of every `<command>` record in file order, bound or not (what
+    /// an export has to list again).
+    #[serde(default)]
+    pub command_ids: Vec<String>,
     pub bindings: Vec<HotkeyBinding>,
 }
 
@@ -109,6 +113,9 @@ pub fn parse_hotkeys_xml(text: &str) -> Result<HotkeyFile, ConfigError> {
             .map(|e| e.text_trimmed().to_string())
             .or_else(|| cmd.attr("id").map(str::to_string))
             .unwrap_or_default();
+        if !id.is_empty() {
+            file.command_ids.push(id.clone());
+        }
         let codes = cmd
             .child("keyCodes")
             .map(|e| e.text_trimmed().to_string())
@@ -142,6 +149,58 @@ pub fn parse_hotkeys_xml(text: &str) -> Result<HotkeyFile, ConfigError> {
         });
     }
     Ok(file)
+}
+
+/// One command of an exported `UserHotkeys.xml`: its id and its key sequence
+/// (empty: the command has no key).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportRow {
+    pub id: String,
+    pub keys: Vec<KeyChord>,
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Writes rows in Chief's own `UserHotkeys.xml` layout (a `<product>` block,
+/// then one `<command>` with `<id>` and `<keyCodes>` per row; an unbound
+/// command has an empty `<keyCodes/>`). [`parse_hotkeys_xml`] reads it back.
+pub fn write_hotkeys_xml(
+    product: Option<&str>,
+    product_version: Option<&str>,
+    file_version: Option<&str>,
+    rows: &[ExportRow],
+) -> String {
+    let mut s = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n<UserHotkeys xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:noNamespaceSchemaLocation=\"UserHotkeys.xsd\">\n\n",
+    );
+    s.push_str("  <product>\n");
+    s.push_str(&format!(
+        "    <name>{}</name>\n    <productVersion>{}</productVersion>\n    <fileVersion>{}</fileVersion>\n",
+        xml_escape(product.unwrap_or("Chief Architect Premier X18")),
+        xml_escape(product_version.unwrap_or("")),
+        xml_escape(file_version.unwrap_or("")),
+    ));
+    s.push_str("  </product>\n\n");
+    for r in rows {
+        s.push_str("  <command>\n");
+        s.push_str(&format!("    <id>{}</id>\n", xml_escape(&r.id)));
+        if r.keys.is_empty() {
+            s.push_str("    <keyCodes/>\n");
+        } else {
+            let codes: Vec<String> = r.keys.iter().map(KeyChord::to_file_string).collect();
+            s.push_str(&format!(
+                "    <keyCodes>{}</keyCodes>\n",
+                xml_escape(&codes.join(", "))
+            ));
+        }
+        s.push_str("  </command>\n\n");
+    }
+    s.push_str("</UserHotkeys>\n");
+    s
 }
 
 /// How many bindings each name source supplied.
@@ -326,6 +385,45 @@ mod tests {
         assert_eq!(f.bindings[1].name_source, NameSource::Xml);
         assert_eq!(f.bindings[1].chord_text(), "Ctrl+Alt+Cmd+6");
         assert_eq!(f.product_version.as_deref(), Some("1.2"));
+    }
+
+    #[test]
+    fn writes_what_it_reads() {
+        let f = parse_hotkeys_xml(SAMPLE).unwrap();
+        assert_eq!(f.command_ids, vec!["1", "2", "3"]);
+        let rows: Vec<ExportRow> = f
+            .command_ids
+            .iter()
+            .map(|id| ExportRow {
+                id: id.clone(),
+                keys: f
+                    .bindings
+                    .iter()
+                    .find(|b| &b.command_id == id)
+                    .map(|b| b.keys.clone())
+                    .unwrap_or_default(),
+            })
+            .collect();
+        let text = write_hotkeys_xml(
+            f.product.as_deref(),
+            f.product_version.as_deref(),
+            f.file_version.as_deref(),
+            &rows,
+        );
+        let back = parse_hotkeys_xml(&text).unwrap();
+        assert_eq!(back.command_ids, f.command_ids);
+        assert_eq!(back.total_commands, 3);
+        assert_eq!(
+            back.bindings
+                .iter()
+                .map(|b| (b.command_id.clone(), b.keys.clone()))
+                .collect::<Vec<_>>(),
+            f.bindings
+                .iter()
+                .map(|b| (b.command_id.clone(), b.keys.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(text.contains("<keyCodes/>") && text.contains("<keyCodes>D, H</keyCodes>"));
     }
 
     #[test]

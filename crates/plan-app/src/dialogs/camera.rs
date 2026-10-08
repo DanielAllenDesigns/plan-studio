@@ -2,9 +2,13 @@
 //! Specification (C-30) and the Ray Trace dialog (C-51, C-52, C-63).
 //!
 //! The Camera Specification edits a cloned [`CameraObject`] on the shared
-//! dialog frame. Fields the model has no storage for (show in plan, shadows,
-//! lock) are drawn disabled; the per-camera rendering technique is kept for
-//! the session by the 3D panel ([`CameraExtras`]).
+//! dialog frame, with Chief's tabs: Camera (position, direction, angle of
+//! view, height, tilt, clipping, floors displayed, lock), Backdrop (default
+//! sky, a sky colour or a picture from Chief's Backdrops folder), Rendering
+//! (technique, Preview or Final View, shadows, ambient and sun overrides)
+//! and Label. The tabs write [`CameraObject::view`], which is saved with the
+//! plan; [`CameraExtras`] only carries the technique of a camera that has
+//! not chosen one yet.
 //!
 //! Elevation and cross-section cameras (and wall elevations) also get the
 //! "Elevation rendering" section on the Rendering tab: hatch materials,
@@ -26,7 +30,7 @@
 //! thread: Idle -> Running -> Done / Cancelled / Failed. Everything except the
 //! egui drawing is plain Rust and unit tested.
 
-use super::{dis_check, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab};
+use super::{row, section, Fields, Outcome, SpecDialog, SpecPages, Tab};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke};
 use plan_3d::Scene;
 use plan_core::camera::{PlanLight, DEFAULT_CONE_LENGTH};
@@ -45,17 +49,22 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+/// Chief's Camera Specification tabs.
 const TABS: &[Tab] = &[
     Tab {
-        name: "General",
+        name: "Camera",
         enabled: true,
     },
     Tab {
-        name: "Options",
+        name: "Backdrop",
         enabled: true,
     },
     Tab {
         name: "Rendering",
+        enabled: true,
+    },
+    Tab {
+        name: "Label",
         enabled: true,
     },
 ];
@@ -351,6 +360,8 @@ pub struct CameraDialog {
     /// the centre, the view direction and this after every edit).
     section_len: f64,
     sun_input: SunInput,
+    /// The plan's lighting, the values the overrides start from.
+    plan_lighting: plan_core::camera_view::Lighting,
     /// "Export DXF" was clicked; the host takes it with
     /// [`CameraDialog::take_export_request`] (the dialog has no project).
     export_requested: bool,
@@ -361,16 +372,36 @@ impl CameraDialog {
         let mut draft = camera.clone();
         crate::tools::camera::upgrade_section(&mut draft);
         let section_len = crate::tools::camera::section_width(&draft);
+        // The camera's own technique (saved with the plan) wins over the one
+        // the 3D view happens to be showing.
+        let mut extras = extras;
+        if let Some(t) = crate::shell::view3d_panel::view_settings::technique_of(&draft) {
+            extras.technique = t;
+        }
         Self {
             frame: SpecDialog::new("Camera Specification", "camera"),
             draft,
             section_len,
             sun_input: SunInput::default(),
+            plan_lighting: plan_core::camera_view::Lighting::default(),
             export_requested: false,
             extras,
             floor_name: floor_name.to_string(),
             fields: Fields::default(),
         }
+    }
+
+    /// The draft the dialog edits, for tests that stand in for the fields.
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut CameraObject {
+        &mut self.draft
+    }
+
+    /// The plan's lighting (3D > Lighting), which the Rendering tab's
+    /// overrides start from.
+    pub fn with_plan_lighting(mut self, l: plan_core::camera_view::Lighting) -> Self {
+        self.plan_lighting = l;
+        self
     }
 
     pub fn id(&self) -> Id {
@@ -490,6 +521,22 @@ impl CameraDialog {
                             .suffix("\u{B0}"),
                     );
                 }
+                ui.add(
+                    egui::DragValue::new(&mut n.tilt_deg)
+                        .range(
+                            -plan_core::camera_view::MAX_TILT_DEG
+                                ..=plan_core::camera_view::MAX_TILT_DEG,
+                        )
+                        .prefix("tilt ")
+                        .suffix("\u{B0}"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut n.hold_s)
+                        .range(0.0..=120.0)
+                        .speed(0.1)
+                        .prefix("hold ")
+                        .suffix(" s"),
+                );
                 if nodes > 2 && ui.small_button("\u{2715}").clicked() {
                     remove = Some(i);
                 }
@@ -499,14 +546,33 @@ impl CameraDialog {
             self.draft.path.remove(i);
             self.draft.path_nodes.remove(i);
         }
-        ui.weak("A node without \"look\" faces along the path.");
+        ui.weak("A node without \"look\" faces along the path. Each node is a key frame: the camera tilts and holds as set there.");
+        section(ui, "Record Walkthrough");
+        let w = &mut self.draft.view.walk;
+        row(ui, "Frames per second", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut w.fps)
+                    .range(plan_core::camera_view::MIN_FPS..=plan_core::camera_view::MAX_FPS)
+                    .speed(0.2),
+            )
+        });
+        ui.weak(format!(
+            "{} frames over {:.1} s",
+            (self.draft.walk_duration_s() * self.draft.view.walk.fps)
+                .round()
+                .max(1.0),
+            self.draft.walk_duration_s()
+        ));
     }
 
     fn kind_label(&self) -> &'static str {
         match self.draft.kind {
             CameraKind::FullCamera => "Full Camera",
+            CameraKind::FloorCamera => "Floor Camera",
             CameraKind::PerspectiveOverview => "Perspective Overview",
             CameraKind::DollHouse => "Doll House View",
+            CameraKind::GlassHouse => "Glass House",
+            CameraKind::FramingOverview => "Framing Overview",
             CameraKind::CrossSection { back_clip: None } => "Cross Section/Elevation",
             CameraKind::CrossSection { .. } => "Back-Clipped Cross Section",
             CameraKind::WallElevation => "Wall Elevation",
@@ -516,6 +582,8 @@ impl CameraDialog {
         }
     }
 
+    /// The Camera tab: name, position, direction, angle of view, height,
+    /// tilt, clipping, floors displayed and the plan display options.
     fn general(&mut self, ui: &mut egui::Ui) {
         section(ui, "General");
         row(ui, "Name", |ui| {
@@ -525,6 +593,7 @@ impl CameraDialog {
         row(ui, "Floor", |ui| ui.label(&self.floor_name));
         if self.draft.kind == CameraKind::Walkthrough {
             self.walkthrough_page(ui);
+            self.display_options(ui);
             return;
         }
         let section_cam = self.is_section();
@@ -564,10 +633,35 @@ impl CameraDialog {
         } else {
             f.length_row(ui, "Height Above Floor", "eye", &mut d.eye_height);
             f.degrees_row(ui, "Angle of View", "deg_fov", &mut d.fov_deg);
+            let level = d.kind.is_eye_level();
+            ui.add_enabled_ui(level, |ui| {
+                f.degrees_row(ui, "Tilt (up is +)", "deg_tilt", &mut d.view.tilt_deg);
+            });
+            if !level {
+                ui.weak("An overview orbits the building; only a Full or Floor Camera tilts.");
+            }
         }
+        self.clipping(ui);
+        if !self.is_section() {
+            section(ui, "Floors Displayed");
+            row(ui, "Show", |ui| {
+                if self.draft.kind == CameraKind::FloorCamera {
+                    ui.label("This floor, clipped at its ceiling");
+                } else {
+                    egui::ComboBox::from_id_salt("camera_floors")
+                        .selected_text(self.draft.view.floors.label())
+                        .show_ui(ui, |ui| {
+                            for fl in plan_core::camera_view::FloorsDisplayed::ALL {
+                                ui.selectable_value(&mut self.draft.view.floors, fl, fl.label());
+                            }
+                        });
+                }
+            });
+        }
+        self.display_options(ui);
     }
 
-    fn options(&mut self, ui: &mut egui::Ui) {
+    fn clipping(&mut self, ui: &mut egui::Ui) {
         section(ui, "Clipping");
         if self.draft.kind == CameraKind::Walkthrough {
             ui.weak("A walkthrough has no clip planes.");
@@ -589,11 +683,85 @@ impl CameraDialog {
                 self.fields.length_row(ui, "Far Clip Distance", "clip", v);
             }
         }
-        section(ui, "Display");
-        dis_check(ui, "Show camera in plan", true);
-        dis_check(ui, "Locked camera", false);
     }
 
+    fn display_options(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Display");
+        ui.checkbox(&mut self.draft.view.show_in_plan, "Show camera in plan");
+        ui.checkbox(&mut self.draft.view.locked, "Locked camera")
+            .on_hover_text(
+                "A locked camera cannot be moved, aimed, resized or tilted with its handles",
+            );
+    }
+
+    /// The Backdrop tab: the default sky, a sky colour, or a picture from
+    /// Chief's Backdrops folder (read from the install, never bundled).
+    fn backdrop(&mut self, ui: &mut egui::Ui) {
+        use plan_core::camera_view::BackdropKind;
+        section(ui, "Backdrop");
+        row(ui, "Type", |ui| {
+            egui::ComboBox::from_id_salt("camera_backdrop_kind")
+                .selected_text(self.draft.view.backdrop.kind.label())
+                .show_ui(ui, |ui| {
+                    for k in BackdropKind::ALL {
+                        ui.selectable_value(&mut self.draft.view.backdrop.kind, k, k.label());
+                    }
+                });
+        });
+        match self.draft.view.backdrop.kind {
+            BackdropKind::Default => {
+                ui.weak("The technique's own sky and ground.");
+            }
+            BackdropKind::Color => {
+                row(ui, "Sky color", |ui| {
+                    ui.color_edit_button_srgb(&mut self.draft.view.backdrop.color)
+                });
+            }
+            BackdropKind::Image => {
+                let found = crate::shell::view3d_panel::backdrop::list_all();
+                row(ui, "Picture", |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.draft.view.backdrop.image)
+                            .hint_text("file name or path")
+                            .desired_width(220.0),
+                    )
+                });
+                if found.is_empty() {
+                    ui.weak("No Backdrops folder found. Type the path of a JPEG or PNG file.");
+                } else {
+                    ui.weak("Pictures in Chief's Backdrops folder:");
+                    egui::ScrollArea::vertical()
+                        .max_height(140.0)
+                        .id_salt("camera_backdrop_list")
+                        .show(ui, |ui| {
+                            for name in &found {
+                                let on = self.draft.view.backdrop.image == *name;
+                                if ui.selectable_label(on, name).clicked() {
+                                    self.draft.view.backdrop.image.clone_from(name);
+                                }
+                            }
+                        });
+                }
+                let named = self.draft.view.backdrop.image.trim();
+                if !named.is_empty()
+                    && crate::shell::view3d_panel::backdrop::resolve(
+                        named,
+                        &crate::shell::view3d_panel::backdrop::backdrop_dirs(),
+                    )
+                    .is_none()
+                {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xC0, 0x40, 0x30),
+                        "That picture was not found; the default sky is used.",
+                    );
+                }
+                ui.weak("Shown behind the model by the techniques that draw a sky.");
+            }
+        }
+    }
+
+    /// The Rendering tab: technique, Preview or Final View, shadows and the
+    /// ambient and sun overrides.
     fn rendering(&mut self, ui: &mut egui::Ui) {
         section(ui, "Rendering");
         row(ui, "Technique", |ui| {
@@ -601,15 +769,74 @@ impl CameraDialog {
                 .selected_text(self.extras.technique.label())
                 .show_ui(ui, |ui| {
                     for t in RenderingTechnique::ALL {
-                        ui.selectable_value(&mut self.extras.technique, t, t.label());
+                        if ui
+                            .selectable_value(&mut self.extras.technique, t, t.label())
+                            .changed()
+                        {
+                            self.draft.view.technique = Some(t.label().to_string());
+                        }
                     }
                 });
         });
-        dis_check(ui, "Cast shadows", true);
-        ui.weak("The technique is kept for this session.");
+        row(ui, "View quality", |ui| {
+            for q in plan_core::camera_view::ViewQuality::ALL {
+                ui.selectable_value(&mut self.draft.view.quality, q, q.label());
+            }
+        });
+        ui.checkbox(&mut self.draft.view.shadows, "Cast shadows")
+            .on_hover_text("Sun shadows in Final View");
+        section(ui, "Lighting");
+        let mut own = self.draft.view.ambient.is_some() || self.draft.view.sun_intensity.is_some();
+        if ui
+            .checkbox(&mut own, "Override the plan's lighting for this camera")
+            .changed()
+        {
+            if own {
+                self.draft.view.ambient = Some(self.plan_lighting.ambient);
+                self.draft.view.sun_intensity = Some(self.plan_lighting.sun_intensity);
+            } else {
+                self.draft.view.ambient = None;
+                self.draft.view.sun_intensity = None;
+            }
+        }
+        if let Some(a) = &mut self.draft.view.ambient {
+            row(ui, "Ambient light", |ui| {
+                ui.add(egui::Slider::new(a, 0.0..=1.0))
+            });
+        }
+        if let Some(i) = &mut self.draft.view.sun_intensity {
+            row(ui, "Sun intensity", |ui| {
+                ui.add(egui::Slider::new(i, 0.0..=2.0))
+            });
+        }
+        if !own {
+            ui.weak("The sun and lights come from 3D > Lighting.");
+        }
         if is_elevation_camera(&self.draft) {
             self.elevation_rendering(ui);
         }
+    }
+
+    /// The Label tab: the text drawn beside the camera in the plan and over
+    /// the 3D view.
+    fn label_tab(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Label");
+        row(ui, "Label text", |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.draft.view.label.text)
+                    .hint_text(self.draft.name.clone())
+                    .desired_width(200.0),
+            )
+        });
+        ui.checkbox(
+            &mut self.draft.view.label.show_in_plan,
+            "Show the label beside the camera in the plan",
+        );
+        ui.checkbox(
+            &mut self.draft.view.label.show_in_view,
+            "Show the label over the 3D view",
+        );
+        ui.weak("An empty label uses the camera's name.");
     }
 
     /// Sets the sun from the date, time and latitude (`plan_materials`).
@@ -743,6 +970,17 @@ impl SpecPages for CameraDialog {
         if self.fields.any_invalid() {
             return Some("Fix the highlighted fields".into());
         }
+        if self.draft.view.tilt_deg.abs() > plan_core::camera_view::MAX_TILT_DEG {
+            return Some(format!(
+                "Tilt must be within {:.0}\u{B0} either way",
+                plan_core::camera_view::MAX_TILT_DEG
+            ));
+        }
+        if self.draft.view.backdrop.kind == plan_core::camera_view::BackdropKind::Image
+            && self.draft.view.backdrop.image.trim().is_empty()
+        {
+            return Some("Choose a backdrop picture or another backdrop type".into());
+        }
         let r = &self.draft.render;
         if is_elevation_camera(&self.draft)
             && r.shadows
@@ -756,8 +994,9 @@ impl SpecPages for CameraDialog {
     fn page(&mut self, ui: &mut egui::Ui, tab: usize) {
         match tab {
             0 => self.general(ui),
-            1 => self.options(ui),
-            _ => self.rendering(ui),
+            1 => self.backdrop(ui),
+            2 => self.rendering(ui),
+            _ => self.label_tab(ui),
         }
         self.sync_section();
         self.sync_walkthrough();
@@ -920,8 +1159,12 @@ pub fn electrical_lights(project: &Project) -> Vec<PlanLight> {
 }
 
 /// Every light that can shine: the plan's own lights plus, when the plan
-/// asks for it, the electrical fixtures.
+/// asks for it, the electrical fixtures. 3D > Lighting can switch every
+/// interior light off.
 pub fn all_lights(project: &Project) -> Vec<PlanLight> {
+    if !project.lighting.interior_lights {
+        return Vec::new();
+    }
     let mut v = project.lights();
     if project.light_settings().use_electrical {
         v.extend(electrical_lights(project));
@@ -1109,6 +1352,332 @@ impl AdjustLightsDialog {
             );
             ui.color_edit_button_srgb(&mut d.color);
         });
+    }
+}
+
+// ----- 3D > Lighting -----
+
+/// The Lighting dialog (C-62, C-63, C-64): the sun (angle, height, strength,
+/// or a date, time and latitude), the ambient light, the interior lights on
+/// or off and the plan's lights with their power. Edits stay in a draft until
+/// OK, which is one undo step.
+pub struct LightingDialog {
+    draft: plan_core::camera_view::Lighting,
+    lights: Vec<PlanLight>,
+    electrical: usize,
+    date: SunInput,
+    adjust_requested: bool,
+}
+
+impl LightingDialog {
+    pub fn new(project: &Project) -> Self {
+        Self {
+            draft: project.lighting,
+            lights: project.lights(),
+            electrical: electrical_lights(project).len(),
+            date: project
+                .lighting
+                .from_date
+                .map_or_else(SunInput::default, |d| SunInput {
+                    month: d.month,
+                    day: d.day,
+                    time_hours: d.hours,
+                    latitude: d.latitude,
+                }),
+            adjust_requested: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut plan_core::camera_view::Lighting {
+        &mut self.draft
+    }
+
+    #[cfg(test)]
+    pub fn lights_mut(&mut self) -> &mut Vec<PlanLight> {
+        &mut self.lights
+    }
+
+    /// Did the user click "Adjust Lights..."? The host opens that dialog.
+    pub fn take_adjust_request(&mut self) -> bool {
+        std::mem::take(&mut self.adjust_requested)
+    }
+
+    /// Puts the sun where the date, time and latitude say it is.
+    pub fn set_sun_from_date(&mut self) {
+        let i = self.date;
+        let sun = SunSettings::from_date_time_location((i.month, i.day), i.time_hours, i.latitude);
+        self.draft.sun_azimuth_deg = sun.azimuth_deg;
+        self.draft.sun_altitude_deg = sun.altitude_deg.clamp(1.0, 90.0);
+        self.draft.from_date = Some(plan_core::camera_view::SunDate {
+            month: i.month,
+            day: i.day,
+            hours: i.time_hours,
+            latitude: i.latitude,
+        });
+    }
+
+    /// Writes the draft into `project`: the lighting and each light's power
+    /// and on/off switch.
+    pub fn apply(&self, project: &mut Project) {
+        project.lighting = self.draft;
+        for l in &self.lights {
+            let (enabled, intensity) = (l.enabled, l.intensity);
+            project.update_light(l.id, |x| {
+                x.enabled = enabled;
+                x.intensity = intensity;
+            });
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let mut outcome = Outcome::Open;
+        let mut open = true;
+        egui::Window::new("Lighting")
+            .id(egui::Id::new("lighting_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                self.contents(ui);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        outcome = Outcome::Ok;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        outcome = Outcome::Cancel;
+                    }
+                });
+            });
+        if !open {
+            outcome = Outcome::Cancel;
+        }
+        // Enter is OK and Escape is Cancel unless a field is being edited.
+        if outcome == Outcome::Open && ctx.memory(|m| m.focused()).is_none() {
+            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                outcome = Outcome::Ok;
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                outcome = Outcome::Cancel;
+            }
+        }
+        outcome
+    }
+
+    fn contents(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Sun");
+        row(ui, "Direction (from north)", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut self.draft.sun_azimuth_deg)
+                    .range(0.0..=360.0)
+                    .suffix("\u{B0}"),
+            )
+        });
+        row(ui, "Height above horizon", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut self.draft.sun_altitude_deg)
+                    .range(1.0..=90.0)
+                    .suffix("\u{B0}"),
+            )
+        });
+        row(ui, "Sun intensity", |ui| {
+            ui.add(egui::Slider::new(&mut self.draft.sun_intensity, 0.0..=2.0))
+        });
+        row(ui, "Ambient light", |ui| {
+            ui.add(egui::Slider::new(&mut self.draft.ambient, 0.0..=1.0))
+        });
+        ui.collapsing("Set the sun from a date", |ui| {
+            let i = &mut self.date;
+            row(ui, "Month, day", |ui| {
+                ui.add(egui::DragValue::new(&mut i.month).range(1..=12));
+                ui.add(egui::DragValue::new(&mut i.day).range(1..=31));
+            });
+            row(ui, "Solar time (hours)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut i.time_hours)
+                        .range(0.0..=24.0)
+                        .speed(0.1),
+                )
+            });
+            row(ui, "Latitude", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut i.latitude)
+                        .range(-90.0..=90.0)
+                        .speed(0.1),
+                )
+            });
+            if ui.button("Set sun from date and time").clicked() {
+                self.set_sun_from_date();
+            }
+        });
+        section(ui, "Interior lights");
+        ui.checkbox(
+            &mut self.draft.interior_lights,
+            "Interior lights are on (the plan's lights and the electrical fixtures)",
+        );
+        ui.add_enabled_ui(self.draft.interior_lights, |ui| {
+            if self.lights.is_empty() {
+                ui.weak("No lights in the plan yet. Use 3D > Lighting > Add Lights.");
+            }
+            egui::ScrollArea::vertical()
+                .max_height(160.0)
+                .id_salt("lighting_list")
+                .show(ui, |ui| {
+                    for l in &mut self.lights {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut l.enabled, &l.name);
+                            ui.add(
+                                egui::DragValue::new(&mut l.intensity)
+                                    .range(0.0..=20.0)
+                                    .speed(0.05)
+                                    .prefix("power "),
+                            );
+                        });
+                    }
+                });
+            if self.electrical > 0 {
+                ui.weak(format!(
+                    "{} light fixtures of the electrical plan are included.",
+                    self.electrical
+                ));
+            }
+        });
+        if ui.button("Adjust Lights\u{2026}").clicked() {
+            self.adjust_requested = true;
+        }
+    }
+}
+
+// ----- Record Walkthrough -----
+
+/// Picture sizes the Record Walkthrough dialog offers.
+pub const RECORD_SIZES: [(&str, u32, u32); 4] = [
+    ("640 x 480", 640, 480),
+    ("960 x 720", 960, 720),
+    ("1280 x 720 (HD)", 1280, 720),
+    ("1920 x 1080 (Full HD)", 1920, 1080),
+];
+
+/// What the Record Walkthrough dialog decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordOutcome {
+    Open,
+    Cancel,
+    Record,
+}
+
+/// The Record Walkthrough dialog: frame rate, picture size, quality and the
+/// folder the numbered PNG frames are written to.
+pub struct RecordDialog {
+    pub camera: Id,
+    pub settings: plan_core::camera_view::WalkRecord,
+    pub folder: String,
+    duration_s: f64,
+    name: String,
+}
+
+impl RecordDialog {
+    pub fn new(camera: &CameraObject, folder: String) -> Self {
+        Self {
+            camera: camera.id,
+            settings: camera.view.walk,
+            folder,
+            duration_s: camera.walk_duration_s(),
+            name: camera.name.clone(),
+        }
+    }
+
+    /// The settings with every value in range.
+    pub fn clamped(&self) -> plan_core::camera_view::WalkRecord {
+        self.settings.clamped()
+    }
+
+    /// How many frames the walk comes to at the chosen rate.
+    pub fn frame_count(&self) -> usize {
+        ((self.duration_s * self.clamped().fps).round() as usize).max(1)
+    }
+
+    /// Can recording start (a folder is named)?
+    pub fn ready(&self) -> bool {
+        !self.folder.trim().is_empty()
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> RecordOutcome {
+        let mut outcome = RecordOutcome::Open;
+        let mut open = true;
+        egui::Window::new("Record Walkthrough")
+            .id(egui::Id::new("record_walkthrough_dialog"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(format!("{} ({:.1} s)", self.name, self.duration_s));
+                section(ui, "Frames");
+                let w = &mut self.settings;
+                row(ui, "Frames per second", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut w.fps)
+                            .range(
+                                plan_core::camera_view::MIN_FPS..=plan_core::camera_view::MAX_FPS,
+                            )
+                            .speed(0.2),
+                    )
+                });
+                row(ui, "Picture size", |ui| {
+                    let current = RECORD_SIZES
+                        .iter()
+                        .find(|(_, a, b)| (*a, *b) == (w.width, w.height))
+                        .map_or("Custom", |(n, _, _)| *n);
+                    egui::ComboBox::from_id_salt("record_size")
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            for (name, a, b) in RECORD_SIZES {
+                                if ui.selectable_label(current == name, name).clicked() {
+                                    (w.width, w.height) = (a, b);
+                                }
+                            }
+                        });
+                });
+                row(ui, "Samples per pixel", |ui| {
+                    ui.add(egui::DragValue::new(&mut w.samples).range(1..=256))
+                });
+                section(ui, "Folder");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.folder)
+                        .hint_text("folder for frame_0001.png, frame_0002.png ...")
+                        .desired_width(320.0),
+                );
+                if ui.button("Choose Folder\u{2026}").clicked() {
+                    if let Some(dir) = rfd::FileDialog::new()
+                        .set_title("Folder for the walkthrough frames")
+                        .pick_folder()
+                    {
+                        self.folder = dir.display().to_string();
+                    }
+                }
+                ui.weak(format!(
+                    "{} frames at {:.0} fps, written as a numbered PNG sequence.",
+                    self.frame_count(),
+                    self.clamped().fps
+                ));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(self.ready(), egui::Button::new("Record"))
+                        .clicked()
+                    {
+                        outcome = RecordOutcome::Record;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        outcome = RecordOutcome::Cancel;
+                    }
+                });
+            });
+        if !open {
+            outcome = RecordOutcome::Cancel;
+        }
+        outcome
     }
 }
 
@@ -2687,5 +3256,222 @@ mod tests {
         assert!(!d.take_export_request());
         d.export_requested = true;
         assert!(d.take_export_request() && !d.take_export_request());
+    }
+
+    // ----- Camera Specification tabs, Lighting and Record Walkthrough (round 14) -----
+
+    fn draw_tabs(d: &mut CameraDialog) {
+        let ctx = egui::Context::default();
+        for tab in 0..TABS.len() {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| d.page(ui, tab));
+            });
+        }
+    }
+
+    #[test]
+    fn the_tabs_are_chiefs_camera_backdrop_rendering_and_label() {
+        let cam = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "C", 0);
+        let d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
+        let names: Vec<_> = d.tabs().iter().map(|t| t.name).collect();
+        assert_eq!(names, ["Camera", "Backdrop", "Rendering", "Label"]);
+        assert!(d.tabs().iter().all(|t| t.enabled));
+    }
+
+    #[test]
+    fn every_tab_draws_for_every_kind_of_camera() {
+        use plan_core::camera_view::BackdropKind;
+        let mut cams = vec![
+            CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "full", 0),
+            CameraObject::new(CameraKind::FloorCamera, Point::ZERO, 0.0, "floor", 0),
+            CameraObject::new(CameraKind::PerspectiveOverview, Point::ZERO, 0.0, "ov", 0),
+            CameraObject::new(CameraKind::DollHouse, Point::ZERO, 0.0, "doll", 0),
+            CameraObject::new(CameraKind::GlassHouse, Point::ZERO, 0.0, "glass", 0),
+            CameraObject::new(CameraKind::FramingOverview, Point::ZERO, 0.0, "fr", 0),
+            CameraObject::walkthrough(vec![Point::ZERO, Point::new(100.0, 0.0)], 66.0, "walk", 0),
+            section_camera(),
+        ];
+        for kind in BackdropKind::ALL {
+            for c in &mut cams {
+                c.view.backdrop.kind = kind;
+                c.view.ambient = Some(0.3);
+                c.view.sun_intensity = Some(1.0);
+                let mut d = CameraDialog::new(c, "1st Floor", CameraExtras::default());
+                draw_tabs(&mut d);
+                assert!(d.kind_label().len() > 3);
+            }
+        }
+    }
+
+    #[test]
+    fn a_cameras_saved_technique_wins_and_the_rendering_tab_edits_it() {
+        let mut cam = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "C", 0);
+        cam.view.technique = Some("Watercolor".into());
+        let d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
+        assert_eq!(d.extras().technique, RenderingTechnique::Watercolor);
+        // A Glass House camera starts as a Glass House.
+        let glass = CameraObject::new(CameraKind::GlassHouse, Point::ZERO, 0.0, "G", 0);
+        let d = CameraDialog::new(&glass, "1st Floor", CameraExtras::default());
+        assert_eq!(d.extras().technique, RenderingTechnique::GlassHouse);
+        // With no choice the 3D view's technique is offered.
+        let plain = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "P", 0);
+        let d = CameraDialog::new(
+            &plain,
+            "1st Floor",
+            CameraExtras {
+                technique: RenderingTechnique::Clay,
+            },
+        );
+        assert_eq!(d.extras().technique, RenderingTechnique::Clay);
+        assert_eq!(d.draft().view.technique, None);
+    }
+
+    #[test]
+    fn tilt_backdrop_and_label_are_checked() {
+        use plan_core::camera_view::BackdropKind;
+        let cam = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "C", 0);
+        let mut d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
+        assert!(d.error().is_none());
+        d.draft.view.tilt_deg = 90.0;
+        assert!(d.error().unwrap().contains("Tilt"));
+        d.draft.view.tilt_deg = -85.0;
+        assert!(d.error().is_none());
+        d.draft.view.backdrop.kind = BackdropKind::Image;
+        assert!(d.error().unwrap().contains("backdrop"));
+        d.draft.view.backdrop.image = "Rolling Hills.jpg".into();
+        assert!(d.error().is_none());
+        // The label and lock edits stay on the draft the host applies.
+        d.draft.view.label.text = "Entry".into();
+        d.draft.view.locked = true;
+        d.draft.view.show_in_plan = false;
+        d.draft.view.floors = plan_core::camera_view::FloorsDisplayed::ThisAndBelow;
+        draw_tabs(&mut d);
+        let v = &d.draft().view;
+        assert!(v.locked && !v.show_in_plan);
+        assert_eq!(v.label_text("C"), "Entry");
+    }
+
+    #[test]
+    fn the_overrides_start_from_the_plans_lighting() {
+        let cam = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "C", 0);
+        let plan = plan_core::camera_view::Lighting {
+            ambient: 0.7,
+            sun_intensity: 1.5,
+            ..plan_core::camera_view::Lighting::default()
+        };
+        let d =
+            CameraDialog::new(&cam, "1st Floor", CameraExtras::default()).with_plan_lighting(plan);
+        assert_eq!(d.plan_lighting, plan);
+        assert_eq!(
+            (d.draft().view.ambient, d.draft().view.sun_intensity),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn the_lighting_dialog_sets_the_sun_the_interior_lights_and_each_light() {
+        let mut p = house();
+        let a = p
+            .add_light(0, PlanLight::new(Point::new(40.0, 40.0), 84.0))
+            .unwrap();
+        let b = p
+            .add_light(0, PlanLight::new(Point::new(80.0, 40.0), 84.0))
+            .unwrap();
+        let mut d = LightingDialog::new(&p);
+        let ids: Vec<Id> = d.lights_mut().iter().map(|l| l.id).collect();
+        assert_eq!(ids, [a, b]);
+        // Noon on the summer solstice at 33.75 degrees north: high and south.
+        d.date = SunInput {
+            month: 6,
+            day: 21,
+            time_hours: 12.0,
+            latitude: 33.75,
+        };
+        d.set_sun_from_date();
+        assert!(d.draft_mut().sun_altitude_deg > 70.0, "{:?}", d.draft_mut());
+        assert!((d.draft_mut().sun_azimuth_deg - 180.0).abs() < 10.0);
+        assert_eq!(
+            d.draft_mut().from_date.map(|x| (x.month, x.day)),
+            Some((6, 21))
+        );
+        d.draft_mut().interior_lights = false;
+        d.draft_mut().ambient = 0.3;
+        d.lights_mut()[0].enabled = false;
+        d.lights_mut()[1].intensity = 2.5;
+        // Nothing changes until OK.
+        assert!(p.lighting.interior_lights);
+        d.apply(&mut p);
+        assert!(!p.lighting.interior_lights);
+        assert_eq!(p.lighting.ambient, 0.3);
+        assert!(!p.light(a).unwrap().enabled);
+        assert_eq!(p.light(b).unwrap().intensity, 2.5);
+        // With the interior lights off nothing reaches the ray tracer or the
+        // viewport, and the plan keeps its lights for when they come back on.
+        assert!(all_lights(&p).is_empty() && render_lights(&p).is_empty());
+        assert_eq!(p.lights().len(), 2);
+        p.lighting.interior_lights = true;
+        assert_eq!(
+            render_lights(&p).len(),
+            1,
+            "the switched-off light stays off"
+        );
+        // The dialog draws, and asks for Adjust Lights on request.
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                let _ = d.show(ctx);
+            });
+        }
+        assert!(!d.take_adjust_request());
+        d.adjust_requested = true;
+        assert!(d.take_adjust_request() && !d.take_adjust_request());
+    }
+
+    #[test]
+    fn the_record_dialog_counts_frames_and_needs_a_folder() {
+        let mut cam =
+            CameraObject::walkthrough(vec![Point::ZERO, Point::new(360.0, 0.0)], 66.0, "Walk", 0);
+        cam.id = 7;
+        cam.walk_speed = 36.0; // ten seconds
+        let mut d = RecordDialog::new(&cam, String::new());
+        assert_eq!(d.camera, 7);
+        assert_eq!(d.settings, plan_core::camera_view::WalkRecord::default());
+        assert_eq!(d.frame_count(), 120, "10 s at the default 12 fps");
+        d.settings.fps = 24.0;
+        assert_eq!(d.frame_count(), 240);
+        d.settings.fps = 1000.0;
+        assert_eq!(d.frame_count(), 600, "the rate is limited to 60 fps");
+        assert!(!d.ready());
+        d.folder = "  ".into();
+        assert!(!d.ready());
+        d.folder = "/tmp/frames".into();
+        assert!(d.ready());
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            assert_eq!(d.show(ctx), RecordOutcome::Open);
+        });
+    }
+
+    #[test]
+    fn the_walkthrough_tab_edits_tilt_hold_and_the_recording_rate() {
+        let mut cam = CameraObject::walkthrough(
+            vec![
+                Point::ZERO,
+                Point::new(100.0, 0.0),
+                Point::new(100.0, 100.0),
+            ],
+            66.0,
+            "Walk",
+            0,
+        );
+        cam.path_nodes[1].tilt_deg = 10.0;
+        cam.path_nodes[1].hold_s = 2.0;
+        cam.view.walk.fps = 24.0;
+        let mut d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
+        draw_tabs(&mut d);
+        assert_eq!(d.draft().path_nodes[1].tilt_deg, 10.0);
+        assert_eq!(d.draft().view.walk.fps, 24.0);
+        assert!((d.draft().walk_duration_s() - (200.0 / 36.0 + 2.0)).abs() < 1e-9);
+        assert!(d.error().is_none());
     }
 }

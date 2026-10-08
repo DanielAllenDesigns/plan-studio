@@ -217,7 +217,8 @@ impl DimAnchor {
                     DimAttach::Along(f) => o.start_offset() + f * o.width,
                     DimAttach::Local { .. } => o.center_offset,
                 };
-                Some(w.point_at(off).add(w.normal().scale(self.side)))
+                // `off` is arc length on a curved wall (DW-88).
+                Some(w.point_along(off).add(w.normal_along(off).scale(self.side)))
             }
             AnchorTarget::Cabinet | AnchorTarget::Symbol => {
                 let f = t.frame(self.target, self.wall)?;
@@ -316,9 +317,9 @@ fn opening_anchor(wall: &Wall, o: &Opening, p: Point) -> Option<DimAnchor> {
     if wall.length() < 1e-6 {
         return None;
     }
-    let rel = p.sub(wall.start);
-    let along = rel.dot(wall.direction());
-    let side = rel.dot(wall.normal());
+    // Arc length and distance off the centerline: a curved wall carries its
+    // openings along the arc (DW-88).
+    let (along, side) = wall.locate(p);
     if side.abs() > wall.thickness * 0.5 + ATTACH_TOL {
         return None;
     }
@@ -889,7 +890,10 @@ mod tests {
             let f = &p.floors[0];
             let o = f.openings.iter().find(|x| x.id == o).unwrap();
             let w = f.wall(south).unwrap();
-            (w.point_at(o.start_offset()), w.point_at(o.end_offset()))
+            (
+                w.point_along(o.start_offset()),
+                w.point_along(o.end_offset()),
+            )
         };
         let id = dim(&mut p, a, b);
         assert_eq!(get(&p, id).anchors.iter().flatten().count(), 2);
@@ -973,5 +977,57 @@ mod tests {
         let d = get(&p, id);
         assert!(d.end.dist(Point::new(283.0, 300.0)) < 1e-9, "{:?}", d.end);
         assert_eq!(d.start, Point::new(-3.0, 300.0));
+    }
+    #[test]
+    fn a_dimension_tied_to_an_opening_on_a_curved_wall_follows_it_along_the_arc() {
+        let mut p = Project::new("t");
+        let w = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        // A semicircular bay.
+        p.floors[0].wall_mut(w).unwrap().curve = crate::WallCurve::from_radius(240.0, 120.0, true);
+        let o = p
+            .add_opening(0, w, 100.0, crate::model::OpeningKind::Window)
+            .unwrap();
+        let (a, b) = {
+            let f = &p.floors[0];
+            let wall = f.wall(w).unwrap();
+            let op = f.openings.iter().find(|x| x.id == o).unwrap();
+            (
+                wall.point_along(op.start_offset()),
+                wall.point_along(op.end_offset()),
+            )
+        };
+        // The chord and the arc differ, so a chord-based tie would miss.
+        assert!(a.dist(p.floors[0].wall(w).unwrap().point_at(100.0 - 18.0)) > 5.0);
+        let id = dim(&mut p, a, b);
+        let anchors = get(&p, id).anchors;
+        assert_eq!(anchors.iter().flatten().count(), 2, "{anchors:?}");
+        assert!(anchors
+            .iter()
+            .flatten()
+            .any(|x| x.target == AnchorTarget::Opening));
+        // Slide the window along the arc: the dimension goes with it.
+        assert!(p.slide_opening(0, o, 160.0));
+        p.floors[0].sync_dimension_anchors();
+        let (na, nb) = {
+            let f = &p.floors[0];
+            let wall = f.wall(w).unwrap();
+            let op = f.openings.iter().find(|x| x.id == o).unwrap();
+            (
+                wall.point_along(op.start_offset()),
+                wall.point_along(op.end_offset()),
+            )
+        };
+        let d = get(&p, id);
+        assert!(
+            d.start.dist(na) < 0.6 && d.end.dist(nb) < 0.6,
+            "{d:?} {na:?} {nb:?}"
+        );
     }
 }

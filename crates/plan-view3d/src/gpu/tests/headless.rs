@@ -89,6 +89,8 @@ struct Setup {
     show_edges: bool,
     camera: Option<Camera>,
     lights: Vec<ViewLight>,
+    /// A picture drawn in place of the sky.
+    backdrop: Option<Arc<crate::backdrop::BackdropImage>>,
     /// Side of the square picture, pixels.
     size: i32,
 }
@@ -113,6 +115,7 @@ impl Setup {
             show_edges: false,
             camera: None,
             lights: Vec::new(),
+            backdrop: None,
             size: W,
         }
     }
@@ -127,6 +130,7 @@ impl Setup {
             show_edges: false,
             camera: None,
             lights: Vec::new(),
+            backdrop: None,
             size: W,
         }
     }
@@ -193,6 +197,7 @@ fn render_with(
             look: setup.look,
             settings: setup.settings,
             lights: setup.lights.clone(),
+            backdrop: setup.backdrop.clone(),
             bounds: Some(bounds),
             target_fbo: Some(fbo),
             ..FrameParams::for_camera(&cam, 1.0, (0, 0, w, h))
@@ -970,6 +975,47 @@ fn mesh_colours_overlays_and_painted_bitmaps_render_through_real_gl() {
     gpu.forget_context();
     assert_eq!(gpu.overlay_count(), 0);
     assert_eq!(gpu.surface_texture_count(), 0);
+    assert_eq!(unsafe { gl.get_error() }, 0);
+    gpu.destroy(&gl);
+}
+
+#[test]
+#[ignore = "needs an OpenGL context (macOS CGL)"]
+fn a_backdrop_picture_replaces_the_sky_behind_the_model() {
+    let Some(gl) = context() else {
+        eprintln!("no OpenGL context available; skipping");
+        return;
+    };
+    let store = Arc::new(TextureStore::with_dirs(Vec::new()));
+    let mut gpu = GpuScene::with_store(store);
+    // A small wall far from the corners, so the corners show the backdrop.
+    let wall = Scene {
+        meshes: vec![front_wall(Material::WallExterior, None)],
+    };
+    let mut cam = front_camera();
+    cam.distance *= 4.0;
+    let mut lit = Setup::lit(Look::Standard, ViewSettings::default());
+    lit.camera = Some(cam);
+    let corner = |px: &[u8]| [px[0], px[1], px[2]];
+    let sky = render(&gl, &mut gpu, &wall, &lit);
+    // A solid red picture.
+    let red: Vec<u8> = (0..8 * 8).flat_map(|_| [220, 20, 20, 255]).collect();
+    lit.backdrop = Some(Arc::new(
+        crate::backdrop::BackdropImage::new(8, 8, red).unwrap(),
+    ));
+    let px = render(&gl, &mut gpu, &wall, &lit);
+    let c = corner(&px);
+    assert!(
+        c[0] > 180 && c[1] < 60 && c[2] < 60,
+        "the corner shows the picture: {c:?} (sky was {:?})",
+        corner(&sky)
+    );
+    // The wall still draws in front of it.
+    assert_ne!(centre(&px), c, "the model is in front of the backdrop");
+    // Taking the picture away brings the sky back.
+    lit.backdrop = None;
+    let again = render(&gl, &mut gpu, &wall, &lit);
+    assert_eq!(corner(&again), corner(&sky));
     assert_eq!(unsafe { gl.get_error() }, 0);
     gpu.destroy(&gl);
 }

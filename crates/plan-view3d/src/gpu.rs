@@ -83,6 +83,7 @@ uniform int u_look;       // 0 standard, 1 physical, 2 clay, 3 glass house, 4 wa
                           // 5 technical, 6 duotone, 7 flat
 uniform float u_rough;    // GGX roughness of the material, 0..1
 uniform float u_metal;    // 0 dielectric .. 1 metal
+uniform float u_emissive; // self-illumination of a painted material, 0..1
 uniform float u_spec;     // specular and sky-reflection strength of the look
 uniform float u_exposure;
 uniform vec3 u_sky_top;   // display-encoded sky colors (reflections)
@@ -230,6 +231,7 @@ void main() {
         rgb += spec;
         shine = max(spec.r, max(spec.g, spec.b));
     }
+    rgb += base * (u_emissive * 3.0);
     rgb *= u_exposure;
     if (u_look == 6) {
         // Duotone: light faces keep their color, shade falls to a deep blue.
@@ -272,6 +274,7 @@ const MAIN_UNIFORMS: &[&str] = &[
     "u_look",
     "u_rough",
     "u_metal",
+    "u_emissive",
     "u_spec",
     "u_exposure",
     "u_sky_top",
@@ -304,6 +307,10 @@ pub(crate) struct FrameParams {
     pub settings: ViewSettings,
     /// Background (horizon) colour, display-encoded.
     pub background: [f32; 4],
+    /// A picture drawn in place of the sky gradient.
+    pub backdrop: Option<Arc<crate::backdrop::BackdropImage>>,
+    /// Width over height of the view (the backdrop's cover fit).
+    pub aspect: f32,
     /// Point lights to evaluate (already the nearest few).
     pub lights: Vec<ViewLight>,
     pub bounds: Option<Bounds>,
@@ -331,6 +338,8 @@ impl FrameParams {
             look: Look::Standard,
             settings: ViewSettings::default(),
             background: [0.85, 0.89, 0.94, 1.0],
+            backdrop: None,
+            aspect,
             lights: Vec::new(),
             bounds: None,
             viewport,
@@ -361,6 +370,8 @@ struct GpuMesh {
     /// GGX roughness and metalness from the scene material table.
     rough: f32,
     metal: f32,
+    /// Glow of a painted material, 0..1 (`Mesh::paint_surface`).
+    emissive: f32,
     centroid: Vec3,
     vao: glow::VertexArray,
     vbo: glow::Buffer,
@@ -428,6 +439,8 @@ pub(crate) struct GpuScene {
     /// A 1 x 1 white texture bound while drawing flat colors, so the sampler
     /// never points at an empty unit.
     blank: Option<glow::Texture>,
+    /// The backdrop picture resident on the GPU: its key and texture.
+    backdrop_tex: Option<(u64, glow::Texture)>,
     /// Material textures still waiting for an upload after the last frame.
     pending_uploads: usize,
     /// Background texture loads in flight (the viewport spawns them).
@@ -520,6 +533,9 @@ fn build_passes(gl: &glow::Context, errors: &mut Vec<String>) -> Passes {
                 "u_sky_top",
                 "u_sky_horizon",
                 "u_ground",
+                "u_backdrop_on",
+                "u_backdrop",
+                "u_backdrop_scale",
             ],
         ),
     );
@@ -639,6 +655,7 @@ impl GpuScene {
             overlay_from: 0,
             anisotropy: None,
             blank: None,
+            backdrop_tex: None,
             pending_uploads: 0,
             prefetching: Arc::new(AtomicUsize::new(0)),
             passes: Passes::default(),
@@ -719,6 +736,7 @@ impl GpuScene {
         self.overlay_from = 0;
         self.anisotropy = None;
         self.blank = None;
+        self.backdrop_tex = None;
         self.pending_uploads = 0;
         self.passes = Passes::default();
         self.targets.forget();
@@ -1196,8 +1214,35 @@ impl GpuScene {
         Some(ShadowUse { map, depth, size })
     }
 
-    /// Paint the sky gradient and ground fade over the whole target.
+    /// Uploads the backdrop picture of `frame` (once per picture) and returns
+    /// its texture, or `None` when the frame has none.
+    fn ensure_backdrop(
+        &mut self,
+        gl: &glow::Context,
+        frame: &FrameParams,
+    ) -> Option<glow::Texture> {
+        let Some(img) = frame.backdrop.as_deref() else {
+            if let Some((_, t)) = self.backdrop_tex.take() {
+                unsafe { gl.delete_texture(t) };
+            }
+            return None;
+        };
+        if let Some((key, t)) = self.backdrop_tex {
+            if key == img.key {
+                return Some(t);
+            }
+            unsafe { gl.delete_texture(t) };
+            self.backdrop_tex = None;
+        }
+        let tex = unsafe { create_backdrop_texture(gl, img.width, img.height, &img.rgba) }.ok()?;
+        self.backdrop_tex = Some((img.key, tex));
+        Some(tex)
+    }
+
+    /// Paint the sky gradient (or the backdrop picture) and ground fade over
+    /// the whole target.
     fn draw_sky(&mut self, gl: &glow::Context, frame: &FrameParams) {
+        let backdrop_tex = self.ensure_backdrop(gl, frame);
         let (Some(prog), Some(inv_vp)) = (self.passes.sky.as_ref(), math::invert(&frame.view_proj))
         else {
             return;
@@ -1206,6 +1251,13 @@ impl GpuScene {
             return;
         };
         let (top, horizon, ground) = quality::sky_colors(frame.background);
+        let backdrop = backdrop_tex.map(|t| {
+            let img = frame.backdrop.as_deref();
+            let scale = img.map_or([1.0, 1.0], |i| {
+                crate::backdrop::cover_scale(i.aspect(), frame.aspect)
+            });
+            (t, scale)
+        });
         unsafe {
             gl.disable(glow::DEPTH_TEST);
             gl.depth_mask(false);
@@ -1217,6 +1269,13 @@ impl GpuScene {
             prog.f3(gl, "u_sky_top", &top);
             prog.f3(gl, "u_sky_horizon", &horizon);
             prog.f3(gl, "u_ground", &ground);
+            prog.i1(gl, "u_backdrop_on", i32::from(backdrop.is_some()));
+            if let Some((tex, scale)) = backdrop {
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                prog.i1(gl, "u_backdrop", 0);
+                prog.f2(gl, "u_backdrop_scale", scale);
+            }
             gl.bind_vertex_array(Some(vao));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.bind_vertex_array(None);
@@ -1549,6 +1608,7 @@ impl GpuScene {
                 "u_metal",
                 if look.specular > 0.0 { m.metal } else { 0.0 },
             );
+            prog.f1(gl, "u_emissive", m.emissive);
             match tex {
                 Some(t) => {
                     gl.bind_texture(glow::TEXTURE_2D, Some(t.tex));
@@ -1592,6 +1652,9 @@ impl GpuScene {
         self.unavailable.clear();
         if let Some(b) = self.blank.take() {
             unsafe { gl.delete_texture(b) };
+        }
+        if let Some((_, t)) = self.backdrop_tex.take() {
+            unsafe { gl.delete_texture(t) };
         }
         if let Some(p) = self.program.take() {
             p.delete(gl);
@@ -1671,6 +1734,43 @@ fn shadow_key(mesh_version: u64, sun: Vec3, hide_roof: bool, size: i32) -> u64 {
     h.finish()
 }
 
+/// A display-encoded RGBA8 texture for the backdrop: sampled as stored (the
+/// sky colours the pass replaces are display-encoded too), linear filtering,
+/// edges clamped.
+unsafe fn create_backdrop_texture(
+    gl: &glow::Context,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<glow::Texture, String> {
+    unsafe {
+        let tex = gl.create_texture()?;
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            width as i32,
+            height as i32,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(rgba)),
+        );
+        for (pname, v) in [
+            (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+            (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+            (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+            (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+        ] {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, pname, v as i32);
+        }
+        Ok(tex)
+    }
+}
+
 /// Create an sRGB RGBA8 texture with mipmaps. Material textures repeat,
 /// pictures clamp. Anisotropic filtering is used when `aniso` is given.
 unsafe fn create_texture(
@@ -1723,17 +1823,34 @@ unsafe fn create_texture(
 }
 
 /// The uniform colour a mesh is drawn with: its own `color` (linear light)
-/// with the material's opacity, else the material's colour.
+/// with the material's opacity (less, when the painted material is
+/// transparent), else the material's colour.
 fn mesh_color(mesh: &plan_3d::Mesh) -> [f32; 4] {
     let base = mesh.material.color();
     match mesh.color_linear() {
-        Some([r, g, b]) => [r, g, b, base[3]],
+        Some([r, g, b]) => {
+            let opacity = mesh
+                .paint_surface()
+                .map_or(1.0, |p| (1.0 - p.transparency).clamp(0.0, 1.0));
+            [r, g, b, base[3].min(opacity)]
+        }
         None => base,
     }
 }
 
+/// What the viewport shader reads of a mesh's surface: the scene material's
+/// roughness and metalness, replaced by the Material Painter's when the mesh
+/// was painted, and the painted glow.
+fn mesh_surface(mesh: &plan_3d::Mesh) -> (f32, f32, f32) {
+    let s = plan_materials::scene_surface(mesh.material);
+    match mesh.paint_surface() {
+        Some(p) => (p.roughness, p.metallic, p.emissive),
+        None => (s.roughness, s.metallic, 0.0),
+    }
+}
+
 fn upload_mesh(gl: &glow::Context, mesh: &plan_3d::Mesh) -> Result<GpuMesh, String> {
-    let surface = plan_materials::scene_surface(mesh.material);
+    let (rough, metal, emissive) = mesh_surface(mesh);
     let mut flat: Vec<f32> = Vec::with_capacity(mesh.vertices.len() * 8);
     let mut sum = [0.0f64; 3];
     for v in &mesh.vertices {
@@ -1781,8 +1898,9 @@ fn upload_mesh(gl: &glow::Context, mesh: &plan_3d::Mesh) -> Result<GpuMesh, Stri
             object_id: mesh.object_id,
             color: mesh_color(mesh),
             custom_color: mesh.color.is_some(),
-            rough: surface.roughness,
-            metal: surface.metallic,
+            rough,
+            metal,
+            emissive,
             centroid,
             vao,
             vbo,
@@ -1841,5 +1959,59 @@ mod tests {
         assert_ne!(base, k(1, [0.1, 1.0, 0.0], false, 2048));
         assert_ne!(base, k(1, [0.0, 1.0, 0.0], true, 2048));
         assert_ne!(base, k(1, [0.0, 1.0, 0.0], false, 4096));
+    }
+}
+
+#[cfg(test)]
+mod paint_surface_tests {
+    use super::*;
+    use plan_3d::surface::{register, PaintSurface};
+
+    fn mesh(object: u64, color: Option<[u8; 3]>) -> plan_3d::Mesh {
+        plan_3d::Mesh {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            material: Material::WallInterior,
+            object_id: Some(object),
+            color,
+        }
+    }
+
+    #[test]
+    fn a_painted_material_sets_gloss_glow_and_opacity_of_its_mesh() {
+        let c = [77, 88, 99];
+        let plain = mesh(9_400_001, Some(c));
+        let (r0, m0, e0) = mesh_surface(&plain);
+        assert_eq!(e0, 0.0);
+        assert_eq!(
+            (r0, m0),
+            {
+                let s = plan_materials::scene_surface(Material::WallInterior);
+                (s.roughness, s.metallic)
+            },
+            "no registered surface keeps the scene material's"
+        );
+        assert_eq!(mesh_color(&plain)[3], Material::WallInterior.color()[3]);
+        register(
+            9_400_001,
+            Material::WallInterior,
+            c,
+            Some(PaintSurface {
+                roughness: 0.1,
+                metallic: 0.95,
+                transparency: 0.6,
+                emissive: 0.7,
+            }),
+        );
+        assert_eq!(mesh_surface(&plain), (0.1, 0.95, 0.7));
+        assert!(
+            (mesh_color(&plain)[3] - 0.4).abs() < 1e-6,
+            "{:?}",
+            mesh_color(&plain)
+        );
+        // The same surface registered for another colour does not leak to a
+        // mesh that is not painted that way.
+        assert_eq!(mesh_surface(&mesh(9_400_001, Some([1, 1, 1]))).2, 0.0);
+        register(9_400_001, Material::WallInterior, c, None);
     }
 }

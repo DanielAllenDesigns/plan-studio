@@ -205,6 +205,22 @@ impl DeviceKind {
                 line(-1.6, -2.5, -1.6, 2.5),
                 line(0.0, -3.2, 0.0, 3.2),
                 line(1.6, -2.5, 1.6, 2.5),
+                text(7.5, 0.0, "220V", 2.5),
+            ],
+            // Weatherproof GFCI: the GFCI duplex with a WP tag.
+            DeviceKind::OutletWp => {
+                let mut s = duplex(3.0);
+                s.push(line(0.0, 3.0, 0.0, 4.5));
+                s.push(line(0.0, -3.0, 0.0, -4.5));
+                s.push(text(6.5, 0.0, "WP", 2.5));
+                s
+            }
+            // Dedicated: a single receptacle (one blade line, solid hub) tagged DED.
+            DeviceKind::OutletDedicated => vec![
+                circle(0.0, 0.0, 3.0, false),
+                line(0.0, -2.0, 0.0, 2.0),
+                circle(0.0, 0.0, 0.8, true),
+                text(6.5, 0.0, "DED", 2.5),
             ],
             DeviceKind::OutletFloor => {
                 let mut s = duplex(3.0);

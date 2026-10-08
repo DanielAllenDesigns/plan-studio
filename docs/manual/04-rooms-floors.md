@@ -151,7 +151,7 @@ below, and old files load with the defaults for every field they lack. The rest 
   - **Deck**: no ceiling over the room; the floor is a deck platform (1 1/2" decking on 7 1/4"
     joists) with no finish. **Porch**: no ceiling, a 4" concrete slab, no finish.
   - **Open Below**: no floor under the room, and the ceiling of the room under it opens
-    to it. The Attic and Courtyard room types have no floor platform either.
+    to it. The Attic room type has no floor platform either, and a **Courtyard** has neither a floor nor a ceiling (Round 13).
   - **Flat Roof**: no ceiling, and a membrane deck (1/2" membrane on 7 1/4" joists) as its floor structure.
   - Any other type goes back to the floor's own finish and platform.
 - **Living Area**: Include in Total Living Area Calculation, Exclude, or Use Default
@@ -167,7 +167,7 @@ below, and old files load with the defaults for every field they lack. The rest 
   relative toggle is session only; the offset values are stored). Both reach the 3D view (QA-02, fixed in Round 8; R-23, R-24, R-33): the 3D floor platform of a room is raised by its Floor Height offset, and its ceiling platform sits at its own Ceiling Height measured from that raised floor. A room with no named entry, or with no override, keeps the floor's ceiling height. Rooms that share the same levels share one platform; the 3D view rebuilds when you change them.
 - **Rough Ceiling Height** for dropped ceilings (stored).
 - **Finish** thicknesses for floor and ceiling (stored finish names; the floor finish thickness reaches the 3D floor).
-- **Platforms**: Floor Under This Room, Ceiling Over This Room (stored and honored by the 3D platforms: off removes that platform; turning the ceiling off also makes Build Roof add a vaulted ceiling plane over the room, chapter 8.2), **Roof Over This Room** (on by default; stored with the room) and **Flat Roof Over This Room** (stored; available only while Roof Over This Room is on). With Roof Over This Room off, **Build Roof leaves the room out**: its exterior walls stop shaping the roof, a partition between it and a roofed room becomes the roof's edge, and a roofless room inside one plane gets a hole in that plane (a courtyard, an open deck; chapter 8.1). With Flat Roof Over This Room on, Build Roof puts a level roof plane at the room's ceiling instead of the pitched roof (chapter 8.1). Auto Rebuild Roofs reruns when either changes.
+- **Platforms**: Floor Under This Room, Ceiling Over This Room (stored and honored by the 3D platforms: off removes that platform; turning the ceiling off also makes Build Roof add a vaulted ceiling plane over the room, chapter 8.2), **Roof Over This Room** (on by default; stored with the room) and **Flat Roof Over This Room** (stored; available only while Roof Over This Room is on). With Roof Over This Room off, **Build Roof leaves the room out**: its exterior walls stop shaping the roof, a partition between it and a roofed room becomes the roof's edge, and a roofless room inside one plane gets a hole in that plane (a courtyard, an open deck; chapter 8.1). With Flat Roof Over This Room on, Build Roof puts a level roof plane at the room's ceiling instead of the pitched roof; since Round 13 that plane **overhangs** on the room's exterior edges (half the wall plus the wall's or the roof settings' overhang) and not on its partition edges (chapter 8.1). When a roofless room lies across a ridge, hip or valley, Build Roof cuts a hole piece in each plane (chapter 8.2). Auto Rebuild Roofs reruns when either changes.
 - **Floor Structure Define...** and **Ceiling Structure Define...** (R-28, R-29) edit the room's
   layer stack (material and thickness per layer, top first; Add Layer, Remove, move up/down, Use
   Default). The layers are stored with the room and their total is the thickness of the 3D platform;
@@ -321,4 +321,4 @@ list behind the Room Type drop-down in the Room Specification.
   your template with File > Templates > Save Current Defaults as My Template...). Renaming a type also renames
   it on the rooms of the open plan that used it, as one undo step ("Rename Room Types"), so those rooms keep
   their type.
-- Function-driven behavior is still (planned) (see 4.4).
+- Beyond the Structure defaults and the roof and platform switches of 4.4, function-driven behavior is still (planned).

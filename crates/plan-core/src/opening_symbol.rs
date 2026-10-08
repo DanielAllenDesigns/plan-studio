@@ -14,6 +14,7 @@
 
 use crate::geometry::Point;
 use crate::model::{Opening, OpeningKind, Wall};
+use crate::openings::spec::CurvedCasing;
 use crate::openings::OpeningStyle;
 
 /// How far bay, box and bow windows project from the exterior wall face.
@@ -49,6 +50,13 @@ pub enum PartKind {
     Track,
     /// A sliding direction arrow.
     Arrow,
+    /// The thin threshold line across an exterior door (DW-81).
+    Threshold,
+    /// The exterior sill of a window projecting past the wall face (DW-85).
+    Sill,
+    /// An Opening Indicator mark: the "X" of a fixed unit, the arrowhead of
+    /// a swing arc, the way an awning opens (DW-83).
+    Indicator,
 }
 
 /// One polyline (or closed polygon) of a symbol, in world inches.
@@ -65,6 +73,9 @@ pub struct OpeningSymbol {
     /// Wall-local `t` range cleared of wall fill across the opening:
     /// `(-half, half)` for a full-depth opening, a shallow band for a niche.
     pub cut: (f64, f64),
+    /// Wall-local `s` range cleared of wall fill: the opening's jambs, wider
+    /// than the unit when its size does not include the frame (DW-82).
+    pub span: (f64, f64),
     pub parts: Vec<SymbolPart>,
 }
 
@@ -172,13 +183,36 @@ fn flat_leaf(ax: &Axes, s: (f64, f64), th: f64) -> SymbolPart {
     rect(ax, PartKind::Leaf, s, (-th * 0.5, th * 0.5))
 }
 
+/// A flat leaf over `s` and `th` thick, standing at `lt` across the wall
+/// (the part `flat_leaf` made, replaced when the leaf is recessed).
+fn shift_t(flat: SymbolPart, ax: &Axes, s: (f64, f64), th: f64, lt: f64) -> SymbolPart {
+    if lt == 0.0 {
+        flat
+    } else {
+        rect(ax, PartKind::Leaf, s, (lt - th * 0.5, lt + th * 0.5))
+    }
+}
+
 /// A swing arc about `(hs, 0)`: from along the wall (toward `dsign`) up to
 /// `angle` toward `side`.
 fn arc(ax: &Axes, hs: f64, dsign: f64, side: f64, radius: f64, angle: f64) -> SymbolPart {
+    arc_t(ax, hs, 0.0, dsign, side, radius, angle)
+}
+
+/// [`arc`] about `(hs, t0)`: a leaf recessed into the wall (DW-57).
+fn arc_t(
+    ax: &Axes,
+    hs: f64,
+    t0: f64,
+    dsign: f64,
+    side: f64,
+    radius: f64,
+    angle: f64,
+) -> SymbolPart {
     let pts = (0..=ARC_SEGMENTS)
         .map(|i| {
             let a = angle * i as f64 / ARC_SEGMENTS as f64;
-            ax.p(hs + dsign * radius * a.cos(), side * radius * a.sin())
+            ax.p(hs + dsign * radius * a.cos(), t0 + side * radius * a.sin())
         })
         .collect();
     part(PartKind::Swing, pts)
@@ -186,7 +220,15 @@ fn arc(ax: &Axes, hs: f64, dsign: f64, side: f64, radius: f64, angle: f64) -> Sy
 
 /// The tip of a leaf of length `len` hinged at `(hs, 0)`, opened `angle`.
 fn leaf_tip(ax: &Axes, hs: f64, dsign: f64, side: f64, len: f64, angle: f64) -> Point {
-    ax.p(hs + dsign * len * angle.cos(), side * len * angle.sin())
+    leaf_tip_t(ax, hs, 0.0, dsign, side, len, angle)
+}
+
+/// [`leaf_tip`] for a leaf hinged at `(hs, t0)`.
+fn leaf_tip_t(ax: &Axes, hs: f64, t0: f64, dsign: f64, side: f64, len: f64, angle: f64) -> Point {
+    ax.p(
+        hs + dsign * len * angle.cos(),
+        t0 + side * len * angle.sin(),
+    )
 }
 
 /// An arrow along the wall from `s_from` to `s_to` at `t`.
@@ -362,6 +404,8 @@ fn curved_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
     vo.width = chord;
     vo.center_offset = s0 + chord * 0.5;
     let mut sym = straight_symbol(&vw, &vo, exterior);
+    // The cleared span is in chord terms: its end follows the arc length.
+    sym.span.1 += o.width - chord;
     let style = symbol_style(o);
     let rigid_leaf = matches!(
         style,
@@ -378,7 +422,9 @@ fn curved_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
         (s0 + (rel.dot(u) - s0) * scale, rel.dot(nv))
     };
     for part in &mut sym.parts {
-        if part.kind == PartKind::Swing || (part.kind == PartKind::Leaf && rigid_leaf) {
+        if matches!(part.kind, PartKind::Swing | PartKind::Indicator)
+            || (part.kind == PartKind::Leaf && rigid_leaf)
+        {
             continue;
         }
         let pts: Vec<(f64, f64)> = part.points.iter().map(|&p| local(p)).collect();
@@ -405,7 +451,64 @@ fn curved_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
     sym
 }
 
+/// How far the wall opening runs past each side of the unit: the frame or
+/// jamb width when the size does not include it (DW-82), else nothing.
+fn frame_reach(o: &Opening, style: OpeningStyle) -> f64 {
+    if o.extras.spec.size_includes_frame || !has_frame_blocks(o, style) {
+        return 0.0;
+    }
+    o.frame_width().min(o.width * 0.25)
+}
+
+/// How far the cleared opening in the wall runs past each side of the unit
+/// `o` (the Jamb and Frame tabs' "Size Excludes Jamb / Frame"): the plan cuts
+/// the wall that much wider, and 3D cuts its hole the same.
+pub fn cleared_reach(o: &Opening) -> f64 {
+    frame_reach(o, symbol_style(o))
+}
+
+/// Whether the plan draws jamb or frame blocks beside the jambs of `o`.
+fn has_frame_blocks(o: &Opening, style: OpeningStyle) -> bool {
+    match o.kind {
+        OpeningKind::Window => {
+            o.extras.frame_width.is_some_and(|f| f > 0.0)
+                && matches!(
+                    style,
+                    OpeningStyle::Window
+                        | OpeningStyle::Fixed
+                        | OpeningStyle::Casement
+                        | OpeningStyle::SlidingWindow
+                        | OpeningStyle::Awning
+                        | OpeningStyle::Hopper
+                )
+        }
+        OpeningKind::Door => {
+            o.extras.spec.jamb_in_plan
+                && o.frame_width() > 0.0
+                && matches!(
+                    style,
+                    OpeningStyle::Hinged
+                        | OpeningStyle::DoubleDoor
+                        | OpeningStyle::Doorway
+                        | OpeningStyle::Sliding
+                        | OpeningStyle::Fixed
+                        | OpeningStyle::Shower
+                        | OpeningStyle::Bifold
+                )
+        }
+    }
+}
+
 fn straight_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
+    // A unit whose size leaves out its frame sits in a wider opening: draw
+    // the opening at that width, the frame blocks filling the difference.
+    let reach = frame_reach(o, symbol_style(o));
+    if reach > 0.0 {
+        let mut wide = o.clone();
+        wide.width += 2.0 * reach;
+        wide.extras.spec.size_includes_frame = true;
+        return straight_symbol(wall, &wide, exterior);
+    }
     let ax = Axes::new(wall);
     let half = wall.thickness * 0.5;
     let (s0, s1) = (o.start_offset(), o.end_offset());
@@ -428,8 +531,17 @@ fn straight_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
         .thickness
         .unwrap_or(1.375)
         .clamp(0.25, half.max(0.5) * 2.0);
+    // Where the leaf stands across the wall: on the centerline, or recessed
+    // to a depth from the exterior face (DW-57).
+    let lt = o
+        .extras
+        .spec
+        .recess_depth
+        .map_or(0.0, |d| exterior * (half - d.clamp(0.0, wall.thickness)));
+    let both = o.extras.spec.swings_both;
     let mut sym = OpeningSymbol {
         cut: (-half, half),
+        span: (s0, s1),
         parts: Vec::new(),
     };
     let jambs = |sym: &mut OpeningSymbol| {
@@ -459,8 +571,8 @@ fn straight_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
             jambs(&mut sym);
             let glass = style == OpeningStyle::Shower;
             if show_open {
-                let base = ax.p(hs, 0.0);
-                let tip = leaf_tip(&ax, hs, dsign, side, w, angle);
+                let base = ax.p(hs, lt);
+                let tip = leaf_tip_t(&ax, hs, lt, dsign, side, w, angle);
                 if glass {
                     // A glass leaf: a long thin rectangle about the leaf line.
                     let perp = tip.sub(base).normalized().perp().scale(0.19);
@@ -471,29 +583,55 @@ fn straight_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
                 } else {
                     sym.parts.push(part(PartKind::Leaf, vec![base, tip]));
                 }
-                sym.parts.push(arc(&ax, hs, dsign, side, w, angle));
+                sym.parts.push(arc_t(&ax, hs, lt, dsign, side, w, angle));
+                if both {
+                    sym.parts.push(arc_t(&ax, hs, lt, dsign, -side, w, angle));
+                }
             } else {
-                sym.parts.push(flat_leaf(
+                sym.parts.push(shift_t(
+                    flat_leaf(&ax, (s0, s1), if glass { 0.375 } else { leaf_th }),
                     &ax,
                     (s0, s1),
                     if glass { 0.375 } else { leaf_th },
+                    lt,
                 ));
             }
         }
         OpeningStyle::DoubleDoor => {
             jambs(&mut sym);
             let half_w = w * 0.5;
-            if show_open {
-                for (h, dir) in [(s0, 1.0), (s1, -1.0)] {
+            let mid = s0 + half_w;
+            let spec = &o.extras.spec;
+            // Each leaf: the hinge (at the jamb, or both in the middle for
+            // "Swings from Center"), the way it runs from the hinge, and the
+            // stretch of the opening it fills when shut.
+            let leaves = if spec.swings_from_center {
+                [(mid, -1.0, (s0, mid)), (mid, 1.0, (mid, s1))]
+            } else {
+                [(s0, 1.0, (s0, mid)), (s1, -1.0, (mid, s1))]
+            };
+            for (k, (h, dir, span)) in leaves.into_iter().enumerate() {
+                if show_open && spec.door_swing.swings(k == 1) {
                     sym.parts.push(part(
                         PartKind::Leaf,
-                        vec![ax.p(h, 0.0), leaf_tip(&ax, h, dir, side, half_w, angle)],
+                        vec![
+                            ax.p(h, lt),
+                            leaf_tip_t(&ax, h, lt, dir, side, half_w, angle),
+                        ],
                     ));
-                    sym.parts.push(arc(&ax, h, dir, side, half_w, angle));
+                    sym.parts.push(arc_t(&ax, h, lt, dir, side, half_w, angle));
+                    if both {
+                        sym.parts.push(arc_t(&ax, h, lt, dir, -side, half_w, angle));
+                    }
+                } else {
+                    sym.parts.push(shift_t(
+                        flat_leaf(&ax, span, leaf_th),
+                        &ax,
+                        span,
+                        leaf_th,
+                        lt,
+                    ));
                 }
-            } else {
-                sym.parts.push(flat_leaf(&ax, (s0, s0 + half_w), leaf_th));
-                sym.parts.push(flat_leaf(&ax, (s0 + half_w, s1), leaf_th));
             }
         }
         OpeningStyle::Doorway => jambs(&mut sym),
@@ -764,13 +902,17 @@ fn straight_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
         }
     }
     add_frame_blocks(&mut sym, &ax, wall, o, style);
+    add_threshold_and_sill(&mut sym, &ax, wall, o, style, exterior, lt);
     add_arch_marks(&mut sym, &ax, wall, o, style);
+    add_rough_opening(&mut sym, &ax, wall, o);
     add_shutters(&mut sym, &ax, wall, o, exterior);
+    add_indicators(&mut sym, &ax, wall, o, style, exterior);
     sym
 }
 
 /// The jamb blocks of a window frame, as wide as the Frame tab says (DW-82):
-/// drawn once the window has a frame width of its own.
+/// drawn once the window has a frame width of its own. A door's jamb blocks
+/// (DW-82) are drawn beside each jamb line unless its Jamb tab turns them off.
 fn add_frame_blocks(
     sym: &mut OpeningSymbol,
     ax: &Axes,
@@ -778,24 +920,136 @@ fn add_frame_blocks(
     o: &Opening,
     style: OpeningStyle,
 ) {
-    let framed = o.kind == OpeningKind::Window
-        && matches!(
-            style,
-            OpeningStyle::Window
-                | OpeningStyle::Fixed
-                | OpeningStyle::Casement
-                | OpeningStyle::SlidingWindow
-                | OpeningStyle::Awning
-                | OpeningStyle::Hopper
-        );
-    let Some(fw) = o.extras.frame_width.filter(|f| framed && *f > 0.0) else {
+    if !has_frame_blocks(o, style) {
         return;
-    };
+    }
     let half = wall.thickness * 0.5;
-    let fw = fw.min(o.width * 0.25);
+    let fw = o.frame_width().min(o.width * 0.25);
     let (s0, s1) = (o.start_offset(), o.end_offset());
     for s in [(s0, s0 + fw), (s1 - fw, s1)] {
         sym.parts.push(rect(ax, PartKind::Frame, s, (-half, half)));
+    }
+}
+
+/// The thin threshold line across an exterior door (DW-81) and the exterior
+/// sill of a window (DW-85) that the Lintel tab turned on.
+fn add_threshold_and_sill(
+    sym: &mut OpeningSymbol,
+    ax: &Axes,
+    wall: &Wall,
+    o: &Opening,
+    style: OpeningStyle,
+    exterior: f64,
+    lt: f64,
+) {
+    let half = wall.thickness * 0.5;
+    let (s0, s1) = (o.start_offset(), o.end_offset());
+    let exterior_wall = wall.kind == crate::model::WallKind::Exterior;
+    match o.kind {
+        OpeningKind::Door => {
+            let thresholded = matches!(
+                style,
+                OpeningStyle::Hinged
+                    | OpeningStyle::DoubleDoor
+                    | OpeningStyle::Sliding
+                    | OpeningStyle::Fixed
+            );
+            if exterior_wall && thresholded && o.extras.spec.threshold {
+                let leaf_th = o.extras.thickness.unwrap_or(1.375);
+                let t = (lt + exterior * (leaf_th * 0.5 + 0.4)).clamp(-half, half);
+                sym.parts
+                    .push(part(PartKind::Threshold, vec![ax.p(s0, t), ax.p(s1, t)]));
+            }
+        }
+        OpeningKind::Window => {
+            let sill = &o.extras.spec.sill;
+            let projects = !matches!(
+                style,
+                OpeningStyle::BayWindow
+                    | OpeningStyle::BowWindow
+                    | OpeningStyle::BoxWindow
+                    | OpeningStyle::WallNiche
+                    | OpeningStyle::PassThrough
+            );
+            if exterior_wall && sill.enabled && projects && sill.depth > 0.0 {
+                let a = (s0 - sill.extend).max(0.0);
+                let b = (s1 + sill.extend).min(wall.path_length());
+                let (t0, t1) = (exterior * half, exterior * (half + sill.depth));
+                sym.parts
+                    .push(rect(ax, PartKind::Sill, (a, b), (t0.min(t1), t0.max(t1))));
+            }
+        }
+    }
+}
+
+/// Opening Indicators (DW-83): the "X" of a fixed unit, the arrow of an
+/// awning or hopper, and an arrowhead at the free end of every swing arc.
+fn add_indicators(
+    sym: &mut OpeningSymbol,
+    ax: &Axes,
+    wall: &Wall,
+    o: &Opening,
+    style: OpeningStyle,
+    exterior: f64,
+) {
+    let ind = o.extras.spec.indicators;
+    if !ind.show_in_plan && !ind.swing_arrows {
+        return;
+    }
+    let half = wall.thickness * 0.5;
+    let (s0, s1) = (o.start_offset(), o.end_offset());
+    if ind.show_in_plan {
+        match style {
+            OpeningStyle::Fixed => {
+                for (a, b) in [((s0, half), (s1, -half)), ((s0, -half), (s1, half))] {
+                    sym.parts.push(part(
+                        PartKind::Indicator,
+                        vec![ax.p(a.0, a.1), ax.p(b.0, b.1)],
+                    ));
+                }
+            }
+            OpeningStyle::Awning | OpeningStyle::Hopper => {
+                let toward = if style == OpeningStyle::Awning {
+                    exterior
+                } else {
+                    -exterior
+                };
+                let toward = if o.swing_flipped { -toward } else { toward };
+                let mid = (s0 + s1) * 0.5;
+                let head = (o.width * 0.08).clamp(1.0, 3.0);
+                let reach = half + 4.0;
+                sym.parts.push(part(
+                    PartKind::Indicator,
+                    vec![
+                        ax.p(mid, 0.0),
+                        ax.p(mid, toward * reach),
+                        ax.p(mid - head, toward * (reach - head)),
+                        ax.p(mid, toward * reach),
+                        ax.p(mid + head, toward * (reach - head)),
+                    ],
+                ));
+            }
+            _ => {}
+        }
+    }
+    if ind.swing_arrows {
+        let heads: Vec<SymbolPart> = sym
+            .of(PartKind::Swing)
+            .filter(|a| a.points.len() >= 2)
+            .map(|a| {
+                let n = a.points.len();
+                let (tip, prev) = (a.points[n - 1], a.points[n - 2]);
+                let dir = tip.sub(prev).normalized();
+                let len = (o.width * 0.08).clamp(1.5, 4.0);
+                let back = tip.sub(dir.scale(len));
+                let wing = dir.perp().scale(len * 0.45);
+                part(
+                    PartKind::Indicator,
+                    vec![back.add(wing), tip, back.sub(wing)],
+                )
+            })
+            .collect();
+        sym.parts.extend(heads);
     }
 }
 
@@ -808,8 +1062,7 @@ fn add_arch_marks(
     o: &Opening,
     style: OpeningStyle,
 ) {
-    if !o.is_arched()
-        || o.extras.spec.arch.rise(o.width, o.height) <= 0.0
+    if ((!o.is_arched() || o.extras.spec.arch.rise(o.width, o.height) <= 0.0) && !o.is_shaped())
         || matches!(
             style,
             OpeningStyle::WallNiche
@@ -828,6 +1081,30 @@ fn add_arch_marks(
     }
 }
 
+/// The rough opening as two dashed lines across the wall, past each jamb by
+/// the Rough Opening tab's extra (DW-56). Nothing unless the tab asks for it
+/// and the rough opening is wider than the unit.
+fn add_rough_opening(sym: &mut OpeningSymbol, ax: &Axes, wall: &Wall, o: &Opening) {
+    let rough = &o.extras.spec.rough;
+    if !rough.show_in_plan || matches!(o.style, OpeningStyle::WallNiche | OpeningStyle::PassThrough)
+    {
+        return;
+    }
+    let b = rough.extents(o.kind);
+    let half = wall.thickness * 0.5;
+    let (lo, hi) = (
+        (o.start_offset() - b.left).max(0.0),
+        (o.end_offset() + b.right).min(wall.path_length()),
+    );
+    if b.left + b.right <= 1e-9 {
+        return;
+    }
+    for s in [lo, hi] {
+        sym.parts
+            .push(part(PartKind::Hidden, vec![ax.p(s, half), ax.p(s, -half)]));
+    }
+}
+
 /// Exterior shutters as small rectangles outside the wall (DW-84).
 fn add_shutters(sym: &mut OpeningSymbol, ax: &Axes, wall: &Wall, o: &Opening, exterior: f64) {
     let sh = &o.extras.spec.shutters;
@@ -842,6 +1119,48 @@ fn add_shutters(sym: &mut OpeningSymbol, ax: &Axes, wall: &Wall, o: &Opening, ex
     let t = (t.0.min(t.1), t.0.max(t.1));
     for (a, b) in sh.spans(o.start_offset(), o.end_offset(), o.casing_reach()) {
         sym.parts.push(rect(ax, PartKind::Frame, (a, b), t));
+    }
+}
+
+/// One casing board over `s` along the wall and `t` across it. On a curved
+/// wall `mode` lays it radial (square to the wall where it stands: the plain
+/// rectangle of the wall's frame), straight (square to the wall at the middle
+/// `mid` of the opening) or parallel (bent to follow the curve).
+fn casing_rect(
+    wall: &Wall,
+    ax: &Axes,
+    mode: CurvedCasing,
+    s: (f64, f64),
+    t: (f64, f64),
+    mid: f64,
+) -> SymbolPart {
+    if !wall.is_curved() || mode == CurvedCasing::Radial {
+        return rect(ax, PartKind::Frame, s, t);
+    }
+    match mode {
+        CurvedCasing::Parallel => {
+            let n = ((s.1 - s.0).abs().ceil() as usize).clamp(2, 24);
+            let mut pts: Vec<(f64, f64)> = (0..=n)
+                .map(|i| (s.0 + (s.1 - s.0) * i as f64 / n as f64, t.0))
+                .collect();
+            pts.extend(
+                (0..=n)
+                    .rev()
+                    .map(|i| (s.0 + (s.1 - s.0) * i as f64 / n as f64, t.1)),
+            );
+            closed(PartKind::Frame, ax.pts(&pts))
+        }
+        _ => {
+            // The board's frame is the wall's tangent at the middle of the
+            // opening: straight, the same on both sides.
+            let (at, tangent) = wall.frame_at(mid);
+            let nrm = tangent.perp();
+            let p = |s_: f64, t_: f64| at.add(tangent.scale(s_ - mid)).add(nrm.scale(t_));
+            closed(
+                PartKind::Frame,
+                vec![p(s.0, t.0), p(s.1, t.0), p(s.1, t.1), p(s.0, t.1)],
+            )
+        }
     }
 }
 
@@ -874,20 +1193,24 @@ pub fn casing_parts(
         let t = (t.0.min(t.1), t.0.max(t.1));
         if o.start_offset() <= lo + 1e-9 {
             let end = lo - c.reveal;
-            out.push(rect(
+            out.push(casing_rect(
+                wall,
                 &ax,
-                PartKind::Frame,
+                spec.curved_casing,
                 ((end - c.width).max(0.0), end),
                 t,
+                (lo + hi) * 0.5,
             ));
         }
         if o.end_offset() >= hi - 1e-9 {
             let start = hi + c.reveal;
-            out.push(rect(
+            out.push(casing_rect(
+                wall,
                 &ax,
-                PartKind::Frame,
+                spec.curved_casing,
                 (start, (start + c.width).min(wall.path_length())),
                 t,
+                (lo + hi) * 0.5,
             ));
         }
     }
@@ -979,8 +1302,10 @@ mod tests {
     #[test]
     fn doorway_is_jambs_only() {
         let s = sym(&open(OpeningKind::Door, OpeningStyle::Doorway, 36.0));
-        assert_eq!(s.parts.len(), 2);
+        // Two jamb lines and the two jamb blocks beside them (DW-82).
+        assert_eq!(s.parts.len(), 4);
         assert_eq!(s.count(PartKind::Jamb), 2);
+        assert_eq!(s.count(PartKind::Frame), 2);
     }
 
     #[test]
@@ -1075,7 +1400,8 @@ mod tests {
         let s = sym(&open(OpeningKind::Door, OpeningStyle::Fixed, 36.0));
         assert_eq!(s.count(PartKind::Swing), 0);
         assert_eq!(s.count(PartKind::Glass), 1);
-        assert_eq!(s.count(PartKind::Frame), 2);
+        // The two wall-face lines of the glazing, plus the two jamb blocks.
+        assert_eq!(s.count(PartKind::Frame), 4);
     }
 
     #[test]
@@ -1251,9 +1577,18 @@ mod tests {
             xs.iter().copied().fold(f64::MIN, f64::max),
         );
         assert!((hi - lo - 2.5).abs() < 1e-9, "{lo} {hi}");
-        // Doors keep their plain jambs.
+        // A door draws its jamb blocks as wide as its Jamb tab says (DW-82)
+        // and none once the tab turns them off.
         let mut d = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
         d.extras.jamb_width = Some(2.5);
+        let blocks = sym(&d);
+        assert_eq!(blocks.count(PartKind::Frame), 2);
+        let b = blocks.of(PartKind::Frame).next().unwrap();
+        let xs: Vec<f64> = b.points.iter().map(|q| q.x).collect();
+        let width = xs.iter().copied().fold(f64::MIN, f64::max)
+            - xs.iter().copied().fold(f64::MAX, f64::min);
+        assert!((width - 2.5).abs() < 1e-9, "{width}");
+        d.extras.spec.jamb_in_plan = false;
         assert_eq!(sym(&d).count(PartKind::Frame), 0);
     }
 
@@ -1470,5 +1805,265 @@ mod tests {
         assert!(solid.parts.iter().any(|p| p.kind == PartKind::Frame));
         assert_eq!(solid.parts.len(), over.parts.len());
         assert!(over.parts.iter().all(|p| p.kind == PartKind::Hidden));
+    }
+    // ----- round 14: threshold, sill, both swings, indicators, recess -----
+
+    #[test]
+    fn an_exterior_door_has_a_threshold_line_across_the_opening() {
+        let d = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        let s = sym(&d);
+        let t = s.of(PartKind::Threshold).next().expect("threshold");
+        // Across the opening, parallel to the wall, on the outside of the leaf.
+        assert!((t.points[0].x - 102.0).abs() < 1e-9 && (t.points[1].x - 138.0).abs() < 1e-9);
+        assert!(t.points[0].y.abs() > 0.0 && t.points[0].y.abs() < 3.0);
+        assert!((t.points[0].y - t.points[1].y).abs() < 1e-9);
+        // The line sits on the exterior side (the left face here).
+        assert!(t.points[0].y > 0.0);
+        // An interior wall, a doorway and a switched-off threshold have none.
+        let mut inner = wall();
+        inner.kind = WallKind::Interior;
+        assert_eq!(plan_symbol(&inner, &d, -1.0).count(PartKind::Threshold), 0);
+        assert_eq!(
+            sym(&open(OpeningKind::Door, OpeningStyle::Doorway, 36.0)).count(PartKind::Threshold),
+            0
+        );
+        let mut off = d.clone();
+        off.extras.spec.threshold = false;
+        assert_eq!(sym(&off).count(PartKind::Threshold), 0);
+    }
+
+    #[test]
+    fn a_window_sill_projects_past_the_exterior_face_when_defined() {
+        let mut w = open(OpeningKind::Window, OpeningStyle::Window, 36.0);
+        assert_eq!(sym(&w).count(PartKind::Sill), 0);
+        w.extras.spec.sill.enabled = true;
+        let s = sym(&w);
+        let sill = s.of(PartKind::Sill).next().expect("sill");
+        let ys: Vec<f64> = sill.points.iter().map(|q| q.y).collect();
+        let xs: Vec<f64> = sill.points.iter().map(|q| q.x).collect();
+        // From the wall face (3") out by the sill depth (2") on the outside.
+        assert!((ys.iter().copied().fold(f64::MIN, f64::max) - 5.0).abs() < 1e-9);
+        assert!((ys.iter().copied().fold(f64::MAX, f64::min) - 3.0).abs() < 1e-9);
+        // It runs past the jambs by the sill's extend.
+        assert!((xs.iter().copied().fold(f64::MAX, f64::min) - 101.0).abs() < 1e-9);
+        assert!((xs.iter().copied().fold(f64::MIN, f64::max) - 139.0).abs() < 1e-9);
+        // No sill on an interior wall.
+        let mut inner = wall();
+        inner.kind = WallKind::Interior;
+        assert_eq!(plan_symbol(&inner, &w, -1.0).count(PartKind::Sill), 0);
+    }
+
+    #[test]
+    fn swings_both_directions_draws_the_arc_on_each_side() {
+        let mut d = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        assert_eq!(sym(&d).count(PartKind::Swing), 1);
+        d.extras.spec.swings_both = true;
+        let s = sym(&d);
+        assert_eq!(s.count(PartKind::Swing), 2);
+        let sides: Vec<f64> = s
+            .of(PartKind::Swing)
+            .map(|a| a.points.iter().map(|q| q.y).sum::<f64>())
+            .collect();
+        assert!(sides[0] > 0.0 && sides[1] < 0.0, "{sides:?}");
+        // A double door gets two more.
+        let mut dd = open(OpeningKind::Door, OpeningStyle::DoubleDoor, 60.0);
+        dd.extras.spec.swings_both = true;
+        assert_eq!(sym(&dd).count(PartKind::Swing), 4);
+    }
+
+    #[test]
+    fn indicators_mark_fixed_units_and_the_ends_of_swing_arcs() {
+        let mut f = open(OpeningKind::Window, OpeningStyle::Fixed, 36.0);
+        assert_eq!(sym(&f).count(PartKind::Indicator), 0);
+        f.extras.spec.indicators.show_in_plan = true;
+        // An X: two diagonals corner to corner.
+        let s = sym(&f);
+        assert_eq!(s.count(PartKind::Indicator), 2);
+        let d = s.of(PartKind::Indicator).next().unwrap();
+        assert!((d.points[0].x - 102.0).abs() < 1e-9 && (d.points[1].x - 138.0).abs() < 1e-9);
+        // An arrowhead at the free end of the arc, three points ending on it.
+        let mut h = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        h.extras.spec.indicators.swing_arrows = true;
+        let s = sym(&h);
+        let head = s.of(PartKind::Indicator).next().expect("arrowhead");
+        assert_eq!(head.points.len(), 3);
+        let arc = s.of(PartKind::Swing).next().unwrap();
+        assert!(head.points[1].dist(*arc.points.last().unwrap()) < 1e-9);
+        // The arc ends at the open leaf (36" out from the hinge) and the
+        // head points along the arc there, parallel to the wall.
+        assert!(
+            (head.points[1].y - 36.0).abs() < 1e-6,
+            "{:?}",
+            head.points[1]
+        );
+        assert!((head.points[0].y - head.points[2].y).abs() > 1e-6);
+    }
+
+    #[test]
+    fn a_recessed_door_stands_at_its_depth_from_the_exterior_face() {
+        let mut d = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        // Recessed 1" in from the outside face (3"): the leaf is at y = 2.
+        d.extras.spec.recess_depth = Some(1.0);
+        let s = sym(&d);
+        let leaf = s.of(PartKind::Leaf).next().unwrap();
+        assert!(
+            (leaf.points[0].y - 2.0).abs() < 1e-9,
+            "{:?}",
+            leaf.points[0]
+        );
+        let arc = s.of(PartKind::Swing).next().unwrap();
+        assert!((arc.points[0].y - 2.0).abs() < 1e-9 || (arc.points[0].y - 38.0).abs() < 1e-6);
+        // Closed, the flat leaf is centered there.
+        d.extras.show_open_in_plan = false;
+        let leaf = sym(&d).of(PartKind::Leaf).next().unwrap().clone();
+        let ys: Vec<f64> = leaf.points.iter().map(|q| q.y).collect();
+        let mid = (ys.iter().copied().fold(f64::MIN, f64::max)
+            + ys.iter().copied().fold(f64::MAX, f64::min))
+            * 0.5;
+        assert!((mid - 2.0).abs() < 1e-9, "{mid}");
+    }
+
+    #[test]
+    fn a_size_that_leaves_out_the_frame_widens_the_cleared_opening() {
+        let mut d = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        d.extras.jamb_width = Some(1.5);
+        assert_eq!(sym(&d).span, (102.0, 138.0));
+        d.extras.spec.size_includes_frame = false;
+        let s = sym(&d);
+        assert_eq!(s.span, (100.5, 139.5));
+        // The jamb lines and blocks run out to the wider opening.
+        let jambs: Vec<f64> = s.of(PartKind::Jamb).map(|j| j.points[0].x).collect();
+        assert!(
+            jambs.contains(&100.5) && jambs.contains(&139.5),
+            "{jambs:?}"
+        );
+        // Windows with a frame width do the same.
+        let mut w = open(OpeningKind::Window, OpeningStyle::Window, 36.0);
+        w.extras.frame_width = Some(2.0);
+        w.extras.spec.size_includes_frame = false;
+        assert_eq!(sym(&w).span, (100.0, 140.0));
+    }
+
+    #[test]
+    fn the_new_marks_stand_in_the_chord_frame_on_a_curved_wall() {
+        let w = arc_wall();
+        let mut d = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        d.center_offset = 100.0;
+        d.extras.spec.swings_both = true;
+        d.extras.spec.indicators.swing_arrows = true;
+        let s = plan_symbol(&w, &d, 1.0);
+        assert_eq!(s.count(PartKind::Swing), 2);
+        assert_eq!(s.count(PartKind::Indicator), 2);
+        assert!(s.span.1 - s.span.0 >= 36.0 - 1e-6);
+    }
+
+    // ----- round 15: swing choices, rough opening, curved casing, shapes -----
+
+    #[test]
+    fn a_double_door_can_swing_one_leaf_or_from_the_center() {
+        use crate::openings::spec::DoorSwing;
+        let mut d = open(OpeningKind::Door, OpeningStyle::DoubleDoor, 60.0);
+        assert_eq!(sym(&d).count(PartKind::Swing), 2);
+        // Left only: one arc, and the other leaf shut across its half.
+        d.extras.spec.door_swing = DoorSwing::LeftOnly;
+        let s = sym(&d);
+        assert_eq!(s.count(PartKind::Swing), 1);
+        assert_eq!(s.count(PartKind::Leaf), 2);
+        let arc = s.of(PartKind::Swing).next().unwrap();
+        assert!(arc.points.iter().all(|p| p.x <= 120.0 + 1e-6), "start leaf");
+        d.extras.spec.door_swing = DoorSwing::RightOnly;
+        let s = sym(&d);
+        let arc = s.of(PartKind::Swing).next().unwrap();
+        assert!(arc.points.iter().all(|p| p.x >= 120.0 - 1e-6), "end leaf");
+        // From the center: both hinges stand in the middle of the opening.
+        d.extras.spec.door_swing = DoorSwing::Both;
+        d.extras.spec.swings_from_center = true;
+        let s = sym(&d);
+        assert_eq!(s.count(PartKind::Swing), 2);
+        for leaf in s.of(PartKind::Leaf) {
+            assert!((leaf.points[0].x - 120.0).abs() < 1e-9, "{:?}", leaf.points);
+        }
+        // Shut, the leaves still fill their halves.
+        d.extras.show_open_in_plan = false;
+        assert_eq!(sym(&d).count(PartKind::Leaf), 2);
+        assert_eq!(sym(&d).count(PartKind::Swing), 0);
+    }
+
+    #[test]
+    fn the_rough_opening_draws_dashed_lines_past_the_jambs_only_when_asked() {
+        let mut d = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        let before = sym(&d).parts.len();
+        d.extras.spec.rough.add_width = 4.0;
+        // Not shown in plan until the tab says so.
+        assert_eq!(sym(&d).parts.len(), before);
+        d.extras.spec.rough.show_in_plan = true;
+        let s = sym(&d);
+        assert_eq!(s.parts.len(), before + 2);
+        let xs: Vec<f64> = s.of(PartKind::Hidden).map(|p| p.points[0].x).collect();
+        assert!(xs.contains(&100.0) && xs.contains(&140.0), "{xs:?}");
+        // No extra space, nothing to draw.
+        d.extras.spec.rough.add_width = 0.0;
+        assert_eq!(sym(&d).parts.len(), before);
+    }
+
+    #[test]
+    fn cleared_reach_matches_the_cleared_span() {
+        let mut d = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        d.extras.jamb_width = Some(1.5);
+        assert_eq!(cleared_reach(&d), 0.0);
+        d.extras.spec.size_includes_frame = false;
+        assert_eq!(cleared_reach(&d), 1.5);
+        let s = sym(&d).span;
+        assert_eq!(s, (d.start_offset() - 1.5, d.end_offset() + 1.5));
+    }
+
+    #[test]
+    fn curved_wall_casing_is_radial_straight_or_parallel() {
+        use crate::openings::spec::CurvedCasing;
+        let w = arc_wall();
+        let mut win = open(OpeningKind::Window, OpeningStyle::Window, 36.0);
+        win.center_offset = 100.0;
+        win.extras.spec.casing_in_plan = true;
+        let parts = |o: &Opening| casing_parts(&w, o, None, 1.0);
+        let radial = parts(&win);
+        assert_eq!(radial.len(), 4);
+        assert!(radial.iter().all(|p| p.points.len() == 4));
+        win.extras.spec.curved_casing = CurvedCasing::Parallel;
+        let parallel = parts(&win);
+        assert_eq!(parallel.len(), 4);
+        assert!(parallel.iter().all(|p| p.points.len() > 4), "bent boards");
+        win.extras.spec.curved_casing = CurvedCasing::Straight;
+        let straight = parts(&win);
+        assert_eq!(straight.len(), 4);
+        assert!(straight.iter().all(|p| p.points.len() == 4));
+        // Straight boards are square to the middle of the opening: the boards
+        // at the two ends of one face share a direction.
+        let dir = |p: &SymbolPart| {
+            let v = p.points[1].sub(p.points[0]);
+            v.scale(1.0 / v.length())
+        };
+        assert!(dir(&straight[0]).dot(dir(&straight[1])) > 0.999);
+        assert!(dir(&radial[0]).dot(dir(&radial[1])) < 0.999);
+        // On a straight wall all three are the same rectangle.
+        let flat = wall();
+        let mut s = open(OpeningKind::Window, OpeningStyle::Window, 36.0);
+        s.extras.spec.casing_in_plan = true;
+        let a = casing_parts(&flat, &s, None, 1.0);
+        s.extras.spec.curved_casing = CurvedCasing::Parallel;
+        assert_eq!(casing_parts(&flat, &s, None, 1.0), a);
+    }
+
+    #[test]
+    fn a_shaped_window_is_marked_at_the_head_in_plan() {
+        use crate::openings::spec::{ShapeKind, WindowShape};
+        let mut win = open(OpeningKind::Window, OpeningStyle::Window, 36.0);
+        let plain = sym(&win).count(PartKind::Hidden);
+        win.extras.spec.shape = WindowShape::preset(ShapeKind::Triangle, 36.0, 80.0);
+        assert!(win.is_shaped());
+        assert_eq!(sym(&win).count(PartKind::Hidden), plain + 2);
+        // A door never has a shape.
+        let mut door = open(OpeningKind::Door, OpeningStyle::Hinged, 36.0);
+        door.extras.spec.shape = WindowShape::preset(ShapeKind::Triangle, 36.0, 80.0);
+        assert!(!door.is_shaped());
     }
 }

@@ -49,6 +49,30 @@ pub fn frame_floor(
     frame_floor_holes(room, floor_elevation, d, direction, &[])
 }
 
+/// Frame a ceiling over `room`: ceiling joists (`d.ceiling_joist_size` at
+/// `d.ceiling_joist_spacing`, running `d.ceiling_direction`) that rest on the
+/// top plates, so their bottoms sit at `plate_top`. No rim joists or blocking.
+/// The members are [`MemberKind::CeilingJoist`].
+pub fn frame_ceiling(room: &Room, plate_top: f64, d: &FramingDefaults) -> Vec<Member> {
+    let as_floor = FramingDefaults {
+        joist_size: d.ceiling_joist_size,
+        joist_spacing: d.ceiling_joist_spacing,
+        rim_joist: false,
+        blocking: false,
+        ..d.clone()
+    };
+    // `frame_floor` puts the joist tops one subfloor thickness below the
+    // elevation it is given; the ceiling joists stand on the plate instead.
+    let elevation = plate_top + SUBFLOOR + d.ceiling_joist_size.depth;
+    frame_floor_holes(room, elevation, &as_floor, d.ceiling_direction, &[])
+        .into_iter()
+        .map(|mut m| {
+            m.kind = MemberKind::CeilingJoist;
+            m
+        })
+        .collect()
+}
+
 /// A hole in the platform (a stairwell) in the frame of the joists: `s` along
 /// the joists, `c` across them.
 struct HoleBox {
@@ -107,7 +131,12 @@ pub fn frame_floor_holes(
         [1.0, 0.0, 0.0]
     };
     let up: Vec3 = [0.0, 1.0, 0.0];
-    let rim = if d.rim_joist { TWO_BY_THICKNESS } else { 0.0 };
+    let rim_plies = d.rim_plies.clamp(1, 3);
+    let rim = if d.rim_joist {
+        TWO_BY_THICKNESS * f64::from(rim_plies)
+    } else {
+        0.0
+    };
 
     let (lo, hi) = if along_x {
         (min.y, max.y)
@@ -246,20 +275,22 @@ pub fn frame_floor_holes(
                 continue;
             }
             let inward = if ccw { e.perp() } else { -e.perp() }.normalized();
-            let start = p + inward * (t / 2.0);
             let dir = e.normalized();
-            let tf = Transform3 {
-                origin: [start.x, y_mid, -start.y],
-                axis_x: [dir.x, 0.0, -dir.y],
-                axis_y: up,
-            };
-            out.push(Member::new(
-                MemberKind::RimJoist,
-                lumber,
-                e.length(),
-                tf,
-                None,
-            ));
+            for ply in 0..rim_plies {
+                let start = p + inward * (t * (f64::from(ply) + 0.5));
+                let tf = Transform3 {
+                    origin: [start.x, y_mid, -start.y],
+                    axis_x: [dir.x, 0.0, -dir.y],
+                    axis_y: up,
+                };
+                out.push(Member::new(
+                    MemberKind::RimJoist,
+                    lumber,
+                    e.length(),
+                    tf,
+                    None,
+                ));
+            }
         }
     }
 
@@ -555,5 +586,52 @@ mod tests {
         assert!(of(&m, MemberKind::Joist)
             .iter()
             .all(|j| (j.length - 237.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_double_rim_adds_a_second_ply_and_shortens_the_joists() {
+        let d = FramingDefaults {
+            rim_plies: 2,
+            ..FramingDefaults::default()
+        };
+        let m = frame_floor(&rect(), 0.0, &d, JoistDirection::Auto);
+        assert_eq!(of(&m, MemberKind::RimJoist).len(), 4);
+        // 120" less two double rims of 3".
+        assert!(of(&m, MemberKind::Joist).iter().all(|j| j.length == 114.0));
+        let zs: Vec<f64> = of(&m, MemberKind::RimJoist)
+            .iter()
+            .map(|r| r.transform.origin[2])
+            .collect();
+        assert_eq!(zs, [-0.75, -2.25, -119.25, -117.75]);
+    }
+
+    #[test]
+    fn ceiling_joists_stand_on_the_plate_with_their_own_size_and_spacing() {
+        let d = FramingDefaults {
+            ceiling_joist_size: crate::lumber::TWO_BY_EIGHT,
+            ceiling_joist_spacing: 24.0,
+            ceiling_direction: JoistDirection::AlongX,
+            ..FramingDefaults::default()
+        };
+        let m = frame_ceiling(&rect(), 109.0, &d);
+        assert!(!m.is_empty());
+        assert!(m.iter().all(|j| j.kind == MemberKind::CeilingJoist));
+        assert!(m.iter().all(|j| j.lumber == crate::lumber::TWO_BY_EIGHT));
+        // Running along X: each joist spans the 240" length.
+        assert!(m.iter().all(|j| j.transform.axis_x == [1.0, 0.0, 0.0]));
+        assert!(m.iter().all(|j| (j.length - 240.0).abs() < 1e-9));
+        // Bottom of every joist on the plate.
+        for j in &m {
+            let bottom = j.transform.origin[1] - j.lumber.depth / 2.0;
+            assert!((bottom - 109.0).abs() < 1e-9, "{bottom}");
+        }
+        // 24" spacing: fewer joists than the 16" floor above.
+        let floor = frame_floor(
+            &rect(),
+            0.0,
+            &FramingDefaults::default(),
+            JoistDirection::AlongX,
+        );
+        assert!(m.len() < of(&floor, MemberKind::Joist).len());
     }
 }

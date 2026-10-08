@@ -1,20 +1,30 @@
 //! Specification of one terrain object (double-click it with a Terrain tool):
-//! terrain feature, break line, terrain wall or curb, garden bed, grass
-//! region, water feature, stepping stones, plant run, sprinklers, and the
-//! road and elevation line (General only). Pages: General (sizes, heights,
-//! material, spacing), Line Style, Fill Style (regions and walls) and Layer.
-//! The dialog edits a [`TerrainObject`] draft the tool stores on OK.
+//! terrain feature (rectangular, kidney, spline, polyline, round) and hole,
+//! break line, terrain wall or curb, garden bed, grass region, water feature,
+//! stepping stones, plant run (with the Plant Chooser), sprinklers, road,
+//! driveway, sidewalk and road marking, and the elevation point, line and
+//! region and the terrain modifiers (Hill, Valley, Raised, Lowered and Flat
+//! Region). Pages: General (sizes, heights, material, spacing), Line Style,
+//! Fill Style (regions and walls) and Layer. The dialog edits a
+//! [`TerrainObject`] draft the tool stores on OK.
 
 use super::super::{
-    on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT, PV_INK,
+    fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT,
+    PV_INK,
 };
 use crate::editor::site_view::TerrainObject;
-use crate::tools::terrain::{apply_plant, plant_choices, SPLINE_SAMPLES};
+use crate::tools::terrain::{
+    apply_plant, plant_categories, plant_choices, plants_in, SPLINE_SAMPLES,
+};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::Point;
-use plan_terrain::{FillStyle, Landscape, LandscapeKind, ObjectStyle, RoadKind, WallKind};
+use plan_terrain::{
+    FeatureKind, FillStyle, Landscape, LandscapeKind, ModifierKind, ObjectStyle, PlantForm,
+    RoadKind, WallKind,
+};
 
 const GENERAL_ONLY: &[Tab] = &[on("General")];
+const ROAD_TABS: &[Tab] = &[on("General"), on("Layer")];
 const PATHS: &[Tab] = &[on("General"), on("Line Style"), on("Layer")];
 const REGIONS: &[Tab] = &[
     on("General"),
@@ -23,6 +33,9 @@ const REGIONS: &[Tab] = &[
     on("Layer"),
 ];
 const MATERIALS: [&str; 4] = ["Concrete", "Stone", "Brick", "Grass"];
+const ROAD_MATERIALS: [&str; 5] = ["Asphalt", "Concrete", "Gravel", "Brick", "Stone"];
+/// Plants listed at a time in the Plant Chooser.
+const CHOOSER_HEIGHT: f32 = 150.0;
 const BED_MATERIALS: [&str; 3] = ["Mulch", "Soil", "Stone"];
 const MIN_SIZE: f64 = 1.0;
 
@@ -34,6 +47,16 @@ pub struct ObjectDialog {
 struct Form {
     draft: TerrainObject,
     fields: Fields,
+    chooser: Chooser,
+}
+
+/// State of the Plant Chooser list of the Plant Specification.
+#[derive(Default)]
+struct Chooser {
+    open: bool,
+    /// Category shown (empty = all).
+    category: String,
+    search: String,
 }
 
 impl ObjectDialog {
@@ -44,6 +67,7 @@ impl ObjectDialog {
             form: Form {
                 draft: obj,
                 fields: Fields::default(),
+                chooser: Chooser::default(),
             },
         }
     }
@@ -85,11 +109,11 @@ fn material_combo(ui: &mut Ui, salt: &str, value: &mut String, options: &[&str])
 impl Form {
     fn style_mut(&mut self) -> Option<&mut ObjectStyle> {
         match &mut self.draft {
-            TerrainObject::Feature(f) => Some(&mut f.style),
+            TerrainObject::Feature(f) if f.kind != FeatureKind::Hole => Some(&mut f.style),
             TerrainObject::Break(b) => Some(&mut b.style),
             TerrainObject::Wall(w) => Some(&mut w.style),
             TerrainObject::Landscape(l) => Some(&mut l.style),
-            TerrainObject::Road(_) | TerrainObject::Line(_) => None,
+            _ => None,
         }
     }
 
@@ -99,15 +123,31 @@ impl Form {
             TerrainObject::Break(_) => plan_terrain::landscape::LAYER_BREAKS.into(),
             TerrainObject::Wall(w) => w.default_layer().into(),
             TerrainObject::Landscape(l) => l.default_layer().into(),
-            TerrainObject::Road(_) | TerrainObject::Line(_) => "Terrain".into(),
+            _ => "Terrain".into(),
         }
     }
 
     fn general(&mut self, ui: &mut Ui) {
         let fields = &mut self.fields;
         match &mut self.draft {
+            TerrainObject::Feature(f) if f.kind == FeatureKind::Hole => {
+                section(ui, "General");
+                ui.label("The terrain surface is cut away inside the outline.");
+                ui.weak("Terrain Holes have no other settings; delete the hole to fill it.");
+            }
             TerrainObject::Feature(f) => {
                 section(ui, "General");
+                row(ui, "Shape", |ui| {
+                    ui.label(format!("{} outline", f.kind_name()))
+                });
+                if f.kind == FeatureKind::Round {
+                    let before = f.radius;
+                    fields.length_row(ui, "Radius", "feature_radius", &mut f.radius);
+                    if (f.radius - before).abs() > f64::EPSILON && f.radius > 0.0 {
+                        f.reflatten();
+                    }
+                    ui.add_space(2.0);
+                }
                 row(ui, "Material", |ui| {
                     material_combo(ui, "tf_material", &mut f.material, &MATERIALS)
                 });
@@ -159,6 +199,14 @@ impl Form {
                 fields.length_row(ui, "Top above terrain", "wall_h", &mut w.height);
                 fields.length_row(ui, "Bottom below terrain", "wall_d", &mut w.depth);
                 fields.length_row(ui, "Thickness", "wall_t", &mut w.thickness);
+                ui.checkbox(&mut w.stepped, "Stepped top (the top drops in courses)");
+                if w.stepped {
+                    fields.length_row(ui, "Course height", "wall_step", &mut w.step);
+                    ui.weak(
+                        "The top holds level and steps down by whole courses as the ground \
+                         falls, instead of following every bump of the ground.",
+                    );
+                }
                 ui.checkbox(&mut w.cut, "Cut the terrain along the wall");
                 if w.cut {
                     fields.length_row(
@@ -173,19 +221,74 @@ impl Form {
                     );
                 }
             }
-            TerrainObject::Landscape(l) => landscape_general(ui, fields, l),
+            TerrainObject::Landscape(l) => landscape_general(ui, fields, l, &mut self.chooser),
             TerrainObject::Road(r) => {
                 section(ui, "General");
                 row(ui, "Type", |ui| {
                     ui.radio_value(&mut r.kind, RoadKind::Road, "Road");
                     ui.radio_value(&mut r.kind, RoadKind::Driveway, "Driveway");
                     ui.radio_value(&mut r.kind, RoadKind::Sidewalk, "Sidewalk");
+                    ui.radio_value(&mut r.kind, RoadKind::Marking, "Marking");
                 });
-                fields.length_row(ui, "Width", "road_w", &mut r.width);
-                fields.length_row(ui, "Crown", "road_crown", &mut r.crown);
-                ui.checkbox(&mut r.curb, "Curbs");
-                if r.curb {
-                    fields.length_row(ui, "Curb height", "road_curb_h", &mut r.curb_height);
+                if r.kind == RoadKind::Marking {
+                    fields.length_row(ui, "Line width", "road_w", &mut r.width);
+                    ui.checkbox(&mut r.dashed, "Dashed");
+                    let mut own = r.color.is_some();
+                    if ui.checkbox(&mut own, "Use a color of its own").changed() {
+                        r.color = own.then_some([0xC9, 0x9A, 0x12]);
+                    }
+                    if let Some(c) = &mut r.color {
+                        row(ui, "Color", |ui| ui.color_edit_button_srgb(c));
+                    }
+                    ui.weak(
+                        "Lies on the ground, or on the crown of any road under it; \
+                         the plan draws it as a line this wide.",
+                    );
+                } else {
+                    row(ui, "Material", |ui| {
+                        let mut name = r.material_name().to_string();
+                        material_combo(ui, "road_material", &mut name, &ROAD_MATERIALS);
+                        r.material = name;
+                    });
+                    fields.length_row(ui, "Width", "road_w", &mut r.width);
+                    fields.length_row(ui, "Crown", "road_crown", &mut r.crown);
+                    ui.checkbox(&mut r.curb, "Curbs");
+                    if r.curb {
+                        fields.length_row(ui, "Curb height", "road_curb_h", &mut r.curb_height);
+                    }
+                }
+            }
+            TerrainObject::Point(e) => {
+                section(ui, "General");
+                fields.length_row(ui, "Elevation", "point_z", &mut e.z);
+                fields.length_row(ui, "Position X", "point_x", &mut e.pos.x);
+                fields.length_row(ui, "Position Y", "point_y", &mut e.pos.y);
+                ui.weak("The surface passes through this spot height.");
+            }
+            TerrainObject::Region(r) => {
+                section(ui, "General");
+                fields.length_row(ui, "Elevation", "region_z", &mut r.z);
+                ui.weak(format!(
+                    "The surface is held at this elevation inside the {} corner outline.",
+                    r.polygon.len()
+                ));
+            }
+            TerrainObject::Modifier(m) => {
+                section(ui, "General");
+                match m.kind {
+                    ModifierKind::FlatRegion => {
+                        ui.label("Levels the ground inside the outline to its mean elevation.");
+                        ui.weak("Flat Regions (Cut/Fill) have no height to set.");
+                    }
+                    kind => {
+                        let label = match kind {
+                            ModifierKind::Hill => "Hill height",
+                            ModifierKind::Valley => "Valley depth",
+                            ModifierKind::RaisedRegion => "Raise by",
+                            _ => "Lower by",
+                        };
+                        fields.length_row(ui, label, "modifier_h", &mut m.height);
+                    }
                 }
             }
             TerrainObject::Line(l) => {
@@ -255,6 +358,12 @@ impl Form {
     }
 
     fn layer(&mut self, ui: &mut Ui) {
+        if let TerrainObject::Road(r) = &mut self.draft {
+            section(ui, "Layer");
+            row(ui, "Layer", |ui| ui.text_edit_singleline(&mut r.layer));
+            ui.weak("Empty draws it on the terrain's own layer.");
+            return;
+        }
         let default = self.default_layer();
         let Some(st) = self.style_mut() else { return };
         section(ui, "Layer");
@@ -263,7 +372,7 @@ impl Form {
     }
 }
 
-fn landscape_general(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape) {
+fn landscape_general(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape, chooser: &mut Chooser) {
     section(ui, "General");
     if !l.control.is_empty() {
         ui.weak(format!(
@@ -300,29 +409,40 @@ fn landscape_general(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape) {
             ui.weak(format!("{} stones along the path", l.stones().len()));
         }
         LandscapeKind::Plants => {
-            let plants = plant_choices();
-            let current = plants
+            let current = plant_choices()
                 .iter()
                 .find(|p| p.id == l.plant)
                 .map_or_else(|| "Custom".to_string(), |p| p.name.clone());
             row(ui, "Plant", |ui| {
-                egui::ComboBox::from_id_salt("plant_choice")
-                    .selected_text(current)
-                    .width(200.0)
-                    .show_ui(ui, |ui| {
-                        for p in plants {
-                            if ui.selectable_label(l.plant == p.id, &p.name).clicked() {
-                                apply_plant(l, p);
-                            }
-                        }
-                    });
+                ui.label(current);
+                let label = if chooser.open {
+                    "Close Plant Chooser"
+                } else {
+                    "Plant Chooser\u{2026}"
+                };
+                if ui.button(label).clicked() {
+                    chooser.open = !chooser.open;
+                }
             });
+            if chooser.open {
+                plant_chooser(ui, l, chooser);
+            }
             fields.length_row(ui, "Canopy width", "plant_w", &mut l.size);
             fields.length_row(ui, "Height", "plant_h", &mut l.height);
             fields.length_row(ui, "Spacing", "plant_space", &mut l.spacing);
+            row(ui, "3D form", |ui| {
+                egui::ComboBox::from_id_salt("plant_form")
+                    .selected_text(l.form.name())
+                    .show_ui(ui, |ui| {
+                        for f in PlantForm::ALL {
+                            ui.selectable_value(&mut l.form, f, f.name());
+                        }
+                    });
+            });
             ui.weak(format!(
-                "{} plants along the path",
-                l.plant_positions().len()
+                "{} plants along the path, built as {}",
+                l.plant_positions().len(),
+                l.plant_form().name().to_lowercase()
             ));
         }
         LandscapeKind::Sprinklers => {
@@ -335,10 +455,59 @@ fn landscape_general(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape) {
     }
 }
 
+/// The Plant Chooser: the Plants catalog by category with a search field; a
+/// click on a plant sets the run's plant, sizes and 3D form.
+fn plant_chooser(ui: &mut Ui, l: &mut Landscape, chooser: &mut Chooser) {
+    ui.group(|ui| {
+        row(ui, "Category", |ui| {
+            let shown = if chooser.category.is_empty() {
+                "All plants".to_string()
+            } else {
+                chooser.category.clone()
+            };
+            egui::ComboBox::from_id_salt("plant_category")
+                .selected_text(shown)
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut chooser.category, String::new(), "All plants");
+                    for c in plant_categories() {
+                        ui.selectable_value(&mut chooser.category, c.clone(), c);
+                    }
+                });
+        });
+        row(ui, "Search", |ui| {
+            ui.text_edit_singleline(&mut chooser.search)
+        });
+        let list = plants_in(&chooser.category, &chooser.search);
+        egui::ScrollArea::vertical()
+            .id_salt("plant_chooser_list")
+            .max_height(CHOOSER_HEIGHT)
+            .show(ui, |ui| {
+                for p in &list {
+                    let text = format!(
+                        "{}   {} wide, {} tall",
+                        p.name,
+                        fmt_short(p.width),
+                        fmt_short(p.height)
+                    );
+                    if ui.selectable_label(l.plant == p.id, text).clicked() {
+                        apply_plant(l, p);
+                    }
+                }
+            });
+        ui.weak(format!("{} plants", list.len()));
+    });
+}
+
 impl SpecPages for Form {
     fn tabs(&self) -> &'static [Tab] {
         match &self.draft {
-            TerrainObject::Road(_) | TerrainObject::Line(_) => GENERAL_ONLY,
+            TerrainObject::Road(_) => ROAD_TABS,
+            TerrainObject::Line(_)
+            | TerrainObject::Point(_)
+            | TerrainObject::Region(_)
+            | TerrainObject::Modifier(_) => GENERAL_ONLY,
+            TerrainObject::Feature(f) if f.kind == FeatureKind::Hole => GENERAL_ONLY,
             TerrainObject::Break(_) => PATHS,
             TerrainObject::Landscape(l) if !l.is_region() => PATHS,
             _ => REGIONS,
@@ -360,9 +529,21 @@ impl SpecPages for Form {
                 if !w.retain.is_finite() {
                     return Some("The grade step is not a length".into());
                 }
+                if w.stepped && w.step < MIN_SIZE {
+                    return Some("A course is at least 1\" high".into());
+                }
             }
             TerrainObject::Road(r) if r.width <= 0.0 => {
                 return Some("The width must be greater than zero".into());
+            }
+            TerrainObject::Road(r) if r.kind == RoadKind::Marking && r.width > 48.0 => {
+                return Some("A marking is at most 4' wide".into());
+            }
+            TerrainObject::Feature(f) if f.kind == FeatureKind::Round && f.radius < MIN_SIZE => {
+                return Some("The radius must be at least 1\"".into());
+            }
+            TerrainObject::Modifier(m) if m.height < 0.0 => {
+                return Some("The height cannot be negative".into());
             }
             TerrainObject::Landscape(l) => {
                 let needs_spacing = matches!(
@@ -420,6 +601,9 @@ impl SpecPages for Form {
             TerrainObject::Landscape(l) => (l.points.clone(), l.is_region()),
             TerrainObject::Road(r) => (r.centerline.clone(), false),
             TerrainObject::Line(l) => (l.points.clone(), false),
+            TerrainObject::Point(e) => (vec![e.pos], false),
+            TerrainObject::Region(r) => (r.polygon.clone(), true),
+            TerrainObject::Modifier(m) => (m.polygon.clone(), true),
         };
         pv_text(
             p,
@@ -464,6 +648,12 @@ impl SpecPages for Form {
                     p.circle_filled(at(m), 2.5, PV_INK);
                 }
             }
+        } else if matches!(self.draft, TerrainObject::Point(_)) {
+            // A spot height: a cross.
+            let c = area.center();
+            let stroke = Stroke::new(1.5_f32, PV_INK);
+            p.line_segment([c - egui::vec2(8.0, 0.0), c + egui::vec2(8.0, 0.0)], stroke);
+            p.line_segment([c - egui::vec2(0.0, 8.0), c + egui::vec2(0.0, 8.0)], stroke);
         } else {
             pv_text(p, area.center(), Align2::CENTER_CENTER, "No outline", 11.0);
         }
@@ -515,7 +705,35 @@ mod tests {
                 ..plan_terrain::RoadStrip::default()
             }),
             TerrainObject::Line(plan_terrain::ElevationLine::spline(pts(), 12.0, 0.5, 8)),
+            TerrainObject::Feature(Feature::round(Point::new(100.0, 100.0), 60.0)),
+            TerrainObject::Feature(Feature {
+                kind: FeatureKind::Hole,
+                polygon: pts(),
+                ..Feature::default()
+            }),
+            TerrainObject::Road(plan_terrain::RoadStrip::marking(pts(), 4.0, true)),
+            TerrainObject::Point(plan_terrain::ElevationPoint {
+                pos: Point::new(10.0, 20.0),
+                z: 36.0,
+            }),
+            TerrainObject::Region(plan_terrain::ElevationRegion {
+                polygon: pts(),
+                z: 12.0,
+            }),
         ];
+        for kind in [
+            ModifierKind::Hill,
+            ModifierKind::Valley,
+            ModifierKind::RaisedRegion,
+            ModifierKind::LoweredRegion,
+            ModifierKind::FlatRegion,
+        ] {
+            v.push(TerrainObject::Modifier(plan_terrain::Modifier {
+                kind,
+                polygon: pts(),
+                height: 48.0,
+            }));
+        }
         for kind in [
             LandscapeKind::GardenBed,
             LandscapeKind::GrassRegion,
@@ -540,7 +758,14 @@ mod tests {
             let tabs = d.tab_names();
             assert_eq!(tabs[0], "General");
             match &obj {
-                TerrainObject::Road(_) | TerrainObject::Line(_) => assert_eq!(tabs.len(), 1),
+                TerrainObject::Road(_) => assert_eq!(tabs, ["General", "Layer"]),
+                TerrainObject::Line(_)
+                | TerrainObject::Point(_)
+                | TerrainObject::Region(_)
+                | TerrainObject::Modifier(_) => assert_eq!(tabs.len(), 1),
+                TerrainObject::Feature(f) if f.kind == FeatureKind::Hole => {
+                    assert_eq!(tabs, ["General"]);
+                }
                 TerrainObject::Landscape(l) if !l.is_region() => {
                     assert_eq!(tabs, ["General", "Line Style", "Layer"]);
                 }
@@ -615,8 +840,82 @@ mod tests {
     }
 
     #[test]
+    fn the_new_objects_keep_their_edits_and_refuse_bad_values() {
+        // A round feature resizes its outline with the radius.
+        let mut d = ObjectDialog::new(TerrainObject::Feature(Feature::round(
+            Point::new(0.0, 0.0),
+            60.0,
+        )));
+        let TerrainObject::Feature(f) = d.draft_mut() else {
+            unreachable!()
+        };
+        f.radius = 0.0;
+        assert!(d.error().unwrap().contains("radius"));
+        // A marking is at most 4' wide.
+        let mut d = ObjectDialog::new(TerrainObject::Road(plan_terrain::RoadStrip::marking(
+            pts(),
+            4.0,
+            false,
+        )));
+        assert_eq!(d.draft().title(), "Road Marking Specification");
+        let TerrainObject::Road(r) = d.draft_mut() else {
+            unreachable!()
+        };
+        r.width = 60.0;
+        assert!(d.error().unwrap().contains("4'"));
+        // A stepped wall needs a course height.
+        let mut d = ObjectDialog::new(TerrainObject::Wall(TerrainWall::new(
+            WallKind::Wall,
+            pts(),
+            false,
+        )));
+        let TerrainObject::Wall(w) = d.draft_mut() else {
+            unreachable!()
+        };
+        w.stepped = true;
+        w.step = 0.0;
+        assert!(d.error().unwrap().contains("course"));
+        // A modifier's height is a magnitude.
+        let mut d = ObjectDialog::new(TerrainObject::Modifier(plan_terrain::Modifier {
+            kind: ModifierKind::Hill,
+            polygon: pts(),
+            height: 72.0,
+        }));
+        assert_eq!(d.draft().title(), "Hill Specification");
+        let TerrainObject::Modifier(m) = d.draft_mut() else {
+            unreachable!()
+        };
+        m.height = -1.0;
+        assert!(d.error().is_some());
+    }
+
+    #[test]
+    fn the_plant_chooser_sets_the_plant_its_size_and_form() {
+        let mut run = Landscape::new(LandscapeKind::Plants, ShapeKind::Polyline, pts());
+        let list = crate::tools::terrain::plant_choices();
+        let spruce = list.iter().find(|p| p.conifer).expect("a conifer");
+        apply_plant(&mut run, spruce);
+        let mut d = ObjectDialog::new(TerrainObject::Landscape(run));
+        d.form.chooser.open = true;
+        d.form.chooser.category = spruce.category.clone();
+        // Draw the page with the chooser open.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, 0));
+        });
+        let TerrainObject::Landscape(l) = d.draft() else {
+            unreachable!()
+        };
+        assert_eq!(l.form, PlantForm::Cone);
+        assert_eq!(l.plant, spruce.id);
+    }
+
+    #[test]
     fn edits_stay_in_the_draft() {
-        let original = objects().remove(7);
+        let original = objects()
+            .into_iter()
+            .find(|o| matches!(o, TerrainObject::Landscape(_)))
+            .unwrap();
         let mut d = ObjectDialog::new(original.clone());
         let TerrainObject::Landscape(l) = d.draft_mut() else {
             unreachable!()

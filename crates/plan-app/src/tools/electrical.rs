@@ -42,8 +42,9 @@ use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
 use plan_core::OpeningKind;
 use plan_core::{Floor, Id};
 use plan_electrical::{
-    auto_place_outlets, auto_place_room_light, auto_place_switch, connect_in, place_free,
-    place_on_wall, AutoOutletOptions, Device, DeviceKind, RoomFunction, WallSide,
+    auto_place_exterior_outlets, auto_place_outlets, auto_place_room_light, auto_place_switch,
+    connect_in, place_free, place_on_wall, AutoOutletOptions, Device, DeviceKind,
+    ElectricalDefaults, RoomFunction, WallSide,
 };
 use std::cell::RefCell;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -73,6 +74,8 @@ pub enum ElecVariant {
     Outlet220,
     Gfci,
     OutletFloor,
+    OutletWp,
+    OutletDedicated,
     Light,
     RecessedLight,
     PendantLight,
@@ -98,12 +101,14 @@ pub enum ElecVariant {
 
 impl ElecVariant {
     /// Every flavor, in flyout order.
-    pub const ALL: [ElecVariant; 26] = [
+    pub const ALL: [ElecVariant; 28] = [
         ElecVariant::Outlet110,
         ElecVariant::Outlet110Quad,
         ElecVariant::Outlet220,
         ElecVariant::Gfci,
         ElecVariant::OutletFloor,
+        ElecVariant::OutletWp,
+        ElecVariant::OutletDedicated,
         ElecVariant::Switch,
         ElecVariant::Switch3Way,
         ElecVariant::Switch4Way,
@@ -135,6 +140,8 @@ impl ElecVariant {
             ElecVariant::Outlet220 => DeviceKind::Outlet220,
             ElecVariant::Gfci => DeviceKind::Gfci,
             ElecVariant::OutletFloor => DeviceKind::OutletFloor,
+            ElecVariant::OutletWp => DeviceKind::OutletWp,
+            ElecVariant::OutletDedicated => DeviceKind::OutletDedicated,
             ElecVariant::Light => DeviceKind::CeilingLight,
             ElecVariant::RecessedLight => DeviceKind::RecessedCan,
             ElecVariant::PendantLight => DeviceKind::PendantLight,
@@ -276,13 +283,16 @@ pub fn placement(
     world: Point,
     snapped: Point,
 ) -> Result<Device, &'static str> {
-    if kind.is_wall_mounted() {
-        wall_placement(cx, kind, world).ok_or("Click on a wall to place this device")
+    let mut dev = if kind.is_wall_mounted() {
+        wall_placement(cx, kind, world).ok_or("Click on a wall to place this device")?
     } else if kind.is_ceiling() {
-        Ok(ceiling_placement(cx, kind, snapped))
+        ceiling_placement(cx, kind, snapped)
     } else {
-        Ok(place_free(kind, snapped))
-    }
+        place_free(kind, snapped)
+    };
+    // The plan's Electrical Defaults decide the mounting height (12" / 48" / ...).
+    ElectricalDefaults::load(&cx.project).apply(&mut dev);
+    Ok(dev)
 }
 
 /// A rope light from `a` to `b`: its local +Y axis runs along the strip.
@@ -336,7 +346,14 @@ pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
             (r.label.clone(), room_function(&name, &ty))
         })
         .collect();
-    let placed = auto_place_outlets(cx.floor(), &rooms, &types, &AutoOutletOptions::default());
+    let mut opts = AutoOutletOptions::with_defaults(&ElectricalDefaults::load(&cx.project));
+    // Spacing from the plan's code minimums (NEC 210.52).
+    crate::editor::code::outlet_options(&crate::editor::code::code_minimums(cx), &mut opts);
+    let mut placed = auto_place_outlets(cx.floor(), &rooms, &types, &opts);
+    if opts.exterior_wp {
+        // NEC 210.52(E): weatherproof GFCI receptacles outside, front and back.
+        placed.extend(auto_place_exterior_outlets(cx.floor(), &rooms, &opts));
+    }
     let existing = load_electrical(cx.floor());
     let fresh: Vec<Device> = placed
         .into_iter()
@@ -356,10 +373,16 @@ pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
         return 0;
     }
     let n = fresh.len();
+    let fresh_exterior = fresh.iter().filter(|d| d.kind.is_weatherproof()).count();
     edit_electrical(cx, "Auto Place Outlets", |layer, _| {
         layer.add_all(fresh);
     });
-    cx.status = format!("Auto Place Outlets: placed {n} outlets");
+    let exterior = fresh_exterior;
+    cx.status = if exterior > 0 {
+        format!("Auto Place Outlets: placed {n} outlets ({exterior} weatherproof outside)")
+    } else {
+        format!("Auto Place Outlets: placed {n} outlets")
+    };
     n
 }
 
@@ -528,6 +551,8 @@ impl ElectricalTool {
         edit_electrical(cx, "Electrical Service Specification", |layer, floor| {
             draft.apply_to_layer(layer, &floor.walls);
         });
+        // The default heights belong to the same undo step.
+        draft.store_defaults(&mut cx.project);
         ToolResult::committed("Electrical Service Specification")
     }
 
@@ -573,6 +598,8 @@ impl ElectricalTool {
             d.angle = -FRAC_PI_2; // strip along +X
             d
         };
+        let mut dev = dev;
+        ElectricalDefaults::load(&cx.project).apply(&mut dev);
         let mut id = 0;
         edit_electrical(cx, "Place Rope Light", |layer, _| id = layer.add(dev));
         self.selected = Some(id);
@@ -620,8 +647,13 @@ impl ElectricalTool {
             Ok(()) => {
                 // The run goes on from the same switch, so every light of the
                 // room can be clicked in turn.
+                let multi = load_electrical(cx.floor())
+                    .device(hit)
+                    .is_some_and(|l| l.switched_by.len() >= 2);
                 cx.status = if pair {
                     "3-way pair wired; click the light, or press Esc".into()
+                } else if multi {
+                    "More than one switch controls it: the switches are now 3-way (S3) / 4-way (S4). Click the next light, or press Esc".into()
                 } else {
                     "Click the next light or outlet, or press Esc to finish".into()
                 };
@@ -742,7 +774,7 @@ impl ElectricalTool {
     fn update_readout(&self, cx: &mut EditorContext) {
         cx.readout = match (self.rope, self.variant.kind()) {
             (Some((a, b)), _) => Some(format!("Length: {}", cx.fmt_dim(a.dist(b)))),
-            (None, Some(k)) => Some(height_text(k.default_height())),
+            (None, Some(k)) => Some(height_text(ElectricalDefaults::load(&cx.project).height(k))),
             _ => None,
         };
     }
@@ -922,7 +954,9 @@ impl Tool for ElectricalTool {
         self.rope = None;
         self.selected = Some(id);
         if let Some(d) = layer.device(id) {
-            *self.dialog.borrow_mut() = Some(ElectricalDialog::for_device(d, &layer));
+            let defaults = ElectricalDefaults::load(&cx.project);
+            *self.dialog.borrow_mut() =
+                Some(ElectricalDialog::for_device(d, &layer).with_defaults(&defaults));
         }
         ToolResult::consumed()
     }
@@ -1498,7 +1532,7 @@ mod tests {
                 Some(format!("Place {}", kind.name()).as_str())
             );
         }
-        assert_eq!(placed, 22);
+        assert_eq!(placed, 24);
         // The flyout names are unique and Chief-like.
         let names: Vec<_> = ElecVariant::ALL.iter().map(|v| v.name()).collect();
         for n in &names {
@@ -1721,5 +1755,95 @@ mod tests {
             .iter()
             .any(|d| d.kind == DeviceKind::SwitchDimmer));
         assert_eq!(layer.device(light).unwrap().switched_by.len(), 1);
+    }
+
+    #[test]
+    fn the_dialog_stores_default_heights_in_the_same_undo_step() {
+        let (mut cx, _) = cx_with_room();
+        click(&mut tool(ElecVariant::Outlet110), &mut cx, 60.0, 0.0);
+        let mut t = tool(ElecVariant::Outlet110);
+        let p = PointerEvent::at(&cx, Point::new(60.0, 2.25));
+        assert!(t.double_click(&mut cx, p).consumed);
+        let mut draft = t.dialog.borrow().as_ref().unwrap().draft().clone();
+        assert!(
+            draft.defaults.is_some(),
+            "the tool opens it with the defaults"
+        );
+        let mut defaults = draft.defaults.clone().unwrap();
+        defaults.set_height(DeviceKind::Outlet110, 16.0);
+        defaults.set_counter_height(40.0);
+        draft.defaults = Some(defaults);
+        draft.height = 20.0;
+        *t.applied.borrow_mut() = Some(draft);
+        let r = t.pointer_move(&mut cx, p);
+        assert_eq!(
+            r.commit.as_deref(),
+            Some("Electrical Service Specification")
+        );
+        let stored = ElectricalDefaults::load(&cx.project);
+        assert_eq!(stored.height(DeviceKind::Outlet110), 16.0);
+        assert_eq!(stored.counter_height(), 40.0);
+        assert_eq!(
+            devices(&cx)[0].height,
+            20.0,
+            "this device keeps its own height"
+        );
+        // The next outlet uses the new default; the readout shows it.
+        let mut t2 = tool(ElecVariant::Outlet110);
+        let at = PointerEvent::at(&cx, Point::new(120.0, 2.25));
+        t2.pointer_move(&mut cx, at);
+        assert_eq!(cx.readout.as_deref(), Some("Height: 16\""));
+        click(&mut t2, &mut cx, 120.0, 0.0);
+        assert_eq!(devices(&cx)[1].height, 16.0);
+        // One undo takes the dialog's OK away: devices and defaults together.
+        cx.undo();
+        cx.undo();
+        assert_eq!(
+            ElectricalDefaults::load(&cx.project).height(DeviceKind::Outlet110),
+            12.0
+        );
+        assert_eq!(devices(&cx)[0].height, 12.0);
+    }
+
+    #[test]
+    fn a_dialog_without_the_defaults_stores_nothing() {
+        let (mut cx, _) = cx_with_room();
+        click(&mut tool(ElecVariant::Switch), &mut cx, 30.0, 0.0);
+        let layer = load_electrical(cx.floor());
+        let d = layer.devices[0].clone();
+        let dlg = ElectricalDialog::for_device(&d, &layer);
+        let draft = dlg.draft().clone();
+        assert!(draft.defaults.is_none());
+        assert!(!draft.store_defaults(&mut cx.project));
+        assert!(cx.project.electrical_defaults.is_none());
+    }
+
+    #[test]
+    fn wiring_two_switches_to_a_light_promotes_them_to_s3() {
+        let (mut cx, _) = cx_with_room();
+        click(&mut tool(ElecVariant::Switch), &mut cx, 30.0, 0.0);
+        click(&mut tool(ElecVariant::Switch), &mut cx, 60.0, 0.0);
+        click(&mut tool(ElecVariant::Light), &mut cx, 120.0, 72.0);
+        let layer = load_electrical(cx.floor());
+        let sw: Vec<Id> = layer
+            .devices
+            .iter()
+            .filter(|d| d.kind.is_switch())
+            .map(|d| d.id)
+            .collect();
+        let light = layer.devices.iter().find(|d| d.kind.is_light()).unwrap().id;
+        connect_devices(&mut cx, sw[0], light).unwrap();
+        assert_eq!(
+            load_electrical(cx.floor()).device(sw[0]).unwrap().kind,
+            DeviceKind::Switch
+        );
+        connect_devices(&mut cx, sw[1], light).unwrap();
+        let layer = load_electrical(cx.floor());
+        assert_eq!(layer.device(sw[0]).unwrap().kind, DeviceKind::Switch3Way);
+        assert_eq!(layer.device(sw[1]).unwrap().kind, DeviceKind::Switch3Way);
+        cx.undo();
+        let layer = load_electrical(cx.floor());
+        assert_eq!(layer.device(sw[0]).unwrap().kind, DeviceKind::Switch);
+        assert_eq!(layer.connections.len(), 1);
     }
 }

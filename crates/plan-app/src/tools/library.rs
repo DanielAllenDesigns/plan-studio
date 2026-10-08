@@ -37,6 +37,7 @@ use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 pub mod chief;
+pub mod door_styles;
 pub mod make;
 pub mod user;
 

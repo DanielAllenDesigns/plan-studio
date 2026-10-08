@@ -218,6 +218,36 @@ impl ToolbarDialog {
         Some(id)
     }
 
+    /// Renames the row being edited.
+    pub fn rename_row(&mut self, name: &str) -> bool {
+        if !self.unlocked() {
+            return false;
+        }
+        let id = self.bar.clone();
+        self.draft.view_mut(self.view).rename_row(&id, name)
+    }
+
+    /// Moves the row being edited up or down among the user's rows.
+    pub fn move_row(&mut self, down: bool) -> bool {
+        if !self.unlocked() {
+            return false;
+        }
+        let id = self.bar.clone();
+        self.draft.view_mut(self.view).move_row(&id, down)
+    }
+
+    /// Copies the row being edited into a new row and picks it.
+    pub fn duplicate_row(&mut self) -> Option<String> {
+        if !self.unlocked() {
+            return None;
+        }
+        let id = self.bar.clone();
+        let new_id = self.draft.view_mut(self.view).duplicate_row(&id)?;
+        self.bar = new_id.clone();
+        self.selected = None;
+        Some(new_id)
+    }
+
     pub fn delete_row(&mut self) -> bool {
         if !self.unlocked() {
             return false;
@@ -496,6 +526,34 @@ impl ToolbarDialog {
                 .clicked()
             {
                 self.delete_row();
+            }
+        });
+        ui.horizontal(|ui| {
+            let custom = !self.bar().is_builtin();
+            if ui
+                .add_enabled(custom, egui::Button::new("Row Up"))
+                .clicked()
+            {
+                self.move_row(false);
+            }
+            if ui
+                .add_enabled(custom, egui::Button::new("Row Down"))
+                .clicked()
+            {
+                self.move_row(true);
+            }
+            if ui.button("Duplicate Row").clicked() {
+                self.duplicate_row();
+            }
+            if ui
+                .button("Rename")
+                .on_hover_text("Names the picked row with the text in the box above")
+                .clicked()
+            {
+                let name = self.new_row_name.clone();
+                if self.rename_row(&name) {
+                    self.new_row_name.clear();
+                }
             }
         });
         ui.separator();

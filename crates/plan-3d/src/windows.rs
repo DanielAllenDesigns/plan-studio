@@ -8,9 +8,9 @@ use crate::opening::{ArchGeom, Ctx};
 use plan_core::opening_symbol::projection_footprint;
 use plan_core::OpeningStyle;
 /// Sash thickness.
-const SASH_THICKNESS: f64 = 1.75;
+pub(crate) const SASH_THICKNESS: f64 = 1.75;
 /// Frame depth through the wall.
-const FRAME_DEPTH: f64 = 3.5;
+pub(crate) const FRAME_DEPTH: f64 = 3.5;
 /// Thickness of a projected window panel.
 const PANEL_THICKNESS: f64 = 2.0;
 /// Seat board and roof slab thickness.
@@ -85,10 +85,12 @@ fn flat_between(ctx: &Ctx, set: &mut MeshSet, s0: f64, s1: f64, sash: bool, legs
     } else {
         (0.0, 0.0, 0.0)
     };
+    // The sash and its muntins go to the Sash material of the Materials tab.
+    let mut sash_set = ctx.sash.borrow_mut();
     if has_sash {
         let sd = SASH_THICKNESS.min(depth * 2.0) * 0.5;
         let t = (-sd, sd);
-        let ring = set.material(Material::WindowFrame);
+        let ring = sash_set.material(Material::WindowFrame);
         f.cuboid(ring, (i0, i1), t, (j0, j0 + sb));
         f.cuboid(ring, (i0, i1), t, (j1 - st, j1));
         f.cuboid(ring, (i0, i0 + sw), t, (j0 + sb, j1 - st));
@@ -100,7 +102,7 @@ fn flat_between(ctx: &Ctx, set: &mut MeshSet, s0: f64, s1: f64, sash: bool, legs
     g.muntins(
         f,
         &leaf,
-        set.material(Material::WindowFrame),
+        sash_set.material(Material::WindowFrame),
         0.0,
         g.muntin * 0.5,
     );
@@ -133,7 +135,7 @@ fn arched(ctx: &Ctx, set: &mut MeshSet, arch: &ArchGeom) {
         g.muntins(
             f,
             &leaf,
-            set.material(Material::WindowFrame),
+            ctx.sash.borrow_mut().material(Material::WindowFrame),
             0.0,
             g.muntin * 0.5,
         );
@@ -221,7 +223,8 @@ fn panel(ctx: &Ctx, set: &mut MeshSet, leaf: &Leaf, len: f64, tt: (f64, f64), ro
     let ht = h.h1 - h.h0;
     let fw = ctx.opening.sash_side().min(len / 4.0).min(ht / 4.0);
     let f = &ctx.frame;
-    let ring = set.material(Material::WindowFrame);
+    let mut sash_set = ctx.sash.borrow_mut();
+    let ring = sash_set.material(Material::WindowFrame);
     leaf.boxed(f, ring, (0.0, len), tt, (h.h0, h.h0 + fw));
     leaf.boxed(f, ring, (0.0, len), tt, (h.h1 - fw, h.h1));
     leaf.boxed(f, ring, (0.0, fw), tt, (h.h0 + fw, h.h1 - fw));
@@ -238,7 +241,7 @@ fn panel(ctx: &Ctx, set: &mut MeshSet, leaf: &Leaf, len: f64, tt: (f64, f64), ro
     g.muntins(
         f,
         leaf,
-        set.material(Material::WindowFrame),
+        sash_set.material(Material::WindowFrame),
         mid,
         g.muntin * 0.5,
     );
@@ -277,13 +280,31 @@ fn projecting(ctx: &Ctx, set: &mut MeshSet) {
     let h = ctx.hole;
     let trim = set.material(Material::Trim);
     ctx.frame.prism(trim, &poly, (h.h0 - SEAT_THICKNESS, h.h0));
-    let roof = set.material(Material::Roof);
-    ctx.frame.prism(roof, &poly, (h.h1, h.h1 + ROOF_THICKNESS));
+    // A small hip or shed roof over the unit (RF-29).
+    if !crate::roof::bay_roof_into(set, &ctx.frame, &poly, h.h1, ctx.opening.style) {
+        let roof = set.material(Material::Roof);
+        ctx.frame.prism(roof, &poly, (h.h1, h.h1 + ROOF_THICKNESS));
+    }
 }
 
 /// Add the window meshes for `ctx.opening.style`.
 pub fn build(ctx: &Ctx, set: &mut MeshSet) {
     let style = ctx.style();
+    // A shaped window (Shape tab) is glazed to its outline.
+    if ctx.opening.is_shaped()
+        && matches!(
+            style,
+            OpeningStyle::Window
+                | OpeningStyle::Fixed
+                | OpeningStyle::Casement
+                | OpeningStyle::SlidingWindow
+                | OpeningStyle::Awning
+                | OpeningStyle::Hopper
+        )
+    {
+        crate::opening::shape::shaped(ctx, set);
+        return;
+    }
     if matches!(
         style,
         OpeningStyle::Window | OpeningStyle::Fixed | OpeningStyle::Casement

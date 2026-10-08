@@ -482,7 +482,9 @@ pub struct ModelImport {
     pub placement: Option<Placement>,
 }
 
-/// File-type defaults: glTF is meters, Y up; OBJ is taken as inches, Y up.
+/// File-type defaults: glTF is meters, Y up; OBJ is taken as inches, Y up;
+/// STL, 3DS and COLLADA start from [`plan_import::suggest`] (the file's own
+/// unit and axis, else the format's axis and a size-based unit guess).
 pub fn import_defaults(path: &Path) -> ModelImport {
     let ext = path
         .extension()
@@ -491,6 +493,13 @@ pub fn import_defaults(path: &Path) -> ModelImport {
         .to_ascii_lowercase();
     let options = if ext == "gltf" || ext == "glb" {
         plan_import::gltf::default_options()
+    } else if matches!(ext.as_str(), "stl" | "3ds" | "dae") {
+        std::fs::read(path)
+            .map(|b| plan_import::suggest(&ext, &b).options)
+            .unwrap_or(ModelOptions {
+                unit_scale: 1.0,
+                up_axis: UpAxis::Y,
+            })
     } else {
         ModelOptions {
             unit_scale: 1.0,
@@ -855,7 +864,7 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         }
         IMPORT_MODEL => match rfd::FileDialog::new()
             .set_title("Import 3D Model")
-            .add_filter("3D models", &["obj", "gltf", "glb"])
+            .add_filter("3D models", &plan_import::formats::EXTENSIONS)
             .pick_file()
         {
             Some(path) => {

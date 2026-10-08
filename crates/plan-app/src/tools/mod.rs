@@ -19,12 +19,14 @@ pub mod camera;
 pub mod details;
 pub mod dimension;
 pub mod electrical;
+pub mod fireplace;
 pub mod foundation;
 pub mod framing;
 pub mod images;
 pub mod library;
 pub mod materials;
 pub mod opening;
+pub mod painters;
 pub mod pan;
 pub mod roof;
 pub mod schedule;
@@ -102,6 +104,14 @@ pub enum ToolId {
     ImagesVariant(images::ImageMode),
     /// The Underlay tool (move a plan underlay, two-point calibration).
     Underlay,
+    /// The Fireplace tools (Fireplace, in Wall, Prefab, Chimney).
+    Fireplace,
+    /// A flavor of the fireplace tool (the flyout entry picked).
+    FireplaceVariant(fireplace::FireplaceMode),
+    /// The Layer and Object Painters and Eyedroppers.
+    Painter,
+    /// One of the four painter tools.
+    PainterVariant(painters::PainterMode),
 }
 
 impl ToolId {
@@ -145,6 +155,8 @@ impl ToolId {
             ToolId::FramingVariant(_) => ToolId::Framing,
             ToolId::ScheduleVariant(_) => ToolId::Schedule,
             ToolId::ImagesVariant(_) => ToolId::Images,
+            ToolId::FireplaceVariant(_) => ToolId::Fireplace,
+            ToolId::PainterVariant(_) => ToolId::Painter,
             other => other,
         }
     }
@@ -298,6 +310,12 @@ pub trait Tool {
     fn double_click(&mut self, _cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
         ToolResult::ignored()
     }
+    /// A right click on the canvas of a tool that has no context menu. The
+    /// default is the tool's Esc; the wall tool keeps its chain instead
+    /// (W-3).
+    fn secondary_click(&mut self, cx: &mut EditorContext) -> ToolResult {
+        self.key(cx, KeyEvent::escape())
+    }
     /// Esc, Tab, Enter, Delete, arrows and typed text.
     fn key(&mut self, _cx: &mut EditorContext, _k: KeyEvent) -> ToolResult {
         ToolResult::ignored()
@@ -332,6 +350,8 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(schedule::ScheduleTool::default()),
         Box::new(images::ImagesTool::default()),
         Box::new(underlay::UnderlayTool::default()),
+        Box::new(fireplace::FireplaceTool::default()),
+        Box::new(painters::PaintersTool::default()),
     ]
 }
 
@@ -443,6 +463,8 @@ mod tests {
             ToolId::Framing,
             ToolId::Schedule,
             ToolId::Underlay,
+            ToolId::Fireplace,
+            ToolId::Painter,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");
         }

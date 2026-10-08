@@ -60,7 +60,7 @@ pub fn bar(
             out,
         );
         // The import window lives in the Library Browser: open that first.
-        if ui.button("Import 3D Model (OBJ, glTF)\u{2026}").clicked() {
+        if ui.button("Import 3D Model (STL, 3DS, DAE, OBJ, glTF)\u{2026}").clicked() {
             if state.dock != Some(Dock::Library) {
                 out.push(Action::ToggleDock(Dock::Library));
             }
@@ -358,6 +358,14 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::File(FileCommand::ExportLayout),
             out,
         );
+        live(
+            ui,
+            "Picture (PNG, JPEG, BMP, TIFF)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::export_picture::EXPORT_PICTURE),
+            out,
+        );
     });
     ui.menu_button("Import", |ui| {
         live(
@@ -386,10 +394,26 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         );
         live(
             ui,
+            "Picture (PNG, JPEG)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::tools::images::IMPORT_PICTURE),
+            out,
+        );
+        live(
+            ui,
             "Underlay Picture (PNG, JPEG, PDF)\u{2026}",
             "",
             false,
             Action::Custom(crate::tools::underlay::IMPORT),
+            out,
+        );
+        live(
+            ui,
+            "3D Symbol (STL, 3DS, DAE, OBJ, glTF)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::export_picture::IMPORT_3D_SYMBOL),
             out,
         );
     });
@@ -496,10 +520,40 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::EditBehaviors,
         out,
     );
-    inert(
+    ui.menu_button("Arc Creation Modes", |ui| {
+        let current = crate::tools::cad::current_arc_mode();
+        for m in crate::tools::cad::ArcMode::ALL {
+            live(ui, m.name(), "", m == current, Action::Custom(m.command()), out);
+        }
+    });
+    ui.separator();
+    ui.menu_button("Edit Area", |ui| {
+        use crate::tools::select as sel;
+        live(ui, "Edit Area", "", false, Action::Custom(sel::EDIT_AREA), out);
+        live(
+            ui,
+            "Edit Area Visible",
+            "",
+            false,
+            Action::Custom(sel::EDIT_AREA_VISIBLE),
+            out,
+        );
+    });
+    live(
         ui,
-        &["Arc Creation Modes>", "-", "Edit Area>", "Stretch CAD", "-"],
+        "Stretch CAD",
+        "",
+        false,
+        Action::Custom(crate::tools::select::STRETCH_CAD),
+        out,
     );
+    ui.menu_button("Marquee Selection", |ui| {
+        let current = crate::tools::select::marquee_mode();
+        for m in crate::tools::select::MarqueeMode::ALL {
+            live(ui, m.label(), "", m == current, Action::Custom(m.command()), out);
+        }
+    });
+    ui.separator();
     live(
         ui,
         "Find/Replace Text\u{2026}",
@@ -779,6 +833,25 @@ fn build_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
 /// Build > Framing: the defaults window and the Framing Overview plan view.
 fn framing_rows(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ui.separator();
+    // The Build Framing dialog: the next Framing window opens as Build Framing
+    // (Floor, Ceiling, Roof, Wall, Posts, Trusses, Framing Defaults tabs).
+    for (label, all) in [
+        ("Build Framing\u{2026}", false),
+        ("Build All Framing\u{2026}", true),
+    ] {
+        if ui.add(egui::Button::new(label)).clicked() {
+            crate::dialogs::framing::request_build(all);
+            out.push(Action::Custom(crate::dialogs::defaults::FRAMING));
+            ui.close_menu();
+        }
+    }
+    // CB-86: the framing of the deck rooms of the floor.
+    for (label, id) in [
+        ("Build Deck Framing", crate::editor::fireplace_view::cmd::BUILD_DECK),
+        ("Delete Deck Framing", crate::editor::fireplace_view::cmd::CLEAR_DECK),
+    ] {
+        live(ui, label, "", false, Action::Custom(id), out);
+    }
     live(
         ui,
         "Framing Defaults\u{2026}",
@@ -922,6 +995,22 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             cmd(C::Mode(M::DollHouse)),
             out,
         );
+        live(
+            ui,
+            V::GlassHouse.label(),
+            "",
+            false,
+            cmd(C::GlassHouse),
+            out,
+        );
+        live(
+            ui,
+            V::FloorCamera.label(),
+            "",
+            false,
+            cmd(C::Tool(V::FloorCamera)),
+            out,
+        );
         ui.separator();
         live(ui, "Ray Trace\u{2026}", "", false, cmd(C::RayTrace), out);
     });
@@ -943,6 +1032,8 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         }
     });
     ui.separator();
+    camera_step_menus(ui, out);
+    ui.separator();
     ui.menu_button("Walkthroughs", |ui| {
         live(
             ui,
@@ -950,6 +1041,14 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "",
             false,
             Action::SetTool(ToolId::CameraVariant(V::Walkthrough)),
+            out,
+        );
+        live(
+            ui,
+            "Walkthrough Path from CAD Polyline",
+            "",
+            false,
+            cmd(C::WalkFromCad),
             out,
         );
         live(
@@ -1007,6 +1106,8 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     }
     ui.separator();
     ui.menu_button("Lighting", |ui| {
+        live(ui, "Lighting\u{2026}", "", false, cmd(C::Lighting), out);
+        ui.separator();
         live(
             ui,
             "Add Lights",
@@ -1027,6 +1128,12 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         out,
     );
     live(ui, "Rebuild 3D", "", false, cmd(C::Rebuild), out);
+    live(ui, "Save Camera", "", false, cmd(C::SaveCamera), out);
+    ui.menu_button("View Quality", |ui| {
+        for q in plan_core::camera_view::ViewQuality::ALL {
+            live(ui, q.label(), "", false, cmd(C::Quality(q)), out);
+        }
+    });
     live(
         ui,
         "Show Doors Open",
@@ -1055,6 +1162,69 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         cmd(C::Defaults),
         out,
     );
+}
+
+/// 3D > Move Camera with Mouse / with Keyboard, Move Camera, Orbit Camera,
+/// Tilt Camera and View Direction (C-2, C-34, C-38, C-40, C-41). Isometric
+/// Views need an orthographic camera at an angle the viewport does not have
+/// yet (queue).
+fn camera_step_menus(ui: &mut egui::Ui, out: &mut Vec<Action>) {
+    use crate::shell::view3d_panel::nudge::{Direction, Nudge as N};
+    use crate::shell::view3d_panel::View3dCommand as C;
+    let step = |n| Action::View3d(C::Nudge(n));
+    ui.menu_button("Move Camera with Mouse", |ui| {
+        live(
+            ui,
+            "Mouse-Orbit Camera",
+            "",
+            false,
+            Action::View3d(C::MouseOrbit),
+            out,
+        );
+    });
+    ui.menu_button("Move Camera with Keyboard", |ui| {
+        for (name, key, n) in [
+            ("Forward", "Up", N::Forward),
+            ("Back", "Down", N::Back),
+            ("Turn Left", "Left", N::TurnLeft),
+            ("Turn Right", "Right", N::TurnRight),
+            ("Raise", "PageUp", N::Raise),
+            ("Lower", "PageDown", N::Lower),
+        ] {
+            live(ui, name, key, false, step(n), out);
+        }
+    });
+    ui.menu_button("Move Camera", |ui| {
+        for (name, n) in [
+            ("Forward", N::Forward),
+            ("Back", N::Back),
+            ("Left", N::Left),
+            ("Right", N::Right),
+            ("Up", N::Raise),
+            ("Down", N::Lower),
+        ] {
+            live(ui, name, "", false, step(n), out);
+        }
+    });
+    ui.menu_button("Orbit Camera", |ui| {
+        for (name, n) in [
+            ("Left", N::OrbitLeft),
+            ("Right", N::OrbitRight),
+            ("Up", N::OrbitUp),
+            ("Down", N::OrbitDown),
+        ] {
+            live(ui, name, "", false, step(n), out);
+        }
+    });
+    ui.menu_button("Tilt Camera", |ui| {
+        live(ui, "Tilt Up", "", false, step(N::TiltUp), out);
+        live(ui, "Tilt Down", "", false, step(N::TiltDown), out);
+    });
+    ui.menu_button("View Direction", |ui| {
+        for d in Direction::ALL {
+            live(ui, d.label(), "", false, step(N::Look(d)), out);
+        }
+    });
 }
 
 /// A CAD menu entry that starts the CAD tool in mode `m`.
@@ -1098,6 +1268,9 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             CadMode::Trim,
             CadMode::Extend,
             CadMode::BreakLine,
+            CadMode::ChangeLineArc,
+            CadMode::DeleteBreak,
+            CadMode::MakeArcTangent,
             CadMode::ReverseDirection,
             CadMode::MakeParallel,
             CadMode::MakePerpendicular,
@@ -1131,7 +1304,38 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         CadMode::BlockManagement,
         out,
     );
-    cad_mode(ui, "CAD Detail From View", CadMode::DetailFromView, out);
+    live(
+        ui,
+        "Auto Detail",
+        "",
+        false,
+        Action::Custom(crate::tools::details::AUTO_DETAIL),
+        out,
+    );
+    live(
+        ui,
+        "CAD Detail From View",
+        "",
+        false,
+        Action::Custom(crate::tools::details::DETAIL_FROM_VIEW),
+        out,
+    );
+    live(
+        ui,
+        "CAD Detail Management\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::tools::details::MANAGEMENT),
+        out,
+    );
+    live(
+        ui,
+        "Detail Components\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::tools::details::COMPONENTS),
+        out,
+    );
     ui.separator();
     live(
         ui,
@@ -1246,6 +1450,32 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         live(ui, "Plan Check", "", false, Action::PlanCheck, out);
         live(
             ui,
+            "Plan Check Settings\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_check::SETTINGS),
+            out,
+        );
+        live(
+            ui,
+            "Check While Drawing",
+            "",
+            crate::dialogs::preferences::pages::current()
+                .architectural
+                .check_while_drawing,
+            Action::Custom(crate::dialogs::plan_check::CHECK_LIVE),
+            out,
+        );
+        live(
+            ui,
+            "Apply Code Minimums to Defaults",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_check::APPLY_DEFAULTS),
+            out,
+        );
+        live(
+            ui,
             "Door/Window Check",
             "",
             false,
@@ -1295,6 +1525,24 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         live(ui, "Room Schedule", "", false, Action::RoomSchedule, out);
         live(ui, "Wall Schedule", "", false, Action::WallSchedule, out);
         ui.separator();
+        // Marks set in the order the doors / windows were drawn (DW-61).
+        live(
+            ui,
+            "Renumber Door Schedule",
+            "",
+            false,
+            Action::Custom(crate::editor::opening_edit::RENUMBER_DOORS),
+            out,
+        );
+        live(
+            ui,
+            "Renumber Window Schedule",
+            "",
+            false,
+            Action::Custom(crate::editor::opening_edit::RENUMBER_WINDOWS),
+            out,
+        );
+        ui.separator();
         // Click in the plan to place the schedule as a table that stays up
         // to date (the Schedule flyout's tool).
         ui.menu_button("Place on Plan", |ui| {
@@ -1336,12 +1584,68 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::MaterialsList,
         out,
     );
+    ui.menu_button("Layer Painter", |ui| {
+        use crate::tools::painters::PainterMode as P;
+        for m in [P::LayerPaint, P::LayerEyedropper] {
+            let id = ToolId::PainterVariant(m);
+            live(ui, m.name(), "", state.tool == id, Action::SetTool(id), out);
+        }
+    });
+    ui.menu_button("Object Painter", |ui| {
+        use crate::tools::painters::PainterMode as P;
+        for m in [P::ObjectPaint, P::ObjectEyedropper] {
+            let id = ToolId::PainterVariant(m);
+            live(ui, m.name(), "", state.tool == id, Action::SetTool(id), out);
+        }
+        ui.separator();
+        live(
+            ui,
+            "Object Painter Modes\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::tools::painters::MODES),
+            out,
+        );
+    });
+    live(
+        ui,
+        "Spell Check\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::spell_check::OPEN),
+        out,
+    );
     live(
         ui,
         "Project Information\u{2026}",
         "",
         false,
         Action::ProjectInfo,
+        out,
+    );
+    // Beyond Chief: custom properties and the Excel exchange.
+    live(
+        ui,
+        "Property Manager\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::property_manager::OPEN),
+        out,
+    );
+    live(
+        ui,
+        "Export Property Data (XLSX)\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::property_manager::EXPORT_ALL),
+        out,
+    );
+    live(
+        ui,
+        "Import Property Data (XLSX)\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::property_manager::IMPORT),
         out,
     );
     ui.separator();
@@ -1605,6 +1909,27 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         out,
     );
     row(ui, "Delete Layout Box", C::DeleteBox, out);
+    row(ui, "Open Source View", C::OpenSourceView, out);
+    row(ui, "Copy Layout Box to Page\u{2026}", C::CopyBoxToPage, out);
+    row(ui, "Duplicate Layout Box", C::DuplicateBox, out);
+    ui.menu_button("Align Layout Boxes", |ui| {
+        for edge in plan_layout::AlignEdge::ALL {
+            row(ui, edge.label(), C::Align(edge), out);
+        }
+        ui.separator();
+        row(
+            ui,
+            "Spread Horizontally",
+            C::Distribute(plan_layout::Spread::Horizontal),
+            out,
+        );
+        row(
+            ui,
+            "Spread Vertically",
+            C::Distribute(plan_layout::Spread::Vertical),
+            out,
+        );
+    });
     row(ui, "Update Layout Views", C::UpdateViews, out);
     ui.separator();
     row(ui, "Insert Page Before", C::InsertPageBefore, out);
@@ -1622,8 +1947,10 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     row(ui, "Previous Page", C::PreviousPage, out);
     row(ui, "Next Page", C::NextPage, out);
     row(ui, "Layout Page Table\u{2026}", C::PageTable, out);
+    row(ui, "Page Specification\u{2026}", C::PageSpecification, out);
     ui.separator();
     row(ui, "Page Setup\u{2026}", C::PageSetup, out);
+    row(ui, "Customize Sheet Sizes\u{2026}", C::CustomizeSheetSizes, out);
     row(ui, "Project Information\u{2026}", C::ProjectInfo, out);
     row(ui, "Fit Page in Window", C::FitPage, out);
     row(ui, "Layer Display Options\u{2026}", C::LayerDisplay, out);
@@ -1631,6 +1958,10 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     ui.separator();
     row(ui, "Save As Template\u{2026}", C::SaveAsTemplate, out);
     row(ui, "Apply Template\u{2026}", C::ApplyTemplate, out);
+    row(ui, "New Layout File\u{2026}", C::NewLayoutFile, out);
+    ui.separator();
+    row(ui, "Export Table as CSV\u{2026}", C::ExportTableCsv, out);
+    row(ui, "Export Table to Excel\u{2026}", C::ExportTableExcel, out);
     ui.separator();
     row(ui, "Print Model\u{2026}", C::PrintModel, out);
     row(ui, "Print Layout\u{2026}", C::Print, out);
@@ -1698,6 +2029,11 @@ mod tests {
         let mut cx = EditorContext::new(crate::plan_defaults::embedded());
         for id in [
             underlay::MANAGE,
+            crate::tools::images::IMPORT_PICTURE,
+            crate::tools::details::MANAGEMENT,
+            crate::tools::details::COMPONENTS,
+            crate::tools::details::DETAIL_FROM_VIEW,
+            crate::tools::details::AUTO_DETAIL,
             mat::LIST,
             mat::ADJUST,
             mat::BUILDER,
@@ -1724,6 +2060,7 @@ mod tests {
             app::RECENT[0],
             crate::dialogs::defaults::CABINETS,
             crate::dialogs::defaults::FRAMING,
+            crate::dialogs::plan_check::SETTINGS,
         ] {
             assert!(placed::run_command(&mut cx, id), "{id} is not handled");
         }

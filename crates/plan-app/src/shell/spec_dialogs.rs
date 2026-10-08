@@ -1,5 +1,6 @@
-//! Hosts the specification dialogs of every object kind except walls and
-//! openings (those two keep their extras in `main.rs`): stairs, cabinets,
+//! Hosts the specification dialogs of every object kind except a single wall
+//! and openings (those keep their extras in `main.rs`; several walls open one
+//! dialog here, W-83): stairs, cabinets,
 //! symbols, roof planes, ceiling planes and dormers, framing members, slabs and other foundation objects,
 //! corner trim, moldings, material regions, hatching, decks and 3D solids,
 //! electrical devices, terrain, dimensions, text and CAD. [`SpecDialogs::open`] is the one place that maps an [`ObjectRef`] to
@@ -12,11 +13,13 @@ use crate::dialogs::dimension::{self, DimensionDialog};
 use crate::dialogs::electrical::ElectricalDialog;
 use crate::dialogs::foundation::FoundationDialog;
 use crate::dialogs::framing::FramingMemberDialog;
+use crate::dialogs::property_manager::{self, PropSession, SharedSession};
 use crate::dialogs::roof::{CeilingDialog, DormerDialog, RoofPlaneDialog};
 use crate::dialogs::stairs::StairDialog;
 use crate::dialogs::symbol::SymbolDialog;
 use crate::dialogs::terrain::{ObjectDialog, TerrainDialog};
 use crate::dialogs::text::TextDialog;
+use crate::dialogs::WallDialog;
 use crate::dialogs::{cad, text, Outcome};
 use crate::editor::{
     details_view, foundation_view, framing_view, placed, roof_view, rooms_edit, schedule_view,
@@ -46,17 +49,54 @@ enum Active {
     Dimension(Box<DimensionDialog>),
     Text(Box<TextDialog>),
     Cad(Box<CadDialog>),
+    /// The Wall Specification over several selected walls (W-83).
+    Walls(Box<WallDialog>),
 }
 
 /// The open specification dialog, if any (one at a time).
 #[derive(Default)]
 pub struct SpecDialogs {
     active: Option<Active>,
+    /// The Properties tab of the open dialog (`property_manager`).
+    props: Option<SharedSession>,
+    /// The Properties tab of the wall or opening dialog `main.rs` hosts.
+    main_props: Option<SharedSession>,
 }
 
 impl SpecDialogs {
     pub fn is_open(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// Arms the Properties tab for the wall or opening dialog that `main.rs`
+    /// hosts (none when the object's kind has no custom properties).
+    pub fn arm_main_props(&mut self, cx: &EditorContext, o: ObjectRef) {
+        self.main_props = PropSession::for_object(cx, o);
+    }
+
+    /// The armed session of the hosted wall / opening dialog.
+    pub fn main_props(&self) -> Option<&SharedSession> {
+        self.main_props.as_ref()
+    }
+
+    /// Takes the armed session (OK) or drops it (Cancel).
+    pub fn take_main_props(&mut self) -> Option<SharedSession> {
+        self.main_props.take()
+    }
+
+    /// The Properties session of the open dialog.
+    #[cfg(test)]
+    pub fn props_mut(&mut self) -> Option<&SharedSession> {
+        self.props.as_ref()
+    }
+
+    /// Test access to the open multi-wall Wall Specification.
+    #[cfg(test)]
+    pub fn walls_dialog_mut(&mut self) -> Option<&mut WallDialog> {
+        match self.active.as_mut()? {
+            Active::Walls(d) => Some(d),
+            _ => None,
+        }
     }
 
     /// Test access to the open Dimension Specification's draft.
@@ -84,6 +124,42 @@ impl SpecDialogs {
             Active::Cad(d) => Some(d.draft_mut()),
             _ => None,
         }
+    }
+
+    /// Opens one Wall Specification over the walls `ids` of the active floor
+    /// (Open Object with several walls selected, W-83). Fields whose values
+    /// differ show the mixed state; only the fields edited are written to all
+    /// the walls, as one undo step. Returns false for fewer than two walls.
+    pub fn open_walls(&mut self, cx: &mut EditorContext, ids: &[Id]) -> bool {
+        let walls: Vec<_> = ids
+            .iter()
+            .filter_map(|id| cx.floor().wall(*id).cloned())
+            .collect();
+        if walls.len() < 2 {
+            return false;
+        }
+        let heights = [
+            cx.wall_height(plan_core::WallKind::Exterior),
+            cx.wall_height(plan_core::WallKind::Interior),
+        ];
+        let dialog = WallDialog::multi(walls, heights, cx.wall_types().to_vec());
+        self.active = Some(Active::Walls(Box::new(dialog)));
+        true
+    }
+
+    /// The walls of the active floor that are all there is in the selection,
+    /// when it holds two or more walls and nothing else.
+    pub fn selected_walls(cx: &EditorContext) -> Option<Vec<Id>> {
+        let ids: Vec<Id> = cx
+            .selection
+            .items
+            .iter()
+            .map(|o| match o {
+                ObjectRef::Wall(id) => Some(*id),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        (ids.len() >= 2).then_some(ids)
     }
 
     /// Opens the dialog of `o`. Returns false when the object has none (or
@@ -193,6 +269,7 @@ impl SpecDialogs {
         let opened = dialog.is_some();
         if opened {
             self.active = dialog;
+            self.props = PropSession::for_object(cx, o);
         }
         opened
     }
@@ -202,7 +279,7 @@ impl SpecDialogs {
         let Some(mut a) = self.active.take() else {
             return;
         };
-        let outcome = match &mut a {
+        let outcome = property_manager::with_current(self.props.as_ref(), || match &mut a {
             Active::Stair(d) => d.show(ctx),
             Active::Cabinet(d) => d.show(ctx),
             Active::Symbol(d) => d.show(ctx),
@@ -218,12 +295,17 @@ impl SpecDialogs {
             Active::Dimension(d) => d.show(ctx),
             Active::Text(d) => d.show(ctx),
             Active::Cad(d) => d.show(ctx),
-        };
+            Active::Walls(d) => d.show(ctx),
+        });
         match outcome {
             Outcome::Open => self.active = Some(a),
-            Outcome::Cancel => {}
+            Outcome::Cancel => self.props = None,
             Outcome::Ok => {
+                // The dialog and its Properties tab are one undo step.
+                let depth = property_manager::before_apply(cx);
                 apply(cx, &a);
+                property_manager::after_apply(cx, self.props.as_ref(), depth);
+                self.props = None;
                 cx.mark_dirty();
             }
         }
@@ -322,6 +404,16 @@ fn apply(cx: &mut EditorContext, a: &Active) {
         Active::Cad(d) => {
             d.apply(cx);
         }
+        Active::Walls(d) => {
+            cx.begin_change("Wall Specification");
+            let fl = cx.floor;
+            if d.apply_multi(&mut cx.project, fl) == 0 {
+                cx.cancel_change();
+                cx.status = "Wall Specification: nothing was changed".into();
+            } else {
+                cx.refresh();
+            }
+        }
     }
 }
 
@@ -382,10 +474,17 @@ mod tests {
         );
         assert_eq!(cx.undo_label().map(str::to_string), depth);
 
-        // An elevation point has no dialog of its own: the Terrain
-        // Specification opens. A vanished element opens nothing.
+        // An elevation point has a dialog of its own (round 14); the whole
+        // terrain opens the Terrain Specification. A vanished element opens
+        // nothing.
         let mut dialogs = SpecDialogs::default();
         assert!(dialogs.open(&mut cx, ObjectRef::TerrainObject(TerrainHit::Point(0))));
+        assert!(matches!(
+            dialogs.active,
+            Some(Active::TerrainObject(TerrainHit::Point(0), _))
+        ));
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::Terrain));
         assert!(matches!(dialogs.active, Some(Active::Terrain(_))));
         let mut dialogs = SpecDialogs::default();
         assert!(!dialogs.open(&mut cx, ObjectRef::TerrainObject(TerrainHit::Wall(4))));

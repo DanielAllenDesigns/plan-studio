@@ -49,6 +49,7 @@ pub mod model;
 pub mod preview;
 pub mod rules;
 mod shapes;
+pub mod standin;
 mod starter;
 mod symbol;
 pub mod user;

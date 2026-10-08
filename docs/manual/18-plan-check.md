@@ -32,15 +32,18 @@ An ignored finding is identified by its floor, rule, object and place (whole inc
 
 **Settings...** opens a window with three parts. OK stores the settings in the plan (one undo step, "Plan Check Settings") and checks again; Cancel drops the edits.
 
-- **Jurisdiction.** The list holds the **IRC 2021 residential** preset and **Custom**. Picking the preset puts every limit and every rule back to its starting value; the name changes to Custom by
-  itself as soon as a limit is edited.
+- **Jurisdiction.** The list holds the **IRC 2021 residential** preset, the **Georgia 2020** preset (the 2018 IRC with the 2020 Georgia amendments, frost depth 12") and **Custom**. Picking a preset puts every limit and every rule back to that preset's
+  starting values; the name changes to Custom by itself as soon as a limit is edited, and back to the preset's name if the limits are brought back to it.
 - **Limits** (a collapsed section): 32 numbers the rules compare against. Edit any of them to match your jurisdiction.
-- **The rule list**, grouped (Rooms, Doors and windows, Stairs and guards, Bath and kitchen, Garage, Roof, Electrical, Framing, Plan geometry). Each rule has a tick box, its severity and a tooltip with what it
-  checks; **All on** and **All off** act on a group. A rule that is switched off does not run.
+- **The rule list**, grouped (Rooms, Doors and windows, Stairs and guards, Bath and kitchen, Garage, Roof, Electrical, Framing, Foundation, Plan geometry). Each rule has a tick box, its severity and a tooltip with what it
+  checks; **All on** and **All off** act on a whole group. A rule that is switched off does not run.
 
 The settings and the ignore list travel with the plan: they are two reserved entries of the plan's Project Information custom fields (`plancheck.settings` and `plancheck.ignored`, JSON in a string).
 Nothing is stored while the settings are the preset's, so a plan that never opened the dialog is unchanged. Do not rename or edit those fields by hand. Door/Window Check applies the rules' on/off ticks and the ignore list
 but uses the preset's limits.
+
+Seven more limits are held by the jurisdiction preset and are not in the dialog's list yet: the frost depth (12"), how far the first floor sits above grade (6", an assumption because the plan has no grade of its own), the thinnest footing (6"),
+the highest handrail (38"), the sphere a guard must stop (4"), the clear space in front of a shower or tub (24") and the thinnest gypsum board on the garage side of the house wall (1/2").
 
 The 32 limits, with the 2021 IRC preset's values:
 
@@ -65,19 +68,23 @@ The 32 limits, with the 2021 IRC preset's values:
 
 ## 18.3 The rules
 
-52 rules. Each finding carries the code reference below as its rule name, so a report reads as a list of sections to look up. Severity is the usual one; some rules give a lower one for a milder case.
+64 rules. Each finding carries the code reference below as its rule name, so a report reads as a list of sections to look up. Severity is the usual one; some rules give a lower one for a milder case.
 
 | Group | Rules (severity) |
 |---|---|
 | Rooms | R304.1 minimum room area (error), R304.2 minimum room dimension (error), R305.1 ceiling height (error), R311.6 hallway width (error), R311.1 means of egress (error: a room is reached through a door), R311.1 access through bathroom (warning), unnamed room (info) |
-| Doors and windows | R310.2 egress (error: a bedroom egress window or exterior door), R303.3 ventilation (info), R303.1 natural light (info: glazing 8% of the floor) and ventilation area (warning: openable glazing 4%), R311.2 door width (warning), R311.2 egress door height (warning), R311.2 bedroom door swing (info), R311.3 landing at a door (warning), R312.1.1 door to a drop (error: an upper-floor exterior door must open onto a deck), R312.2 window fall protection (info) |
-| Stairs and guards | R311.7.1 stair width, R311.7.2 headroom, R311.7.3 vertical rise (12'-7"), R311.7.5.1 riser height, R311.7.5.2 tread depth, R311.7.6 landings (all errors); R311.7.5 stair comfort 2R+T (info); R311.7.6 door swing over a stair (warning); R311.7.8 handrails (warning: four or more risers); R312.1.2 guard height (error); R312.1.1 guards on decks over 30" (error); R311.8 ramps (error) |
-| Bath and kitchen | R307.1 water closet clearance, P2708.1 shower and tub size, R307.1 door swing into a fixture (warnings); NKBA kitchen aisle width (warning), NKBA kitchen counter depth (info) |
-| Garage | R309.1 garage floor (info), R302.5.1 garage opening into a bedroom (error), garage door width (error), garage door rating (info) |
+| Doors and windows | R310.2 egress (error: a bedroom needs an exterior door or an operable window with 5.7 sq ft net clear, 5.0 on the grade floor, 20" wide, 24" high, sill 44" at most; a fixed window does not count and a sliding window counts half its width), R311.2 egress door (error: the grade floor needs a side-hinged exterior door 3'-0" x 6'-8" or larger that is not a garage door), R303.3 ventilation (info), R303.1 natural light (info: glazing 8% of the floor) and ventilation area (warning: openable glazing 4%), R311.2 door width (warning), R311.2 egress door height (warning), R311.2 bedroom door swing (info), R311.3 landing at a door (warning), R312.1.1 door to a drop (error: an upper-floor exterior door must open onto a deck), R312.2 window fall protection (info) |
+| Stairs and guards | R311.7.1 stair width, R311.7.2 headroom, R311.7.3 vertical rise (12'-7"), R311.7.5.1 riser height, R311.7.5.2 tread depth, R311.7.6 landings (all errors); R311.7.5 stair comfort 2R+T (info); R311.7.6 door swing over a stair (warning); R311.7.8 handrails (warning: four or more risers), R311.7.8.1 handrail height (34" to 38"), R311.7.8.2 handrail continuity (a railed flight must not run into an unrailed landing); R312.1.2 guard height (error: 34" on a stair, 36" on a landing), R312.1.3 opening limitation (error: balusters or cables that pass a 4" sphere); R312.1.1 guards on decks over 30" (error); R311.8 ramps (error) |
+| Bath and kitchen | R307.1 water closet clearance, R307.1 shower entrance clearance (24" in front of a shower or tub), P2708.1 shower and tub size, R307.1 door swing into a fixture (warnings); NKBA kitchen aisle width (warning), NKBA kitchen counter depth (info) |
+| Garage | R309.1 garage floor (info), R302.5.1 garage opening into a bedroom (error), garage door width (error), garage door rating (info), R302.6 garage separation (the garage side of a wall between garage and house needs 1/2" gypsum board: error when thinner, warning when another material, info when the wall has no wall type) |
 | Roof | R905.2.2 roof slope (warning), R905.1.1 underlayment (info), steep slope advisory (info) |
-| Electrical | R314.3 smoke alarm in each bedroom and on every level (warnings), R315.2 carbon monoxide alarms (info), NEC 210.8(A) GFCI protection (warning), NEC 210.52(A) receptacle spacing (warning) |
-| Framing | R602.7 header size, R502.3.1 joist span (warnings) |
+| Electrical | R314.3 smoke alarm in each bedroom, outside each sleeping area and on every level (warnings), R315.2 carbon monoxide alarms and R315.3 CO alarm outside each sleeping area (info), NEC 210.8(A) GFCI protection (warning), NEC 210.52(A) receptacle count and E3901.2 receptacle spacing (warnings: no point along a wall space of 2' or more is farther than 6' from a receptacle; a door breaks a wall space) |
+| Framing | R602.7 header size, R502.3.1 joist span, R802.4.1 rafter span (warnings; the span tables are conservative simplifications, not a structural design) |
+| Foundation | R403.1.4 footing depth (warning: the underside must be at least the frost depth below grade), R403.1.1 footing size (warning: width by number of storeys, 12", 15" or 18", and 6" thick) |
 | Plan geometry | Tiny wall (under 6"), dangling exterior wall, duplicate wall (warnings); opening fits and does not overlap (error) |
+
+The footing rules read the foundation floor made by Build Foundation (walls with footings, a thickened slab edge) and the slabs, pads and piers on a floor. Because the plan has no grade of its own they assume the first floor's finished floor is
+6" above grade; a footing finding says so. They give a place to zoom to but select nothing.
 
 Some rules need the right objects to be in the plan: the electrical rules read the placed devices (chapter 9), the stair rules read the stairs of the floor (chapter 7), the roof rules the roof planes (chapter 8), the
 bath and kitchen rules the fixtures, cabinets and room types, and the room rules the room names and types. Room types come from the room names, so name your rooms for the room rules to know which are bedrooms, baths and kitchens.
@@ -97,5 +104,30 @@ The same three outputs are written for Door/Window Check.
 
 - The rules measure the model, not a code official's reading of it: tolerance, local amendments and exceptions are yours to apply (that is what the limits and the rule ticks are for).
 - Only the active floor is checked each time. Run Plan Check on each floor.
+- Not checked, because the model has no data for it: beam clearance (6'-8") in R305.1, 5/8" Type X on the ceiling under a habitable room above a garage, deck baluster spacing (a deck only has a Railing tick box) and the N1102 fenestration U-factor.
 - A rule fires on the objects the model has: a missing smoke alarm is found because bedrooms exist and no alarm is placed, but a bedroom without a room name or type may escape the bedroom rules.
 - The report has no sheet reference or date; the layout page is plain text. Format it in the layout like any text box.
+
+## 18.6 Code minimums
+
+The limits Plan Check checks are also the minimums the rest of the program holds your plan to. They come from the jurisdiction in **Tools > Checks > Plan Check Settings...** (IRC 2021 residential, Georgia 2020, or Custom once you edit a limit), so changing the preset changes them everywhere at once. While the settings are open the status bar names the code edition, for example `Code: IRC 2021` or `Code: IRC 2018 (Georgia)`.
+
+**Starting values.** A new plan and File > New start from code-legal defaults: stairs at 7 1/2" risers (7 3/4" at most), 10" treads, 36" width and 6'-8" headroom; rails 36" high (a handrail 34" to 38") with openings that stop a 4" sphere; a 3-0 x 5-0 casement as the bedroom window default (net clear 15 sq ft, sill 36"); an exterior door of at least 36" x 80"; a footing as wide as the table asks for (15" for two storeys) and at least 6" thick; and a garage-separation wall type with 5/8" Type X gypsum on both faces. Values that are already legal are left alone: Daniel's 96" exterior door stays 96". The preference **Preferences > Architectural > Seed defaults from code minimums** (on by default) turns this off. **Plan Check Settings > Apply code minimums to defaults** (also Tools > Checks > Apply Code Minimums to Defaults) raises the current defaults to the minimums of the open plan; the status bar lists what moved. It is one step in the plan's Undo list, but Undo does not put the defaults back, because the defaults belong to the program rather than the plan.
+
+**Notices under the fields.** A dialog field that is past a minimum gets an amber line under it with the code section and the limit, and a **Set to code** button that writes the limit into the field. The notice only warns: OK is never blocked, and Set to code is part of the dialog's draft, so OK is still one undo step. The notices are in:
+
+- Staircase Specification, General: Width (R311.7.1), Tread Depth (R311.7.5.2), Riser Height (R311.7.5.1), Headroom (R311.7.2); Newels/Balusters: Clear Spacing (R312.1.3, a 4" sphere); Rails: Guard Height (R311.7.8.1, 34" to 38" for a stair rail). A landing's width has the same notice.
+- Wall Specification, Rail Style (a railing wall): Railing Height (R312.1.2, 36").
+- Window Specification, for a window in a bedroom (a room whose type has bed, master or nursery in it): the net clear opening (R310.2.1: 5.7 sq ft, 5.0 on the grade floor; 20" wide; 24" high; a sliding window counts half its width) and the sill (R310.2.2, 44" at most). A fixed window is flagged because it cannot be the escape opening.
+- Door Specification, for an exterior door of the grade floor (not a garage door): the egress door width (a 36" leaf for 32" clear) and height (80", R311.2).
+- Room Specification: the ceiling height of a habitable room, hall, bath or laundry (R305.1) on the Structure tab, and a note on General when a habitable room is smaller than 70 sq ft (R304.1).
+- Build Foundation, Walls with Footings: Footing Width (Table R403.1(1)) and Footing Depth, the footing's thickness (R403.1.1 and the frost depth, R403.1.4), against the stem wall height; the footing rows of the slab and pad pages have the 6" thickness notice.
+- Build Framing: a note when joist or rafter spacing is wider than the span tables cover (24") or wider than the 16" they are written for, with the table span of the size.
+
+**Tools.** A new stair starts at the plan's minimums (a stricter riser limit in the settings gives a stricter stair). Auto Place Outlets spaces receptacles by the plan's limits (a receptacle within 6' along a wall, counter receptacles 48" apart, none for a wall space under 24").
+
+**Fix.** In the Plan Check window, **Fix** writes the minimum into the object a stair finding names (width, headroom, tread, riser, rail height, baluster opening) or into the footings of the foundation floor (width and thickness), as one undo step (*Fix Stair to Code*, *Fix Footing to Code*). The button is greyed for findings that have no automatic fix.
+
+**Check while drawing.** With **Tools > Checks > Check While Drawing** on (it is on by default, and a preference on the Architectural page), Plan Check re-counts after each edit the rule groups the edit touched: Stairs and guards, Doors and windows, Rooms and Foundation. The status bar shows `Live check: 2 errors, 1 warning` while there are any, and a Plan Check button on a toolbar shows the count as a red badge. The full list is still **Tools > Checks > Plan Check**.
+
+Local amendments: the settings dialog edits the limits Plan Check has fields for. A limit with no field there (receptacle spacing, for example) can be amended in the plan file under `plancheck.minimum_overrides`, a name to number map (`CodeMinimums::numeric_keys` lists the names).

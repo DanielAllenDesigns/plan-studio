@@ -2301,6 +2301,7 @@ name = "plan-docs"
 version = "0.1.0"
 dependencies = [
  "plan-cabinets",
+ "plan-calib",
  "plan-core",
  "plan-electrical",
  "plan-framing",

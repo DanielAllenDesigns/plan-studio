@@ -32,12 +32,15 @@
 
 pub mod cad;
 pub mod camera;
+pub mod camera_view;
 pub mod defaults;
 pub mod details;
+pub mod deck;
 pub mod dim_assoc;
 pub mod dimension;
 pub mod export;
 pub mod extras;
+pub mod fireplace;
 pub mod find_text;
 pub mod floors;
 pub mod foundation;
@@ -53,9 +56,12 @@ pub mod model;
 pub mod object_materials;
 pub mod opening_symbol;
 pub mod openings;
+pub mod props;
 pub mod rooms;
 pub mod schedules;
+pub mod split_level;
 pub mod symbols;
+pub mod text_box;
 pub mod text_styles;
 pub mod transform;
 pub mod underlay;
@@ -65,7 +71,7 @@ pub mod walls;
 pub use cad::{CadItem, CadObject};
 pub use camera::{CameraKind, CameraObject};
 pub use defaults::{
-    DimensionDefaultSet, EditingDefaults, PlanDefaults, WallConnectDefaults, WallLayer, WallTypeDef,
+    CodeDefaults, DimensionDefaultSet, EditingDefaults, PlanDefaults, WallConnectDefaults, WallLayer, WallTypeDef,
 };
 pub use dimension::{
     align_dimensions, auto_exterior_dimensions, auto_exterior_set, auto_nkba_dimensions,

@@ -31,6 +31,19 @@
 //! step. The objects live in the floor's `DetailsLayer`
 //! (`editor::details_view`).
 
+mod cad_detail;
+mod components;
+
+pub use cad_detail::{
+    auto_detail, delete_detail, duplicate_detail, eligible_cameras, new_detail, open_detail,
+    rename_detail, run_command, scale_label, send_to_layout, sync_names, AutoDetailOptions,
+    AUTO_DETAIL, COMPONENTS, DETAIL_FROM_VIEW, MANAGEMENT,
+};
+#[cfg(test)]
+pub use cad_detail::build as build_auto_detail;
+pub use components::{arm, catalogue, find as find_component, place as place_component};
+pub use components::{Category as ComponentCategory, Component};
+
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::details::{DetailsDialog, Draft};
 use crate::dialogs::Outcome;
@@ -73,6 +86,8 @@ pub enum DetailsVariant {
     Cylinder,
     Pyramid,
     Sphere,
+    /// Places the Detail Components window's chosen component as a CAD block.
+    Component,
 }
 
 /// What the clicks of a flavor do.
@@ -91,10 +106,12 @@ enum Draw {
     Wall,
     /// A wall, then the dialog.
     Hatch,
+    /// One click places the armed detail component.
+    Component,
 }
 
 impl DetailsVariant {
-    pub const ALL: [DetailsVariant; 17] = [
+    pub const ALL: [DetailsVariant; 18] = [
         DetailsVariant::CornerBoards,
         DetailsVariant::AutoCornerBoards,
         DetailsVariant::Quoins,
@@ -112,6 +129,7 @@ impl DetailsVariant {
         DetailsVariant::Cylinder,
         DetailsVariant::Pyramid,
         DetailsVariant::Sphere,
+        DetailsVariant::Component,
     ];
 
     /// Chief's name of the tool.
@@ -134,6 +152,7 @@ impl DetailsVariant {
             DetailsVariant::Cylinder => "Cylinder",
             DetailsVariant::Pyramid => "Pyramid",
             DetailsVariant::Sphere => "Sphere",
+            DetailsVariant::Component => "Detail Component",
         }
     }
 
@@ -148,6 +167,7 @@ impl DetailsVariant {
             }
             DetailsVariant::WallMaterialRegion => Draw::Wall,
             DetailsVariant::WallHatching => Draw::Hatch,
+            DetailsVariant::Component => Draw::Component,
             _ => Draw::Polygon,
         }
     }
@@ -495,6 +515,19 @@ impl DetailsTool {
 
     // ----- overlay -----
 
+    /// One click of Detail Component: the armed component goes there.
+    fn place_armed(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        let Some(c) = components::armed() else {
+            cx.status = self.hint();
+            return ToolResult::consumed();
+        };
+        let at = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+        match components::place(cx, &c, at) {
+            Some(_) => ToolResult::committed("Place Detail Component"),
+            None => ToolResult::consumed(),
+        }
+    }
+
     fn draw_progress(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         let ink = cx.palette.ghost_stroke;
         let stroke = Stroke::new(1.6_f32, ink);
@@ -562,6 +595,18 @@ impl DetailsTool {
                     line(&strip, true, Stroke::new(2.0_f32, cx.palette.hover));
                 }
             }
+            Draw::Component => {
+                // The outline of the component where it would go.
+                if let (Some(h), Some(c)) = (self.hover, components::armed()) {
+                    let (lo, hi) = c.bounds();
+                    let half = Point::new((hi.x - lo.x) * 0.5, (hi.y - lo.y) * 0.5);
+                    line(
+                        &rect_outline(h - half, h + half),
+                        true,
+                        Stroke::new(1.6_f32, cx.palette.hover),
+                    );
+                }
+            }
             Draw::Auto | Draw::Corner => {}
         }
     }
@@ -596,6 +641,13 @@ impl Tool for DetailsTool {
                 v.name()
             ),
             Draw::Hatch => format!("{}: click a wall", v.name()),
+            Draw::Component => match components::armed() {
+                Some(c) => format!("{}: click to place {} (Esc stops)", v.name(), c.name),
+                None => format!(
+                    "{}: choose a component in CAD > Detail Components first",
+                    v.name()
+                ),
+            },
         }
     }
 
@@ -658,6 +710,7 @@ impl Tool for DetailsTool {
         let draw = self.variant.draw();
         self.hover = Some(match draw {
             Draw::Corner | Draw::Wall | Draw::Hatch | Draw::Auto => p.world,
+            Draw::Component => cx.snap_at(p.world, None, p.modifiers.alt, &[]).point,
             _ if self.points.is_empty() => p.snapped,
             _ => self.snapped(cx, &p),
         });
@@ -716,6 +769,7 @@ impl Tool for DetailsTool {
             };
         }
         match draw {
+            Draw::Component => self.place_armed(cx, &p),
             Draw::Auto => self.auto_place(cx),
             Draw::Corner => self.place_on_corner(cx, &p),
             Draw::Hatch => self.hatch_wall(cx, &p),
@@ -1357,7 +1411,9 @@ mod tests {
                 }
             }
         }
-        assert_eq!(live, DetailsVariant::ALL.len());
+        // The Detail Component tool is armed from the Detail Components
+        // window, so it has no flyout entry.
+        assert_eq!(live, DetailsVariant::ALL.len() - 1);
         for v in DetailsVariant::ALL {
             assert!(!stubs.contains(&v.name()), "{} is still a stub", v.name());
         }

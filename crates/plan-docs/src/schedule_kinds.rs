@@ -34,6 +34,7 @@ use plan_cabinets::{auto_label, Cabinet, CabinetKind};
 use plan_core::schedules::{
     FloorScope, Numbering, Schedule, ScheduleKind, ScheduleLayer, SortSpec,
 };
+use plan_core::props::{PropDef, PropKey, PropKind};
 use plan_core::units::fmt_ft_in;
 use plan_core::{detect_rooms, Id, MoldingKind, OpeningKind, PlacedSymbol, Point, Project, Room};
 use plan_electrical::ElectricalLayer;
@@ -70,11 +71,22 @@ pub struct Entry {
     /// Short name and size, for the General schedule.
     pub name: String,
     pub size: String,
+    /// `(column id, text)` of the custom properties of the object
+    /// (`prop:Fire Rating`), for the kinds that take them.
+    pub props: Vec<(String, String)>,
 }
 
 impl Entry {
-    /// The text of field `id` (empty when the entry has no such field).
+    /// The text of field `id` (empty when the entry has no such field). A
+    /// `prop:` id reads the object's custom property.
     pub fn cell(&self, id: &str) -> &str {
+        if id.starts_with(plan_core::props::COLUMN_PREFIX) {
+            return self
+                .props
+                .iter()
+                .find(|(k, _)| k == id)
+                .map_or("", |(_, v)| v.as_str());
+        }
         self.cells
             .iter()
             .find(|(k, _)| *k == id)
@@ -116,6 +128,7 @@ fn new_entry(floor: usize, id: Id, position: Point, kind: ScheduleKind) -> Entry
         kind,
         name: String::new(),
         size: String::new(),
+        props: Vec::new(),
     }
 }
 
@@ -170,6 +183,15 @@ fn door_window(project: &Project, kind: ScheduleKind) -> Vec<Entry> {
                     ),
                     ("style", o.type_name().to_string()),
                     ("label", opening_label(o)),
+                    ("manufacturer", o.extras.spec.schedule.manufacturer.clone()),
+                    ("model", o.extras.spec.schedule.model.clone()),
+                    ("supplier", o.extras.spec.schedule.supplier.clone()),
+                    ("comment", o.extras.spec.schedule.comment.clone()),
+                    ("rough", size_text(o.rough_width(), o.rough_height())),
+                    ("u_factor", format!("{:.2}", o.extras.spec.energy.u_factor)),
+                    ("shgc", format!("{:.2}", o.extras.spec.energy.shgc)),
+                    ("description", o.extras.spec.info.description.clone()),
+                    ("object_id", o.extras.spec.info.id.clone()),
                 ]
             } else {
                 vec![
@@ -183,6 +205,15 @@ fn door_window(project: &Project, kind: ScheduleKind) -> Vec<Entry> {
                     ("floor", f.name.clone()),
                     ("style", o.type_name().to_string()),
                     ("label", opening_label(o)),
+                    ("manufacturer", o.extras.spec.schedule.manufacturer.clone()),
+                    ("model", o.extras.spec.schedule.model.clone()),
+                    ("supplier", o.extras.spec.schedule.supplier.clone()),
+                    ("comment", o.extras.spec.schedule.comment.clone()),
+                    ("rough", size_text(o.rough_width(), o.rough_height())),
+                    ("u_factor", format!("{:.2}", o.extras.spec.energy.u_factor)),
+                    ("shgc", format!("{:.2}", o.extras.spec.energy.shgc)),
+                    ("description", o.extras.spec.info.description.clone()),
+                    ("object_id", o.extras.spec.info.id.clone()),
                 ]
             };
             out.push(e);
@@ -316,6 +347,7 @@ fn stairs(project: &Project) -> Vec<Entry> {
                 StairShape::UShaped { .. } => "U-Shaped",
                 StairShape::Winder { .. } => "Winder",
                 StairShape::Ramp { .. } => "Ramp",
+                StairShape::Curved { .. } if p.spiral => "Spiral",
                 StairShape::Curved { .. } => "Curved",
             };
             let sol = solve(p);
@@ -326,7 +358,16 @@ fn stairs(project: &Project) -> Vec<Entry> {
             e.cells = vec![
                 ("mark", String::new()),
                 ("type", kind.to_string()),
+                (
+                    "treads",
+                    if ramp {
+                        String::new()
+                    } else {
+                        sol.treads.to_string()
+                    },
+                ),
                 ("width", fmt_ft_in(p.width)),
+                ("headroom", fmt_ft_in(p.headroom_min)),
                 ("rise", fmt_ft_in(p.total_rise)),
                 (
                     "risers",
@@ -424,6 +465,10 @@ fn cabinets(project: &Project) -> Vec<Entry> {
             let Ok(c) = serde_json::from_value::<Cabinet>(v.clone()) else {
                 continue;
             };
+            // Schedule tab of the Cabinet Specification: off keeps it out.
+            if !c.in_schedule {
+                continue;
+            }
             // The local origin is the back-left corner; the centre is half
             // the width along X and half the depth along Y, rotated.
             let (s, co) = c.angle.sin_cos();
@@ -760,6 +805,75 @@ fn general(project: &Project) -> Vec<Entry> {
 /// [`number`]. `active` lets the Room schedule use the editor's own room
 /// detection for that floor.
 pub fn entries(project: &Project, kind: ScheduleKind, active: ActiveRooms) -> Vec<Entry> {
+    let mut out = entries_raw(project, kind, active);
+    attach_props(project, kind, &mut out);
+    out
+}
+
+/// The kind of custom property a schedule of `kind` lists (none for the
+/// Note and General schedules).
+pub fn prop_kind_of(kind: ScheduleKind) -> Option<PropKind> {
+    match kind {
+        ScheduleKind::Door => Some(PropKind::Door),
+        ScheduleKind::Window => Some(PropKind::Window),
+        ScheduleKind::Room | ScheduleKind::RoomFinish => Some(PropKind::Room),
+        ScheduleKind::Wall => Some(PropKind::Wall),
+        ScheduleKind::Cabinet => Some(PropKind::Cabinet),
+        ScheduleKind::Electrical => Some(PropKind::Electrical),
+        ScheduleKind::Framing => Some(PropKind::Framing),
+        ScheduleKind::Fixture | ScheduleKind::Furniture | ScheduleKind::Plant => {
+            Some(PropKind::Symbol)
+        }
+        ScheduleKind::Stair => Some(PropKind::Stair),
+        ScheduleKind::Note | ScheduleKind::General => None,
+    }
+}
+
+/// Who owns the custom property values of a scheduled object: `None` for the
+/// lines that stand for no single object (grouped framing, terrain plants).
+pub fn prop_key(kind: ScheduleKind, floor: usize, id: Id, position: Point) -> Option<PropKey> {
+    match kind {
+        ScheduleKind::Room | ScheduleKind::RoomFinish => Some(PropKey::room(floor, position)),
+        _ if id == 0 => None,
+        ScheduleKind::Door => Some(PropKey::door(id)),
+        ScheduleKind::Window => Some(PropKey::window(id)),
+        ScheduleKind::Wall => Some(PropKey::wall(id)),
+        ScheduleKind::Cabinet => Some(PropKey::cabinet(id)),
+        ScheduleKind::Electrical => Some(PropKey::device(floor, id)),
+        ScheduleKind::Fixture | ScheduleKind::Furniture | ScheduleKind::Plant => {
+            Some(PropKey::symbol(id))
+        }
+        ScheduleKind::Stair => Some(PropKey::stair(id)),
+        ScheduleKind::Framing => Some(PropKey::framing(id)),
+        ScheduleKind::Note | ScheduleKind::General => None,
+    }
+}
+
+/// Fills in each entry's custom property texts (stored value, else default).
+fn attach_props(project: &Project, kind: ScheduleKind, entries: &mut [Entry]) {
+    let Some(pk) = prop_kind_of(kind) else {
+        return;
+    };
+    let defs: Vec<&PropDef> = project.props.defs_for(pk).collect();
+    if defs.is_empty() {
+        return;
+    }
+    for e in entries {
+        let key = prop_key(e.kind, e.floor, e.id, e.position);
+        e.props = defs
+            .iter()
+            .map(|d| {
+                let text = key
+                    .as_ref()
+                    .map(|k| project.props.text(k, d))
+                    .unwrap_or_default();
+                (d.column_id(), text)
+            })
+            .collect();
+    }
+}
+
+fn entries_raw(project: &Project, kind: ScheduleKind, active: ActiveRooms) -> Vec<Entry> {
     match kind {
         ScheduleKind::Door | ScheduleKind::Window => door_window(project, kind),
         ScheduleKind::Wall => walls(project),
@@ -946,10 +1060,50 @@ const SUMMED: [&str; 7] = [
     "board_feet",
 ];
 
-fn visible_columns(def: &Schedule) -> Vec<&plan_core::schedules::ColumnSpec> {
-    def.visible_columns()
-        .filter(|c| def.kind.fields().iter().any(|f| f.id == c.field))
-        .collect()
+/// The columns `def` shows: its visible columns the kind (or a custom
+/// property of the kind) supplies, then any custom property flagged "show in
+/// schedule" that the schedule has no column for.
+pub fn effective_columns(
+    project: &Project,
+    def: &Schedule,
+) -> Vec<plan_core::schedules::ColumnSpec> {
+    let pk = prop_kind_of(def.kind);
+    let prop_def = |field: &str| -> Option<&PropDef> {
+        let name = field.strip_prefix(plan_core::props::COLUMN_PREFIX)?;
+        project.props.def(pk?, name)
+    };
+    let mut cols: Vec<plan_core::schedules::ColumnSpec> = def
+        .visible_columns()
+        .filter(|c| def.kind.fields().iter().any(|f| f.id == c.field) || prop_def(&c.field).is_some())
+        .cloned()
+        .collect();
+    if let Some(pk) = pk {
+        for d in project.props.defs_for(pk).filter(|d| d.show_in_schedule) {
+            if !def.columns.iter().any(|c| c.field == d.column_id()) {
+                cols.push(plan_core::schedules::ColumnSpec::new(&d.column_id(), &d.name, true));
+            }
+        }
+    }
+    cols
+}
+
+/// A column's heading: its own title, else the kind's field title, else the
+/// custom property's name.
+fn column_title(def: &Schedule, c: &plan_core::schedules::ColumnSpec) -> String {
+    if !c.title.trim().is_empty() {
+        return c.title.clone();
+    }
+    def.kind
+        .fields()
+        .iter()
+        .find(|f| f.id == c.field)
+        .map(|f| f.title.to_string())
+        .or_else(|| {
+            c.field
+                .strip_prefix(plan_core::props::COLUMN_PREFIX)
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
 }
 
 /// The rows as listed (one per object) or grouped by `def.group_by`, and a
@@ -962,7 +1116,7 @@ fn display_rows(
     active: ActiveRooms,
 ) -> Vec<(Vec<String>, Vec<RowTarget>)> {
     let shown = rows(project, def, home_floor, active);
-    let columns = visible_columns(def);
+    let columns = effective_columns(project, def);
     let target = |e: &Entry| RowTarget {
         kind: e.kind,
         floor: e.floor,
@@ -1057,23 +1211,10 @@ pub fn row_targets(
 /// one row per object (or per group, with a Totals line, when the schedule
 /// asks for them).
 pub fn table(project: &Project, def: &Schedule, home_floor: usize, active: ActiveRooms) -> Table {
-    let columns = visible_columns(def);
+    let columns = effective_columns(project, def);
     Table {
         title: def.display_title(),
-        columns: columns
-            .iter()
-            .map(|c| {
-                if c.title.trim().is_empty() {
-                    def.kind
-                        .fields()
-                        .iter()
-                        .find(|f| f.id == c.field)
-                        .map_or(String::new(), |f| f.title.to_string())
-                } else {
-                    c.title.clone()
-                }
-            })
-            .collect(),
+        columns: columns.iter().map(|c| column_title(def, c)).collect(),
         rows: display_rows(project, def, home_floor, active)
             .into_iter()
             .map(|(cells, _)| cells)
@@ -1427,6 +1568,20 @@ mod tests {
     }
 
     #[test]
+    fn a_cabinet_switched_out_of_the_schedule_is_not_listed() {
+        let mut p = rich();
+        let mut cabs = p.floors[0].cabinets_as::<Cabinet>().unwrap();
+        let before = table(&p, &def(ScheduleKind::Cabinet), 0, None).rows.len();
+        assert!(before >= 1);
+        cabs[0].in_schedule = false;
+        p.floors[0].set_cabinets(&cabs).unwrap();
+        let t = table(&p, &def(ScheduleKind::Cabinet), 0, None);
+        assert_eq!(t.rows.len(), before - 1);
+        let targets = row_targets(&p, &def(ScheduleKind::Cabinet), 0, None);
+        assert!(targets.iter().flatten().all(|e| e.id != cabs[0].id));
+    }
+
+    #[test]
     fn sort_filter_and_framing_groups() {
         let p = rich();
         let mut d = def(ScheduleKind::Cabinet);
@@ -1687,6 +1842,32 @@ mod tests {
     }
 
     #[test]
+    fn a_spiral_stair_is_named_spiral_and_a_plain_curved_one_curved() {
+        use plan_stairs::{Stair, StairParams, StairShape};
+        let mut p = rich();
+        let mut mk = |spiral: bool, x: f64| {
+            Stair::new(
+                p.alloc_id(),
+                Point::new(x, 40.0),
+                0.0,
+                StairParams {
+                    shape: StairShape::Curved { inner_radius: 6.0 },
+                    spiral,
+                    ..StairParams::default()
+                },
+            )
+        };
+        let (a, b) = (mk(true, 300.0), mk(false, 400.0));
+        let mut stairs = p.floors[0].stairs_as::<Stair>().unwrap();
+        stairs.extend([a, b]);
+        p.floors[0].set_stairs(&stairs).unwrap();
+        let t = table(&p, &def(ScheduleKind::Stair), 0, None);
+        let types: Vec<&str> = t.rows.iter().map(|r| r[1].as_str()).collect();
+        assert!(types.contains(&"Spiral"), "{types:?}");
+        assert!(types.contains(&"Curved"), "{types:?}");
+    }
+
+    #[test]
     fn the_stair_schedule_lists_stairs_but_not_landings() {
         use plan_stairs::{Stair, StairParams, StairShape};
         let mut p = rich();
@@ -1708,12 +1889,14 @@ mod tests {
             vec![
                 "Mark",
                 "Type",
-                "Width",
-                "Total rise",
+                "Treads",
                 "Risers",
                 "Riser height",
                 "Tread depth",
-                "Total run"
+                "Total rise",
+                "Total run",
+                "Width",
+                "Headroom"
             ]
         );
         assert_eq!(t.rows.len(), 1, "{:?}", t.rows);
@@ -1722,10 +1905,122 @@ mod tests {
         assert_eq!(row[1], "Straight");
         let params = StairParams::default();
         let sol = plan_stairs::solve(&params);
-        assert_eq!(row[4], sol.risers.to_string());
-        assert_eq!(row[5], format!("{:.3}\"", sol.riser_height));
+        assert_eq!(row[2], sol.treads.to_string());
+        assert_eq!(row[3], sol.risers.to_string());
+        assert_eq!(row[4], format!("{:.3}\"", sol.riser_height));
+        assert_eq!(row[8], fmt_ft_in(params.width));
+        assert_eq!(row[9], fmt_ft_in(params.headroom_min));
         let targets = row_targets(&p, &def(ScheduleKind::Stair), 0, None);
         assert_eq!(targets[0][0].kind, ScheduleKind::Stair);
         assert_ne!(targets[0][0].id, 0);
+    }
+    #[test]
+    fn schedule_tab_data_reaches_the_columns_and_include_leaves_a_door_out() {
+        let mut p = house();
+        let doors: Vec<plan_core::Id> = p.floors[0]
+            .openings
+            .iter()
+            .filter(|o| o.kind == OpeningKind::Door)
+            .map(|o| o.id)
+            .collect();
+        assert!(!doors.is_empty());
+        let first = doors[0];
+        {
+            let o = p.floors[0]
+                .openings
+                .iter_mut()
+                .find(|o| o.id == first)
+                .unwrap();
+            let sch = &mut o.extras.spec.schedule;
+            sch.supplier = "Acme Millwork".into();
+            sch.manufacturer = "Therma".into();
+            sch.model = "TD-3068".into();
+            sch.comment = "Primed".into();
+        }
+        let mut d = def(ScheduleKind::Door);
+        for field in ["manufacturer", "model", "supplier", "comment"] {
+            d.columns
+                .iter_mut()
+                .find(|c| c.field == field)
+                .unwrap_or_else(|| panic!("no {field} column"))
+                .visible = true;
+        }
+        let t = table(&p, &d, 0, None);
+        let row = t
+            .rows
+            .iter()
+            .find(|r| r.iter().any(|c| c == "Acme Millwork"))
+            .expect("the supplier is listed");
+        assert!(row.iter().any(|c| c == "Therma"));
+        assert!(row.iter().any(|c| c == "TD-3068"));
+        assert!(row.iter().any(|c| c == "Primed"));
+        // "Include in Schedule" cleared: the door is not a row and takes no mark.
+        let before = table(&p, &d, 0, None).rows.len();
+        p.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == first)
+            .unwrap()
+            .extras
+            .spec
+            .schedule
+            .include = false;
+        let after = table(&p, &d, 0, None);
+        assert_eq!(after.rows.len(), before - 1);
+        assert!(after
+            .rows
+            .iter()
+            .all(|r| !r.iter().any(|c| c == "Acme Millwork")));
+        assert!(callouts(&p, 0, &d).iter().all(|c| c.object != first));
+    }
+
+    #[test]
+    fn rough_opening_energy_and_object_information_reach_the_schedule() {
+        let mut p = house();
+        let doors: Vec<plan_core::Id> = p.floors[0]
+            .openings
+            .iter()
+            .filter(|o| o.kind == OpeningKind::Door)
+            .map(|o| o.id)
+            .collect();
+        let first = doors[0];
+        {
+            let o = p.floors[0]
+                .openings
+                .iter_mut()
+                .find(|o| o.id == first)
+                .unwrap();
+            let spec = &mut o.extras.spec;
+            spec.rough.add_width = 2.0;
+            spec.rough.add_height = 2.5;
+            spec.energy.u_factor = 0.27;
+            spec.energy.shgc = 0.2;
+            spec.info.description = "Entry door".into();
+            spec.info.id = "E-1".into();
+        }
+        let mut d = def(ScheduleKind::Door);
+        for field in ["rough", "u_factor", "shgc", "description", "object_id"] {
+            d.columns
+                .iter_mut()
+                .find(|c| c.field == field)
+                .unwrap_or_else(|| panic!("no {field} column"))
+                .visible = true;
+        }
+        let t = table(&p, &d, 0, None);
+        let row = t
+            .rows
+            .iter()
+            .find(|r| r.iter().any(|c| c == "Entry door"))
+            .expect("the description is listed");
+        let o = p.floors[0].openings.iter().find(|o| o.id == first).unwrap();
+        assert!(row.iter().any(|c| *c == size_text(o.width + 2.0, o.height + 2.5)));
+        assert!(row.iter().any(|c| c == "0.27"));
+        assert!(row.iter().any(|c| c == "0.20"));
+        assert!(row.iter().any(|c| c == "E-1"));
+        // The window schedule has the same columns.
+        let w = def(ScheduleKind::Window);
+        for field in ["rough", "u_factor", "shgc", "description", "object_id"] {
+            assert!(w.columns.iter().any(|c| c.field == field), "{field}");
+        }
     }
 }

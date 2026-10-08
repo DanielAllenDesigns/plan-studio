@@ -141,6 +141,14 @@ impl TerrainRecord {
         t.contour_label_major_only = d.contour_label_major_only;
         t.flatten_pad = d.flatten_pad;
         t.north_angle = d.north_angle;
+        t.ground_material = d.ground_material.clone();
+        t.dirt_material = d.dirt_material.clone();
+        t.contour_primary = d.contour_primary;
+        t.contour_secondary = d.contour_secondary;
+        // Survey points imported in the dialog only ever add to the data.
+        if d.elevation_points.len() > t.elevation_points.len() {
+            t.elevation_points = d.elevation_points.clone();
+        }
         if let (Some(pad), Some(dp)) = (t.building_pad.as_mut(), d.building_pad.as_ref()) {
             pad.margin = dp.margin;
             pad.slope_ratio = dp.slope_ratio;
@@ -769,6 +777,8 @@ const PERIMETER_COLOR: Color32 = Color32::from_rgb(0x4F, 0x7F, 0x3A);
 const CONTOUR_COLOR: Color32 = Color32::from_rgb(0x9C, 0x78, 0x4A);
 const MAJOR_CONTOUR_COLOR: Color32 = Color32::from_rgb(0x7A, 0x55, 0x2B);
 const FEATURE_COLOR: Color32 = Color32::from_rgb(0x3C, 0x7F, 0xA8);
+/// A road marking without a color of its own: traffic yellow.
+const MARKING_COLOR: Color32 = Color32::from_rgb(0xC9, 0x9A, 0x12);
 const ROAD_COLOR: Color32 = Color32::from_rgb(0x70, 0x70, 0x78);
 const DATA_COLOR: Color32 = Color32::from_rgb(0xB0, 0x40, 0x30);
 const MODIFIER_COLOR: Color32 = Color32::from_rgb(0x2E, 0x8B, 0x7A);
@@ -877,6 +887,7 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         return;
     }
     let px = |w: f64, min: f32| ((w as f32) * 1.6).max(min);
+    let t = &view.record.terrain;
     if view.stale {
         // Auto rebuild is off and the terrain was edited since Build Terrain.
         if let Some(p) = view.record.terrain.perimeter.first() {
@@ -898,12 +909,20 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 weight,
                 kind,
             } => {
-                let (color, width) = match kind {
-                    StrokeKind::Perimeter => (PERIMETER_COLOR, 3.0),
-                    StrokeKind::MajorContour => (MAJOR_CONTOUR_COLOR, px(*weight, 1.4)),
-                    StrokeKind::Contour => (CONTOUR_COLOR, px(*weight, 0.8)),
-                    StrokeKind::Feature => (FEATURE_COLOR, px(*weight, 1.0)),
-                    StrokeKind::RoadEdge => (ROAD_COLOR, px(*weight, 1.0)),
+                let (color, width, dashed) = match kind {
+                    StrokeKind::Perimeter => (PERIMETER_COLOR, 3.0, false),
+                    StrokeKind::MajorContour => (
+                        contour_color(&t.contour_primary, MAJOR_CONTOUR_COLOR),
+                        px(*weight, 1.4),
+                        t.contour_primary.dashed,
+                    ),
+                    StrokeKind::Contour => (
+                        contour_color(&t.contour_secondary, CONTOUR_COLOR),
+                        px(*weight, 0.8),
+                        t.contour_secondary.dashed,
+                    ),
+                    StrokeKind::Feature => (FEATURE_COLOR, px(*weight, 1.0), false),
+                    StrokeKind::RoadEdge => (ROAD_COLOR, px(*weight, 1.0), false),
                 };
                 draw_polyline(
                     painter,
@@ -911,7 +930,7 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                     points,
                     *closed,
                     egui::Stroke::new(width, color),
-                    false,
+                    dashed,
                 );
             }
             TerrainStroke::Text {
@@ -932,7 +951,6 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             }
         }
     }
-    let t = &view.record.terrain;
     let data = egui::Stroke::new(1.2_f32, DATA_COLOR);
     for e in &t.elevation_points {
         let c = sc(cam, e.pos);
@@ -981,6 +999,25 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         );
     }
     for r in &t.roads {
+        if r.own_layer().is_some_and(|l| !cx.layers().is_visible(l)) {
+            continue;
+        }
+        if r.kind == plan_terrain::RoadKind::Marking {
+            // A painted line: its true width, in its color, dashed when it is.
+            let c = r
+                .color
+                .map_or(MARKING_COLOR, |c| Color32::from_rgb(c[0], c[1], c[2]));
+            let width = ((r.width * cam.px_per_in) as f32).clamp(1.0, 12.0);
+            draw_polyline(
+                painter,
+                cam,
+                &r.centerline,
+                false,
+                egui::Stroke::new(width, c),
+                r.dashed,
+            );
+            continue;
+        }
         draw_polyline(
             painter,
             cam,
@@ -990,6 +1027,13 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             true,
         );
     }
+}
+
+/// A contour family's own color, or the plan's `default`.
+fn contour_color(style: &plan_terrain::ContourStyle, default: Color32) -> Color32 {
+    style
+        .color
+        .map_or(default, |c| Color32::from_rgb(c[0], c[1], c[2]))
 }
 
 /// An electrical plan symbol in world space.

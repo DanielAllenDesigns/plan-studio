@@ -186,21 +186,33 @@ pub(crate) struct Layout {
 /// Points per half-ellipse of a flared tread.
 const APRON_STEPS: usize = 10;
 
-/// The outline `(s, lateral)` of a flared bottom tread (the apron): the
-/// straight tread of depth `tread` (plus the `nosing` in front) and `width`
-/// wide, with a half-ellipse cap on each side that reaches `flare` past the
-/// stair. Convex. Measured along the flight from the first riser line.
-pub(crate) fn apron_outline(tread: f64, nosing: f64, width: f64, flare: f64) -> Vec<Uv> {
+/// The outline `(s, lateral)` of a flared or bullnosed bottom tread (the
+/// apron): the straight tread of depth `tread` (plus the `nosing` in front)
+/// and `width` wide, with a half-ellipse cap on each side that reaches
+/// `reach.0` past the left edge and `reach.1` past the right one (a reach of
+/// zero is a straight end). Convex. Measured along the flight from the first
+/// riser line.
+pub(crate) fn apron_outline(tread: f64, nosing: f64, width: f64, reach: (f64, f64)) -> Vec<Uv> {
     let a = (tread + nosing) * 0.5;
     let mid = (tread - nosing) * 0.5;
-    let mut pts = Vec::with_capacity(2 * APRON_STEPS + 2);
-    for i in 0..=APRON_STEPS {
-        let phi = std::f64::consts::PI * i as f64 / APRON_STEPS as f64;
-        pts.push((mid + a * phi.cos(), -flare * phi.sin()));
+    let mut pts = Vec::with_capacity(2 * APRON_STEPS + 4);
+    if reach.0 > 1e-9 {
+        for i in 0..=APRON_STEPS {
+            let phi = std::f64::consts::PI * i as f64 / APRON_STEPS as f64;
+            pts.push((mid + a * phi.cos(), -reach.0 * phi.sin()));
+        }
+    } else {
+        pts.push((mid + a, 0.0));
+        pts.push((mid - a, 0.0));
     }
-    for i in 0..=APRON_STEPS {
-        let phi = std::f64::consts::PI * (1.0 - i as f64 / APRON_STEPS as f64);
-        pts.push((mid + a * phi.cos(), width + flare * phi.sin()));
+    if reach.1 > 1e-9 {
+        for i in 0..=APRON_STEPS {
+            let phi = std::f64::consts::PI * (1.0 - i as f64 / APRON_STEPS as f64);
+            pts.push((mid + a * phi.cos(), width + reach.1 * phi.sin()));
+        }
+    } else {
+        pts.push((mid - a, width));
+        pts.push((mid + a, width));
     }
     pts
 }
@@ -211,7 +223,8 @@ impl Layout {
     /// start).
     pub(crate) fn apron(&self, params: &crate::StairParams) -> Option<Vec<Uv>> {
         let f = self.flights.first()?;
-        if params.flare <= 1e-9
+        let reach = params.apron_reach();
+        if (reach.0 <= 1e-9 && reach.1 <= 1e-9)
             || self.is_ramp
             || self.is_landing
             || self.curve.is_some()
@@ -220,7 +233,7 @@ impl Layout {
             return None;
         }
         Some(
-            apron_outline(self.tread_depth, params.nosing, f.width, params.flare)
+            apron_outline(self.tread_depth, params.nosing, f.width, reach)
                 .into_iter()
                 .map(|(s, lat)| f.at(s, lat))
                 .collect(),

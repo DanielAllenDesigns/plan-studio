@@ -8,7 +8,6 @@ use crate::rng::Rng;
 use crate::settings::{RenderSettings, Technique};
 use crate::shading::{reflect, sample_cone, sample_cosine, sheet_reflectance, Kind, Surface};
 use crate::vec3::V3;
-use plan_3d::Material;
 use plan_materials::textures::TextureStore;
 
 /// Ray-origin offset along the surface normal, inches.
@@ -76,7 +75,7 @@ impl<'a> Frame<'a> {
         env: &Environment,
         (lights, areas): (&[PointLight], &[AreaLight]),
         settings: &RenderSettings,
-        (store, custom): (&TextureStore, &[(Material, [u8; 3])]),
+        (store, custom): (&TextureStore, &[crate::shading::Custom]),
     ) -> Frame<'a> {
         let (width, height) = (settings.width.max(1), settings.height.max(1));
         let surfaces = Surface::table_with(settings.technique, custom);
@@ -232,7 +231,7 @@ impl<'a> Frame<'a> {
                         None => surface,
                     };
                     let direct = self.direct(p, n, wo, surface, rng);
-                    sum += self.contribution(throughput * direct, bounce);
+                    sum += self.contribution(throughput * (direct + surface.emission), bounce);
                     if bounce >= self.max_bounces {
                         break;
                     }

@@ -1022,4 +1022,141 @@ mod tests {
         assert_eq!(at(&p, c).0, Point::new(200.0, 0.0));
         assert!(p.floors[0].wall(c).unwrap().is_curved());
     }
+
+    // ----- three-way and four-way junctions, crossings (W-34, W-36, W-103) -----
+
+    fn outline_of(p: &Project, id: Id) -> Vec<Point> {
+        plan_core::wall_outlines(&p.floors[0].walls, 0.5)
+            .into_iter()
+            .find(|o| o.wall_id == id)
+            .unwrap()
+            .polygon
+    }
+
+    #[test]
+    fn a_wall_ended_on_a_joined_corner_makes_a_three_way_and_keeps_the_pair() {
+        let mut p = Project::new("t");
+        let a = wall(&mut p, (0.0, 0.0), (200.0, 0.0));
+        let b = wall(&mut p, (200.0, 0.0), (200.0, 150.0));
+        // Drawn from the east, ending 3" short of the corner of a and b.
+        let c = wall(&mut p, (400.0, 0.0), (203.0, 0.0));
+        assert!(auto_connect_project(&mut p, 0, c, &opts()) > 0);
+        assert_eq!(at(&p, c).1, Point::new(200.0, 0.0), "snaps onto the corner");
+        // The pair that was joined stays joined and untouched.
+        assert_eq!(at(&p, a), (Point::new(0.0, 0.0), Point::new(200.0, 0.0)));
+        assert_eq!(
+            at(&p, b),
+            (Point::new(200.0, 0.0), Point::new(200.0, 150.0))
+        );
+        assert_eq!(p.floors[0].walls.len(), 3);
+        // a and c are one line: they run through and b butts their face.
+        let ob = outline_of(&p, b);
+        assert!((ob[0].y - 3.8125).abs() < 1e-9, "{ob:?}");
+        assert!((ob[3].y - 3.8125).abs() < 1e-9, "{ob:?}");
+        for id in [a, b, c] {
+            assert_eq!(auto_connect_project(&mut p, 0, id, &opts()), 0);
+        }
+    }
+
+    #[test]
+    fn a_tee_in_the_middle_of_a_wall_makes_a_three_way_with_the_split_halves() {
+        let mut p = Project::new("t");
+        let through = wall(&mut p, (0.0, 0.0), (240.0, 0.0));
+        let stem = wall(&mut p, (120.0, 100.0), (120.0, 2.0));
+        auto_connect_project(&mut p, 0, stem, &opts());
+        assert_eq!(p.floors[0].walls.len(), 3);
+        // The halves run through with square ends; the stem butts the face.
+        let halves: Vec<Id> = p.floors[0]
+            .walls
+            .iter()
+            .filter(|w| w.id != stem)
+            .map(|w| w.id)
+            .collect();
+        assert!(halves.contains(&through));
+        let os = outline_of(&p, stem);
+        // The stem's end is its start-or-end point at the junction, now on the face.
+        let on_face = os.iter().filter(|q| (q.y - 3.8125).abs() < 1e-9).count();
+        assert_eq!(on_face, 2, "{os:?}");
+    }
+
+    #[test]
+    fn crossing_walls_are_cut_into_a_four_way_where_the_exterior_wall_runs_through() {
+        let mut p = Project::new("t");
+        let a = wall(&mut p, (0.0, 0.0), (200.0, 0.0));
+        let b = wall(&mut p, (100.0, -80.0), (100.0, 80.0));
+        // a is exterior, b interior; b is thicker than a would be otherwise.
+        p.floors[0].wall_mut(a).unwrap().kind = WallKind::Exterior;
+        {
+            let w = p.floors[0].wall_mut(b).unwrap();
+            w.kind = WallKind::Interior;
+            w.thickness = 4.5;
+        }
+        assert!(auto_connect_project(&mut p, 0, b, &opts()) > 0);
+        let f = &p.floors[0];
+        assert_eq!(f.walls.len(), 4);
+        let at_x = |w: &Wall| w.start == Point::new(100.0, 0.0) || w.end == Point::new(100.0, 0.0);
+        assert!(f.walls.iter().all(at_x));
+        // The exterior halves keep square ends at the crossing...
+        let outlines = plan_core::wall_outlines(&f.walls, 0.5);
+        for (w, o) in f.walls.iter().zip(&outlines) {
+            if w.kind == WallKind::Exterior {
+                for (q, r) in o.polygon.iter().zip(w.footprint().iter()) {
+                    assert!(q.dist(*r) < 1e-9, "{:?}", o.polygon);
+                }
+            } else {
+                // ...and the interior halves stop on its faces (3.8125 = half of 7 5/8).
+                let near: Vec<f64> = o
+                    .polygon
+                    .iter()
+                    .filter(|q| q.dist(Point::new(100.0, 0.0)) < 6.0)
+                    .map(|q| q.y.abs())
+                    .collect();
+                assert_eq!(near.len(), 2, "{:?}", o.polygon);
+                assert!(near.iter().all(|y| (y - 3.8125).abs() < 1e-9), "{near:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn crossing_walls_stay_whole_without_split_on_tee() {
+        let mut p = Project::new("t");
+        wall(&mut p, (0.0, 0.0), (200.0, 0.0));
+        let b = wall(&mut p, (100.0, -50.0), (100.0, 50.0));
+        let o = ConnectOptions {
+            split_on_tee: false,
+            ..ConnectOptions::default()
+        };
+        assert_eq!(auto_connect_project(&mut p, 0, b, &o), 0);
+        assert_eq!(p.floors[0].walls.len(), 2);
+        // Turning the option on cuts them, and the outlines are a clean four-way.
+        assert!(auto_connect_project(&mut p, 0, b, &opts()) > 0);
+        assert_eq!(p.floors[0].walls.len(), 4);
+        let outlines = plan_core::wall_outlines(&p.floors[0].walls, 0.5);
+        let areas: f64 = outlines
+            .iter()
+            .map(|o| plan_core::geometry::polygon_area(&o.polygon).abs())
+            .sum();
+        // 200 x 7.625 and 100 x 7.625 less the doubly covered middle square.
+        let cross = 200.0 * 7.625 + 100.0 * 7.625 - 7.625 * 7.625;
+        assert!((areas - cross).abs() < 1e-6, "{areas} vs {cross}");
+    }
+
+    #[test]
+    fn a_five_way_junction_still_connects_and_is_stable() {
+        let mut p = Project::new("t");
+        let ids: Vec<Id> = (0..5)
+            .map(|k| {
+                let t = (k as f64) * std::f64::consts::TAU / 5.0;
+                wall(&mut p, (0.0, 0.0), (150.0 * t.cos(), 150.0 * t.sin()))
+            })
+            .collect();
+        for id in &ids {
+            assert_eq!(auto_connect_project(&mut p, 0, *id, &opts()), 0);
+        }
+        let outlines = plan_core::wall_outlines(&p.floors[0].walls, 0.5);
+        assert_eq!(outlines.len(), 5);
+        assert!(outlines
+            .iter()
+            .all(|o| o.polygon.iter().all(|q| q.x.is_finite() && q.y.is_finite())));
+    }
 }

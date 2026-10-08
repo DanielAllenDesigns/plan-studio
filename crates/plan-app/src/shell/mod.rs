@@ -8,3 +8,4 @@ pub mod spec_dialogs;
 pub mod status;
 pub mod tooltips;
 pub mod view3d_panel;
+pub mod view_commands;

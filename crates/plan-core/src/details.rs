@@ -27,6 +27,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
+mod cad_detail;
+pub use cad_detail::*;
+
 /// Layer corner boards and quoins are drawn on.
 pub const CORNER_TRIM_LAYER: &str = "Corner Trim";
 /// Layer moldings are drawn on.

@@ -134,16 +134,29 @@ pub enum SideKind {
     Railing,
     /// A half-wall with a cap rail.
     HalfWall,
+    /// A wall-mounted handrail only (34" above the nosing line): no guard,
+    /// newels or balusters. The side beside a wall.
+    Handrail,
 }
 
 impl SideKind {
     /// The names of the Stair Specification, in menu order.
-    pub const ALL: [SideKind; 4] = [
+    pub const ALL: [SideKind; 5] = [
         SideKind::None,
         SideKind::Wall,
         SideKind::Railing,
         SideKind::HalfWall,
+        SideKind::Handrail,
     ];
+
+    /// Does this side stop a fall? A railing, a half-wall and a wall do; a
+    /// handrail is for gripping and does not.
+    pub fn is_guard(self) -> bool {
+        matches!(
+            self,
+            SideKind::Railing | SideKind::HalfWall | SideKind::Wall
+        )
+    }
 
     /// Chief's label.
     pub fn name(self) -> &'static str {
@@ -152,7 +165,48 @@ impl SideKind {
             SideKind::Wall => "Wall",
             SideKind::Railing => "Railing",
             SideKind::HalfWall => "Half Wall",
+            SideKind::Handrail => "Handrail",
         }
+    }
+}
+
+/// Which ends of the bottom tread are rounded off (a bullnose starter step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Bullnose {
+    /// Square ends (or the flare, if [`StairParams::flare`] is set).
+    #[default]
+    None,
+    /// The left end is a half-round the depth of the tread.
+    Left,
+    /// The right end is a half-round the depth of the tread.
+    Right,
+    /// Both ends.
+    Both,
+}
+
+impl Bullnose {
+    pub const ALL: [Bullnose; 4] = [
+        Bullnose::None,
+        Bullnose::Left,
+        Bullnose::Right,
+        Bullnose::Both,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Bullnose::None => "None",
+            Bullnose::Left => "Left End",
+            Bullnose::Right => "Right End",
+            Bullnose::Both => "Both Ends",
+        }
+    }
+
+    pub fn left(self) -> bool {
+        matches!(self, Bullnose::Left | Bullnose::Both)
+    }
+
+    pub fn right(self) -> bool {
+        matches!(self, Bullnose::Right | Bullnose::Both)
     }
 }
 
@@ -207,6 +261,14 @@ pub struct StairParams {
     /// past the stair on each side in a quarter-ellipse. `0` is a plain
     /// tread. Straight, L, U and winder stairs only.
     pub flare: f64,
+    /// A bullnose bottom tread: the chosen ends are half-rounds of the
+    /// tread's depth (they win over `flare` on that end).
+    pub bullnose: Bullnose,
+    /// Rails, newels and balusters of the left side when they differ from
+    /// [`StairParams::railing`] (Newels/Balusters and Rails tabs, Left side).
+    pub left_railing: Option<RailingParams>,
+    /// The same for the right side.
+    pub right_railing: Option<RailingParams>,
     /// A spiral stair: a [`StairShape::Curved`] stair around a centre pole
     /// (`inner_radius` is the pole's radius) that follows the spiral-stair
     /// code limits (9 1/2" risers, 6 3/4" treads at the walking line, 26"
@@ -238,8 +300,42 @@ impl Default for StairParams {
             slab_thickness: 3.5,
             outline: Vec::new(),
             flare: 0.0,
+            bullnose: Bullnose::None,
+            left_railing: None,
+            right_railing: None,
             spiral: false,
         }
+    }
+}
+
+impl StairParams {
+    /// The rails, newels and balusters of one side: its own settings when it
+    /// has them, else the shared [`StairParams::railing`].
+    pub fn railing_for(&self, side: RailSide) -> RailingParams {
+        match side {
+            RailSide::Left => self.left_railing,
+            RailSide::Right => self.right_railing,
+        }
+        .unwrap_or(self.railing)
+    }
+
+    /// How far the bottom tread reaches past the left and right edges of the
+    /// stair for a given tread depth and nosing: the bullnose's half-round on
+    /// a rounded end, else the flare.
+    pub fn apron_reach(&self) -> (f64, f64) {
+        let round = (self.tread_depth + self.nosing) * 0.5;
+        (
+            if self.bullnose.left() {
+                round
+            } else {
+                self.flare.max(0.0)
+            },
+            if self.bullnose.right() {
+                round
+            } else {
+                self.flare.max(0.0)
+            },
+        )
     }
 }
 

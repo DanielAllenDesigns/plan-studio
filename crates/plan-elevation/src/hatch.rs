@@ -24,8 +24,10 @@ use plan_3d::Material;
 use plan_core::Point;
 use plan_materials::{clip_strokes_to_polygon, pattern_strokes, Pattern, MAX_STROKES};
 
-/// Drawing scale used to coarsen dense patterns: 1/4" = 1'-0" paper inches per foot.
-const HATCH_SCALE: f64 = 0.25;
+/// The drawing scale hatches are made for unless the caller names one:
+/// 1/4" = 1'-0", paper inches per foot. Dense patterns are coarsened for
+/// the scale so the hatch stays legible on paper.
+pub const DEFAULT_HATCH_SCALE: f64 = 0.25;
 
 /// The 2D pattern for a material, `None` when it is not hatched.
 fn pattern_for(m: Material) -> Option<Pattern> {
@@ -138,7 +140,7 @@ fn bbox(poly: &[Point]) -> (Point, Point) {
 }
 
 /// Hatch strokes of one region (empty for unhatched materials and non-face regions).
-pub(crate) fn region_strokes(region: &Region) -> Vec<(Point, Point)> {
+pub(crate) fn region_strokes(region: &Region, scale_in_per_ft: f64) -> Vec<(Point, Point)> {
     if region.kind != RegionKind::Face || region.polygon.len() < 3 {
         return Vec::new();
     }
@@ -146,7 +148,7 @@ pub(crate) fn region_strokes(region: &Region) -> Vec<(Point, Point)> {
     let raw = if region.material == Material::Stone {
         stone_strokes(rect)
     } else if let Some(p) = pattern_for(region.material) {
-        let mut s = pattern_strokes(&p, rect, HATCH_SCALE);
+        let mut s = pattern_strokes(&p, rect, scale_in_per_ft);
         if region.material == Material::Stucco {
             s = s.into_iter().step_by(3).collect();
         }
@@ -157,11 +159,12 @@ pub(crate) fn region_strokes(region: &Region) -> Vec<(Point, Point)> {
     clip_strokes_to_polygon(&raw, &region.polygon)
 }
 
-/// Light hatch lines for every face region.
-pub(crate) fn hatch_lines(regions: &[Region]) -> Vec<Line2> {
+/// Light hatch lines for every face region, made for a drawing scale of
+/// `scale_in_per_ft` paper inches per foot.
+pub(crate) fn hatch_lines(regions: &[Region], scale_in_per_ft: f64) -> Vec<Line2> {
     regions
         .iter()
-        .flat_map(region_strokes)
+        .flat_map(|r| region_strokes(r, scale_in_per_ft))
         .map(|(a, b)| Line2 {
             a,
             b,

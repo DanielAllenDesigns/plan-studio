@@ -47,7 +47,7 @@ of a `plan_cabinets::Cabinet`, so the plan file stays readable and the engine
 | Wall Cabinet | `Cmd+T` | Works. |
 | Full Height | `Ctrl+Alt+Cmd+X` | Works. |
 | Soffit | `T` | Works as a cabinet-like box. |
-| Soffit Polygon | | Click the corners of the soffit (or drag a rectangle); `Enter` or the first corner finishes, `Backspace` removes a corner. It is stored as a Soffit with a polygon outline (one undo step, "Place Soffit Polygon"). |
+| Soffit Polygon | | Click the corners of the soffit (or drag a rectangle); `Enter` or the first corner finishes, `Backspace` removes a corner. It is stored as a Soffit with a polygon outline (one undo step, "Place Soffit Polygon"). A closed CAD polyline you have selected becomes the same soffit with the Edit toolbar button **Convert Polyline to Soffit** (the polyline is replaced; one undo step). |
 | Shelf | `Ctrl+Alt+Cmd+Y` | Works. |
 | Partition | `Ctrl+Alt+Cmd+Z` | Works. |
 | Base Filler | `Ctrl+Alt+Cmd+0` | Works: a click in a gap makes a filler the width of the gap. |
@@ -88,7 +88,7 @@ and sits in the bay (a range bay takes an oven and the other way round).
 | Move | A ghost cabinet follows the pointer. |
 | Click | Places a cabinet. Within 12" of a wall, the cabinet's back rotates to that wall and sits flush to its face. Away from walls it keeps the tool's angle. |
 | Press, drag, release | Sets the width in 3" steps (one cabinet). |
-| Place or drag next to another cabinet | It slides to butt against the neighbor and aligns its back line (bumping). |
+| Place or drag next to another cabinet | It slides to butt against the neighbor and aligns its back line (bumping). The Edit toolbar button **Neighbors: Bump / Push / Pass Through** changes what a dragged cabinet does (below). |
 | `Tab`, `Shift+Tab` | Next cabinet kind; next library type (Vanity, Pantry, Tall Oven, Refrigerator). |
 | Click the width, gap or distance of the temporary dimensions | Types a value (below). |
 | `G` | **Generate Countertop**: joins the countertops of touching base cabinets into custom countertops (below). |
@@ -111,7 +111,8 @@ A placed cabinet is selected. Its handles:
   A cabinet dragged into a gap (between a wall and a cabinet, or two cabinets) whose width is within 2"
   of its own **fits to the gap**: it takes the gap's width and position exactly. `Alt`, or
   Preferences > Architectural, turns that off.
-- **Resize** at both ends: changes the width in 3" steps; the cabinet grows from the dragged side.
+- **Bumping and pushing**: in **Bump** (the default) a dragged cabinet stops butted against the cabinets it meets. In **Push** it pushes the cabinets of its run along ahead of it (they stay butted, and come back if you drag back); if a wall or another run is in the way it bumps instead. **Pass Through** ignores other cabinets. One undo step undoes the move and every push. The setting is for the session; the Select tool always bumps.
+- **Resize** at both ends: changes the width in 3" steps; the cabinet grows from the dragged side. An edge dragged within 4" of a wall or the next cabinet snaps to it, so the cabinet fills the gap (`Alt` turns the snap off).
 - **Depth** handles on the middle of the front and back edges: change the depth in 1" steps
   (3" at least); the opposite edge stays put, so the back can stay on the wall.
 - **Corner** handles: change width and depth together, the opposite corner staying put.
@@ -189,14 +190,16 @@ The preview shows the plan symbol and a front elevation of the resolved face ite
 | Box Construction | Works |
 | Front/Sides/Back | Works. The **Cabinet Side** list picks Front, Left, Right or Back; each of the three sides is a Plain Panel, a Finished Panel, Open, or a **Custom Face** with its own face-item tree edited like the front (rectangular cabinets only; the sides are built in 3D) |
 | Door/Drawer | Works |
-| Accessories | Works (mostly disabled controls) |
+| Accessories | Works: front pilasters (plain or fluted, left and right, width), feet (block, bun or bracket, in place of the toe kick board) and finished end panels |
 | Opening Indicators | Works |
 | Moldings | Works (crown and light rail) |
 | Layer | Works (shows the layer; follows the cabinet's type) |
-| Fill Style | (disabled) |
+| Fill Style | Works: None, Solid, Hatch or Cross Hatch with a colour, opacity and line spacing, in the plan view |
 | Materials | Works (per part) |
 | Label | Works |
-| Components, Object Information, Schedule | (disabled) |
+| Components | Works: the parts with counts, sizes and materials |
+| Object Information | Works: the facts, plus manufacturer, model number, description and notes |
+| Schedule | Works: *List this cabinet in the Cabinet Schedule* and the cabinet's schedule row |
 
 ### General
 
@@ -235,8 +238,8 @@ The preview shows the plan symbol and a front elevation of the resolved face ite
 
 **Door/Drawer** has: *Door Panel* (Main Style, Panel Profile Slab, Shaker or Raised Panel, Thickness, Stile and Rail Width for framed profiles, Glass Doors); *Door Handle* (Main Style, Vertical Position Centered or Distance From Top,
 Distance From Edge); *Door Hinges* (Hidden or Exposed, Up/Down From Edge); *Drawer Panel* (Main Style, Panel Profile, Thickness); *Drawer Handle* (Main Style, Vertical Position Centered or Near the top). The built-in door styles are Lincoln
-Door, Slab Door, Shaker Door and Raised Panel Door; the drawer styles are Lincoln Flat Panel Drawer, Slab Drawer, Shaker Drawer and Raised Panel Drawer; library styles are (planned). Handles (**hardware styles**) are None, Knob, Pull (a bar pull on two posts, vertical on a door and horizontal on a drawer), Cup Pull (a half-round plate at the top edge of a drawer) or Edge Pull (a thin lip along the free edge of a door or the top of a drawer front).
-**Accessories**: Front Pilasters, Feet (Foot Style), Side Panels (Main Panel Style, Full Size Panel); the controls are disabled.
+Door, Slab Door, Shaker Door and Raised Panel Door; the drawer styles are Lincoln Flat Panel Drawer, Slab Drawer, Shaker Drawer and Raised Panel Drawer; the **library styles** follow them in the Main Style list: every library object in a "Cabinet Doors" category (and "Cabinet Drawers" for drawer fronts) from the built-in and user libraries, and, after **Load Chief Library Styles** (with the Chief catalogs on), Chief's. A picked style copies its name, look (Slab, Shaker or Raised, Glass) and library id into the cabinet; the 3D door is built from the look. Handles (**hardware styles**) are None, Knob, Pull (a bar pull on two posts, vertical on a door and horizontal on a drawer), Cup Pull (a half-round plate at the top edge of a drawer) or Edge Pull (a thin lip along the free edge of a door or the top of a drawer front).
+**Accessories**: Front Pilaster (None, Plain, Fluted; Left and Right; Width), Foot Style (None, Block, Bun, Bracket; Foot Size; feet need a toe kick and stand in its place) and Side Panels (a finished panel on the left or right end, the same as Side Type on the Front/Sides/Back tab).
 
 ### Opening Indicators, Moldings, Layer, Materials, Label
 
@@ -490,5 +493,9 @@ shows the usual symbol. This is Chief's way of making a library object read as a
 - Chief catalogs are read, never written: Chief objects cannot be added to the User catalog, and Import Library reads only Plan Studio's own export, not `.calib` files (6.4a).
 - Imported and saved 3D models show in the preview pane; the 3D view of the plan draws them once `user::placed_meshes` is hooked into `view3d_panel.rs` (open).
 - Search filters have no "objects already in the plan" mode.
-- A custom face on the Sides and Back needs a rectangular cabinet. Library door and drawer styles and
-  accessories are (planned).
+- A custom face on the Sides and Back needs a rectangular cabinet. Of a library door or drawer style (a "Cabinet Doors" object) only the look
+  (profile, glass) reaches 3D: its own geometry and Chief's Library... and Edit... buttons on the Door/Drawer tab are not built, and the Chief styles you scan with
+  Load Chief Library Styles are forgotten when the install folder or the discovered library changes.
+- Front pilasters and feet are built for rectangular cabinets; corner, blind and custom kinds ignore them. The Object Information fields (manufacturer, model, description,
+  notes) have no schedule columns yet.
+- The Select tool and a drag in the 3D view always bump (the Push mode belongs to the Cabinet tool's Edit toolbar), and plan boxes, Print Preview and the PDF do not yet draw a cabinet's Fill Style (it shows on screen).

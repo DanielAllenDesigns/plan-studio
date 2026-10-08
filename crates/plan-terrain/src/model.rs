@@ -115,6 +115,10 @@ pub enum FeatureKind {
     Spline,
     /// Cuts the surface away (Terrain Hole, Make Terrain Hole Around Building).
     Hole,
+    /// Polyline Terrain Feature: a clicked polygon.
+    Polyline,
+    /// Round Terrain Feature: a circle from its center and radius.
+    Round,
 }
 
 /// Default slope ratio of the sloped sides of a graded pad: 2 horizontal per
@@ -144,7 +148,14 @@ pub struct Feature {
     /// closed spline through them); empty when the outline was clicked point
     /// by point.
     pub control: Vec<Point>,
+    /// Center of a round feature (the polygon is the circle around it).
+    pub center: Point,
+    /// Radius of a round feature, inches (0 for every other kind).
+    pub radius: f64,
 }
+
+/// Corners of the polygon a round feature is drawn with.
+pub const ROUND_CORNERS: usize = 36;
 
 impl Default for Feature {
     fn default() -> Self {
@@ -157,16 +168,54 @@ impl Default for Feature {
             pad: false,
             slope_ratio: DEFAULT_SLOPE_RATIO,
             control: Vec::new(),
+            center: Point::new(0.0, 0.0),
+            radius: 0.0,
         }
     }
 }
 
 impl Feature {
+    /// A round feature of `radius` inches around `center`.
+    pub fn round(center: Point, radius: f64) -> Self {
+        let mut f = Feature {
+            kind: FeatureKind::Round,
+            center,
+            radius,
+            ..Feature::default()
+        };
+        f.reflatten();
+        f
+    }
+
+    /// Resizes a round feature so its edge passes through `edge` (a no-op for
+    /// the other kinds).
+    pub fn set_radius_through(&mut self, edge: Point) {
+        if self.kind == FeatureKind::Round {
+            self.radius = self.center.dist(edge).max(1.0);
+            self.reflatten();
+        }
+    }
+
     /// Rebuilds the outline from the control points (the closed spline through
     /// them). Does nothing for an outline without control points.
     pub fn reflatten(&mut self) {
-        if self.control.len() >= 3 {
+        if self.kind == FeatureKind::Round && self.radius > 0.0 {
+            self.polygon =
+                crate::landscape_plan::circle_points(self.center, self.radius, ROUND_CORNERS, 0.0);
+        } else if self.control.len() >= 3 {
             self.polygon = crate::landscape::closed_spline(&self.control);
+        }
+    }
+
+    /// The name the feature kind goes by in the specification and reports.
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            FeatureKind::Rectangular => "Rectangular",
+            FeatureKind::Kidney => "Kidney",
+            FeatureKind::Spline => "Spline",
+            FeatureKind::Hole => "Hole",
+            FeatureKind::Polyline => "Polyline",
+            FeatureKind::Round => "Round",
         }
     }
 }
@@ -177,6 +226,30 @@ pub enum RoadKind {
     Road,
     Driveway,
     Sidewalk,
+    /// Road Marking / Stripe: a thin painted line laid on the ground or on a
+    /// road (centerline stripe, crosswalk bar, parking line).
+    Marking,
+}
+
+impl RoadKind {
+    /// Chief-style name of the kind.
+    pub fn name(self) -> &'static str {
+        match self {
+            RoadKind::Road => "Road",
+            RoadKind::Driveway => "Driveway",
+            RoadKind::Sidewalk => "Sidewalk",
+            RoadKind::Marking => "Road Marking",
+        }
+    }
+
+    /// Material a strip of this kind is built of until it names its own.
+    pub fn default_material(self) -> &'static str {
+        match self {
+            RoadKind::Road | RoadKind::Driveway => "Asphalt",
+            RoadKind::Sidewalk => "Concrete",
+            RoadKind::Marking => "Paint",
+        }
+    }
 }
 
 /// A road, driveway or sidewalk: a polyline strip draped on the terrain.
@@ -193,6 +266,48 @@ pub struct RoadStrip {
     pub crown: f64,
     /// Height of the curb blocks, inches.
     pub curb_height: f64,
+    /// Material by name ("Asphalt", "Concrete", "Gravel", "Stone", "Brick",
+    /// "Paint"); empty takes the kind's own ([`RoadKind::default_material`]).
+    pub material: String,
+    /// A dashed marking (a stripe drawn as dashes).
+    pub dashed: bool,
+    /// Color of a marking in plan, RGB; `None` is a traffic yellow.
+    pub color: Option<[u8; 3]>,
+    /// Layer the strip is drawn on; empty draws it on the terrain's own layer.
+    pub layer: String,
+}
+
+/// Default width of a road marking, inches.
+pub const MARKING_WIDTH: f64 = 4.0;
+/// Dash and gap of a dashed marking, inches.
+pub const MARKING_DASH: f64 = 120.0;
+pub const MARKING_GAP: f64 = 240.0;
+
+impl RoadStrip {
+    /// The material name the strip is built of.
+    pub fn material_name(&self) -> &str {
+        if self.material.trim().is_empty() {
+            self.kind.default_material()
+        } else {
+            self.material.trim()
+        }
+    }
+
+    /// The layer the strip names for itself, if any.
+    pub fn own_layer(&self) -> Option<&str> {
+        Some(self.layer.trim()).filter(|l| !l.is_empty())
+    }
+
+    /// A road marking along `centerline`, `width` inches wide.
+    pub fn marking(centerline: Vec<Point>, width: f64, dashed: bool) -> Self {
+        RoadStrip {
+            kind: RoadKind::Marking,
+            centerline,
+            width,
+            dashed,
+            ..RoadStrip::default()
+        }
+    }
 }
 
 impl Default for RoadStrip {
@@ -204,6 +319,10 @@ impl Default for RoadStrip {
             curb: false,
             crown: 0.0,
             curb_height: 6.0,
+            material: String::new(),
+            dashed: false,
+            color: None,
+            layer: String::new(),
         }
     }
 }
@@ -236,10 +355,43 @@ impl Default for BuildingPad {
     }
 }
 
+/// How a family of contour lines is drawn in plan (Terrain Specification >
+/// Contours: primary lines are the majors, secondary the lines between them).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContourStyle {
+    /// `None` takes the plan's terrain color.
+    pub color: Option<[u8; 3]>,
+    /// Line weight in points; `0` takes the family's own weight.
+    pub weight: f64,
+    pub dashed: bool,
+}
+
+/// Default weight of the primary (major) contours, points.
+pub const PRIMARY_CONTOUR_WEIGHT: f64 = 1.0;
+/// Default weight of the secondary (minor) contours, points.
+pub const SECONDARY_CONTOUR_WEIGHT: f64 = 0.35;
+
+impl ContourStyle {
+    /// The weight to draw with: the style's, or `default` when it takes the family's own.
+    pub fn weight_or(&self, default: f64) -> f64 {
+        if self.weight > 0.0 {
+            self.weight
+        } else {
+            default
+        }
+    }
+}
+
 /// Every this-many'th contour is a major contour.
 pub const DEFAULT_MAJOR_EVERY: u32 = 5;
 /// Default distance between elevation labels along a major contour, inches.
 pub const DEFAULT_LABEL_SPACING: f64 = 480.0;
+
+/// Material of the ground surface until the specification names another.
+pub const DEFAULT_GROUND_MATERIAL: &str = "Grass";
+/// Material of the bare ground until the specification names another.
+pub const DEFAULT_DIRT_MATERIAL: &str = "Dirt";
 
 /// Everything the user draws for the terrain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -286,6 +438,15 @@ pub struct Terrain {
     pub north_angle: f64,
     /// The placed North Pointer (its CAD objects on the Site Plan layer).
     pub north_pointer: Option<crate::site_symbols::SiteMark>,
+    /// Material of the ground surface (Terrain Specification > Materials):
+    /// "Grass", "Dirt", "Gravel", "Stone", "Concrete", "Mulch" or "Asphalt".
+    pub ground_material: String,
+    /// Material of the bare ground: the cut slopes of graded pads and the strip under walls.
+    pub dirt_material: String,
+    /// Line style of the primary (major) contours.
+    pub contour_primary: ContourStyle,
+    /// Line style of the secondary (minor) contours.
+    pub contour_secondary: ContourStyle,
 }
 
 impl Default for Terrain {
@@ -319,6 +480,10 @@ impl Default for Terrain {
             flatten_pad: true,
             north_angle: 0.0,
             north_pointer: None,
+            ground_material: DEFAULT_GROUND_MATERIAL.into(),
+            dirt_material: DEFAULT_DIRT_MATERIAL.into(),
+            contour_primary: ContourStyle::default(),
+            contour_secondary: ContourStyle::default(),
         }
     }
 }

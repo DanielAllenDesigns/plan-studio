@@ -31,8 +31,8 @@ pub use daniel::{
 };
 pub use error::ConfigError;
 pub use hotkeys::{
-    parse_hotkeys_xml, resolve_names, resolved_markdown, to_plan_studio_bindings, HotkeyBinding,
-    HotkeyFile, NameSource, PlanBinding, ResolveStats,
+    parse_hotkeys_xml, resolve_names, resolved_markdown, to_plan_studio_bindings,
+    write_hotkeys_xml, ExportRow, HotkeyBinding, HotkeyFile, NameSource, PlanBinding, ResolveStats,
 };
 pub use import::{all_view_buttons, buttons_for_view, import_hotkeys_xml, ChiefView, ViewToolbar};
 pub use prefs::{

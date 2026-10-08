@@ -18,7 +18,7 @@ Select Objects (`Space`) picks every object kind (walls, openings, dimensions, C
 - S-3: The pick target is the object's drawn geometry, not a centerline. A wall is picked by clicking anywhere inside its filled footprint or on its outline; a line by its stroke; a closed polyline/box by its edge, and by its interior only when it has a fill; text by its text box; a door/window by its symbol (jamb-to-jamb span including the swing arc and the leaf). Pick tolerance is a few pixels beyond the drawn edge.
 - S-4: When objects overlap, the topmost by object draw order wins; openings win over their host wall; CAD and text on the active layer win over objects on other layers (verify in Chief).
 - S-5: Objects on a layer that is not displayed cannot be selected. Objects on a **locked** layer can be selected but not moved, resized or deleted (verify in Chief: locked-layer objects are selectable only for viewing the specification).
-- S-6: Hovering an object with Select Objects active highlights it before the click and the status bar shows the object's description (for a wall "Exterior Wall", length, etc.) (verify in Chief).
+- S-6: Hovering an object with Select Objects active highlights it before the click and the status bar shows the object's description (for a wall "Exterior Wall", length, etc.) (verify in Chief). **Round 14:** built. Hovering names the object in the status bar and in a tooltip after egui's rest delay (`tools/select/describe.rs hover_text`, `shell/status.rs context_fields`, `main.rs canvas`); tests `scenarios::s30_select_r14::hover_and_selection_are_described_in_the_status_bar`, `describe::tests::a_hovered_wall_is_named_with_its_length`. Words are ours; verify in Chief.
 - S-7: Double-click opens the object's specification dialog (see `docs/chief-x18-dialogs.md`). The Open Object edit button does the same.
 - S-8: Right-click on an object selects it and opens a context menu whose first group matches the Edit toolbar buttons for that object type; right-click on empty space shows the view/zoom/paste menu. Right-drag in empty plan space pans in Plan Studio; in Chief the right button is the context menu and middle-drag/Pan Window pans (verify in Chief).
 - S-9: Escape clears the selection when no drawing operation is in progress. Switching tools with a selection keeps nothing selected unless the tool is an edit-type tool.
@@ -38,17 +38,17 @@ Select Objects (`Space`) picks every object kind (walls, openings, dimensions, C
 - S-20: Dragging a wall's end handle onto another wall's centerline creates a T-junction there; onto another wall's end creates a corner join (walls: `docs/parity/walls.md` W-31 to W-40).
 - S-21: Dragging a wall's Move handle (or its body) moves the wall **perpendicular to its length only**; the component along the wall is zero. Connected walls keep their directions and stretch/shorten so corners stay joined. This is Chief's signature behavior.
 - S-22: Holding Alt/Option while dragging a wall body or Move handle allows a free-direction move; walls joined to it then change both length and angle (verify in Chief; Chief may instead use Point to Point Move for this).
-- S-23: While a perpendicular move is in progress, the wall's temporary dimensions to the nearest parallel walls update live and the wall snaps to those walls' faces and centerlines.
+- S-23: While a perpendicular move is in progress, the wall's temporary dimensions to the nearest parallel walls update live and the wall snaps to those walls' faces and centerlines. **Round 14:** partial. Typing a number during a move or rotate drag sets the exact distance, angle or degrees (`select.rs typed_pointer`); test `a_typed_distance_moves_a_selection_by_exactly_that_much`. Snapping to neighbouring wall faces and centerlines during the move is still not built.
 - S-24: Door/window handles: Move (center), a Resize handle on each jamb edge (changes width; the opposite jamb stays fixed), a vertical Resize handle on the head (height; sill stays fixed) in elevation only, and a swing handle (see `doors-windows.md` DW-31 to DW-37).
 - S-25: Text handles: Move (corner), Resize (right-edge handle that changes the wrap width), Rotate. A text box is not resized by dragging corners to scale the font (font size is a property) (verify in Chief).
 - S-26: Dragging a handle begins only after the pointer moves a small threshold (about 3 px). A bare click on a handle does nothing except for toggle-type handles (swing flip).
 - S-27: Releasing the mouse commits one undo step for the whole drag. Pressing Escape during the drag cancels it and restores the original geometry.
-- S-28: Tab or typing a number during a handle drag opens the temporary-dimension entry for the dragged quantity (length for a resize, distance for a move); Enter commits it (verify in Chief).
+- S-28: Tab or typing a number during a handle drag opens the temporary-dimension entry for the dragged quantity (length for a resize, distance for a move); Enter commits it (verify in Chief). **Round 14:** built for every move and rotate drag (selection, wall body, cabinet, symbol, stair, device, roof plane, camera, CAD and group Rotate handles), not only wall ends and openings: `select.rs typed_kind`, `typed_pointer`, `typed_readout`; tests `a_typed_distance_moves_a_selection_by_exactly_that_much`, `a_typed_distance_and_angle_move_a_wall_perpendicular_or_any_object`, `a_typed_angle_turns_a_selected_cad_object`, `typed_input::tests::a_rotate_drag_arms_the_angle_field_first`.
 
 ## 3. Marquee, multi-select, Tab, groups
 
 - S-29: Click-drag starting in empty space draws a marquee rectangle. Drag left-to-right: selects objects **entirely inside** the rectangle. Drag right-to-left: selects objects that are inside **or touched** by the rectangle (verify in Chief; recalled as the AutoCAD-style window vs crossing rule).
-- S-30: A marquee that starts on an unselected object drags that object instead (S-13). To marquee from on top of objects, begin the drag in a gap or hold Alt (verify in Chief).
+- S-30: A marquee that starts on an unselected object drags that object instead (S-13). To marquee from on top of objects, begin the drag in a gap or hold Alt (verify in Chief). **Round 14:** built. Alt held on the press starts a marquee over an object; Edit > Marquee Selection picks By Drag Direction, Enclosing or Touching (`select.rs MarqueeMode`, `objects_in_rect`); tests `alt_on_the_press_marquees_from_on_top_of_an_object`, `the_marquee_selection_setting_decides_enclosing_or_touching`. The setting lasts for the session (DECISIONS); verify in Chief.
 - S-31: Shift+marquee adds to the current selection; Shift-click on a selected object removes it, on an unselected object adds it. Ctrl/Cmd-click does not mean add in Chief (verify in Chief).
 - S-32: Marquee Select Similar: Edit toolbar / context command that, with one object selected, selects every object of the same type (and, for walls, optionally the same wall type) inside the next marquee drawn; also reachable from the "Select Same Type" button on the right-edge vertical bar (see `chief-x18-ui-notes.md`) (verify in Chief for exact UI).
 - S-33: Select All (Cmd+A) selects every selectable object on the active floor that is on a displayed, unlocked layer. Status bar shows the count.
@@ -93,7 +93,7 @@ Select Objects (`Space`) picks every object kind (walls, openings, dimensions, C
 ## 6. Edit Behaviors (Edit > Edit Behaviors)
 
 - S-65: Edit Behaviors are a radio group that changes what dragging an edit handle does for CAD/Text and some objects: **Default** (move/resize in place), **Replicate** (dragging leaves the original and creates a copy; the Transform/Replicate dialog opens for count), **Resize** (a body drag resizes instead of moves for boxes/circles/arcs), **Concentric** (dragging an arc/circle/polyline creates a concentric offset copy), **Fillet** (clicking two CAD lines rounds their corner with a radius prompt), **Chamfer** (same but cuts the corner square).
-- S-66: The active behavior shows as a toggled item under Edit > Edit Behaviors and as a status-bar hint; it resets to Default when switching away from Select Objects (verify in Chief).
+- S-66: The active behavior shows as a toggled item under Edit > Edit Behaviors and as a status-bar hint; it resets to Default when switching away from Select Objects (verify in Chief). **Round 14:** built. The status bar shows "Edit Behavior: <mode>" while it is not Default and Select Objects resets it when the tool changes (`behaviors::indicator`, `behaviors::reset`, `SelectTool::deactivate`); tests `behaviors::tests::the_indicator_names_the_behavior_and_leaving_select_resets_it`, `s30_select_r14::the_edit_behavior_shows_in_the_status_bar_until_select_is_left`. Verify in Chief.
 - S-67: Fillet/Chamfer apply to CAD lines, arcs and polyline corners and to wall corners as "Wall Fillet" is not offered (verify in Chief).
 
 ## 7. Snap settings (Edit > Snap Settings)
@@ -121,7 +121,7 @@ Select Objects (`Space`) picks every object kind (walls, openings, dimensions, C
 - S-82: Paste (Cmd+V) attaches the clipboard objects to the cursor at their reference point; the user clicks to drop. Esc cancels. Pasted walls auto-join to touching walls at the drop point.
 - S-83: Paste Hold Position (toolbar button, Build row 2 item 18) pastes at the **original coordinates** with no cursor attachment; used to move content between floors or views.
 - S-84: Copy and Paste in Place (key sequence `C, P, P`) duplicates the selection at the same position in one step; the duplicate is selected.
-- S-85: Pasting across different Plan Studio/Chief files preserves layers by name; missing layers are created (verify in Chief).
+- S-85: Pasting across different Plan Studio/Chief files preserves layers by name; missing layers are created (verify in Chief). **Round 14:** built. Copy and Cut write `~/.plan-studio/clipboard.json` and a newer file becomes the clipboard of any running program; layers travel by name and are made when missing (`clipboard.rs write_file`, `poll_file`, `Clipboard::ensure_layers`); tests `a_copy_in_one_plan_pastes_into_another_with_its_layers`, `the_clipboard_file_survives_junk_and_a_missing_home`. Verify in Chief.
 - S-86: Copy/Paste does not copy the room, which is derived; names attached to rooms are not copied.
 
 ## 10. Delete and Delete Objects
@@ -132,19 +132,19 @@ Select Objects (`Space`) picks every object kind (walls, openings, dimensions, C
 
 ## 11. Edit Area
 
-- S-90: Edit > Edit Area offers Select Edit Area / Edit Area Current Floor / Clear Edit Area style commands that define a rectangular region; subsequent Move, Copy, Rotate, Delete and Stretch commands apply to everything inside the region, and walls crossing its edge stretch (verify in Chief for exact menu names).
-- S-91: Stretch CAD (Edit menu) stretches CAD vertices inside a drawn window while leaving vertices outside fixed.
+- S-90: Edit > Edit Area offers Select Edit Area / Edit Area Current Floor / Clear Edit Area style commands that define a rectangular region; subsequent Move, Copy, Rotate, Delete and Stretch commands apply to everything inside the region, and walls crossing its edge stretch (verify in Chief for exact menu names). **Round 14:** built as Edit > Edit Area > Edit Area / Edit Area Visible (`tools/select/area.rs`): rubber band, move, copy with Ctrl/Cmd, turn with the handle, Delete, walls crossing the edge stretch. Tests `area::tests::*`, `s30_select_r14::the_edit_menu_commands_start_edit_area_and_stretch_cad`, `edit_area_visible_leaves_hidden_layers_alone`. Menu names unverified; verify in Chief.
+- S-91: Stretch CAD (Edit menu) stretches CAD vertices inside a drawn window while leaving vertices outside fixed. **Round 14:** built as Edit > Stretch CAD (`area.rs stretch_cad`): vertices of lines and polylines inside the window move with one drag. Tests `area::tests::stretch_cad_moves_only_the_vertices_inside_the_window`.
 
 ## 12. Keyboard, modifiers and cursor feedback
 
 - S-92: Arrow keys nudge the selection by the Grid Snap Unit (1" default) in the arrow's direction; Shift+Arrow nudges by 10 units; a wall nudged with Left/Right arrows moves perpendicular-only per S-21 (verify in Chief).
 - S-93: Enter with an object selected opens its specification (same as double-click). Delete/Backspace deletes. Cmd+D duplicates in place (verify in Chief; Chief's documented command is Copy and Paste in Place, `C, P, P`).
-- S-94: Modifier table for Select Objects (macOS): Shift = add/remove from selection; Alt/Option = suspend snaps (and free move for walls, S-22); Cmd = nothing special for selection; Ctrl+drag = copy-drag in some X versions (verify in Chief). Space = toggle Select Objects.
+- S-94: Modifier table for Select Objects (macOS): Shift = add/remove from selection; Alt/Option = suspend snaps (and free move for walls, S-22); Cmd = nothing special for selection; Ctrl+drag = copy-drag in some X versions (verify in Chief). Space = toggle Select Objects. **Round 14:** built: Ctrl or Cmd held when a drag starts copies the selection and drags the copies as one "Copy Objects" step; Alt on the press starts a marquee (S-30); Shift adds. Tests `ctrl_drag_copies_the_selection_in_one_undo_step`, `ctrl_drag_of_a_wall_leaves_the_walls_around_it_alone`, `escape_during_a_ctrl_drag_removes_the_copies_and_restores_the_selection`. Ctrl-click is a right click on macOS, hence Cmd too; verify in Chief.
 - S-95: Cursor shapes: arrow in empty space; four-arrow over a movable body; resize double-arrow over a resize handle, oriented along the resize axis; curved arrow over a rotate handle; hand over Pan.
-- S-96: Fill Window Selected Objects (right-edge bar) zooms the plan to the selection bounds with a margin; disabled with no selection.
+- S-96: Fill Window Selected Objects (right-edge bar) zooms the plan to the selection bounds with a margin; disabled with no selection. **Round 14:** built: the right-bar "Fill Window Selected Objects" button now runs the command (`toolbar.rs`), which frames the selection (`app_info::selection_frame`); tests `fill_window_selected_frames_the_selection`, `the_fill_window_selected_button_is_wired`.
 - S-97: Select Objects draws the selection in a high-contrast color (default blue) with the handles; hidden-layer ghost objects are never drawn selected.
-- S-98: The status bar left segment shows the selected object count/type ("1 Straight Wall selected") and cursor coordinates X/Y/Z in feet-inches with fractions (already captured in `chief-x18-ui-notes.md`).
-- S-99: Dragging an object off the visible plan area auto-scrolls the view (verify in Chief).
+- S-98: The status bar left segment shows the selected object count/type ("1 Straight Wall selected") and cursor coordinates X/Y/Z in feet-inches with fractions (already captured in `chief-x18-ui-notes.md`). **Round 14:** built. The status bar shows the cursor Z beside X and Y, the selection ("1 Straight Wall selected, Z 0\" to 9'-0\"", counts and types for several) and the hover text (`describe::selection_summary`, `status::context_fields`); tests `describe::tests::the_selection_is_counted_and_typed`, `status::tests::context_fields_read_the_editor`, `hover_and_selection_are_described_in_the_status_bar`.
+- S-99: Dragging an object off the visible plan area auto-scrolls the view (verify in Chief). **Round 14:** built. A Select Objects drag (move, handle, marquee) scrolls the view when the pointer is within 28 px of the canvas edge or past it, up to 900 px/s (`select.rs auto_scroll_vector`, `drag_in_progress`; `main.rs auto_scroll`); tests `a_drag_at_the_canvas_edge_scrolls_the_view_toward_it`, `the_select_tool_reports_a_drag_in_progress_for_the_shell`. Verify in Chief.
 - S-100: Pressing Escape while a handle drag is in progress cancels (S-27); pressing it with no drag deselects (S-9).
 
 ## 13. Rotate, Transform/Replicate and Reflect in detail
@@ -161,7 +161,7 @@ Select Objects (`Space`) picks every object kind (walls, openings, dimensions, C
 - S-107: Rooms are not directly selected objects in the plan with Select Objects unless the click lands in the room interior (Chief selects the room object; its specification opens on double-click). Plan Studio's rooms are derived and have no object identity yet.
 - S-108: Dimensions are selectable by their dimension line, extension lines or text; selected dimensions show the Move handle (drags the dimension line perpendicular to its measured axis), Resize handles at each extension line end, a text-move handle, and an Add/Delete extension-point control.
 - S-109: Selecting a wall that is part of a closed loop does not select the loop; Shift-click each wall, or use Select Same Type.
-- S-110: Selecting a hosted door/window also highlights its host wall softly (a thin outline) while the temporary dimensions are shown to the wall ends.
+- S-110: Selecting a hosted door/window also highlights its host wall softly (a thin outline) while the temporary dimensions are shown to the wall ends. **Round 14:** built. A selected door or window outlines its host wall softly (`select.rs draw_host_walls`, `host_walls`); test `hover_and_selection_are_described_in_the_status_bar`.
 - S-111: Objects on the Reference Display (floor below/above in gray) are never selectable.
 - S-112: Clicking a CAD object that lies behind a wall on the same position picks by layer order; the active CAD layer's objects are favored (verify in Chief).
 
@@ -201,3 +201,17 @@ Priority order for builders (highest value first): history wiring (S-75..S-79), 
 | S-7 double-click opens spec for any object | Works for walls and openings | Low (done) | Extend as new object types gain dialogs |
 | S-33 Select All | Inert menu item | Low | Add after `Selection` exists |
 | S-9, S-10 Esc/Space semantics | Esc ends chain then returns to Select; Space bound to Select | Low (done) | Verify Esc deselects when idle |
+
+<!-- coverage-audit:start -->
+## Coverage audit additions (2026-10-08)
+
+Rows added by the Round 14 coverage audit (`docs/chief-feature-coverage.md`): Chief X18 features found in the menu, toolbar, sub-tool and dialog captures, or known from the product, that no row above covered. Status comes from a code search, not a Chief session; "verify in Chief" marks behavior known only from the product. Variants of one flyout or tab share one row.
+
+| ID | Chief behavior | Status | Evidence |
+|---|---|---|---|
+| S-113 | Move to Front: Change the draw order of CAD and plan objects. Also covers: Move to Back (draw order). (Not captured; verify in Chief.) | Works | edit_commands.rs FRONT/BACK; menus.rs "Move to Front" |
+| S-114 | Lock: Lock objects so they cannot be moved or edited. Also covers: Unlock selection. (Not captured; verify in Chief.) | Works | edit_commands.rs LOCK/UNLOCK |
+| S-115 | Reverse Plan: Mirror the whole plan left to right (a flipped floor plan). | Missing | no mirror-the-whole-plan command (Edit > Reflect works on a selection, S-48) |
+| S-116 | Object Painter ▸: Paint one object's properties (style, size, layer) onto other objects of the same type. | Partial (round 15; verify in Chief) | tools/painters.rs (Attrs capture and apply, targets, paint_object, eyedrop_object, match_properties), dialogs/painters.rs (bar and Object Painter Modes: Component, Object, Room, Floor, Plan, Apply to all of type), Tools > Object Painter, Edit toolbar Match Properties; walls, doors and windows, dimensions, CAD and text, symbols, cabinets and rooms; never position or size. Tests: s45 the_object_painter_copies_a_walls_specification_but_not_its_position_or_length, scope_floor_reaches_walls_like_the_clicked_one_unless_apply_to_all_of_type_is_on, scope_plan_reaches_other_floors_and_scope_floor_does_not, scope_room_reaches_only_the_objects_in_the_clicked_room, doors_and_windows_do_not_exchange_attributes_but_doors_paint_doors, match_properties_loads_the_selection_and_switches_to_the_object_painter. Open: stairs, roofs, devices, foundation, framing and details are not copied (DECISIONS 451, 452) |
+| S-117 | Lock / Unlock: Lock selected objects against editing. (Not captured; verify in Chief.) | Works | edit_commands.rs LOCK, UNLOCK |
+<!-- coverage-audit:end -->

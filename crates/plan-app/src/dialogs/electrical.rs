@@ -1,7 +1,10 @@
 //! Electrical Service Specification (double-click a device; CB-62, CB-63).
 //!
 //! * General: the kind (any kind of the same family, e.g. a duplex outlet
-//!   becomes a GFCI), height above the floor, label and circuit.
+//!   becomes a GFCI), its voltage and flags (110V / 220V, GFCI, WP,
+//!   Dedicated), height above the floor, label and circuit; with the plan's
+//!   defaults loaded ([`ElectricalDialog::with_defaults`]) also "Use as
+//!   default height" and the Default Heights of every kind.
 //! * Switches: for a switch, the lights and outlets it controls (check one to
 //!   connect it, uncheck to remove the connection arc); for anything else,
 //!   the switches that control it.
@@ -19,7 +22,10 @@ use super::{
 use crate::editor::{site_view, Camera};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Ui};
 use plan_core::{Id, Point, Wall};
-use plan_electrical::{connect_in, disconnect, Device, DeviceKind, ElectricalLayer, FINISHES};
+use plan_electrical::{
+    connect_in, disconnect, Device, DeviceKind, ElectricalDefaults, ElectricalLayer,
+    COUNTER_OUTLET_KEY, FINISHES,
+};
 
 const TABS: &[Tab] = &[
     on("General"),
@@ -46,6 +52,9 @@ pub struct DeviceDraft {
     pub finish: String,
     /// Hide the label in the plan.
     pub hide_label: bool,
+    /// The plan's default heights as edited in the dialog; `None` when the
+    /// dialog was opened without them (nothing to store then).
+    pub defaults: Option<ElectricalDefaults>,
 }
 
 impl DeviceDraft {
@@ -68,7 +77,21 @@ impl DeviceDraft {
             controls,
             finish: d.finish.clone(),
             hide_label: d.hide_label,
+            defaults: None,
         }
+    }
+
+    /// Stores the edited default heights in `project` (nothing changes when
+    /// the dialog had none). Returns whether they differ from what was there.
+    pub fn store_defaults(&self, project: &mut plan_core::Project) -> bool {
+        let Some(defaults) = &self.defaults else {
+            return false;
+        };
+        if *defaults == ElectricalDefaults::load(project) {
+            return false;
+        }
+        defaults.store(project);
+        true
     }
 
     /// Copies the edited values onto `d`.
@@ -125,6 +148,11 @@ struct Form {
     loads: Vec<(Id, String)>,
     fields: Fields,
     circuit_text: String,
+    /// Default height rows, one per kind: the kind and its height.
+    default_rows: Vec<(DeviceKind, f64)>,
+    counter_height: f64,
+    /// "Use as default height for this kind" is ticked.
+    make_default: bool,
 }
 
 fn device_name(d: &Device) -> String {
@@ -165,8 +193,23 @@ impl ElectricalDialog {
                 loads,
                 fields: Fields::default(),
                 circuit_text: d.circuit.map(|c| c.to_string()).unwrap_or_default(),
+                default_rows: Vec::new(),
+                counter_height: ElectricalDefaults::default().counter_height(),
+                make_default: false,
             },
         }
+    }
+
+    /// Opens the dialog with the plan's electrical defaults, so the General
+    /// tab offers "Use as default height" and the Default Heights list.
+    pub fn with_defaults(mut self, defaults: &ElectricalDefaults) -> Self {
+        self.form.default_rows = DeviceKind::all()
+            .into_iter()
+            .map(|k| (k, defaults.height(k)))
+            .collect();
+        self.form.counter_height = defaults.counter_height();
+        self.form.draft.defaults = Some(defaults.clone());
+        self
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -185,6 +228,20 @@ impl ElectricalDialog {
 }
 
 impl Form {
+    /// Folds the Default Heights rows and the tick box into the draft.
+    fn sync_defaults(&mut self) {
+        let Some(defaults) = self.draft.defaults.as_mut() else {
+            return;
+        };
+        for (k, h) in &self.default_rows {
+            defaults.set_height(*k, *h);
+        }
+        defaults.set_counter_height(self.counter_height);
+        if self.make_default {
+            defaults.set_height(self.draft.kind, self.draft.height);
+        }
+    }
+
     fn circuit_valid(&self) -> bool {
         let t = self.circuit_text.trim();
         t.is_empty() || t.parse::<u32>().is_ok()
@@ -208,8 +265,43 @@ impl Form {
                 self.draft.height = self.draft.kind.default_height();
             }
         });
+        row(ui, "Voltage", |ui| {
+            ui.label(match self.draft.kind.voltage() {
+                Some(v) => format!("{v}V"),
+                None => "-".to_string(),
+            })
+        });
+        let flags: Vec<&str> = self
+            .draft
+            .kind
+            .flags()
+            .into_iter()
+            .filter(|f| !f.ends_with('V'))
+            .collect();
+        row(ui, "Flags", |ui| {
+            ui.label(if flags.is_empty() {
+                "-".to_string()
+            } else {
+                flags.join(", ")
+            })
+        });
         self.fields
             .length_row(ui, "Height", "height", &mut self.draft.height);
+        if self.draft.defaults.is_some() {
+            let name = format!("Use as default height for {}", self.draft.kind.name());
+            ui.checkbox(&mut self.make_default, name);
+            ui.collapsing("Default Heights", |ui| {
+                self.fields.length_row(
+                    ui,
+                    "Counter Outlet",
+                    COUNTER_OUTLET_KEY,
+                    &mut self.counter_height,
+                );
+                for (k, h) in &mut self.default_rows {
+                    self.fields.length_row(ui, k.name(), k.name(), h);
+                }
+            });
+        }
         row(ui, "Label", |ui| {
             ui.text_edit_singleline(&mut self.draft.label)
         });
@@ -332,6 +424,7 @@ impl SpecPages for Form {
             "Layer" => self.layer(ui),
             _ => {}
         }
+        self.sync_defaults();
     }
 
     fn preview(&self, p: &Painter, rect: Rect) {
@@ -459,5 +552,68 @@ mod tests {
                 assert_eq!(dlg.show(ctx), Outcome::Open);
             });
         }
+    }
+
+    #[test]
+    fn the_defaults_list_follows_the_ticked_kind_and_the_edited_rows() {
+        let mut layer = ElectricalLayer::default();
+        let o = layer.add(place_free(DeviceKind::Outlet110, Point::ZERO));
+        let d = layer.device(o).unwrap().clone();
+        let plain = ElectricalDialog::for_device(&d, &layer);
+        assert!(plain.draft().defaults.is_none(), "no defaults, no section");
+        let mut dlg =
+            ElectricalDialog::for_device(&d, &layer).with_defaults(&ElectricalDefaults::default());
+        assert_eq!(dlg.form.default_rows.len(), DeviceKind::all().len());
+        // Tick "Use as default height" with a new height.
+        dlg.form.make_default = true;
+        dlg.draft_mut().height = 18.0;
+        // And edit the switch row and the counter row.
+        for (k, h) in &mut dlg.form.default_rows {
+            if *k == DeviceKind::Switch {
+                *h = 40.0;
+            }
+        }
+        dlg.form.counter_height = 36.0;
+        dlg.form.sync_defaults();
+        let defaults = dlg.draft().defaults.clone().unwrap();
+        assert_eq!(defaults.height(DeviceKind::Outlet110), 18.0);
+        assert_eq!(defaults.height(DeviceKind::Switch), 40.0);
+        assert_eq!(defaults.height(DeviceKind::Gfci), 12.0);
+        assert_eq!(defaults.counter_height(), 36.0);
+        let mut project = plan_core::Project::new("x");
+        assert!(dlg.draft().store_defaults(&mut project));
+        assert!(
+            !dlg.draft().store_defaults(&mut project),
+            "unchanged the second time"
+        );
+        assert_eq!(ElectricalDefaults::load(&project), defaults);
+        // Unticking restores the row's value.
+        dlg.form.make_default = false;
+        dlg.form.sync_defaults();
+        assert_eq!(
+            dlg.draft()
+                .defaults
+                .as_ref()
+                .unwrap()
+                .height(DeviceKind::Outlet110),
+            12.0
+        );
+    }
+
+    #[test]
+    fn voltage_and_flags_follow_the_type() {
+        let mut layer = ElectricalLayer::default();
+        let o = layer.add(place_free(DeviceKind::Outlet110, Point::ZERO));
+        let d = layer.device(o).unwrap().clone();
+        let mut dlg = ElectricalDialog::for_device(&d, &layer);
+        assert!(dlg.form.family.contains(&DeviceKind::OutletWp));
+        dlg.draft_mut().kind = DeviceKind::OutletWp;
+        assert_eq!(dlg.draft().kind.voltage(), Some(110));
+        assert_eq!(dlg.draft().kind.flags(), ["110V", "GFCI", "WP"]);
+        let mut draft = dlg.draft().clone();
+        draft.apply_to_layer(&mut layer, &[]);
+        assert_eq!(layer.device(o).unwrap().kind, DeviceKind::OutletWp);
+        draft.kind = DeviceKind::Outlet220;
+        assert_eq!(draft.kind.flags(), ["220V", "Dedicated"]);
     }
 }

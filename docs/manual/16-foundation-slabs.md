@@ -105,7 +105,7 @@ Each object has its own Specification dialog on the shared frame (tab list, pane
 
 ## 16.5 Differences from Chief
 
-- Slabs are objects you draw; they do not follow the walls, and Build Foundation does not make them.
+- Slabs are objects you draw; they do not follow the walls, and Build Foundation does not make them. A foundation **wall** has its own footing, slab chamfer and sill plate on the Foundation tab of the Wall Specification (chapter 2.6); the slab chamfer and pour number there are stored and not built.
 - The Slab Footing wall variant, Wall Hatching and Floor Material Region are in chapter 17. Pads and piers have no resize handles (change their size in the dialog).
 - Slab Hole footings use the footing of the slab they cut (or the defaults), not a size of their own.
 - Fill patterns are simple screen patterns, not Chief's hatch library.

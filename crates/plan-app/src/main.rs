@@ -7,6 +7,7 @@
 //! (shared services, [`EditorContext`]) and `tools/` (one module per Chief
 //! tool behind the [`Tool`] trait); see `docs/architecture-tools.md`.
 
+mod chief_link;
 mod dialogs;
 mod editor;
 mod files;
@@ -20,6 +21,7 @@ mod plan_defaults;
 #[cfg(test)]
 mod scenarios;
 mod shell;
+mod spell;
 mod templates;
 mod theme;
 mod toolbar;
@@ -102,6 +104,8 @@ fn bar_state<'a>(
 
 impl PlanApp {
     fn new(settings: AppSettings, defaults: PlanDefaults, note: Option<String>) -> Self {
+        let mut defaults = defaults;
+        editor::code::seed_new_plan(&mut defaults);
         let mut cx = EditorContext::new(defaults);
         cx.status = note.unwrap_or_default();
         cx.palette = settings.theme.palette();
@@ -292,6 +296,28 @@ impl PlanApp {
             }
             // File > Close, Revert, Save a Copy, Backup, Clear Menu, Archives.
             Action::Custom(id) if files::is_command(id) => self.file_command(id),
+            // Edit Area, Stretch CAD and Marquee Selection (Select Objects); the
+            // Arc Creation Modes (Draw Arc).
+            Action::Custom(id) if tools::select::is_command(id) => {
+                if tools::select::run_command(&mut self.cx, id) {
+                    self.set_tool(ToolId::Select);
+                }
+            }
+            Action::Custom(id) if tools::cad::is_command(id) => {
+                tools::cad::run_command(&mut self.cx, id)
+            }
+            // File > Export > Picture and File > Import > 3D Symbol.
+            Action::Custom(id) if dialogs::export_picture::is_command(id) => {
+                let views = dialogs::export_picture::ViewInfo {
+                    snapshot_3d: self.view3d.snapshot_source(),
+                    view_3d_active: self.view3d.active,
+                };
+                dialogs::export_picture::run_command(&mut self.cx, id, views)
+            }
+            // Property Manager and the Excel property exchange.
+            Action::Custom(id) if dialogs::property_manager::is_command(id) => {
+                dialogs::property_manager::run_command(&mut self.cx, id);
+            }
             Action::Custom(id) => {
                 // The Edit commands work on the plan, not on the 3D or layout view.
                 if id.starts_with("edit.")
@@ -308,7 +334,7 @@ impl PlanApp {
             Action::Framing(c) => dialogs::exchange::dispatch_framing(&mut self.cx, c),
             Action::CurrentWall => self.apply(self.toolbars.wall_action()),
             Action::FileNew => self.request_file_action(files::Pending::New),
-            Action::ImportChiefPlan => self.import_chief_plan(),
+            Action::ImportChiefPlan => self.request_file_action(files::Pending::ImportChief),
             Action::FileOpen => self.request_file_action(files::Pending::Open(None)),
             Action::FileSave => self.save_project(),
             Action::FileSaveAs => self.save_project_as(),
@@ -422,6 +448,12 @@ impl PlanApp {
                         return;
                     }
                 }
+                // Send to Layout from the 3D view can send a picture of it too.
+                if c == shell::layout_window::LayoutCommand::SendToLayout && self.view3d.active {
+                    if let Some(view) = self.view3d.snapshot_source() {
+                        shell::layout_window::offer_snapshot_3d(view);
+                    }
+                }
                 let camera = self
                     .view3d
                     .active
@@ -512,6 +544,7 @@ impl PlanApp {
     // ----- file operations -----
 
     fn new_project(&mut self) {
+        editor::code::seed_new_plan(&mut self.cx.defaults);
         let project = Project::from_defaults("Untitled", &self.cx.defaults);
         self.cx.set_project(project);
         self.cx.seed_template_plan_views();
@@ -532,21 +565,35 @@ impl PlanApp {
         else {
             return;
         };
-        let opts = plan_chiefplan::import::ImportOptions::default();
-        match plan_chiefplan::import::import_plan(&path, &opts) {
-            Ok(res) => {
-                let summary = res.report.summary();
-                let file = res.report.file_name.clone();
-                self.cx.set_project(res.project);
-                self.path = None;
-                self.tools.restart(&mut self.cx);
-                self.files.rebaseline(&self.cx);
-                self.cx.status = format!("Imported {file}: {summary}");
-            }
+        self.import_chief_plan_from(&path);
+    }
+
+    /// Imports the Chief `.plan` at `path` as a new, untitled project. The
+    /// status bar gets the one-line headline; the full summary (counts and
+    /// warnings) opens in the report window.
+    fn import_chief_plan_from(&mut self, path: &std::path::Path) {
+        let opts = plan_chiefplan::import::ImportOptions {
+            symbol_resolver: Some(chief_link::resolve_symbol),
+            ..Default::default()
+        };
+        match plan_chiefplan::import::import_plan(path, &opts) {
+            Ok(res) => self.apply_chief_import(res),
             Err(e) => {
                 self.cx.status = format!("Could not import {}: {e}", path.display());
             }
         }
+    }
+
+    /// Makes an imported Chief plan the open (untitled) project.
+    fn apply_chief_import(&mut self, res: plan_chiefplan::import::ImportResult) {
+        let headline = res.report.headline();
+        let summary = res.report.summary();
+        self.cx.set_project(res.project);
+        self.path = None;
+        self.tools.restart(&mut self.cx);
+        self.files.rebaseline(&self.cx);
+        self.cx.status = format!("Imported {headline}");
+        dialogs::plan_check::open_text_report("Chief Plan Import", &headline, &summary);
     }
 
     // Open, save, save as, revert, backup and the prompts live in `files.rs`.
@@ -630,7 +677,16 @@ impl PlanApp {
     /// object kind to its dialog).
     fn open_spec(&mut self, o: ObjectRef) {
         match o {
-            ObjectRef::Wall(id) => self.open_wall_dialog(id),
+            ObjectRef::Wall(id) => {
+                // Open Object over a selection of walls: one dialog for all
+                // of them (W-83).
+                let many = shell::spec_dialogs::SpecDialogs::selected_walls(&self.cx)
+                    .filter(|ids| ids.contains(&id));
+                match many {
+                    Some(ids) if self.spec.open_walls(&mut self.cx, &ids) => {}
+                    _ => self.open_wall_dialog(id),
+                }
+            }
             ObjectRef::Opening(id) => self.open_opening_dialog(id),
             other => {
                 if !self.spec.open(&mut self.cx, other) {
@@ -804,11 +860,9 @@ impl PlanApp {
             }
             self.canvas_context_menu(ctx, resp);
         } else if resp.clicked_by(egui::PointerButton::Secondary) {
-            // Right-click ends a wall chain (the tool's Esc), without leaving the tool.
-            let res = self
-                .tools
-                .active_mut()
-                .key(&mut self.cx, KeyEvent::escape());
+            // Right-click is the tool's Esc without leaving the tool (the
+            // wall tool keeps its chain, W-3).
+            let res = self.tools.active_mut().secondary_click(&mut self.cx);
             self.finish_tool_call(ctx, &res);
         }
     }
@@ -1181,6 +1235,11 @@ impl PlanApp {
             zoom: shell::status::zoom_label(self.camera.px_per_in),
             undo: self.cx.undo_label().map(str::to_string),
             saved: self.saved_status(std::time::Instant::now()),
+            // Z, the selection text, the hover text and the Edit Behavior.
+            ..shell::status::context_fields(
+                &self.cx,
+                self.tools.active_id().base() == ToolId::Select,
+            )
         };
         egui::TopBottomPanel::bottom("status")
             .frame(frame)
@@ -1207,9 +1266,16 @@ impl PlanApp {
         }
         self.cx.cursor_world = new_cursor;
         self.cx.px_per_in = self.camera.px_per_in;
+        self.auto_scroll(ctx);
         self.dispatch_pointer(ctx, &resp);
         if resp.hovered() {
             ui.ctx().set_cursor_icon(self.tools.active().cursor());
+            // The name of the object under the pointer, after a short rest.
+            if self.tools.active_id().base() == ToolId::Select && !self.pressed_in_canvas {
+                if let Some(text) = shell::status::hover_tooltip(&self.cx) {
+                    resp.clone().on_hover_text_at_pointer(text);
+                }
+            }
         }
 
         self.cx.refresh();
@@ -1218,6 +1284,21 @@ impl PlanApp {
             .active()
             .draw_overlay(&self.cx, &painter, &self.camera);
         render::draw_crosshairs(&self.cx, &painter, &self.camera);
+    }
+
+    /// A Select Objects drag whose pointer reaches the edge of the canvas
+    /// scrolls the view that way (S-99).
+    fn auto_scroll(&mut self, ctx: &egui::Context) {
+        if !self.pressed_in_canvas || !tools::select::drag_in_progress() {
+            return;
+        }
+        let (pos, dt) = ctx.input(|i| (i.pointer.latest_pos(), i.stable_dt.min(0.05)));
+        let Some(pos) = pos else { return };
+        let v = tools::select::auto_scroll_vector(self.camera.rect, pos, dt);
+        if v != Vec2::ZERO {
+            self.camera.pan_by_pixels(v);
+            ctx.request_repaint();
+        }
     }
 
     fn handle_camera_input(&mut self, ui: &egui::Ui, resp: &egui::Response) {
@@ -1297,6 +1378,7 @@ impl PlanApp {
             default_height,
             self.cx.wall_types().to_vec(),
         ))));
+        self.spec.arm_main_props(&self.cx, ObjectRef::Wall(id));
     }
 
     fn open_opening_dialog(&mut self, id: Id) {
@@ -1322,6 +1404,7 @@ impl PlanApp {
         let dialog = OpeningDialog::for_opening(opening, &wall, others, extras)
             .with_label_defaults(&self.cx.defaults.opening_labels);
         self.dialog = Some(ActiveDialog::Opening(Box::new(dialog)));
+        self.spec.arm_main_props(&self.cx, ObjectRef::Opening(id));
     }
 
     fn open_defaults_entry(&mut self, entry: DefaultsEntry) {
@@ -1353,6 +1436,8 @@ impl PlanApp {
                     .with_label_defaults(&app.cx.defaults.opening_labels),
             ))
         };
+        // A default dialog has no object, so no Properties tab.
+        self.spec.take_main_props();
         self.dialog = match entry {
             DefaultsEntry::ExteriorWall => Some(wall_dialog(WallTarget::DefaultExterior, self)),
             DefaultsEntry::InteriorWall => Some(wall_dialog(WallTarget::DefaultInterior, self)),
@@ -1398,18 +1483,26 @@ impl PlanApp {
     /// Shows the open dialogs and applies an OK.
     fn dialogs(&mut self, ctx: &egui::Context) {
         if let Some(mut dialog) = self.dialog.take() {
-            let outcome = match &mut dialog {
-                ActiveDialog::Wall(d) => d.show(ctx),
-                ActiveDialog::Opening(d) => d.show(ctx),
-            };
+            // The Properties tab of the plan's own walls and openings.
+            let outcome = dialogs::property_manager::with_current(self.spec.main_props(), || {
+                match &mut dialog {
+                    ActiveDialog::Wall(d) => d.show(ctx),
+                    ActiveDialog::Opening(d) => d.show(ctx),
+                }
+            });
             match outcome {
                 Outcome::Open => self.dialog = Some(dialog),
-                Outcome::Cancel => {}
+                Outcome::Cancel => {
+                    self.spec.take_main_props();
+                }
                 Outcome::Ok => {
+                    let props = self.spec.take_main_props();
+                    let depth = dialogs::property_manager::before_apply(&self.cx);
                     match &dialog {
                         ActiveDialog::Wall(d) => self.apply_wall_dialog(d),
                         ActiveDialog::Opening(d) => self.apply_opening_dialog(d),
                     }
+                    dialogs::property_manager::after_apply(&mut self.cx, props.as_ref(), depth);
                     self.cx.mark_dirty();
                 }
             }
@@ -1424,6 +1517,7 @@ impl PlanApp {
             match defaults.show(ctx, self.dialog.is_none() && self.lists.is_none()) {
                 DefaultsOutcome::Open => {}
                 DefaultsOutcome::Edit(entry) => self.open_defaults_entry(entry),
+                DefaultsOutcome::Run(action) => self.apply(action),
                 DefaultsOutcome::Close => return,
             }
             self.defaults_dialog = Some(defaults);
@@ -1574,6 +1668,8 @@ impl eframe::App for PlanApp {
         if editor::roof_view::auto_rebuild(&mut self.cx) {
             self.cx.refresh();
         }
+        // Code minimums for the dialogs and the live Plan Check count.
+        editor::code::frame(&mut self.cx);
         if !ctx.input(|i| i.pointer.any_down()) {
             self.cx.end_merge();
         }
@@ -1637,6 +1733,7 @@ impl eframe::App for PlanApp {
             self.camera.px_per_in = zoom.clamp(0.05, 50.0);
         }
         dialogs::build_tools::show_all(ctx, &mut self.cx, &mut self.camera);
+        dialogs::property_manager::show_all(ctx, &mut self.cx, self.path.as_deref());
         shell::layout_window::show_dialogs(ctx, &mut self.cx);
         dialogs::transform::show_edit_windows(ctx, &mut self.cx);
         // Copy and Cut leave a note on the system clipboard: egui only sends
@@ -1647,6 +1744,7 @@ impl eframe::App for PlanApp {
         dialogs::exchange::show_all(ctx, &mut self.cx);
         dialogs::underlay::show_all(ctx, &mut self.cx);
         tools::materials::show_windows(ctx, &mut self.cx);
+        dialogs::spell_check::show_all(ctx, &mut self.cx);
         let mut pref_actions = Vec::new();
         dialogs::preferences::show_all(ctx, &mut self.cx, &mut self.settings, &mut pref_actions);
         for action in pref_actions {
@@ -1655,6 +1753,7 @@ impl eframe::App for PlanApp {
         self.poll_template_detection(ctx);
         self.app_commands(ctx);
         self.drive_files(ctx);
+        fonts::post_notes(&mut self.cx.status);
         shell::status::record(&self.cx.status);
         self.sync_settings(ctx);
         if self.cx.is_dirty() {

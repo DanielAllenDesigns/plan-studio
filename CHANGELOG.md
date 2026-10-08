@@ -12,19 +12,36 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
-Nothing yet beyond the Round 12 work below, which is in the working tree and not committed. Everything in this file from Round 10 on is uncommitted; the first tagged release (`v0.1.0`) will fold all of the rounds together (see [docs/release-checklist.md](docs/release-checklist.md)).
+No version has been tagged yet; the first tagged release (`v0.1.0`) will fold all of the rounds together (see [docs/release-checklist.md](docs/release-checklist.md)). Round 13 is commit `9ba0ae7`; the Round 14 integration items are listed at the end of its section.
+
+### Round 13 - 2026-10-08 (commit 9ba0ae7)
+
+#### Added
+
+- **System fonts** (`plan-app/fonts.rs`, `plan-docs`): text styles use the fonts installed on the machine (Replace Fonts, Preferences > Fonts); a family that is not installed falls back to the bundled font with one note on the status bar; the PDF writer embeds the fonts it may and says so when a font does not allow embedding.
+- **Openings in 3D** (`plan-3d/opening*`): casing, jambs and sills, open doors (Show Doors Open), transoms over doors, and openings in curved walls.
+- **3D view interaction** (`shell/view3d_panel/`): drag to move a picked object, an orbit centre at the picked point, hover highlight, and per-mesh colour for painted surfaces.
+- **Chief `.plan` import, stage 2** (`plan-chiefplan/import/`): cabinets, library symbols (as `chief-plan.<name>`; one the catalog does not know draws as a labelled box in plan and a labelled block in 3D), electrical devices, stairs, roof planes and room labels, and the X17 and X16 dimension layouts.
+- **Roofs**: dormer overhangs, Dutch gable faces and roof plane handles.
+- **Stairs**: spiral stairs, flared bottom treads, landing rails and stair labels.
+- **Walls**: radius-to and lock on the wall tool, Reverse Layers.
+- **Layout**: page templates, bent leaders, the revision table, XLSX schedule export and the print preview modes.
+- **Tools > Checks > Plan Check Settings** opens the Plan Check Settings dialog directly; 3D menu camera commands (Move, Orbit, Tilt, View Direction, Isometric); the Default Settings Terrain page.
+
+#### Changed
+
+- Round 14 integration: File > Import > Chief Plan... asks about unsaved changes first, like File > Open; the status bar gets a one-line headline of the counts and the full summary (counts and warnings) opens in a report window. Font notes (a family that is not installed, a font that does not allow embedding) reach the status bar, once each.
 
 ### Planned
 
-- Open doors, casing, sills and thresholds in the editor's 3D view; threshold marks in plan; a transom over a door.
 - Attic floors from Build Roof.
-- Replace Fonts; ties from dimensions to stairs, roof planes and framing.
+- Ties from dimensions to stairs, roof planes and framing.
 - Layout: Save As Template, opening labels on pages, CAD-detail boxes from the Send to Layout dialog.
 - Bump maps, and the ray tracer drawing pictures with their bitmaps.
-- Chief `.plan` import: cabinets, roof planes, library symbols and the other classes that are recognized but not decoded.
+- Chief `.plan` import: framing and the other classes that are recognized but not decoded.
 - A live manual QA pass on macOS, Windows and Linux, then the first tagged release.
 
-## Round 12 - 2026-10-08 (working tree; the commit is not made yet)
+## Round 12 - 2026-10-08 (`066ea0d`, with Rounds 10 to 12)
 
 About 3,120 tests (3,161 `#[test]` functions less 39 that are `#[ignore]`d, counted from the source, not from a `cargo test` run; Round 11 was about 2,750 at its last count). Run `cargo test --workspace` for the exact number before tagging. Round 12 also finished the Round 11 work that was still in flight when that section was written.
 
@@ -57,7 +74,7 @@ About 3,120 tests (3,161 `#[test]` functions less 39 that are `#[ignore]`d, coun
 - The Status column of `docs/qa-findings.md` may still say "open" for QA-08 to QA-11 although no scenario test is `#[ignore]`d any more.
 - The `#[allow(dead_code)]` comments in `dialogs/cabinet.rs` and `dialogs/framing.rs` still say the Cabinet and Framing Defaults windows are not opened from a menu; they are.
 
-## Round 11 - 2026-10-08 (working tree; the commit is not made yet; the parts that were still in flight when this section was first written landed in Round 12)
+## Round 11 - 2026-10-08 (`066ea0d`, with Rounds 10 to 12; the parts that were still in flight when this section was first written landed in Round 12)
 
 About 2,750 tests (2,821 `#[test]` functions less 45 that are `#[ignore]`d, at the last count; the number is still rising as the unfinished Round 11 work lands, counted from the source, not from a `cargo test` run; Round 10 was about 2,430). Run `cargo test --workspace` for the exact number before tagging.
 
@@ -81,7 +98,7 @@ About 2,750 tests (2,821 `#[test]` functions less 45 that are `#[ignore]`d, at t
 
 - (Fixed in Round 12.) The standard widths and the tab values new openings start with were not saved with the plan defaults.
 
-## Round 10 - 2026-10-08 (working tree; the commit is not made yet)
+## Round 10 - 2026-10-08 (`066ea0d`, with Rounds 10 to 12)
 
 About 2,430 tests. The figure is counted from the source (the `#[test]` functions that are not `#[ignore]`d), not from a `cargo test` run; the same count matched the reported totals within ten at Rounds 7 and 8. Run `cargo test --workspace` for the exact number before tagging.
 

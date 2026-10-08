@@ -19,6 +19,7 @@ mod edges;
 mod footprint;
 mod gable;
 mod geom;
+mod halfhip;
 mod hole;
 mod join;
 mod skeleton;
@@ -35,6 +36,7 @@ pub use footprint::footprint_from_walls;
 pub use gable::{
     apply_gable_line, roof_return, roof_return_at, ReturnKind, ReturnSpec, RoofReturn,
 };
+pub use halfhip::DEFAULT_CLIP_FRACTION;
 pub use hole::{
     hole_pieces, roof_plane_with_holes, HoleKind, RoofHole, RoofPolygonWithHoles, Skylight,
     SkylightSpec,

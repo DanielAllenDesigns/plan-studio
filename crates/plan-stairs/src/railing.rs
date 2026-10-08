@@ -794,7 +794,7 @@ pub(crate) fn landing_railing(stair: &Stair) -> Vec<Mesh> {
         (RailSide::Left, stair.params.left_side),
         (RailSide::Right, stair.params.right_side),
     ] {
-        let mut params = stair.params.railing;
+        let mut params = stair.params.railing_for(side);
         match kind {
             crate::SideKind::Railing => {}
             crate::SideKind::HalfWall => {

@@ -1,15 +1,23 @@
 //! Edit > Preferences... (Cmd+,): Chief's Preferences dialog, one window with a
-//! page list. Pages: Appearance (canvas theme, UI brightness, text size, icon
-//! halo), Colors (selection color), Library (the Chief catalog switch and
-//! folder), Folders (template files and where Plan Studio keeps its files),
-//! Render (ray-trace defaults), Edit (links to the editing dialogs), Snaps
-//! (object, grid and angle snaps), Architectural (cabinet behavior).
+//! page list. Pages: Appearance (canvas colors, theme, brightness, icon size,
+//! icon halo), Colors (selection color), Text (interface text size, installed
+//! fonts, the default text styles), Library Browser (the Chief catalog switch
+//! and folder, thumbnail size, search options), Render (ray-trace defaults,
+//! preview quality, shadows and occlusion), Materials List, Reset Options
+//! (toolbars, dialog sizes, "don't ask again" messages, side windows),
+//! Folders (Chief's data folders, each with an "exists" mark), Edit (rotate
+//! and resize about, marquee, snap switches), Behaviors (Edit Type, Replicate
+//! dialog, camera steps), Snap Properties (every snap kind, sensitivity,
+//! angles), Architectural (cabinets, auto rebuild), CAD (arc centers, end
+//! caps, line weights), General Plan Defaults (a link) and Unit Conversions.
 //!
-//! The choices of this module live under the `"preferences"` key of
-//! `~/.plan-studio/settings.json` ([`Preferences`]); the canvas theme and the
-//! brightness stay at the top level where `theme::AppSettings` keeps them, and
-//! the Chief catalog switch under `"chief_catalogs"`. Every change applies at
-//! once and is saved when the mouse is released.
+//! The choices live in `~/.plan-studio/preferences.json` ([`pages::PrefsFile`]:
+//! a version, the general [`Preferences`] and one key per page, all with serde
+//! defaults); a first run reads the general choices from the older
+//! `"preferences"` key of `settings.json`. The canvas theme and the brightness
+//! stay at the top level of `settings.json` where `theme::AppSettings` keeps
+//! them, and the Chief catalog switch under `"chief_catalogs"`. Every change
+//! applies at once and is saved when the mouse is released.
 
 use crate::dialogs::camera::{SamplesPreset, SizePreset};
 use crate::editor::{placed, EditorContext};
@@ -20,6 +28,9 @@ use eframe::egui::{self, Align2};
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
+
+pub mod pages;
+pub mod ui;
 
 /// The key in `settings.json`.
 pub const SETTINGS_KEY: &str = "preferences";
@@ -143,7 +154,8 @@ pub fn read_at(path: &Path) -> Option<Preferences> {
 }
 
 /// Writes the `preferences` key of the settings file at `path`, keeping every
-/// other key.
+/// other key (the older layout; the live file is `preferences.json`).
+#[cfg(test)]
 pub fn write_at(path: &Path, p: &Preferences) -> Result<(), String> {
     let mut v = std::fs::read_to_string(path)
         .ok()
@@ -164,46 +176,69 @@ pub fn write_at(path: &Path, p: &Preferences) -> Result<(), String> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Appearance,
-    Fonts,
     Colors,
+    /// Chief's Text page (this build's Fonts page).
+    Fonts,
+    /// Chief's Library Browser page.
     Library,
-    Folders,
     Render,
+    MaterialsList,
+    ResetOptions,
+    Folders,
     Edit,
+    Behaviors,
+    /// Chief's Snap Properties page.
     Snaps,
     Architectural,
+    Cad,
+    PlanDefaults,
+    UnitConversions,
 }
 
 impl Page {
-    pub const ALL: [Page; 9] = [
+    pub const ALL: [Page; 15] = [
         Page::Appearance,
-        Page::Fonts,
         Page::Colors,
+        Page::Fonts,
         Page::Library,
-        Page::Folders,
         Page::Render,
+        Page::MaterialsList,
+        Page::ResetOptions,
+        Page::Folders,
         Page::Edit,
+        Page::Behaviors,
         Page::Snaps,
         Page::Architectural,
+        Page::Cad,
+        Page::PlanDefaults,
+        Page::UnitConversions,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Page::Appearance => "Appearance",
-            Page::Fonts => "Fonts",
             Page::Colors => "Colors",
-            Page::Library => "Library",
-            Page::Folders => "Folders",
+            Page::Fonts => "Text",
+            Page::Library => "Library Browser",
             Page::Render => "Render",
+            Page::MaterialsList => "Materials List",
+            Page::ResetOptions => "Reset Options",
+            Page::Folders => "Folders",
             Page::Edit => "Edit",
-            Page::Snaps => "Snaps",
+            Page::Behaviors => "Behaviors",
+            Page::Snaps => "Snap Properties",
             Page::Architectural => "Architectural",
+            Page::Cad => "CAD",
+            Page::PlanDefaults => "General Plan Defaults",
+            Page::UnitConversions => "Unit Conversions",
         }
     }
 }
 
 struct Live {
     prefs: Option<Preferences>,
+    /// The other pages (`preferences.json`).
+    pages: Option<pages::PagePrefs>,
     open: bool,
     page: Page,
     /// A change not yet written to the settings file.
@@ -214,12 +249,21 @@ struct Live {
     chief: Option<ChiefSettings>,
     chief_folder_text: String,
     note: String,
+    /// The editing defaults of the saved pages have been laid over the
+    /// plan's (once per run).
+    editing_applied: bool,
+    /// The converter's input on the Unit Conversions page.
+    converter: String,
+    /// The Reset Options button waiting for a second click.
+    reset_pending: Option<ui::Reset>,
+    reset_note: String,
 }
 
 impl Default for Live {
     fn default() -> Self {
         Self {
             prefs: None,
+            pages: None,
             open: false,
             page: Page::Appearance,
             dirty: false,
@@ -227,6 +271,10 @@ impl Default for Live {
             chief: None,
             chief_folder_text: String::new(),
             note: String::new(),
+            editing_applied: false,
+            converter: String::new(),
+            reset_pending: None,
+            reset_note: String::new(),
         }
     }
 }
@@ -252,8 +300,12 @@ pub fn current() -> Preferences {
                 }
                 #[cfg(not(test))]
                 {
-                    settings_path()
-                        .and_then(|p| read_at(&p))
+                    // preferences.json first; the older settings.json key
+                    // for a first run on this layout.
+                    pages::file_path()
+                        .and_then(|p| pages::read_file_at(&p))
+                        .map(|f| f.general)
+                        .or_else(|| settings_path().and_then(|p| read_at(&p)))
                         .unwrap_or_default()
                 }
             })
@@ -283,11 +335,40 @@ pub fn show_status_bar() -> bool {
     current().show_status_bar
 }
 
-/// Lays the user's own colors (Preferences > Colors) over the canvas theme's
-/// palette; the canvas calls it each frame after it picks the theme.
+/// Lays the user's own colors (Preferences > Colors and Appearance) over the
+/// canvas theme's palette; the canvas calls it each frame after it picks the
+/// theme.
 pub fn tint_palette(palette: &mut crate::theme::Palette) {
+    let rgb = |c: [u8; 3]| egui::Color32::from_rgb(c[0], c[1], c[2]);
     if let Some(c) = current().selection_color {
-        palette.selection = egui::Color32::from_rgb(c[0], c[1], c[2]);
+        palette.selection = rgb(c);
+    }
+    let a = pages::current().appearance;
+    if let Some(c) = a.background {
+        palette.background = rgb(c);
+    }
+    if let Some(c) = a.grid {
+        palette.grid_major = rgb(c);
+        palette.grid_minor = rgb(c).gamma_multiply(0.6);
+    }
+    if let Some(c) = a.text {
+        palette.text = rgb(c);
+        palette.room_label = rgb(c);
+    }
+    if let Some(c) = a.temp_dim {
+        palette.dimension_text = rgb(c);
+    }
+}
+
+/// The Chief catalog folder the user set (the Library page's), if any.
+fn chief_folder() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        live(|l| l.chief.as_ref().and_then(|c| c.folder.clone()))
+    }
+    #[cfg(not(test))]
+    {
+        chief::ChiefSettings::load().folder
     }
 }
 
@@ -308,6 +389,7 @@ fn apply_runtime(p: &Preferences) {
 pub fn apply_startup(ctx: &egui::Context) {
     let p = current();
     apply_runtime(&p);
+    pages::apply_runtime(&pages::current());
     let z = p.zoom();
     if (z - 1.0).abs() > f32::EPSILON {
         ctx.set_zoom_factor(z);
@@ -386,7 +468,7 @@ pub fn show_all(
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_size([620.0, 420.0])
+            .default_size([720.0, 480.0])
             .pivot(Align2::CENTER_CENTER)
             .default_pos(ctx.screen_rect().center())
             .show(ctx, |ui| body(ui, cx, settings, actions));
@@ -394,12 +476,17 @@ pub fn show_all(
             live(|l| l.open = false);
         }
     }
+    // The saved editing defaults (snaps, Edit Type) go over the plan's once.
+    if !live(|l| std::mem::replace(&mut l.editing_applied, true)) {
+        let mut editing = cx.defaults.editing.clone();
+        if pages::apply_editing(&mut editing) {
+            cx.defaults.editing = editing;
+            cx.mark_dirty();
+        }
+    }
     // Write the file once the mouse is up.
     if live(|l| l.dirty) && !ctx.input(|i| i.pointer.any_down()) {
-        let p = current();
-        let res = settings_path()
-            .ok_or_else(|| crate::paths::NO_HOME.to_string())
-            .and_then(|path| write_at(&path, &p));
+        let res = save_all();
         live(|l| {
             l.dirty = false;
             l.note = res
@@ -414,6 +501,35 @@ pub fn show_all(
     }
 }
 
+/// Sets the Chief catalog folder (empty: the default install folder), saves
+/// it in `settings.json` and rescans on the next Library Browser open.
+fn set_chief_folder(folder: &str) -> Result<(), String> {
+    let mut s = live(|l| l.chief.get_or_insert_with(ChiefSettings::load).clone());
+    s.folder = (!folder.trim().is_empty()).then(|| PathBuf::from(folder.trim()));
+    let res = s.save();
+    chief::configure(&s);
+    live(|l| {
+        l.chief = Some(s);
+        l.chief_folder_text = folder.trim().to_string();
+        l.note = res.clone().err().unwrap_or_default();
+    });
+    res
+}
+
+/// Writes `preferences.json` from the live copies (nothing under test).
+fn save_all() -> Result<(), String> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    let path = pages::file_path().ok_or_else(|| crate::paths::NO_HOME.to_string())?;
+    let file = pages::PrefsFile {
+        version: pages::FILE_VERSION,
+        general: current(),
+        pages: pages::current(),
+    };
+    pages::write_file_at(&path, &file)
+}
+
 fn body(
     ui: &mut egui::Ui,
     cx: &mut EditorContext,
@@ -424,34 +540,67 @@ fn body(
     let before = prefs.clone();
     let active = page();
     ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(130.0);
-            for p in Page::ALL {
-                if ui.selectable_label(p == active, p.label()).clicked() {
-                    live(|l| {
-                        l.page = p;
-                        l.chief = None;
-                    });
-                }
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("prefs_page_list")
+            .auto_shrink([true, false])
+            .max_height(380.0)
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(140.0);
+                    for p in Page::ALL {
+                        if ui.selectable_label(p == active, p.label()).clicked() {
+                            live(|l| {
+                                l.page = p;
+                                l.chief = None;
+                            });
+                        }
+                    }
+                });
+            });
         ui.separator();
-        ui.vertical(|ui| {
-            ui.set_min_width(420.0);
-            ui.heading(active.label());
-            ui.separator();
-            match active {
-                Page::Appearance => appearance(ui, &mut prefs, settings),
-                Page::Fonts => fonts(ui, &mut prefs),
-                Page::Colors => colors(ui, &mut prefs, settings),
-                Page::Library => library(ui),
-                Page::Folders => folders(ui, actions),
-                Page::Render => render(ui, &mut prefs),
-                Page::Edit => edit(ui, actions),
-                Page::Snaps => snaps(ui, cx),
-                Page::Architectural => architectural(ui, &mut prefs),
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("prefs_page_body")
+            .auto_shrink([false, false])
+            .max_height(380.0)
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_min_width(420.0);
+                    ui.heading(active.label());
+                    ui.separator();
+                    match active {
+                        Page::Appearance => {
+                            appearance(ui, &mut prefs, settings);
+                            ui::appearance_extra(ui, &mut prefs, settings);
+                        }
+                        Page::Colors => colors(ui, &mut prefs, settings),
+                        Page::Fonts => {
+                            fonts(ui, &mut prefs);
+                            ui::text_links(ui, actions);
+                        }
+                        Page::Library => {
+                            library(ui);
+                            ui::library_browser(ui);
+                        }
+                        Page::Render => {
+                            render(ui, &mut prefs);
+                            ui::render(ui);
+                        }
+                        Page::MaterialsList => ui::materials(ui),
+                        Page::ResetOptions => ui::reset_options(ui, settings),
+                        Page::Folders => ui::folders(ui, actions),
+                        Page::Edit => ui::edit(ui, cx, actions),
+                        Page::Behaviors => ui::behaviors(ui, cx),
+                        Page::Snaps => ui::snaps(ui, cx),
+                        Page::Architectural => {
+                            architectural(ui, &mut prefs);
+                            ui::architectural(ui);
+                        }
+                        Page::Cad => ui::cad(ui),
+                        Page::PlanDefaults => ui::plan_defaults(ui, actions),
+                        Page::UnitConversions => ui::units(ui),
+                    }
+                });
+            });
     });
     if prefs != before {
         set(prefs);
@@ -594,37 +743,6 @@ fn library(ui: &mut egui::Ui) {
     }
 }
 
-fn folders(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-    let t = crate::templates::load_settings();
-    let show = |ui: &mut egui::Ui, label: &str, p: Option<&Path>| {
-        ui.horizontal(|ui| {
-            ui.label(label);
-            match p {
-                Some(p) => ui.weak(p.display().to_string()),
-                None => ui.weak("none"),
-            };
-        });
-    };
-    show(ui, "Default plan template", t.plan.as_deref());
-    show(ui, "Default layout template", t.layout.as_deref());
-    let home = crate::paths::user_file("");
-    show(ui, "Plan Studio files", home.as_deref());
-    show(
-        ui,
-        "Material library",
-        crate::tools::materials::user_library_path().as_deref(),
-    );
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        if ui.button("Templates...").clicked() {
-            crate::dialogs::exchange::open_templates_page();
-        }
-        if ui.button("Default Settings...").clicked() {
-            actions.push(Action::DefaultSettings);
-        }
-    });
-}
-
 fn render(ui: &mut egui::Ui, p: &mut Preferences) {
     ui.label("The Ray Trace dialog starts from these.");
     ui.horizontal(|ui| {
@@ -672,63 +790,6 @@ fn render(ui: &mut egui::Ui, p: &mut Preferences) {
                 .suffix("\u{b0}"),
         );
     });
-}
-
-fn edit(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-    ui.label("Editing behavior is set in these dialogs.");
-    ui.horizontal(|ui| {
-        if ui.button("Default Settings...").clicked() {
-            actions.push(Action::DefaultSettings);
-        }
-        if ui.button("Customize Hotkeys...").clicked() {
-            actions.push(Action::OpenHotkeyDialog);
-        }
-    });
-    ui.add_space(6.0);
-    ui.weak("Edit Behaviors, Arc Creation Modes and the other Edit-menu settings live in the Edit menu.");
-}
-
-fn snaps(ui: &mut egui::Ui, cx: &mut EditorContext) {
-    let before = cx.defaults.editing.clone();
-    let e = &mut cx.defaults.editing;
-    ui.checkbox(&mut e.object_snaps, "Object snaps");
-    ui.add_enabled_ui(e.object_snaps, |ui| {
-        ui.indent("prefs_object_snaps", |ui| {
-            ui.checkbox(&mut e.snap_endpoint, "Endpoint");
-            ui.checkbox(&mut e.snap_midpoint, "Midpoint");
-            ui.checkbox(&mut e.snap_intersection, "Intersection");
-            ui.checkbox(&mut e.snap_perpendicular, "Perpendicular");
-            ui.checkbox(&mut e.snap_on_object, "On object");
-            ui.checkbox(&mut e.snap_center, "Center");
-            ui.checkbox(&mut e.snap_quadrant, "Quadrant");
-            ui.checkbox(&mut e.snap_tangent, "Tangent");
-        });
-    });
-    ui.checkbox(&mut e.grid_snaps, "Grid snaps");
-    ui.checkbox(&mut e.angle_snaps, "Angle snaps");
-    ui.horizontal(|ui| {
-        ui.label("Angle increment");
-        egui::ComboBox::from_id_salt("prefs_angle_snap")
-            .selected_text(format!("{}\u{b0}", e.angle_snap_deg))
-            .show_ui(ui, |ui| {
-                for a in [0.0, 15.0, 30.0, 45.0, 90.0] {
-                    ui.selectable_value(&mut e.angle_snap_deg, a, format!("{a}\u{b0}"));
-                }
-            });
-    });
-    ui.horizontal(|ui| {
-        ui.label("Snap distance");
-        ui.add(
-            egui::DragValue::new(&mut e.snap_distance_px)
-                .range(1.0..=40.0)
-                .suffix(" px"),
-        );
-    });
-    ui.checkbox(&mut e.bumping, "Bumping");
-    ui.weak("These are the plan's editing defaults; they are saved with My Template.");
-    if cx.defaults.editing != before {
-        cx.mark_dirty();
-    }
 }
 
 fn architectural(ui: &mut egui::Ui, p: &mut Preferences) {

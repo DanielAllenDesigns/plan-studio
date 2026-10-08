@@ -345,6 +345,8 @@ pub fn configure(settings: &ChiefSettings) {
             g.catalogs.clear();
             g.meshes.clear();
             g.failed.clear();
+            // The door styles scanned from the old install are out of date.
+            super::door_styles::forget_chief();
         }
         if settings.enabled && !g.settings.enabled {
             g.failed.clear();
@@ -364,6 +366,7 @@ pub fn set_library(lib: Arc<ChiefLibrary>) {
         g.library = Some(lib);
         g.catalogs.clear();
     });
+    super::door_styles::forget_chief();
 }
 
 /// The discovered library, scanning now when no background scan ran yet and

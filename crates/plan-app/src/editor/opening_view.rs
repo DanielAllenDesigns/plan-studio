@@ -38,9 +38,15 @@ fn draw_part(
     }
     let thin = Stroke::new(0.8_f32, line_col);
     let stroke = match part.kind {
-        PartKind::Jamb | PartKind::Leaf | PartKind::Arrow => Stroke::new(1.0_f32, line_col),
-        PartKind::Swing => Stroke::new(1.0_f32, arc_col),
-        PartKind::Frame | PartKind::Glass | PartKind::Hidden | PartKind::Track => thin,
+        PartKind::Jamb | PartKind::Leaf | PartKind::Arrow | PartKind::Sill => {
+            Stroke::new(1.0_f32, line_col)
+        }
+        PartKind::Swing | PartKind::Indicator => Stroke::new(1.0_f32, arc_col),
+        PartKind::Frame
+        | PartKind::Glass
+        | PartKind::Hidden
+        | PartKind::Track
+        | PartKind::Threshold => thin,
     };
     match part.kind {
         PartKind::Hidden | PartKind::Track => {
@@ -72,6 +78,20 @@ pub fn draw_opening(
     ghost: bool,
 ) {
     draw_opening_in(painter, cam, wall, o, pal, exterior, ghost, false);
+}
+
+/// A ghost of an opening that stands over another one (the transom a window
+/// clicked onto a door would become): dashed, and the wall is not cleared
+/// again.
+pub fn draw_opening_over(
+    painter: &egui::Painter,
+    cam: &Camera,
+    wall: &Wall,
+    o: &Opening,
+    pal: &Palette,
+    exterior: f64,
+) {
+    draw_opening_in(painter, cam, wall, o, pal, exterior, true, true);
 }
 
 /// [`draw_opening`] for an opening of `floor`: one that stands over another
@@ -125,7 +145,7 @@ fn draw_opening_in(
         sym.cut.1
     };
     if !over {
-        for quad in wall.band_quads(o.start_offset(), o.end_offset(), lo, hi) {
+        for quad in wall.band_quads(sym.span.0, sym.span.1, lo, hi) {
             painter.add(Shape::convex_polygon(
                 screen(cam, &quad),
                 pal.background,

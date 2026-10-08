@@ -210,6 +210,8 @@ pub struct PrintDialog {
     pub preview_requested: bool,
     /// The printers, read when "System printer" is first chosen.
     printers: Option<Printers>,
+    /// The layout's own sizes (Customize Sheet Sizes), offered as paper.
+    custom_papers: Vec<(String, (f64, f64))>,
 }
 
 impl PrintDialog {
@@ -228,7 +230,15 @@ impl PrintDialog {
             to: pages.max(1),
             preview_requested: false,
             printers: None,
+            custom_papers: Vec::new(),
         }
+    }
+
+    /// Offers the layout's custom sheet sizes (`name`, long and short side in
+    /// inches) in the paper list; picking one fills in a custom paper.
+    pub fn with_custom_papers(mut self, papers: Vec<(String, (f64, f64))>) -> Self {
+        self.custom_papers = papers;
+        self
     }
 
     /// The printer picked for a system-printer print; `None` is the default.
@@ -427,6 +437,7 @@ impl PrintDialog {
             to,
             preview_requested,
             printers,
+            custom_papers,
             ..
         } = self;
         let out = frame(ctx, &title, 420.0, error, |ui| {
@@ -449,7 +460,7 @@ impl PrintDialog {
                 });
             }
             section(ui, "Paper");
-            row(ui, "Size", |ui| paper_combo(ui, &mut s.paper));
+            row(ui, "Size", |ui| paper_combo(ui, s, custom_papers));
             if s.paper == PaperChoice::Custom {
                 row(ui, "Width / Height", |ui| {
                     ui.add(
@@ -566,18 +577,31 @@ impl PrintDialog {
     }
 }
 
-fn paper_combo(ui: &mut Ui, current: &mut PaperChoice) {
-    let shown = match current {
+fn paper_combo(ui: &mut Ui, s: &mut Settings, custom_papers: &[(String, (f64, f64))]) {
+    let shown = match s.paper {
         PaperChoice::Standard(z) => z.label().to_string(),
-        PaperChoice::Custom => "Custom".to_string(),
+        PaperChoice::Custom => custom_papers
+            .iter()
+            .find(|(_, (a, b))| {
+                (a.max(*b) - s.custom_w.max(s.custom_h)).abs() < 1e-6
+                    && (a.min(*b) - s.custom_w.min(s.custom_h)).abs() < 1e-6
+            })
+            .map_or_else(|| "Custom".to_string(), |(n, _)| n.clone()),
     };
     egui::ComboBox::from_id_salt("print_paper")
         .selected_text(shown)
         .show_ui(ui, |ui| {
             for z in SheetSize::ALL {
-                ui.selectable_value(current, PaperChoice::Standard(z), z.label());
+                ui.selectable_value(&mut s.paper, PaperChoice::Standard(z), z.label());
             }
-            ui.selectable_value(current, PaperChoice::Custom, "Custom size");
+            for (name, (a, b)) in custom_papers {
+                if ui.selectable_label(false, name).clicked() {
+                    s.paper = PaperChoice::Custom;
+                    s.custom_w = a.max(*b);
+                    s.custom_h = a.min(*b);
+                }
+            }
+            ui.selectable_value(&mut s.paper, PaperChoice::Custom, "Custom size");
         });
 }
 
@@ -605,6 +629,266 @@ fn scale_combo(ui: &mut Ui, current: &mut ScaleChoice, layout: bool) {
                 ui.selectable_value(current, ScaleChoice::Custom, "Custom ratio");
             }
         });
+}
+
+// ----------------------------------------------------------- Print Preview --
+
+/// Print Preview (L-19): the pages as they will print, drawn from the same
+/// primitives the PDF is made of, in the chosen colour mode, with the pen
+/// weights (or hairlines) of the print, the sheet scaled and placed on the
+/// paper, hatches at their scale and pictures in place.
+pub struct PrintPreviewDialog {
+    title: String,
+    note: String,
+    pages: Vec<plan_layout::PreviewPage>,
+    index: usize,
+    /// Screen pixels per paper inch; `None` fits the page in the window.
+    zoom: Option<f32>,
+    textures: std::collections::HashMap<(usize, usize), egui::TextureHandle>,
+}
+
+impl PrintPreviewDialog {
+    pub fn new(title: &str, note: &str, pages: Vec<plan_layout::PreviewPage>) -> Self {
+        Self {
+            title: title.to_string(),
+            note: note.to_string(),
+            pages,
+            index: 0,
+            zoom: None,
+            textures: std::collections::HashMap::new(),
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn pages(&self) -> &[plan_layout::PreviewPage] {
+        &self.pages
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Shows page `i` (clamped).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn go_to(&mut self, i: usize) {
+        self.index = i.min(self.pages.len().saturating_sub(1));
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let mut open = true;
+        let mut close = false;
+        let n = self.pages.len();
+        egui::Window::new(format!("Print Preview: {}", self.title))
+            .id(egui::Id::new("print_preview_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([820.0, 640.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(self.index > 0, egui::Button::new("Previous"))
+                        .clicked()
+                    {
+                        self.index -= 1;
+                    }
+                    ui.label(format!("Page {} of {}", self.index + 1, n.max(1)));
+                    if ui
+                        .add_enabled(self.index + 1 < n, egui::Button::new("Next"))
+                        .clicked()
+                    {
+                        self.index += 1;
+                    }
+                    ui.separator();
+                    if ui.button("Fit").clicked() {
+                        self.zoom = None;
+                    }
+                    if ui.button("+").clicked() {
+                        self.zoom = Some(self.zoom.unwrap_or(40.0) * 1.25);
+                    }
+                    if ui.button("-").clicked() {
+                        self.zoom = Some((self.zoom.unwrap_or(40.0) / 1.25).max(4.0));
+                    }
+                    ui.separator();
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+                let Some(page) = self.pages.get(self.index) else {
+                    ui.label("Nothing to print.");
+                    return;
+                };
+                ui.weak(format!(
+                    "{}   {}   {:.0}% on {:.1} x {:.1} in paper, {}",
+                    page.caption,
+                    self.note,
+                    page.scale * 100.0,
+                    page.paper_in.0,
+                    page.paper_in.1,
+                    color_note(page.color)
+                ));
+                let avail = ui.available_size();
+                let fit = (avail.x / page.paper_in.0 as f32)
+                    .min(avail.y / page.paper_in.1 as f32)
+                    .max(4.0);
+                let ppi = self.zoom.unwrap_or(fit);
+                let size = egui::vec2(page.paper_in.0 as f32 * ppi, page.paper_in.1 as f32 * ppi);
+                egui::ScrollArea::both().show(ui, |ui| {
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    paint_preview(ui, rect, ppi, page, self.index, &mut self.textures);
+                });
+            });
+        if close || !open {
+            Outcome::Cancel
+        } else {
+            Outcome::Open
+        }
+    }
+}
+
+fn color_note(c: PrintColor) -> &'static str {
+    match c {
+        PrintColor::Color => "in colour",
+        PrintColor::Grayscale => "in grayscale",
+        PrintColor::BlackWhite => "in black and white",
+    }
+}
+
+fn px_color(c: [u8; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// Paints a preview page into `rect` (the whole paper) at `ppi` screen pixels
+/// per paper inch.
+fn paint_preview(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    ppi: f32,
+    page: &plan_layout::PreviewPage,
+    page_index: usize,
+    textures: &mut std::collections::HashMap<(usize, usize), egui::TextureHandle>,
+) {
+    use plan_layout::PreviewItem as I;
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(150)),
+        egui::StrokeKind::Inside,
+    );
+    let k = ppi / 72.0;
+    let h_pt = page.paper_in.1 as f32 * 72.0;
+    let at = |x: f64, y: f64| {
+        egui::pos2(
+            rect.min.x + x as f32 * k,
+            rect.min.y + (h_pt - y as f32) * k,
+        )
+    };
+    let rect_of = |r: &[f64; 4]| egui::Rect::from_two_pos(at(r[0], r[1]), at(r[2], r[3]));
+    // The printable area, faint, so the margin shows.
+    let pa = rect_of(&page.printable_pt);
+    painter.rect_stroke(
+        pa,
+        0.0,
+        egui::Stroke::new(0.5_f32, egui::Color32::from_gray(210)),
+        egui::StrokeKind::Inside,
+    );
+    let mut clips: Vec<egui::Rect> = vec![rect];
+    for (idx, item) in page.items.iter().enumerate() {
+        let clip = *clips.last().unwrap_or(&rect);
+        let p = painter.with_clip_rect(clip);
+        match item {
+            I::ClipBegin(r) => clips.push(clip.intersect(rect_of(r))),
+            I::ClipEnd => {
+                if clips.len() > 1 {
+                    clips.pop();
+                }
+            }
+            I::Fill { pts, color } => {
+                if pts.len() >= 3 {
+                    let pts: Vec<egui::Pos2> = pts.iter().map(|q| at(q.0, q.1)).collect();
+                    p.add(egui::Shape::convex_polygon(
+                        pts,
+                        px_color(*color),
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+            I::Stroke {
+                pts,
+                closed,
+                width_pt,
+                color,
+                dash,
+            } => {
+                let mut v: Vec<egui::Pos2> = pts.iter().map(|q| at(q.0, q.1)).collect();
+                if *closed && v.len() > 2 {
+                    v.push(v[0]);
+                }
+                let stroke = egui::Stroke::new((*width_pt as f32 * k).max(0.4), px_color(*color));
+                if dash.len() >= 2 && dash[0] > 0.0 {
+                    let on = (dash[0] as f32 * k).max(1.0);
+                    let off = (dash[1] as f32 * k).max(1.0);
+                    p.extend(egui::Shape::dashed_line(&v, stroke, on, off));
+                } else {
+                    p.add(egui::Shape::line(v, stroke));
+                }
+            }
+            I::Text {
+                x,
+                y,
+                size_pt,
+                color,
+                bold,
+                angle,
+                text,
+            } => {
+                let size = (*size_pt as f32 * k).max(1.0);
+                if size < 2.0 {
+                    continue;
+                }
+                let font = egui::FontId::proportional(size);
+                let c = px_color(*color);
+                let galley = p.layout_no_wrap(text.clone(), font, c);
+                let base = at(*x, *y);
+                let ascent = size * 0.8;
+                let phi = -(*angle as f32);
+                let off = egui::vec2(-ascent * phi.sin(), ascent * phi.cos());
+                let mut shape = egui::epaint::TextShape::new(base - off, galley, c).with_angle(phi);
+                if *bold {
+                    // A second pass, a hair to the right, reads as bold.
+                    let mut again = shape.clone();
+                    again.pos += egui::vec2(size * 0.03, 0.0);
+                    p.add(egui::Shape::Text(again));
+                }
+                shape.override_text_color = Some(c);
+                p.add(egui::Shape::Text(shape));
+            }
+            I::Image { rect: r, px, rgba } => {
+                let tex = textures.entry((page_index, idx)).or_insert_with(|| {
+                    let img = egui::ColorImage::from_rgba_unmultiplied(
+                        [px.0 as usize, px.1 as usize],
+                        rgba,
+                    );
+                    ui.ctx().load_texture(
+                        format!("print_preview_{page_index}_{idx}"),
+                        img,
+                        egui::TextureOptions::LINEAR,
+                    )
+                });
+                p.image(
+                    tex.id(),
+                    rect_of(r),
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------- Print Image --
@@ -798,6 +1082,7 @@ impl ModelDialog {
                 to: 1,
                 preview_requested: false,
                 printers: None,
+                custom_papers: Vec::new(),
             }
             .options()
         }
@@ -865,7 +1150,7 @@ impl ModelDialog {
                 );
             });
             section(ui, "Paper");
-            row(ui, "Size", |ui| paper_combo(ui, &mut s.paper));
+            row(ui, "Size", |ui| paper_combo(ui, s, &[]));
             row(ui, "Orientation", |ui| {
                 ui.radio_value(&mut s.landscape, true, "Landscape");
                 ui.radio_value(&mut s.landscape, false, "Portrait");
@@ -1163,6 +1448,106 @@ mod tests {
             m.show(ctx);
             i.show(ctx);
         });
+    }
+
+    #[test]
+    fn the_print_preview_window_pages_zooms_and_draws_every_item() {
+        use plan_layout::{PreviewItem as I, PreviewPage};
+        let page = |caption: &str| PreviewPage {
+            paper_in: (11.0, 8.5),
+            printable_pt: [18.0, 18.0, 774.0, 594.0],
+            items: vec![
+                I::ClipBegin([18.0, 18.0, 774.0, 594.0]),
+                I::Fill {
+                    pts: vec![(20.0, 20.0), (200.0, 20.0), (200.0, 120.0), (20.0, 120.0)],
+                    color: [200, 200, 200],
+                },
+                I::Stroke {
+                    pts: vec![(30.0, 30.0), (190.0, 30.0), (190.0, 110.0)],
+                    closed: true,
+                    width_pt: 1.5,
+                    color: [0, 0, 0],
+                    dash: vec![],
+                },
+                I::Stroke {
+                    pts: vec![(30.0, 200.0), (300.0, 200.0)],
+                    closed: false,
+                    width_pt: 0.5,
+                    color: [90, 90, 90],
+                    dash: vec![6.0, 3.0],
+                },
+                I::Text {
+                    x: 40.0,
+                    y: 300.0,
+                    size_pt: 12.0,
+                    color: [0, 0, 0],
+                    bold: true,
+                    angle: 0.0,
+                    text: "FIRST FLOOR PLAN".into(),
+                },
+                I::Text {
+                    x: 400.0,
+                    y: 300.0,
+                    size_pt: 10.0,
+                    color: [0, 0, 0],
+                    bold: false,
+                    angle: std::f64::consts::FRAC_PI_2,
+                    text: "TURNED".into(),
+                },
+                I::Image {
+                    rect: [400.0, 400.0, 480.0, 460.0],
+                    px: (2, 2),
+                    rgba: vec![255; 16],
+                },
+                I::ClipEnd,
+            ],
+            caption: caption.into(),
+            scale: 0.5,
+            color: PrintColor::Grayscale,
+        };
+        let mut d =
+            PrintPreviewDialog::new("Layout", "SCALE: 1/4\"", vec![page("A-1"), page("A-2")]);
+        assert_eq!((d.pages().len(), d.index()), (2, 0));
+        d.go_to(9);
+        assert_eq!(d.index(), 1, "clamped to the last page");
+        d.go_to(0);
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let mut out = Outcome::Open;
+            let _ = ctx.run(egui::RawInput::default(), |c| out = d.show(c));
+            assert_eq!(out, Outcome::Open);
+        }
+        d.zoom = Some(60.0);
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |c| {
+                d.show(c);
+            });
+        }
+        // No pages: the window says so instead of drawing.
+        let mut none = PrintPreviewDialog::new("Empty", "", vec![]);
+        let _ = ctx.run(egui::RawInput::default(), |c| {
+            assert_eq!(none.show(c), Outcome::Open);
+        });
+    }
+
+    #[test]
+    fn the_paper_list_offers_the_layouts_custom_sizes() {
+        let mut d = PrintDialog::for_layout(1, (40.0, 30.0), "Layout")
+            .with_custom_papers(vec![("Poster (30 x 40)".into(), (40.0, 30.0))]);
+        assert_eq!(d.custom_papers.len(), 1);
+        // Picking it fills in a custom paper of that size.
+        let (name, (a, b)) = d.custom_papers[0].clone();
+        assert_eq!(name, "Poster (30 x 40)");
+        d.s.paper = PaperChoice::Custom;
+        d.s.custom_w = a;
+        d.s.custom_h = b;
+        assert_eq!(d.options().paper.inches(true), (40.0, 30.0));
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |c| {
+                d.show(c);
+            });
+        }
     }
 
     #[test]

@@ -8,12 +8,14 @@
 //! one clockwise loop for the unbounded outside, which is discarded.
 
 use crate::defaults::RoomTypeDef;
+use crate::extras::MoldingKind;
 use crate::geometry::{
     dist_to_segment, point_in_polygon, polygon_area, polygon_centroid, project_on_segment,
     segment_intersection, BoxGrid, Point,
 };
-use crate::model::{Project, RoomName, Wall, WallKind};
+use crate::model::{Floor, Project, RoomName, Wall, WallKind};
 use crate::units::sq_in_to_sq_ft;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// A detected room (R-1..R-18).
@@ -119,9 +121,11 @@ impl Default for FunctionDefaults {
 }
 
 /// The platform defaults of a room with function `function` (a room type's
-/// function: Standard, Utility, Garage, Deck, Porch, Open Below) and room
-/// type `type_name` (an Attic or Courtyard has no floor platform whatever its
-/// function, and a Courtyard, open to the sky, has no ceiling either).
+/// function: Standard, Utility, Garage, Deck, Porch, Open Below, Basement,
+/// Crawl Space) and room type `type_name` (an Attic or Courtyard has no floor
+/// platform whatever its function, and a Courtyard, open to the sky, has no
+/// ceiling either; a room type named Basement or Crawl Space behaves as that
+/// function).
 pub fn function_defaults(function: &str, type_name: &str) -> FunctionDefaults {
     use crate::extras::StructureLayer as L;
     let mut d = FunctionDefaults::default();
@@ -156,6 +160,26 @@ pub fn function_defaults(function: &str, type_name: &str) -> FunctionDefaults {
     if type_name == "Courtyard" {
         d.has_ceiling = false;
     }
+    // Rooms of a foundation floor (R-18): a basement has a concrete slab and
+    // takes its ceiling from the platform of the floor above; a crawl space
+    // has the ground for a floor and the floor above for a ceiling.
+    if function == "Basement" || type_name == "Basement" {
+        d.has_floor = true;
+        d.has_ceiling = true;
+        // The slab sits on the ground inside the foundation walls.
+        d.floor_height_offset = SLAB_FLOOR_THICKNESS;
+        d.floor_finish_thickness = Some(0.0);
+        d.floor_structure = vec![crate::extras::StructureLayer::new(
+            "Concrete",
+            SLAB_FLOOR_THICKNESS,
+        )];
+    }
+    if function == "Crawl Space" || type_name == "Crawl Space" {
+        d.has_floor = false;
+        d.has_ceiling = false;
+        d.floor_finish_thickness = Some(0.0);
+        d.floor_structure = Vec::new();
+    }
     d
 }
 
@@ -171,6 +195,509 @@ pub fn apply_function_defaults(name: &mut RoomName, d: &FunctionDefaults, defaul
     misc.floor_structure = d.floor_structure.clone();
     misc.floor_finish_thickness = d.floor_finish_thickness.unwrap_or(default_finish);
     name.misc = Some(misc);
+}
+
+// ----- Room Specification: slab flag, label style, moldings (round 14) -----
+
+/// Default thickness of a monolithic slab, inches (R-31).
+pub const MONOLITHIC_SLAB_THICKNESS: f64 = 4.0;
+/// Default depth of the thickened edge of a monolithic slab, inches (R-31).
+pub const MONOLITHIC_STEM_HEIGHT: f64 = 12.0;
+
+/// The Monolithic Slab Foundation flag of a room on the first floor (R-31):
+/// the room's floor is a concrete slab of `thickness` with a thickened edge
+/// `stem_height` deep under its exterior walls, and the foundation floor is
+/// not needed under it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoomSlab {
+    /// Slab thickness, inches.
+    pub thickness: f64,
+    /// Depth of the thickened edge below the floor datum, inches.
+    pub stem_height: f64,
+}
+
+impl Default for RoomSlab {
+    fn default() -> Self {
+        Self {
+            thickness: MONOLITHIC_SLAB_THICKNESS,
+            stem_height: MONOLITHIC_STEM_HEIGHT,
+        }
+    }
+}
+
+/// Where a room's plan label sits before it is dragged (R-44, R-46).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LabelPlacement {
+    /// At the room's label point (inside the room, near its centroid).
+    #[default]
+    Center,
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl LabelPlacement {
+    pub const ALL: [LabelPlacement; 5] = [
+        LabelPlacement::Center,
+        LabelPlacement::Top,
+        LabelPlacement::Bottom,
+        LabelPlacement::Left,
+        LabelPlacement::Right,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LabelPlacement::Center => "Center of Room",
+            LabelPlacement::Top => "Near Top Wall",
+            LabelPlacement::Bottom => "Near Bottom Wall",
+            LabelPlacement::Left => "Near Left Wall",
+            LabelPlacement::Right => "Near Right Wall",
+        }
+    }
+}
+
+/// The Label tab's appearance options (R-46): a named text style (empty is
+/// "Use Layer Text Style", which for room labels is "Room Label Style") and
+/// where the label sits before it is dragged.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoomLabelStyle {
+    pub text_style: String,
+    pub placement: LabelPlacement,
+}
+
+/// The text style room labels use when a room names none.
+pub const ROOM_LABEL_TEXT_STYLE: &str = "Room Label Style";
+
+impl RoomLabelStyle {
+    /// The text style to draw the label in.
+    pub fn style_name(&self) -> &str {
+        if self.text_style.trim().is_empty() {
+            ROOM_LABEL_TEXT_STYLE
+        } else {
+            &self.text_style
+        }
+    }
+}
+
+impl Room {
+    /// A point inside the room proper: the centroid, or another interior
+    /// point for a concave room.
+    pub fn interior_point(&self) -> Point {
+        if self.contains(self.centroid) {
+            return self.centroid;
+        }
+        let n = self.polygon.len();
+        for i in 0..n {
+            let (a, b, c) = (
+                self.polygon[i],
+                self.polygon[(i + 1) % n],
+                self.polygon[(i + 2) % n],
+            );
+            let t = Point::new((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0);
+            if self.contains(t) {
+                return t;
+            }
+        }
+        self.centroid
+    }
+
+    /// Where the label of this room sits for `placement` (R-44, R-46): the
+    /// interior point for [`LabelPlacement::Center`], else the middle of the
+    /// named side of the interior bounds, `inset` inches in from the wall
+    /// (pulled toward the interior point when that spot is outside the room).
+    pub fn label_point(&self, placement: LabelPlacement, inset: f64) -> Point {
+        let anchor = self.interior_point();
+        if placement == LabelPlacement::Center {
+            return anchor;
+        }
+        let poly = if self.inner_polygon.len() >= 3 {
+            &self.inner_polygon
+        } else {
+            &self.polygon
+        };
+        let (lo, hi) = crate::foundation::bounds(poly);
+        let mid = Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+        let want = match placement {
+            LabelPlacement::Top => Point::new(mid.x, hi.y - inset),
+            LabelPlacement::Bottom => Point::new(mid.x, lo.y + inset),
+            LabelPlacement::Left => Point::new(lo.x + inset, mid.y),
+            LabelPlacement::Right => Point::new(hi.x - inset, mid.y),
+            LabelPlacement::Center => anchor,
+        };
+        for k in 0..=8 {
+            let p = Point::lerp(want, anchor, f64::from(k) / 8.0);
+            if self.contains(p) {
+                return p;
+            }
+        }
+        anchor
+    }
+}
+
+/// One molding profile of the library (R-34): a name, what it is for and its
+/// cross section as `(projection, height)` points in inches, counter-clockwise,
+/// measured from the molding's bottom edge at the wall.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoldingDef {
+    pub name: &'static str,
+    pub kind: MoldingKind,
+    pub section: &'static [(f64, f64)],
+}
+
+impl MoldingDef {
+    /// Vertical size of the profile, inches.
+    pub fn height(&self) -> f64 {
+        self.section.iter().map(|p| p.1).fold(0.0, f64::max)
+    }
+
+    /// How far the profile projects from the wall, inches.
+    pub fn projection(&self) -> f64 {
+        self.section.iter().map(|p| p.0).fold(0.0, f64::max)
+    }
+
+    /// The cross section as plan points `(projection, height)`.
+    pub fn points(&self) -> Vec<Point> {
+        self.section
+            .iter()
+            .map(|&(x, y)| Point::new(x, y))
+            .collect()
+    }
+}
+
+/// The molding library the Moldings tab picks base, crown and chair rail
+/// profiles from.
+pub const MOLDING_LIBRARY: [MoldingDef; 9] = [
+    MoldingDef {
+        name: "Base - Square 3 1/4",
+        kind: MoldingKind::Base,
+        section: &[(0.0, 0.0), (0.5, 0.0), (0.5, 3.25), (0.0, 3.25)],
+    },
+    MoldingDef {
+        name: "Base - Colonial 5 1/4",
+        kind: MoldingKind::Base,
+        section: &[
+            (0.0, 0.0),
+            (0.75, 0.0),
+            (0.75, 0.35),
+            (0.6, 0.5),
+            (0.5, 0.9),
+            (0.5, 4.6),
+            (0.65, 4.8),
+            (0.65, 5.05),
+            (0.4, 5.25),
+            (0.0, 5.25),
+        ],
+    },
+    MoldingDef {
+        name: "Base - Craftsman 7 1/4",
+        kind: MoldingKind::Base,
+        section: &[
+            (0.0, 0.0),
+            (0.75, 0.0),
+            (0.75, 6.25),
+            (1.0, 6.25),
+            (1.0, 7.0),
+            (0.75, 7.25),
+            (0.0, 7.25),
+        ],
+    },
+    MoldingDef {
+        name: "Crown - Cove 3 5/8",
+        kind: MoldingKind::Crown,
+        section: &[
+            (0.0, 0.0),
+            (0.28, 1.39),
+            (1.06, 2.57),
+            (2.24, 3.35),
+            (3.625, 3.625),
+            (0.0, 3.625),
+        ],
+    },
+    MoldingDef {
+        name: "Crown - Colonial 4 5/8",
+        kind: MoldingKind::Crown,
+        section: &[
+            (0.0, 0.0),
+            (0.5, 0.0),
+            (0.5, 0.5),
+            (1.1, 1.0),
+            (1.9, 1.6),
+            (2.6, 2.4),
+            (3.1, 3.3),
+            (3.75, 3.5),
+            (3.75, 4.625),
+            (0.0, 4.625),
+        ],
+    },
+    MoldingDef {
+        name: "Crown - Stepped 6",
+        kind: MoldingKind::Crown,
+        section: &[
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.5),
+            (2.5, 1.5),
+            (2.5, 3.0),
+            (4.0, 3.0),
+            (4.0, 4.5),
+            (5.0, 4.5),
+            (5.0, 6.0),
+            (0.0, 6.0),
+        ],
+    },
+    MoldingDef {
+        name: "Chair Rail - Simple 2 1/2",
+        kind: MoldingKind::Chair,
+        section: &[
+            (0.0, 0.0),
+            (0.5, 0.0),
+            (0.5, 0.5),
+            (0.75, 0.75),
+            (0.75, 1.9),
+            (0.4, 2.2),
+            (0.4, 2.5),
+            (0.0, 2.5),
+        ],
+    },
+    MoldingDef {
+        name: "Chair Rail - Colonial 3",
+        kind: MoldingKind::Chair,
+        section: &[
+            (0.0, 0.0),
+            (0.6, 0.0),
+            (0.6, 0.4),
+            (0.9, 0.7),
+            (0.9, 1.5),
+            (1.0, 1.7),
+            (1.0, 2.4),
+            (0.6, 2.8),
+            (0.4, 3.0),
+            (0.0, 3.0),
+        ],
+    },
+    MoldingDef {
+        name: "Chair Rail - Flat 3 1/2",
+        kind: MoldingKind::Chair,
+        section: &[(0.0, 0.0), (0.5, 0.0), (0.5, 3.5), (0.0, 3.5)],
+    },
+];
+
+/// Surface materials the Materials tab offers for floors (R-36). Each name
+/// maps to a 3D surface to a 3D surface: wood names keep the
+/// wood floor, the rest lay a plate of their own material.
+pub const FLOOR_SURFACES: [&str; 8] = [
+    "Oak Hardwood",
+    "Maple Hardwood",
+    "Ceramic Tile",
+    "Marble",
+    "Concrete",
+    "Brick",
+    "Stone",
+    "Painted Trim White",
+];
+
+/// Surface materials the Materials tab offers for ceilings.
+pub const CEILING_SURFACES: [&str; 5] = [
+    "Painted Drywall",
+    "White Paint",
+    "Wood Planks",
+    "Stucco",
+    "Plaster",
+];
+
+/// Surface materials the Materials tab offers for interior walls.
+pub const WALL_SURFACES: [&str; 8] = [
+    "Painted Drywall",
+    "Plaster",
+    "Wood Paneling",
+    "Brick",
+    "Stone",
+    "Ceramic Tile",
+    "Stucco",
+    "Concrete",
+];
+
+/// The library profile with this name (case-insensitive).
+pub fn molding_def(name: &str) -> Option<&'static MoldingDef> {
+    let n = name.trim();
+    MOLDING_LIBRARY
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(n))
+}
+
+/// The library profiles for one kind of molding, in list order.
+pub fn molding_defs(kind: MoldingKind) -> Vec<&'static MoldingDef> {
+    MOLDING_LIBRARY.iter().filter(|m| m.kind == kind).collect()
+}
+
+/// Height above the finished floor where a chair rail starts, inches.
+pub const CHAIR_RAIL_HEIGHT: f64 = 32.0;
+
+/// Elevation range `(bottom, top)` of a molding of `kind` and `height`
+/// above the room's finished floor, for a finished ceiling `ceiling` above
+/// that floor, inches. Base sits on the floor, a chair rail at
+/// [`CHAIR_RAIL_HEIGHT`], crown hangs from the ceiling.
+pub fn molding_span(kind: MoldingKind, height: f64, ceiling: f64) -> (f64, f64) {
+    match kind {
+        MoldingKind::Base => (0.0, height),
+        MoldingKind::Chair => (CHAIR_RAIL_HEIGHT, CHAIR_RAIL_HEIGHT + height),
+        MoldingKind::Crown => ((ceiling - height).max(0.0), ceiling),
+    }
+}
+
+/// The wall that owns the interior-surface edge `p`-`q` of a room: parallel
+/// to it, with the edge about half a thickness from its centerline. Curved
+/// walls own no edge (their facets are not straight walls).
+pub fn edge_wall(floor: &Floor, p: Point, q: Point) -> Option<&Wall> {
+    use crate::geometry::dist_to_segment;
+    let mid = Point::lerp(p, q, 0.5);
+    let dir = q.sub(p).normalized();
+    floor
+        .walls
+        .iter()
+        .filter(|w| w.length() > 1e-6 && !w.is_curved())
+        .filter(|w| w.direction().cross(dir).abs() < 0.02)
+        .filter_map(|w| {
+            let d = dist_to_segment(mid, w.start, w.end);
+            let off = (d - w.thickness * 0.5).abs();
+            (d <= w.thickness * 0.5 + 1.5 && off <= 1.5).then_some((off, w))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, w)| w)
+}
+
+/// An opening seen along an interior-surface edge: where it lies along the
+/// edge and how high it reaches above the floor datum, inches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeOpening {
+    pub from: f64,
+    pub to: f64,
+    pub sill: f64,
+    pub head: f64,
+}
+
+/// The openings of the wall under the interior-surface edge `p`-`q`, sorted
+/// along the edge.
+pub fn edge_openings(floor: &Floor, p: Point, q: Point) -> Vec<EdgeOpening> {
+    let dir = q.sub(p).normalized();
+    let mut out: Vec<EdgeOpening> = Vec::new();
+    if let Some(w) = edge_wall(floor, p, q) {
+        for o in floor.openings_on(w.id) {
+            let c = w.point_at(o.center_offset).sub(p).dot(dir);
+            out.push(EdgeOpening {
+                from: c - o.width * 0.5,
+                to: c + o.width * 0.5,
+                sill: o.sill_height,
+                head: o.sill_height + o.height,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.from.total_cmp(&b.from));
+    out
+}
+
+/// Pieces of the edge `p`-`q` (as `(from, to)` distances along it) not
+/// crossed by an opening of the owning wall between `bottom` and `top` above
+/// the floor datum.
+fn edge_pieces(floor: &Floor, p: Point, q: Point, bottom: f64, top: f64) -> Vec<(f64, f64)> {
+    let len = p.dist(q);
+    let mut pieces = Vec::new();
+    let mut cursor = 0.0;
+    for o in edge_openings(floor, p, q)
+        .into_iter()
+        .filter(|o| o.sill < top && o.head > bottom)
+    {
+        if o.from > cursor {
+            pieces.push((cursor, o.from.min(len)));
+        }
+        cursor = cursor.max(o.to);
+    }
+    if cursor < len {
+        pieces.push((cursor, len));
+    }
+    pieces.retain(|(a, b)| b - a > 0.5);
+    pieces
+}
+
+impl Room {
+    /// The paths a molding spanning `bottom..top` above the floor datum runs
+    /// along inside this room (R-34): the interior-surface outline, broken
+    /// where an opening of the wall reaches into that height range. Corners
+    /// stay joined, so a molding that meets no opening is one closed path
+    /// (first point repeated at the end). Each path is counter-clockwise, the
+    /// molding projecting to its left (into the room).
+    pub fn molding_runs(&self, floor: &Floor, bottom: f64, top: f64) -> Vec<Vec<Point>> {
+        let poly = if self.inner_polygon.len() >= 3 {
+            &self.inner_polygon
+        } else {
+            &self.polygon
+        };
+        let n = poly.len();
+        if n < 3 {
+            return Vec::new();
+        }
+        // Every uncut piece of every edge, with whether it starts and ends
+        // at a corner of the outline.
+        let mut pieces: Vec<(Point, Point, bool, bool)> = Vec::new();
+        for i in 0..n {
+            let (p, q) = (poly[i], poly[(i + 1) % n]);
+            let len = p.dist(q);
+            if len < 1e-6 {
+                continue;
+            }
+            let dir = q.sub(p).normalized();
+            for (a, b) in edge_pieces(floor, p, q, bottom, top) {
+                pieces.push((p + dir * a, p + dir * b, a < 1e-6, len - b < 1e-6));
+            }
+        }
+        let mut runs: Vec<Vec<Point>> = Vec::new();
+        let mut prev_open_end = false;
+        for &(pa, pb, at_start, at_end) in &pieces {
+            if at_start && prev_open_end && !runs.is_empty() {
+                if let Some(last) = runs.last_mut() {
+                    last.push(pb);
+                }
+            } else {
+                runs.push(vec![pa, pb]);
+            }
+            prev_open_end = at_end;
+        }
+        // The last run continues into the first around the outline's start.
+        let wraps = pieces.first().is_some_and(|f| f.2) && pieces.last().is_some_and(|l| l.3);
+        if wraps && runs.len() > 1 {
+            let first = runs.remove(0);
+            if let Some(last) = runs.last_mut() {
+                last.extend(first.into_iter().skip(1));
+            }
+        } else if wraps && runs.len() == 1 {
+            let r = &mut runs[0];
+            if r[0].dist(r[r.len() - 1]) > 1e-6 {
+                let p0 = r[0];
+                r.push(p0);
+            }
+        }
+        runs
+    }
+}
+
+/// Is `inner` wholly inside `outer`: every vertex and edge midpoint inside
+/// the polygon or on its boundary (within `tol`), and no bigger than it
+/// (R-40, Open Below)?
+pub fn polygon_inside(inner: &[Point], outer: &[Point], tol: f64) -> bool {
+    if inner.len() < 3 || outer.len() < 3 {
+        return false;
+    }
+    let ok = |p: Point| {
+        point_in_polygon(p, outer)
+            || (0..outer.len())
+                .any(|i| dist_to_segment(p, outer[i], outer[(i + 1) % outer.len()]) <= tol)
+    };
+    let n = inner.len();
+    (0..n).all(|i| ok(inner[i]) && ok(Point::lerp(inner[i], inner[(i + 1) % n], 0.5)))
+        && polygon_area(inner).abs() <= polygon_area(outer).abs() * 1.02 + 1.0
 }
 
 /// Ignore faces smaller than this (slivers from near-coincident walls). 1 sq ft.
@@ -1036,6 +1563,263 @@ mod tests {
             assert_eq!(fast, scan, "plan {n}");
             assert!(fast.len() > 100);
         }
+    }
+
+    fn box_floor(t: f64) -> Floor {
+        let mut f = Floor::new("1st Floor", 0.0);
+        f.walls = box_walls(t);
+        f
+    }
+
+    #[test]
+    fn basement_and_crawl_space_functions_set_their_platforms() {
+        let b = function_defaults("Basement", "Basement");
+        assert!(b.has_floor && b.has_ceiling);
+        assert_eq!(b.floor_height_offset, SLAB_FLOOR_THICKNESS);
+        assert_eq!(b.floor_finish_thickness, Some(0.0));
+        assert_eq!(
+            crate::extras::structure_thickness(&b.floor_structure),
+            SLAB_FLOOR_THICKNESS
+        );
+        // The room type's name works without the function (the template's
+        // Crawl Space type has the Utility function).
+        let c = function_defaults("Utility", "Crawl Space");
+        assert!(!c.has_floor && !c.has_ceiling);
+        assert!(function_defaults("Crawl Space", "Whatever")
+            .floor_structure
+            .is_empty());
+        assert!(function_defaults("Utility", "Storage").has_floor);
+    }
+
+    #[test]
+    fn chiefs_room_types_keep_their_living_area_defaults() {
+        let d = crate::defaults::PlanDefaults::chief_x18_daniel();
+        let types = &d.rooms.room_types;
+        let living = |n: &str| {
+            types
+                .iter()
+                .find(|t| t.name == n)
+                .unwrap_or_else(|| panic!("no room type {n}"))
+                .include_in_living_area
+        };
+        for n in [
+            "Bedroom",
+            "Bonus Room",
+            "Closet",
+            "Dining Room",
+            "Dressing Room",
+            "Entry",
+            "Family Room",
+            "Foyer",
+            "Kitchen",
+            "Living",
+            "Master Bath",
+        ] {
+            assert!(living(n), "{n} counts as living area");
+        }
+        for n in [
+            "Courtyard",
+            "Crawl Space",
+            "Deck",
+            "Flat Roof",
+            "Garage",
+            "Porch",
+        ] {
+            assert!(!living(n), "{n} is left out of the living area");
+        }
+        assert!(types.iter().any(|t| t.name == "Utility"));
+        assert!(types.iter().any(|t| t.name == "Dinette"));
+    }
+
+    #[test]
+    fn the_molding_library_has_clean_profiles_of_each_kind() {
+        for kind in [MoldingKind::Base, MoldingKind::Crown, MoldingKind::Chair] {
+            assert!(molding_defs(kind).len() >= 2, "{kind:?}");
+        }
+        for m in MOLDING_LIBRARY.iter() {
+            let pts = m.points();
+            assert!(polygon_area(&pts) > 0.0, "{} is counter-clockwise", m.name);
+            assert!(m.height() > 1.0 && m.projection() > 0.2, "{}", m.name);
+            // A simple outline: no two edges cross.
+            let n = pts.len();
+            for i in 0..n {
+                for j in i + 2..n {
+                    if i == 0 && j == n - 1 {
+                        continue;
+                    }
+                    let (a, b) = (pts[i], pts[(i + 1) % n]);
+                    let (c, d) = (pts[j], pts[(j + 1) % n]);
+                    assert!(
+                        segment_intersection(a, b, c, d).is_none(),
+                        "{} edges {i} and {j} cross",
+                        m.name
+                    );
+                }
+            }
+            assert_eq!(molding_def(m.name), Some(m));
+        }
+        assert_eq!(
+            molding_def("crown - cove 3 5/8").map(|m| m.kind),
+            Some(MoldingKind::Crown)
+        );
+        assert!(molding_def("No such profile").is_none());
+        assert_eq!(molding_span(MoldingKind::Base, 5.25, 108.0), (0.0, 5.25));
+        assert_eq!(molding_span(MoldingKind::Crown, 3.5, 108.0), (104.5, 108.0));
+        assert_eq!(
+            molding_span(MoldingKind::Chair, 3.0, 108.0),
+            (CHAIR_RAIL_HEIGHT, CHAIR_RAIL_HEIGHT + 3.0)
+        );
+    }
+
+    #[test]
+    fn a_molding_without_openings_is_one_closed_run_around_the_room() {
+        let f = box_floor(6.0);
+        let room = detect_rooms(&f.walls, 0.5).remove(0);
+        let runs = room.molding_runs(&f, 0.0, 5.0);
+        assert_eq!(runs.len(), 1);
+        let r = &runs[0];
+        assert!(r[0].dist(r[r.len() - 1]) < 1e-6, "closed");
+        assert_eq!(r.len(), 5, "four corners and the repeat");
+        // Along the interior surfaces (3" in from the centerlines).
+        assert!(r
+            .iter()
+            .all(|p| p.x > 2.9 && p.x < 237.1 && p.y > 2.9 && p.y < 117.1));
+    }
+
+    #[test]
+    fn a_door_breaks_the_base_but_not_the_crown() {
+        use crate::model::{Opening, OpeningKind};
+        let mut f = box_floor(6.0);
+        // A 36" door in the bottom wall (id 1), centered 100" along it.
+        f.openings
+            .push(Opening::new(1, 100.0, OpeningKind::Door, 36.0, 80.0, 0.0));
+        let room = detect_rooms(&f.walls, 0.5).remove(0);
+        let base = room.molding_runs(&f, 0.0, 5.0);
+        assert_eq!(
+            base.len(),
+            1,
+            "one open run: the base stops either side of the door"
+        );
+        let r = &base[0];
+        assert!(r[0].dist(r[r.len() - 1]) > 1.0, "open, not closed");
+        // The gap is the door's 36" (82..118 along the wall).
+        let ends = [r[0], r[r.len() - 1]];
+        let xs: Vec<f64> = ends.iter().map(|p| p.x).collect();
+        assert!(xs.iter().any(|x| (x - 118.0).abs() < 0.01), "{xs:?}");
+        assert!(xs.iter().any(|x| (x - 82.0).abs() < 0.01), "{xs:?}");
+        // Crown at the ceiling runs over the door.
+        let crown = room.molding_runs(&f, 104.5, 108.0);
+        assert_eq!(crown.len(), 1);
+        assert!(crown[0][0].dist(crown[0][crown[0].len() - 1]) < 1e-6);
+        // A window with a 36" sill leaves the base alone, but stops a chair
+        // rail at 32".."35".
+        f.openings.clear();
+        f.openings.push(Opening::new(
+            1,
+            100.0,
+            OpeningKind::Window,
+            36.0,
+            48.0,
+            36.0,
+        ));
+        assert!(
+            room.molding_runs(&f, 0.0, 5.0)[0][0].dist(room.molding_runs(&f, 0.0, 5.0)[0][4])
+                < 1e-6
+        );
+        let chair = room.molding_runs(&f, 32.0, 35.0);
+        assert!(chair.len() == 1 && chair[0][0].dist(chair[0][chair[0].len() - 1]) < 1e-6);
+        // Two doors split the base into two runs.
+        f.openings.clear();
+        f.openings
+            .push(Opening::new(1, 60.0, OpeningKind::Door, 36.0, 80.0, 0.0));
+        f.openings
+            .push(Opening::new(3, 120.0, OpeningKind::Door, 30.0, 80.0, 0.0));
+        let two = room.molding_runs(&f, 0.0, 5.0);
+        assert_eq!(two.len(), 2, "{two:?}");
+    }
+
+    #[test]
+    fn open_below_covers_only_rooms_wholly_inside() {
+        let hole = vec![
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 120.0),
+            Point::new(0.0, 120.0),
+        ];
+        let same = hole.clone();
+        let inner = vec![
+            Point::new(10.0, 10.0),
+            Point::new(100.0, 10.0),
+            Point::new(100.0, 100.0),
+            Point::new(10.0, 100.0),
+        ];
+        let sticking_out = vec![
+            Point::new(100.0, 10.0),
+            Point::new(300.0, 10.0),
+            Point::new(300.0, 100.0),
+            Point::new(100.0, 100.0),
+        ];
+        let bigger = vec![
+            Point::new(-50.0, -50.0),
+            Point::new(300.0, -50.0),
+            Point::new(300.0, 200.0),
+            Point::new(-50.0, 200.0),
+        ];
+        assert!(polygon_inside(&same, &hole, 1.0));
+        assert!(polygon_inside(&inner, &hole, 1.0));
+        assert!(!polygon_inside(&sticking_out, &hole, 1.0));
+        assert!(!polygon_inside(&bigger, &hole, 1.0));
+        assert!(!polygon_inside(&[], &hole, 1.0));
+    }
+
+    #[test]
+    fn a_label_can_sit_near_a_wall_and_stays_inside_the_room() {
+        let room = detect_rooms(&box_walls(6.0), 0.5).remove(0);
+        let c = room.label_point(LabelPlacement::Center, 12.0);
+        assert!(c.dist(Point::new(120.0, 60.0)) < 1.0);
+        let top = room.label_point(LabelPlacement::Top, 12.0);
+        let bottom = room.label_point(LabelPlacement::Bottom, 12.0);
+        let left = room.label_point(LabelPlacement::Left, 12.0);
+        let right = room.label_point(LabelPlacement::Right, 12.0);
+        assert!(top.y > c.y && bottom.y < c.y && left.x < c.x && right.x > c.x);
+        assert!((top.y - (117.0 - 12.0)).abs() < 0.01);
+        for p in [top, bottom, left, right] {
+            assert!(room.contains(p));
+        }
+        // An inset bigger than the room falls back toward the middle.
+        let deep = room.label_point(LabelPlacement::Top, 200.0);
+        assert!(room.contains(deep));
+        assert_eq!(LabelPlacement::ALL.len(), 5);
+        assert_eq!(
+            RoomLabelStyle::default().style_name(),
+            ROOM_LABEL_TEXT_STYLE
+        );
+        let own = RoomLabelStyle {
+            text_style: "Schedule Style".into(),
+            ..RoomLabelStyle::default()
+        };
+        assert_eq!(own.style_name(), "Schedule Style");
+    }
+
+    #[test]
+    fn room_slab_and_label_style_survive_a_round_trip() {
+        let mut n = RoomName::new(Point::new(1.0, 2.0), "Den", "Den");
+        n.monolithic_slab = Some(RoomSlab {
+            thickness: 5.0,
+            stem_height: 14.0,
+        });
+        n.label_style = RoomLabelStyle {
+            text_style: "Schedule Style".into(),
+            placement: LabelPlacement::Bottom,
+        };
+        let json = serde_json::to_string(&n).unwrap();
+        let back: RoomName = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, n);
+        // Older files have neither.
+        let old = r#"{"anchor":{"x":0.0,"y":0.0},"name":"A","room_type":"B"}"#;
+        let old: RoomName = serde_json::from_str(old).unwrap();
+        assert!(old.monolithic_slab.is_none());
+        assert_eq!(old.label_style, RoomLabelStyle::default());
     }
 
     #[test]

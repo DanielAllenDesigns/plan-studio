@@ -95,6 +95,9 @@ pub enum BoxSource {
     ImageData {
         width: u32,
         height: u32,
+        /// Stored as base64 text in the layout's JSON (a list of numbers
+        /// would take four times the room); files with a list still load.
+        #[serde(with = "pixels_text")]
         rgba: Vec<u8>,
     },
     /// A text box: lines of text in paper points, aligned within the box,
@@ -122,6 +125,68 @@ pub enum BoxSource {
     /// The sheet index as a table (sheet number and title of every printed
     /// page), kept up to date as pages are added, renamed or reordered.
     SheetIndex,
+}
+
+/// `ImageData` pixels in JSON: base64 text, or (older files) a list of bytes.
+mod pixels_text {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub(super) fn encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let n = (u32::from(chunk[0]) << 16)
+                | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*chunk.get(2).unwrap_or(&0));
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    pub(super) fn decode(text: &str) -> Option<Vec<u8>> {
+        let mut out = Vec::with_capacity(text.len() / 4 * 3);
+        let (mut acc, mut bits) = (0u32, 0);
+        for c in text.bytes() {
+            if c == b'=' {
+                break;
+            }
+            let v = ALPHABET.iter().position(|a| *a == c)? as u32;
+            acc = (acc << 6) | v;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push(((acc >> bits) & 0xFF) as u8);
+            }
+        }
+        Some(out)
+    }
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        encode(bytes).serialize(s)
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Text(String),
+        List(Vec<u8>),
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        match Stored::deserialize(d)? {
+            Stored::List(v) => Ok(v),
+            Stored::Text(t) => {
+                decode(&t).ok_or_else(|| serde::de::Error::custom("bad base64 in image pixels"))
+            }
+        }
+    }
 }
 
 impl BoxSource {
@@ -270,7 +335,7 @@ impl LayoutBox {
     }
 
     /// Normalised `[x_min, y_min, x_max, y_max]` in paper inches.
-    pub(crate) fn bounds_in(&self) -> [f64; 4] {
+    pub fn bounds_in(&self) -> [f64; 4] {
         let (a, b) = self.rect_in;
         [a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)]
     }
@@ -297,6 +362,15 @@ pub struct LayoutPage {
     /// [`cad`](Self::cad).
     #[serde(default)]
     pub clouds: Vec<RevisionCloud>,
+    /// Page Specification: this page's own sheet, `(width, height)` in paper
+    /// inches as it prints, instead of the layout's. `None` follows the
+    /// layout.
+    #[serde(default)]
+    pub size_override_in: Option<(f64, f64)>,
+    /// Page Specification: the page prints without the border and title
+    /// block (a full-page picture or a cover).
+    #[serde(default)]
+    pub no_title_block: bool,
 }
 
 impl LayoutPage {
@@ -387,7 +461,117 @@ pub struct Layout {
     /// their line weights.
     #[serde(default)]
     pub layers: LayoutLayers,
+    /// Customize Sheet Sizes: the sizes this layout adds to the standard
+    /// list.
+    #[serde(default)]
+    pub custom_sizes: Vec<CustomSheetSize>,
+    /// Customize Sheet Sizes: standard sizes left out of the size lists.
+    #[serde(default)]
+    pub hidden_sizes: Vec<SheetSize>,
+    /// The layout's own sheet when it is one of the custom sizes (it wins
+    /// over [`sheet`](Self::sheet), which then only names the nearest
+    /// standard size for the plan's Drawing Sheet).
+    #[serde(default)]
+    pub custom_sheet: Option<CustomSheetSize>,
 }
+
+/// Smallest and largest sheet side Customize Sheet Sizes accepts, inches.
+pub const MIN_SHEET_SIDE_IN: f64 = 2.0;
+pub const MAX_SHEET_SIDE_IN: f64 = 200.0;
+
+/// A sheet size added in Customize Sheet Sizes: a name and the sheet's two
+/// sides in inches.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomSheetSize {
+    pub name: String,
+    pub width_in: f64,
+    pub height_in: f64,
+}
+
+impl CustomSheetSize {
+    pub fn new(name: impl Into<String>, width_in: f64, height_in: f64) -> Self {
+        Self {
+            name: name.into(),
+            width_in,
+            height_in,
+        }
+    }
+
+    /// `(width, height)` landscape, the long side wide (like
+    /// [`SheetSize::inches`]).
+    pub fn inches(&self) -> (f64, f64) {
+        (
+            self.width_in.max(self.height_in),
+            self.width_in.min(self.height_in),
+        )
+    }
+
+    /// Name for the lists, sides short by long: `Poster (30 x 40)`.
+    pub fn label(&self) -> String {
+        let (long, short) = self.inches();
+        format!(
+            "{} ({} x {})",
+            self.name.trim(),
+            side_text(short),
+            side_text(long)
+        )
+    }
+
+    /// Why the size cannot be kept, if it cannot.
+    pub fn problem(&self) -> Option<&'static str> {
+        let ok = |v: f64| v.is_finite() && (MIN_SHEET_SIDE_IN..=MAX_SHEET_SIDE_IN).contains(&v);
+        if self.name.trim().is_empty() {
+            Some("Give the size a name")
+        } else if !ok(self.width_in) || !ok(self.height_in) {
+            Some("Each side must be between 2 and 200 inches")
+        } else {
+            None
+        }
+    }
+}
+
+fn side_text(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-6 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{v:.2}").trim_end_matches('0').to_string()
+    }
+}
+
+/// A sheet size the lists offer: a standard one or one of the layout's own.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SheetChoice {
+    Standard(SheetSize),
+    Custom(CustomSheetSize),
+}
+
+impl SheetChoice {
+    pub fn label(&self) -> String {
+        match self {
+            SheetChoice::Standard(s) => s.label().to_string(),
+            SheetChoice::Custom(c) => c.label(),
+        }
+    }
+
+    /// Landscape `(width, height)`, inches.
+    pub fn inches(&self) -> (f64, f64) {
+        match self {
+            SheetChoice::Standard(s) => s.inches(),
+            SheetChoice::Custom(c) => c.inches(),
+        }
+    }
+}
+
+/// The standard sizes Daniel works in, ARCH C (18 x 24) first: the preset of
+/// Customize Sheet Sizes.
+pub const DANIEL_SIZES: [SheetSize; 6] = [
+    SheetSize::ArchC,
+    SheetSize::ArchD,
+    SheetSize::ArchB,
+    SheetSize::ArchA,
+    SheetSize::ArchE,
+    SheetSize::ArchE1,
+];
 
 impl Layout {
     /// An empty layout with the presentation title block and 0.5" margins.
@@ -403,13 +587,19 @@ impl Layout {
             edge_line_weight: LAYOUT_EDGE_WEIGHT,
             portrait: false,
             layers: LayoutLayers::default(),
+            custom_sizes: Vec::new(),
+            hidden_sizes: Vec::new(),
+            custom_sheet: None,
         }
     }
 
     /// Width and height of the sheet in paper inches, turned upright when
     /// the layout is portrait.
     pub fn sheet_inches(&self) -> (f64, f64) {
-        let (w, h) = self.sheet.inches();
+        let (w, h) = match &self.custom_sheet {
+            Some(c) => c.inches(),
+            None => self.sheet.inches(),
+        };
         if self.portrait {
             (w.min(h), w.max(h))
         } else {
@@ -437,6 +627,8 @@ impl Layout {
             template_page: false,
             leaders: Vec::new(),
             clouds: Vec::new(),
+            size_override_in: None,
+            no_title_block: false,
         });
         self.pages.last_mut().expect("just pushed")
     }
@@ -468,23 +660,124 @@ impl Layout {
             .map_or(1, |m| m + 1)
     }
 
-    /// Width of the right title strip for this sheet, paper inches.
-    pub(crate) fn right_strip_in(&self) -> f64 {
-        RIGHT_STRIP_IN.min(self.sheet_inches().0 * 0.22)
+    /// Width of the right title strip on a sheet `sheet_w_in` wide.
+    pub(crate) fn right_strip_in_for(&self, sheet_w_in: f64) -> f64 {
+        RIGHT_STRIP_IN.min(sheet_w_in * 0.22)
     }
 
     /// The area boxes are packed into (inside the border, beside the title
     /// block): `(lower-left, upper-right)` in paper inches.
     pub fn drawing_area(&self) -> (Point, Point) {
-        let (w, h) = self.sheet_inches();
+        self.drawing_area_for(self.sheet_inches())
+    }
+
+    /// [`drawing_area`](Self::drawing_area) of a sheet of `size` inches.
+    pub fn drawing_area_for(&self, (w, h): (f64, f64)) -> (Point, Point) {
         let m = self.margins_in;
         let (mut right, mut bottom) = (w - m, m);
         match self.title_block.style {
-            TitleBlockStyle::RightStrip => right -= self.right_strip_in(),
+            TitleBlockStyle::RightStrip => right -= self.right_strip_in_for(w),
             TitleBlockStyle::BottomStrip => bottom += BOTTOM_STRIP_IN,
             TitleBlockStyle::Custom(_) => {}
         }
         (Point::new(m, bottom), Point::new(right, h - m))
+    }
+
+    /// The sheet `page` prints on, `(width, height)` in paper inches: its
+    /// own size from Page Specification, else the layout's.
+    pub fn page_sheet_inches(&self, page: &LayoutPage) -> (f64, f64) {
+        page.size_override_in.unwrap_or_else(|| self.sheet_inches())
+    }
+
+    /// The drawing area of `page` (its own sheet size counts).
+    pub fn page_drawing_area(&self, page: &LayoutPage) -> (Point, Point) {
+        self.drawing_area_for(self.page_sheet_inches(page))
+    }
+
+    /// Customize Sheet Sizes: the sizes the lists offer, standard ones that
+    /// are not hidden (the layout's own sheet always stays), then the custom
+    /// ones.
+    pub fn size_choices(&self) -> Vec<SheetChoice> {
+        let mut out: Vec<SheetChoice> = SheetSize::ALL
+            .into_iter()
+            .filter(|s| {
+                !self.hidden_sizes.contains(s) || (self.custom_sheet.is_none() && *s == self.sheet)
+            })
+            .map(SheetChoice::Standard)
+            .collect();
+        out.extend(self.custom_sizes.iter().cloned().map(SheetChoice::Custom));
+        out
+    }
+
+    /// The layout's sheet as a list choice.
+    pub fn sheet_choice(&self) -> SheetChoice {
+        match &self.custom_sheet {
+            Some(c) => SheetChoice::Custom(c.clone()),
+            None => SheetChoice::Standard(self.sheet),
+        }
+    }
+
+    /// Makes `choice` the layout's sheet. A custom size is kept as the
+    /// layout's own and the standard size is set to the smallest one that
+    /// holds it (what the plan's Drawing Sheet shows).
+    pub fn set_sheet_choice(&mut self, choice: &SheetChoice) {
+        match choice {
+            SheetChoice::Standard(s) => {
+                self.sheet = *s;
+                self.custom_sheet = None;
+            }
+            SheetChoice::Custom(c) => {
+                let (w, h) = c.inches();
+                if let Some(near) = SheetSize::ALL
+                    .into_iter()
+                    .filter(|s| {
+                        let (sw, sh) = s.inches();
+                        sw + 1e-6 >= w && sh + 1e-6 >= h
+                    })
+                    .min_by(|a, b| {
+                        let area = |s: &SheetSize| s.inches().0 * s.inches().1;
+                        area(a).total_cmp(&area(b))
+                    })
+                {
+                    self.sheet = near;
+                }
+                self.custom_sheet = Some(c.clone());
+            }
+        }
+    }
+
+    /// Gives page `index` the sheet of `choice` (turned upright when
+    /// `portrait`), or the layout's own when `choice` is `None`.
+    pub fn set_page_sheet(&mut self, index: usize, choice: Option<&SheetChoice>, portrait: bool) {
+        let size = choice.map(|c| {
+            let (w, h) = c.inches();
+            if portrait {
+                (h, w)
+            } else {
+                (w, h)
+            }
+        });
+        if let Some(p) = self.pages.get_mut(index) {
+            p.size_override_in = size;
+        }
+    }
+
+    /// Gives page `index` the sheet number `number`. Refused (with the
+    /// reason) when another page already has it.
+    pub fn set_page_number(&mut self, index: usize, number: u32) -> Result<(), &'static str> {
+        if index >= self.pages.len() {
+            return Err("There is no such page");
+        }
+        if self
+            .pages
+            .iter()
+            .enumerate()
+            .any(|(i, p)| i != index && p.number == number)
+        {
+            return Err("Another page already has that sheet number");
+        }
+        self.pages[index].number = number;
+        Ok(())
     }
 }
 
@@ -509,6 +802,36 @@ mod tests {
             assert_eq!(Scale::from_label(s.label()), Some(s));
         }
         assert!((Scale::QuarterInch.points_per_inch() - 1.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn image_pixels_are_stored_as_base64_and_older_lists_still_load() {
+        let rgba: Vec<u8> = (0..=255u8).cycle().take(4 * 7 * 5 + 1).collect();
+        let src = BoxSource::ImageData {
+            width: 7,
+            height: 5,
+            rgba: rgba.clone(),
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert!(json["ImageData"]["rgba"].is_string(), "{json}");
+        let back: BoxSource = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back, src);
+        // A file written before the text form held a list of numbers.
+        let mut old = json;
+        old["ImageData"]["rgba"] = serde_json::json!(rgba);
+        let back: BoxSource = serde_json::from_value(old).unwrap();
+        assert_eq!(back, src);
+        // Padding lengths 0..3 round trip.
+        for n in 0..8usize {
+            let v: Vec<u8> = (0..n as u8).map(|i| i.wrapping_mul(37)).collect();
+            assert_eq!(
+                pixels_text::decode(&pixels_text::encode(&v)).unwrap(),
+                v,
+                "{n}"
+            );
+        }
+        assert_eq!(pixels_text::encode(b"Man"), "TWFu");
+        assert_eq!(pixels_text::encode(b"Ma"), "TWE=");
     }
 
     #[test]

@@ -128,6 +128,17 @@ pub(crate) struct RoomLevels {
 }
 
 /// The levels of `room` on `floor`.
+///
+/// * The ceiling platform hangs above the finished ceiling: the slab runs
+///   from the finished ceiling up through the ceiling finish layers (R-27) -
+///   or up to the Rough Ceiling height when the room has one (R-25) - and
+///   the platform itself.
+/// * On a foundation floor built with a basement the ceiling is the
+///   underside of the first floor's platform (the floor's ceiling structure
+///   thickness), and the floor's `ceiling_height` reaches the first floor's
+///   finished level (R-18).
+/// * A room with the Monolithic Slab Foundation flag has a floor platform of
+///   the slab's thickness (R-31).
 pub(crate) fn room_levels(floor: &plan_core::Floor, room: &plan_core::Room) -> RoomLevels {
     let named = room.name_entry(&floor.room_names);
     let misc = named.and_then(|n| n.misc.as_ref());
@@ -136,16 +147,46 @@ pub(crate) fn room_levels(floor: &plan_core::Floor, room: &plan_core::Room) -> R
             .filter(|l| !l.is_empty())
             .map(|l| plan_core::extras::structure_thickness(l))
     };
+    let floor_offset = named.map_or(0.0, |n| n.floor_height_offset);
+    let platform_above = if floor.kind == plan_core::FloorKind::Foundation {
+        floor.settings.ceiling_structure_thickness.max(0.0)
+    } else {
+        0.0
+    };
+    let ceiling_height = named.and_then(|n| n.ceiling_height).unwrap_or_else(|| {
+        if platform_above > 0.0 {
+            (floor.ceiling_height - platform_above - floor_offset).max(1.0)
+        } else {
+            floor.ceiling_height
+        }
+    });
+    let own_ceiling = layered(misc.map(|m| &m.ceiling_structure));
+    let (gap, platform) = match own_ceiling {
+        None if platform_above > 0.0 => (0.0, (platform_above - SLAB_THICKNESS).max(0.5)),
+        own => {
+            let finish = misc
+                .map_or(floor.settings.ceiling_finish_thickness, |m| {
+                    m.ceiling_finish_thickness
+                })
+                .max(0.0);
+            let rough = named
+                .and_then(|n| n.rough_ceiling)
+                .map_or(finish, |r| (r - ceiling_height).max(finish));
+            (rough, own.unwrap_or(SLAB_THICKNESS))
+        }
+    };
+    let monolithic = named.and_then(|n| n.monolithic_slab);
     RoomLevels {
-        floor_offset: named.map_or(0.0, |n| n.floor_height_offset),
-        ceiling_height: named
-            .and_then(|n| n.ceiling_height)
-            .unwrap_or(floor.ceiling_height),
+        floor_offset,
+        ceiling_height,
         floor_finish: misc.map_or(floor.settings.floor_finish_thickness, |m| {
             m.floor_finish_thickness
         }),
-        floor_thickness: layered(misc.map(|m| &m.floor_structure)).unwrap_or(SLAB_THICKNESS),
-        ceiling_thickness: layered(misc.map(|m| &m.ceiling_structure)).unwrap_or(SLAB_THICKNESS),
+        floor_thickness: monolithic
+            .map(|s| s.thickness.max(0.5))
+            .or_else(|| layered(misc.map(|m| &m.floor_structure)))
+            .unwrap_or(SLAB_THICKNESS),
+        ceiling_thickness: gap + platform,
         has_floor: named.is_none_or(|n| n.has_floor),
         has_ceiling: named.is_none_or(|n| n.has_ceiling),
     }
@@ -165,7 +206,7 @@ pub fn room_ceiling_top(floor: &plan_core::Floor, room: &plan_core::Room) -> f64
 /// gets them that deep below the datum. They stop at garage doors.
 /// `thickness` is the foundation wall type's (the wall's own when unknown).
 /// One mesh per run, tagged with its wall.
-pub(crate) fn stem_walls(
+fn stem_only(
     floor: &plan_core::Floor,
     room: &plan_core::Room,
     levels: &RoomLevels,
@@ -175,9 +216,16 @@ pub(crate) fn stem_walls(
     use crate::frame::Frame;
     use plan_core::geometry::dist_to_segment;
     use plan_core::{OpeningStyle, WallKind};
+    // A Stem Wall height, or the thickened edge of a Monolithic Slab (R-31).
     let explicit = room
         .name_entry(&floor.room_names)
-        .and_then(|n| n.stem_wall_height)
+        .and_then(|n| {
+            let slab = n.monolithic_slab.map(|s| s.stem_height);
+            match (n.stem_wall_height, slab) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            }
+        })
         .filter(|h| *h > 0.5);
     let dropped = levels.floor_offset < -0.5;
     let datum = floor.elevation;
@@ -254,9 +302,365 @@ pub(crate) fn stem_walls(
     out
 }
 
+/// Everything a room adds beside its platforms and stem walls: the stem
+/// walls themselves (R-26, R-31), the footings under foundation walls
+/// (R-61), the base, chair rail and crown moldings of its Moldings tab
+/// (R-34) and the floor, ceiling and wall surfaces of its Materials tab
+/// (R-36). One mesh per run or surface.
+pub(crate) fn stem_walls(
+    floor: &plan_core::Floor,
+    room: &plan_core::Room,
+    levels: &RoomLevels,
+    thickness: Option<f64>,
+) -> Vec<Mesh> {
+    let mut out = stem_only(floor, room, levels, thickness);
+    out.extend(footings(floor, room));
+    out.extend(room_moldings(floor, room, levels));
+    out.extend(room_surfaces(floor, room, levels));
+    out
+}
+
+/// Footings under the foundation walls of a Walls with Footings foundation
+/// (R-61): a concrete box under each wall run of the room, as wide and deep
+/// as the Build Foundation dialog said.
+fn footings(floor: &plan_core::Floor, room: &plan_core::Room) -> Vec<Mesh> {
+    use crate::builder::MeshSet;
+    use crate::frame::Frame;
+    use plan_core::floors::FoundationKind;
+    use plan_core::geometry::dist_to_segment;
+    let Some(build) = floor.settings.foundation else {
+        return Vec::new();
+    };
+    if floor.kind != plan_core::FloorKind::Foundation
+        || !matches!(build.kind, FoundationKind::StemWall { .. })
+        || build.footing_width <= 0.0
+        || build.footing_depth <= 0.0
+        || room.polygon.len() < 3
+    {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let n = room.polygon.len();
+    for i in 0..n {
+        let (p, q) = (room.polygon[i], room.polygon[(i + 1) % n]);
+        let len = p.dist(q);
+        if len < 1.0 {
+            continue;
+        }
+        let dir = q.sub(p).normalized();
+        let mid = Point::lerp(p, q, 0.5);
+        let Some(wall) = floor.walls.iter().find(|w| {
+            w.is_foundation()
+                && !w.is_curved()
+                && w.length() > 1e-6
+                && dist_to_segment(mid, w.start, w.end) <= w.thickness * 0.5 + 1.0
+                && w.direction().cross(dir).abs() < 0.02
+        }) else {
+            continue;
+        };
+        let mut synthetic = wall.clone();
+        synthetic.start = p;
+        synthetic.end = q;
+        synthetic.bottom_offset = 0.0;
+        let base = floor.elevation + wall.bottom_offset;
+        let frame = Frame::new(&synthetic, base - build.footing_depth);
+        let half = build.footing_width * 0.5;
+        let mut set = MeshSet::default();
+        frame.cuboid(
+            set.material(Material::Concrete),
+            (0.0, len),
+            (-half, half),
+            (0.0, build.footing_depth),
+        );
+        out.extend(set.finish(Some(wall.id)));
+    }
+    out
+}
+
+fn scene_point(p: Point, y: f64) -> [f32; 3] {
+    [p.x as f32, y as f32, (-p.y) as f32]
+}
+
+/// The molding runs of a room's Moldings tab, swept along the interior
+/// surfaces with the miters of [`crate::details::molding_mesh`] (R-34).
+/// Base sits on the finished floor, a chair rail 32" up, crown hangs from the
+/// finished ceiling; each stops at doors and openings that reach into its
+/// height.
+fn room_moldings(
+    floor: &plan_core::Floor,
+    room: &plan_core::Room,
+    levels: &RoomLevels,
+) -> Vec<Mesh> {
+    use plan_core::details::{MoldingLine, MoldingProfile};
+    use plan_core::extras::MoldingKind;
+    use plan_core::rooms::{molding_def, molding_defs, molding_span};
+    let Some(named) = room.name_entry(&floor.room_names) else {
+        return Vec::new();
+    };
+    let on_floor = levels.floor_offset + levels.floor_finish;
+    let ceiling = levels.ceiling_height - levels.floor_finish;
+    let mut out = Vec::new();
+    for m in &named.moldings {
+        if m.profile.trim().is_empty() || (m.kind == MoldingKind::Crown && !levels.has_ceiling) {
+            continue;
+        }
+        let Some(def) = molding_def(&m.profile).or_else(|| molding_defs(m.kind).first().copied())
+        else {
+            continue;
+        };
+        let height = if m.height > 0.0 {
+            m.height
+        } else {
+            def.height()
+        };
+        let (lo, hi) = molding_span(m.kind, height, ceiling);
+        for run in room.molding_runs(floor, on_floor + lo, on_floor + hi) {
+            let line = MoldingLine {
+                polyline: run,
+                profile: MoldingProfile::Custom(def.points()),
+                height,
+                width: def.projection(),
+                elevation: floor.elevation + on_floor + lo,
+                ..MoldingLine::default()
+            };
+            out.extend(crate::details::molding_mesh(&line, 0.0));
+        }
+    }
+    out
+}
+
+/// A surface material named in the Materials tab: `None` when it is empty or
+/// is what the surface is already built of.
+fn surface_material(name: &str, plain: Material) -> Option<Material> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+    let m = crate::details::material_of(n, plain);
+    (m != plain).then_some(m)
+}
+
+/// Thin plates of the surface materials a room names for its floor, ceiling
+/// and walls (R-36), lying on the platform tops, the ceiling underside and the
+/// interior wall faces. A surface without a name of its own takes the floor's
+/// default (Floor Defaults).
+fn room_surfaces(
+    floor: &plan_core::Floor,
+    room: &plan_core::Room,
+    levels: &RoomLevels,
+) -> Vec<Mesh> {
+    use crate::builder::MeshBuilder;
+    use plan_core::foundation::PlatformKind;
+    const PLATE: f64 = 0.06;
+    let named = room.name_entry(&floor.room_names);
+    let pick = |own: Option<&str>, fallback: &str| -> String {
+        own.filter(|s| !s.trim().is_empty())
+            .unwrap_or(fallback)
+            .to_string()
+    };
+    let floor_name = pick(
+        named.and_then(|n| n.floor_finish.as_deref()),
+        &floor.settings.floor_material,
+    );
+    let ceiling_name = pick(
+        named.and_then(|n| n.ceiling_finish.as_deref()),
+        &floor.settings.ceiling_material,
+    );
+    let wall_name = pick(
+        named
+            .and_then(|n| n.misc.as_ref())
+            .map(|m| m.wall_covering.as_str()),
+        &floor.settings.wall_material,
+    );
+    let mut out = Vec::new();
+    let y_top = floor.elevation + levels.floor_offset + levels.floor_finish;
+    let y_ceiling = floor.elevation + levels.floor_offset + levels.ceiling_height;
+    if levels.has_floor {
+        if let Some(mat) = surface_material(&floor_name, Material::Floor) {
+            let mut cut = crate::foundation::platform_holes(floor, PlatformKind::Floor);
+            cut.extend(room.holes.iter().cloned());
+            out.extend(crate::foundation::build_platform(
+                mat,
+                std::slice::from_ref(room),
+                &cut,
+                y_top,
+                y_top + PLATE,
+                None,
+            ));
+        }
+    }
+    if levels.has_ceiling {
+        if let Some(mat) = surface_material(&ceiling_name, Material::Ceiling) {
+            let mut cut = crate::foundation::platform_holes(floor, PlatformKind::Ceiling);
+            cut.extend(room.holes.iter().cloned());
+            out.extend(crate::foundation::build_platform(
+                mat,
+                std::slice::from_ref(room),
+                &cut,
+                y_ceiling - PLATE,
+                y_ceiling,
+                None,
+            ));
+        }
+    }
+    if let Some(mat) = surface_material(&wall_name, Material::WallInterior) {
+        let poly = if room.inner_polygon.len() >= 3 {
+            &room.inner_polygon
+        } else {
+            &room.polygon
+        };
+        let mut mesh = MeshBuilder::new(mat);
+        let n = poly.len();
+        for i in 0..n {
+            let (p, q) = (poly[i], poly[(i + 1) % n]);
+            let len = p.dist(q);
+            if len < 1.0 {
+                continue;
+            }
+            let dir = q.sub(p).normalized();
+            let into = dir.perp();
+            let lift = into * PLATE;
+            let normal = [into.x as f32, 0.0, (-into.y) as f32];
+            let mut panel = |a: f64, b: f64, y0: f64, y1: f64| {
+                if b - a < 0.25 || y1 - y0 < 0.25 {
+                    return;
+                }
+                let (pa, pb) = (p + dir * a + lift, p + dir * b + lift);
+                mesh.quad(
+                    [
+                        scene_point(pa, y0),
+                        scene_point(pb, y0),
+                        scene_point(pb, y1),
+                        scene_point(pa, y1),
+                    ],
+                    [
+                        [(a / IN_PER_FT) as f32, (y0 / IN_PER_FT) as f32],
+                        [(b / IN_PER_FT) as f32, (y0 / IN_PER_FT) as f32],
+                        [(b / IN_PER_FT) as f32, (y1 / IN_PER_FT) as f32],
+                        [(a / IN_PER_FT) as f32, (y1 / IN_PER_FT) as f32],
+                    ],
+                    normal,
+                );
+            };
+            let mut cursor = 0.0;
+            for o in plan_core::rooms::edge_openings(floor, p, q) {
+                let (from, to) = (o.from.max(0.0), o.to.min(len));
+                if to <= from {
+                    continue;
+                }
+                panel(cursor, from, y_top, y_ceiling);
+                panel(from, to, y_top, floor.elevation + o.sill);
+                panel(from, to, floor.elevation + o.head, y_ceiling);
+                cursor = cursor.max(to);
+            }
+            panel(cursor, len, y_top, y_ceiling);
+        }
+        if !mesh.is_empty() {
+            out.push(mesh.finish(None));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn box_room(floor: &mut plan_core::Floor) -> plan_core::Room {
+        use plan_core::{Wall, WallKind};
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(120.0, 0.0),
+            Point::new(120.0, 96.0),
+            Point::new(0.0, 96.0),
+        ];
+        for i in 0..4 {
+            floor.walls.push(Wall {
+                id: i as u64 + 1,
+                ..Wall::new(c[i], c[(i + 1) % 4], 6.0, 108.0, WallKind::Exterior)
+            });
+        }
+        plan_core::detect_rooms(&floor.walls, 0.5).remove(0)
+    }
+
+    #[test]
+    fn surface_materials_skip_what_the_surface_already_is() {
+        assert_eq!(surface_material("", Material::Floor), None);
+        assert_eq!(surface_material("  ", Material::Floor), None);
+        assert_eq!(surface_material("Oak Hardwood", Material::Floor), None);
+        assert_eq!(
+            surface_material("Ceramic Tile", Material::Floor),
+            Some(Material::Stone)
+        );
+        assert_eq!(
+            surface_material("Painted Drywall", Material::WallInterior),
+            None
+        );
+        assert_eq!(
+            surface_material("Brick", Material::WallInterior),
+            Some(Material::Brick)
+        );
+        for n in plan_core::rooms::FLOOR_SURFACES {
+            let _ = surface_material(n, Material::Floor);
+        }
+    }
+
+    #[test]
+    fn levels_add_the_finish_the_rough_ceiling_and_the_slab_flag() {
+        let mut floor = plan_core::Floor::new("1st", 0.0);
+        floor.ceiling_height = 108.0;
+        let room = box_room(&mut floor);
+        // An unnamed room: 5/8" ceiling finish and a 1" platform above the
+        // finished ceiling.
+        let l = room_levels(&floor, &room);
+        assert_eq!(l.ceiling_height, 108.0);
+        assert!((l.ceiling_thickness - (0.625 + SLAB_THICKNESS)).abs() < 1e-9);
+        assert_eq!(l.floor_thickness, SLAB_THICKNESS);
+        // A rough ceiling above the finish sets the gap.
+        let mut n = plan_core::RoomName::new(Point::new(60.0, 48.0), "Den", "Den");
+        n.rough_ceiling = Some(120.0);
+        floor.room_names = vec![n.clone()];
+        let l = room_levels(&floor, &room);
+        assert!((l.ceiling_thickness - (12.0 + SLAB_THICKNESS)).abs() < 1e-9);
+        // One below the finish layers is no lower than them.
+        floor.room_names[0].rough_ceiling = Some(100.0);
+        let l = room_levels(&floor, &room);
+        assert!((l.ceiling_thickness - (0.625 + SLAB_THICKNESS)).abs() < 1e-9);
+        // The slab flag sets the floor platform and its edge depth.
+        floor.room_names[0].rough_ceiling = None;
+        floor.room_names[0].monolithic_slab = Some(plan_core::rooms::RoomSlab {
+            thickness: 6.0,
+            stem_height: 14.0,
+        });
+        let l = room_levels(&floor, &room);
+        assert_eq!(l.floor_thickness, 6.0);
+        let stem = stem_only(&floor, &room, &l, None);
+        assert_eq!(stem.len(), 4, "a run of stem wall under each exterior wall");
+        let (lo, _) = stem[0].bounds().unwrap();
+        assert!((f64::from(lo[1]) + 14.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_foundation_floor_takes_its_ceiling_from_the_platform_above() {
+        let mut floor = plan_core::Floor::new("Foundation", -108.0);
+        floor.kind = plan_core::FloorKind::Foundation;
+        floor.ceiling_height = 108.0;
+        floor.settings.ceiling_structure_thickness = 10.25;
+        let room = box_room(&mut floor);
+        let l = room_levels(&floor, &room);
+        assert!((l.ceiling_height - (108.0 - 10.25)).abs() < 1e-9);
+        assert!((l.ceiling_thickness - (10.25 - SLAB_THICKNESS)).abs() < 1e-9);
+        // The ceiling top is the underside of the first floor's slab (1" below
+        // its finished level at 0).
+        assert!((room_ceiling_top(&floor, &room) + SLAB_THICKNESS).abs() < 1e-9);
+        // A basement slab's offset is taken off the clear height.
+        let mut n = plan_core::RoomName::new(Point::new(60.0, 48.0), "Basement", "Basement");
+        n.floor_height_offset = 4.0;
+        floor.room_names = vec![n];
+        let l = room_levels(&floor, &room);
+        assert!((l.ceiling_height - (108.0 - 10.25 - 4.0)).abs() < 1e-9);
+        assert!((room_ceiling_top(&floor, &room) + SLAB_THICKNESS).abs() < 1e-9);
+    }
 
     #[test]
     fn flat_square_slab_is_a_closed_box() {

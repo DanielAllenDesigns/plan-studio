@@ -19,6 +19,8 @@
 //! Lengths are inches. The 3D frame matches `plan-3d`: X right, Y up,
 //! Z = -plan y.
 
+mod build;
+pub mod deck;
 mod defaults;
 mod detail;
 mod floor;
@@ -27,13 +29,18 @@ mod lumber;
 pub mod manual;
 mod member;
 mod roof;
+pub mod span;
 mod takeoff;
 pub mod truss;
 mod wall;
 
-pub use defaults::{default_header_table, FramingDefaults, HeaderRow};
-pub use detail::{wall_detail, Stroke};
-pub use floor::{frame_floor, frame_floor_holes, JoistDirection};
+pub use build::{
+    fingerprint, group_of, group_of_manual, merge_groups, merge_rebuild, BuildOptions, Group,
+    GroupFlags, PostDefaults, TrussDefaults,
+};
+pub use defaults::{default_header_table, BearingMode, FramingDefaults, HeaderRow};
+pub use detail::{wall_detail, wall_detail_dims, DetailDim, DimKind, Stroke};
+pub use floor::{frame_ceiling, frame_floor, frame_floor_holes, JoistDirection};
 pub use layout::{
     frame_floor_directed, frame_wall_with_marker, frame_wall_with_marker_joined, layout_trusses,
     BearingLine, JoistDirection as JoistDirectionLine, ReferenceMarker, RoofTrussDirection,

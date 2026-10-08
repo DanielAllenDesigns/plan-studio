@@ -94,7 +94,11 @@ pub fn show(ui: &mut egui::Ui, dock: Dock, cx: &mut EditorContext, st: &mut Dock
         Dock::LayerDisplay => layer_panel(ui, cx, &mut st.layers, 0.55),
         Dock::Project => project_browser(ui, cx, &mut st.requests),
         Dock::Library => {
-            if let Some(ev) = library_browser::show(ui, &mut st.library) {
+            // The dock lists library objects, or (filtered to Materials) the
+            // material library.
+            if crate::tools::materials::browser::filter_switch(ui) {
+                crate::tools::materials::browser::panel(ui, cx);
+            } else if let Some(ev) = library_browser::show(ui, &mut st.library) {
                 if let Some(tool) = library_browser::apply_event(ev, &mut st.library, cx) {
                     st.requests.push(DockRequest::SetTool(tool));
                 }
@@ -587,6 +591,8 @@ pub enum BrowserItem {
         floor: usize,
         group: plan_core::Id,
     },
+    /// A CAD detail (a floor marked as a detail): opens in a tab of its own.
+    DetailFloor(usize),
     /// Index into the layout's pages.
     Page(usize),
 }
@@ -623,6 +629,11 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
     let mut schedules = Vec::new();
     let mut details = Vec::new();
     for (fi, f) in p.floors.iter().enumerate() {
+        if f.is_cad_detail() {
+            // A detail is listed once; its parts are not browser rows.
+            details.push(entry(BrowserItem::DetailFloor(fi), f.name.clone()));
+            continue;
+        }
         for s in plan_core::schedules::ScheduleLayer::load(f).schedules {
             let title = if s.title.is_empty() {
                 s.kind.name().to_string()
@@ -655,6 +666,7 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
                     .floors
                     .iter()
                     .enumerate()
+                    .filter(|(_, f)| !f.is_cad_detail())
                     .map(|(i, f)| entry(BrowserItem::Floor(i), f.name.clone()))
                     .collect(),
                 BrowserNode::PlanViews => p
@@ -1031,14 +1043,23 @@ fn plan_view_rows(ui: &mut egui::Ui, cx: &mut EditorContext, rows: &[BrowserEntr
     });
 }
 
-/// The Cameras rows: click selects the camera and pans to it, right-click
-/// offers Rename, Delete and Send to Layout.
+/// The Cameras rows: click selects the camera and pans to it, double-click
+/// restores it (opens its 3D view), right-click offers Restore, Rename, Delete
+/// and Send to Layout. "Save Camera" keeps the 3D view on screen as a camera.
 fn camera_rows(
     ui: &mut egui::Ui,
     cx: &mut EditorContext,
     rows: &[BrowserEntry],
     requests: &mut Vec<DockRequest>,
 ) {
+    use super::view3d_panel::{Outbox, ViewRequest};
+    if ui
+        .small_button("Save Camera")
+        .on_hover_text("Keep the view in the 3D window as a camera (3D > Save Camera)")
+        .clicked()
+    {
+        Outbox::global().post(ViewRequest::SaveCamera);
+    }
     if rows.is_empty() {
         ui.weak("None");
     }
@@ -1059,12 +1080,19 @@ fn camera_rows(
         let current = selected == Some(ObjectRef::Camera(id));
         let r = ui
             .selectable_label(current, &e.label)
-            .on_hover_text("Select the camera and pan the plan to it (right-click: Rename, Delete, Send to Layout)");
+            .on_hover_text("Select the camera and pan the plan to it; double-click restores its 3D view (right-click: Restore, Rename, Delete, Send to Layout)");
         if r.clicked() {
             requests.push(DockRequest::SelectCamera(id));
         }
+        if r.double_clicked() {
+            Outbox::global().post(ViewRequest::ShowCamera(id));
+        }
         let label = e.label.clone();
         r.context_menu(|ui| {
+            if ui.button("Restore (open 3D view)").clicked() {
+                Outbox::global().post(ViewRequest::ShowCamera(id));
+                ui.close_menu();
+            }
             if ui.button("Rename").clicked() {
                 start_rename(ui, &key, &label);
                 ui.close_menu();
@@ -1161,6 +1189,45 @@ fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec
                                         ui.weak("None");
                                     }
                                     for e in rows {
+                                        if let BrowserItem::DetailFloor(i) = e.item {
+                                            let on = cx.floor == i;
+                                            let r = ui
+                                                .selectable_label(on, &e.label)
+                                                .on_hover_text("Open the detail in a tab");
+                                            if r.clicked() {
+                                                crate::tools::details::open_detail(cx, i);
+                                            }
+                                            r.context_menu(|ui| {
+                                                if ui.button("Open").clicked() {
+                                                    crate::tools::details::open_detail(cx, i);
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Duplicate").clicked() {
+                                                    crate::tools::details::duplicate_detail(cx, i);
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Send to Layout").clicked() {
+                                                    if let Err(e) =
+                                                        crate::tools::details::send_to_layout(cx, i)
+                                                    {
+                                                        cx.status = e;
+                                                    }
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Delete").clicked() {
+                                                    crate::tools::details::delete_detail(cx, i);
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Manage\u{2026}").clicked() {
+                                                    crate::dialogs::details::select_detail(Some(
+                                                        &e.label,
+                                                    ));
+                                                    crate::dialogs::details::open_management();
+                                                    ui.close_menu();
+                                                }
+                                            });
+                                            continue;
+                                        }
                                         if let BrowserItem::CadDetail { floor, group } = e.item {
                                             if ui
                                                 .selectable_label(false, &e.label)

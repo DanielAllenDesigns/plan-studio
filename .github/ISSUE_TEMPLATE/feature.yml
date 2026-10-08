@@ -1,0 +1,66 @@
+name: Feature request
+description: Suggest a Chief Architect X18 behavior to add, or an improvement to an existing tool.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Plan Studio's goal is Chief Architect X18's residential workflow. The best requests name the Chief behavior and the job you are trying to do. Check [docs/parity-status.md](https://github.com/DanielAllenDesigns/plan-studio/blob/main/docs/parity-status.md) first: many gaps are already listed with an id, and a comment on that id is welcome.
+
+        Please do not paste Chief Architect library content, templates or text from its manual. Describe the behavior in your own words.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The residential design task, as a short story (for example "put a window on a curved wall and see it in 3D").
+    validations:
+      required: true
+  - type: textarea
+    id: chief
+    attributes:
+      label: How Chief Architect X18 does it
+      description: The tool, menu path, dialog tab and what the user sees. Mark anything you are not sure of.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What Plan Studio does today
+      description: Missing, partly there, or different. Include the parity id (for example DW-19) if you know it.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Walls
+        - Select and edit
+        - Doors and windows
+        - Rooms and floors
+        - Roofs
+        - Dimensions, text and CAD
+        - Cabinets, stairs, framing, terrain, electrical
+        - Library and symbols
+        - 3D views, cameras and rendering
+        - Layout, schedules, print and export
+        - Files, import and Chief templates
+        - Dialogs, menus, hotkeys and toolbars
+        - Packaging and installation
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: importance
+    attributes:
+      label: How often would you use it
+      options:
+        - Every project
+        - Most projects
+        - Occasionally
+        - Rarely
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to build this (see CONTRIBUTING.md).

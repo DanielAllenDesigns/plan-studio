@@ -558,6 +558,62 @@ impl ViewSet {
         id
     }
 
+    /// Renames a row (the standard ones keep their id). False for an empty
+    /// name or an unknown row.
+    pub fn rename_row(&mut self, id: &str, name: &str) -> bool {
+        let name = name.trim();
+        match self.bar_mut(id) {
+            Some(b) if !name.is_empty() => {
+                b.name = name.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Moves a row the user added one place up or down among the user's
+    /// rows (the standard bars stay first, in their order).
+    pub fn move_row(&mut self, id: &str, down: bool) -> bool {
+        if is_builtin(id) {
+            return false;
+        }
+        let custom: Vec<usize> = self
+            .bars
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.is_builtin())
+            .map(|(i, _)| i)
+            .collect();
+        let Some(at) = custom.iter().position(|&i| self.bars[i].id == id) else {
+            return false;
+        };
+        let to = if down {
+            if at + 1 >= custom.len() {
+                return false;
+            }
+            at + 1
+        } else {
+            if at == 0 {
+                return false;
+            }
+            at - 1
+        };
+        self.bars.swap(custom[at], custom[to]);
+        true
+    }
+
+    /// Adds a copy of a row (its buttons and separators) after the user's
+    /// last row and returns the new row's id.
+    pub fn duplicate_row(&mut self, id: &str) -> Option<String> {
+        let src = self.bar(id)?.clone();
+        let new_id = self.add_row(&format!("{} copy", src.name));
+        let bar = self.bar_mut(&new_id)?;
+        bar.items = src.items;
+        bar.visible = src.visible;
+        bar.tidy();
+        Some(new_id)
+    }
+
     /// Deletes a row the user added. The standard bars cannot be deleted
     /// (hide them instead).
     pub fn remove_row(&mut self, id: &str) -> bool {
@@ -913,6 +969,14 @@ pub fn set_current(mut cfg: ToolbarConfig) -> Result<(), String> {
     };
     with_current(|c| *c = cfg);
     saved
+}
+
+/// Reset Toolbars: every view type back to Daniel's Chief set (the lock is
+/// kept), live and saved. Returns the save error, if any.
+pub fn reset_all_live() -> Result<(), String> {
+    let mut cfg = current();
+    cfg.reset_all();
+    set_current(cfg)
 }
 
 /// Replaces the live configuration without touching the disk (tests).

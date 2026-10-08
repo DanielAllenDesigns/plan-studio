@@ -15,6 +15,7 @@ use crate::cabinet::{
     BlindSide, Cabinet, CabinetKind, DoorProfile, FaceSide, HandleStyle, HingeStyle,
     MaterialChoice, Overlay, SideKind,
 };
+use crate::dress::{FootStyle, MAX_SHELVES, SHELF_SPACING};
 use crate::face::{FaceItem, FaceLayout};
 use crate::top::{CornerTreatment, EdgeProfile};
 
@@ -422,14 +423,21 @@ impl Builder {
         }
 
         // Toe kick board, front face `depth` back from the cabinet front.
+        // Feet (Accessories tab) stand in its place.
+        let feet = cabinet.accessories.feet;
         if let Some(tk) = toe {
             let front = d - tk.depth;
-            self.add_box(
-                [0.0, (front - FRAME).max(0.0), 0.0],
-                [w, front, tk.height],
-                pick(cabinet.materials.toe_kick, Material::WallInterior),
-            );
+            if feet == FootStyle::None {
+                self.add_box(
+                    [0.0, (front - FRAME).max(0.0), 0.0],
+                    [w, front, tk.height],
+                    pick(cabinet.materials.toe_kick, Material::WallInterior),
+                );
+            } else {
+                self.feet(cabinet, front, tk.height);
+            }
         }
+        self.pilasters(cabinet, z0, z1);
 
         // Countertop and backsplash. A cabinet that gave its slab to a
         // generated top keeps its backsplash, standing on that top.
@@ -691,7 +699,6 @@ const DRAWER_PULL_OUT: f64 = 14.0;
 /// Thickness of a drawer box's sides, back and bottom, inches.
 const DRAWER_BOX: f64 = 0.5;
 /// Tallest gap between shelves in the interior shown by an open door, in.
-const SHELF_SPACING: f64 = 13.0;
 /// Height above the cabinet bottom where a tall door's handle sits, inches.
 const TALL_HANDLE_Z: f64 = 38.0;
 
@@ -881,7 +888,7 @@ fn shelves(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64)) {
         return;
     }
     let wood = pick(cab.materials.carcass, Material::WallInterior);
-    for k in 1..=n.min(6) {
+    for k in 1..=n.min(MAX_SHELVES) {
         let z = z0 + (z1 - z0) * k as f64 / (n + 1) as f64;
         b.add_box(
             [xa, PANEL, z - PANEL / 2.0],

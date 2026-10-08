@@ -99,7 +99,8 @@ pub(crate) fn ordered_openings(f: &Floor, kind: OpeningKind) -> Vec<(&Opening, &
     let mut v: Vec<(&Opening, &Wall, Point)> = f
         .openings
         .iter()
-        .filter(|o| o.kind == kind)
+        // "Include in Schedule" (L-29): a cleared box leaves it out.
+        .filter(|o| o.kind == kind && o.extras.spec.schedule.include)
         .filter_map(|o| {
             let w = f.wall(o.wall_id)?;
             Some((o, w, w.point_at(o.center_offset)))

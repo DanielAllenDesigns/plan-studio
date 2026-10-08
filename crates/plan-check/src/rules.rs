@@ -2,7 +2,7 @@
 
 use plan_core::geometry::{dist_to_segment, polygon_area};
 use plan_core::units::fmt_ft_in;
-use plan_core::{OpeningKind, Point, Wall, WallKind};
+use plan_core::{OpeningKind, OpeningStyle, Point, Wall, WallKind};
 use plan_stairs::{footprint, solve, StairShape};
 
 use crate::ctx::{is_habitable, is_hall, Ctx, OpInfo};
@@ -103,12 +103,18 @@ pub(crate) fn bedroom_egress(ctx: &Ctx, out: &mut Vec<Finding>) {
         if !ctx.exterior_openings(i, OpeningKind::Door).is_empty() {
             continue;
         }
-        let windows = ctx.exterior_openings(i, OpeningKind::Window);
+        // Only a window that opens can be an escape opening; its net clear
+        // size is what counts (R310.2.1).
+        let windows: Vec<_> = ctx
+            .exterior_openings(i, OpeningKind::Window)
+            .into_iter()
+            .filter(|w| net_clear(w.op).is_some())
+            .collect();
         let name = ctx.name(i);
+        let net_area = |w: &&OpInfo| net_clear(w.op).map_or(0.0, |(nw, nh)| nw * nh);
         let best = windows.iter().max_by(|a, b| {
-            let area = |w: &&OpInfo| w.op.width * w.op.height;
-            area(a)
-                .partial_cmp(&area(b))
+            net_area(a)
+                .partial_cmp(&net_area(b))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let Some(best) = best else {
@@ -117,7 +123,7 @@ pub(crate) fn bedroom_egress(ctx: &Ctx, out: &mut Vec<Finding>) {
                     "IRC R310.2 egress",
                     Severity::Error,
                     format!("{name} has no egress window or exterior door."),
-                    "Add an exterior window that meets egress sizes, or an exterior door.",
+                    "Add an operable exterior window that meets egress sizes, or an exterior door.",
                 )
                 .at(room.centroid)
                 .on(Target::Room(i)),
@@ -125,22 +131,23 @@ pub(crate) fn bedroom_egress(ctx: &Ctx, out: &mut Vec<Finding>) {
             continue;
         };
         if windows.iter().any(|w| {
-            let op = w.op;
+            let (nw, nh) = net_clear(w.op).unwrap_or((0.0, 0.0));
             let mut v = Vec::new();
-            egress_shortfalls(op.width, op.height, op.sill_height, min_area, o, &mut v);
+            egress_shortfalls(nw, nh, w.op.sill_height, min_area, o, &mut v);
             v.is_empty()
         }) {
             continue;
         }
         let op = best.op;
+        let (nw, nh) = net_clear(op).unwrap_or((0.0, 0.0));
         let mut why = Vec::new();
-        egress_shortfalls(op.width, op.height, op.sill_height, min_area, o, &mut why);
+        egress_shortfalls(nw, nh, op.sill_height, min_area, o, &mut why);
         let mut f = finding(
             "IRC R310.2 egress",
             Severity::Error,
             format!(
-                "No window in {name} meets egress. The largest ({}) {}.",
-                dims(op.width, op.height),
+                "No window in {name} meets egress. The largest ({} net clear) {}.",
+                dims(nw, nh),
                 why.join("; ")
             ),
             "Enlarge the window or lower its sill: 5.7 sq ft (5.0 on the grade floor), 20\" wide, 24\" high, sill at most 44\".",
@@ -150,6 +157,18 @@ pub(crate) fn bedroom_egress(ctx: &Ctx, out: &mut Vec<Finding>) {
             f = f.at(c);
         }
         out.push(f);
+    }
+}
+
+/// The net clear opening of a window when its sash is open, `(width, height)`,
+/// or `None` when the window cannot be opened (a fixed window, a niche). A
+/// sliding window opens half its width; the other styles are taken at their
+/// full size.
+fn net_clear(op: &plan_core::Opening) -> Option<(f64, f64)> {
+    match op.style {
+        OpeningStyle::Fixed | OpeningStyle::WallNiche | OpeningStyle::PassThrough => None,
+        OpeningStyle::SlidingWindow => Some((op.width * 0.5, op.height)),
+        _ => Some((op.width, op.height)),
     }
 }
 

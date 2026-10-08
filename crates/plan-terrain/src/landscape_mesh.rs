@@ -21,7 +21,7 @@ use plan_core::Point;
 
 use crate::delaunay::triangulate;
 use crate::geom::{bounds, dedup_points, densify, dist_to_boundary, offset_polygon, strip_edges};
-use crate::landscape::{Landscape, LandscapeKind, TerrainWall};
+use crate::landscape::{Landscape, LandscapeKind, PlantForm, TerrainWall};
 use crate::mesh::{terrain_object_id, to_scene, MeshBuilder, TerrainPart, UP};
 use crate::model::{Feature, FeatureKind, Terrain, TerrainSurface};
 use crate::query::elevation_at;
@@ -103,7 +103,7 @@ fn tag(meshes: &mut [Mesh], part: TerrainPart, index: usize) {
     }
 }
 
-fn named_material(name: &str, default: Material) -> Material {
+pub(crate) fn named_material(name: &str, default: Material) -> Material {
     match name.trim().to_ascii_lowercase().as_str() {
         "stone" | "flagstone" | "fieldstone" => Material::Stone,
         "brick" => Material::Brick,
@@ -113,12 +113,14 @@ fn named_material(name: &str, default: Material) -> Material {
         "mulch" | "soil" | "dirt" | "bark" => Material::Mulch,
         "gravel" | "pea gravel" | "crushed stone" => Material::Gravel,
         "asphalt" | "blacktop" => Material::Asphalt,
+        "paint" | "stripe" | "marking" | "white" => Material::Trim,
         _ => default,
     }
 }
 
 // ----- sweeps (walls, curbs, edging) -----
 
+#[derive(Clone, Copy)]
 struct WRow {
     l: Point,
     r: Point,
@@ -219,11 +221,63 @@ fn wall_mesh(w: &TerrainWall, ground: &Ground) -> Option<Mesh> {
     }
     let last = edges.center.len() - 1;
     rows.push(row(edges.left[last], edges.right[last], along));
+    if w.stepped {
+        rows = step_tops(&rows, w.step);
+    }
     sweep(
         &rows,
         false,
         named_material(&w.material, Material::Concrete),
     )
+}
+
+/// Run of the riser between two courses of a stepped wall, inches.
+const STEP_RISER_RUN: f64 = 0.25;
+
+/// The rows of a stepped wall: every top is lifted to a whole number of
+/// `step` inch courses above the lowest one, so the top holds level and drops
+/// in courses as the ground falls; where two neighbors differ a pair of rows a
+/// riser apart makes the vertical step.
+fn step_tops(rows: &[WRow], step: f64) -> Vec<WRow> {
+    let step = step.max(1.0);
+    let base = rows.iter().map(|r| r.top).fold(f64::INFINITY, f64::min);
+    let course = |top: f64| base + ((top - base) / step - 1e-9).ceil().max(0.0) * step;
+    let mut out = Vec::with_capacity(rows.len() * 2);
+    for (i, r) in rows.iter().enumerate() {
+        let top = course(r.top);
+        out.push(WRow { top, ..*r });
+        let Some(n) = rows.get(i + 1) else { continue };
+        let next = course(n.top);
+        if (next - top).abs() < 1e-6 {
+            continue;
+        }
+        let span = (n.along - r.along).max(STEP_RISER_RUN * 4.0);
+        let at = |s: f64| {
+            (
+                Point::lerp(r.l, n.l, s),
+                Point::lerp(r.r, n.r, s),
+                r.along + (n.along - r.along) * s,
+            )
+        };
+        let riser = (STEP_RISER_RUN / span).min(0.2);
+        let (l0, r0, a0) = at(0.5);
+        let (l1, r1, a1) = at(0.5 + riser);
+        out.push(WRow {
+            l: l0,
+            r: r0,
+            along: a0,
+            top,
+            bottom: r.bottom,
+        });
+        out.push(WRow {
+            l: l1,
+            r: r1,
+            along: a1,
+            top: next,
+            bottom: n.bottom,
+        });
+    }
+    out
 }
 
 /// Rows of a closed ring around `poly`: the left edge `outer` inches off the
@@ -588,28 +642,99 @@ fn plant_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
         return Vec::new();
     }
     let (mut canopy, mut trunks) = (MeshBuilder::default(), MeshBuilder::default());
+    let form = l.plant_form();
     let tree = l.height >= TREE_HEIGHT;
     let positions = l.plant_positions();
-    for p in &positions {
-        let at = to_scene(*p, ground.z(*p));
-        if tree {
-            let trunk_h = l.height * 0.4;
-            cylinder(&mut trunks, at, (l.size * 0.03).clamp(1.5, 8.0), trunk_h);
-            let r = [l.size / 2.0, (l.height - trunk_h) / 2.0, l.size / 2.0];
-            ellipsoid(&mut canopy, [at[0], at[1] + trunk_h + r[1], at[2]], r, true);
-        } else {
-            let r = [l.size / 2.0, l.height, l.size / 2.0];
-            ellipsoid(&mut canopy, at, r, false);
-        }
-    }
     if positions.is_empty() {
         return Vec::new();
     }
+    for p in &positions {
+        let at = to_scene(*p, ground.z(*p));
+        match form {
+            PlantForm::Billboard => billboard(&mut canopy, at, l.size, l.height),
+            PlantForm::Cone => {
+                // A short bare trunk, then the cone up to the tip.
+                let trunk_h = (l.height * 0.1).min(24.0);
+                cylinder(&mut trunks, at, (l.size * 0.03).clamp(1.5, 8.0), trunk_h);
+                cone(
+                    &mut canopy,
+                    [at[0], at[1] + trunk_h, at[2]],
+                    l.size / 2.0,
+                    l.height - trunk_h,
+                );
+            }
+            _ if tree => {
+                let trunk_h = l.height * 0.4;
+                cylinder(&mut trunks, at, (l.size * 0.03).clamp(1.5, 8.0), trunk_h);
+                let r = [l.size / 2.0, (l.height - trunk_h) / 2.0, l.size / 2.0];
+                ellipsoid(&mut canopy, [at[0], at[1] + trunk_h + r[1], at[2]], r, true);
+            }
+            _ => {
+                let r = [l.size / 2.0, l.height, l.size / 2.0];
+                ellipsoid(&mut canopy, at, r, false);
+            }
+        }
+    }
     let mut out = vec![canopy.finish(Material::Foliage)];
-    if tree {
+    if !trunks.positions.is_empty() {
         out.push(trunks.finish(Material::Framing));
     }
     out
+}
+
+/// A cone of `radius` at `base` rising `height` to a tip.
+fn cone(b: &mut MeshBuilder, base: [f64; 3], radius: f64, height: f64) {
+    const SIDES: usize = 12;
+    let tip = b.push([base[0], base[1] + height, base[2]], [0.5, 1.0]);
+    let ring: Vec<u32> = (0..SIDES)
+        .map(|k| {
+            let a = 2.0 * PI * k as f64 / SIDES as f64;
+            b.push(
+                [
+                    base[0] + radius * a.cos(),
+                    base[1],
+                    base[2] + radius * a.sin(),
+                ],
+                [k as f64 / SIDES as f64, 0.0],
+            )
+        })
+        .collect();
+    let center = b.push(base, [0.5, 0.5]);
+    for k in 0..SIDES {
+        let k2 = (k + 1) % SIDES;
+        let a = 2.0 * PI * (k as f64 + 0.5) / SIDES as f64;
+        // The side leans up and in: its normal tilts with the cone's slope.
+        let lean = radius / height.max(1.0);
+        b.push_facing([ring[k], ring[k2], tip], [a.cos(), lean, a.sin()]);
+        b.push_facing([center, ring[k], ring[k2]], [0.0, -1.0, 0.0]);
+    }
+}
+
+/// Two crossed upright planes `width` wide and `height` tall at `base`, each
+/// seen from both sides (a cut-out standing in for a plant).
+fn billboard(b: &mut MeshBuilder, base: [f64; 3], width: f64, height: f64) {
+    let half = width / 2.0;
+    for (dx, dz) in [(1.0, 0.0), (0.0, 1.0)] {
+        let lo_l = b.push(
+            [base[0] - dx * half, base[1], base[2] - dz * half],
+            [0.0, 0.0],
+        );
+        let lo_r = b.push(
+            [base[0] + dx * half, base[1], base[2] + dz * half],
+            [1.0, 0.0],
+        );
+        let hi_r = b.push(
+            [base[0] + dx * half, base[1] + height, base[2] + dz * half],
+            [1.0, 1.0],
+        );
+        let hi_l = b.push(
+            [base[0] - dx * half, base[1] + height, base[2] - dz * half],
+            [0.0, 1.0],
+        );
+        for facing in [[dz, 0.0, -dx], [-dz, 0.0, dx]] {
+            quad(b, [lo_l, lo_r, hi_r, hi_l], facing);
+        }
+    }
 }
 
 fn sprinkler_mesh(l: &Landscape, ground: &Ground) -> Option<Mesh> {

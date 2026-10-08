@@ -34,13 +34,203 @@ enum Leaf {
     Entry(DefaultsEntry),
     /// Roofs > Roof Defaults (RF-14, RF-15, RF-28, RF-31).
     RoofDefaults,
-    /// Cabinets > Cabinet Defaults.
-    CabinetDefaults,
-    /// Framing > Framing Defaults.
-    FramingDefaults,
+    /// Cabinets: the Cabinet Defaults dialog on the tab at this index.
+    CabinetDefaults(usize),
+    /// Framing: the Framing Defaults dialog on the tab at this index.
+    FramingDefaults(usize),
+    /// Terrain > Terrain Defaults (`default_settings_terrain.rs`).
+    TerrainDefaults,
+    /// A generic page of `default_pages` (its id).
+    Page(&'static str),
+    /// Electrical (`default_pages/electrical.rs`): the plan's device heights.
+    Electrical,
+    /// A command of the application (an existing dialog or tool window).
+    Run(Action),
 }
 
+use crate::toolbar::Action;
+
+const NO_LEAVES: &[(&str, Leaf)] = &[];
+
+/// The cabinet kinds: tab indexes of the Cabinet Defaults dialog.
+const CABINET_LEAVES: &[(&str, Leaf)] = &[
+    ("Base Cabinet", Leaf::CabinetDefaults(0)),
+    ("Wall Cabinet", Leaf::CabinetDefaults(1)),
+    ("Full Height Cabinet", Leaf::CabinetDefaults(2)),
+    ("Soffit", Leaf::CabinetDefaults(3)),
+    ("Shelf", Leaf::CabinetDefaults(4)),
+    ("Partition", Leaf::CabinetDefaults(5)),
+    ("Countertop", Leaf::CabinetDefaults(6)),
+    ("Backsplash", Leaf::CabinetDefaults(7)),
+];
+
+/// Chief's Default Settings tree: 29 groups. A leaf opens the same
+/// specification dialog an object shows, an existing window, or a page of
+/// `default_pages`.
 const TREE: &[(&str, &[(&str, Leaf)])] = &[
+    ("3D Solid", &[("3D Solid", Leaf::Page("solid3d"))]),
+    (
+        "3D View Defaults",
+        &[(
+            "3D View Defaults",
+            Leaf::Run(Action::View3d(
+                crate::shell::view3d_panel::View3dCommand::Defaults,
+            )),
+        )],
+    ),
+    ("Cabinets", CABINET_LEAVES),
+    (
+        "CAD",
+        &[
+            ("General CAD", Leaf::Page("cad.general")),
+            ("Arcs", Leaf::Page("cad.arcs")),
+            ("Boxes", Leaf::Page("cad.boxes")),
+            ("Circles", Leaf::Page("cad.circles")),
+            ("Lines", Leaf::Page("cad.lines")),
+            ("Polylines", Leaf::Page("cad.polylines")),
+            ("Splines", Leaf::Page("cad.splines")),
+            ("Points", Leaf::Page("cad.points")),
+            ("Markers", Leaf::Page("cad.markers")),
+            ("Callouts", Leaf::Page("cad.callouts")),
+            ("Leaders", Leaf::Page("cad.leaders")),
+            ("Insert Point", Leaf::Page("cad.insert_point")),
+        ],
+    ),
+    (
+        "Camera Tools",
+        &[
+            ("Full Camera", Leaf::Page("camera.full")),
+            ("Floor Camera", Leaf::Page("camera.floor")),
+            ("Doll House", Leaf::Page("camera.doll_house")),
+            ("Glass House", Leaf::Page("camera.glass_house")),
+            ("Overview", Leaf::Page("camera.overview")),
+            ("Elevation", Leaf::Page("camera.elevation")),
+            ("Section", Leaf::Page("camera.section")),
+            ("Backclipped", Leaf::Page("camera.backclipped")),
+            ("Wall Elevation", Leaf::Page("camera.wall_elevation")),
+        ],
+    ),
+    ("Corner Trim", &[("Corner Trim", Leaf::Page("corner_trim"))]),
+    ("Default Sets", &[("Default Sets", Leaf::Page("default_sets"))]),
+    (
+        "Dimension",
+        &[
+            ("Dimensions", Leaf::Entry(DefaultsEntry::Dimensions)),
+            ("Auto Exterior", Leaf::Page("dimension.auto_exterior")),
+            ("Auto Interior", Leaf::Page("dimension.auto_interior")),
+            ("NKBA", Leaf::Page("dimension.nkba")),
+            ("Baseline", Leaf::Page("dimension.baseline")),
+            ("Story Pole", Leaf::Page("dimension.story_pole")),
+            ("Angular", Leaf::Page("dimension.angular")),
+            ("Point to Point", Leaf::Page("dimension.point_to_point")),
+            ("Temporary", Leaf::Page("dimension.temporary")),
+        ],
+    ),
+    (
+        "Distributed Objects",
+        &[("Distributed Objects", Leaf::Page("distributed"))],
+    ),
+    (
+        "Doors",
+        &[
+            ("Interior Door", Leaf::Entry(DefaultsEntry::InteriorDoor)),
+            ("Exterior Door", Leaf::Entry(DefaultsEntry::ExteriorDoor)),
+            ("Garage Door", Leaf::Page("garage_door")),
+        ],
+    ),
+    ("Dormer", &[("Dormer", Leaf::Page("dormer"))]),
+    ("Electrical", &[("Electrical", Leaf::Electrical)]),
+    (
+        "Floors and Rooms",
+        &[
+            ("Floor Defaults", Leaf::Entry(DefaultsEntry::FloorDefaults)),
+            ("Floor Levels", Leaf::Page("floor_levels")),
+            ("Floor/Ceiling Platform", Leaf::Page("platforms")),
+            ("Room Types", Leaf::Entry(DefaultsEntry::RoomTypes)),
+            ("Rooms", Leaf::Page("rooms")),
+            ("Room Label", Leaf::Page("room_label")),
+        ],
+    ),
+    ("Foundation", &[("Foundation", Leaf::Page("foundation"))]),
+    (
+        "Framing",
+        &[
+            ("Framing Defaults", Leaf::FramingDefaults(0)),
+            ("Wall Framing", Leaf::FramingDefaults(0)),
+            ("Headers", Leaf::FramingDefaults(1)),
+            ("Floor Framing", Leaf::FramingDefaults(2)),
+            ("Roof Framing", Leaf::FramingDefaults(3)),
+        ],
+    ),
+    (
+        "General",
+        &[
+            ("General Plan Defaults", Leaf::Page("general")),
+            ("Templates", Leaf::Entry(DefaultsEntry::Templates)),
+        ],
+    ),
+    ("Image", &[("Image", Leaf::Page("image"))]),
+    ("Layout", &[("Layout", Leaf::Page("layout"))]),
+    (
+        "Materials",
+        &[
+            (
+                "Materials Defaults",
+                Leaf::Run(Action::Custom("materials.defaults")),
+            ),
+            ("Materials List", Leaf::Page("materials_list")),
+            ("Molding Polylines", Leaf::Page("molding_polylines")),
+        ],
+    ),
+    (
+        "Plan",
+        &[
+            ("Plan Defaults", Leaf::Page("plan")),
+            (
+                "Active Layer Display Options",
+                Leaf::Run(Action::OpenLayerDisplay),
+            ),
+            ("Plan Check", Leaf::Run(Action::Custom("check.settings"))),
+        ],
+    ),
+    (
+        "Railing and Deck",
+        &[("Railing and Deck", Leaf::Page("railing_deck"))],
+    ),
+    ("Roofs", &[("Roof Defaults", Leaf::RoofDefaults)]),
+    (
+        "Schedules",
+        &[
+            ("Door Schedule", Leaf::Page("schedules.door")),
+            ("Window Schedule", Leaf::Page("schedules.window")),
+            ("Room Schedule", Leaf::Page("schedules.room")),
+            ("Wall Schedule", Leaf::Page("schedules.wall")),
+            ("Cabinet Schedule", Leaf::Page("schedules.cabinet")),
+            ("Electrical Schedule", Leaf::Page("schedules.electrical")),
+            ("Framing Schedule", Leaf::Page("schedules.framing")),
+            ("Fixture Schedule", Leaf::Page("schedules.fixture")),
+            ("Furniture Schedule", Leaf::Page("schedules.furniture")),
+            ("Plant Schedule", Leaf::Page("schedules.plant")),
+            ("Stair Schedule", Leaf::Page("schedules.stair")),
+            ("Room Finish Schedule", Leaf::Page("schedules.room_finish")),
+            ("Note Schedule", Leaf::Page("schedules.note")),
+            ("General Schedule", Leaf::Page("schedules.general")),
+        ],
+    ),
+    ("Slab", &[("Slab", Leaf::Page("slab"))]),
+    ("Stairs", &[("Stairs", Leaf::Page("stairs"))]),
+    ("Terrain", &[("Terrain Defaults", Leaf::TerrainDefaults)]),
+    (
+        "Text",
+        &[
+            ("Text Styles", Leaf::Entry(DefaultsEntry::TextStyles)),
+            ("Rich Text", Leaf::Page("text.rich")),
+            ("Arrows", Leaf::Page("text.arrows")),
+            ("Leader Lines", Leaf::Page("text.leader_lines")),
+            ("Callouts", Leaf::Page("text.callouts")),
+            ("Markers", Leaf::Page("text.markers")),
+        ],
+    ),
     (
         "Walls",
         &[
@@ -50,39 +240,24 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
                 "Foundation Wall",
                 Leaf::Entry(DefaultsEntry::FoundationWall),
             ),
-        ],
-    ),
-    (
-        "Doors",
-        &[
-            ("Interior Door", Leaf::Entry(DefaultsEntry::InteriorDoor)),
-            ("Exterior Door", Leaf::Entry(DefaultsEntry::ExteriorDoor)),
+            ("Railing Wall", Leaf::Page("walls.railing")),
+            ("Fence", Leaf::Page("walls.fence")),
+            ("Pony Wall", Leaf::Page("walls.pony")),
+            ("Half Wall", Leaf::Page("walls.half")),
+            ("Glass Wall", Leaf::Page("walls.glass")),
+            ("Attic Wall", Leaf::Page("walls.attic")),
         ],
     ),
     ("Windows", &[("Window", Leaf::Entry(DefaultsEntry::Window))]),
-    (
-        "Dimension",
-        &[("Dimensions", Leaf::Entry(DefaultsEntry::Dimensions))],
-    ),
-    (
-        "Text",
-        &[("Text Styles", Leaf::Entry(DefaultsEntry::TextStyles))],
-    ),
-    (
-        "Floors and Rooms",
-        &[
-            ("Floor Defaults", Leaf::Entry(DefaultsEntry::FloorDefaults)),
-            ("Room Types", Leaf::Entry(DefaultsEntry::RoomTypes)),
-        ],
-    ),
-    ("Roofs", &[("Roof Defaults", Leaf::RoofDefaults)]),
-    ("Cabinets", &[("Cabinet Defaults", Leaf::CabinetDefaults)]),
-    ("Framing", &[("Framing Defaults", Leaf::FramingDefaults)]),
-    (
-        "Preferences",
-        &[("Templates", Leaf::Entry(DefaultsEntry::Templates))],
-    ),
 ];
+
+/// The groups and leaves of the tree, for the tests and the parity checks.
+#[cfg(test)]
+fn all_leaves() -> Vec<(&'static str, &'static str, Leaf)> {
+    TREE.iter()
+        .flat_map(|(g, ls)| ls.iter().map(move |(n, l)| (*g, *n, *l)))
+        .collect()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DefaultsOutcome {
@@ -90,16 +265,53 @@ pub enum DefaultsOutcome {
     Close,
     /// Edit the chosen leaf (double-click or the Edit button).
     Edit(DefaultsEntry),
+    /// Run an application command (a leaf that opens an existing window).
+    Run(Action),
 }
 
 #[derive(Default)]
 pub struct DefaultsDialog {
     search: String,
     selected: Option<Leaf>,
+    /// Reset to Template was clicked once; the next click does it.
+    confirm_reset: bool,
 }
 
-/// What editing a leaf does: the entries go to `main`, the Roof Defaults
-/// page opens here.
+/// What a leaf opens, in a line.
+fn describe(leaf: Leaf) -> &'static str {
+    match leaf {
+        Leaf::Entry(DefaultsEntry::ExteriorWall | DefaultsEntry::InteriorWall) => {
+            "The Wall Specification every new wall of this kind starts from."
+        }
+        Leaf::Entry(DefaultsEntry::FoundationWall) => {
+            "The Wall Specification new foundation walls start from."
+        }
+        Leaf::Entry(DefaultsEntry::InteriorDoor | DefaultsEntry::ExteriorDoor) => {
+            "The Door Specification new doors start from."
+        }
+        Leaf::Entry(DefaultsEntry::Window) => "The Window Specification new windows start from.",
+        Leaf::Entry(DefaultsEntry::Dimensions) => {
+            "The saved dimension default sets: format, automatic dimensions, extensions and arrows."
+        }
+        Leaf::Entry(DefaultsEntry::RoomTypes) => "The room types and what each one means.",
+        Leaf::Entry(DefaultsEntry::FloorDefaults) => {
+            "Ceiling height, platforms, finishes and materials of floors built from now on."
+        }
+        Leaf::Entry(DefaultsEntry::TextStyles) => "The text styles new plans start with.",
+        Leaf::Entry(DefaultsEntry::Templates) => {
+            "The Chief plan and layout templates new plans start from."
+        }
+        Leaf::RoofDefaults => "Eave cut, fascia, soffit, rafter tails, attic walls and baseline.",
+        Leaf::CabinetDefaults(_) => "The Cabinet Defaults: sizes, styles and hardware.",
+        Leaf::FramingDefaults(_) => "The Framing Defaults: members, spacing and headers.",
+        Leaf::TerrainDefaults => "The Terrain Specification of this plan.",
+        Leaf::Page(_) => "A page of default values for new objects of this kind.",
+        Leaf::Electrical => "The height each kind of device is placed at; kept with this plan.",
+        Leaf::Run(_) => "Opens the matching window.",
+    }
+}
+
+/// What editing a leaf does: the entries go to `main`, the pages open here.
 fn edit_outcome(leaf: Leaf) -> DefaultsOutcome {
     match leaf {
         Leaf::Entry(e) => DefaultsOutcome::Edit(e),
@@ -107,14 +319,27 @@ fn edit_outcome(leaf: Leaf) -> DefaultsOutcome {
             open_roof_defaults();
             DefaultsOutcome::Open
         }
-        Leaf::CabinetDefaults => {
-            OPEN_CABINETS.with(|c| c.set(true));
+        Leaf::CabinetDefaults(tab) => {
+            OPEN_CABINETS.with(|c| c.set(Some(tab)));
             DefaultsOutcome::Open
         }
-        Leaf::FramingDefaults => {
-            OPEN_FRAMING.with(|c| c.set(true));
+        Leaf::FramingDefaults(tab) => {
+            OPEN_FRAMING.with(|c| c.set(Some(tab)));
             DefaultsOutcome::Open
         }
+        Leaf::TerrainDefaults => {
+            super::default_settings_terrain::request_open();
+            DefaultsOutcome::Open
+        }
+        Leaf::Page(id) => {
+            super::default_pages::request_open(id);
+            DefaultsOutcome::Open
+        }
+        Leaf::Electrical => {
+            super::default_pages::electrical::request_open();
+            DefaultsOutcome::Open
+        }
+        Leaf::Run(action) => DefaultsOutcome::Run(action),
     }
 }
 
@@ -133,8 +358,8 @@ impl DefaultsDialog {
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_size([360.0, 420.0])
-            .min_size([300.0, 280.0])
+            .default_size([520.0, 520.0])
+            .min_size([360.0, 320.0])
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.screen_rect().center())
             .show(ctx, |ui| {
@@ -148,7 +373,7 @@ impl DefaultsDialog {
                         );
                     });
                     ui.separator();
-                    let tree_height = (ui.available_height() - 40.0).max(80.0);
+                    let tree_height = (ui.available_height() - 76.0).max(80.0);
                     egui::ScrollArea::vertical()
                         .id_salt("defaults_tree")
                         .max_height(tree_height)
@@ -170,14 +395,16 @@ impl DefaultsDialog {
                                 any = true;
                                 let mut header = egui::CollapsingHeader::new(*group)
                                     .id_salt(("defaults_group", group))
-                                    .default_open(true);
+                                    .default_open(false);
                                 if !query.is_empty() {
                                     header = header.open(Some(true));
                                 }
                                 header.show(ui, |ui| {
                                     for (name, entry) in shown {
-                                        let resp = ui
-                                            .selectable_label(self.selected == Some(*entry), *name);
+                                        let resp = ui.selectable_label(
+                                            self.selected == Some(*entry),
+                                            *name,
+                                        );
                                         if resp.clicked() {
                                             self.selected = Some(*entry);
                                         }
@@ -193,6 +420,10 @@ impl DefaultsDialog {
                             }
                         });
                     ui.separator();
+                    match self.selected {
+                        Some(leaf) => ui.weak(describe(leaf)),
+                        None => ui.weak("Select a setting, then Edit."),
+                    };
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.button("Close").clicked() {
                             outcome = DefaultsOutcome::Close;
@@ -206,6 +437,23 @@ impl DefaultsDialog {
                                 outcome = edit_outcome(e);
                             }
                         }
+                        let label = if self.confirm_reset {
+                            "Click again to reset all"
+                        } else {
+                            "Reset to Template"
+                        };
+                        if ui
+                            .button(label)
+                            .on_hover_text(
+                                "Put every default back to the template (the plan's own data is not touched)",
+                            )
+                            .clicked()
+                        {
+                            if self.confirm_reset {
+                                RESET.with(|c| c.set(true));
+                            }
+                            self.confirm_reset = !self.confirm_reset;
+                        }
                     });
                 });
             });
@@ -218,6 +466,24 @@ impl DefaultsDialog {
         outcome
     }
 }
+
+thread_local! {
+    /// Reset to Template was confirmed; [`show_templates_page`] does it.
+    static RESET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Reset to Template: the plan defaults go back to `base` (the embedded
+/// template, seeded from the Chief plan template when that is set up). The
+/// plan's own data (terrain, electrical heights, framing settings) is not
+/// touched, and the per-session edits of the default dialogs are forgotten.
+pub fn reset_to_template(cx: &mut EditorContext, base: plan_core::PlanDefaults) {
+    cx.defaults = base;
+    forget_dialog_edits(cx);
+    cx.status = "Reset the default settings to the template".into();
+}
+
+/// Command id: Edit > Reset to Defaults.
+pub const RESET_TO_DEFAULTS: &str = "defaults.reset";
 
 // ===================================================================
 // Preferences > Templates
@@ -274,6 +540,11 @@ pub fn show_templates_page(ctx: &egui::Context, cx: &mut EditorContext) {
     show_roof_defaults(ctx, cx);
     show_cabinet_defaults(ctx, cx);
     show_framing_defaults(ctx, cx);
+    super::default_settings_terrain::show(ctx, cx);
+    super::default_pages::show(ctx, cx);
+    if RESET.with(|c| c.replace(false)) {
+        reset_to_template(cx, crate::plan_defaults::template_base().0);
+    }
     let Some(mut page) = PAGE.with(|p| p.borrow_mut().take()) else {
         return;
     };
@@ -608,8 +879,10 @@ pub const FRAMING: &str = "defaults.framing";
 pub const FRAMING_OVERVIEW: &str = "defaults.framing_overview";
 
 thread_local! {
-    static OPEN_CABINETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static OPEN_FRAMING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The tab the Cabinet Defaults open on, once asked for.
+    static OPEN_CABINETS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// The tab the Framing Defaults open on, once asked for.
+    static OPEN_FRAMING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static CABINET_PAGE: RefCell<Option<super::cabinet::CabinetDefaultsDialog>> =
         const { RefCell::new(None) };
     static FRAMING_PAGE: RefCell<Option<super::framing::FramingDefaultsDialog>> =
@@ -619,8 +892,9 @@ thread_local! {
 /// Runs the menu commands of this module; false for any other id.
 pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
     match id {
-        CABINETS => OPEN_CABINETS.with(|c| c.set(true)),
-        FRAMING => OPEN_FRAMING.with(|c| c.set(true)),
+        CABINETS => OPEN_CABINETS.with(|c| c.set(Some(0))),
+        FRAMING => OPEN_FRAMING.with(|c| c.set(Some(0))),
+        RESET_TO_DEFAULTS => RESET.with(|c| c.set(true)),
         FRAMING_OVERVIEW => {
             if crate::editor::framing_view::in_overview(&cx.project) {
                 crate::editor::framing_view::leave_overview(cx);
@@ -634,8 +908,9 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
 }
 
 fn show_cabinet_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
-    if OPEN_CABINETS.with(|c| c.replace(false)) {
-        let dlg = super::cabinet::CabinetDefaultsDialog::new(&cx.defaults.cabinets);
+    if let Some(tab) = OPEN_CABINETS.with(|c| c.replace(None)) {
+        let mut dlg = super::cabinet::CabinetDefaultsDialog::new(&cx.defaults.cabinets);
+        dlg.start_on(tab);
         CABINET_PAGE.with(|p| *p.borrow_mut() = Some(dlg));
     }
     let Some(mut dlg) = CABINET_PAGE.with(|p| p.borrow_mut().take()) else {
@@ -653,9 +928,10 @@ fn show_cabinet_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
 }
 
 fn show_framing_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
-    if OPEN_FRAMING.with(|c| c.replace(false)) {
+    if let Some(tab) = OPEN_FRAMING.with(|c| c.replace(None)) {
         let settings = crate::editor::framing_view::settings(&cx.project);
-        let dlg = super::framing::FramingDefaultsDialog::new(&settings);
+        let mut dlg = super::framing::FramingDefaultsDialog::new(&settings);
+        dlg.start_on(tab);
         FRAMING_PAGE.with(|p| *p.borrow_mut() = Some(dlg));
     }
     let Some(mut dlg) = FRAMING_PAGE.with(|p| p.borrow_mut().take()) else {

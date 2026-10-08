@@ -18,9 +18,11 @@
 //! the far half of the wall). The plain window is unaffected; casements follow
 //! the pointer like doors.
 
+mod place;
+
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::place_from_template;
-use crate::editor::opening_view::draw_opening;
+use crate::editor::opening_view::{draw_opening, draw_opening_over};
 use crate::editor::tempdim::{self, opening_temp_dims, TempDims};
 use crate::editor::{render, Camera, EditAction, EditorContext, ObjectRef};
 use crate::toolbar::ViewFlag;
@@ -67,12 +69,39 @@ impl OpeningVariant {
     }
 }
 
+/// Where a click would put the opening.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Hover {
+    wall: Id,
+    /// The center along the wall (arc length on a curved wall).
+    center: f64,
+    /// What the center is lined up with, if an alignment snap applied.
+    align: Option<place::Align>,
+    /// A window over this door becomes its transom.
+    transom_of: Option<Id>,
+}
+
+/// The opening just placed while the button is still down: dragging slides it
+/// along its wall (DW-5).
+#[derive(Clone, Copy, Debug)]
+struct Placing {
+    id: Id,
+    wall: Id,
+    press: egui::Pos2,
+    moved: bool,
+}
+
+/// Screen pixels the pointer must travel after the press before the opening
+/// just placed starts to follow it.
+const DRAG_START_PX: f32 = 3.0;
+
 pub struct OpeningTool {
     kind: OpeningKind,
     style: OpeningStyle,
-    hover: Option<(Id, f64)>,
+    hover: Option<Hover>,
     /// World position of the last pointer move (drives the ghost's swing).
     hover_pointer: Point,
+    placing: Option<Placing>,
 }
 
 impl Default for OpeningTool {
@@ -82,29 +111,22 @@ impl Default for OpeningTool {
             style: OpeningStyle::Hinged,
             hover: None,
             hover_pointer: Point::new(0.0, 0.0),
+            placing: None,
         }
     }
 }
 
-/// The wall under `p` and the snapped opening center along it.
-fn target(cx: &EditorContext, p: Point, alt: bool) -> Option<(Id, f64)> {
+/// The wall under `p`: the nearest visible one within the pick distance.
+fn wall_under(cx: &EditorContext, p: Point) -> Option<&plan_core::Wall> {
     let tol = cx.pick_tol();
-    let wall = cx
-        .floor()
+    cx.floor()
         .walls
         .iter()
         .filter(|w| cx.layers().is_visible(&w.layer))
         .map(|w| (w, w.closest_point(p).0.dist(p)))
         .filter(|(_, d)| *d <= tol)
         .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(w, _)| w)?;
-    // Along the wall is arc length on a curved wall (DW-88).
-    let mut offset = wall.locate(p).0;
-    let unit = cx.snap_unit();
-    if !alt {
-        offset = (offset / unit).round() * unit;
-    }
-    Some((wall.id, offset))
+        .map(|(w, _)| w)
 }
 
 impl OpeningTool {
@@ -125,6 +147,96 @@ impl OpeningTool {
         }
         o.wall_id = wall.id;
         (target_key, o)
+    }
+
+    /// Where a click with the pointer at `p` would put the opening, or `None`
+    /// when it would be refused (the pointer is over a neighbour or the face of
+    /// a wall that meets the host, the wall is too short, there is no room).
+    /// A window over a door answers with the door, to become its transom.
+    fn placement(
+        &self,
+        cx: &EditorContext,
+        wall: &plan_core::Wall,
+        p: Point,
+        alt: bool,
+    ) -> Option<Hover> {
+        let raw = wall.locate(p).0;
+        let (_, template) = self.opening_for(cx, wall, p, raw);
+        if self.kind == OpeningKind::Window {
+            let door = cx.floor().openings_on(wall.id).find(|d| {
+                d.kind == OpeningKind::Door && raw >= d.start_offset() && raw <= d.end_offset()
+            });
+            if let Some(d) = door {
+                return Some(Hover {
+                    wall: wall.id,
+                    center: d.center_offset,
+                    align: None,
+                    transom_of: Some(d.id),
+                });
+            }
+        }
+        let r = place::resolve(
+            &cx.project,
+            cx.floor,
+            wall,
+            &template,
+            raw,
+            cx.snap_unit(),
+            cx.pick_tol(),
+            !alt,
+            None,
+        )?;
+        Some(Hover {
+            wall: wall.id,
+            center: r.center,
+            align: r.align,
+            transom_of: None,
+        })
+    }
+
+    /// Dragging with the button down after a placement: the opening follows
+    /// the pointer along its wall, with the same snaps and clearances.
+    fn drag_placed(&mut self, cx: &mut EditorContext, p: PointerEvent, mut pl: Placing) -> bool {
+        if !pl.moved && (p.screen - pl.press).length() < DRAG_START_PX {
+            return false;
+        }
+        pl.moved = true;
+        self.placing = Some(pl);
+        let fl = cx.floor;
+        let Some(wall) = cx.floor().wall(pl.wall).cloned() else {
+            return false;
+        };
+        let Some(open) = cx.floor().openings.iter().find(|o| o.id == pl.id).cloned() else {
+            return false;
+        };
+        let raw = wall.locate(p.world).0;
+        let Some(r) = place::resolve(
+            &cx.project,
+            fl,
+            &wall,
+            &open,
+            raw,
+            cx.snap_unit(),
+            cx.pick_tol(),
+            !p.modifiers.alt,
+            Some(pl.id),
+        ) else {
+            return false;
+        };
+        let swings = self.swings();
+        if let Some(o) = cx.project.floors[fl]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == pl.id)
+        {
+            o.center_offset = r.center;
+            if swings {
+                (o.swing_flipped, o.hinge_at_end) =
+                    door_defaults_for_pointer(&wall, p.world, r.center);
+            }
+        }
+        cx.mark_dirty();
+        true
     }
 
     /// Does the flavor have a swing side and a hinge to take from the pointer?
@@ -171,8 +283,14 @@ impl Tool for OpeningTool {
         }
     }
 
+    /// The "no" glyph while the pointer is where nothing can be placed
+    /// (DW-3): off every wall, over a neighbour or in a wall too short.
     fn cursor(&self) -> egui::CursorIcon {
-        egui::CursorIcon::Crosshair
+        if self.hover.is_some() || self.placing.is_some() {
+            egui::CursorIcon::Crosshair
+        } else {
+            egui::CursorIcon::NotAllowed
+        }
     }
 
     fn set_variant(&mut self, id: ToolId) {
@@ -195,10 +313,24 @@ impl Tool for OpeningTool {
 
     fn deactivate(&mut self, _cx: &mut EditorContext) {
         self.hover = None;
+        self.placing = None;
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        self.hover = target(cx, p.world, p.modifiers.alt);
+        if p.down {
+            if let Some(pl) = self.placing {
+                self.drag_placed(cx, p, pl);
+                self.hover_pointer = p.world;
+                return ToolResult {
+                    repaint: true,
+                    ..ToolResult::default()
+                };
+            }
+        } else {
+            self.placing = None;
+        }
+        self.hover =
+            wall_under(cx, p.world).and_then(|w| self.placement(cx, w, p.world, p.modifiers.alt));
         self.hover_pointer = p.world;
         ToolResult {
             repaint: true,
@@ -206,13 +338,29 @@ impl Tool for OpeningTool {
         }
     }
 
+    fn pointer_up(&mut self, _cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
+        // The drag ends with the release; it was part of the placement's one
+        // undo step.
+        if self.placing.take().is_some() {
+            return ToolResult {
+                repaint: true,
+                ..ToolResult::consumed()
+            };
+        }
+        ToolResult::ignored()
+    }
+
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        let Some((wid, center)) = target(cx, p.world, p.modifiers.alt) else {
+        self.placing = None;
+        let Some(wall) = wall_under(cx, p.world).cloned() else {
             return ToolResult::consumed();
         };
-        let Some(wall) = cx.floor().wall(wid).cloned() else {
+        let wid = wall.id;
+        let Some(hover) = self.placement(cx, &wall, p.world, p.modifiers.alt) else {
+            cx.status = "Opening does not fit there (wall too short or overlap)".into();
             return ToolResult::consumed();
         };
+        let center = hover.center;
         let (target_key, template) = self.opening_for(cx, &wall, p.world, center);
         let extras = cx.default_opening_extras(target_key);
         let label = match self.kind {
@@ -220,19 +368,7 @@ impl Tool for OpeningTool {
             OpeningKind::Window => "Place Window",
         };
         // A window clicked onto a door goes over it as a transom (DW-52).
-        let door_here = (self.kind == OpeningKind::Window)
-            .then(|| {
-                cx.floor()
-                    .openings_on(wid)
-                    .find(|d| {
-                        d.kind == OpeningKind::Door
-                            && center >= d.start_offset()
-                            && center <= d.end_offset()
-                    })
-                    .map(|d| d.id)
-            })
-            .flatten();
-        if let Some(door) = door_here {
+        if let Some(door) = hover.transom_of {
             cx.begin_change("Add Transom");
             let fl = cx.floor;
             return match cx.project.add_transom(fl, door, template.height) {
@@ -270,6 +406,13 @@ impl Tool for OpeningTool {
                 cx.selection.set(ObjectRef::Opening(id));
                 cx.status.clear();
                 cx.mark_dirty();
+                // Dragging before the release slides it along the wall (DW-5).
+                self.placing = Some(Placing {
+                    id,
+                    wall: wid,
+                    press: p.screen,
+                    moved: false,
+                });
                 ToolResult::committed(label)
             }
             None => {
@@ -316,10 +459,10 @@ impl Tool for OpeningTool {
     }
 
     fn draw_overlay(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-        let Some((wid, center)) = self.hover else {
+        let Some(hover) = self.hover else {
             return;
         };
-        let Some(wall) = cx.floor().wall(wid) else {
+        let Some(wall) = cx.floor().wall(hover.wall) else {
             return;
         };
         let pal = &cx.palette;
@@ -330,22 +473,44 @@ impl Tool for OpeningTool {
             wall,
             egui::Stroke::new(3.0_f32, pal.hover),
         );
-        let (_, mut ghost) = self.opening_for(cx, wall, self.hover_pointer, center);
-        let half = ghost.width * 0.5;
-        let len = wall.path_length();
-        if len < ghost.width + 4.0 {
+        let exterior = plan_core::exterior_sign(wall, &cx.rooms);
+        // A window over a door: the transom, drawn dashed as it will be.
+        if let Some(door) = hover
+            .transom_of
+            .and_then(|d| cx.floor().openings.iter().find(|o| o.id == d))
+        {
+            let (_, template) = self.opening_for(cx, wall, self.hover_pointer, door.center_offset);
+            let mut ghost = template;
+            ghost.center_offset = door.center_offset;
+            ghost.width = door.width;
+            ghost.sill_height = door.sill_height + door.height;
+            ghost.height = ghost.height.min(
+                (wall.height - ghost.sill_height).max(plan_core::openings::MIN_TRANSOM_HEIGHT),
+            );
+            draw_opening_over(painter, cam, wall, &ghost, pal, exterior);
             return;
         }
-        ghost.center_offset = center.clamp(half + 2.0, len - half - 2.0);
-        let exterior = plan_core::exterior_sign(wall, &cx.rooms);
+        let (_, mut ghost) = self.opening_for(cx, wall, self.hover_pointer, hover.center);
+        ghost.center_offset = hover.center;
         draw_opening(painter, cam, wall, &ghost, pal, exterior, true);
+        if let Some(a) = hover.align {
+            // What the center is lined up with.
+            let at = cam.world_to_screen(wall.point_along(hover.center));
+            painter.text(
+                at + egui::vec2(0.0, -24.0),
+                egui::Align2::CENTER_BOTTOM,
+                a.name(),
+                egui::FontId::proportional(11.0),
+                pal.hover,
+            );
+        }
         if cx.view_flags.contains(&ViewFlag::TemporaryDimensions) {
             let dims = TempDims {
                 dims: opening_temp_dims(
                     cx.floor(),
                     wall,
                     &ghost,
-                    ObjectRef::Wall(wid),
+                    ObjectRef::Wall(hover.wall),
                     &tempdim::TempLocate::of(cx),
                 ),
                 editing: None,
@@ -641,5 +806,168 @@ mod tests {
         click(&mut t, &mut cx, 125.0, 0.0);
         assert_eq!(cx.floor().openings.len(), 2);
         assert!(cx.status.contains("over it already"), "{}", cx.status);
+    }
+    // ----- round 14: placement feel -----
+
+    fn event(cx: &EditorContext, x: f64, y: f64) -> PointerEvent {
+        PointerEvent::at(cx, Point::new(x, y))
+    }
+
+    #[test]
+    fn off_a_wall_the_cursor_says_no_and_nothing_is_placed() {
+        let (mut cx, _) = setup();
+        let mut t = OpeningTool::default();
+        // Over the wall: the crosshair and a ghost.
+        let p = event(&cx, 60.0, 0.0);
+        t.pointer_move(&mut cx, p);
+        assert_eq!(t.cursor(), egui::CursorIcon::Crosshair);
+        assert!(t.hover.is_some());
+        // In the open: the "no" glyph, no ghost, and a click places nothing.
+        let p = event(&cx, 60.0, 80.0);
+        t.pointer_move(&mut cx, p);
+        assert_eq!(t.cursor(), egui::CursorIcon::NotAllowed);
+        assert!(t.hover.is_none());
+        let before = cx.floor().openings.len();
+        t.pointer_down(&mut cx, p.with_down(true));
+        assert_eq!(cx.floor().openings.len(), before);
+        assert!(!cx.can_undo());
+        // Over a door the same tool cannot put a second one: "no" again.
+        click(&mut t, &mut cx, 120.0, 0.0);
+        let p = event(&cx, 125.0, 0.0);
+        t.pointer_move(&mut cx, p);
+        assert_eq!(t.cursor(), egui::CursorIcon::NotAllowed);
+    }
+
+    #[test]
+    fn dragging_after_the_click_slides_the_new_opening_in_one_undo_step() {
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        let p = event(&cx, 40.0, 3.0);
+        t.pointer_move(&mut cx, p);
+        t.pointer_down(&mut cx, p.with_down(true));
+        // A twitch inside the drag threshold does not move it.
+        let twitch = event(&cx, 41.0, 3.0).with_down(true);
+        t.pointer_move(&mut cx, twitch);
+        assert_eq!(
+            cx.floor().openings_on(w).next().unwrap().center_offset,
+            40.0
+        );
+        // A real drag does, with the same snaps.
+        let to = event(&cx, 190.4, 3.0).with_down(true);
+        t.pointer_move(&mut cx, to);
+        let o = cx.floor().openings_on(w).next().unwrap().clone();
+        assert_eq!(o.center_offset, 190.0);
+        // The hinge follows the nearer end, as the ghost did.
+        assert!(o.hinge_at_end);
+        let up = event(&cx, 190.4, 3.0);
+        assert!(t.pointer_up(&mut cx, up).consumed);
+        // Moving the pointer afterwards (no button) leaves it alone.
+        let ev = event(&cx, 60.0, 3.0);
+        t.pointer_move(&mut cx, ev);
+        assert_eq!(
+            cx.floor().openings_on(w).next().unwrap().center_offset,
+            190.0
+        );
+        // One undo step takes back the whole placement.
+        assert_eq!(cx.undo().as_deref(), Some("Place Door"));
+        assert!(cx.floor().openings.is_empty());
+        assert!(!cx.can_undo());
+    }
+
+    #[test]
+    fn a_drag_stops_at_a_neighbour_and_cannot_cross_a_wall_end() {
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        click(&mut t, &mut cx, 200.0, 0.0);
+        let p = event(&cx, 40.0, 0.0);
+        t.pointer_move(&mut cx, p);
+        t.pointer_down(&mut cx, p.with_down(true));
+        // Toward the first door: it stops 2" short of its jamb (182 - 2 - 18).
+        let ev = event(&cx, 170.0, 0.0).with_down(true);
+        t.pointer_move(&mut cx, ev);
+        let second = cx
+            .floor()
+            .openings_on(w)
+            .find(|o| o.center_offset < 200.0)
+            .unwrap()
+            .clone();
+        assert!((second.end_offset() - 180.0).abs() < 1e-9, "{second:?}");
+        // Past the wall start it keeps the end clearance.
+        let ev = event(&cx, -30.0, 0.0).with_down(true);
+        t.pointer_move(&mut cx, ev);
+        let second = cx
+            .floor()
+            .openings_on(w)
+            .find(|o| o.center_offset < 200.0)
+            .unwrap();
+        assert!((second.start_offset() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_center_snaps_to_the_wall_midpoint_and_alt_places_exactly() {
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        click(&mut t, &mut cx, 123.0, 0.0);
+        assert_eq!(
+            cx.floor().openings_on(w).next().unwrap().center_offset,
+            120.0
+        );
+        assert_eq!(t.hover.unwrap().align, Some(place::Align::Midpoint));
+        // Alt suspends the alignment snaps and the grid (DW-110).
+        let (mut cx, w) = setup();
+        let mut ev = event(&cx, 123.4, 0.0);
+        ev.modifiers.alt = true;
+        t.pointer_move(&mut cx, ev);
+        t.pointer_down(&mut cx, ev.with_down(true));
+        assert_eq!(
+            cx.floor().openings_on(w).next().unwrap().center_offset,
+            123.4
+        );
+    }
+
+    #[test]
+    fn a_jamb_keeps_clear_of_the_face_of_a_wall_that_meets_the_host() {
+        let (mut cx, w) = setup();
+        cx.project.add_wall(
+            0,
+            Point::new(100.0, 0.0),
+            Point::new(100.0, 120.0),
+            4.5,
+            109.125,
+            WallKind::Interior,
+        );
+        let mut t = OpeningTool::default();
+        // Beside the partition: the door slides out to its face plus 2".
+        click(&mut t, &mut cx, 108.0, 0.0);
+        let o = cx.floor().openings_on(w).next().unwrap().clone();
+        assert!((o.start_offset() - 104.25).abs() < 1e-9, "{o:?}");
+        // On the partition itself: refused, with a message and no undo step.
+        let before = cx.floor().openings.len();
+        click(&mut t, &mut cx, 100.0, 0.0);
+        assert_eq!(cx.floor().openings.len(), before);
+        assert!(cx.status.contains("does not fit"), "{}", cx.status);
+    }
+
+    #[test]
+    fn two_windows_may_touch_and_a_window_over_a_door_ghosts_its_transom() {
+        let (mut cx, w) = setup();
+        let mut t = OpeningTool::default();
+        t.set_variant(ToolId::Window);
+        click(&mut t, &mut cx, 100.0, 0.0);
+        click(&mut t, &mut cx, 135.0, 0.0);
+        let mut ws: Vec<_> = cx.floor().openings_on(w).cloned().collect();
+        ws.sort_by(|a, b| a.center_offset.total_cmp(&b.center_offset));
+        assert_eq!(ws.len(), 2);
+        assert!((ws[1].start_offset() - ws[0].end_offset()).abs() < 1e-9);
+        // Over a door the hover is its transom.
+        let (mut cx, w) = setup();
+        let mut d = OpeningTool::default();
+        click(&mut d, &mut cx, 60.0, 0.0);
+        let door = cx.floor().openings_on(w).next().unwrap().id;
+        d.set_variant(ToolId::Window);
+        let p = event(&cx, 62.0, 0.0);
+        d.pointer_move(&mut cx, p);
+        assert_eq!(d.hover.unwrap().transom_of, Some(door));
+        assert_eq!(d.cursor(), egui::CursorIcon::Crosshair);
     }
 }

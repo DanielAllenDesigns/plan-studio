@@ -21,6 +21,13 @@ use plan_core::units::fmt_ft_in;
 use plan_core::walls::Side;
 use plan_core::Id;
 
+mod management;
+#[cfg(test)]
+pub use management::{components_open, management_open};
+pub use management::{
+    open_auto_detail, open_components, open_management, select_detail, show_windows,
+};
+
 const FULL_TABS: &[Tab] = &[
     on("General"),
     on("Materials"),

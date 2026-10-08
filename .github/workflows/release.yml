@@ -1,8 +1,13 @@
 name: Release
 
-# Pushing a tag such as v0.1.0 builds Plan Studio for macOS (arm64 and
-# x86_64), Windows and Linux, then attaches the packages to a GitHub Release
-# with generated notes. Tags with a hyphen (v0.2.0-rc1) are marked pre-release.
+# Pushing a tag such as v0.1.0 checks the tag against the workspace version and
+# CHANGELOG.md, runs the whole test suite on Linux, macOS and Windows, then builds
+# macOS (arm64 and x86_64 disk images and zips), Windows (zip) and Linux (tarball,
+# plus an AppImage when appimagetool can be fetched), and attaches everything to a
+# GitHub Release whose notes are the CHANGELOG section for that version. Tags with
+# a hyphen (v0.2.0-rc1) are marked pre-release. Nothing is published unless every
+# job before the last one succeeded. The steps are described in
+# docs/release-checklist.md.
 
 on:
   push:
@@ -15,8 +20,58 @@ permissions:
   contents: read
 
 jobs:
+  # Cheap checks first: a tag that does not match Cargo.toml or has no changelog
+  # section fails in seconds, before any runner compiles anything.
+  verify:
+    name: verify tag, changelog, packaging scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tag matches the workspace version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(sh scripts/version.sh)"
+          base="${TAG#v}"
+          base="${base%%-*}"
+          if [ "$base" != "$version" ]; then
+            echo "::error::tag $TAG does not match the workspace version $version in Cargo.toml"
+            exit 1
+          fi
+      - name: CHANGELOG has a section for this version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: sh scripts/release-notes.sh "$TAG" > /dev/null
+      - name: Packaging scripts self-test
+        run: bash scripts/test-packaging.sh
+
+  test:
+    name: test (${{ matrix.os }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-test
+      - name: Linux GUI build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
+      # A tag on a broken commit must not publish: the packages are built only
+      # after the suite passes on all three operating systems.
+      - run: cargo test --workspace --locked
+
   build:
     name: build (${{ matrix.name }})
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -52,12 +107,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
-      # A tag on a broken commit must not publish: the gate runs before any
-      # package is built (the tests build for the runner, not the target).
-      - name: Run the workspace tests
-        run: cargo test --workspace
       - name: Build plan-app (release)
-        run: cargo build --release -p plan-app --target ${{ matrix.target }}
+        run: cargo build --release --locked -p plan-app --target ${{ matrix.target }}
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -77,24 +128,33 @@ jobs:
           sh ../scripts/macos-dmg.sh "$PWD" "$PWD" "plan-studio-$TAG-$NAME.dmg"
           rm -rf "Plan Studio.app"
 
+      # "Plan Studio-<version>-windows-x64.zip": the exe, an .ico and a README.
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
+        run: bash scripts/windows-package.sh "target/$TARGET/release/plan-studio.exe" dist
+
+      # The AppImage is best effort: appimagetool is fetched from its GitHub
+      # release, and if that fails the tarball is still published.
+      - name: Fetch appimagetool (best effort)
+        if: runner.os == 'Linux'
+        continue-on-error: true
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path "target/$env:TARGET/release/plan-studio.exe" -DestinationPath "dist/plan-studio-$env:TAG-$env:NAME.zip"
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          set -euo pipefail
-          pkg="plan-studio-$TAG-$NAME"
-          mkdir -p "dist/$pkg"
-          cp "target/$TARGET/release/plan-studio" "dist/$pkg/"
-          cp scripts/linux/plan-studio.desktop "dist/$pkg/"
-          tar -C dist -czf "dist/$pkg.tar.gz" "$pkg"
-          rm -rf "dist/$pkg"
+          label="plan-studio-$TAG-$NAME"
+          # The tarball is written before the AppImage step, so a failure there
+          # leaves a usable tarball and only costs the AppImage.
+          bash scripts/linux-appimage.sh "target/$TARGET/release/plan-studio" dist "$label" \
+            || echo "::warning::AppImage step failed; publishing the tarball only"
+          test -f "dist/$label.tar.gz"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -108,6 +168,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
@@ -115,13 +177,26 @@ jobs:
           pattern: plan-studio-*
           path: dist
           merge-multiple: true
-      - name: List packages
-        run: ls -l dist
+      - name: Release notes from CHANGELOG.md
+        run: |
+          sh scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md"
+          cat scripts/release-footer.md >> "$RUNNER_TEMP/notes.md"
+      # GitHub turns spaces in asset names into dots; do it here so the names
+      # in SHA256SUMS.txt are the names people download.
+      - name: Normalize names and write checksums
+        working-directory: dist
+        run: |
+          for f in *\ *; do [ -e "$f" ] && mv "$f" "$(printf '%s' "$f" | tr ' ' '.')"; done
+          sha256sum * > "$RUNNER_TEMP/SHA256SUMS.txt"
+          mv "$RUNNER_TEMP/SHA256SUMS.txt" SHA256SUMS.txt
+          ls -l
       - uses: softprops/action-gh-release@v2
         with:
+          name: Plan Studio ${{ github.ref_name }}
+          body_path: ${{ runner.temp }}/notes.md
           files: |
             dist/*
             samples/*.psplan
-          generate_release_notes: true
+          generate_release_notes: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true

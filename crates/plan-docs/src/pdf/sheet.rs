@@ -428,7 +428,6 @@ fn draw_opening(
     use plan_core::opening_symbol::{plan_symbol_in, PartKind};
     let k = ctx.k;
     let half = w.thickness * 0.5;
-    let (s, e) = (o.start_offset(), o.end_offset());
     // Without rooms the outside is the wall's left face (right for interior
     // walls), like the plan view without detected rooms. A window over a door
     // (a transom) is drawn dashed and leaves the door's clearing alone.
@@ -448,7 +447,7 @@ fn draw_opening(
     };
     if !stands_over {
         // Along the arc on a curved wall.
-        for quad in w.band_quads(s, e, lo, hi) {
+        for quad in w.band_quads(sym.span.0, sym.span.1, lo, hi) {
             doc.polygon(&pt_list(&quad, tp), Some(PdfColor::WHITE), None);
         }
     }
@@ -462,9 +461,11 @@ fn draw_opening(
             pts.push(pts[0]);
         }
         let width = match part.kind {
-            PartKind::Jamb | PartKind::Frame | PartKind::Leaf => pen,
+            PartKind::Jamb | PartKind::Frame | PartKind::Leaf | PartKind::Sill => pen,
             PartKind::Swing => pen * 0.6,
-            PartKind::Glass | PartKind::Arrow => pen * 0.5,
+            PartKind::Glass | PartKind::Arrow | PartKind::Threshold | PartKind::Indicator => {
+                pen * 0.5
+            }
             PartKind::Hidden | PartKind::Track => pen * 0.5,
         };
         let dashed = matches!(part.kind, PartKind::Hidden | PartKind::Track);
@@ -549,7 +550,19 @@ fn draw_cad(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64), ctx:
                 );
                 let size = (drawn * ctx.k).max(2.0);
                 let (x, y) = tp(*pos);
-                if angle.rem_euclid(TAU).abs() < 1e-9 {
+                // A text box: fill, frame, wrapped and aligned lines.
+                let boxed = attrs.get(&o.id).and_then(|a| {
+                    let item = CadItem::Text {
+                        pos: *pos,
+                        text: text.clone(),
+                        height: drawn,
+                        angle: *angle,
+                    };
+                    plan_core::text_box::placed(&item, a)
+                });
+                if let Some(pb) = boxed {
+                    draw_text_box(doc, &pb, tp, ctx.k, pen);
+                } else if angle.rem_euclid(TAU).abs() < 1e-9 {
                     doc.text(x, y, size, text);
                 } else {
                     doc.text_rotated(x, y, size, angle.to_degrees(), text);
@@ -560,6 +573,46 @@ fn draw_cad(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64), ctx:
     doc.set_dash_solid();
     doc.set_rgb_stroke(0, 0, 0);
     doc.set_rgb_fill(0, 0, 0);
+}
+
+/// A text box on paper (TXT-1, TXT-16): the background fill, the frame and
+/// the lines, wrapped and aligned as [`plan_core::text_box`] lays them out
+/// with Helvetica's widths. `k` is points of paper per plan inch.
+fn draw_text_box(
+    doc: &mut PdfDoc,
+    pb: &plan_core::text_box::PlacedBox,
+    tp: &impl Fn(Point) -> (f64, f64),
+    k: f64,
+    pen: f64,
+) {
+    let k = k.max(1e-9);
+    let width = |r: &plan_core::text_styles::RichRun, h: f64| {
+        (if r.bold {
+            PdfDoc::text_width_bold(&r.text, h * k)
+        } else {
+            PdfDoc::text_width(&r.text, h * k)
+        }) / k
+    };
+    let draw = pb.draw_plan(&width);
+    if let Some((quad, c)) = draw.fill {
+        let pts: Vec<(f64, f64)> = quad.iter().map(|q| tp(*q)).collect();
+        doc.polygon(&pts, Some(PdfColor::Rgb(c[0], c[1], c[2])), None);
+    }
+    if let Some(quad) = draw.border {
+        let pts: Vec<(f64, f64)> = quad.iter().map(|q| tp(*q)).collect();
+        doc.polygon(&pts, None, Some(pen));
+    }
+    for r in &draw.runs {
+        let (x, y) = tp(r.at);
+        let size = (r.height * k).max(2.0);
+        doc.set_font_bold(r.run.bold);
+        if pb.angle.rem_euclid(TAU).abs() < 1e-9 {
+            doc.text(x, y, size, &r.run.text);
+        } else {
+            doc.text_rotated(x, y, size, pb.angle.to_degrees(), &r.run.text);
+        }
+    }
+    doc.set_font_bold(false);
 }
 
 /// Extension lines, dimension line, 45 degree ticks and the label. Labels on
@@ -574,17 +627,38 @@ fn draw_dimension(
     text_pt: f64,
 ) {
     const TICK: f64 = 2.5;
+    // Points of paper per inch of plan, for the sizes a dimension sets itself.
+    let k = {
+        let (o, e) = (tp(Point::ZERO), tp(Point::new(1.0, 0.0)));
+        (e.0 - o.0).hypot(e.1 - o.1)
+    };
+    let look = &d.look;
+    let own_ext = look.ext_gap.is_some() || look.ext_past.is_some() || look.ext_length.is_some();
     // Extension lines switched off per point stay off on paper.
-    for (a, b) in d.visible_extension_lines() {
-        let (pa, pb) = (tp(a), tp(b));
-        doc.line(pa.0, pa.1, pb.0, pb.1, pen * 0.6);
+    for ((m, e), hidden) in d.extension_lines().into_iter().zip(d.hide_ext) {
+        if hidden {
+            continue;
+        }
+        let seg = if own_ext {
+            plan_core::dimension::extension_segment(
+                m,
+                e,
+                look.ext_gap.unwrap_or(0.0),
+                look.ext_past.unwrap_or(0.0),
+                look.ext_length,
+            )
+        } else {
+            Some((m, e))
+        };
+        if let Some((a, b)) = seg {
+            let (pa, pb) = (tp(a), tp(b));
+            doc.line(pa.0, pa.1, pb.0, pb.1, pen * 0.6);
+        }
     }
     let (a, b) = d.line_points();
     let (pa, pb) = (tp(a), tp(b));
     doc.line(pa.0, pa.1, pb.0, pb.1, pen);
-    for p in [pa, pb] {
-        doc.line(p.0 - TICK, p.1 - TICK, p.0 + TICK, p.1 + TICK, pen * 1.5);
-    }
+    draw_dimension_ends(doc, pa, pb, look, k, TICK, pen);
     let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
     if dx.hypot(dy) < 1e-6 {
         return;
@@ -608,6 +682,71 @@ fn draw_dimension(
         doc.text(x, y, text_pt, &label);
     } else {
         doc.text_rotated(x, y, text_pt, ang, &label);
+    }
+}
+
+/// The end marks of a dimension line: the 45 degree tick unless the
+/// dimension sets an arrow, dot or none (the Arrow tab).
+fn draw_dimension_ends(
+    doc: &mut PdfDoc,
+    pa: (f64, f64),
+    pb: (f64, f64),
+    look: &plan_core::dimension::DimOverrides,
+    k: f64,
+    tick: f64,
+    pen: f64,
+) {
+    use plan_core::dimension::DimArrow;
+    let mark = look.arrow.unwrap_or(DimArrow::Tick);
+    let size = look
+        .arrow_size
+        .map_or(tick * 2.0, |s| s * k)
+        .clamp(3.0, 24.0);
+    let filled = look.arrow_filled.unwrap_or(true);
+    let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
+    let len = dx.hypot(dy);
+    let (ux, uy) = if len > 1e-9 {
+        (dx / len, dy / len)
+    } else {
+        (1.0, 0.0)
+    };
+    match mark {
+        DimArrow::None => {}
+        DimArrow::Tick => {
+            for p in [pa, pb] {
+                doc.line(p.0 - tick, p.1 - tick, p.0 + tick, p.1 + tick, pen * 1.5);
+            }
+        }
+        DimArrow::Dot => {
+            let r = size * 0.25;
+            for p in [pa, pb] {
+                let ring: Vec<(f64, f64)> = (0..12)
+                    .map(|i| {
+                        let t = TAU * f64::from(i) / 12.0;
+                        (p.0 + r * t.cos(), p.1 + r * t.sin())
+                    })
+                    .collect();
+                if filled {
+                    doc.polygon(&ring, Some(PdfColor::Rgb(0, 0, 0)), None);
+                } else {
+                    doc.polygon(&ring, None, Some(pen));
+                }
+            }
+        }
+        DimArrow::Arrow => {
+            let half = size * 0.3;
+            for (tip, sx, sy) in [(pa, ux, uy), (pb, -ux, -uy)] {
+                let base = (tip.0 + sx * size, tip.1 + sy * size);
+                let (px, py) = (-sy * half, sx * half);
+                let head = [tip, (base.0 + px, base.1 + py), (base.0 - px, base.1 - py)];
+                if filled {
+                    doc.polygon(&head, Some(PdfColor::Rgb(0, 0, 0)), None);
+                } else {
+                    doc.line(head[0].0, head[0].1, head[1].0, head[1].1, pen);
+                    doc.line(head[0].0, head[0].1, head[2].0, head[2].1, pen);
+                }
+            }
+        }
     }
 }
 
@@ -1149,5 +1288,128 @@ mod tests {
             lines(&q) - plain
         };
         assert_eq!(with_transom, transom_lines + cased);
+    }
+    #[test]
+    fn a_text_box_prints_wrapped_lines_a_frame_and_a_fill() {
+        use plan_core::text_box::TextBox;
+        let mut p = house();
+        p.floors[0].cad.push(CadObject {
+            id: 800,
+            layer: "CAD, Default".into(),
+            item: CadItem::Text {
+                pos: Point::new(10.0, -100.0),
+                text: "alpha beta gamma delta".into(),
+                height: 4.0,
+                angle: 0.0,
+            },
+        });
+        let plain = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+        assert!(text_of(&plain.pdf).contains("(alpha beta gamma delta) Tj"));
+        // 11 glyphs wide: two lines.
+        let boxed = TextBox {
+            width: 4.0 * 0.6 * 11.0,
+            ..TextBox::default()
+        };
+        p.floors[0].cad_attrs.push(plan_core::cad::CadAttrs {
+            text_box: boxed,
+            ..plan_core::cad::CadAttrs::new(800)
+        });
+        let r = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+        check_xref(&r.pdf);
+        check_objects(&r.pdf);
+        let t = text_of(&r.pdf);
+        assert!(t.contains("(alpha beta) Tj"), "first line");
+        assert!(t.contains("(gamma delta) Tj"), "wrapped line");
+        assert!(!t.contains("(alpha beta gamma delta) Tj"));
+        // A frame and a fill add drawing operators.
+        p.floors[0].cad_attrs[0].text_box = TextBox {
+            border: true,
+            background: Some([250, 240, 200]),
+            ..boxed
+        };
+        let framed = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+        check_xref(&framed.pdf);
+        assert!(text_of(&framed.pdf).len() > t.len());
+        // Right-aligned lines start further right than left-aligned ones.
+        let x_of = |pdf: &[u8], s: &str| -> f64 {
+            let t = text_of(pdf);
+            let at = t.find(&format!("({s}) Tj")).unwrap();
+            let td = t[..at].rfind(" Td").unwrap();
+            t[..td]
+                .split_whitespace()
+                .rev()
+                .nth(1)
+                .and_then(|v| v.parse().ok())
+                .unwrap()
+        };
+        let left_x = x_of(&r.pdf, "alpha beta");
+        p.floors[0].cad_attrs[0].text_box.halign = plan_core::text_box::HAlign::Right;
+        let right = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+        assert!(x_of(&right.pdf, "alpha beta") > left_x);
+    }
+
+    #[test]
+    fn a_dimension_that_sets_its_own_arrow_prints_it() {
+        let mut p = house();
+        let id = p.add_dimension(
+            0,
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::new(0.0, -200.0),
+                Point::new(120.0, -200.0),
+                12.0,
+            ),
+        );
+        let base = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+        let mut with = |arrow: plan_core::dimension::DimArrow, filled: bool| {
+            let d = p.floors[0]
+                .dimensions
+                .iter_mut()
+                .find(|d| d.id == id)
+                .unwrap();
+            d.look.arrow = Some(arrow);
+            d.look.arrow_filled = Some(filled);
+            plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb())
+        };
+        let arrow = with(plan_core::dimension::DimArrow::Arrow, true);
+        let dot = with(plan_core::dimension::DimArrow::Dot, false);
+        let none = with(plan_core::dimension::DimArrow::None, true);
+        for r in [&arrow, &dot, &none] {
+            check_xref(&r.pdf);
+            check_objects(&r.pdf);
+        }
+        assert_ne!(base.pdf, arrow.pdf);
+        assert_ne!(arrow.pdf, dot.pdf);
+        assert_ne!(none.pdf, base.pdf);
+        // No ticks: fewer line operators than the tick version.
+        assert!(text_of(&none.pdf).len() < text_of(&base.pdf).len());
+        // The dimension's own extension line length prints too.
+        let d = p.floors[0]
+            .dimensions
+            .iter_mut()
+            .find(|d| d.id == id)
+            .unwrap();
+        d.look = plan_core::dimension::DimOverrides {
+            ext_gap: Some(2.0),
+            ext_past: Some(3.0),
+            ext_length: Some(6.0),
+            ..Default::default()
+        };
+        let ext = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+        assert_ne!(ext.pdf, base.pdf);
+        // A format of its own changes the number.
+        let d = p.floors[0]
+            .dimensions
+            .iter_mut()
+            .find(|d| d.id == id)
+            .unwrap();
+        d.look = plan_core::dimension::DimOverrides {
+            units: Some(plan_core::units::LengthUnit::Inches),
+            ..Default::default()
+        };
+        let inches = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+        assert!(text_of(&inches.pdf).contains("(120\") Tj"));
+        assert!(text_of(&base.pdf).contains("(10'-0\") Tj"));
     }
 }

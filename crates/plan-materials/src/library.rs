@@ -367,5 +367,20 @@ pub fn core_library() -> MaterialLibrary {
             .with_texture(K::Glass, (96.0, 96.0))
             .with_cost(0.0, "13-1100"),
     ];
+    // The Properties tab's class of the glass, metal and plated entries.
+    let materials = materials
+        .into_iter()
+        .map(|mut d| {
+            let class = match d.category.first().map(String::as_str) {
+                Some("Glass") => Some(crate::MaterialClass::Glass),
+                Some("Metal") => Some(crate::MaterialClass::Metal),
+                _ => None,
+            };
+            if let Some(c) = class {
+                d.class = c;
+            }
+            d
+        })
+        .collect();
     MaterialLibrary { materials }
 }

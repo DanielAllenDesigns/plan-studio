@@ -2,6 +2,8 @@
 
 > Status (2026-10-08, re-audited against HEAD 4c11b69): 121 ids: 90 Works, 28 Partial, 2 Missing, 1 Differs-by-design. Per-id evidence and gaps are in [../parity-status.md](../parity-status.md); the spec text below is the original and its code snapshots are out of date.
 
+> Round 14 (text and dimensions): TXT-1, TXT-3, TXT-10, TXT-13, S-25, DIM-38, DIM-41 and S-63 are Works; TXT-16, DIM-2, DIM-31, DIM-39 and S-58 are Partial with smaller gaps. Evidence per id is in [../parity-status.md](../parity-status.md); decisions 79 to 86 in `DECISIONS.md`.
+
 Reference: Chief Architect X18 dimension, text and CAD tools, layers and layer sets, Reference Display. Source:
 Chief's Reference Manual and documented behavior, plus the tool names and hotkeys captured in
 `docs/chief-x18-subtools.md` and the toolbars in `docs/chief-x18-toolbars.md`. **(verify in Chief)** marks
@@ -87,24 +89,24 @@ Dimensions, text and CAD are fully in the editor (`tools/dimension.rs`, `text.rs
 - CAD-4: Connect CAD Segments (toggle): consecutive lines/arcs sharing endpoints behave as a single path: moving a shared vertex moves both, and Convert to Polyline merges them.
 - CAD-5: **Input Line**: after the first click a dialog asks for Length and Angle (and line style); OK places the end at that polar offset; the tool repeats from the new end.
 - CAD-6: **Line With Arrow**: line with an arrowhead at its end; arrow backoff points (CAD Block tools) trim the line to the arrowhead.
-- CAD-7: **Draw Arc** uses the current **Arc Creation Mode** (Edit > Arc Creation Modes): Three-point (start, end, then a point the arc passes through), Center-Start-End (center, start, sweep to end), Start-End-Radius, and Tangent (continues tangent from the previous segment) (verify in Chief for exact mode list and order).
+- CAD-7: **Draw Arc** uses the current **Arc Creation Mode** (Edit > Arc Creation Modes): Three-point (start, end, then a point the arc passes through), Center-Start-End (center, start, sweep to end), Start-End-Radius, and Tangent (continues tangent from the previous segment) (verify in Chief for exact mode list and order). **Round 14:** built. Edit > Arc Creation Modes and the option strip offer Three-Point, Center-Start-End, Start-End-Radius and Tangent (a Tangent arc that starts where the last line or arc ended needs two clicks and continues it); `cad.rs ArcMode`, `arc_start_end_radius`, `CadTool::continuation_dir`; tests `s30_select_r14::the_edit_menu_picks_the_arc_creation_mode`, `start_end_radius_bulges_toward_the_third_click_with_that_radius`, `a_tangent_arc_continues_the_line_just_drawn_in_two_clicks`. Verify in Chief for the exact mode list.
 - CAD-8: **Input Arc**: dialog entering radius and sweep angle (and start angle) before placement (verify in Chief).
 - CAD-9: Arc editing: Move (midpoint), Resize at both ends (changes sweep with radius kept, or chord with radius changing per modifier), center/radius handle at the arc midpoint (drag to change radius).
 - CAD-10: **Arc Centers and Ends** (right-bar toggle) shows the center marker and end points of arcs and circles for snapping.
 - CAD-11: **Circle** (`K`): click center, drag or click for radius; a circle is a single object with center and radius. **Circle About Center** draws from center; **Ellipse** takes center and two radii; **Oval** takes a bounding box (verify in Chief for exactly which of these takes a diameter).
 - CAD-12: **Rectangular Polyline** (Shift+P): click opposite corners; creates a closed 4-point polyline with fill option. **Box**: the same but as a Box primitive; **Cross Box** draws diagonals; **Blocking Box**, **Insulation** draw patterned boxes; **Regular Polygon** takes center, radius and side count.
 - CAD-13: Fill and line style: closed polylines/boxes/circles can carry a fill style (pattern/solid/color) and each item has line style (solid, dashed), weight and color; defaults come from CAD Default Settings.
-- CAD-14: All CAD tools use Object Snaps, Angle Snaps and Grid Snaps (select-and-edit S-68..S-72). Holding Shift constrains line direction to 0/45/90 (verify in Chief; Chief may rely on Angle Snaps only).
+- CAD-14: All CAD tools use Object Snaps, Angle Snaps and Grid Snaps (select-and-edit S-68..S-72). Holding Shift constrains line direction to 0/45/90 (verify in Chief; Chief may rely on Angle Snaps only). **Round 14:** built. Shift holds a CAD line to 15-degree steps from the last point (`cad.rs CadTool::snap_result`); test `shift_holds_a_cad_line_to_15_degree_steps`. 15 degrees rather than 0/45/90; verify in Chief.
 
 ## 7. Polylines and splines (CAD-15 to CAD-30 editing rules)
 
 - CAD-15: **Polyline** (Boxes group, also Wall Hatching and Material Region use the same): click vertices; double-click or Esc ends; clicking on the first vertex closes it. Right-click opens the end menu (verify in Chief).
 - CAD-16: A polyline with N vertices shows N vertex handles plus a Move handle; closed polylines show no free ends.
 - CAD-20: Dragging a vertex handle moves only that vertex; with Edit Behavior Fillet, clicking two segments rounds the corner with the prompted radius; with Chamfer it cuts the corner.
-- CAD-21: **Add Break** inserts a new vertex at the clicked point on a segment (no geometry change); **Delete Break** removes a vertex; **Break Line** splits an open polyline into two at the click.
-- CAD-22: **Change Line/Arc** toggles a segment between straight and arc; dragging the arc handle sets the bulge (polyline segments can be arcs).
+- CAD-21: **Add Break** inserts a new vertex at the clicked point on a segment (no geometry change); **Delete Break** removes a vertex; **Break Line** splits an open polyline into two at the click. **Round 14:** built. Delete Break (CAD edit mode, Edit CAD menu and the Edit toolbar) removes the polyline vertex nearest the click, the two edges becoming one (`cad/arcs.rs Logical::delete_vertex`, `delete_break_click`); tests `arcs::tests::delete_vertex_joins_the_neighbours_with_a_straight_edge`, `delete_break_removes_a_polyline_vertex`.
+- CAD-22: **Change Line/Arc** toggles a segment between straight and arc; dragging the arc handle sets the bulge (polyline segments can be arcs). **Round 14:** built. Change Line/Arc toggles a polyline edge (a bulge toward the click), a Line into an Arc object and back; the diamond handle of a selected polyline arc edge sets its bulge. Arc edges are sampled points plus `CadAttrs::arc_edges` (DECISIONS); `cad/arcs.rs`, `select.rs Op::CadArcBulge`; tests `change_line_arc_toggles_a_polyline_edge_and_undoes`, `change_line_arc_turns_a_line_into_an_arc_and_back`, `dragging_the_diamond_on_a_polyline_arc_edge_sets_its_bulge`.
 - CAD-23: **Convert to Polyline** converts selected lines/arcs/connected segments (and walls' centerlines) into one polyline; **Convert to Spline** and **Convert Polyline to Lines** are the inverses on the Edit toolbar (verify in Chief).
-- CAD-24: **Make Arc Tangent** adjusts an arc to be tangent to the adjacent segment at the shared end.
+- CAD-24: **Make Arc Tangent** adjusts an arc to be tangent to the adjacent segment at the shared end. **Round 14:** built. Make Arc Tangent turns a polyline arc edge to meet the edge before it (the first edge: the one after), or an Arc object to the line that ends at one of its ends (`arcs.rs Logical::make_tangent`, `arc_tangent_at`); tests `arcs::tests::make_tangent_removes_the_corner_with_the_previous_edge`, `make_arc_tangent_adjusts_an_arc_object_to_the_line_beside_it`. Only a line (or the end segment of a polyline) is the neighbour of an Arc object, not another arc.
 - CAD-25: Offset/Concentric behavior (Edit Behavior Concentric): dragging a polyline's move handle with Concentric creates an offset copy at the dragged distance (verify in Chief).
 - CAD-26: Closing a polyline sets `closed = true`; the area can be queried and fill applied; Plan Studio's `CadItem::Polyline { points, closed }` matches this but has no arc segments (gap).
 - CAD-27: Self-intersecting polylines are allowed; fill uses non-zero or even-odd per fill style (verify in Chief).
@@ -188,7 +190,7 @@ Dimensions, text and CAD are fully in the editor (`tools/dimension.rs`, `text.rs
 | CAD-7/CAD-8 arc creation modes | Arc as center/radius/angles; no modes | Medium | Add arc constructors from 3 points / center-start-end in core |
 | CAD-15..CAD-30 polyline editing (vertices, breaks, arc segments, fillet/chamfer, convert) | `Polyline{points, closed}` without arc segments | High | Extend to `Vec<Vertex { p, bulge }>` (bulge arcs) and write edit ops in core |
 | CAD-29..CAD-30 spline | None | Low | Add `CadItem::Spline` with Catmull-Rom/B-spline; polyline-based first |
-| CAD-31..CAD-35 CAD blocks, details | None | Low (defer) | `CadBlock { name, items, insertion }` library after tools exist |
+| CAD-31..CAD-35 CAD blocks, details | Blocks done earlier; CAD-35 Auto Detail, CAD Detail From View and CAD Detail Management done in round 14 (`tools/details/`, manual chapter 20) | Low | - |
 | LAY-1..LAY-8 layers consulted by the app; Layer Display Options panel | Layers exist in core, ignored in UI; dock says "Coming in Phase 1" | High | Panel with eye/lock per layer; `draw()` filters by `is_visible`; hit tests honor lock/visibility; save layer sets per view |
 | LAY-6 current CAD layer | Not selectable; default string `CAD, Default` | Medium | `PlanApp.current_cad_layer` and toolbar button/dialog |
 | LAY-9..LAY-10 Reference Display | Flag only | Medium | When on, draw floor below's walls in gray under the active floor; not pickable |
@@ -197,3 +199,53 @@ Dimensions, text and CAD are fully in the editor (`tools/dimension.rs`, `text.rs
 | TXT-16..TXT-17 Text Specification and named text styles | None | Medium | `TextStyle` list in `Project`; dialog; `Use Layer Text Style` option |
 | CAD-38..CAD-40 CAD specification dialogs and snaps to CAD geometry | None | Medium | Dialogs per type; extend `snap()` with CAD candidates via `CadItem` geometry helpers (extend `cad.rs`) |
 | DIM-42..LAY-15 acceptance scenarios | Not runnable | n/a | Turn into `plan-core` tests as each feature lands |
+
+<!-- coverage-audit:start -->
+## Coverage audit additions (2026-10-08)
+
+Rows added by the Round 14 coverage audit (`docs/chief-feature-coverage.md`): Chief X18 features found in the menu, toolbar, sub-tool and dialog captures, or known from the product, that no row above covered. Status comes from a code search, not a Chief session; "verify in Chief" marks behavior known only from the product. Variants of one flyout or tab share one row.
+
+| ID | Chief behavior | Status | Evidence |
+|---|---|---|---|
+| CAD-46 | Import ▸ Picture (PNG, JPEG): Import Picture File into a picture box with Image Specification. | Works | tools/images.rs; menus.rs "Picture (PNG, JPEG)…" |
+| CAD-47 | Create Image (picture box): Picture on the plan, in layout and in 3D. | Works | tools/images.rs ImageMode::CreateImage; dialogs/images.rs |
+| CAD-48 | Create Billboard Image: Image that always faces the 3D camera (people, trees). | Works | ImageMode::BillboardImage |
+| CAD-49 | Create Image Library item: Store a picture or symbol as a reusable image-library entry (Create Image Library). | Partial | ImageMode::ImageLibrary stores an image as a user-library symbol; round 14 details builder in flight |
+| CAD-50 | Point to Point Resize: Scale and rotate a picture or underlay by two clicks. Also covers: Rotate to Align (picture tracing). (Not captured; verify in Chief.) | Works | ImageMode::PointToPointResize, RotateToAlign; tools/underlay.rs |
+| CAD-51 | Polyline Distribution Path: Repeat a symbol along a path (fence posts, trees, balusters). Also covers: Spline Distribution Path. | Works | ImageMode::PolylinePath, SplinePath; dialogs/images.rs DIST |
+| CAD-52 | Polyline Distribution Region: Fill a region with scattered symbols (shrubs, gravel). Also covers: Spline Distribution Region. | Works | ImageMode::PolylineRegion, SplineRegion |
+| CAD-53 | Patterns ▸ Hatch Closed Shape (CAD hatch patterns): Fill a closed CAD shape with a hatch pattern from the pattern list. | Works | menus.rs cad_menu "Patterns" > "Hatch Closed Shape"; tools/cad/edit.rs hatch_pattern, plan_hatch, apply_hatch |
+| CAD-54 | Edit CAD ▸ (Offset, Trim, Extend, Break Line, Fillet, Chamfer, Make Parallel/Perpendicular, Reverse Direction): CAD edit tools that change a line or polyline: offset copy, trim to a cutter, extend to the next object, break at a point, fillet or chamfer a corner. Also covers: Trim / Extend / Offset. (Not captured; verify in Chief.) | Works | tools/cad/edit.rs; CadMode::Offset, Trim, Extend, BreakLine, Fillet, Chamfer, ReverseDirection; edit_tests.rs "Trim Line" |
+| CAD-55 | Boolean polyline operations (union, subtract, intersect): Combine closed polylines into one outline by union, subtraction or intersection (Chief: Edit toolbar Subtract/Union/Intersect polylines). Also covers: Boolean polyline operations. (Not captured; verify in Chief.) | Missing | no polygon boolean tool in plan-app (grep boolean in tools finds nothing) |
+| CAD-56 | Fill Style Painter ▸: Pick up a fill style and paint it onto polylines, rooms, slabs. | Missing | no fill style painter |
+| CAD-57 | CAD defaults (line style, fill, arrows, text, layer): Default line style, weight, fill, arrow and layer for new CAD lines, boxes, polylines and arcs. | Missing | not in the tree; each CAD item has a dialog (dialogs/cad.rs) but no default set |
+| CAD-58 | Distributed Objects defaults: Default spacing and symbol for distribution paths and regions. | Missing | not in the tree |
+| CAD-59 | Image defaults: Default size, transparency and layer for pictures and billboards. | Missing | not in the tree |
+| CAD-60 | Image / Distributed Object specification: Picture box and distribution path/region dialogs. (Not captured; verify in Chief.) | Works | dialogs/images.rs IMAGE_TABS, DIST_TABS |
+| CAD-61 | Import pictures (PNG, JPEG, TIFF, BMP): Insert scanned plans and photos as picture boxes. (Not captured; verify in Chief.) | Partial | tools/images.rs reads PNG and JPEG; TIFF and BMP are not read |
+| DIM-46 | Secondary Format tab (second unit in parentheses): Show a second measurement system next to the primary dimension text. | Missing | no secondary format in default_lists.rs DIM_TABS or dialogs/dimension.rs |
+| LAY-16 | Layer Settings ▸ Active Layers by Tool…: Which layer each tool draws on (Chief: Active Layers for Tools). | Works | menus.rs "Active Layers by Tool…"; dialogs/layer_sets.rs ACTIVE_LAYERS |
+| LAY-17 | Active View ▸ Rotate Plan View…: Rotate the plan on screen and in layout to put a skewed lot square to the page. | Missing | no plan rotation (grep finds nothing) |
+| LAY-18 | Layer Painter / Layer Eyedropper (not captured): Click an object to copy its layer, click others to put them on it. Also covers: Layer Painter / Layer Eyedropper. (Not captured; verify in Chief.) | Works (round 15; the bar is ours, verify in Chief) | tools/painters.rs eyedrop_layer, paint_layer (scope Component or Object), editor/edit_commands.rs move_objects_to_layer, dialogs/painters.rs bar; Tools > Layer Painter, row 2 toggles. Tests: s45 the_layer_eyedropper_loads_a_layer_then_the_painter_moves_a_wall_in_one_undo_step, layer_painter_scope_is_component_or_the_whole_group, the_layer_painter_needs_a_layer_and_respects_locked_layers (DECISIONS 450) |
+| LAY-19 | Color (F8): Toggle color and black-and-white plan display. Also covers: Color toggle. | Works | ViewFlag::Color; toolbar.rs; menus.rs |
+| LAY-20 | Crosshairs: Full-window crosshair cursor for alignment. Also covers: Crosshairs toggle. | Works | ViewFlag::Crosshairs; menus.rs |
+| LAY-21 | Coordinate System Indicator (Floating / Fixed / Origin): Show the X/Y axis and origin symbol on the plan. | Missing | only the status-bar X/Y readout; no on-canvas axis indicator (toolbar/config.rs maps the label only) |
+| LAY-22 | Reference Grid (Shift+F9): Display the drawing grid. | Works | ViewFlag::ReferenceGrid; menus.rs "Reference Grid" |
+| LAY-23 | Angle Snap Grid: Show the angle-snap rays from the last point while drawing. | Missing | no angle-snap grid display toggle |
+| LAY-24 | Zoom (rubber-band, Shift+Z): Drag a rectangle to zoom to it. | Partial | toolbar.rs "Zoom" is a stub toggle; mouse wheel and Zoom In/Out work |
+| LAY-25 | Zoom Out (-): Step zoom. Also covers: Zoom In (+). | Works | Action::ZoomOut/ZoomIn; menus.rs window_menu |
+| LAY-26 | Undo Zoom: Return to the previous zoom. | Works | Action::UndoZoom |
+| LAY-27 | Fill Window Building Only: Fit the building (walls and rooms) in the window, ignoring far-away CAD. | Missing | toolbar.rs fill_building stub; menus.rs has no row |
+| LAY-28 | Fill Window (Ctrl+F): Fit all objects in the window. | Works | Action::FillWindow; menus.rs |
+| LAY-29 | Pan Window (H): Hand-pan the plan. | Works | Action::TogglePan; tools/pan.rs |
+| LAY-30 | Zoom toggle: Rubber-band zoom tool. | Partial | toolbar.rs "Zoom" stub; wheel and Zoom In/Out buttons work |
+| LAY-31 | Zoom In: Zoom steps. Also covers: Zoom Out; Undo Zoom. | Works | Action::ZoomIn, ZoomOut, UndoZoom |
+| LAY-32 | Fill Window: Fit everything. | Works | Action::FillWindow |
+| LAY-33 | Pan Window: Pan tool. | Works | Action::TogglePan |
+| LAY-34 | Annotation Sets (named text/dimension display groups): Named sets that show or hide annotation (dimension, text) per view; verify in Chief. (Not captured; verify in Chief.) | Missing | no annotation sets; layer sets and plan views (LAY-2) cover the same job by layers |
+| LAY-35 | Zoom tools: Zoom, Zoom In, Zoom Out, Undo Zoom, Fill Window, Pan (hotkeys): Zoom and pan commands. | Works | toolbar.rs view_slots; Action::ZoomIn... |
+| LAY-36 | Drawing Groups (line-weight groups, object type to group): Drawing groups assign each object type (wall, door, dimension) a pen/line weight group that Preferences and printing set. (Not captured; verify in Chief.) | Partial | the Wall dialog's Layer tab shows a Drawing Group; there is no drawing group table that maps each object kind to a pen group (dialogs/wall.rs only) |
+| LAY-37 | Plan elevation datum and north angle (site orientation): Set the plan's north direction, site latitude/longitude and elevation datum once for sun angles and terrain. (Not captured; verify in Chief.) | Partial | north angle lives in the North Pointer object and Terrain Specification (dialogs/terrain.rs North angle); there is no plan-wide datum or latitude/longitude field for sun studies |
+| TXT-20 | Text ▸ Text Macro Management: User-defined %macro% text such as %project_name% inserted into labels and notes. | Works | dialogs/text/ "Text Macro Management"; plan-core text_styles.rs |
+| TXT-21 | Spell check in text: Spell-check text boxes, notes and labels before printing. (Not captured; verify in Chief.) | Works (round 15; dialog layout is ours, verify in Chief) | spell.rs (system word list read at run time, endings, edit-distance suggestions, user dictionary), dialogs/spell_check.rs (Tools > Spell Check, File toolbar Check Spelling, Change, Change All, Ignore, Ignore All, Add; text, rich runs, dimension, opening and symbol labels, room names, layout text), dialogs/text.rs (red underline layouter, Check Spelling button). Tests: spell.rs tests; s45 tools_spell_check_walks_the_plan_and_change_is_one_undo_step, layout_text_is_checked_and_fixed_in_the_layout, the_text_dialog_underlines_misspelled_words_and_offers_check_spelling, suggestions_come_from_the_word_list_within_two_edits (DECISIONS 454, 455) |
+<!-- coverage-audit:end -->

@@ -664,6 +664,8 @@ pub fn build(
         width: DEFAULT_WIDTH,
         ..StairParams::default()
     };
+    // A new stair starts at the plan's code minimums (editor::code).
+    super::code::legalize_stair_params(&mut params);
     let mut direction = drag.map_or(FRAC_PI_2, |b| b.sub(a).angle());
     let run = drag.map(|b| a.dist(b));
     let mut anchor = a;
@@ -1809,6 +1811,48 @@ pub fn upper_strokes(o: &StairObj) -> Vec<PlanStroke> {
     out
 }
 
+/// Does the stair open into the floor above it: it owns a stairwell hole in
+/// that floor's platform, or the middle of its footprint lies in a room of
+/// that floor that has no floor under it (an Open Below room)? `fl` is the
+/// stair's own floor.
+pub fn open_to_floor_above(project: &Project, fl: usize, o: &StairObj) -> bool {
+    if o.is_landing() || o.is_ramp() {
+        return false;
+    }
+    if o.x.stairwell_hole.is_some() {
+        return true;
+    }
+    let Some(above) = project.floors.get(fl + 1) else {
+        return false;
+    };
+    if above.room_names.iter().all(|n| n.has_floor) {
+        return false;
+    }
+    let centre = polygon_centroid(&o.footprint());
+    detect_rooms(&above.walls, 0.5).iter().any(|r| {
+        point_in_polygon(centre, &r.polygon)
+            && above
+                .room_names
+                .iter()
+                .any(|n| !n.has_floor && point_in_polygon(n.anchor, &r.polygon))
+    })
+}
+
+/// The treads a floor above sees through the opening the stair rises into
+/// (a stairwell hole or an Open Below room): the lines of the lower floor's
+/// symbol, up to the break line. [`draw_stairs`] draws them dashed and
+/// fainter than the part beyond the break (CB-33). Empty for landings and
+/// ramps.
+pub fn well_strokes(o: &StairObj) -> Vec<PlanStroke> {
+    if o.is_landing() || o.is_ramp() {
+        return Vec::new();
+    }
+    plan_symbol(&o.stair, Some(break_fraction(o)))
+        .into_iter()
+        .filter(|s| matches!(s, PlanStroke::Line(..)))
+        .collect()
+}
+
 /// One line of the Components tab.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Component {
@@ -1921,11 +1965,24 @@ pub fn components(o: &StairObj) -> Vec<Component> {
             inch(p.slab_thickness),
             "Treads",
         );
-        if p.flare > 0.0 {
+        if p.bullnose != plan_stairs::Bullnose::None {
+            push(
+                "Bullnose bottom tread",
+                1,
+                p.bullnose.name().to_string(),
+                "Treads",
+            );
+        }
+        if p.flare > 0.0 && p.bullnose != plan_stairs::Bullnose::Both {
+            let past = if p.bullnose == plan_stairs::Bullnose::None {
+                "each side"
+            } else {
+                "the other end"
+            };
             push(
                 "Flared bottom tread",
                 1,
-                format!("{} past each side", inch(p.flare)),
+                format!("{} past {past}", inch(p.flare)),
                 "Treads",
             );
         }
@@ -1944,9 +2001,16 @@ pub fn components(o: &StairObj) -> Vec<Component> {
             );
         }
     }
-    let mut newels = 0;
-    let mut balusters = 0;
-    let mut rails = 0;
+    // Newels, balusters and rails per side: one set of rows when both sides
+    // share their settings, a row per side when they differ.
+    struct SideParts {
+        side: plan_stairs::RailSide,
+        newels: usize,
+        balusters: usize,
+        rails: usize,
+        railing: plan_stairs::RailingParams,
+    }
+    let mut sides: Vec<SideParts> = Vec::new();
     for (side, kind) in [
         (plan_stairs::RailSide::Left, p.left_side),
         (plan_stairs::RailSide::Right, p.right_side),
@@ -1954,49 +2018,97 @@ pub fn components(o: &StairObj) -> Vec<Component> {
         if kind != SideKind::Railing {
             continue;
         }
+        let railing = p.railing_for(side);
+        let mut part = SideParts {
+            side,
+            newels: 0,
+            balusters: 0,
+            rails: 0,
+            railing,
+        };
         if o.is_landing() {
             let g = plan_stairs::landing_edges(&o.stair, side);
-            rails += g.len();
-            newels += g.len() + 1;
+            part.rails = g.len();
+            part.newels = g.len() + 1;
         } else {
-            let g = plan_stairs::stair_railing_geometry(&o.stair, side, &p.railing);
-            rails += g.rails.len();
-            newels += g.newels.len();
-            balusters += g.balusters.len();
+            let g = plan_stairs::stair_railing_geometry(&o.stair, side, &railing);
+            part.rails = g.rails.len();
+            part.newels = g.newels.len();
+            part.balusters = g.balusters.len();
         }
+        sides.push(part);
     }
-    push(
-        "Newels",
-        newels,
-        format!("{} square", inch(p.railing.newel.size)),
-        "Handrail",
-    );
-    push(
-        "Balusters",
-        balusters,
-        match p.railing.style {
-            plan_stairs::RailStyle::Balusters { size, .. } => format!("{} square", inch(size)),
-            _ => String::new(),
-        },
-        "Balusters",
-    );
-    push(
-        "Rails",
-        rails,
-        format!(
-            "{} x {}",
-            inch(p.railing.top_rail.0),
-            inch(p.railing.top_rail.1)
-        ),
-        "Handrail",
-    );
+    let same = sides.windows(2).all(|w| w[0].railing == w[1].railing);
+    let groups: Vec<(String, usize, usize, usize, plan_stairs::RailingParams)> = if same {
+        sides
+            .first()
+            .map(|f| {
+                (
+                    String::new(),
+                    sides.iter().map(|s| s.newels).sum(),
+                    sides.iter().map(|s| s.balusters).sum(),
+                    sides.iter().map(|s| s.rails).sum(),
+                    f.railing,
+                )
+            })
+            .into_iter()
+            .collect()
+    } else {
+        sides
+            .iter()
+            .map(|s| {
+                let tag = match s.side {
+                    plan_stairs::RailSide::Left => " (left)",
+                    plan_stairs::RailSide::Right => " (right)",
+                };
+                (tag.to_string(), s.newels, s.balusters, s.rails, s.railing)
+            })
+            .collect()
+    };
+    for (tag, newels, balusters, rails, railing) in groups {
+        push(
+            &format!("Newels{tag}"),
+            newels,
+            format!("{} square", inch(railing.newel.size)),
+            "Handrail",
+        );
+        push(
+            &format!("Balusters{tag}"),
+            balusters,
+            match railing.style {
+                plan_stairs::RailStyle::Balusters { size, .. } => {
+                    format!("{} square", inch(size))
+                }
+                _ => String::new(),
+            },
+            "Balusters",
+        );
+        push(
+            &format!("Rails{tag}"),
+            rails,
+            format!(
+                "{} x {}",
+                inch(railing.top_rail.0),
+                inch(railing.top_rail.1)
+            ),
+            "Handrail",
+        );
+    }
     let walls = [p.left_side, p.right_side]
         .iter()
         .filter(|k| matches!(k, SideKind::Wall | SideKind::HalfWall))
         .count();
     push("Side walls", walls, String::new(), "Stringers");
-    if p.handrail && !o.is_landing() && !o.is_ramp() {
-        push("Handrails", 2, "on both sides".to_string(), "Handrail");
+    if !o.is_landing() && !o.is_ramp() {
+        let left = p.handrail || p.left_side == SideKind::Handrail;
+        let right = p.handrail || p.right_side == SideKind::Handrail;
+        let (n, where_) = match (left, right) {
+            (true, true) => (2, "on both sides"),
+            (true, false) => (1, "on the left"),
+            (false, true) => (1, "on the right"),
+            (false, false) => (0, ""),
+        };
+        push("Handrails", n, where_.to_string(), "Handrail");
     }
     out
 }
@@ -2217,6 +2329,17 @@ pub fn draw_stairs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 1.0,
                 true,
             );
+            // The treads below the break, seen through the opening.
+            if open_to_floor_above(&cx.project, cx.floor - 1, &o) {
+                draw_strokes(
+                    painter,
+                    cam,
+                    &well_strokes(&o),
+                    pal.text.gamma_multiply(0.4),
+                    0.75,
+                    true,
+                );
+            }
         }
     }
     let objs = load(cx.floor());

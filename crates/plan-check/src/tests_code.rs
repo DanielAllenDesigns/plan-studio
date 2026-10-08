@@ -850,6 +850,8 @@ fn the_catalog_lists_every_rule_once_and_only_real_ones() {
         include_str!("rules_mep.rs"),
         include_str!("rules_code.rs"),
         include_str!("rules_fixtures.rs"),
+        include_str!("rules_irc.rs"),
+        include_str!("rules_nkba.rs"),
     ];
     for r in catalog {
         let quoted = format!("\"{}\"", r.id);
@@ -866,6 +868,10 @@ fn every_rule_of_the_new_files_is_in_the_catalog() {
     for src in [
         include_str!("rules_code.rs"),
         include_str!("rules_fixtures.rs"),
+        include_str!("rules_irc.rs"),
+        include_str!("rules_mep.rs"),
+        include_str!("rules_nkba.rs"),
+        include_str!("rules.rs"),
     ] {
         for lit in src.split('"').skip(1).step_by(2) {
             let looks_like_rule = ["IRC ", "NEC ", "NKBA ", "Roof pitch: ", "Plan geometry: "]

@@ -255,6 +255,40 @@ fn siding_hatch_is_horizontal_and_brick_has_joints() {
     assert!(vertical > 100);
 }
 
+#[test]
+fn hatch_follows_the_drawing_scale_and_rehatch_matches_a_fresh_drawing() {
+    let scene = scene_of(vec![cuboid(
+        (0.0, 480.0),
+        (0.0, 240.0),
+        (-6.0, 0.0),
+        Material::Brick,
+        1,
+    )]);
+    let at = |scale: f64| Options {
+        hatch: true,
+        hatch_scale: scale,
+        ..opts()
+    };
+    let count =
+        |d: &plan_elevation::Drawing| d.lines.iter().filter(|l| l.kind == EdgeKind::Hatch).count();
+    let quarter = elevation(&scene, ViewDir::Front, &at(0.25));
+    let tiny = elevation(&scene, ViewDir::Front, &at(0.02));
+    assert!(
+        count(&tiny) < count(&quarter) / 2,
+        "a small scale coarsens the courses: {} vs {}",
+        count(&tiny),
+        count(&quarter)
+    );
+    // Making the hatch again for another scale gives what a fresh drawing at
+    // that scale has, and a drawing without hatch is left alone.
+    let mut again = quarter.clone();
+    assert!(again.rehatch(0.02));
+    assert_eq!(count(&again), count(&tiny));
+    assert_eq!(again.lines.len(), tiny.lines.len());
+    let mut plain = elevation(&scene, ViewDir::Front, &opts());
+    assert!(!plain.rehatch(0.02));
+}
+
 /// Two parallel walls, no room: no floor or ceiling slabs get cut.
 fn two_wall_project() -> Project {
     let mut project = Project::new("two walls");

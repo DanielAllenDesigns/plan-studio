@@ -18,17 +18,24 @@ floor's typed `electrical` slot, so the plan file carries them and undo restores
 from before this change kept them as one hidden record on an `Electrical, Data` layer; opening
 such a file converts it and removes the layer.)
 
-Device kinds known to the engine (`plan-electrical`, 23 kinds): 110V Outlet, Quad Outlet, 220V Outlet,
-GFCI Outlet, Floor Outlet, Switch, 3-Way Switch, 4-Way Switch, Dimmer Switch, Ceiling Light, Recessed Can,
+Device kinds known to the engine (`plan-electrical`, 25 kinds): 110V Outlet, Quad Outlet, 220V Outlet,
+GFCI Outlet, Floor Outlet, WP Outlet, Dedicated Outlet, Switch, 3-Way Switch, 4-Way Switch, Dimmer Switch, Ceiling Light, Recessed Can,
 Pendant Light, Wall Sconce, Ceiling Fan, Smoke Detector, CO Detector, Thermostat, Doorbell,
 Data, Phone and TV Jacks, Panel and Rope Light. Every kind has its own plan symbol (the legend lists them all).
+
+Receptacle symbols carry their flags as Chief draws them: the 110V duplex is a circle with two
+blades; the **220V** outlet has three blades and a `220V` tag; the **GFCI** outlet has the `GFCI` tag; the
+**WP** (weatherproof, exterior) outlet is a GFCI duplex with a `WP` tag; the **Dedicated** outlet is a single
+blade with a solid hub and a `DED` tag. A 3-way switch is the S symbol with a `3` and a 4-way switch the S
+symbol with a `4` (S3, S4). Schedules list the voltage and flags with the type (`110V, GFCI, WP`).
 
 Default heights above the floor:
 
 | Device | Height |
 |---|---|
-| Outlets (110V, quad, 220V, GFCI), data and phone jacks | 12" |
-| Kitchen counter outlets (Auto Place Outlets) | 42" |
+| Outlets (110V, quad, 220V, GFCI, dedicated), data and phone jacks | 12" |
+| WP (exterior) outlet | 18" |
+| Kitchen counter outlets (Auto Place Outlets) | 44" |
 | Floor outlet | 0" |
 | Switches (all kinds), doorbell, TV jack | 48" |
 | Thermostat | 52" |
@@ -38,7 +45,12 @@ Default heights above the floor:
 | Ceiling light, recessed can, ceiling fan, smoke detector | at the ceiling |
 
 Wall devices sit on the wall face (half the wall thickness off the centerline), facing into
-the room. Ceiling devices are placed freely.
+the room (outside the house for WP outlets). Ceiling devices are placed freely.
+
+The heights are the plan's **Electrical Defaults**: open a device, tick **Use as default height for
+<kind>** or edit the **Default Heights** list (every kind, plus the Counter Outlet) on the General tab of the
+Electrical Service Specification. The next device of that kind, the status bar's `Height:` readout and Auto
+Place Outlets use them. The defaults are saved in the plan and undo with the dialog's OK.
 
 ## 9.2 Tools
 
@@ -58,8 +70,9 @@ the room. Ceiling devices are placed freely.
 | Ceiling Fan, Smoke and CO Detector | | Ceiling and wall devices. |
 | Thermostat, Doorbell, Data, Phone and TV Jack, Electrical Panel | | Wall devices. |
 | Auto Place Switches | | One click: a switch 6" past the latch jamb of every door of every room, a ceiling light for a room without one, and the connections. Two doors in a room make a 3-way pair. |
-| Electrical Connection | `E, C` | Click a switch (or outlet), then every light it controls (Esc ends the run). A dashed arc is drawn to each and stored. Clicking a second 3-way or 4-way switch wires the pair, and both then control the lights of either. Drag the square handle at the middle of an arc to bend it. |
-| Auto Place Outlets | `E, A, O` | One click places outlets for every room of the floor, from the room names and types. |
+| WP Outlet, Dedicated Outlet | | Wall receptacles: weatherproof GFCI (18") and a single receptacle on its own circuit. |
+| Electrical Connection | `E, C` | Click a switch (or outlet), then every light it controls (Esc ends the run). A dashed arc is drawn to each and stored. When a light is controlled by **two or more switches** they become multi-way: the first and last are 3-way (S3) and any in between 4-way (S4), and the symbols change as you wire; removing a connection or a switch turns them back. Clicking a second 3-way or 4-way switch wires the pair, and both then control the lights of either. Drag the square handle at the middle of an arc to bend it. |
+| Auto Place Outlets | `E, A, O` | One click places outlets for every room of the floor, from the room names and types, and the exterior weatherproof outlets. One undo step. |
 
 All of them start the one Electrical tool, and the Electrical flyout does pass your choice
 through to it.
@@ -76,10 +89,15 @@ through to it.
 
 ### Auto Place Outlets rules
 
-- No point along a wall is more than 6' from an outlet.
-- Outlets stay clear of door jambs.
-- Kitchen counters get GFCI outlets at 42", at most 4' apart.
-- Wet rooms and garages get GFCI outlets.
+These follow NEC 210.52:
+
+- Every wall space of 2' or more gets outlets; no point along a wall is more than 6' from one (outlets at most 12' apart, none farther than 6' from a doorway edge or a corner of its wall space).
+- Outlets stay 6" clear of door jambs.
+- Kitchens get GFCI outlets at the counter height (44") at most 4' apart.
+- Baths, laundries and garages get GFCI outlets; a bath whose walls are all shorter than 2' still gets one, on its longest wall.
+- Exterior: one WP GFCI outlet on the outside face of the longest exterior wall (the front) and one on the opposite side of the house (the back), in the widest stretch clear of doors, at 18".
+- Heights come from the Electrical Defaults (12", 44", 18").
+- Outlets already in place are not duplicated.
 
 Auto Place Switches (above) places the room light and the switches.
 
@@ -89,7 +107,7 @@ Double-click a device with the Electrical tool.
 
 | Tab | Fields |
 |---|---|
-| General | Type (any kind of the same family, e.g. a duplex outlet becomes a GFCI), Height, Label, Circuit (a number, or blank) |
+| General | Type (any kind of the same family, e.g. a duplex outlet becomes a GFCI), Voltage and Flags (110V / 220V, GFCI, WP, Dedicated; read-only, set by the type), Height, Use as default height for the kind, Default Heights (every kind and the Counter Outlet), Label, Circuit (a number, or blank) |
 | Switches | For a switch: **Connected Lights and Outlets**, check boxes that add and remove connection arcs. For other devices: **Switched By**, the switches that control it |
 | Materials | Plate or fixture finish (White, Ivory, Light Almond, Brown, Black, Stainless Steel), shown on the 3D plate or fixture |
 | Label | Show label in plan, Label text, Text height (disabled) |
@@ -99,7 +117,7 @@ Double-click a device with the Electrical tool.
 
 The engine groups devices into circuits (`assign_circuits`), counts devices by kind for a
 schedule, and lists a legend of symbols. No menu uses the circuit and legend functions yet: circuit assignment and the electrical legend
-are (planned; engine in `plan-electrical`). The **Electrical Schedule** from the Schedule flyout (chapter 11.2) lists the plan's devices (mark, type, label, mount height, circuit) as a live table placed in the plan.
+are (planned; engine in `plan-electrical`). The **Electrical Schedule** from the Schedule flyout (chapter 11.2) lists the plan's devices (mark, type, label, mount height, circuit) as a live table placed in the plan. `schedule_rows` gives the same lines with the voltage and flags (`E-01`, `GFCI Outlet`, 12", circuit 4, `110V, GFCI`).
 Light fixtures also emit light in the ray tracer (chapter 10.13).
 The schedule's Count column sums grouped rows.
 
@@ -113,7 +131,7 @@ The plate or fixture takes the finish chosen on the Materials tab (White by defa
 **Connections** (the dashed arcs from a switch or outlet to the lights it controls) have a handle at the middle of the arc: drag it to **bend** the arc (it is stored as the arc's
 bulge, so a bent connection saves and undoes with the plan). **3-way and 4-way** switches are wired as pairs: click one, then the other, and both then control the lights of either.
 **Auto Place Switches** puts a switch 6" past the latch jamb of every door of every room, a ceiling light in a room that has none, and the connections; a room with two doors gets a
-3-way pair. The **Switches** tab of the Electrical Service Specification adds and removes connection arcs by tick box, also when the dialog is opened with Select Objects (it
+3-way pair (and the S3 / S4 symbols follow the wiring, see Electrical Connection above). WP outlets are modeled with a deeper in-use cover with a dark flap opening. Every wall device is built on the face of its host wall and faces out of it, so a plate follows the wall's thickness and side. The **Switches** tab of the Electrical Service Specification adds and removes connection arcs by tick box, also when the dialog is opened with Select Objects (it
 opens from either tool the same way).
 
 # Part B: Terrain and landscaping
@@ -191,13 +209,15 @@ In every polyline gesture `Enter` or a double-click ends the line; in every poly
 | Rectangular Feature | Drag a rectangle, or click two corners. |
 | Kidney Shaped Feature | Click both ends of the long axis, then a third click sets the width. |
 | Spline Feature | Click control points of a closed spline; `Enter` closes it. |
+| Polyline Feature | Click the corners of a polygon; `Enter` closes it. |
+| Round Feature | Click the center, then a point on the circle (or drag from the center); the distance is the radius. |
 
-The three shaped features are **cut and fill pads**. The terrain under the outline is levelled to a flat top at
+The five shaped features (rectangular, kidney, spline, polyline and round) are **cut and fill pads**, each with its own height and material. The terrain under the outline is levelled to a flat top at
 the mean ground under it plus the feature's height (4" by default; a negative height cuts the pad into the
 ground), and the pad's sides slope back to the existing ground at the **side slope** (1 rise to 2 run by default).
 The build finds the daylight line where each side meets the ground. Untick "Grade the terrain" in the feature's
 dialog for the old behavior, a slab over the ground. A Terrain Hole cuts the surface away. A kidney or spline
-outline keeps its control points: select it and drag them, and the curve follows (a smooth closed spline).
+outline keeps its control points: select it and drag them, and the curve follows (a smooth closed spline). A round feature keeps its center and radius: any of its handles drags the edge and sets the radius, and the Round Feature specification has a Radius field.
 The cut and fill in cubic yards is listed in the Terrain Specification (Building Pad page), in the plan-docs
 cut/fill table and in the Materials List under Landscaping.
 
@@ -220,6 +240,8 @@ at the wall. The ground on the left of the drawing direction keeps its grade (th
 the right is lowered by the wall's *grade step* (2'-0" for a new wall, none for a curb), sloping back up to the
 existing ground at 1:4. Untick "Cut the terrain along the wall" to leave the surface whole.
 
+A new terrain wall is a **retaining wall with a stepped top**: in 3D its top holds level and drops in whole courses (8" by default; the *Course height* in the specification) as the ground falls, with a vertical riser at each step, instead of following every bump of the ground. Untick "Stepped top" for a top that follows the ground. A curb is never stepped.
+
 ### Landscaping
 
 | Variant | Gesture |
@@ -228,12 +250,15 @@ existing ground at 1:4. Untick "Cut the terrain along the wall" to leave the sur
 | Kidney Garden Bed, Kidney Grass Region | Click both ends of the long axis, then a third click sets the width. |
 | Spline Garden Bed, Spline Grass Region, Spline Water Feature | Click control points of a closed spline. |
 | Polyline Stepping Stone, Spline Stepping Stone | Click a path (control points for the spline); stones are laid along it. |
-| Polyline Plant, Spline Plant | Click a path; plants of the chosen kind are laid along it at one canopy width apart. |
+| Polyline Plant, Spline Plant | Click a path; plants of the chosen kind are laid along it at one canopy width apart. Pick the plant in the **Plant Chooser** of the Plant Specification. |
 | Polyline Sprinkler, Spline Sprinkler | Click a path; sprinkler heads are laid along it. |
 
 Objects take their sizes from defaults, and the specification (below) edits them. A **plant run** stores a catalog
 plant (the built-in Plants catalog of the Library Browser, boxwood by default), its canopy width and its height;
-the plan draws the canopies and 3D draws a shrub or, for a plant 8' tall or more, a tree on a trunk. Splines and
+the plan draws the canopies. In 3D a plant is built in the **3D form** the specification names: *Automatic* (a cone for a conifer
+such as a pine, spruce, cedar or cypress, a round shrub otherwise, and a tree on a trunk when the plant is 8' tall or more), *Round canopy*, *Cone (evergreen)* or *Billboard*
+(two crossed upright planes, cheap to draw). The **Plant Chooser** (the "Plant Chooser..." button of the Plant Specification) lists the Plants catalog of the Library Browser by category (Trees > Deciduous, Trees > Evergreen,
+Shrubs, Grasses and Perennials, ...) with a search field; a click sets the plant, its canopy width, its height, the spacing and the form. The plants come from the built-in catalog; no catalog files are bundled. Splines and
 kidney shapes are stored flattened as polylines.
 
 ### Roads, driveways, sidewalks
@@ -244,6 +269,9 @@ kidney shapes are stored flattened as polylines.
 | Polyline Driveway | Same, default width 12'-0". |
 | Polyline Sidewalk | Same, default width 4'-0". |
 | Spline Road, Spline Driveway, Spline Sidewalk | The same, with the clicks as control points of a curve. |
+| Polyline Road Marking, Spline Road Marking | A painted stripe: click a polyline, `Enter`, type the line width (default 4"). Dashed, color and layer are in the specification. |
+
+A **road marking** (stripe) lies on whatever is under it: on the ground, or on the crown of a road it crosses (0.3" above the surface), in white paint in 3D; a dashed marking is cut into 10' dashes with 20' gaps. The plan draws it as a line of its true width in traffic yellow (or the color you pick). A road's *Material* (Asphalt, Concrete, Gravel, Brick, Stone) sets its 3D surface.
 
 Roads drape 0.5" above the terrain surface. A road's specification has a **Crown** (how much higher the centerline sits than the edges, so the road sheds water to both sides) and **Curbs** with a **Curb height**; the roadway and its curb blocks are in the 3D scene.
 
@@ -268,13 +296,15 @@ At the top of the Terrain menu:
 | Build Terrain | Builds the surface and contours. |
 | Clear Terrain | Resets the terrain record (one undo step). "There is no terrain to clear" if none. |
 | Make Terrain Hole Around Building | Cuts a hole in the surface 12" outside the building footprint. |
+| Site Objects > Import Terrain Data... | Opens the Import Terrain Data dialog (9.8a). |
+| Site Objects > Terrain Cut and Fill Report... | Opens the report of the soil every graded pad moves (9.8a). |
 
 ### Editing
 
 With a Terrain tool active: `Delete` removes the element under the pointer (one undo step), the arrow keys
 nudge it, and a double-click on an element that has a specification opens it; a double-click outside any
 element opens the Terrain Specification, which Select Objects can also open (there is one terrain, so Select
-Objects picks the whole terrain). **Select Objects picks single terrain objects** (features, breaks, walls, curbs, roads and landscape objects): click to select, drag to move, the arrow keys nudge, `Delete` removes, and a double-click opens the object's specification. An element with 40 points or fewer also shows vertex handles. The 3D view picks them too (chapter 10).
+Objects picks the whole terrain). **Select Objects picks single terrain objects** (features, breaks, walls, curbs, roads and landscape objects): click to select, drag to move, the arrow keys nudge, `Delete` removes, and a double-click opens the object's specification. An element with 40 points or fewer also shows vertex handles. The 3D view picks them too (chapter 10). **Every terrain object has a specification of its own**: the elevation point, region and modifier too (Hill, Valley, Raised Region, Lowered Region and Flat Region), and a Terrain Hole; the Terrain Perimeter opens the Terrain Specification. **Terrain Perimeter editing**: select the perimeter (`ObjectRef::TerrainObject(Perimeter)`) and drag a corner handle ("Reshape Terrain Element"), or nudge it with the arrow keys from a Terrain tool.
 
 ## 9.7 What the plan shows
 
@@ -284,7 +314,7 @@ the program adds to the plan when you draw the first object:
 
 | Layer | Holds |
 |---|---|
-| `Terrain, Features` | Rectangular, kidney and spline features |
+| `Terrain, Features` | Rectangular, kidney, spline, polyline and round features |
 | `Terrain, Walls` | Terrain walls and curbs |
 | `Terrain, Breaks` | Terrain breaks |
 | `Landscaping, Garden Beds`, `Landscaping, Grass Regions`, `Landscaping, Water Features`, `Landscaping, Stepping Stones` | The matching regions and stones |
@@ -296,37 +326,53 @@ changes; the layer the terrain itself draws on is set in the Terrain Specificati
 **In 3D** (Round 8): the terrain surface, the roads draped on it and the landscape objects are in the 3D
 scene, and the scene rebuilds when the terrain changes. The 3D materials now include Grass, Mulch, Foliage, Water, Asphalt and Gravel, and the landscape uses them: the terrain surface and lawn or grass regions Grass, garden beds Mulch (or the bed's named material, such as Gravel), canopies Foliage, water Water (translucent), trunks Framing, edging, basins and stepping stones Stone, roads and driveways Asphalt, walls Concrete, Stone or Brick by the object's material.
 
+**Round 14**: the terrain surface takes the *Ground* material of the Terrain Specification (Grass, Dirt, Gravel, Stone, Mulch, Concrete); road strips take their own material, road markings are paint (white) lying on the road's crown, retaining walls step, conifers are cones and billboards are crossed planes; the roads follow the built surface (TIN) at every sample.
+
 ## 9.8 Dialog: Terrain Specification
 
 | Tab | Fields |
 |---|---|
-| General | Terrain to first floor (subfloor height above terrain), Building pad elevation, Grid spacing, Subdivision, Smoothing passes, North angle, and the "Rebuild the terrain after every edit" switch (off keeps the built surface until Build Terrain runs again; the plan then writes "Terrain out of date" at the perimeter). A line reports the Finished floor elevation. |
-| Contours | Contour interval, Major contour every N, Label spacing (elevation text every N feet along the labeled contours, 0 = one per line), Label the major contours only. |
+| General | Terrain to first floor (subfloor height above terrain), Building pad elevation, "Level the terrain under the building automatically", Contour interval, Grid spacing, Subdivision, Smoothing passes, North angle, and the "Rebuild the terrain after every edit" switch (off keeps the built surface until Build Terrain runs again; the plan then writes "Terrain out of date" at the perimeter). A line reports the Finished floor elevation. |
+| Contours | Contour interval, Major contour every N, Label spacing (elevation text every N feet along the labeled contours, 0 = one per line). **Primary lines** (the majors) and **Secondary lines** (between them): a color of their own, line weight (0 takes the default of 1 pt and 0.35 pt), Dashed, with a sample of the line; the primary lines are always labeled, the secondary ones when "Labeled with their elevation" is ticked. |
 | Building Pad | Level the terrain under the building; margin, side slope and first floor elevation of the pad; the Cut and Fill table in cubic yards per pad with the total. |
-| Materials | Ground (Grass), Bare ground (Dirt): disabled. |
+| Materials | Ground (Grass, Dirt, Gravel, Stone, Mulch, Concrete): the material of the terrain surface in 3D. Bare ground (Dirt, Gravel, Mulch, Stone): stored for the cut slopes of graded pads. |
 | Layer | The layer the terrain is drawn on. |
+
+### 9.8a Dialogs: Import Terrain Data and Terrain Cut and Fill Report
+
+**Import Terrain Data** (Terrain > Site Objects) reads survey points as elevation points. *Choose File...* reads a DXF, GPX or text file, or paste the text into the box. Formats (parsed by Plan Studio itself):
+
+| Format | Reads |
+|---|---|
+| DXF (ASCII) | `POINT`, `3DFACE`, the `VERTEX` records of a `POLYLINE` and the vertices of an `LWPOLYLINE` (at its elevation). The unit is the drawing's `$INSUNITS` when it has one (feet if not). |
+| GPX | Waypoints, route points and track points with `lat`, `lon` and `<ele>` (meters), projected onto a flat local plan around the first point (east is plan x, north is plan y). |
+| XYZ text | One point per line, `x y z` separated by spaces, commas, semicolons or tabs; a leading point number and header lines are skipped. |
+
+*Coordinates in* overrides the unit (Feet, Inches, Meters, Millimeters). "Center the points on the terrain perimeter" moves the survey to the middle of the lot (handy for GPX and for surveys in a state-plane coordinate system) and "Make the lowest point elevation 0" lowers the survey to the plan's datum. *Add to terrain* reports how many points were read and added (points that fall on an existing point are skipped); OK stores them as one undo step "Terrain Specification", Cancel keeps nothing.
+
+**Terrain Cut and Fill Report** lists every graded pad (the building pad and each feature that grades the terrain) with the elevation of its top, its area, and its cut and fill in cubic yards (the pad and its sloped sides together), the totals, and the soil to haul away or bring in. *Copy as CSV* puts the table on the clipboard. The report stores nothing.
 
 ### Dialog: terrain object specifications
 
-Double-click a feature, break, wall, curb, landscape object, road or elevation line with a Terrain tool. The title
-names the object (Terrain Feature, Terrain Break, Terrain Wall, Terrain Curb, Garden Bed, Grass Region, Water Feature,
-Stepping Stone, Plant, Sprinkler, Road or Elevation Line Specification). OK is one undo step.
+Double-click any terrain object with a Terrain tool (or select it and press `Enter`). The title
+names the object (Terrain Feature, Terrain Hole, Terrain Break, Terrain Wall, Terrain Curb, Garden Bed, Grass Region, Water Feature,
+Stepping Stone, Plant, Sprinkler, Road, Driveway, Sidewalk, Road Marking, Elevation Line, Elevation Point, Elevation Region, Hill, Valley, Raised Region, Lowered Region or Flat Region Specification). OK is one undo step.
 
 | Tab | Fields |
 |---|---|
-| General | Feature: Material, Height above ground. Break and elevation line: Elevation. Wall or curb: Type, Material (Concrete, Stone, Brick, Grass), Top above terrain, Bottom below terrain, Thickness. Road: Type, Width, Curbs. Garden bed: Material (Mulch, Soil, Stone), Mulch depth, Edging and Edging height. Grass region: Height above ground. Water feature: Water level below grade, Depth of water, Stone edge and Edge width. Stepping stones: Stone size, Spacing, Thickness. Plant: the plant, Canopy width, Height, Spacing. Sprinkler: Spray radius, Head spacing, Spray angle, Riser height |
+| General | Feature: Shape, Radius (round), Material, Height above ground or the graded pad's height and side slope. Terrain Hole: a note only. Break and elevation line: Elevation. Elevation point: Elevation and position. Elevation region: Elevation. Modifier: Hill height, Valley depth, Raise by or Lower by (none for a Flat Region). Wall or curb: Type, Material (Concrete, Stone, Brick, Grass), Top above terrain, Bottom below terrain, Thickness, Stepped top and Course height. Road: Type (Road, Driveway, Sidewalk, Marking), Material, Width, Crown, Curbs; Marking: Line width, Dashed, Color. Garden bed: Material (Mulch, Soil, Stone), Mulch depth, Edging and Edging height. Grass region: Height above ground. Water feature: Water level below grade, Depth of water, Stone edge and Edge width. Stepping stones: Stone size, Spacing, Thickness. Plant: the plant and the Plant Chooser, Canopy width, Height, Spacing, 3D form. Sprinkler: Spray radius, Head spacing, Spray angle, Riser height |
 | Line Style | A color of its own, line weight, dashed (everything but roads and elevation lines) |
 | Fill Style | A fill color of its own (regions, features and walls) |
 | Layer | The layer name |
 
-Roads and elevation lines show General only; a path object (break, stepping stones, plants, sprinklers) has General,
+Elevation lines, points, regions, modifiers and holes show General only; a road shows General and Layer; a path object (break, stepping stones, plants, sprinklers) has General,
 Line Style and Layer.
 
 ## 9.9 Differences from Chief
 
 - Sprinkler heads are not connected to a supply, and the 3D water surface is flat (the ripple is a plan fill).
-- Build Terrain runs on the UI thread: it reports its stages (with a percentage) in the readout while it builds and ends with a triangle count and time, with no separate progress bar. The Materials page of the Terrain Specification is disabled, and an elevation point has no
-  dialog of its own (delete and place it again, or drag it).
+- Build Terrain runs on the UI thread: it reports its stages (with a percentage) in the readout while it builds and ends with a triangle count and time, with no separate progress bar.
+- The tab layout of the Terrain Specification, the stepped-wall course height, the road-marking defaults (4" wide, 10' dashes with 20' gaps, yellow in plan, white in 3D) and the Import Terrain Data dialog are modeled on Chief's but not captured from it (verify in Chief); see `DECISIONS.md`.
 - Plants are terrain-owned runs, not placed library symbols: the Plant Schedule (chapter 11.2) does not list them and Replace
   From Library does not see them.
 - North Pointer and Scale Bar are CAD objects on the "Site Plan" layer (Terrain tool); the pointer sets the plan's

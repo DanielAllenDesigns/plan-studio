@@ -8,7 +8,7 @@ use plan_core::Point;
 use crate::contour::Contour;
 use crate::geom::strip_edges;
 use crate::landscape::path_length;
-use crate::model::Terrain;
+use crate::model::{Terrain, PRIMARY_CONTOUR_WEIGHT, SECONDARY_CONTOUR_WEIGHT};
 
 /// What a plan stroke represents, so renderers can pick layers and colors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,9 +108,15 @@ pub fn plan_symbols(t: &Terrain, contours: &[Contour]) -> Vec<Stroke> {
     }
     for c in contours {
         let (weight, kind) = if c.major {
-            (1.0, StrokeKind::MajorContour)
+            (
+                t.contour_primary.weight_or(PRIMARY_CONTOUR_WEIGHT),
+                StrokeKind::MajorContour,
+            )
         } else {
-            (0.35, StrokeKind::Contour)
+            (
+                t.contour_secondary.weight_or(SECONDARY_CONTOUR_WEIGHT),
+                StrokeKind::Contour,
+            )
         };
         let label = fmt_ft_in_frac(c.z, 2);
         let labeled = c.major || !t.contour_label_major_only;
@@ -149,7 +155,12 @@ pub fn plan_symbols(t: &Terrain, contours: &[Contour]) -> Vec<Stroke> {
             kind: StrokeKind::Feature,
         });
     }
-    for road in t.roads.iter().filter(|r| r.width > 0.0) {
+    // A road marking is a painted line: the plan draws its centerline.
+    for road in t
+        .roads
+        .iter()
+        .filter(|r| r.width > 0.0 && r.kind != crate::model::RoadKind::Marking)
+    {
         let edges = strip_edges(&road.centerline, road.width / 2.0);
         if edges.center.len() < 2 {
             continue;

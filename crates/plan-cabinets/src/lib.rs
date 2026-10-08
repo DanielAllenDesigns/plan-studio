@@ -15,11 +15,13 @@
 //! `plan-3d`: X = plan x, Y = up, Z = -plan y.
 
 mod cabinet;
+mod dress;
 mod face;
 mod filler;
 mod geom;
 mod mesh3d;
 mod mesh_extra;
+mod push;
 mod symbol;
 mod top;
 
@@ -32,13 +34,18 @@ pub use cabinet::{
     DoorProfile, DoorStyle, DrawerStyle, FaceSide, HandleStyle, HingeStyle, MaterialChoice,
     Molding, MoldingKind, Overlay, PartMaterials, SideFace, SideKind, ToeKick, FULL_HEIGHT_TO,
 };
+pub use dress::{
+    components, fmt_in, shelf_count, Accessories, Component, FillPattern, FootStyle, ObjectInfo,
+    PilasterStyle, PlanFill, MAX_SHELVES, SHELF_SPACING,
+};
 pub use face::{Divider, DividerHandle, FaceCell, FaceItem, FaceLayout, ResolvedFace, MIN_ITEM};
-pub use filler::{fit_between, fit_to_gap, wall_polygon, MAX_FILLER_GAP};
+pub use filler::{fit_between, fit_to_gap, run_bounds, wall_polygon, MAX_FILLER_GAP};
 pub use geom::{
     area as ring_area, bbox as ring_bbox, ccw as ring_ccw, free_span, offset_ring, thicken_path,
     triangulate, union_polygons, InsideObstacle,
 };
 pub use mesh3d::meshes;
+pub use push::push_run;
 pub use symbol::{plan_symbol, Stroke};
 pub use top::{
     fit_full_height_backsplashes, generate_countertops, join_touching_countertops,

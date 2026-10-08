@@ -211,10 +211,15 @@ pub fn frame_wall_joined(
     }
 
     // King-to-king zone of every opening, as (start, end) along the wall.
-    let side = f64::from(d.trimmers + d.king_studs) * t;
+    // An opening's own Framing and Rough Opening tabs move its zone.
     let zones: Vec<(f64, f64)> = openings
         .iter()
-        .map(|o| (o.start_offset() - side, o.end_offset() + side))
+        .map(|o| {
+            let fr = o.framed();
+            let (nt, nk) = supports(o, d);
+            let side = f64::from(nt + nk) * t;
+            (fr.start - side, fr.end + side)
+        })
         .collect();
     let in_zone = |left: f64| {
         zones
@@ -366,10 +371,13 @@ fn frame_opening(
     out: &mut Vec<Member>,
 ) {
     let t = lumber.thickness;
-    let (a, b) = (o.start_offset(), o.end_offset());
+    // The rough opening (Rough Opening tab) is what the framing stands around.
+    let fr = o.framed();
+    let (a, b) = (fr.start, fr.end);
     let floor = y_bot - PLATE * f64::from(d.bottom_plates);
-    let open_bot = floor + o.sill_height;
-    let open_top = open_bot + o.height;
+    let open_bot = floor + fr.bottom;
+    let open_top = floor + fr.top;
+    let own = &o.extras.spec.framing;
     // Vertical members that would hang off either wall end are dropped.
     let push_if_fits = |out: &mut Vec<Member>, kind: MemberKind, left: f64, y0: f64, len: f64| {
         if left >= -EPS && left + t <= wall_len + EPS && len > 0.5 {
@@ -377,7 +385,7 @@ fn frame_opening(
         }
     };
 
-    let (nt, nk) = (d.trimmers, d.king_studs);
+    let (nt, nk) = supports(o, d);
     for i in 0..nk {
         let off = (f64::from(nt) + f64::from(i)) * t;
         push_if_fits(out, MemberKind::KingStud, a - off - t, y_bot, stud_len);
@@ -398,17 +406,30 @@ fn frame_opening(
 
     // Header between the kings, resting on the trimmers.
     let h_start = a - f64::from(nt) * t;
-    let h_len = o.width + 2.0 * f64::from(nt) * t;
+    let h_len = (b - a) + 2.0 * f64::from(nt) * t;
     let mut header_top = open_top;
-    if d.header_plies > 0 {
+    let header_plies = if own.include_header {
+        own.header_plies.unwrap_or(d.header_plies)
+    } else {
+        0
+    };
+    if header_plies > 0 {
         // A header that would poke through the top plates is shortened in depth.
-        let depth = d.header_depth_for(o.width).min(y_top - open_top);
+        let wanted = own
+            .header_depth
+            .filter(|v| *v > 0.0)
+            .unwrap_or_else(|| d.header_depth_for(b - a));
+        let depth = wanted.min(y_top - open_top);
         if depth > 0.5 {
             header_top = open_top + depth;
-            let ply = Lumber::two_by(depth);
-            let plies = f64::from(d.header_plies);
-            for p in 0..d.header_plies {
-                let offset = (f64::from(p) - (plies - 1.0) / 2.0) * PLATE;
+            let thick = own.header_material.ply();
+            let ply = Lumber {
+                thickness: thick,
+                depth,
+            };
+            let plies = f64::from(header_plies);
+            for p in 0..header_plies {
+                let offset = (f64::from(p) - (plies - 1.0) / 2.0) * thick;
                 let y_mid = open_top + depth / 2.0;
                 out.push(f.on_edge(ply, h_start, h_len, y_mid, offset));
             }
@@ -431,9 +452,9 @@ fn frame_opening(
     }
 
     // Windows: sill plate and cripples below it.
-    if o.sill_height > 0.0 && open_bot - PLATE >= y_bot - EPS {
+    if fr.bottom > 0.0 && own.sill && open_bot - PLATE >= y_bot - EPS {
         let sill_bot = open_bot - PLATE;
-        out.push(f.flat(MemberKind::Sill, lumber, a, o.width, sill_bot + PLATE / 2.0));
+        out.push(f.flat(MemberKind::Sill, lumber, a, b - a, sill_bot + PLATE / 2.0));
         let below = sill_bot - y_bot;
         if below > 0.5 {
             for left in grid(step, a, b - t) {
@@ -441,6 +462,16 @@ fn frame_opening(
             }
         }
     }
+}
+
+/// Trimmers and king studs on each side of `o`: its own Framing tab values,
+/// else the Framing Defaults.
+fn supports(o: &Opening, d: &FramingDefaults) -> (u32, u32) {
+    let own = &o.extras.spec.framing;
+    (
+        own.trimmers.unwrap_or(d.trimmers),
+        own.king_studs.unwrap_or(d.king_studs),
+    )
 }
 
 /// Multiples of `step` within `[lo, hi]` (left edges that fit).
@@ -797,5 +828,97 @@ mod tests {
         assert!(of(&m, MemberKind::Stud)
             .iter()
             .all(|s| (s.length - 104.625).abs() < 1e-9));
+    }
+
+    // ----- the Rough Opening and Framing tabs of a door or window -----
+
+    #[test]
+    fn the_rough_opening_moves_the_trimmers_and_lengthens_the_header() {
+        let w = wall();
+        let mut door = Opening::default_door(1, w.id, 60.0);
+        door.extras.spec.rough.add_width = 4.0;
+        door.extras.spec.rough.add_height = 2.0;
+        let m = frame_wall(&w, &[&door], 0.0, &FramingDefaults::default());
+        // Trimmers stand at the rough edges (40 and 80), one stud wide.
+        let mut trimmers: Vec<f64> = of(&m, MemberKind::TrimmerStud)
+            .iter()
+            .map(|t| left_edge(t))
+            .collect();
+        trimmers.sort_by(f64::total_cmp);
+        assert_eq!(trimmers, [38.5, 80.0]);
+        // The rough opening is 2" taller: the trimmers run to 82 above the
+        // 1 1/2" bottom plate.
+        assert!(of(&m, MemberKind::TrimmerStud)
+            .iter()
+            .all(|t| (t.length - 80.5).abs() < 1e-9));
+        for h in of(&m, MemberKind::Header) {
+            assert_eq!(h.length, 40.0 + 3.0);
+        }
+        // Without rough extra space nothing moved.
+        door.extras.spec.rough = Default::default();
+        let plain = frame_wall(&w, &[&door], 0.0, &FramingDefaults::default());
+        assert!(of(&plain, MemberKind::TrimmerStud)
+            .iter()
+            .all(|t| (t.length - 78.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn an_opening_overrides_the_header_trimmers_and_king_studs() {
+        let w = wall();
+        let mut door = Opening::default_door(1, w.id, 60.0);
+        let d = FramingDefaults::default();
+        door.extras.spec.framing.header_plies = Some(3);
+        door.extras.spec.framing.header_depth = Some(9.25);
+        door.extras.spec.framing.trimmers = Some(2);
+        door.extras.spec.framing.king_studs = Some(2);
+        let m = frame_wall(&w, &[&door], 0.0, &d);
+        let headers = of(&m, MemberKind::Header);
+        assert_eq!(headers.len(), 3);
+        assert!(headers.iter().all(|h| h.lumber.depth == 9.25));
+        assert_eq!(of(&m, MemberKind::TrimmerStud).len(), 4);
+        assert_eq!(of(&m, MemberKind::KingStud).len(), 4);
+        // No common stud stands inside the wider king-to-king zone.
+        let inside = of(&m, MemberKind::Stud)
+            .iter()
+            .filter(|s| left_edge(s) > 42.0 - 6.0 && left_edge(s) < 78.0 + 6.0)
+            .count();
+        assert_eq!(inside, 0);
+        // LVL plies are 1 3/4" thick.
+        door.extras.spec.framing = Default::default();
+        door.extras.spec.framing.header_material = plan_core::openings::spec::HeaderMaterial::Lvl;
+        let m = frame_wall(&w, &[&door], 0.0, &d);
+        assert!(of(&m, MemberKind::Header)
+            .iter()
+            .all(|h| (h.lumber.thickness - 1.75).abs() < 1e-9));
+        // No header at all.
+        door.extras.spec.framing = Default::default();
+        door.extras.spec.framing.include_header = false;
+        let m = frame_wall(&w, &[&door], 0.0, &d);
+        assert!(of(&m, MemberKind::Header).is_empty());
+    }
+
+    #[test]
+    fn a_window_sill_can_be_left_out() {
+        let w = wall();
+        let mut win = Opening::default_window(2, w.id, 60.0);
+        let d = FramingDefaults::default();
+        assert_eq!(of(&frame_wall(&w, &[&win], 0.0, &d), MemberKind::Sill).len(), 1);
+        win.extras.spec.framing.sill = false;
+        assert!(of(&frame_wall(&w, &[&win], 0.0, &d), MemberKind::Sill).is_empty());
+        // The rough sill drops with the rough opening's bottom extra.
+        win.extras.spec.framing.sill = true;
+        win.extras.spec.rough.add_height = 2.0;
+        let sill = of(&frame_wall(&w, &[&win], 0.0, &d), MemberKind::Sill)
+            .iter()
+            .map(|m| m.transform.origin[1])
+            .next()
+            .unwrap();
+        let plain = {
+            win.extras.spec.rough = Default::default();
+            of(&frame_wall(&w, &[&win], 0.0, &d), MemberKind::Sill)[0]
+                .transform
+                .origin[1]
+        };
+        assert!((plain - sill - 1.0).abs() < 1e-9, "{plain} {sill}");
     }
 }

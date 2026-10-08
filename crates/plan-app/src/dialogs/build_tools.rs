@@ -533,6 +533,8 @@ fn create_construction_set(cx: &mut EditorContext) {
 #[derive(Default)]
 struct Windows {
     room: Option<RoomDialog>,
+    /// The Properties tab of the Room Specification.
+    room_props: Option<super::property_manager::SharedSession>,
     floor: Option<FloorDialog>,
     space: Option<SpaceWindow>,
     check: Option<CheckWindow>,
@@ -749,7 +751,7 @@ fn schedule_spec_dialog(
     if !layers.contains(&def.layer) {
         layers.push(def.layer.clone());
     }
-    Some(ScheduleSpecDialog::new(floor, def, styles, layers))
+    Some(ScheduleSpecDialog::new(floor, def, styles, layers).with_props(cx.project.props.defs.clone()))
 }
 
 /// Draws every open window of this module and applies what the user accepted.
@@ -757,6 +759,31 @@ pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext, cam: &mut Camera) {
     let mut w = with_windows(std::mem::take);
     w.show(ctx, cx, cam);
     with_windows(|slot| *slot = w);
+    super::plan_check::show_text_report(ctx);
+}
+
+/// Tools > Checks > Plan Check Settings: opens the Plan Check window (running
+/// the check when it is not up) with its Settings dialog showing.
+pub(super) fn open_check_settings(cx: &mut EditorContext) {
+    cx.refresh();
+    let up = with_windows(|w| w.check.as_ref().is_some_and(|c| c.kind == CheckKind::Plan));
+    if !up {
+        let run = run_check_full(cx, CheckKind::Plan);
+        let window = CheckWindow::from_run(CheckKind::Plan, cx.floor, run);
+        cx.status = window.summary();
+        with_windows(|w| w.check = Some(window));
+    }
+    with_windows(|w| {
+        if let Some(c) = w.check.as_mut() {
+            c.open_settings(cx);
+        }
+    });
+}
+
+/// Is the Plan Check Settings dialog showing?
+#[cfg(test)]
+pub fn check_settings_open() -> bool {
+    with_windows(|w| w.check.as_ref().is_some_and(CheckWindow::settings_open))
 }
 
 impl Windows {
@@ -765,15 +792,23 @@ impl Windows {
         if self.room.is_none() && self.floor.is_none() {
             if let Some(idx) = rooms_edit::take_room_dialog_request(cx) {
                 self.room = rooms_edit::room_dialog_init(cx, idx).map(RoomDialog::new);
+                self.room_props = super::property_manager::PropSession::for_object(
+                    cx,
+                    crate::editor::ObjectRef::Room(idx),
+                );
             }
         }
         if let Some(mut d) = self.room.take() {
-            match d.show(ctx) {
+            let shown = super::property_manager::with_current(self.room_props.as_ref(), || d.show(ctx));
+            match shown {
                 Outcome::Open => self.room = Some(d),
                 outcome => {
                     if outcome == Outcome::Ok {
+                        let depth = super::property_manager::before_apply(cx);
                         rooms_edit::apply_room_spec(cx, d.room_index(), d.room_name(), d.extras());
+                        super::property_manager::after_apply(cx, self.room_props.as_ref(), depth);
                     }
+                    self.room_props = None;
                     // The Enter that closed the dialog also reached the Select
                     // tool, which asked for it again.
                     let _ = rooms_edit::take_room_dialog_request(cx);
@@ -856,6 +891,13 @@ impl Windows {
         if let Some(mut d) = self.sched_spec.take() {
             let outcome = d.show(ctx);
             let actions = d.take_actions();
+            if actions.export_for_editing {
+                // Exports the schedule as the dialog shows it, edits included.
+                super::property_manager::request_export_one(d.floor(), d.draft().clone());
+            }
+            if actions.import_props {
+                super::property_manager::request_import();
+            }
             if actions.send_to_layout {
                 // The box shows the stored schedule, so store the edits first.
                 schedule_view::replace(cx, d.floor(), d.draft().clone());

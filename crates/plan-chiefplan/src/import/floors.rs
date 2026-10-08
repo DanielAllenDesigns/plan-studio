@@ -194,7 +194,16 @@ pub fn class_label(class_id: u8, version: u8) -> Option<(&'static str, &'static 
         (114, 0) => ("library object entry (name, tags)", "Medium"),
         (209, 0) => ("area / region object", "Low"),
         (52, 0) => ("floor/ceiling/roof surface", "Low"),
-        (34, 1) | (36, 1) => ("unidentified plan object", "None"),
+        (34, 1) => ("electrical connection arc (two devices)", "Medium"),
+        (150, 0) => ("electrical gang box (group of devices)", "Medium"),
+        (35, 0) | (36, 1) | (38, 0) => ("extent record (four numbers: a bounding box)", "Low"),
+        (41, 0) => (
+            "CAD record among the lines (pen values 0.5, 5, 1.53)",
+            "None",
+        ),
+        (64, 1) => ("text box with a format record", "Low"),
+        (73, 1) => ("text format record (font, style, colour, size)", "Medium"),
+        (101, 1) | (104, 1) => ("material-list property record (48 to 60 bytes)", "None"),
         _ => return None,
     })
 }

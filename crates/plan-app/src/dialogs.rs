@@ -22,8 +22,11 @@ pub mod build_tools;
 pub mod cabinet;
 pub mod cad;
 pub mod camera;
+pub mod code_notice;
 pub mod customize_toolbars;
-mod default_lists;
+pub mod default_lists;
+pub mod default_pages;
+pub mod default_settings_terrain;
 pub mod defaults;
 pub mod delete_objects;
 pub mod details;
@@ -31,7 +34,9 @@ pub mod dimension;
 pub mod edit_behaviors;
 pub mod electrical;
 pub mod exchange;
+pub mod export_picture;
 pub mod find_replace;
+pub mod fireplace;
 pub mod floor;
 pub mod floor_defaults;
 pub mod foundation;
@@ -39,22 +44,26 @@ pub mod framing;
 pub mod help;
 pub mod hotkeys;
 pub mod images;
+pub mod import_review;
 pub mod layer_display;
 pub mod layer_sets;
 pub mod layout;
 pub mod materials;
 mod opening;
+pub mod painters;
 pub mod plan_check;
 pub mod plan_views;
 pub mod preferences;
 pub mod print;
 pub mod project_info;
+pub mod property_manager;
 pub mod reference_display;
 pub mod roof;
 pub mod room;
 pub mod schedule_spec;
 pub mod send_to_layer;
 pub mod snap_settings;
+pub mod spell_check;
 pub mod stairs;
 pub mod symbol;
 pub mod terrain;
@@ -165,6 +174,11 @@ impl SpecDialog {
         }
     }
 
+    /// Opens on tab `i` (a Default Settings leaf that jumps to its tab).
+    pub fn start_on(&mut self, i: usize) {
+        self.active = i;
+    }
+
     /// The dialog type's name in the settings file (its title).
     #[allow(dead_code)]
     pub fn geometry_key(&self) -> &str {
@@ -215,9 +229,18 @@ impl SpecDialog {
         let mut outcome = Outcome::Open;
         let mut apply = false;
         let mut open = true;
-        let error = pages.error();
+        // The Properties tab: the host armed custom properties for this
+        // object (`property_manager::with_current`), so the frame adds a
+        // last tab for them.
+        let props = property_manager::current();
+        let error = pages
+            .error()
+            .or_else(|| props.as_ref().and_then(|p| p.borrow().error()));
         let tabs = pages.tabs();
-        if !tabs.get(self.active).is_some_and(|t| t.enabled) {
+        let props_tab = props.is_some().then_some(tabs.len());
+        if self.active != props_tab.unwrap_or(usize::MAX)
+            && !tabs.get(self.active).is_some_and(|t| t.enabled)
+        {
             self.active = 0;
         }
         FOCUS_FIRST.with(|f| f.set(self.fresh));
@@ -285,6 +308,12 @@ impl SpecDialog {
                                 self.active = i;
                             }
                         }
+                        if let Some(i) = props_tab {
+                            let label = egui::SelectableLabel::new(self.active == i, "Properties");
+                            if ui.add(label).clicked() {
+                                self.active = i;
+                            }
+                        }
                     });
                 });
 
@@ -295,7 +324,12 @@ impl SpecDialog {
                 .auto_shrink([false, false])
                 .show(&mut mc, |ui| {
                     ui.set_width(ui.available_width());
-                    pages.page(ui, self.active);
+                    match (&props, props_tab) {
+                        (Some(p), Some(i)) if self.active == i => {
+                            property_manager::page(ui, &mut p.borrow_mut());
+                        }
+                        _ => pages.page(ui, self.active),
+                    }
                 });
 
             // Preview.

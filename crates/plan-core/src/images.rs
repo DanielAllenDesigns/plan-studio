@@ -98,9 +98,9 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32, ImageFormat)> {
     None
 }
 
-/// Shown for JPEG pictures: no decoder is built in, so the plan draws a
-/// placeholder frame.
-pub const JPEG_NOTE: &str = "JPEG preview is not available yet; drawn as a frame";
+/// Shown for a JPEG picture that cannot be decoded (damaged, or a kind the
+/// decoder does not read): the plan draws a placeholder frame.
+pub const JPEG_NOTE: &str = "This JPEG could not be decoded; drawn as a frame";
 
 fn default_gray() -> [u8; 3] {
     [180, 180, 180]

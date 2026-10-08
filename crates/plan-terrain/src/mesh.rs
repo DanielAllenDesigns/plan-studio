@@ -6,13 +6,17 @@ use plan_3d::{Material, Mesh, Vertex};
 use plan_core::Point;
 
 use crate::geom::strip_edges;
-use crate::model::{RoadKind, RoadStrip, Terrain, TerrainSurface};
+use crate::landscape::dash_path;
+use crate::landscape_mesh::named_material;
+use crate::model::{RoadKind, RoadStrip, Terrain, TerrainSurface, MARKING_DASH, MARKING_GAP};
 use crate::query::elevation_at;
 
 /// Height roads sit above the terrain to avoid z-fighting, inches.
 const ROAD_LIFT: f64 = 0.5;
 /// Curb width, inches.
 const CURB_WIDTH: f64 = 6.0;
+/// Height a painted marking sits above the surface it is laid on, inches.
+const MARKING_LIFT: f64 = 0.3;
 
 /// Plan point and elevation to a plan-3d position.
 pub(crate) fn to_scene(p: Point, z: f64) -> [f64; 3] {
@@ -138,6 +142,16 @@ pub fn terrain_object_of(id: u64) -> Option<(TerrainPart, usize)> {
 /// triangle normals averaged (area-weighted) at the vertices; UVs are plan x/y
 /// in feet.
 pub fn terrain_mesh(surface: &TerrainSurface) -> Mesh {
+    surface_mesh(surface, Material::Grass)
+}
+
+/// [`terrain_mesh`] in the material the terrain's specification names
+/// ([`Terrain::ground_material`]; "Grass" when blank or unknown).
+pub fn terrain_mesh_for(t: &Terrain, surface: &TerrainSurface) -> Mesh {
+    surface_mesh(surface, named_material(&t.ground_material, Material::Grass))
+}
+
+fn surface_mesh(surface: &TerrainSurface, material: Material) -> Mesh {
     let mut b = MeshBuilder::default();
     for v in &surface.vertices {
         b.push(
@@ -147,7 +161,7 @@ pub fn terrain_mesh(surface: &TerrainSurface) -> Mesh {
     }
     // Plan-CCW triangles face up in the scene frame, so indices copy straight across.
     b.triangles = surface.triangles.clone();
-    b.finish(Material::Grass)
+    b.finish(material)
 }
 
 /// One mesh per road strip (plus a curb mesh when `curb` is set), draped on `surface`.
@@ -157,10 +171,12 @@ pub fn terrain_mesh(surface: &TerrainSurface) -> Mesh {
 /// the surface plus 0.5". Samples off the surface (holes, outside the perimeter) take
 /// the nearest elevation along the strip.
 ///
-/// Roads and driveways are [`Material::Asphalt`]; sidewalks and curbs are
-/// [`Material::Concrete`]. Each carries its road's [`terrain_object_id`]. A
-/// strip with a `crown` is `crown` inches higher along its centerline than
-/// along its edges; a curb is `curb_height` tall.
+/// The material is the strip's own ([`RoadStrip::material_name`]): asphalt for
+/// roads and driveways, concrete for sidewalks and curbs, paint for a road
+/// marking. Each carries its road's [`terrain_object_id`]. A strip with a
+/// `crown` is `crown` inches higher along its centerline than along its edges;
+/// a curb is `curb_height` tall. A marking lies on whatever is under it (the
+/// ground, or the crown of a road), and a dashed one is cut into dashes.
 pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
     let step = (t.grid_spacing / 2.0).max(6.0);
     let default_z = if surface.vertices.is_empty() {
@@ -170,14 +186,19 @@ pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
     };
     let mut meshes = Vec::new();
     for (index, road) in t.roads.iter().enumerate() {
-        let Some(rows) = draped_rows(road, surface, step, default_z) else {
+        let id = Some(terrain_object_id(TerrainPart::Road, index));
+        if road.kind == RoadKind::Marking {
+            let mut mesh = marking_mesh(t, road, surface, step, default_z);
+            if let Some(m) = mesh.as_mut() {
+                m.object_id = id;
+            }
+            meshes.extend(mesh);
+            continue;
+        }
+        let Some(rows) = draped_rows(road, surface, step, default_z, &|_| 0.0) else {
             continue;
         };
-        let material = match road.kind {
-            RoadKind::Road | RoadKind::Driveway => Material::Asphalt,
-            RoadKind::Sidewalk => Material::Concrete,
-        };
-        let id = Some(terrain_object_id(TerrainPart::Road, index));
+        let material = named_material(road.material_name(), Material::Asphalt);
         let mut strip = strip_mesh(&rows, material, road.crown.max(0.0));
         strip.object_id = id;
         meshes.push(strip);
@@ -188,6 +209,53 @@ pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
         }
     }
     meshes
+}
+
+/// How far the surface of the roads under `p` stands above the ground there,
+/// inches: the road lift plus the crown, which fades to nothing at the edges.
+fn road_lift_at(t: &Terrain, p: Point) -> f64 {
+    t.roads
+        .iter()
+        .filter(|r| r.kind != RoadKind::Marking && r.width > 0.0)
+        .filter_map(|r| {
+            let d = r
+                .centerline
+                .windows(2)
+                .map(|w| plan_core::geometry::dist_to_segment(p, w[0], w[1]))
+                .fold(f64::INFINITY, f64::min);
+            let half = r.width / 2.0;
+            (d <= half).then(|| ROAD_LIFT + r.crown.max(0.0) * (1.0 - d / half))
+        })
+        .fold(0.0, f64::max)
+}
+
+/// The painted strip of a road marking (all its dashes in one mesh).
+fn marking_mesh(
+    t: &Terrain,
+    road: &RoadStrip,
+    surface: &TerrainSurface,
+    step: f64,
+    default_z: f64,
+) -> Option<Mesh> {
+    let pieces = if road.dashed {
+        dash_path(&road.centerline, MARKING_DASH, MARKING_GAP)
+    } else {
+        vec![road.centerline.clone()]
+    };
+    let lift = |p: Point| (road_lift_at(t, p) - ROAD_LIFT).max(0.0) + MARKING_LIFT;
+    let mut b = MeshBuilder::default();
+    let mut any = false;
+    for piece in pieces {
+        let strip = RoadStrip {
+            centerline: piece,
+            ..road.clone()
+        };
+        if let Some(rows) = draped_rows(&strip, surface, step.min(60.0), default_z, &lift) {
+            push_strip(&mut b, &rows, 0.0);
+            any = true;
+        }
+    }
+    any.then(|| b.finish(named_material(road.material_name(), Material::Trim)))
 }
 
 /// A cross-section of a draped strip.
@@ -203,6 +271,7 @@ fn draped_rows(
     surface: &TerrainSurface,
     step: f64,
     default_z: f64,
+    extra_lift: &dyn Fn(Point) -> f64,
 ) -> Option<Vec<Row>> {
     if road.width <= 0.0 {
         return None;
@@ -254,8 +323,8 @@ fn draped_rows(
         plan.iter()
             .enumerate()
             .map(|(i, &(l, r, along))| Row {
-                left: to_scene(l, z(2 * i)),
-                right: to_scene(r, z(2 * i + 1)),
+                left: to_scene(l, z(2 * i) + extra_lift(l)),
+                right: to_scene(r, z(2 * i + 1) + extra_lift(r)),
                 along,
             })
             .collect(),
@@ -266,6 +335,12 @@ pub(crate) const UP: [f64; 3] = [0.0, 1.0, 0.0];
 
 fn strip_mesh(rows: &[Row], material: Material, crown: f64) -> Mesh {
     let mut b = MeshBuilder::default();
+    push_strip(&mut b, rows, crown);
+    b.finish(material)
+}
+
+/// Adds the strip through `rows` to `b`.
+fn push_strip(b: &mut MeshBuilder, rows: &[Row], crown: f64) {
     let width_ft = {
         let (l, r) = (rows[0].left, rows[0].right);
         ((l[0] - r[0]).powi(2) + (l[2] - r[2]).powi(2)).sqrt() / 12.0
@@ -294,7 +369,6 @@ fn strip_mesh(rows: &[Row], material: Material, crown: f64) -> Mesh {
             b.push_facing([r0, l1, l0], UP);
         }
     }
-    b.finish(material)
 }
 
 /// Raised curb blocks along both edges of the strip, inside the strip width.

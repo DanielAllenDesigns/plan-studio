@@ -5,7 +5,7 @@
 use super::floor_defaults::{FloorDefaultsDialog, FloorDefaultsTarget};
 use super::reference_display::{self, ReferenceDisplayDialog};
 use super::{Fields, Outcome, ERROR_RED};
-use crate::editor::rooms_edit::{self, FoundationSpec, FoundationType, NewFloorSpec};
+use crate::editor::rooms_edit::{self, FoundationSpec, NewFloorSpec};
 use crate::editor::EditorContext;
 use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers, RichText};
@@ -205,22 +205,15 @@ impl FloorDialog {
             } => {
                 if fields.0.any_invalid() {
                     Some("Fix the highlighted field")
-                } else if foundation.kind == FoundationType::WallsWithFootings
-                    && foundation.stem_height <= 0.0
-                {
-                    Some("Stem wall height must be greater than zero")
                 } else {
-                    None
+                    foundation.error()
                 }
             }
             FloorDialog::BuildFoundation { spec, fields } => {
                 if fields.0.any_invalid() {
                     Some("Fix the highlighted field")
-                } else if spec.kind == FoundationType::WallsWithFootings && spec.stem_height <= 0.0
-                {
-                    Some("Stem wall height must be greater than zero")
                 } else {
-                    None
+                    spec.error()
                 }
             }
             _ => None,
@@ -310,6 +303,8 @@ impl FloorDialog {
                                 foundation_fields(ui, foundation, fields);
                             }
                         }
+                        ui.add_space(4.0);
+                        ui.checkbox(&mut spec.attic, "Also build an attic floor");
                     }
                     FloorDialog::Defaults(_) | FloorDialog::Reference(_) => {}
                     FloorDialog::BuildFoundation { spec, fields } => {
@@ -377,25 +372,13 @@ fn apply_reference_display(cx: &mut EditorContext, d: &ReferenceDisplayDialog) {
 /// The foundation type radios and the stem wall heights, shared by Build
 /// Foundation and the foundation option of Build New Floor.
 fn foundation_fields(ui: &mut egui::Ui, spec: &mut FoundationSpec, fields: &mut FieldsBox) {
-    ui.label(RichText::new("Foundation Type").strong());
-    for t in FoundationType::ALL {
-        ui.radio_value(&mut spec.kind, t, t.name());
-    }
-    ui.add_space(6.0);
-    let walls = spec.kind == FoundationType::WallsWithFootings;
-    ui.add_enabled_ui(walls, |ui| {
-        super::row(ui, "Stem Wall Height", |ui| {
-            fields.0.length(ui, "stem_h", &mut spec.stem_height)
-        });
-        super::row(ui, "Minimum Stem Wall", |ui| {
-            fields.0.length(ui, "stem_min", &mut spec.min_stem_height)
-        });
-    });
+    super::foundation::build_options(ui, spec, &mut fields.0);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::rooms_edit::FoundationType;
 
     #[test]
     fn names_follow_the_floor_stack() {
@@ -548,6 +531,58 @@ mod tests {
                 assert_eq!(out, Outcome::Open);
             }
         }
+    }
+
+    /// Each Foundation Type draws its own options, and the room choices.
+    #[test]
+    fn every_foundation_type_draws_its_options() {
+        let ctx = egui::Context::default();
+        for kind in FoundationType::ALL {
+            let mut spec = FoundationSpec::from_defaults(&PlanDefaults::chief_x18_daniel());
+            spec.kind = kind;
+            let mut d = FloorDialog::foundation(spec);
+            for _ in 0..2 {
+                let mut out = Outcome::Cancel;
+                let _ = ctx.run(egui::RawInput::default(), |ctx| out = d.show(ctx));
+                assert_eq!(out, Outcome::Open, "{kind:?}");
+            }
+            assert!(d.error().is_none(), "{kind:?}");
+        }
+        // The new-floor dialog draws the foundation options and the attic
+        // check box too.
+        let mut cx = cx_with_house();
+        let mut d = FloorDialog::new_floor(&cx.project, cx.floor, &cx.defaults);
+        if let FloorDialog::NewFloor {
+            build_foundation,
+            spec,
+            ..
+        } = &mut d
+        {
+            *build_foundation = true;
+            spec.attic = true;
+        }
+        let mut out = Outcome::Cancel;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| out = d.show(ctx));
+        assert_eq!(out, Outcome::Open);
+        d.apply(&mut cx);
+        assert!(cx.project.floors.iter().any(|f| f.kind == FloorKind::Attic));
+        assert_eq!(cx.project.floors[0].kind, FloorKind::Foundation);
+    }
+
+    #[test]
+    fn the_foundation_dialog_builds_what_it_shows() {
+        let mut cx = cx_with_house();
+        let mut spec = FoundationSpec::from_defaults(&cx.defaults);
+        spec.kind = FoundationType::Piers;
+        spec.pier_spacing = 60.0;
+        FloorDialog::foundation(spec).apply(&mut cx);
+        let layer = plan_core::foundation::FoundationLayer::load(&cx.project.floors[0]);
+        assert!(layer.piers.len() >= 6, "{}", layer.piers.len());
+        let mut spec = FoundationSpec::from_defaults(&cx.defaults);
+        spec.stem_height = 100.0;
+        FloorDialog::foundation(spec).apply(&mut cx);
+        assert_eq!(cx.project.floors[0].room_names[0].room_type, "Basement");
+        assert_eq!(cx.project.floors.len(), 2);
     }
 
     #[test]

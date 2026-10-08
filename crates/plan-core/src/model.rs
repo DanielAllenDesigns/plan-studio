@@ -100,6 +100,10 @@ pub struct Wall {
     /// walls start at the roof surface.
     #[serde(default)]
     pub bottom_offset: f64,
+    /// Structure, Foundation and Wall Cap tab values (W-39, W-52, W-60, W-62,
+    /// R-69); see [`crate::walls::spec`].
+    #[serde(default)]
+    pub spec: crate::walls::WallSpec,
 }
 
 fn default_foundation_height() -> f64 {
@@ -256,6 +260,16 @@ pub struct RoomName {
     /// Roof-over, absolute heights, finish thicknesses and wall covering.
     #[serde(default)]
     pub misc: Option<crate::extras::RoomMisc>,
+    /// Monolithic Slab Foundation flag of a first-floor room (R-31).
+    #[serde(default)]
+    pub monolithic_slab: Option<crate::rooms::RoomSlab>,
+    /// Label text style and placement (R-46).
+    #[serde(default)]
+    pub label_style: crate::rooms::RoomLabelStyle,
+    /// Deck Specification of a deck room: planking, framing and stairs to
+    /// grade (CB-86); see [`crate::deck`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deck: Option<crate::deck::DeckSpec>,
 }
 
 fn default_true() -> bool {
@@ -282,6 +296,9 @@ impl RoomName {
             label: crate::extras::RoomLabelOptions::default(),
             moldings: Vec::new(),
             misc: None,
+            monolithic_slab: None,
+            label_style: crate::rooms::RoomLabelStyle::default(),
+            deck: None,
         }
     }
 }
@@ -351,10 +368,19 @@ pub struct Floor {
     /// Pictures placed under the plan for tracing; see [`crate::underlay`].
     #[serde(default)]
     pub underlays: Vec<crate::underlay::Underlay>,
+    /// Set on the floors that are CAD details (CAD Detail Management, Auto
+    /// Detail); see [`crate::details::CadDetailInfo`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<crate::details::CadDetailInfo>,
     /// Floor Defaults of this floor (R-56): platform and finish thicknesses,
     /// the room type and materials a new room starts with.
     #[serde(default)]
     pub settings: crate::floors::FloorSettings,
+    /// Specification of each fireplace and chimney on this floor, keyed by
+    /// the id of the placed symbol that stands for it (CB-87); see
+    /// [`crate::fireplace`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fireplaces: Vec<crate::fireplace::Fireplace>,
 }
 
 impl Floor {
@@ -382,7 +408,9 @@ impl Floor {
             cad_attrs: Vec::new(),
             cad_blocks: Vec::new(),
             underlays: Vec::new(),
+            detail: None,
             settings: crate::floors::FloorSettings::default(),
+            fireplaces: Vec::new(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -433,11 +461,19 @@ pub struct Project {
     /// Plan-wide light options.
     #[serde(default)]
     pub light_options: crate::camera::LightSettings,
+    /// The sun and interior lights of the 3D views (3D > Lighting).
+    #[serde(default)]
+    pub lighting: crate::camera_view::Lighting,
     /// The project's layout (Chief's layout file kept in the plan), as the
     /// JSON of a `plan_layout::Layout`. plan-core must not depend on
     /// plan-layout, so the app reads and writes it (`shell::layout_window`).
     #[serde(default)]
     pub layout: Option<serde_json::Value>,
+    /// The plan's other layout files, parked while `layout` is the one that
+    /// is open (the JSON of a `plan_layout::Layout` each; Send to Layout
+    /// can pick the file a view goes to, see `shell::layout_window`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layout_files: Vec<serde_json::Value>,
     /// The plan's user text macros (Text Macro Management).
     #[serde(default)]
     pub text_macros: crate::text_styles::TextMacros,
@@ -448,10 +484,23 @@ pub struct Project {
     /// Materials); see [`crate::object_materials`].
     #[serde(default)]
     pub object_materials: Vec<crate::object_materials::ObjectMaterial>,
+    /// Materials Defaults (Default Settings > Materials): the material each
+    /// object class (Wall, Door, Window, Room, Cabinet, Roof...) gives its
+    /// parts unless the object was painted; see [`crate::object_materials`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub material_defaults: Vec<crate::object_materials::ClassMaterial>,
     /// How the 3D view shows doors and windows: casing on or off, doors
     /// open or closed (`SceneOptions::for_project`).
     #[serde(default)]
     pub opening_display: crate::openings::OpeningView3d,
+    /// Electrical defaults of the plan (default device heights); opaque so
+    /// plan-core needs no electrical types, see `plan_electrical::ElectricalDefaults`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub electrical_defaults: Option<serde_json::Value>,
+    /// User-defined properties and their values (Tools > Property Manager);
+    /// see [`crate::props`].
+    #[serde(default, skip_serializing_if = "crate::props::PropTable::is_empty")]
+    pub props: crate::props::PropTable,
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -474,11 +523,16 @@ impl Project {
             info: crate::schedules::ProjectInfo::default(),
             lights: Vec::new(),
             light_options: crate::camera::LightSettings::default(),
+            lighting: crate::camera_view::Lighting::default(),
             layout: None,
+            layout_files: Vec::new(),
             text_macros: crate::text_styles::TextMacros::default(),
             note_types: crate::text_styles::NoteTypes::default(),
             object_materials: Vec::new(),
+            material_defaults: Vec::new(),
             opening_display: crate::openings::OpeningView3d::default(),
+            electrical_defaults: None,
+            props: crate::props::PropTable::default(),
         }
     }
 

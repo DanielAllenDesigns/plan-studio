@@ -74,6 +74,7 @@ Select a dimension by clicking its line, extension or text. Its handles:
   wall moves perpendicular, or lengthens if the dimension runs along it; openings
   slide). A locked layer refuses the change.
 - Double-click opens the Dimension Specification (5.7).
+- **Add Extension Line** and **Delete Extension Line** (Round 14) edit an existing string: click a dimension line where a new measured point goes (or on a hidden extension line to bring it back); click an extension line to delete it, which merges the strings on both sides into one or hides an end's line. Both tools are built and reachable through the option strip of the Dimension tools; the Dimension flyout has no button for them yet (planned). Copying a dimension keeps its ties to the walls and openings it measures.
 - The **Edit toolbar** of a selected dimension offers four commands, each one undo step (a locked layer refuses them):
   - **Reverse Dimension** swaps the two measured points (with their ties and extension-line switches), which puts the dimension line on the other side of what it measures, the same distance away.
   - **Convert to Manual Dimension** turns an automatic dimension (any string of Auto Exterior, Interior, Elevation, Story Pole or NKBA) into an ordinary manual one that a later Auto run no longer replaces. Enabled only when a selected dimension is automatic.
@@ -98,7 +99,7 @@ Not built: ties to other kinds of objects (stairs, roof planes, framing).
 
 Temporary Dimensions (view bar, on by default) show a live readout while drawing
 and dimensions to nearby objects for the selected one. They are never saved or
-printed. Clicking one turns it into an edit field (see chapter 2.5). Which part of a wall or opening they measure to is the **Temporary** group of Locate Objects in the Dimension Defaults (5.9); the **Elevation** group is stored for the level dimensions but no tool reads it yet. Both groups default to wall surfaces and opening sides.
+printed. Clicking one turns it into an edit field (see chapter 2.5). A selected **CAD object** shows its own (Round 14): a line its length and angle, a box its width and height, a circle its radius and diameter and an arc its radius; typing a value resizes the object (a line keeps its start, a box its lower-left corner, a circle its center). A **padlock** beside a measuring value locks it: the temporary dimension becomes a permanent manual dimension on the Dimensions layer, tied to the objects it measures, and clicking the padlock again takes it away. Which part of a wall or opening they measure to is the **Temporary** group of Locate Objects in the Dimension Defaults (5.9); the **Elevation** group is stored for the level dimensions but no tool reads it yet. Both groups default to wall surfaces and opening sides.
 
 ## 5.3 Text tools
 
@@ -109,7 +110,7 @@ together.
 
 | Variant | Hotkey | How it works |
 |---|---|---|
-| Text | `Y` | Click to set the text's lower-left anchor, type, `Enter` to commit. A click elsewhere commits and starts the next text. `Esc` cancels. Clicking existing text edits it in place. |
+| Text | `Y` | Click to set the text's lower-left anchor, type, `Enter` to commit. A click elsewhere commits and starts the next text. `Esc` cancels. Clicking existing text edits it in place. **Press and drag** instead of clicking (Round 14) to draw a **text box**: its width wraps the text, its drag height is a minimum box height, and a ghost shows the box; a drag narrower than about three characters is an ordinary click. Rich Text takes the same drag. |
 | Rich Text | `Ctrl+Alt+Cmd+J` | Click, type; `Enter` adds a line; `Tab` finishes. Bold, italic, underline, size and color are stored with the text as runs (below). |
 | Leader Line | `Alt+L` | Click the arrow tip and the bends; double-click or `Enter` ends. |
 | Text Line with Arrow | `Alt+A` | As Leader Line, then asks for the text at the end. |
@@ -118,12 +119,13 @@ together.
 | Note | `Ctrl+Alt+Cmd+N` | Click, type; the text reads "Note n: ..." with the next free number of the active note type. |
 | Note Type Management | | Opens the dialog below. |
 | Text Macro Management | | Opens the dialog below. |
+| Text Style Management | | The **Text Style Management** window (Round 13): pick a style, then **Rename** it or **Remove** it. A rename follows the style everywhere it is used (the plan's layers, layer-set overrides, saved plan views, CAD text, dimensions and placed schedules); a remove sends its users back to the layer's style. The Default Text Style can be neither renamed nor removed. OK applies the changes. The window is built (the Text tool's Styles mode) but the Text flyout has no entry for it yet (planned); Default Settings > Text > Text Styles renames and removes styles in the meantime (5.9). A note type does not follow a style rename. |
 
 Text height defaults to the template's 6" plan height. A text style can instead be a **Printed Size** style
 (Default Settings > Text Styles, 5.9): its text keeps its size on paper (a 1/8" label stays 1/8" at 1/4", 1/8" or 1/2" scale)
 because its plan height is recomputed from the sheet's scale; a new text on such a layer is placed at the style's own height, and the
 Text Specification says how big it is on paper. A **Character Height** style keeps the plan height you give it.
-Edit > Find/Replace Text finds a string in the text objects of the floor (or every floor) and replaces it, Replace All as one undo step. Replace Fonts is (planned).
+Edit > Find/Replace Text finds a string in the text objects of the floor (or every floor) and replaces it, Replace All as one undo step. **Replace Fonts** (Default Settings > Text > Text Styles, 5.9) swaps one font family for another in every style at once; the Edit > Replace Fonts... menu line itself stays dimmed.
 
 ### Rich text
 
@@ -169,11 +171,11 @@ snaps, angle snaps and the grid apply to every CAD tool. In the tools that take 
 | | Input Point | | Type X, `Tab`, Y, `Enter`. |
 | | Point Marker | | Click to drop a marked point. |
 | | Delete Temporary Points | | A command: removes every point Place Point and Input Point dropped (they sit on the layer `CAD, Temporary Points`; Point Marker points stay). |
-| Lines | Draw Line | | Click start, click end, or press-drag-release. With Connect CAD Segments on (`Shift+F8`) the next line starts where the last ended. `Enter` after the first click types a length and angle. |
+| Lines | Draw Line | | Click start, click end, or press-drag-release. With Connect CAD Segments on (`Shift+F8`) the next line starts where the last ended. `Enter` after the first click types a length and angle. Hold `Shift` to hold the line to 15-degree steps. |
 | | Input Line | | Click start, type length, `Tab`, angle, `Enter`. |
 | | Line With Arrow | | Click the start, click the arrow tip. |
 | | Polyline | | Click vertices, click the first to close, `Enter` or double-click ends. |
-| Arcs | Draw Arc | | Click the points of the arc. Modes in the option strip: three-point, center-start-end, start-end-tangent. |
+| Arcs | Draw Arc | | Click the points of the arc. Four **Arc Creation Modes** (Edit > Arc Creation Modes, or the option strip): **Three-Point** (start, end, then a point the arc passes through), **Center-Start-End** (center, start, end), **Start-End-Radius** (start, end, then a point on the side the arc bulges to; its distance from the middle of the chord sets the radius) and **Tangent** (start, end, then a point giving the tangent direction at the start; two clicks when the start is the end of the line or arc just drawn, which the new arc continues without a corner). |
 | | Input Arc | | Click the center, type radius, start angle and sweep. |
 | | Arc With Arrow | | Three-point arc ending in an arrowhead. |
 | Circles | Circle | `K` | Click the center, click a point on the circle. |
@@ -225,6 +227,9 @@ The **CAD edit tools** are in the CAD menu (CAD > Edit CAD, CAD > Patterns) as t
 | Trim Line | Click the part of a line to remove at its nearest cutters. |
 | Extend Line | Click the end of a line to extend it to the next object. |
 | Break Line | Click the point where a line or polyline splits. |
+| Change Line/Arc | Click a line, an arc or one edge of a polyline: it becomes curved (bulging toward your click) or straight. A selected polyline shows a **diamond handle** on each arc edge; drag it to set the bulge. Arc edges are stored as sample points every 7.5 degrees, so DXF and the layout see a smooth curve. |
+| Delete Break | Click a polyline vertex to remove it; the two edges around it become one straight edge. |
+| Make Arc Tangent | Click an arc edge (or an Arc object): it turns so it leaves its neighbor at the shared end without a corner. |
 | Reverse Direction | Click a line or polyline to reverse it. |
 | Make Parallel | Click the end of a line to turn, then the line to match. |
 | Make Perpendicular | Click the end of a line to turn, then the line to square to. |
@@ -319,11 +324,11 @@ The plan draws the object's own color, weight, dash, solid fill and arrow ends. 
 | Tab | Fields |
 |---|---|
 | General | Type and Value; the Offset From Measured Line; the measured points (Start X/Y, End X/Y); **Located Objects**: for each end what it is tied to (a wall, an opening, a cabinet, a fixture, or "Free point") and a **Show Extension Line** check box per end that hides or shows that end's extension line (stored with the dimension). |
-| Primary Format | Units, Show Unit Indicators, Smallest Fraction, Show Denominator, Reduce Fractions. Shown from the active Dimension Defaults (disabled). |
-| Arrow | Style (Tick) and Size, and the extension line gap and length, from the Dimension Defaults (disabled). |
+| Primary Format | Round 14: the check box **Use the Dimension Defaults' format** (on: the format of the active Dimension Defaults, shown read-only). Clear it and this one dimension has its own **Units** (Feet and Inches, Inches, Decimal Feet, Millimeters, Centimeters, Meters), **Smallest Fraction** (1/2 to 1/64) or **Decimal Places** and **Show Trailing Zeroes**, **Show Unit Indicators** and **Suppress Zero Feet**; a line shows how the value then reads. |
+| Arrow | Round 14: **Use the Dimension Defaults' arrows**, or this dimension's own **Style** (Tick, Arrow, Dot, None), **Size** and **Filled**; and **Extension Lines**: **Use the Dimension Defaults' extension lines**, or its own **Gap From Marked Object**, **Length Past Dimension Line** and **Fixed Extension Line Length** with the **Length From Dimension Line**. |
 | Text Style | **Style**: "From Dimension Defaults" or any text style of the plan (stored with the dimension). Below it the style's Font, whether the Size is a Character Height or a Printed Size, the size **on paper** at the sheet's scale (inches and points) and the height **in the plan**. Position (Centered On / Above / Below Dimension Line) is shown disabled. |
 | Layer | Manual or Automatic dimension layer. |
-| Label | Value Text: type a replacement for the measured value. |
+| Label | Value Text: **Specify the dimension text** and type a replacement for the measured value (the measured value is shown beneath). |
 
 The Dimension Defaults sets (1/4" Scale, 1/8" Scale, Electrical, Framing ...) are kept in the plan
 defaults and edited from Edit > Default Settings > Dimension > Dimensions (5.9). The set marked
@@ -336,7 +341,7 @@ fractions) is what dimensions use.
 |---|---|
 | Text | The text, with a *Rich text* check box that shows it as markup (`<b>`, `<i>`, `<u>`, `<size=1.5>`, 5.3), Angle, Position (lower left X and Y). |
 | Text Style | **Style**: a named text style of the plan, or "(layer's style)"; the font it gives; **Format** check boxes Bold, Italic and Underline for the whole text (mixed formats are typed as markup on the Text tab). |
-| Appearance | **Size**: Text Height. Alignment (Left, Center, Right), Border and Background Fill are disabled until the model stores them. |
+| Appearance | **Size**: Text Height. **Alignment** (Left, Center, Right; Top, Middle, Bottom when the box is taller than the text). **Text Box** (Round 14): **Wrap Text at Box Width** with the **Box Width**, and the **Minimum Box Height** (the box grows taller to hold the text; 0 fits it). **Border** with its **Margin** and **Line Weight** (0 follows the layer). **Background Fill** and its **Fill Color**. The same box is drawn in the plan, on layout pages and in the PDF; the DXF export writes a boxed text as one text entity without its wrapping, border or fill. |
 | Layer | The layer, editable. |
 
 ## 5.9 Default Settings: Dimensions and Text Styles
@@ -371,13 +376,25 @@ Edit > Default Settings... > Text > **Text Styles** edits named text styles for 
 **Edit styles of** radios: **This plan** (the open plan's styles, one undo step, "Text Styles") and **New-plan
 defaults** (what plans start from).
 
-- The list is on the left. The form on the right has Name, Font (Arial, Helvetica, Times New Roman, Courier
-  New, Verdana, Georgia, Calibri), Height (0.25" to 96"), **Size by** (Character Height or Printed Size), Style (Bold, Italic, Underline) and Color.
+- The list is on the left. The form on the right has Name, **Font** (a picker of the fonts installed on this
+  computer, with a search box; the Chief names Avenir, Arial, Arial Narrow and Chief Blueprint are listed too and
+  marked when this machine does not have them; a preview line under it is set in the face the style will use,
+  Bold and Italic choosing the real bold and italic faces), Height (0.25" to 96"), **Size by** (Character Height or Printed Size), Style (Bold, Italic, Underline) and Color.
   **Character Height** keeps the plan height; a character-height style prints at its height times the sheet scale (a 6" style is 1/8" at 1/4" scale).
   **Printed Size** shows a size in inches on paper (0.02" to 2") that holds at any scale, so the plan height changes with the
   sheet's scale. **New** adds a style, **Copy** duplicates the selected one, **Delete** removes it.
 - Names must be filled in and unique. "Default Text Style" can be neither renamed nor deleted.
-- Renaming a style in the plan renames it on the layers that used it. OK applies both lists ("Saved the text
+- Renaming a style in the plan renames it on every layer, layer-set override, saved plan view, CAD text,
+  dimension and placed schedule that used it (Round 13). OK applies both lists ("Saved the text
   styles"); Cancel or Escape drops the changes.
+- **Replace Fonts** (Chief's TXT-12), in the same dialog: choose the family to replace (the list offers the
+  families the styles use now), choose the family to use instead with the same picker, and press **Replace in all
+  styles**. The note under the button says how many styles changed. It edits the list on the screen, so it
+  takes effect with the dialog's OK, as one undo step ("Text Styles").
+- **Fonts on screen and on paper.** A style's font is drawn in the installed font of that name: plan text objects,
+  dimension numbers, room labels and the layout window's box text on screen, and the same fonts embedded in the PDFs
+  you make here (chapter 12.6). A font family that is not installed falls back to a close stand-in (Arial to Helvetica
+  Neue, Avenir to Avenir Next), else the bundled font on screen and Helvetica on paper. Preferences > Fonts switches
+  all this off or on (chapter 1.9a).
 - The styles are stored with the plan, and a layer's Text Style property refers to one by name. The Text
-  Specification's Appearance tab is still disabled (5.8).
+  Specification's Appearance tab holds the text box settings (5.8).

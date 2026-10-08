@@ -390,11 +390,98 @@ impl Camera {
         self.yaw += dyaw;
         self.pitch = (self.pitch + dpitch).clamp(-MAX_PITCH, MAX_PITCH);
     }
+
+    /// How far the first-person view looks up (negative: down), degrees.
+    /// Zero outside `FullCamera`.
+    pub fn tilt_deg(&self) -> f32 {
+        if self.mode == CameraMode::FullCamera {
+            self.pitch.to_degrees()
+        } else {
+            0.0
+        }
+    }
+
+    /// Sets how far the first-person view looks up, degrees, limited to
+    /// +-85. Returns `false` (and does nothing) outside `FullCamera`.
+    pub fn set_tilt_deg(&mut self, deg: f32) -> bool {
+        if self.mode != CameraMode::FullCamera {
+            return false;
+        }
+        self.pitch = deg.to_radians().clamp(-MAX_TILT, MAX_TILT);
+        true
+    }
+
+    /// The eye and the point looked at: the orbit target, or for the
+    /// first-person camera the point `distance` inches ahead.
+    pub fn pose(&self) -> (Vec3, Vec3) {
+        let eye = self.eye();
+        if self.mode == CameraMode::FullCamera {
+            (
+                eye,
+                math::add(eye, math::scale(self.forward(), self.distance)),
+            )
+        } else {
+            (eye, self.target)
+        }
+    }
+
+    /// Aims an orbit-style camera (Perspective Overview, Doll House) from
+    /// `eye` at `target`, the inverse of [`Camera::pose`]. Returns `false`
+    /// and leaves the camera alone for other modes or a degenerate pose.
+    pub fn look_from(&mut self, eye: Vec3, target: Vec3) -> bool {
+        if !self.mode.is_orbit_like() {
+            return false;
+        }
+        let offset = math::sub(eye, target);
+        let distance = math::length(offset);
+        if !distance.is_finite() || distance < 1.0 {
+            return false;
+        }
+        self.target = target;
+        self.distance = distance;
+        self.yaw = offset[0].atan2(offset[2]);
+        self.pitch = (offset[1] / distance).asin().clamp(-MAX_PITCH, MAX_PITCH);
+        true
+    }
 }
+
+/// Tilt limit of the first-person view, radians (85 degrees).
+const MAX_TILT: f32 = 85.0 * std::f32::consts::PI / 180.0;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tilt_only_applies_to_the_first_person_camera() {
+        let mut cam = Camera::default();
+        assert!(!cam.set_tilt_deg(10.0));
+        assert_eq!(cam.tilt_deg(), 0.0);
+        cam.set_mode(CameraMode::FullCamera);
+        assert!(cam.set_tilt_deg(20.0));
+        assert!((cam.tilt_deg() - 20.0).abs() < 1e-4);
+        assert!(cam.forward()[1] > 0.3, "tilting up raises the view");
+        assert!(cam.set_tilt_deg(120.0));
+        assert!((cam.tilt_deg() - 85.0).abs() < 1e-3);
+        assert!(cam.set_tilt_deg(-120.0));
+        assert!((cam.tilt_deg() + 85.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn look_from_is_the_inverse_of_pose() {
+        let mut cam = Camera::default();
+        let (eye, target) = ([900.0, 700.0, 1500.0], [400.0, 60.0, -300.0]);
+        assert!(cam.look_from(eye, target));
+        let (e, t) = cam.pose();
+        for i in 0..3 {
+            assert!((e[i] - eye[i]).abs() < 0.05, "eye {i}: {e:?}");
+            assert!((t[i] - target[i]).abs() < 0.05, "target {i}: {t:?}");
+        }
+        // Degenerate and first-person cameras are left alone.
+        assert!(!cam.look_from(target, target));
+        cam.set_mode(CameraMode::FullCamera);
+        assert!(!cam.look_from(eye, target));
+    }
 
     const MIN: [f32; 3] = [0.0, 0.0, -600.0];
     const MAX: [f32; 3] = [1200.0, 108.0, 0.0];

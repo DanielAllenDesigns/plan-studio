@@ -5,9 +5,10 @@
 //! layer. Those are editable here, and so are the extras kept with the object
 //! (`plan_core::cad::CadAttrs`): the named text style and rich text runs
 //! (bold, italic, underline, size scale, color), typed as markup like
-//! `<b>bold</b> <size=1.5>big</size>`. Alignment, border and fill have no
-//! model fields yet and are shown disabled, as in the other specification
-//! dialogs.
+//! `<b>bold</b> <size=1.5>big</size>`. The Appearance tab edits the text box
+//! (`plan_core::text_box::TextBox`, TXT-16): left/center/right and
+//! top/middle/bottom alignment, wrap width, minimum height, border with its
+//! margin and weight, and the background fill.
 //!
 //! [`open_for`] builds the dialog for an `ObjectRef::Cad`/`Text` that holds a
 //! text item; call [`TextDialog::show`] each frame and
@@ -18,15 +19,19 @@
 pub mod manage;
 
 use super::{
-    dis_check, dis_radio, fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog,
-    SpecPages, Tab, PV_FAINT, PV_INK,
+    fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT,
+    PV_INK,
 };
 use crate::editor::selection::cad_by_id;
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::cad::{CadAttrs, CadItem};
+use plan_core::text_box::{HAlign, VAlign};
 use plan_core::text_styles::{runs_from_markup, runs_plain, runs_to_markup, RichRun};
 use plan_core::{CadObject, Id};
+
+/// The wrap width a text gets when Wrap Text is first ticked (plan inches).
+const DEFAULT_BOX_WIDTH: f64 = 96.0;
 
 const TEXT_TABS: &[Tab] = &[on("Text"), on("Text Style"), on("Appearance"), on("Layer")];
 
@@ -245,14 +250,20 @@ impl TextForm {
             self.rich = rich;
             self.sync_text();
         }
+        // Misspelled words are underlined in red (TXT-21).
+        let mut underline = super::spell_check::layouter(self.rich);
         let changed = ui
             .add(
                 egui::TextEdit::multiline(&mut self.markup)
                     .desired_rows(5)
-                    .desired_width(f32::INFINITY),
+                    .desired_width(f32::INFINITY)
+                    .layouter(&mut underline),
             )
             .changed();
         if changed {
+            self.sync_text();
+        }
+        if super::spell_check::local_controls(ui, &mut self.markup, self.rich) {
             self.sync_text();
         }
         let CadItem::Text { pos, angle, .. } = &mut self.draft.item else {
@@ -370,15 +381,65 @@ impl TextForm {
                 ui.weak("Plan inches; the printed size follows the plan scale.");
             }
         }
+        self.box_sections(ui);
+    }
+
+    /// Alignment, the text box (wrap width, minimum height), border and
+    /// background fill (TXT-16).
+    fn box_sections(&mut self, ui: &mut Ui) {
+        let tb = &mut self.attrs.text_box;
         section(ui, "Alignment");
         ui.horizontal(|ui| {
-            dis_radio(ui, "Left", true);
-            dis_radio(ui, "Center", false);
-            dis_radio(ui, "Right", false);
+            for a in HAlign::ALL {
+                ui.radio_value(&mut tb.halign, a, a.label());
+            }
         });
-        section(ui, "Box");
-        dis_check(ui, "Border", false);
-        dis_check(ui, "Background Fill", false);
+        ui.horizontal(|ui| {
+            for a in VAlign::ALL {
+                ui.radio_value(&mut tb.valign, a, a.label());
+            }
+        });
+        ui.weak("Left, center or right of the box; top, middle or bottom when the box is taller than the text.");
+        section(ui, "Text Box");
+        let mut wrap = tb.width > 0.0;
+        if ui.checkbox(&mut wrap, "Wrap Text at Box Width").changed() {
+            tb.width = if wrap { DEFAULT_BOX_WIDTH } else { 0.0 };
+        }
+        if tb.width > 0.0 {
+            self.fields
+                .length_row(ui, "Box Width", "box_width", &mut tb.width);
+        }
+        self.fields
+            .length_row(ui, "Minimum Box Height", "box_height", &mut tb.height);
+        ui.weak("The box grows taller to hold the text; 0 fits the text.");
+        section(ui, "Border");
+        ui.checkbox(&mut tb.border, "Border");
+        if tb.border {
+            self.fields
+                .length_row(ui, "Margin", "box_margin", &mut tb.margin);
+            row(ui, "Line Weight", |ui| {
+                let mut w = tb.border_weight;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut w)
+                            .range(0..=200)
+                            .suffix(" /100 mm"),
+                    )
+                    .changed()
+                {
+                    tb.border_weight = w;
+                }
+            });
+            ui.weak("Weight 0 follows the layer.");
+        }
+        section(ui, "Background");
+        let mut fill = tb.background.is_some();
+        if ui.checkbox(&mut fill, "Background Fill").changed() {
+            tb.background = fill.then_some(tb.background.unwrap_or([255, 255, 255]));
+        }
+        if let Some(k) = &mut tb.background {
+            row(ui, "Fill Color", |ui| ui.color_edit_button_srgb(k));
+        }
     }
 
     fn layer(&mut self, ui: &mut Ui) {
@@ -597,5 +658,50 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
         });
+    }
+    #[test]
+    fn the_appearance_tab_stores_alignment_box_border_and_fill() {
+        use plan_core::text_box::TextBox;
+        let (mut cx, id) = cx_with_text();
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        assert!(d.attrs().text_box.is_plain());
+        d.form.attrs.text_box = TextBox {
+            width: 80.0,
+            height: 30.0,
+            halign: HAlign::Center,
+            valign: VAlign::Middle,
+            border: true,
+            margin: 2.0,
+            border_weight: 35,
+            background: Some([240, 230, 200]),
+        };
+        assert!(d.apply(&mut cx));
+        let tb = cx.floor().cad_attrs(id).unwrap().text_box;
+        assert_eq!((tb.halign, tb.valign), (HAlign::Center, VAlign::Middle));
+        assert!(tb.border && tb.margin == 2.0 && tb.border_weight == 35);
+        assert_eq!(tb.background, Some([240, 230, 200]));
+        assert_eq!((tb.width, tb.height), (80.0, 30.0));
+        // Reopened, the dialog shows what was stored.
+        let again = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        assert_eq!(again.attrs().text_box, tb);
+        // The tab draws with every part on, and with them off.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        let tab = TEXT_TABS
+            .iter()
+            .position(|t| t.name == "Appearance")
+            .unwrap();
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
+            });
+            d.form.attrs.text_box = TextBox::default();
+        }
+        // One undo step takes it all back.
+        assert_eq!(cx.undo().as_deref(), Some("Change Text"));
+        assert!(cx
+            .floor()
+            .cad_attrs(id)
+            .is_none_or(|a| a.text_box.is_plain()));
     }
 }

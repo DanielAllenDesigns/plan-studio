@@ -35,7 +35,15 @@ impl DefaultsList {
     }
 
     pub fn room_types(cx: &EditorContext) -> Self {
-        DefaultsList::RoomTypes(Box::new(RoomTypesDialog::new(&cx.defaults)))
+        let in_use = cx
+            .project
+            .floors
+            .iter()
+            .flat_map(|f| f.room_names.iter().map(|n| n.room_type.clone()))
+            .collect();
+        DefaultsList::RoomTypes(Box::new(
+            RoomTypesDialog::new(&cx.defaults).with_in_use(in_use),
+        ))
     }
 
     pub fn text_styles(cx: &EditorContext) -> Self {
@@ -774,7 +782,7 @@ fn string_combo(ui: &mut Ui, salt: &str, value: &mut String, options: &[&str]) {
 // ----- Room Types -----
 
 /// Chief's room functions.
-pub const FUNCTIONS: [&str; 7] = [
+pub const FUNCTIONS: [&str; 9] = [
     "Standard",
     "Living",
     "Utility",
@@ -782,6 +790,8 @@ pub const FUNCTIONS: [&str; 7] = [
     "Garage",
     "Porch",
     "Open Below",
+    "Basement",
+    "Crawl Space",
 ];
 
 /// The draft of the room types: each entry remembers the name it had when
@@ -835,6 +845,18 @@ impl RoomTypeList {
             },
         ));
         self.types.len() - 1
+    }
+
+    /// Copies the type at `idx` under the name `new` (the list's own checks
+    /// apply: a name is required and cannot repeat); returns the copy's index.
+    pub fn copy(&mut self, idx: usize, new: &str) -> Result<usize, String> {
+        if let Some(e) = self.name_error(usize::MAX, new) {
+            return Err(e.into());
+        }
+        let mut t = self.types.get(idx).ok_or("No such room type")?.1.clone();
+        t.name = new.trim().to_string();
+        self.types.push((None, t));
+        Ok(self.types.len() - 1)
     }
 
     pub fn rename(&mut self, idx: usize, new: &str) -> Result<(), String> {
@@ -906,17 +928,92 @@ pub struct RoomTypesDialog {
     /// The Edit form: a copy of the type being edited.
     edit: Option<(usize, RoomTypeDef)>,
     prompt: Option<(usize, String)>,
+    /// The Copy prompt: the type being copied and the name for the copy.
+    copy_prompt: Option<(usize, String)>,
     message: Option<String>,
+    /// The types the plan's rooms use (the In Use column).
+    in_use: Vec<String>,
+    /// The check box of each type (parallel to `types.types`); Delete removes
+    /// the checked types.
+    pub checked: Vec<bool>,
 }
 
 impl RoomTypesDialog {
     pub fn new(d: &PlanDefaults) -> Self {
+        let types = RoomTypeList::from_defaults(d);
+        let checked = vec![false; types.types.len()];
         Self {
-            types: RoomTypeList::from_defaults(d),
+            types,
             selected: 0,
             edit: None,
             prompt: None,
+            copy_prompt: None,
             message: None,
+            in_use: Vec::new(),
+            checked,
+        }
+    }
+
+    /// Marks the types the plan's rooms use.
+    pub fn with_in_use(mut self, names: Vec<String>) -> Self {
+        self.in_use = names;
+        self
+    }
+
+    /// Does a room of the plan use this type?
+    pub fn is_in_use(&self, name: &str) -> bool {
+        self.in_use.iter().any(|n| n == name)
+    }
+
+    /// Select All: checks every type.
+    pub fn select_all(&mut self) {
+        self.checked = vec![true; self.types.types.len()];
+    }
+
+    /// Clear All: unchecks every type.
+    pub fn clear_all(&mut self) {
+        self.checked = vec![false; self.types.types.len()];
+    }
+
+    /// Copy: a new type named `new` with the settings of type `idx`; it
+    /// becomes the selected one.
+    pub fn copy_type(&mut self, idx: usize, new: &str) -> Result<(), String> {
+        let at = self.types.copy(idx, new)?;
+        self.checked.push(false);
+        self.selected = at;
+        Ok(())
+    }
+
+    /// Delete: removes the checked types, or the selected one when none is
+    /// checked. "Unspecified" and a type that a room uses stay, with a
+    /// message. Returns how many were removed.
+    pub fn delete_checked(&mut self) -> Result<usize, String> {
+        let mut wanted: Vec<usize> = (0..self.types.types.len())
+            .filter(|&i| self.checked.get(i).copied().unwrap_or(false))
+            .collect();
+        if wanted.is_empty() && self.selected < self.types.types.len() {
+            wanted.push(self.selected);
+        }
+        let mut removed = 0;
+        let mut refusal: Option<String> = None;
+        for &i in wanted.iter().rev() {
+            let name = self.types.types[i].1.name.clone();
+            if self.is_in_use(&name) {
+                refusal = Some(format!("\"{name}\" is used by a room in the plan"));
+                continue;
+            }
+            match self.types.delete(i) {
+                Ok(()) => {
+                    self.checked.remove(i);
+                    removed += 1;
+                }
+                Err(e) => refusal = Some(e),
+            }
+        }
+        self.selected = self.selected.min(self.types.types.len().saturating_sub(1));
+        match refusal {
+            Some(e) if removed == 0 => Err(e),
+            _ => Ok(removed),
         }
     }
 
@@ -947,34 +1044,60 @@ impl RoomTypesDialog {
                 }
             }
         }
-        let enabled = self.edit.is_none() && self.prompt.is_none();
+        if let Some((src, mut text)) = self.copy_prompt.take() {
+            let err = self.types.name_error(usize::MAX, &text).map(String::from);
+            match name_prompt(ctx, "Copy Room Type", &mut text, err.as_deref()) {
+                Outcome::Open => self.copy_prompt = Some((src, text)),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    if let Err(e) = self.copy_type(src, &text) {
+                        self.message = Some(e);
+                    }
+                }
+            }
+        }
+        let enabled = self.edit.is_none() && self.prompt.is_none() && self.copy_prompt.is_none();
         let (types, selected, message) = (&mut self.types, &mut self.selected, &mut self.message);
+        let (checked, in_use) = (&mut self.checked, &self.in_use);
+        checked.resize(types.types.len(), false);
         let mut want_edit = None;
         let mut want_rename = None;
+        let mut want_copy = None;
+        let mut want_delete = false;
+        let mut want_select_all = false;
+        let mut want_clear_all = false;
         let outcome = list_window(
             ctx,
             "Room Types",
             "room_types",
             enabled,
             None,
-            [520.0, 480.0],
+            [560.0, 500.0],
             |ui| {
-                let list_h = (ui.available_height() - 40.0).max(60.0);
+                let list_h = (ui.available_height() - 64.0).max(60.0);
                 egui::ScrollArea::vertical()
                     .id_salt("room_types_list")
                     .max_height(list_h)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         egui::Grid::new("room_types_grid")
-                            .num_columns(4)
+                            .num_columns(6)
                             .striped(true)
                             .spacing([14.0, 3.0])
                             .show(ui, |ui| {
-                                for h in ["Name", "Function", "Living Area", "Conditioned"] {
+                                for h in [
+                                    "",
+                                    "Name",
+                                    "Function",
+                                    "Living Area",
+                                    "Conditioned",
+                                    "In Use",
+                                ] {
                                     ui.strong(h);
                                 }
                                 ui.end_row();
                                 for (i, (_, t)) in types.types.iter().enumerate() {
+                                    ui.checkbox(&mut checked[i], "");
                                     let r = ui.selectable_label(*selected == i, &t.name);
                                     if r.clicked() {
                                         *selected = i;
@@ -985,15 +1108,21 @@ impl RoomTypesDialog {
                                     ui.label(&t.function);
                                     ui.label(yes_no(t.include_in_living_area));
                                     ui.label(yes_no(t.conditioned));
+                                    ui.label(if in_use.contains(&t.name) {
+                                        "\u{2713}"
+                                    } else {
+                                        ""
+                                    });
                                     ui.end_row();
                                 }
                             });
                     });
                 ui.separator();
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let has = *selected < types.types.len();
                     if ui.button("Add").clicked() {
                         *selected = types.add();
+                        checked.push(false);
                         want_edit = Some(*selected);
                         *message = None;
                     }
@@ -1004,19 +1133,25 @@ impl RoomTypesDialog {
                         want_edit = Some(*selected);
                     }
                     if ui
+                        .add_enabled(has, egui::Button::new("Copy\u{2026}"))
+                        .clicked()
+                    {
+                        want_copy = Some(*selected);
+                    }
+                    if ui
                         .add_enabled(has, egui::Button::new("Rename\u{2026}"))
                         .clicked()
                     {
                         want_rename = Some(*selected);
                     }
                     if ui.add_enabled(has, egui::Button::new("Delete")).clicked() {
-                        match types.delete(*selected) {
-                            Ok(()) => {
-                                *selected = (*selected).min(types.types.len().saturating_sub(1));
-                                *message = None;
-                            }
-                            Err(e) => *message = Some(e),
-                        }
+                        want_delete = true;
+                    }
+                    if ui.button("Select All").clicked() {
+                        want_select_all = true;
+                    }
+                    if ui.button("Clear All").clicked() {
+                        want_clear_all = true;
                     }
                 });
                 if let Some(m) = message.as_deref() {
@@ -1024,6 +1159,15 @@ impl RoomTypesDialog {
                 }
             },
         );
+        if want_select_all {
+            self.select_all();
+        }
+        if want_clear_all {
+            self.clear_all();
+        }
+        if want_delete {
+            self.message = self.delete_checked().err();
+        }
         if let Some(i) = want_edit {
             if let Some((_, t)) = self.types.types.get(i) {
                 self.edit = Some((i, t.clone()));
@@ -1032,6 +1176,14 @@ impl RoomTypesDialog {
         if let Some(i) = want_rename {
             if let Some((_, t)) = self.types.types.get(i) {
                 self.prompt = Some((i, t.name.clone()));
+            }
+        }
+        if let Some(i) = want_copy {
+            if let Some((_, t)) = self.types.types.get(i) {
+                let name = unique_name(&format!("{} Copy", t.name), |n| {
+                    self.types.types.iter().any(|(_, x)| x.name == n)
+                });
+                self.copy_prompt = Some((i, name));
             }
         }
         outcome
@@ -1575,6 +1727,100 @@ mod tests {
         assert!(cx.defaults.room_type("Bath").is_none());
         cx.undo();
         assert_eq!(cx.project.floors[0].room_names[0].room_type, "Bath");
+    }
+
+    #[test]
+    fn room_types_copy_select_all_clear_all_and_delete_the_checked() {
+        let mut cx = EditorContext::new(defaults());
+        cx.project.floors[0]
+            .room_names
+            .push(plan_core::model::RoomName::new(
+                plan_core::Point::new(1.0, 1.0),
+                "Hall Bath",
+                "Bath",
+            ));
+        let in_use: Vec<String> = cx.project.floors[0]
+            .room_names
+            .iter()
+            .map(|n| n.room_type.clone())
+            .collect();
+        let mut dlg = RoomTypesDialog::new(&cx.defaults).with_in_use(in_use);
+        let n = dlg.types.types.len();
+        assert_eq!(dlg.checked.len(), n);
+        assert!(dlg.is_in_use("Bath") && !dlg.is_in_use("Bedroom"));
+        // Copy keeps the settings under a new, unused name.
+        let bedroom = dlg
+            .types
+            .types
+            .iter()
+            .position(|(_, t)| t.name == "Bedroom")
+            .unwrap();
+        assert!(dlg.copy_type(bedroom, "Bedroom").is_err(), "name taken");
+        assert!(dlg.copy_type(bedroom, "  ").is_err(), "name needed");
+        dlg.copy_type(bedroom, "Guest Room").unwrap();
+        assert_eq!(dlg.types.types.len(), n + 1);
+        assert_eq!(dlg.checked.len(), n + 1);
+        let copy = &dlg.types.types[n];
+        assert_eq!(copy.0, None, "a new type, not a rename");
+        assert_eq!(copy.1.name, "Guest Room");
+        assert_eq!(copy.1.function, dlg.types.types[bedroom].1.function);
+        assert_eq!(
+            copy.1.include_in_living_area,
+            dlg.types.types[bedroom].1.include_in_living_area
+        );
+        // Select All and Clear All.
+        dlg.select_all();
+        assert!(dlg.checked.iter().all(|c| *c));
+        dlg.clear_all();
+        assert!(dlg.checked.iter().all(|c| !*c));
+        // Delete takes the checked types; one that a room uses and
+        // "Unspecified" stay, with a reason when nothing could go.
+        let at = |dlg: &RoomTypesDialog, name: &str| {
+            dlg.types
+                .types
+                .iter()
+                .position(|(_, t)| t.name == name)
+                .unwrap()
+        };
+        let (guest, bath, unspec) = (
+            at(&dlg, "Guest Room"),
+            at(&dlg, "Bath"),
+            at(&dlg, "Unspecified"),
+        );
+        dlg.checked[guest] = true;
+        dlg.checked[bath] = true;
+        dlg.checked[unspec] = true;
+        assert_eq!(dlg.delete_checked(), Ok(1));
+        assert!(dlg.types.types.iter().all(|(_, t)| t.name != "Guest Room"));
+        assert_eq!(dlg.types.types.len(), n);
+        assert_eq!(dlg.checked.len(), n);
+        dlg.select_all();
+        let kept = dlg.delete_checked().unwrap();
+        assert!(kept > 10, "everything else went: {kept}");
+        let names: Vec<&str> = dlg
+            .types
+            .types
+            .iter()
+            .map(|(_, t)| t.name.as_str())
+            .collect();
+        assert_eq!(names, ["Bath", "Unspecified"]);
+        assert!(dlg.delete_checked().is_err(), "nothing is left to delete");
+        // With nothing checked the selected row goes.
+        let mut dlg = RoomTypesDialog::new(&cx.defaults);
+        dlg.selected = at(&dlg, "Study");
+        assert_eq!(dlg.delete_checked(), Ok(1));
+        assert!(dlg.types.types.iter().all(|(_, t)| t.name != "Study"));
+        // The list draws with the new column and buttons.
+        let ctx = egui::Context::default();
+        let mut out = Outcome::Cancel;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| out = dlg.show(ctx));
+        assert_eq!(out, Outcome::Open);
+    }
+
+    #[test]
+    fn the_room_type_functions_include_basement_and_crawl_space() {
+        assert!(FUNCTIONS.contains(&"Basement") && FUNCTIONS.contains(&"Crawl Space"));
+        assert_eq!(FUNCTIONS.len(), 9);
     }
 
     #[test]

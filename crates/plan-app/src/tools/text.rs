@@ -37,13 +37,15 @@
 
 use super::cad::{add_cad_items, arrowhead, regular_polygon, set_typing, OptionStrip, StripButton};
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
-use crate::dialogs::text::manage::{MacroDialog, NoteTypeDialog};
+use crate::dialogs::text::manage::{MacroDialog, NoteTypeDialog, StyleOp, TextStyleDialog};
 use crate::dialogs::Outcome;
 use crate::editor::selection::{cad_by_id, cad_distance, hit_test};
+use crate::editor::snap::SnapResult;
 use crate::editor::{render, Camera, EditorContext, EditorRequest, ObjectRef};
 use eframe::egui::{self, Rect, Stroke};
 use plan_core::cad::{CadItem, TEXT_WIDTH_FACTOR};
 use plan_core::geometry::{point_in_polygon, Point};
+use plan_core::text_box::{layout, TextBox};
 use plan_core::text_styles::{
     expand_macros, runs_from_markup, runs_plain, runs_to_markup, MacroContext, RichRun,
 };
@@ -76,10 +78,12 @@ pub enum TextMode {
     NoteTypes,
     /// Opens Text Macro Management.
     Macros,
+    /// Opens Text Style Management (rename and remove styles).
+    TextStyles,
 }
 
 impl TextMode {
-    pub const ALL: [TextMode; 9] = [
+    pub const ALL: [TextMode; 10] = [
         TextMode::Text,
         TextMode::RichText,
         TextMode::LeaderLine,
@@ -89,6 +93,7 @@ impl TextMode {
         TextMode::Note,
         TextMode::NoteTypes,
         TextMode::Macros,
+        TextMode::TextStyles,
     ];
 
     /// Chief's name from the Text Tools flyout.
@@ -103,12 +108,16 @@ impl TextMode {
             TextMode::Note => "Note",
             TextMode::NoteTypes => "Note Type Management",
             TextMode::Macros => "Text Macro Management",
+            TextMode::TextStyles => "Text Style Management",
         }
     }
 
     /// Opens a dialog when picked instead of drawing.
     fn is_command(self) -> bool {
-        matches!(self, TextMode::NoteTypes | TextMode::Macros)
+        matches!(
+            self,
+            TextMode::NoteTypes | TextMode::Macros | TextMode::TextStyles
+        )
     }
 
     pub fn from_name(name: &str) -> Option<TextMode> {
@@ -122,6 +131,7 @@ impl TextMode {
             TextMode::ArrowLine => "Line + Text",
             TextMode::NoteTypes => "Note Types",
             TextMode::Macros => "Macros",
+            TextMode::TextStyles => "Styles",
             m => m.name(),
         }
     }
@@ -138,6 +148,9 @@ impl TextMode {
             TextMode::NoteTypes => "Note Type Management: add note types and their label prefixes",
             TextMode::Macros => {
                 "Text Macro Management: define %macros% that expand when text is placed"
+            }
+            TextMode::TextStyles => {
+                "Text Style Management: rename or remove text styles; users follow the change"
             }
         }
     }
@@ -330,12 +343,24 @@ pub struct TextTool {
     dialog: Option<TextUi>,
     /// Open the mode's dialog on the next frame.
     pending: bool,
+    /// A new text's press: where it landed on screen and in the plan. A drag
+    /// from it defines the text box (TXT-1).
+    press: Option<(egui::Pos2, Point)>,
+    /// The opposite corner of the box being dragged.
+    box_drag: Option<Point>,
+    /// The box a finished drag made, and the plan y of its top edge: the box
+    /// keeps its top where it was dragged as the text grows (TXT-13).
+    text_box: Option<(TextBox, f64)>,
+    /// The vertical guide of a left-edge alignment (TXT-10): from the text
+    /// aligned to, to the anchor.
+    align_guide: Option<(Point, Point)>,
 }
 
 /// The dialogs of the two management commands.
 enum TextUi {
     NoteTypes(Box<NoteTypeDialog>),
     Macros(Box<MacroDialog>),
+    Styles(Box<TextStyleDialog>),
 }
 
 impl Default for TextTool {
@@ -355,6 +380,10 @@ impl Default for TextTool {
             note_type: GENERAL_NOTE.to_string(),
             dialog: None,
             pending: false,
+            press: None,
+            box_drag: None,
+            text_box: None,
+            align_guide: None,
         }
     }
 }
@@ -417,6 +446,10 @@ impl TextTool {
         self.editing = None;
         self.pts.clear();
         self.leader.clear();
+        self.press = None;
+        self.box_drag = None;
+        self.text_box = None;
+        self.align_guide = None;
     }
 
     fn cancel(&mut self, cx: &mut EditorContext) {
@@ -456,6 +489,10 @@ impl TextTool {
             height,
             cx.sheet.scale.inches_per_foot(),
         )
+    }
+
+    fn drawn_height_of(&self, cx: &EditorContext, height: f64) -> f64 {
+        Self::drawn_height(cx, height)
     }
 
     fn arrow_size(&self, cx: &EditorContext) -> f64 {
@@ -547,6 +584,15 @@ impl TextTool {
             + 1
     }
 
+    /// Where the text being typed sits: its anchor, or for a text box the
+    /// lower left corner that keeps the dragged top edge (TXT-13).
+    fn text_pos(&self, anchor: Point, text: &str, runs: &[RichRun], height: f64) -> Point {
+        match self.text_box {
+            Some((tb, top)) => Point::new(anchor.x, top - layout(text, runs, height, &tb).height),
+            None => anchor,
+        }
+    }
+
     fn begin_typing(&mut self, cx: &mut EditorContext, anchor: Point) {
         self.anchor = Some(anchor);
         self.buf.clear();
@@ -569,8 +615,13 @@ impl TextTool {
                 } else {
                     self.buf.clone()
                 };
+                let runs = if self.mode == TextMode::RichText {
+                    runs_from_markup(&self.buf)
+                } else {
+                    Vec::new()
+                };
                 vec![CadItem::Text {
-                    pos: a,
+                    pos: self.text_pos(a, &text, &runs, self.drawn_height_of(cx, height)),
                     text,
                     height,
                     angle: 0.0,
@@ -615,7 +666,7 @@ impl TextTool {
                     keep_text_height(marker_items(c, Self::next_marker(cx), dh), height)
                 })
                 .unwrap_or_default(),
-            TextMode::NoteTypes | TextMode::Macros => Vec::new(),
+            TextMode::NoteTypes | TextMode::Macros | TextMode::TextStyles => Vec::new(),
         }
     }
 
@@ -650,6 +701,10 @@ impl TextTool {
         };
         let leader = std::mem::take(&mut self.leader);
         let target = self.pts.first().copied();
+        let boxed = self.text_box.take();
+        self.press = None;
+        self.box_drag = None;
+        self.align_guide = None;
         self.anchor = None;
         self.buf.clear();
         self.editing = None;
@@ -665,9 +720,17 @@ impl TextTool {
                 if text.trim().is_empty() {
                     return ToolResult::consumed();
                 }
+                // A dragged text box keeps its top edge where it was dragged.
+                let pos = match boxed {
+                    Some((tb, top)) => Point::new(
+                        anchor.x,
+                        top - layout(&text, &runs, Self::drawn_height(cx, height), &tb).height,
+                    ),
+                    None => anchor,
+                };
                 (
                     vec![CadItem::Text {
-                        pos: anchor,
+                        pos,
                         text,
                         height,
                         angle: 0.0,
@@ -724,6 +787,10 @@ impl TextTool {
                     self.styles.insert(ids[0], self.rich);
                     Self::store_runs(cx, ids[0], runs);
                 }
+                if let (Some((tb, _)), TextMode::Text | TextMode::RichText) = (boxed, mode) {
+                    let fl = cx.floor;
+                    cx.project.edit_cad_attrs(fl, ids[0], |a| a.text_box = tb);
+                }
                 ToolResult::committed(label)
             }
             None => ToolResult::consumed(),
@@ -771,11 +838,28 @@ impl TextTool {
         }
         cx.begin_change("Edit Text");
         let fl = cx.floor;
+        // A box grows and shrinks from its top edge (TXT-13).
+        let tb = cx
+            .floor()
+            .cad_attrs(id)
+            .map(|a| a.text_box)
+            .filter(TextBox::is_boxed);
         if text.trim().is_empty() {
             Self::remove_text(cx, id);
             cx.selection.clear();
         } else if let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) {
-            if let CadItem::Text { text: t, .. } = &mut c.item {
+            if let CadItem::Text {
+                text: t,
+                pos,
+                height,
+                angle,
+            } = &mut c.item
+            {
+                if let (Some(tb), true) = (tb, angle.abs() < 1e-9) {
+                    let old = layout(t, &old_runs, *height, &tb).height;
+                    let new = layout(&text, &runs, *height, &tb).height;
+                    pos.y += old - new;
+                }
                 *t = text;
             }
             if runs != old_runs {
@@ -831,7 +915,15 @@ impl TextTool {
             }
             let drawn = render::printed_text_object(cx, c, attrs.get(&c.id));
             let item = drawn.as_ref().map_or(&c.item, |o| &o.item);
-            (cad_distance(item, p) <= tol).then_some(c.id)
+            // A text with a box is picked by its box and frame.
+            let dist = match attrs
+                .get(&c.id)
+                .and_then(|a| plan_core::text_box::placed(item, a))
+            {
+                Some(pb) => pb.distance(p),
+                None => cad_distance(item, p),
+            };
+            (dist <= tol).then_some(c.id)
         })
     }
 
@@ -899,6 +991,7 @@ impl TextTool {
         let out = match &mut ui {
             TextUi::NoteTypes(d) => d.show(ctx),
             TextUi::Macros(d) => d.show(ctx),
+            TextUi::Styles(d) => d.show(ctx),
         };
         self.dialog_outcome(cx, ui, out);
     }
@@ -929,6 +1022,16 @@ impl TextTool {
                         cx.mark_dirty();
                     }
                 }
+                TextUi::Styles(d) => {
+                    if !d.ops().is_empty() {
+                        cx.begin_change("Change Text Styles");
+                        if StyleOp::apply_all(d.ops(), &mut cx.project) > 0 {
+                            cx.mark_dirty();
+                        } else {
+                            cx.cancel_change();
+                        }
+                    }
+                }
             },
         }
         cx.requests.push(EditorRequest::SetTool(ToolId::Select));
@@ -952,6 +1055,14 @@ impl TextTool {
             }
             TextMode::Macros => Some(TextUi::Macros(Box::new(MacroDialog::new(
                 cx.project.text_macros(),
+            )))),
+            TextMode::TextStyles => Some(TextUi::Styles(Box::new(TextStyleDialog::new(
+                cx.project
+                    .text_styles
+                    .names()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
             )))),
             _ => None,
         };
@@ -1031,7 +1142,33 @@ impl Tool for TextTool {
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        let s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+        let mut s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+        // Dragging from a new text's anchor sizes its box (TXT-1).
+        if let Some((scr, _)) = self.press {
+            if p.down
+                && self.typing()
+                && self.buf.is_empty()
+                && self.editing.is_none()
+                && (p.screen - scr).length() >= BOX_DRAG_PX
+            {
+                self.box_drag = Some(s.point);
+            }
+        }
+        // The anchor of the next text lines up with the left edge of nearby
+        // text (TXT-10).
+        self.align_guide = None;
+        if !self.typing()
+            && !p.modifiers.alt
+            && matches!(
+                self.mode,
+                TextMode::Text | TextMode::RichText | TextMode::Note
+            )
+        {
+            if let Some((at, other)) = align_left_edge(cx, &s) {
+                s.point = at;
+                self.align_guide = Some((other, at));
+            }
+        }
         self.hover = Some(s.point);
         cx.last_snap = Some(s);
         ToolResult {
@@ -1081,7 +1218,7 @@ impl Tool for TextTool {
                 }
                 ToolResult::consumed()
             }
-            TextMode::NoteTypes | TextMode::Macros => ToolResult::consumed(),
+            TextMode::NoteTypes | TextMode::Macros | TextMode::TextStyles => ToolResult::consumed(),
             TextMode::Marker => {
                 let height = self.height(cx);
                 let n = Self::next_marker(cx);
@@ -1097,8 +1234,43 @@ impl Tool for TextTool {
         }
     }
 
-    fn pointer_up(&mut self, _cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
-        ToolResult::ignored()
+    fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        let press = self.press.take();
+        let Some(drag_end) = self.box_drag.take() else {
+            return ToolResult::ignored();
+        };
+        let Some((_, a)) = press else {
+            return ToolResult::ignored();
+        };
+        if !self.typing() || self.editing.is_some() {
+            return ToolResult::ignored();
+        }
+        let b = if p.modifiers.alt {
+            p.world
+        } else {
+            cx.snap_at(p.world, None, false, &[]).point
+        };
+        let b = if b.dist(drag_end) < 1e-9 { drag_end } else { b };
+        let h = Self::drawn_height(cx, self.height(cx));
+        let pitch = h * plan_core::text_box::LINE_SPACING;
+        let (lo_x, lo_y) = (a.x.min(b.x), a.y.min(b.y));
+        let (w, dy) = ((a.x - b.x).abs(), (a.y - b.y).abs());
+        if w < h * TEXT_WIDTH_FACTOR * 3.0 {
+            // Too narrow for a box: an ordinary click.
+            return ToolResult::consumed();
+        }
+        let tb = TextBox {
+            width: w,
+            height: if dy > pitch { dy } else { 0.0 },
+            ..TextBox::default()
+        };
+        self.anchor = Some(Point::new(lo_x, lo_y));
+        self.text_box = Some((tb, lo_y + dy.max(pitch)));
+        cx.status = format!(
+            "Text box {} wide: type the text; Enter finishes, Esc cancels",
+            cx.fmt_dim(w)
+        );
+        ToolResult::consumed()
     }
 
     fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
@@ -1165,6 +1337,18 @@ impl Tool for TextTool {
         let ghost = Stroke::new(1.0_f32, pal.ghost_stroke);
         let hover = self.hover;
         let items = self.pending_items(cx, hover);
+        // The left-edge alignment guide (TXT-10).
+        if let Some((from, to)) = self.align_guide {
+            painter.line_segment(
+                [cam.world_to_screen(from), cam.world_to_screen(to)],
+                Stroke::new(1.0_f32, pal.selection),
+            );
+        }
+        // The rectangle being dragged for a new text box (TXT-1).
+        if let (Some((_, a)), Some(b)) = (self.press, self.box_drag) {
+            let r = Rect::from_two_pos(cam.world_to_screen(a), cam.world_to_screen(b));
+            painter.rect_stroke(r, 0.0, ghost, egui::StrokeKind::Middle);
+        }
         for it in &items {
             // The ghost is drawn at the size the text will print.
             let shown = match it {
@@ -1182,6 +1366,30 @@ impl Tool for TextTool {
                 other => other.clone(),
             };
             let it = &shown;
+            if let (CadItem::Text { .. }, Some((tb, _))) = (it, self.text_box) {
+                // A text box: wrapped lines inside the dragged width.
+                let obj = plan_core::CadObject {
+                    id: 0,
+                    layer: TEXT_LAYER.to_string(),
+                    item: it.clone(),
+                };
+                let mut attrs = plan_core::cad::CadAttrs::new(0);
+                attrs.text_box = tb;
+                if self.mode == TextMode::RichText {
+                    attrs.runs = runs_from_markup(&self.buf);
+                }
+                if let Some(pb) = plan_core::text_box::placed(it, &attrs) {
+                    render::draw_text_box(cx, painter, cam, &obj, &attrs);
+                    let pts: Vec<egui::Pos2> = pb
+                        .layout
+                        .corners(pb.pos, pb.angle, 0.0)
+                        .iter()
+                        .map(|q| cam.world_to_screen(*q))
+                        .collect();
+                    painter.add(egui::Shape::closed_line(pts, ghost));
+                }
+                continue;
+            }
             render::draw_cad(painter, cam, it, ghost, pal);
             if let CadItem::Text { text, .. } = it {
                 if self.typing() {
@@ -1237,9 +1445,107 @@ impl TextTool {
             }
         }
         cx.selection.clear();
-        self.begin_typing(cx, p.snapped);
+        let at = if p.modifiers.alt {
+            p.snapped
+        } else {
+            align_left_edge(cx, &p.snap).map_or(p.snapped, |(a, _)| a)
+        };
+        self.begin_typing(cx, at);
+        self.press = Some((p.screen, at));
+        self.text_box = None;
         ToolResult::consumed()
     }
+}
+
+/// Pixels the pointer travels from a new text's anchor before the drag sizes
+/// a text box.
+const BOX_DRAG_PX: f32 = 5.0;
+/// How close (screen pixels) an anchor must be to the left edge of another
+/// text to line up with it (TXT-10).
+const ALIGN_PX: f64 = 6.0;
+
+/// TXT-10: when `snap` is a plain grid or free point, the point moved onto the
+/// left edge of the nearest text whose left edge is within [`ALIGN_PX`]
+/// screen pixels, with that text's anchor (the guide runs between the two).
+/// Object snaps win, as they do for every other point.
+pub fn align_left_edge(cx: &EditorContext, snap: &SnapResult) -> Option<(Point, Point)> {
+    use crate::editor::snap::SnapKind;
+    if !matches!(snap.kind, SnapKind::Grid | SnapKind::Free | SnapKind::Angle) {
+        return None;
+    }
+    let tol = ALIGN_PX / cx.px_per_in.max(1e-6);
+    let at = snap.point;
+    cx.floor()
+        .cad
+        .iter()
+        .filter(|c| cx.layers().is_visible(&c.layer))
+        .filter_map(|c| match &c.item {
+            CadItem::Text { pos, angle, .. } if angle.abs() < 1e-9 => Some(*pos),
+            _ => None,
+        })
+        .filter(|pos| (pos.x - at.x).abs() <= tol && pos.dist(at) > 1e-9)
+        .min_by(|a, b| {
+            let da = (a.x - at.x).abs() * 1e3 + (a.y - at.y).abs() * 1e-3;
+            let db = (b.x - at.x).abs() * 1e3 + (b.y - at.y).abs() * 1e-3;
+            da.total_cmp(&db)
+        })
+        .map(|other| (Point::new(other.x, at.y), other))
+}
+
+/// Dragging a text's box handle under Select (S-25, TXT-3, TXT-13). The
+/// Select tool calls this for the `ResizeEnd` (wrap width), `Reshape(0)`
+/// (minimum height) and `Reshape(1)` (both) handles of a text and applies the
+/// pointer position `world` to the box; returns false for anything else.
+/// Width and height are measured in the text's own frame, so a turned text
+/// resizes along its own edges. Alt turns the grid off.
+pub fn drag_box_handle(
+    cx: &mut EditorContext,
+    id: Id,
+    kind: crate::editor::handles::HandleKind,
+    world: Point,
+    free: bool,
+) -> bool {
+    use crate::editor::handles::HandleKind;
+    let (width, height) = match kind {
+        HandleKind::ResizeEnd => (true, false),
+        HandleKind::Reshape(0) => (false, true),
+        HandleKind::Reshape(1) => (true, true),
+        _ => return false,
+    };
+    let fl = cx.floor;
+    let unit = cx.snap_unit();
+    let Some((pos, angle, h)) = cx.project.floors[fl]
+        .cad
+        .iter()
+        .find_map(|c| match &c.item {
+            CadItem::Text {
+                pos, angle, height, ..
+            } if c.id == id => Some((*pos, *angle, *height)),
+            _ => None,
+        })
+    else {
+        return false;
+    };
+    let local = plan_core::text_box::to_local(pos, angle, world);
+    let round = |v: f64| {
+        if free || unit <= 0.0 {
+            v
+        } else {
+            (v / unit).round() * unit
+        }
+    };
+    let min_w = h * TEXT_WIDTH_FACTOR * 2.0;
+    let new_w = round(local.x).max(min_w);
+    let new_h = round(local.y).max(0.0);
+    cx.project.edit_cad_attrs(fl, id, |a| {
+        if width {
+            a.text_box.width = new_w;
+        }
+        if height {
+            a.text_box.height = new_h;
+        }
+    });
+    true
 }
 
 #[cfg(test)]
@@ -1939,5 +2245,271 @@ mod tests {
         assert!(t.dialog.is_some());
         let _ = ctx.run(egui::RawInput::default(), |ctx| t.frame(&mut cx, ctx));
         assert!(t.dialog.is_some());
+    }
+    fn drag(t: &mut TextTool, cx: &mut EditorContext, a: (f64, f64), b: (f64, f64)) {
+        let pa = PointerEvent::at(cx, Point::new(a.0, a.1));
+        let pb = PointerEvent::at(cx, Point::new(b.0, b.1));
+        t.pointer_move(cx, pa);
+        t.pointer_down(cx, pa.with_down(true));
+        t.pointer_move(cx, pb.with_down(true));
+        t.pointer_up(cx, pb);
+    }
+
+    fn the_text(cx: &EditorContext) -> (Id, Point, f64, plan_core::text_box::TextBox) {
+        let c = cx.floor().cad.last().expect("a text");
+        let CadItem::Text { pos, height, .. } = &c.item else {
+            panic!("not a text")
+        };
+        let tb = cx
+            .floor()
+            .cad_attrs(c.id)
+            .map(|a| a.text_box)
+            .unwrap_or_default();
+        (c.id, *pos, *height, tb)
+    }
+
+    #[test]
+    fn dragging_defines_a_text_box_with_a_wrap_width() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let mut t = tool(TextMode::Text);
+        drag(&mut t, &mut cx, (0.0, 100.0), (60.0, 40.0));
+        assert!(t.typing(), "the box waits for the text");
+        type_text(&mut t, &mut cx, "aa bb cc dd ee ff gg hh");
+        let r = enter(&mut t, &mut cx);
+        assert_eq!(r.commit.as_deref(), Some("Place Text"));
+        let (id, pos, h, tb) = the_text(&cx);
+        assert_eq!(tb.width, 60.0);
+        assert_eq!(tb.height, 60.0);
+        // Two lines fit in the dragged height: the box is where it was dragged.
+        assert_eq!(pos, Point::new(0.0, 40.0));
+        let lay = layout("aa bb cc dd ee ff gg hh", &[], h, &tb);
+        assert_eq!(lay.lines.len(), 2, "the text wraps at the box width");
+        // One undo step takes text and box away.
+        assert_eq!(cx.undo().as_deref(), Some("Place Text"));
+        assert!(cx.floor().cad.is_empty());
+        assert!(cx.floor().cad_attrs(id).is_none());
+    }
+
+    #[test]
+    fn a_box_keeps_its_top_edge_as_the_text_grows() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let mut t = tool(TextMode::Text);
+        drag(&mut t, &mut cx, (0.0, 100.0), (60.0, 90.0));
+        type_text(&mut t, &mut cx, &"word ".repeat(30));
+        enter(&mut t, &mut cx);
+        let (id, pos, h, tb) = the_text(&cx);
+        let CadItem::Text { text, .. } = &cad_by_id(cx.floor(), id).unwrap().item else {
+            panic!()
+        };
+        let lay = layout(text, &[], h, &tb);
+        assert!(lay.lines.len() > 3);
+        assert!(
+            (pos.y + lay.height - 100.0).abs() < 1e-6,
+            "the top stays at 100"
+        );
+        // Editing in place shortens the box from the top, too.
+        click(&mut t, &mut cx, 5.0, 100.0 - 2.0);
+        assert_eq!(t.editing, Some(id), "a click in the box edits the text");
+        t.buf = "short".into();
+        enter(&mut t, &mut cx);
+        let (_, pos2, _, tb2) = the_text(&cx);
+        let lay2 = layout("short", &[], h, &tb2);
+        assert!((pos2.y + lay2.height - 100.0).abs() < 1e-6);
+        assert_eq!(tb2.width, 60.0, "the width is kept");
+    }
+
+    #[test]
+    fn a_short_drag_is_an_ordinary_click_and_a_narrow_one_is_too() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let mut t = tool(TextMode::Text);
+        drag(&mut t, &mut cx, (0.0, 0.0), (4.0, 0.0));
+        type_text(&mut t, &mut cx, "plain");
+        enter(&mut t, &mut cx);
+        let (id, pos, _, tb) = the_text(&cx);
+        assert!(tb.is_plain(), "{tb:?}");
+        assert!(cx.floor().cad_attrs(id).is_none());
+        assert_eq!(pos, Point::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn rich_text_can_be_dragged_into_a_box_too() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let mut t = tool(TextMode::RichText);
+        drag(&mut t, &mut cx, (0.0, 0.0), (80.0, 30.0));
+        type_text(&mut t, &mut cx, "<b>bold</b> and plain words");
+        t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        let (id, _, _, tb) = the_text(&cx);
+        assert_eq!(tb.width, 80.0);
+        assert!(cx
+            .floor()
+            .cad_attrs(id)
+            .unwrap()
+            .runs
+            .iter()
+            .any(|r| r.bold));
+    }
+
+    #[test]
+    fn a_new_text_lines_up_with_the_left_edge_of_nearby_text() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        cx.project.add_cad(
+            0,
+            TEXT_LAYER,
+            CadItem::Text {
+                pos: Point::new(100.5, 200.0),
+                text: "Notes".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        let mut t = tool(TextMode::Text);
+        // One screen pixel off the other text's left edge (half an inch at
+        // 2 px/in): the anchor takes the edge, and the guide is drawn.
+        let p = PointerEvent::at(&cx, Point::new(101.0, 160.0));
+        t.pointer_move(&mut cx, p);
+        assert!(t.align_guide.is_some());
+        t.pointer_down(&mut cx, p.with_down(true));
+        type_text(&mut t, &mut cx, "Below");
+        enter(&mut t, &mut cx);
+        let (_, pos, _, _) = the_text(&cx);
+        assert_eq!(pos.x, 100.5, "x lines up with the text above");
+        // Far away: no alignment. Alt: none either.
+        let far = PointerEvent::at(&cx, Point::new(140.0, 120.0));
+        t.pointer_move(&mut cx, far);
+        assert!(t.align_guide.is_none());
+        let alt = PointerEvent::at(&cx, Point::new(101.0, 100.0)).with_modifiers(egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::NONE
+        });
+        t.pointer_move(&mut cx, alt);
+        assert!(t.align_guide.is_none());
+    }
+
+    #[test]
+    fn dragging_the_box_handles_sizes_the_box_in_the_texts_own_frame() {
+        use crate::editor::handles::HandleKind;
+        let mut cx = new_cx();
+        let id = cx.project.add_cad(
+            0,
+            TEXT_LAYER,
+            CadItem::Text {
+                pos: Point::new(10.0, 10.0),
+                text: "one two three four five six".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        // Width: the pointer's x in the text's frame.
+        assert!(drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::ResizeEnd,
+            Point::new(70.0, 30.0),
+            true
+        ));
+        let a = cx.floor().cad_attrs(id).unwrap();
+        assert_eq!(a.text_box.width, 60.0);
+        assert_eq!(a.text_box.height, 0.0, "the height is untouched");
+        // Height, then both.
+        assert!(drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::Reshape(0),
+            Point::new(30.0, 50.0),
+            true
+        ));
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().text_box.height, 40.0);
+        assert!(drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::Reshape(1),
+            Point::new(90.0, 80.0),
+            true
+        ));
+        let tb = cx.floor().cad_attrs(id).unwrap().text_box;
+        assert_eq!((tb.width, tb.height), (80.0, 70.0));
+        // Not smaller than a couple of characters.
+        assert!(drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::ResizeEnd,
+            Point::new(5.0, 30.0),
+            true
+        ));
+        assert!(cx.floor().cad_attrs(id).unwrap().text_box.width >= 6.0 * 0.6 * 2.0 - 1e-9);
+        // Other handles and other objects are not ours.
+        assert!(!drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::Rotate,
+            Point::ZERO,
+            true
+        ));
+        let line = cx.project.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Line {
+                a: Point::ZERO,
+                b: Point::new(10.0, 0.0),
+            },
+        );
+        assert!(!drag_box_handle(
+            &mut cx,
+            line,
+            HandleKind::ResizeEnd,
+            Point::ZERO,
+            true
+        ));
+        // A turned text measures along its own edges.
+        let turned = cx.project.add_cad(
+            0,
+            TEXT_LAYER,
+            CadItem::Text {
+                pos: Point::new(0.0, 0.0),
+                text: "turned".into(),
+                height: 6.0,
+                angle: std::f64::consts::FRAC_PI_2,
+            },
+        );
+        assert!(drag_box_handle(
+            &mut cx,
+            turned,
+            HandleKind::ResizeEnd,
+            Point::new(-5.0, 50.0),
+            true
+        ));
+        let w = cx.floor().cad_attrs(turned).unwrap().text_box.width;
+        assert!((w - 50.0).abs() < 1e-9, "{w}");
+    }
+
+    #[test]
+    fn text_style_management_renames_and_removes_in_one_undo_step() {
+        let mut cx = new_cx();
+        cx.project.layers.layers[0].text_style = "Room Label Style".into();
+        let mut t = tool(TextMode::TextStyles);
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| t.frame(&mut cx, ctx));
+        let Some(TextUi::Styles(mut d)) = t.dialog.take() else {
+            panic!("the text style dialog is open")
+        };
+        assert!(d.rename("Room Label Style", "Labels"));
+        assert!(d.remove("Schedule Style"));
+        t.dialog_outcome(&mut cx, TextUi::Styles(d), Outcome::Ok);
+        assert!(cx.project.text_styles.get("Labels").is_some());
+        assert!(cx.project.text_styles.get("Schedule Style").is_none());
+        assert_eq!(cx.project.layers.layers[0].text_style, "Labels");
+        assert_eq!(cx.undo().as_deref(), Some("Change Text Styles"));
+        assert!(cx.project.text_styles.get("Room Label Style").is_some());
+        assert_eq!(cx.project.layers.layers[0].text_style, "Room Label Style");
+        // Cancel stores nothing.
+        let mut d = TextStyleDialog::new(vec!["Default Text Style".into(), "Labels".into()]);
+        d.remove("Labels");
+        t.dialog_outcome(&mut cx, TextUi::Styles(Box::new(d)), Outcome::Cancel);
+        assert!(cx.project.text_styles.get("Room Label Style").is_some());
     }
 }

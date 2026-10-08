@@ -9,12 +9,18 @@ use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::extras::WallExtras as StoredExtras;
 use plan_core::geometry::Point;
 use plan_core::units::fmt_ft_in;
+use plan_core::walls::spec::{default_cap_profiles, min_thickness};
 use plan_core::walls::{
-    scale_opening_offset, ArcLock, DEFAULT_HALF_WALL_HEIGHT, DEFAULT_PONY_SPLIT,
+    scale_opening_offset, ArcLock, CapPosition, CeilingPlatform, FloorPlatform,
+    DEFAULT_HALF_WALL_HEIGHT, DEFAULT_PONY_SPLIT,
 };
 use plan_core::{
-    FenceStyle, Id, Opening, ResizeAbout, Wall, WallClass, WallCurve, WallKind, WallTypeDef,
+    FenceStyle, Id, Opening, Project, ResizeAbout, Wall, WallClass, WallCurve, WallKind,
+    WallTypeDef,
 };
+use std::collections::{HashMap, HashSet};
+
+mod tabs;
 
 /// Values a Roof tab control starts with when it is switched on.
 const ROOF_PITCH_DEFAULT: f64 = 8.0;
@@ -122,38 +128,49 @@ const WALL_TABS_EXTERIOR: &[Tab] = &[
     on("General"),
     on("Structure"),
     on("Roof"),
-    off("Foundation"),
+    on("Foundation"),
     on("Wall Types"),
-    off("Wall Cap"),
-    off("Wall Covering"),
+    on("Wall Cap"),
+    on("Wall Covering"),
     on("Rail Style"),
-    off("Newels/Balusters"),
-    off("Rails"),
+    on("Newels/Balusters"),
+    on("Rails"),
     on("Layer"),
-    off("Materials"),
+    on("Materials"),
     on("Label"),
-    off("Components"),
-    off("Object Information"),
-    off("Schedule"),
+    on("Components"),
+    on("Object Information"),
+    on("Schedule"),
+];
+
+/// The tabs of the Wall Specification over several walls (W-83): the fields
+/// every wall has.
+const WALL_TABS_MULTI: &[Tab] = &[
+    on("General"),
+    on("Structure"),
+    on("Foundation"),
+    on("Wall Types"),
+    on("Wall Cap"),
+    on("Layer"),
 ];
 
 const WALL_TABS: &[Tab] = &[
     on("General"),
     on("Structure"),
     off("Roof"),
-    off("Foundation"),
+    on("Foundation"),
     on("Wall Types"),
-    off("Wall Cap"),
-    off("Wall Covering"),
+    on("Wall Cap"),
+    on("Wall Covering"),
     on("Rail Style"),
-    off("Newels/Balusters"),
-    off("Rails"),
+    on("Newels/Balusters"),
+    on("Rails"),
     on("Layer"),
-    off("Materials"),
+    on("Materials"),
     on("Label"),
-    off("Components"),
-    off("Object Information"),
-    off("Schedule"),
+    on("Components"),
+    on("Object Information"),
+    on("Schedule"),
 ];
 
 /// Wall dialog values. The last picked wall type, the plan label switch and
@@ -224,6 +241,144 @@ enum WallLock {
     End,
 }
 
+/// What a dialog over several walls tracks (W-83).
+struct Multi {
+    ids: Vec<Id>,
+    originals: Vec<Wall>,
+    /// Keys whose value is not the same in every wall.
+    mixed: HashSet<&'static str>,
+    /// Keys the user edited: only these are written to the walls.
+    touched: HashSet<&'static str>,
+    /// Text of the mixed length fields being typed.
+    bufs: HashMap<&'static str, String>,
+    default_heights: [f64; 2],
+}
+
+/// The fields a multi-wall dialog edits, by key, as comparable text.
+fn field_values(w: &Wall) -> Vec<(&'static str, String)> {
+    let (st, f, c) = (&w.spec.structure, &w.spec.foundation, &w.spec.cap);
+    let n = |v: f64| format!("{v:.4}");
+    vec![
+        ("thickness", n(w.thickness)),
+        ("wall_type", format!("{:?}", w.wall_type)),
+        ("bottom", n(w.bottom_offset)),
+        ("height", n(w.height)),
+        ("default_top", format!("{}", !st.custom_top)),
+        (
+            "default_bottom",
+            format!("{}", st.default_bottom(w.bottom_offset)),
+        ),
+        ("invisible", format!("{}", w.flags.invisible)),
+        (
+            "no_room_definition",
+            format!("{}", w.flags.no_room_definition),
+        ),
+        ("no_locate", format!("{}", w.flags.no_locate)),
+        ("layer", w.layer.clone()),
+        ("gen_between", format!("{}", st.generate_between_platforms)),
+        ("ceiling_platform", format!("{:?}", st.ceiling_platform)),
+        ("floor_platform", format!("{:?}", st.floor_platform)),
+        ("through_start", format!("{}", st.through_at_start)),
+        ("through_end", format!("{}", st.through_at_end)),
+        ("slab_footing", format!("{}", f.slab_footing)),
+        ("footing", format!("{}", f.footing)),
+        ("footing_width", n(f.footing_width)),
+        ("footing_height", n(f.footing_height)),
+        ("footing_auto", format!("{}", f.auto_bottom)),
+        ("footing_bottom", n(f.footing_bottom)),
+        ("footing_vertical", format!("{}", f.vertical_footing)),
+        ("footing_offset", n(f.footing_offset)),
+        ("footing_center", format!("{}", f.center_on_main_layer)),
+        ("footing_outside", format!("{}", f.align_on_outside)),
+        ("chamfer_mono", format!("{}", f.chamfer_monolithic)),
+        ("chamfer_regular", format!("{}", f.chamfer_regular)),
+        ("chamfer_width", n(f.chamfer_width)),
+        ("chamfer_height", n(f.chamfer_height)),
+        ("pour", format!("{}", f.pour_number)),
+        ("sill_plate", format!("{}", f.sill_plate)),
+        ("cap", format!("{}", c.enabled)),
+        ("cap_profile", c.profile.clone()),
+        ("cap_full", format!("{}", c.full_wall_width)),
+        ("cap_position", format!("{:?}", c.position)),
+        ("cap_split_pony", format!("{}", c.split_pony_wall)),
+    ]
+}
+
+/// The keys whose values differ between `walls`.
+fn mixed_keys(walls: &[Wall]) -> HashSet<&'static str> {
+    let mut out = HashSet::new();
+    let Some((first, rest)) = walls.split_first() else {
+        return out;
+    };
+    let base = field_values(first);
+    for w in rest {
+        for ((key, a), (_, b)) in base.iter().zip(field_values(w)) {
+            if *a != b {
+                out.insert(*key);
+            }
+        }
+    }
+    out
+}
+
+/// Copies the field `key` of `from` onto `to` (thickness and wall type are
+/// the project's business: they hold reference lines).
+fn apply_field(key: &str, from: &Wall, to: &mut Wall, default_heights: &[f64; 2]) {
+    let (fs, ts) = (&from.spec, &mut to.spec);
+    match key {
+        "bottom" => {
+            to.bottom_offset = from.bottom_offset;
+            ts.structure.custom_bottom = fs.structure.custom_bottom;
+        }
+        "height" => to.height = from.height,
+        "default_top" => {
+            ts.structure.custom_top = fs.structure.custom_top;
+            if !ts.structure.custom_top {
+                to.height = default_heights[usize::from(to.kind == WallKind::Interior)];
+            }
+        }
+        "default_bottom" => {
+            ts.structure.custom_bottom = fs.structure.custom_bottom;
+            if !ts.structure.custom_bottom {
+                to.bottom_offset = 0.0;
+            }
+        }
+        "invisible" => to.flags.invisible = from.flags.invisible,
+        "no_room_definition" => to.flags.no_room_definition = from.flags.no_room_definition,
+        "no_locate" => to.flags.no_locate = from.flags.no_locate,
+        "layer" => to.layer = from.layer.clone(),
+        "gen_between" => {
+            ts.structure.generate_between_platforms = fs.structure.generate_between_platforms
+        }
+        "ceiling_platform" => ts.structure.ceiling_platform = fs.structure.ceiling_platform,
+        "floor_platform" => ts.structure.floor_platform = fs.structure.floor_platform,
+        "through_start" => ts.structure.through_at_start = fs.structure.through_at_start,
+        "through_end" => ts.structure.through_at_end = fs.structure.through_at_end,
+        "slab_footing" => ts.foundation.slab_footing = fs.foundation.slab_footing,
+        "footing" => ts.foundation.footing = fs.foundation.footing,
+        "footing_width" => ts.foundation.footing_width = fs.foundation.footing_width,
+        "footing_height" => ts.foundation.footing_height = fs.foundation.footing_height,
+        "footing_auto" => ts.foundation.auto_bottom = fs.foundation.auto_bottom,
+        "footing_bottom" => ts.foundation.footing_bottom = fs.foundation.footing_bottom,
+        "footing_vertical" => ts.foundation.vertical_footing = fs.foundation.vertical_footing,
+        "footing_offset" => ts.foundation.footing_offset = fs.foundation.footing_offset,
+        "footing_center" => ts.foundation.center_on_main_layer = fs.foundation.center_on_main_layer,
+        "footing_outside" => ts.foundation.align_on_outside = fs.foundation.align_on_outside,
+        "chamfer_mono" => ts.foundation.chamfer_monolithic = fs.foundation.chamfer_monolithic,
+        "chamfer_regular" => ts.foundation.chamfer_regular = fs.foundation.chamfer_regular,
+        "chamfer_width" => ts.foundation.chamfer_width = fs.foundation.chamfer_width,
+        "chamfer_height" => ts.foundation.chamfer_height = fs.foundation.chamfer_height,
+        "pour" => ts.foundation.pour_number = fs.foundation.pour_number,
+        "sill_plate" => ts.foundation.sill_plate = fs.foundation.sill_plate,
+        "cap" => ts.cap.enabled = fs.cap.enabled,
+        "cap_profile" => ts.cap.profile = fs.cap.profile.clone(),
+        "cap_full" => ts.cap.full_wall_width = fs.cap.full_wall_width,
+        "cap_position" => ts.cap.position = fs.cap.position,
+        "cap_split_pony" => ts.cap.split_pony_wall = fs.cap.split_pony_wall,
+        _ => {}
+    }
+}
+
 pub struct WallDialog {
     frame: SpecDialog,
     form: WallForm,
@@ -235,7 +390,9 @@ struct WallForm {
     extras: WallExtras,
     /// The wall's openings as they were when the dialog opened.
     openings: Vec<Opening>,
-    orig_start: Point,
+    /// How far the length and angle edits so far moved the wall's start along
+    /// the wall, so its openings keep their distance from the locked point.
+    open_shift: f64,
     lock: WallLock,
     /// The reference line the Radius field measures to ("Radius to").
     radius_to: ResizeAbout,
@@ -246,7 +403,16 @@ struct WallForm {
     arc_scale: f64,
     default_height: f64,
     default_top: bool,
+    /// The thickness the wall had when the dialog opened (a wall already
+    /// thinner than its type allows may keep it).
+    orig_thickness: f64,
+    /// Set when the dialog edits several walls at once (W-83).
+    multi: Option<Multi>,
     fields: Fields,
+    /// The library the Materials and Wall Covering tabs pick from, loaded when
+    /// first needed, and their search text.
+    material_lib: Option<plan_materials::MaterialLibrary>,
+    material_filter: String,
     /// The wall types offered in the Wall Types tab (`PlanDefaults::wall_types`).
     types: Vec<WallTypeDef>,
     /// The Wall Type Definitions dialog, while open.
@@ -273,7 +439,8 @@ impl WallDialog {
             WallTarget::DefaultInterior => "Wall Specification (Interior Wall Defaults)",
             WallTarget::DefaultFoundation => "Wall Specification (Foundation Wall Defaults)",
         };
-        let default_top = (wall.height - default_height).abs() < 1e-6;
+        let default_top =
+            !wall.spec.structure.custom_top && (wall.height - default_height).abs() < 1e-6;
         // A placed wall's own stored values win over the session's.
         let extras = if target.is_default() {
             extras
@@ -284,7 +451,8 @@ impl WallDialog {
             frame: SpecDialog::new(title, "wall"),
             form: WallForm {
                 target,
-                orig_start: wall.start,
+                orig_thickness: wall.thickness,
+                open_shift: 0.0,
                 draft: wall,
                 extras,
                 openings,
@@ -294,7 +462,10 @@ impl WallDialog {
                 arc_scale: 1.0,
                 default_height,
                 default_top,
+                multi: None,
                 fields: Fields::default(),
+                material_lib: None,
+                material_filter: String::new(),
                 types,
                 define: None,
                 edited_types: Vec::new(),
@@ -330,6 +501,110 @@ impl WallDialog {
         Self::new(target, wall, Vec::new(), extras, height, types)
     }
 
+    /// The Wall Specification over several walls (W-83, Open Object with a
+    /// selection of walls). `default_heights` are the default top heights of
+    /// exterior and interior walls. Fields whose values differ between the
+    /// walls show Chief's indeterminate state, and only the fields edited
+    /// are written back by [`WallDialog::apply_multi`].
+    pub fn multi(walls: Vec<Wall>, default_heights: [f64; 2], types: Vec<WallTypeDef>) -> Self {
+        let first = walls.first().cloned().expect("at least one wall");
+        let mut d = Self::new(
+            WallTarget::Wall(first.id),
+            first,
+            Vec::new(),
+            WallExtras::default(),
+            default_heights[0],
+            types,
+        );
+        let mixed = mixed_keys(&walls);
+        d.frame = SpecDialog::new("Wall Specification (Multiple Walls)", "wall_multi");
+        d.form.multi = Some(Multi {
+            ids: walls.iter().map(|w| w.id).collect(),
+            originals: walls,
+            mixed,
+            touched: HashSet::new(),
+            bufs: HashMap::new(),
+            default_heights,
+        });
+        d
+    }
+
+    /// The walls a multi-wall dialog edits (`None` for a one-wall dialog).
+    #[cfg(test)]
+    pub fn multi_ids(&self) -> Option<&[Id]> {
+        self.form.multi.as_ref().map(|m| m.ids.as_slice())
+    }
+
+    /// Keys of the fields the user edited so far (multi-wall dialogs).
+    #[cfg(test)]
+    pub fn touched(&self) -> Vec<&'static str> {
+        let mut v: Vec<_> = self
+            .form
+            .multi
+            .iter()
+            .flat_map(|m| m.touched.iter().copied())
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Tests edit a field of the draft and mark it edited, as the page does.
+    #[cfg(test)]
+    pub fn edit_field(&mut self, key: &'static str, edit: impl FnOnce(&mut Wall)) {
+        edit(&mut self.form.draft);
+        self.form.touch(key);
+    }
+
+    /// Whether the field `key` shows the mixed state (multi-wall dialogs).
+    #[cfg(test)]
+    pub fn is_mixed(&self, key: &str) -> bool {
+        self.form.mixed(key)
+    }
+
+    /// Writes the edited fields of a multi-wall dialog to every wall of floor
+    /// `floor`; the caller opens the undo step. A thickness edit keeps each
+    /// wall's reference line (W-27) and a wall type change goes through
+    /// [`Project::set_wall_type`]. Returns how many walls changed.
+    pub fn apply_multi(&self, project: &mut Project, floor: usize) -> usize {
+        let Some(m) = &self.form.multi else {
+            return 0;
+        };
+        if m.touched.is_empty() {
+            return 0;
+        }
+        let draft = &self.form.draft;
+        let mut changed = 0;
+        for id in &m.ids {
+            let Some(before) = project.floors[floor].wall(*id).cloned() else {
+                continue;
+            };
+            if let (true, Some(name)) = (m.touched.contains("wall_type"), &draft.wall_type) {
+                if let Some(def) = self.form.types.iter().find(|t| &t.name == name) {
+                    let about = before.resize_about;
+                    project.set_wall_type(floor, *id, def, about);
+                    if let Some(w) = project.floors[floor].wall_mut(*id) {
+                        w.kind = def.kind;
+                    }
+                }
+            }
+            if m.touched.contains("thickness") {
+                project.set_wall_thickness_about(floor, *id, draft.thickness);
+            }
+            if let Some(w) = project.floors[floor].wall_mut(*id) {
+                for key in &m.touched {
+                    apply_field(key, draft, w, &m.default_heights);
+                }
+            }
+            if project.floors[floor]
+                .wall(*id)
+                .is_some_and(|w| !plan_core::joins::walls_equal(std::slice::from_ref(w), &[before]))
+            {
+                changed += 1;
+            }
+        }
+        changed
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
         // The definitions dialog is drawn first so it takes Esc and Enter.
         if let Some(mut d) = self.form.define.take() {
@@ -348,6 +623,11 @@ impl WallDialog {
     /// accepting the dialog stores them in `Wall.extras`.
     pub(crate) fn sync_stored(&mut self) {
         self.form.draft.extras = self.form.extras.to_stored();
+        // A wall whose "Default Wall Top Height" box is off keeps its own
+        // height when the floor's ceiling height changes (W-60).
+        if self.form.multi.is_none() {
+            self.form.draft.spec.structure.custom_top = !self.form.default_top;
+        }
     }
 
     /// Wall types edited or created through "Define...".
@@ -417,11 +697,10 @@ impl WallForm {
     /// (making a wall curved, or changing its radius, stretches the
     /// centerline) so each keeps its proportion along the wall.
     fn adjusted_openings(&self) -> Vec<Opening> {
-        let dir = self.draft.direction();
         let shift = if self.draft.is_curved() {
             0.0
         } else {
-            self.orig_start.sub(self.draft.start).dot(dir)
+            self.open_shift
         };
         let k = self.arc_scale;
         let len = self.draft.path_length();
@@ -477,6 +756,14 @@ impl WallForm {
         let len = len.max(1.0);
         let d = self.dir();
         let (s, e) = (self.draft.start, self.draft.end);
+        // The openings keep their distance from the locked point: the start
+        // moves back by the change (End lock) or half of it (Center lock).
+        let delta = len - self.draft.length();
+        self.open_shift += match self.lock {
+            WallLock::Start => 0.0,
+            WallLock::Center => delta * 0.5,
+            WallLock::End => delta,
+        };
         match self.lock {
             WallLock::Start => self.draft.end = s.add(d.scale(len)),
             WallLock::End => self.draft.start = e.sub(d.scale(len)),
@@ -488,14 +775,23 @@ impl WallForm {
         }
     }
 
-    /// Rotates the wall about its start point, keeping the length.
+    /// Rotates the wall about its Lock point (the start, the center or the
+    /// end), keeping the length (W-76). The walls joined to the ends follow
+    /// when the dialog is accepted (`wall_edit::follow_moved_ends`).
     fn set_angle(&mut self, deg: f64) {
         let a = deg.to_radians();
         let len = self.draft.length().max(1.0);
-        self.draft.end = self
-            .draft
-            .start
-            .add(Point::new(a.cos(), a.sin()).scale(len));
+        let d = Point::new(a.cos(), a.sin());
+        let (s, e) = (self.draft.start, self.draft.end);
+        match self.lock {
+            WallLock::Start => self.draft.end = s.add(d.scale(len)),
+            WallLock::End => self.draft.start = e.sub(d.scale(len)),
+            WallLock::Center => {
+                let mid = Point::lerp(s, e, 0.5);
+                self.draft.start = mid.sub(d.scale(len * 0.5));
+                self.draft.end = mid.add(d.scale(len * 0.5));
+            }
+        }
     }
 
     /// The type matching the draft: the one picked last if it still fits,
@@ -831,8 +1127,14 @@ impl WallForm {
             ui.weak("Draw a Railing or Deck Railing wall, or tick Railing on the General tab.");
             return;
         }
-        self.fields
-            .length_row(ui, "Railing Height", "rail_height", &mut self.draft.height);
+        if self
+            .fields
+            .length_row(ui, "Railing Height", "rail_height", &mut self.draft.height)
+        {
+            // The Rails tab's top of rail follows the height set here.
+            self.draft.spec.railing.top_rail_top = Some(self.draft.height);
+        }
+        super::code_notice::code_notice(ui, "IRC R312.1.2 guard height", &mut self.draft.height, crate::editor::code::active().guard_height, super::code_notice::LimitKind::Min);
         let len = self.draft.length();
         ui.weak(format!(
             "Posts {}: one every 8' at most and one at each end",
@@ -880,12 +1182,15 @@ impl WallForm {
             .length_row(ui, "Thickness", "thickness", &mut self.draft.thickness);
         // Chief's wall "Bottom" value: where the wall starts above its floor.
         ui.add_enabled_ui(!is_default, |ui| {
-            self.fields.length_row(
+            if self.fields.length_row(
                 ui,
                 "Bottom Height",
                 "bottom_offset",
                 &mut self.draft.bottom_offset,
-            );
+            ) {
+                // A bottom off the floor is no longer the default one.
+                self.draft.spec.structure.custom_bottom = self.draft.bottom_offset.abs() > 1e-9;
+            }
         });
         ui.add_enabled_ui(!is_default, |ui| {
             let mut len = self.draft.length();
@@ -915,7 +1220,7 @@ impl WallForm {
             });
         });
         if !is_default {
-            ui.weak("The angle rotates about the start point. Connected walls are not moved.");
+            ui.weak("The angle turns the wall about its Lock point; the walls joined to its ends follow.");
         }
 
         section(ui, "Options");
@@ -933,11 +1238,17 @@ impl WallForm {
             "Lock Center",
             "No Room Moldings Exterior",
             "No Room Moldings Interior",
-            "Automatically Generated Wall",
             "Ignored by Hide Exterior Walls",
         ] {
             dis_check(ui, l, false);
         }
+        // Set by the program on the invisible walls between platforms (W-25,
+        // W-63); it cannot be turned on by hand.
+        dis_check(
+            ui,
+            "Automatically Generated Wall",
+            self.draft.flags.auto_generated,
+        );
 
         self.arc_section(ui, is_default);
     }
@@ -1077,39 +1388,234 @@ impl WallForm {
         }
     }
 
-    fn structure(&mut self, ui: &mut Ui) {
-        section(ui, "Default Wall Heights");
-        if ui
-            .checkbox(&mut self.default_top, "Default Wall Top Height")
-            .changed()
-            && self.default_top
-        {
-            self.draft.height = self.default_height;
-        }
-        ui.add_enabled_ui(!self.default_top, |ui| {
-            self.fields
-                .length_row(ui, "Wall Height", "height", &mut self.draft.height);
-        });
-        dis_check(ui, "Default Wall Bottom Height", true);
+    // ----- fields shared by the one-wall and the multi-wall dialog -----
 
-        ui.add_enabled_ui(false, |ui| {
-            section(ui, "Platform Intersections");
-            dis_check(
-                ui,
-                "Invisible Walls and Railings: Generate Between Platforms",
-                true,
+    /// Does `key` show the mixed state: several walls disagree and the user
+    /// has not edited it yet (W-83)?
+    fn mixed(&self, key: &str) -> bool {
+        self.multi
+            .as_ref()
+            .is_some_and(|m| m.mixed.contains(key) && !m.touched.contains(key))
+    }
+
+    /// Notes that the user edited `key`; only edited fields are written to
+    /// the walls of a multi-wall dialog.
+    fn touch(&mut self, key: &'static str) {
+        if let Some(m) = &mut self.multi {
+            m.touched.insert(key);
+        }
+    }
+
+    /// A check box over a `bool` of the draft (the mixed state shows as
+    /// indeterminate until it is clicked).
+    fn chk(
+        &mut self,
+        ui: &mut Ui,
+        key: &'static str,
+        label: &str,
+        get: fn(&mut Wall) -> &mut bool,
+    ) -> bool {
+        let mut v = *get(&mut self.draft);
+        let resp = ui.add(egui::Checkbox::new(&mut v, label).indeterminate(self.mixed(key)));
+        if resp.changed() {
+            *get(&mut self.draft) = v;
+            self.touch(key);
+            return true;
+        }
+        false
+    }
+
+    /// A radio button; `selected` is whether the draft has this choice. A mixed
+    /// field selects none. Returns true when it was clicked.
+    fn pick(&mut self, ui: &mut Ui, key: &'static str, label: &str, selected: bool) -> bool {
+        let selected = selected && !self.mixed(key);
+        let clicked = ui.radio(selected, label).clicked();
+        if clicked {
+            self.touch(key);
+        }
+        clicked
+    }
+
+    /// A length field over an `f64` of the draft. A mixed field is blank
+    /// until something is typed in it.
+    fn len(
+        &mut self,
+        ui: &mut Ui,
+        label: &str,
+        key: &'static str,
+        get: fn(&mut Wall) -> &mut f64,
+    ) -> bool {
+        if !self.mixed(key) {
+            let changed = self.fields.length_row(ui, label, key, get(&mut self.draft));
+            if changed {
+                self.touch(key);
+            }
+            return changed;
+        }
+        let mut changed = false;
+        row(ui, label, |ui| {
+            let buf = self
+                .multi
+                .as_mut()
+                .map(|m| m.bufs.entry(key).or_default())
+                .expect("a mixed field exists only in a multi-wall dialog");
+            let resp = ui.add(
+                egui::TextEdit::singleline(buf)
+                    .desired_width(100.0)
+                    .hint_text("(varies)"),
             );
+            if resp.changed() {
+                if let Some(v) = plan_core::units::parse_ft_in(buf) {
+                    *get(&mut self.draft) = v;
+                    changed = true;
+                }
+            }
+        });
+        if changed {
+            self.touch(key);
+        }
+        changed
+    }
+
+    /// The thinnest the wall may be made: the layers of its type other than
+    /// the main layer (W-30).
+    fn min_thickness(&self, wall: &Wall) -> f64 {
+        let ty = wall
+            .wall_type
+            .as_deref()
+            .and_then(|n| self.types.iter().find(|t| t.name == n));
+        min_thickness(ty)
+    }
+
+    fn structure(&mut self, ui: &mut Ui) {
+        let is_default = self.target.is_default();
+        section(ui, "Default Wall Heights");
+        let mixed = self.mixed("default_top");
+        let before = self.default_top;
+        let resp = ui.add(
+            egui::Checkbox::new(&mut self.default_top, "Default Wall Top Height")
+                .indeterminate(mixed),
+        );
+        if resp.changed() && self.default_top != before {
+            self.touch("default_top");
+            self.draft.spec.structure.custom_top = !self.default_top;
+            if self.default_top {
+                self.draft.height = self.default_height;
+            }
+        }
+        ui.add_enabled_ui(!self.default_top || mixed, |ui| {
+            if self.len(ui, "Wall Height", "height", |w| &mut w.height) {
+                self.default_top = false;
+                self.draft.spec.structure.custom_top = true;
+                self.touch("default_top");
+            }
+        });
+        ui.add_enabled_ui(!is_default, |ui| {
+            let mixed = self.mixed("default_bottom");
+            let mut on = self
+                .draft
+                .spec
+                .structure
+                .default_bottom(self.draft.bottom_offset);
+            let resp = ui.add(
+                egui::Checkbox::new(&mut on, "Default Wall Bottom Height").indeterminate(mixed),
+            );
+            if resp.changed() {
+                self.touch("default_bottom");
+                self.draft.spec.structure.custom_bottom = !on;
+                if on {
+                    self.draft.bottom_offset = 0.0;
+                }
+            }
+        });
+
+        ui.add_enabled_ui(!is_default, |ui| {
+            section(ui, "Platform Intersections");
+            self.chk(
+                ui,
+                "gen_between",
+                "Invisible Walls and Railings: Generate Between Platforms",
+                |w| &mut w.spec.structure.generate_between_platforms,
+            );
+            let ceiling = self.draft.spec.structure.ceiling_platform;
             row(ui, "Ceiling Platform", |ui| {
-                dis_radio(ui, "Automatic", true);
-                dis_radio(ui, "Stop at Ceiling Above", false);
+                ui.vertical(|ui| {
+                    let c = [
+                        ("Automatic", CeilingPlatform::Automatic),
+                        ("Stop at Ceiling Above", CeilingPlatform::StopAtCeilingAbove),
+                        (
+                            "Balloon Through Ceiling Above",
+                            CeilingPlatform::BalloonThroughCeilingAbove,
+                        ),
+                    ];
+                    for (label, choice) in c {
+                        if self.pick(ui, "ceiling_platform", label, ceiling == choice) {
+                            self.draft.spec.structure.ceiling_platform = choice;
+                        }
+                    }
+                    let hang = matches!(ceiling, CeilingPlatform::HangFloorPlatformAbove { .. });
+                    let (mut sub, mut ledger) = match ceiling {
+                        CeilingPlatform::HangFloorPlatformAbove {
+                            subfloor_to_interior,
+                            include_ledger,
+                        } => (subfloor_to_interior, include_ledger),
+                        _ => (false, false),
+                    };
+                    if self.pick(
+                        ui,
+                        "ceiling_platform",
+                        "Hang Floor Platform Above on Wall",
+                        hang,
+                    ) {
+                        self.draft.spec.structure.ceiling_platform =
+                            CeilingPlatform::HangFloorPlatformAbove {
+                                subfloor_to_interior: sub,
+                                include_ledger: ledger,
+                            };
+                    }
+                    ui.add_enabled_ui(hang, |ui| {
+                        let a = ui
+                            .checkbox(&mut sub, "Subflooring to Wall Interior")
+                            .changed();
+                        let b = ui.checkbox(&mut ledger, "Include Ledger").changed();
+                        if a || b {
+                            self.draft.spec.structure.ceiling_platform =
+                                CeilingPlatform::HangFloorPlatformAbove {
+                                    subfloor_to_interior: sub,
+                                    include_ledger: ledger,
+                                };
+                            self.touch("ceiling_platform");
+                        }
+                    });
+                });
             });
+            let floor = self.draft.spec.structure.floor_platform;
             row(ui, "Floor Platform", |ui| {
-                dis_radio(ui, "Automatic", true);
-                dis_radio(ui, "Stop at Floor Below", false);
+                ui.vertical(|ui| {
+                    let c = [
+                        ("Automatic", FloorPlatform::Automatic),
+                        ("Stop at Floor Below", FloorPlatform::StopAtFloorBelow),
+                        (
+                            "Balloon/Extend Through Floor Below",
+                            FloorPlatform::BalloonThroughFloorBelow,
+                        ),
+                    ];
+                    for (label, choice) in c {
+                        if self.pick(ui, "floor_platform", label, floor == choice) {
+                            self.draft.spec.structure.floor_platform = choice;
+                        }
+                    }
+                });
             });
             section(ui, "Wall Intersections");
-            dis_check(ui, "Through Wall At End", false);
-            dis_check(ui, "Through Wall At Start", false);
+            self.chk(ui, "through_end", "Through Wall At End", |w| {
+                &mut w.spec.structure.through_at_end
+            });
+            self.chk(ui, "through_start", "Through Wall At Start", |w| {
+                &mut w.spec.structure.through_at_start
+            });
+        });
+        ui.add_enabled_ui(false, |ui| {
             section(ui, "Rim Joist");
             row(ui, "Rim Joist", |ui| {
                 dis_radio(ui, "Automatic", true);
@@ -1132,6 +1638,243 @@ impl WallForm {
             dis_check(ui, "Create Wall/Footing Below", false);
             dis_check(ui, "Insert Floor Framing Below", true);
         });
+    }
+
+    /// Foundation tab (W-52): the footing under the wall, slab chamfers and
+    /// the sill plate on top.
+    fn foundation(&mut self, ui: &mut Ui) {
+        let is_default = self.target.is_default();
+        ui.add_enabled_ui(!is_default, |ui| {
+            section(ui, "Foundation");
+            ui.horizontal_wrapped(|ui| {
+                let mut foundation = self.draft.class == WallClass::Foundation;
+                let single = self.multi.is_none();
+                let changed = ui
+                    .add_enabled(
+                        single,
+                        egui::Checkbox::new(&mut foundation, "Foundation Wall"),
+                    )
+                    .changed();
+                if changed {
+                    self.change_class(if foundation {
+                        WallClass::Foundation
+                    } else {
+                        WallClass::Standard
+                    });
+                }
+                self.chk(ui, "slab_footing", "Slab Footing", |w| {
+                    &mut w.spec.foundation.slab_footing
+                });
+            });
+            self.len(ui, "Wall Thickness", "thickness", |w| &mut w.thickness);
+
+            section(ui, "Footing");
+            self.chk(ui, "footing", "Footing", |w| &mut w.spec.foundation.footing);
+            let on = self.draft.spec.foundation.footing || self.mixed("footing");
+            ui.add_enabled_ui(on, |ui| {
+                self.len(ui, "Width", "footing_width", |w| {
+                    &mut w.spec.foundation.footing_width
+                });
+                self.len(ui, "Height", "footing_height", |w| {
+                    &mut w.spec.foundation.footing_height
+                });
+                self.chk(ui, "footing_auto", "Automatic Footing Bottom Height", |w| {
+                    &mut w.spec.foundation.auto_bottom
+                });
+                ui.add_enabled_ui(!self.draft.spec.foundation.auto_bottom, |ui| {
+                    self.len(ui, "Footing Bottom", "footing_bottom", |w| {
+                        &mut w.spec.foundation.footing_bottom
+                    });
+                });
+                self.chk(ui, "footing_vertical", "Vertical Footing", |w| {
+                    &mut w.spec.foundation.vertical_footing
+                });
+                self.len(ui, "Footing Offset", "footing_offset", |w| {
+                    &mut w.spec.foundation.footing_offset
+                });
+                self.chk(ui, "footing_center", "Center Footing on Main Layer", |w| {
+                    &mut w.spec.foundation.center_on_main_layer
+                });
+                self.chk(ui, "footing_outside", "Align Footing on Outside", |w| {
+                    &mut w.spec.foundation.align_on_outside
+                });
+            });
+
+            section(ui, "Slab");
+            self.chk(ui, "chamfer_mono", "Add Chamfer on Monolithic Slab", |w| {
+                &mut w.spec.foundation.chamfer_monolithic
+            });
+            self.chk(ui, "chamfer_regular", "Add Chamfer on Regular Slab", |w| {
+                &mut w.spec.foundation.chamfer_regular
+            });
+            self.len(ui, "Chamfer Width", "chamfer_width", |w| {
+                &mut w.spec.foundation.chamfer_width
+            });
+            self.len(ui, "Chamfer Height", "chamfer_height", |w| {
+                &mut w.spec.foundation.chamfer_height
+            });
+            row(ui, "Monolithic Slab Pour Number", |ui| {
+                let mut n = self.draft.spec.foundation.pour_number;
+                if ui.add(egui::DragValue::new(&mut n).range(1..=99)).changed() {
+                    self.draft.spec.foundation.pour_number = n;
+                    self.touch("pour");
+                }
+            });
+
+            section(ui, "Sill Plate");
+            self.chk(ui, "sill_plate", "Sill Plate", |w| {
+                &mut w.spec.foundation.sill_plate
+            });
+            row(ui, "Construction", |ui| {
+                dis_combo(
+                    ui,
+                    "wall_sill",
+                    &self.draft.spec.foundation.sill_construction.clone(),
+                )
+            });
+        });
+        if is_default {
+            ui.weak("The foundation options are set on a placed wall.");
+        }
+    }
+
+    /// Wall Cap tab: the cap profile laid on the top of the wall (usually a
+    /// half wall).
+    fn cap(&mut self, ui: &mut Ui) {
+        let is_default = self.target.is_default();
+        ui.add_enabled_ui(!is_default, |ui| {
+            section(ui, "Wall Cap Profile");
+            self.chk(ui, "cap", "Wall Cap", |w| &mut w.spec.cap.enabled);
+            let on = self.draft.spec.cap.enabled || self.mixed("cap");
+            ui.add_enabled_ui(on, |ui| {
+                egui::Grid::new("wall_cap_table")
+                    .num_columns(3)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Name");
+                        ui.strong("Width");
+                        ui.strong("Height");
+                        ui.end_row();
+                        for p in default_cap_profiles() {
+                            let selected =
+                                self.draft.spec.cap.profile == p.name && !self.mixed("cap_profile");
+                            if ui.selectable_label(selected, &p.name).clicked() {
+                                self.draft.spec.cap.profile = p.name.clone();
+                                self.touch("cap_profile");
+                            }
+                            ui.label(super::fmt_short(p.width));
+                            ui.label(super::fmt_short(p.height));
+                            ui.end_row();
+                        }
+                    });
+                self.chk(ui, "cap_full", "Full Wall Width", |w| {
+                    &mut w.spec.cap.full_wall_width
+                });
+                self.chk(ui, "cap_split_pony", "Split Pony Wall", |w| {
+                    &mut w.spec.cap.split_pony_wall
+                });
+                section(ui, "Selected Profile Options");
+                let pos = self.draft.spec.cap.position;
+                row(ui, "Horizontal Position", |ui| {
+                    for (label, choice) in [
+                        ("Inside Wall", CapPosition::Inside),
+                        ("Wall Center", CapPosition::Center),
+                        ("Outside Wall", CapPosition::Outside),
+                    ] {
+                        if self.pick(ui, "cap_position", label, pos == choice) {
+                            self.draft.spec.cap.position = choice;
+                        }
+                    }
+                });
+            });
+        });
+        if is_default {
+            ui.weak("The wall cap is set on a placed wall.");
+        }
+    }
+
+    /// General tab over several walls (W-83): the fields every wall has.
+    fn general_multi(&mut self, ui: &mut Ui) {
+        section(ui, "General");
+        self.len(ui, "Thickness", "thickness", |w| &mut w.thickness);
+        if self.len(ui, "Bottom Height", "bottom", |w| &mut w.bottom_offset) {
+            self.draft.spec.structure.custom_bottom = self.draft.bottom_offset.abs() > 1e-9;
+            self.touch("default_bottom");
+        }
+        section(ui, "Options");
+        self.chk(ui, "invisible", "Invisible", |w| &mut w.flags.invisible);
+        self.chk(ui, "no_room_definition", "No Room Definition", |w| {
+            &mut w.flags.no_room_definition
+        });
+        self.chk(ui, "no_locate", "No Locate", |w| &mut w.flags.no_locate);
+        let n = self.multi.as_ref().map_or(0, |m| m.ids.len());
+        ui.weak(format!(
+            "{n} walls are open. A blank or indeterminate field differs between them and \
+             stays as it is unless you edit it."
+        ));
+    }
+
+    /// Wall Types tab over several walls: one wall type for all of them.
+    fn wall_types_multi(&mut self, ui: &mut Ui) {
+        section(ui, "General");
+        let mixed = self.mixed("wall_type");
+        let text = if mixed {
+            "(varies)".to_string()
+        } else {
+            self.draft
+                .wall_type
+                .clone()
+                .unwrap_or_else(|| "Custom".into())
+        };
+        let mut picked: Option<WallTypeDef> = None;
+        row(ui, "Wall Type", |ui| {
+            egui::ComboBox::from_id_salt("wall_type_multi")
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    for t in &self.types {
+                        let label = format!("{} ({})", t.name, super::fmt_short(t.thickness()));
+                        let on = !mixed && self.draft.wall_type.as_deref() == Some(t.name.as_str());
+                        if ui.selectable_label(on, label).clicked() {
+                            picked = Some(t.clone());
+                        }
+                    }
+                });
+        });
+        if let Some(t) = picked {
+            self.draft.wall_type = Some(t.name.clone());
+            self.draft.thickness = t.thickness();
+            self.extras.wall_type = Some(t.name);
+            self.touch("wall_type");
+            self.touch("thickness");
+        }
+    }
+
+    /// Layer tab over several walls.
+    fn layer_multi(&mut self, ui: &mut Ui) {
+        section(ui, "Layer");
+        let mixed = self.mixed("layer");
+        let text = if mixed {
+            "(varies)".to_string()
+        } else {
+            self.draft.layer.clone()
+        };
+        let mut picked = None;
+        row(ui, "Layer", |ui| {
+            egui::ComboBox::from_id_salt("wall_layer_multi")
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    for name in WALL_LAYERS {
+                        let on = !mixed && self.draft.layer == name;
+                        if ui.selectable_label(on, name).clicked() {
+                            picked = Some(name);
+                        }
+                    }
+                });
+        });
+        if let Some(name) = picked {
+            self.draft.layer = name.to_string();
+            self.touch("layer");
+        }
     }
 
     /// Roof tab (RF-18..RF-27): what Build Roof does at this wall.
@@ -1315,9 +2058,7 @@ impl WallForm {
                     }
                 });
         });
-        row(ui, "Drawing Group", |ui| {
-            dis_combo(ui, "wall_group", "Default: 29 \u{2013} Wall")
-        });
+        self.drawing_group_row(ui);
     }
 
     fn label(&mut self, ui: &mut Ui) {
@@ -1358,7 +2099,9 @@ impl WallForm {
 
 impl SpecPages for WallForm {
     fn tabs(&self) -> &'static [Tab] {
-        if self.draft.kind == WallKind::Exterior && !self.target.is_default() {
+        if self.multi.is_some() {
+            WALL_TABS_MULTI
+        } else if self.draft.kind == WallKind::Exterior && !self.target.is_default() {
             WALL_TABS_EXTERIOR
         } else {
             WALL_TABS
@@ -1371,6 +2114,29 @@ impl SpecPages for WallForm {
         }
         if self.draft.thickness <= 0.0 {
             return Some("Thickness must be greater than zero".into());
+        }
+        if let Some(m) = &self.multi {
+            // Every wall that takes the new thickness must keep its layers.
+            if m.touched.contains("thickness") {
+                for w in &m.originals {
+                    let least = self.min_thickness(w);
+                    if self.draft.thickness < least - 1e-9 {
+                        return Some(format!(
+                            "Thickness cannot be less than {} (the layers of {})",
+                            fmt_ft_in(least),
+                            w.wall_type.as_deref().unwrap_or("the wall")
+                        ));
+                    }
+                }
+            }
+        } else if (self.draft.thickness - self.orig_thickness).abs() > 1e-9 {
+            let least = self.min_thickness(&self.draft);
+            if self.draft.thickness < least - 1e-9 {
+                return Some(format!(
+                    "Thickness cannot be less than {} (the layers of the wall type)",
+                    fmt_ft_in(least)
+                ));
+            }
         }
         if self.draft.height <= 0.0 {
             return Some("Wall height must be greater than zero".into());
@@ -1391,14 +2157,35 @@ impl SpecPages for WallForm {
     }
 
     fn page(&mut self, ui: &mut Ui, tab: usize) {
+        if self.multi.is_some() {
+            match self.tabs()[tab].name {
+                "General" => self.general_multi(ui),
+                "Structure" => self.structure(ui),
+                "Foundation" => self.foundation(ui),
+                "Wall Types" => self.wall_types_multi(ui),
+                "Wall Cap" => self.cap(ui),
+                "Layer" => self.layer_multi(ui),
+                _ => {}
+            }
+            return;
+        }
         match self.tabs()[tab].name {
             "General" => self.general(ui),
             "Structure" => self.structure(ui),
+            "Foundation" => self.foundation(ui),
+            "Wall Cap" => self.cap(ui),
             "Roof" => self.roof(ui),
             "Wall Types" => self.wall_types(ui),
             "Rail Style" => self.rail_style(ui),
             "Layer" => self.layer(ui),
             "Label" => self.label(ui),
+            "Wall Covering" => self.wall_covering(ui),
+            "Newels/Balusters" => self.newels_balusters(ui),
+            "Rails" => self.rails(ui),
+            "Materials" => self.materials_tab(ui),
+            "Components" => self.components_tab(ui),
+            "Object Information" => self.object_information(ui),
+            "Schedule" => self.schedule_tab(ui),
             _ => {}
         }
     }
@@ -1521,7 +2308,7 @@ mod tests {
         opening.width = 30.0;
         WallForm {
             target: WallTarget::Wall(1),
-            orig_start: wall.start,
+            open_shift: 0.0,
             draft: wall,
             extras: WallExtras::default(),
             openings: vec![opening],
@@ -1531,7 +2318,11 @@ mod tests {
             arc_scale: 1.0,
             default_height: 109.125,
             default_top: true,
+            orig_thickness: 4.5,
+            multi: None,
             fields: Fields::default(),
+            material_lib: None,
+            material_filter: String::new(),
             types: plan_core::PlanDefaults::chief_x18_daniel().wall_types,
             define: None,
             edited_types: Vec::new(),
@@ -1817,5 +2608,318 @@ mod tests {
         f.set_sweep_deg(sweep.to_degrees() / 2.0);
         let (c2, r2) = f.draft.arc_center_radius().unwrap();
         assert!(c2.dist(c0) < 1e-6 && (r2 - 2.0 * r0).abs() < 1e-6);
+    }
+
+    // ----- Structure and Foundation tabs, multi-wall Open Object (W-83) -----
+
+    /// Draws `tab` of `f` and clicks the text `label` (the last such text on
+    /// the page, so a checkbox wins over a section title of the same name).
+    fn click_label(f: &mut WallForm, ctx: &egui::Context, tab: usize, label: &str) {
+        use egui::{Event, PointerButton, Pos2, RawInput};
+        fn find(s: &egui::Shape, label: &str, out: &mut Option<Pos2>) {
+            match s {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    *out = Some(t.pos + egui::vec2(4.0, 4.0))
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|x| find(x, label, out)),
+                _ => {}
+            }
+        }
+        let frame = |f: &mut WallForm, input: RawInput| {
+            ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| f.page(ui, tab));
+            })
+        };
+        let out = frame(f, RawInput::default());
+        let mut at = None;
+        for c in &out.shapes {
+            find(&c.shape, label, &mut at);
+        }
+        let at = at.unwrap_or_else(|| panic!("no text {label:?} on the page"));
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for input in [
+            vec![Event::PointerMoved(at)],
+            vec![button(true)],
+            vec![button(false)],
+        ] {
+            frame(
+                f,
+                RawInput {
+                    events: input,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    fn tab_index(f: &WallForm, name: &str) -> usize {
+        f.tabs().iter().position(|t| t.name == name).unwrap()
+    }
+
+    #[test]
+    fn the_structure_tab_stores_platform_intersections_and_through_walls() {
+        let mut f = form(WallLock::Start);
+        let ctx = egui::Context::default();
+        let tab = tab_index(&f, "Structure");
+        let st = |f: &WallForm| f.draft.spec.structure.clone();
+        assert_eq!(st(&f).ceiling_platform, CeilingPlatform::Automatic);
+        click_label(&mut f, &ctx, tab, "Balloon Through Ceiling Above");
+        assert_eq!(
+            st(&f).ceiling_platform,
+            CeilingPlatform::BalloonThroughCeilingAbove
+        );
+        click_label(&mut f, &ctx, tab, "Stop at Ceiling Above");
+        assert_eq!(st(&f).ceiling_platform, CeilingPlatform::StopAtCeilingAbove);
+        click_label(&mut f, &ctx, tab, "Hang Floor Platform Above on Wall");
+        assert!(matches!(
+            st(&f).ceiling_platform,
+            CeilingPlatform::HangFloorPlatformAbove { .. }
+        ));
+        click_label(&mut f, &ctx, tab, "Include Ledger");
+        assert!(matches!(
+            st(&f).ceiling_platform,
+            CeilingPlatform::HangFloorPlatformAbove {
+                include_ledger: true,
+                ..
+            }
+        ));
+        click_label(&mut f, &ctx, tab, "Stop at Floor Below");
+        assert_eq!(st(&f).floor_platform, FloorPlatform::StopAtFloorBelow);
+        click_label(&mut f, &ctx, tab, "Balloon/Extend Through Floor Below");
+        assert_eq!(
+            st(&f).floor_platform,
+            FloorPlatform::BalloonThroughFloorBelow
+        );
+        assert!(!st(&f).through_at_end);
+        click_label(&mut f, &ctx, tab, "Through Wall At End");
+        click_label(&mut f, &ctx, tab, "Through Wall At Start");
+        assert!(st(&f).through_at_end && st(&f).through_at_start);
+        assert!(st(&f).generate_between_platforms);
+        click_label(
+            &mut f,
+            &ctx,
+            tab,
+            "Invisible Walls and Railings: Generate Between Platforms",
+        );
+        assert!(!st(&f).generate_between_platforms);
+        // Unchecking the default heights marks the wall as keeping its own.
+        assert!(f.default_top && !st(&f).custom_top);
+        click_label(&mut f, &ctx, tab, "Default Wall Top Height");
+        assert!(!f.default_top && st(&f).custom_top);
+        assert!(st(&f).default_bottom(0.0));
+        click_label(&mut f, &ctx, tab, "Default Wall Bottom Height");
+        assert!(st(&f).custom_bottom && !st(&f).default_bottom(0.0));
+        // And it all survives the file.
+        let back: Wall = serde_json::from_str(&serde_json::to_string(&f.draft).unwrap()).unwrap();
+        assert_eq!(back.spec.structure, st(&f));
+    }
+
+    #[test]
+    fn the_foundation_and_cap_tabs_store_their_fields() {
+        let mut f = form(WallLock::Start);
+        let ctx = egui::Context::default();
+        let tab = tab_index(&f, "Foundation");
+        assert!(!f.draft.spec.foundation.footing);
+        click_label(&mut f, &ctx, tab, "Footing");
+        assert!(f.draft.spec.foundation.footing);
+        click_label(&mut f, &ctx, tab, "Vertical Footing");
+        click_label(&mut f, &ctx, tab, "Align Footing on Outside");
+        click_label(&mut f, &ctx, tab, "Automatic Footing Bottom Height");
+        let fd = &f.draft.spec.foundation;
+        assert!(fd.vertical_footing && fd.align_on_outside && !fd.auto_bottom);
+        click_label(&mut f, &ctx, tab, "Slab Footing");
+        assert!(f.draft.spec.foundation.slab_footing);
+        let cap = tab_index(&f, "Wall Cap");
+        click_label(&mut f, &ctx, cap, "Wall Cap");
+        assert!(f.draft.spec.cap.enabled);
+        click_label(&mut f, &ctx, cap, "Overhanging Cap");
+        click_label(&mut f, &ctx, cap, "Full Wall Width");
+        click_label(&mut f, &ctx, cap, "Wall Center");
+        let c = &f.draft.spec.cap;
+        assert_eq!(c.profile, "Overhanging Cap");
+        assert!(!c.full_wall_width);
+        assert_eq!(c.position, CapPosition::Center);
+        // The tabs are live, not dimmed.
+        assert!(f.tabs().iter().any(|t| t.name == "Foundation" && t.enabled));
+        assert!(f.tabs().iter().any(|t| t.name == "Wall Cap" && t.enabled));
+    }
+
+    fn three_walls() -> (Project, Vec<Id>) {
+        let mut p = Project::new("t");
+        let ids: Vec<Id> = [(4.5, 96.0), (6.0, 96.0), (6.0, 96.0)]
+            .iter()
+            .enumerate()
+            .map(|(k, (t, h))| {
+                p.add_wall(
+                    0,
+                    Point::new(0.0, 100.0 * k as f64),
+                    Point::new(120.0, 100.0 * k as f64),
+                    *t,
+                    *h,
+                    WallKind::Interior,
+                )
+            })
+            .collect();
+        p.floors[0].wall_mut(ids[1]).unwrap().flags.invisible = true;
+        (p, ids)
+    }
+
+    fn multi_for(p: &Project, ids: &[Id]) -> WallDialog {
+        WallDialog::multi(
+            ids.iter()
+                .map(|i| p.floors[0].wall(*i).unwrap().clone())
+                .collect(),
+            [109.125, 96.0],
+            plan_core::PlanDefaults::chief_x18_daniel().wall_types,
+        )
+    }
+
+    #[test]
+    fn several_walls_show_mixed_fields_and_write_only_the_edited_ones() {
+        let (mut p, ids) = three_walls();
+        let mut d = multi_for(&p, &ids);
+        assert_eq!(d.multi_ids().unwrap(), ids.as_slice());
+        // Thickness and the invisible flag differ; the height does not.
+        assert!(d.is_mixed("thickness") && d.is_mixed("invisible"));
+        assert!(!d.is_mixed("height") && !d.is_mixed("no_locate"));
+        assert!(d.touched().is_empty());
+        // Nothing edited: nothing written.
+        assert_eq!(d.apply_multi(&mut p, 0), 0);
+        // Edit No Locate through the page and leave the rest.
+        let ctx = egui::Context::default();
+        let tab = tab_index(&d.form, "General");
+        click_label(&mut d.form, &ctx, tab, "No Locate");
+        assert_eq!(d.touched(), vec!["no_locate"]);
+        let before: Vec<(f64, bool)> = ids
+            .iter()
+            .map(|i| {
+                let w = p.floors[0].wall(*i).unwrap();
+                (w.thickness, w.flags.invisible)
+            })
+            .collect();
+        assert_eq!(d.apply_multi(&mut p, 0), 3);
+        for (k, id) in ids.iter().enumerate() {
+            let w = p.floors[0].wall(*id).unwrap();
+            assert!(w.flags.no_locate, "wall {k}");
+            assert_eq!((w.thickness, w.flags.invisible), before[k], "wall {k}");
+        }
+    }
+
+    #[test]
+    fn a_thickness_typed_over_several_walls_goes_to_all_of_them() {
+        let (mut p, ids) = three_walls();
+        let mut d = multi_for(&p, &ids);
+        {
+            let m = d.form.multi.as_mut().unwrap();
+            m.touched.insert("thickness");
+        }
+        d.draft_mut().thickness = 8.0;
+        assert!(d.form.error().is_none());
+        assert_eq!(d.apply_multi(&mut p, 0), 3);
+        for id in &ids {
+            assert_eq!(p.floors[0].wall(*id).unwrap().thickness, 8.0);
+        }
+        // One undo step is the host's business; the walls' other fields stay.
+        assert!(p.floors[0].wall(ids[1]).unwrap().flags.invisible);
+    }
+
+    #[test]
+    fn thickness_cannot_go_below_the_layers_of_the_wall_type() {
+        let ty = plan_core::PlanDefaults::chief_x18_daniel()
+            .wall_type("Stucco-6")
+            .unwrap()
+            .clone();
+        let fixed = plan_core::walls::spec::fixed_layers_thickness(&ty);
+        assert!(fixed > 0.5);
+        let mut p = Project::new("t");
+        let mut ids = Vec::new();
+        for k in 0..2 {
+            let id = p.add_wall(
+                0,
+                Point::new(0.0, 100.0 * k as f64),
+                Point::new(120.0, 100.0 * k as f64),
+                ty.thickness(),
+                96.0,
+                WallKind::Exterior,
+            );
+            p.floors[0].wall_mut(id).unwrap().wall_type = Some(ty.name.clone());
+            ids.push(id);
+        }
+        let mut d = multi_for(&p, &ids);
+        d.form.multi.as_mut().unwrap().touched.insert("thickness");
+        d.draft_mut().thickness = fixed;
+        let msg = d.form.error().expect("too thin for its layers");
+        assert!(msg.starts_with("Thickness cannot be less than"), "{msg}");
+        d.draft_mut().thickness = fixed + 0.25;
+        assert!(d.form.error().is_none());
+
+        // The same rule for one wall.
+        let mut f = form(WallLock::Start);
+        f.types = vec![ty.clone()];
+        f.draft.wall_type = Some(ty.name.clone());
+        f.draft.thickness = fixed;
+        assert!(f.error().unwrap().starts_with("Thickness cannot be less"));
+        // A wall that was already thinner may keep its thickness.
+        f.orig_thickness = fixed;
+        assert!(f.error().is_none());
+    }
+
+    #[test]
+    fn mixed_platform_choices_select_no_radio_until_one_is_clicked() {
+        let (mut p, ids) = three_walls();
+        {
+            use plan_core::walls::CeilingPlatform as C;
+            p.floors[0]
+                .wall_mut(ids[0])
+                .unwrap()
+                .spec
+                .structure
+                .ceiling_platform = C::BalloonThroughCeilingAbove;
+        }
+        let mut d = multi_for(&p, &ids);
+        assert!(d.is_mixed("ceiling_platform"));
+        let ctx = egui::Context::default();
+        let tab = tab_index(&d.form, "Structure");
+        click_label(&mut d.form, &ctx, tab, "Stop at Ceiling Above");
+        assert!(!d.is_mixed("ceiling_platform"));
+        click_label(&mut d.form, &ctx, tab, "Through Wall At End");
+        assert_eq!(d.touched(), vec!["ceiling_platform", "through_end"]);
+        assert_eq!(d.apply_multi(&mut p, 0), 3);
+        for id in &ids {
+            let st = &p.floors[0].wall(*id).unwrap().spec.structure;
+            assert_eq!(st.ceiling_platform, CeilingPlatform::StopAtCeilingAbove);
+            assert!(st.through_at_end && !st.through_at_start);
+        }
+    }
+
+    #[test]
+    fn a_wall_type_picked_for_several_walls_resizes_each_about_its_reference() {
+        let (mut p, ids) = three_walls();
+        let d_types = plan_core::PlanDefaults::chief_x18_daniel().wall_types;
+        let i6 = d_types
+            .iter()
+            .find(|t| t.name == "Interior-6")
+            .unwrap()
+            .clone();
+        let mut d = multi_for(&p, &ids);
+        {
+            let form = &mut d.form;
+            form.draft.wall_type = Some(i6.name.clone());
+            form.draft.thickness = i6.thickness();
+            let m = form.multi.as_mut().unwrap();
+            m.touched.insert("wall_type");
+            m.touched.insert("thickness");
+        }
+        assert_eq!(d.apply_multi(&mut p, 0), 3);
+        for id in &ids {
+            let w = p.floors[0].wall(*id).unwrap();
+            assert_eq!(w.wall_type.as_deref(), Some("Interior-6"));
+            assert!((w.thickness - i6.thickness()).abs() < 1e-9);
+        }
     }
 }

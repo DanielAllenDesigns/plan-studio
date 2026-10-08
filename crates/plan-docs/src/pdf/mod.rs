@@ -267,6 +267,17 @@ impl PdfColor {
     /// Opaque black.
     pub const BLACK: PdfColor = PdfColor::Gray(0.0);
 
+    /// The colour as 8-bit red, green and blue.
+    pub fn rgb8(self) -> [u8; 3] {
+        match self {
+            PdfColor::Gray(g) => {
+                let v = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+                [v, v, v]
+            }
+            PdfColor::Rgb(r, g, b) => [r, g, b],
+        }
+    }
+
     fn components(self) -> String {
         match self {
             PdfColor::Gray(g) => num(g.clamp(0.0, 1.0)),
@@ -323,8 +334,29 @@ impl PdfColorMode {
         }
     }
 
+    /// An image pixel in this mode: as is, its luminance gray, or black and
+    /// white (what the PDF writer embeds).
+    pub fn pixel(self, rgb: [u8; 3]) -> [u8; 3] {
+        match self {
+            PdfColorMode::Color => rgb,
+            mode => {
+                let l = Self::luma(PdfColor::Rgb(rgb[0], rgb[1], rgb[2]));
+                let v = if mode == PdfColorMode::BlackWhite {
+                    if l < 0.5 {
+                        0
+                    } else {
+                        255
+                    }
+                } else {
+                    (l * 255.0).round() as u8
+                };
+                [v, v, v]
+            }
+        }
+    }
+
     /// The colour of strokes, text and tracked fills in this mode.
-    fn ink(self, c: PdfColor) -> PdfColor {
+    pub fn ink(self, c: PdfColor) -> PdfColor {
         match self {
             PdfColorMode::Color => c,
             PdfColorMode::Grayscale => PdfColor::Gray(Self::luma(c)),
@@ -335,7 +367,7 @@ impl PdfColorMode {
     }
 
     /// The colour of a filled area: black B&W prints keep only dark fills.
-    fn area(self, c: PdfColor) -> PdfColor {
+    pub fn area(self, c: PdfColor) -> PdfColor {
         match self {
             PdfColorMode::BlackWhite => PdfColor::Gray(if Self::luma(c) < 0.5 { 0.0 } else { 1.0 }),
             other => other.ink(c),
@@ -1166,19 +1198,7 @@ impl PdfDoc {
                 .as_chunks::<3>()
                 .0
                 .iter()
-                .flat_map(|p| {
-                    let l = PdfColorMode::luma(PdfColor::Rgb(p[0], p[1], p[2]));
-                    let v = if mode == PdfColorMode::BlackWhite {
-                        if l < 0.5 {
-                            0
-                        } else {
-                            255
-                        }
-                    } else {
-                        (l * 255.0).round() as u8
-                    };
-                    [v, v, v]
-                })
+                .flat_map(|p| mode.pixel(*p))
                 .collect(),
         };
         self.images.push(Image {

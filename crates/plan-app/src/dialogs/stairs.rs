@@ -22,12 +22,17 @@ use super::{
     on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, ERROR_RED, PV_ACCENT,
     PV_FAINT, PV_INK,
 };
+use super::code_notice::{code_notice, LimitKind};
+use crate::editor::code;
 use crate::editor::stairs_view::{self as view, first_flight_treads, StairObj};
 use crate::editor::Camera;
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Shape, Stroke, Ui};
 use plan_core::geometry::Point;
 use plan_core::Id;
-use plan_stairs::{solve, RailStyle, SideKind, StairShape, StringerStyle, Turn};
+use plan_stairs::{
+    solve, Bullnose, RailStyle, RailingParams, SideKind, StairParams, StairShape, StringerStyle,
+    Turn,
+};
 
 const STAIR_TABS: &[Tab] = &[
     on("General"),
@@ -38,6 +43,7 @@ const STAIR_TABS: &[Tab] = &[
     on("Fill Style"),
     on("Materials"),
     on("Components"),
+    on("Schedule"),
     on("Label"),
 ];
 
@@ -100,9 +106,31 @@ fn set_shape(draft: &mut StairObj, sel: ShapeSel) {
     };
 }
 
+/// Which side the Newels/Balusters and Rails tabs edit: both share one set
+/// of settings until a side is given its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum RailScope {
+    #[default]
+    Both,
+    Left,
+    Right,
+}
+
+/// The railing settings `scope` edits. A side that has none of its own is
+/// given a copy of the shared ones the first time it is edited.
+fn scoped_railing(p: &mut StairParams, scope: RailScope) -> &mut RailingParams {
+    let shared = p.railing;
+    match scope {
+        RailScope::Both => &mut p.railing,
+        RailScope::Left => p.left_railing.get_or_insert(shared),
+        RailScope::Right => p.right_railing.get_or_insert(shared),
+    }
+}
+
 struct StairForm {
     draft: StairObj,
     fields: Fields,
+    scope: RailScope,
 }
 
 pub struct StairDialog {
@@ -124,6 +152,7 @@ impl StairDialog {
             form: StairForm {
                 draft: obj,
                 fields: Fields::default(),
+                scope: RailScope::default(),
             },
         }
     }
@@ -156,6 +185,7 @@ impl StairForm {
         section(ui, "Landing");
         self.fields
             .length_row(ui, "Width", "width", &mut self.draft.stair.params.width);
+        code_notice(ui, "IRC R311.7.6 landing width", &mut self.draft.stair.params.width, code::active().stair_width_min, LimitKind::Min);
         if self.draft.is_polygon_landing() {
             ui.weak("Drawn as a polygon: the outline follows the corners you clicked.");
         } else {
@@ -190,6 +220,7 @@ impl StairForm {
         section(ui, "General");
         self.fields
             .length_row(ui, "Width", "width", &mut self.draft.stair.params.width);
+        code_notice(ui, "IRC R311.7.1 stair width", &mut self.draft.stair.params.width, code::active().stair_width_min, LimitKind::Min);
         let ramp = self.draft.is_ramp();
         if !ramp {
             self.fields.length_row(
@@ -198,12 +229,14 @@ impl StairForm {
                 "tread",
                 &mut self.draft.stair.params.tread_depth,
             );
+            code_notice(ui, "IRC R311.7.5.2 tread depth", &mut self.draft.stair.params.tread_depth, code::active().stair_tread_min, LimitKind::Min);
             self.fields.length_row(
                 ui,
                 "Riser Height",
                 "riser",
                 &mut self.draft.stair.params.riser_height_target,
             );
+            code_notice(ui, "IRC R311.7.5.1 riser height", &mut self.draft.stair.params.riser_height_target, code::active().stair_riser_max, LimitKind::Max);
             let sol = solve(&self.draft.stair.params);
             let (mut risers, mut treads) = (sol.risers, sol.treads);
             row(ui, "Number of Risers", |ui| {
@@ -260,6 +293,7 @@ impl StairForm {
             "headroom",
             &mut self.draft.stair.params.headroom_min,
         );
+        code_notice(ui, "IRC R311.7.2 headroom", &mut self.draft.stair.params.headroom_min, code::active().stair_headroom_min, LimitKind::Min);
 
         section(ui, "Shape");
         row(ui, "Stair Shape", |ui| {
@@ -429,6 +463,16 @@ impl StairForm {
                 .length_row(ui, "Flared Bottom Tread", "flare", &mut p.flare);
             ui.weak("The bottom tread reaches this far past the stair on each side, in a half-round end. 0 keeps it square.");
             p.flare = p.flare.max(0.0);
+            row(ui, "Bullnose Bottom Tread", |ui| {
+                egui::ComboBox::from_id_salt("stair_bullnose")
+                    .selected_text(p.bullnose.name())
+                    .show_ui(ui, |ui| {
+                        for b in Bullnose::ALL {
+                            ui.selectable_value(&mut p.bullnose, b, b.name());
+                        }
+                    });
+            });
+            ui.weak("A bullnose rounds the chosen end of the bottom tread into a half-round the depth of the tread; it wins over the flare on that end.");
         }
         self.fields
             .length_row(ui, "Riser Thickness", "riser_t", &mut p.riser_thickness);
@@ -454,8 +498,65 @@ impl StairForm {
         ui.checkbox(&mut p.handrail, "Handrail on both sides");
     }
 
+    /// The "Applies to" row of the Newels/Balusters and Rails tabs: both
+    /// sides, or the left or right one alone.
+    fn scope_row(&mut self, ui: &mut Ui) {
+        section(ui, "Applies To");
+        let before = self.scope;
+        row(ui, "Side", |ui| {
+            ui.radio_value(&mut self.scope, RailScope::Both, "Both sides");
+            ui.radio_value(&mut self.scope, RailScope::Left, "Left side");
+            ui.radio_value(&mut self.scope, RailScope::Right, "Right side");
+        });
+        let p = &mut self.draft.stair.params;
+        // Leaving a side whose settings still equal the shared ones drops its
+        // override again.
+        if before != self.scope {
+            let shared = p.railing;
+            for o in [&mut p.left_railing, &mut p.right_railing] {
+                if *o == Some(shared) {
+                    *o = None;
+                }
+            }
+        }
+        match self.scope {
+            RailScope::Both => {
+                if p.left_railing.is_some() || p.right_railing.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.weak("A side has settings of its own.");
+                        if ui.small_button("Use these for both sides").clicked() {
+                            p.left_railing = None;
+                            p.right_railing = None;
+                        }
+                    });
+                }
+            }
+            side => {
+                let own = match side {
+                    RailScope::Left => p.left_railing.is_some(),
+                    _ => p.right_railing.is_some(),
+                };
+                if own {
+                    ui.horizontal(|ui| {
+                        ui.weak("This side has settings of its own.");
+                        if ui.small_button("Same as both sides").clicked() {
+                            match side {
+                                RailScope::Left => p.left_railing = None,
+                                _ => p.right_railing = None,
+                            }
+                        }
+                    });
+                } else {
+                    ui.weak("Editing this side gives it settings of its own.");
+                }
+            }
+        }
+    }
+
     fn newels_balusters(&mut self, ui: &mut Ui) {
-        let r = &mut self.draft.stair.params.railing;
+        self.scope_row(ui);
+        let scope = self.scope;
+        let r = scoped_railing(&mut self.draft.stair.params, scope);
         section(ui, "Newels");
         self.fields
             .length_row(ui, "Newel Size", "newel_size", &mut r.newel.size);
@@ -486,6 +587,7 @@ impl StairForm {
             RailStyle::Balusters { spacing, size } => {
                 self.fields
                     .length_row(ui, "Clear Spacing", "baluster_spacing", spacing);
+                code_notice(ui, "IRC R312.1.3 baluster opening (sphere)", spacing, code::active().guard_sphere, LimitKind::Max);
                 self.fields
                     .length_row(ui, "Baluster Size", "baluster_size", size);
             }
@@ -518,10 +620,14 @@ impl StairForm {
                     });
             });
         }
-        let r = &mut self.draft.stair.params.railing;
+        self.scope_row(ui);
+        let scope = self.scope;
+        let r = scoped_railing(&mut self.draft.stair.params, scope);
         section(ui, "Rails");
         self.fields
             .length_row(ui, "Guard Height", "guard", &mut r.height);
+        code_notice(ui, "IRC R311.7.8.1 handrail height", &mut r.height, code::active().stair_guard_height, LimitKind::Min);
+        code_notice(ui, "IRC R311.7.8.1 handrail height", &mut r.height, code::active().handrail_max, LimitKind::Max);
         self.fields
             .length_row(ui, "Top Rail Width", "top_rail_w", &mut r.top_rail.0);
         self.fields
@@ -538,7 +644,7 @@ impl StairForm {
             "bottom_rail_h",
             &mut r.bottom_rail.1,
         );
-        ui.weak("Railing: newels, balusters and a rail that follows the pitch. Half Wall: a cap rail on a solid panel. Wall: a full-height wall.");
+        ui.weak("Railing: a guard with newels, balusters and a rail that follows the pitch. Handrail: a rail on the wall only, no guard. Half Wall: a cap rail on a solid panel. Wall: a full-height wall.");
     }
 
     fn line_style(&mut self, ui: &mut Ui) {
@@ -631,6 +737,50 @@ impl StairForm {
         ui.weak("Counts and sizes come from the solved layout; change them on the General, Style and Rails tabs.");
     }
 
+    /// The row the stair has in the Stair Schedule: the same columns, from
+    /// the solved layout.
+    fn schedule(&mut self, ui: &mut Ui) {
+        section(ui, "Stair Schedule Row");
+        let o = &self.draft;
+        let p = &o.stair.params;
+        let sol = solve(p);
+        let ramp = o.is_ramp();
+        let kind = match p.shape {
+            StairShape::Straight | StairShape::Landing { .. } => "Straight",
+            StairShape::LShaped { .. } => "L-Shaped",
+            StairShape::UShaped { .. } => "U-Shaped",
+            StairShape::Winder { .. } => "Winder",
+            StairShape::Ramp { .. } => "Ramp",
+            StairShape::Curved { .. } if p.spiral => "Spiral",
+            StairShape::Curved { .. } => "Curved",
+        };
+        let steps = |v: String| if ramp { String::new() } else { v };
+        let cells = [
+            ("Type", kind.to_string()),
+            ("Treads", steps(sol.treads.to_string())),
+            ("Risers", steps(sol.risers.to_string())),
+            ("Riser height", steps(format!("{:.3}\"", sol.riser_height))),
+            ("Tread depth", steps(format!("{:.2}\"", sol.tread_depth))),
+            ("Total rise", super::fmt_short(p.total_rise)),
+            ("Total run", super::fmt_short(sol.total_run)),
+            ("Width", super::fmt_short(p.width)),
+            ("Headroom", super::fmt_short(p.headroom_min)),
+        ];
+        egui::Grid::new("stair_schedule_row")
+            .striped(true)
+            .show(ui, |ui| {
+                for (h, _) in &cells {
+                    ui.strong(*h);
+                }
+                ui.end_row();
+                for (_, v) in &cells {
+                    ui.label(v);
+                }
+                ui.end_row();
+            });
+        ui.weak("Listed in the Stair Schedule (Tools > Schedules > Stair); landings are not.");
+    }
+
     fn label(&mut self, ui: &mut Ui) {
         section(ui, "Label");
         ui.checkbox(&mut self.draft.x.show_label, "Show label in plan");
@@ -708,6 +858,7 @@ impl SpecPages for StairForm {
             "Fill Style" => self.fill_style(ui),
             "Materials" => self.materials(ui),
             "Components" => self.components(ui),
+            "Schedule" => self.schedule(ui),
             "Label" => self.label(ui),
             _ => {}
         }
@@ -901,6 +1052,7 @@ mod tests {
                 "Fill Style",
                 "Materials",
                 "Components",
+                "Schedule",
                 "Label"
             ]
         );
@@ -947,6 +1099,11 @@ mod tests {
         let mut flared = o.clone();
         flared.stair.params.flare = 6.0;
         objs.push(flared);
+        let mut bull = o.clone();
+        bull.stair.params.bullnose = Bullnose::Both;
+        bull.stair.params.left_side = SideKind::Handrail;
+        bull.stair.params.right_railing = Some(RailingParams::default());
+        objs.push(bull);
         objs.push(view::build(
             &cx.project,
             0,
@@ -1100,5 +1257,123 @@ mod tests {
             "{:?}",
             d.draft().solution().warnings
         );
+    }
+
+    fn page_texts(d: &mut StairDialog, tab: &str) -> Vec<String> {
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|x| texts(x, out)),
+                _ => {}
+            }
+        }
+        let i = d.form.tabs().iter().position(|t| t.name == tab).unwrap();
+        let ctx = egui::Context::default();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, i));
+        });
+        let mut all = Vec::new();
+        for c in &out.shapes {
+            texts(&c.shape, &mut all);
+        }
+        all
+    }
+
+    #[test]
+    fn the_schedule_tab_shows_the_row_the_stair_has_in_the_stair_schedule() {
+        let (_, o) = cx_with_stair();
+        let mut d = StairDialog::new(o);
+        let t = page_texts(&mut d, "Schedule");
+        for want in [
+            "Type",
+            "Treads",
+            "Risers",
+            "Riser height",
+            "Tread depth",
+            "Total rise",
+            "Total run",
+            "Width",
+            "Headroom",
+            "Straight",
+        ] {
+            assert!(t.iter().any(|x| x == want), "{want} in {t:?}");
+        }
+        let sol = solve(&d.draft().stair.params);
+        assert!(t.iter().any(|x| *x == sol.risers.to_string()), "{t:?}");
+        assert!(t.iter().any(|x| *x == sol.treads.to_string()), "{t:?}");
+    }
+
+    #[test]
+    fn the_rails_tabs_edit_one_side_without_touching_the_other() {
+        let (_, o) = cx_with_stair();
+        let mut d = StairDialog::new(o);
+        let shared = d.draft().stair.params.railing;
+        // Both sides: the shared settings.
+        scoped_railing(&mut d.draft_mut().stair.params, RailScope::Both)
+            .newel
+            .size = 4.0;
+        assert_eq!(d.draft().stair.params.railing.newel.size, 4.0);
+        assert!(d.draft().stair.params.right_railing.is_none());
+        // The right side gets a copy of its own the first time it is edited.
+        {
+            let p = &mut d.draft_mut().stair.params;
+            scoped_railing(p, RailScope::Right).newel.size = 5.0;
+            scoped_railing(p, RailScope::Right).style = RailStyle::Glass;
+        }
+        let p = &d.draft().stair.params;
+        assert_eq!(p.railing.newel.size, 4.0, "the shared set is untouched");
+        assert_eq!(p.left_railing, None);
+        let own = p.right_railing.unwrap();
+        assert_eq!((own.newel.size, own.style), (5.0, RailStyle::Glass));
+        assert_ne!(own, shared);
+        assert_eq!(p.railing_for(plan_stairs::RailSide::Left), p.railing);
+        // The tabs draw for each scope, with the side's own note.
+        d.form.scope = RailScope::Right;
+        let t = page_texts(&mut d, "Newels/Balusters");
+        assert!(
+            t.iter()
+                .any(|x| x.contains("This side has settings of its own")),
+            "{t:?}"
+        );
+        d.form.scope = RailScope::Left;
+        let t = page_texts(&mut d, "Rails");
+        assert!(
+            t.iter().any(|x| x.contains("Editing this side gives it")),
+            "{t:?}"
+        );
+        // Leaving a side whose settings equal the shared ones drops its copy.
+        d.form.scope = RailScope::Both;
+        let t = page_texts(&mut d, "Rails");
+        assert!(t.iter().any(|x| x.contains("A side has settings")), "{t:?}");
+        // The Style tab offers the bullnose.
+        let t = page_texts(&mut d, "Style");
+        assert!(t.iter().any(|x| x == "Bullnose Bottom Tread"), "{t:?}");
+    }
+
+    #[test]
+    fn a_handrail_side_is_offered_and_changes_the_3d_and_the_components() {
+        let (_, o) = cx_with_stair();
+        assert!(SideKind::ALL.contains(&SideKind::Handrail));
+        let mut d = StairDialog::new(o);
+        d.draft_mut().stair.params.left_side = SideKind::Handrail;
+        let comps = view::components(d.draft());
+        let h = comps.iter().find(|c| c.name == "Handrails").unwrap();
+        assert_eq!((h.count, h.size.as_str()), (1, "on the left"));
+        d.draft_mut().stair.params.handrail = true;
+        let comps = view::components(d.draft());
+        assert_eq!(
+            comps.iter().find(|c| c.name == "Handrails").unwrap().count,
+            2
+        );
+        // A bullnose and a flare show as their own lines.
+        d.draft_mut().stair.params.bullnose = Bullnose::Left;
+        d.draft_mut().stair.params.flare = 4.0;
+        let comps = view::components(d.draft());
+        assert!(comps
+            .iter()
+            .any(|c| c.name == "Bullnose bottom tread" && c.size == "Left End"));
+        assert!(comps
+            .iter()
+            .any(|c| c.name == "Flared bottom tread" && c.size.contains("the other end")));
     }
 }

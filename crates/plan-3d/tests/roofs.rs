@@ -117,6 +117,47 @@ fn hole_mesh_has_no_triangles_inside_the_hole() {
 }
 
 #[test]
+fn an_l_shaped_hole_is_open_in_its_arms_and_closed_in_its_notch() {
+    // RF-42: a hole that is not a rectangle. An L: 60 x 60 with the corner
+    // (240..260, 100..120) left out.
+    let planes = gable_planes();
+    let plane = south(&planes);
+    let l = vec![
+        Point::new(200.0, 60.0),
+        Point::new(260.0, 60.0),
+        Point::new(260.0, 100.0),
+        Point::new(220.0, 100.0),
+        Point::new(220.0, 120.0),
+        Point::new(200.0, 120.0),
+    ];
+    let poly = roof_plane_with_holes(plane, &[RoofHole::hole(l)]);
+    assert_eq!(poly.holes.len(), 1);
+    assert!(poly.skipped_holes.is_empty());
+    let meshes = roof_plane_meshes(&poly, 6.0);
+    let tris = plan_tris(&[&meshes[0]]);
+    for open in [
+        Point::new(210.0, 70.0),
+        Point::new(250.0, 70.0),
+        Point::new(210.0, 115.0),
+    ] {
+        assert!(
+            !tris.iter().any(|(t, _)| covers(t, open)),
+            "{open:?} should be open"
+        );
+    }
+    // The notch of the L is roof.
+    let notch = Point::new(245.0, 115.0);
+    assert!(tris.iter().any(|(t, _)| covers(t, notch)));
+    let top: f64 = tris
+        .iter()
+        .filter(|(_, n)| n[1] > 0.8)
+        .map(|(t, _)| area(t).abs())
+        .sum();
+    let l_area = 60.0 * 60.0 - 40.0 * 20.0;
+    assert!((top - (480.0 * 180.0 - l_area)).abs() < 1e-2, "{top}");
+}
+
+#[test]
 fn roof_without_holes_is_a_plain_slab_set() {
     let planes = gable_planes();
     let roof = plan_roof::Roof {
@@ -440,4 +481,109 @@ fn ceiling_planes_that_meet_at_a_ridge_are_mitred() {
     );
     // The underside keeps its materials.
     assert!(!of(&mitred[0], Material::WallInterior).is_empty());
+}
+
+// ----- the roof over a bay, box or bow window (RF-29, DW-48) -----
+
+mod bay_roof {
+    use plan_3d::{build_scene, Material, Mesh, Scene};
+    use plan_core::{Id, OpeningKind, OpeningStyle, Point, Project, WallKind};
+
+    fn unit(style: OpeningStyle) -> (Scene, Id) {
+        let mut p = Project::new("t");
+        let wall = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(120.0, 0.0),
+            4.5,
+            100.0,
+            WallKind::Interior,
+        );
+        let id = p
+            .add_opening(0, wall, 60.0, OpeningKind::Window)
+            .expect("opening");
+        let o = p.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == id)
+            .unwrap();
+        o.style = style;
+        o.width = 72.0;
+        (build_scene(&p), id)
+    }
+
+    fn roof_of(scene: &Scene, id: Id) -> Vec<&Mesh> {
+        scene
+            .meshes
+            .iter()
+            .filter(|m| m.object_id == Some(id) && m.material == Material::Roof)
+            .collect()
+    }
+
+    fn top(ms: &[&Mesh]) -> f32 {
+        ms.iter()
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[1]))
+            .fold(f32::MIN, f32::max)
+    }
+
+    fn bottom(ms: &[&Mesh]) -> f32 {
+        ms.iter()
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[1]))
+            .fold(f32::MAX, f32::min)
+    }
+
+    /// Largest tilt of a face of the roof from level, in rise per 12 of run.
+    fn steepest(ms: &[&Mesh]) -> f32 {
+        ms.iter()
+            .flat_map(|m| m.vertices.iter())
+            .filter(|v| v.normal[1] > 0.8)
+            .map(|v| (1.0 - v.normal[1] * v.normal[1]).max(0.0).sqrt() / v.normal[1] * 12.0)
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn a_bay_bow_or_box_window_has_a_pitched_roof_not_a_flat_slab() {
+        for style in [
+            OpeningStyle::BayWindow,
+            OpeningStyle::BowWindow,
+            OpeningStyle::BoxWindow,
+        ] {
+            let (scene, id) = unit(style);
+            let roof = roof_of(&scene, id);
+            assert!(!roof.is_empty(), "{style:?} has no roof");
+            let pitch = steepest(&roof);
+            assert!(
+                (pitch - 6.0).abs() < 0.2,
+                "{style:?} roof steepest face {pitch}:12"
+            );
+            // It rises above its eave by a few inches (18" deep, 6:12).
+            let rise = top(&roof) - bottom(&roof);
+            assert!(rise > 4.0, "{style:?} rise {rise}");
+        }
+    }
+
+    #[test]
+    fn the_roof_stays_within_the_projection_of_the_unit() {
+        for style in [OpeningStyle::BayWindow, OpeningStyle::BoxWindow] {
+            let (scene, id) = unit(style);
+            let zmax = roof_of(&scene, id)
+                .iter()
+                .flat_map(|m| m.vertices.iter().map(|v| v.position[2]))
+                .fold(f32::MIN, f32::max);
+            assert!(zmax <= 2.25 + 18.0 + 1e-3, "{style:?} reaches {zmax}");
+        }
+    }
+
+    #[test]
+    fn a_box_window_roof_is_a_single_slope_from_the_wall() {
+        let (scene, id) = unit(OpeningStyle::BoxWindow);
+        let roof = roof_of(&scene, id);
+        // The slope faces away from the wall: every upward face leans +z.
+        let leaning = roof
+            .iter()
+            .flat_map(|m| m.vertices.iter())
+            .filter(|v| v.normal[1] > 0.8 && v.normal[1] < 0.99)
+            .all(|v| v.normal[2] > 0.0);
+        assert!(leaning);
+    }
 }

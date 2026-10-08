@@ -4,7 +4,7 @@ use crate::extent::{frame_for, size_of, source_size_in, Frame, SceneSource};
 use crate::model::{BoxSource, Layout, LayoutBox, ScheduleKind, LABEL_GAP_IN};
 use crate::render::LayoutRenderContext;
 use crate::titleblock::TitleBlockTemplate;
-use plan_3d::build_scene;
+use plan_3d::{build_scene_with, Scene, SceneOptions};
 use plan_core::{CadItem, CadObject, Id, Point, Project};
 use plan_docs::{Scale, SheetSize};
 use plan_elevation::{SectionCut, ViewDir};
@@ -169,9 +169,24 @@ pub fn send_to_layout(
     scale: Scale,
     at: Option<Point>,
 ) -> Id {
+    send_to_layout_sized(layout, cx, page, source, scale, at, None)
+}
+
+/// [`send_to_layout`] with a box size of the caller's: `size_in` is the
+/// `(width, height)` in paper inches the box takes instead of the one the
+/// source measures (a picture of the 3D view at the width it was asked for).
+pub fn send_to_layout_sized(
+    layout: &mut Layout,
+    cx: &LayoutRenderContext,
+    page: u32,
+    source: BoxSource,
+    scale: Scale,
+    at: Option<Point>,
+    size_in: Option<(f64, f64)>,
+) -> Id {
     // A sheet index box is measured against the pages this layout has.
     cx.set_sheet_index(layout);
-    let (w, h) = source_size_in(&source, scale, cx);
+    let (w, h) = size_in.unwrap_or_else(|| source_size_in(&source, scale, cx));
     let label = default_label(&source, cx.project);
     let id = layout.next_box_id();
     if layout.page(page).is_none() {
@@ -180,7 +195,10 @@ pub fn send_to_layout(
     let lower_left = match at {
         Some(p) => p,
         None => {
-            let area = layout.drawing_area();
+            // A page with a sheet of its own packs into that sheet's area.
+            let area = layout
+                .page(page)
+                .map_or_else(|| layout.drawing_area(), |p| layout.page_drawing_area(p));
             let placed: Vec<Foot> = layout
                 .page(page)
                 .map(|p| p.boxes.iter().map(Foot::of).collect())
@@ -216,7 +234,7 @@ pub fn fit_largest_scale(
     max: Scale,
 ) -> Scale {
     let (lo, hi) = layout.drawing_area();
-    let scenes = SceneSource::new(cx.scene);
+    let scenes = SceneSource::for_context(cx);
     let frame = frame_for(source, cx, &scenes);
     if matches!(frame, Frame::Paper { .. }) {
         return max;
@@ -365,6 +383,21 @@ pub fn default_construction_set_with(
     layout
 }
 
+/// The `(floor, id)` of the placed schedules whose kind the layout's own
+/// door, window and room schedule boxes do not already show.
+fn other_placed_schedules(project: &Project) -> Vec<(usize, Id)> {
+    use plan_core::schedules::{ScheduleKind as K, ScheduleLayer};
+    let mut out = Vec::new();
+    for (floor, f) in project.floors.iter().enumerate() {
+        for s in ScheduleLayer::load(f).schedules {
+            if !matches!(s.kind, K::Door | K::Window | K::Room) {
+                out.push((floor, s.id));
+            }
+        }
+    }
+    out
+}
+
 /// Adds Daniel's sheet set to `layout`, laid out for its sheet and title block:
 ///
 /// 1. **Cover**: the project title, "CONSTRUCTION DOCUMENTS" and the sheet
@@ -387,6 +420,23 @@ pub fn append_construction_set(
     floors: usize,
     master: &plan_docs::MasterList,
 ) -> usize {
+    append_construction_set_in(layout, project, floors, master, None)
+}
+
+/// [`append_construction_set`] measuring elevations and sections on the
+/// scene `scene_builder` makes (the application's, with roofs, stairs and
+/// the rest of the 3D view) instead of the walls-and-openings scene built
+/// here. Placed schedules of the plan that no standard schedule box covers
+/// (cabinets, electrical, stairs, notes...) follow the door, window and room
+/// schedules on the Schedules sheet, each as a box that follows its
+/// Schedule Specification.
+pub fn append_construction_set_in(
+    layout: &mut Layout,
+    project: &Project,
+    floors: usize,
+    master: &plan_docs::MasterList,
+    scene_builder: Option<&dyn Fn(&Project) -> Scene>,
+) -> usize {
     layout.pages.retain(|p| {
         p.template_page
             || !(p.boxes.is_empty()
@@ -397,7 +447,10 @@ pub fn append_construction_set(
     let before = layout.pages.len();
     let mut number = layout.pages.iter().map(|p| p.number + 1).max().unwrap_or(0);
 
-    let scene = build_scene(project);
+    let scene = match scene_builder {
+        Some(f) => f(project),
+        None => build_scene_with(project, &SceneOptions::for_project(project)),
+    };
     let mut cx = LayoutRenderContext::new(project);
     cx.scene = Some(&scene);
     cx.master_list = master.clone();
@@ -518,6 +571,19 @@ pub fn append_construction_set(
             cx,
             number,
             BoxSource::Schedule { kind },
+            quarter,
+            None,
+        );
+    }
+
+    // Placed schedules no standard box covers: the plan's cabinet, stair,
+    // electrical... schedules, as the plan shows them.
+    for (floor, id) in other_placed_schedules(project) {
+        send_to_layout(
+            layout,
+            cx,
+            number,
+            BoxSource::PlacedSchedule { floor, id },
             quarter,
             None,
         );

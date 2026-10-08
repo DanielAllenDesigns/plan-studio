@@ -21,10 +21,20 @@ use plan_core::images::DistKind;
 use plan_core::PlacedSymbol;
 use plan_library::Placement;
 
+mod import3d;
+pub use import3d::{show_import, start_import};
+// The scenario tests drive the dialog through these.
+#[cfg(test)]
+pub use import3d::{
+    accept as accept_import, close as close_import, is_open as import_is_open, open_path,
+    with_dialog as with_import, Side,
+};
+
 const TABS: &[Tab] = &[
     on("General"),
     on("Options"),
     off("3D"),
+    on("Materials"),
     on("Layer"),
     on("Label"),
     off("Components"),
@@ -60,6 +70,11 @@ struct SymbolForm {
     fields: Fields,
     /// What the last "Replace From Library" did.
     note: String,
+    /// Materials tab: the material the symbol was painted with (`None` =
+    /// the symbol's own look) and whether the dialog changed it.
+    material: Option<String>,
+    material_changed: bool,
+    material_search: String,
 }
 
 fn placement_name(p: Placement) -> &'static str {
@@ -109,6 +124,9 @@ impl SymbolDialog {
             layers,
             fields: Fields::default(),
             note: String::new(),
+            material: None,
+            material_changed: false,
+            material_search: String::new(),
             draft: symbol,
         };
         form.describe();
@@ -130,6 +148,9 @@ impl SymbolDialog {
             layers,
             fields: Fields::default(),
             note: String::new(),
+            material: None,
+            material_changed: false,
+            material_search: String::new(),
             draft: symbol,
         };
         Self {
@@ -145,6 +166,21 @@ impl SymbolDialog {
             Some(Special::Distribution(f)) => self.frame.show(ctx, f),
             None => self.frame.show(ctx, &mut self.form),
         }
+    }
+
+    /// Starts the Materials tab on the material the symbol is painted with.
+    pub fn with_material(mut self, current: Option<String>) -> Self {
+        self.form.material = current;
+        self
+    }
+
+    /// The Materials tab's choice when it was changed: `Some(None)` puts the
+    /// symbol's own look back, `Some(Some(name))` paints it with a library
+    /// material (apply it with `tools::materials::apply_symbol_material`).
+    pub fn material_choice(&self) -> Option<Option<String>> {
+        self.form
+            .material_changed
+            .then(|| self.form.material.clone())
     }
 
     pub fn draft(&self) -> &PlacedSymbol {
@@ -269,6 +305,57 @@ impl SymbolForm {
         }
     }
 
+    /// The Materials tab: the library material the symbol is painted with
+    /// (the Material Painter's whole-object paint), with search.
+    fn materials(&mut self, ui: &mut Ui) {
+        let lib = crate::tools::materials::library();
+        section(ui, "Materials");
+        ui.weak("A symbol has no named parts: the material paints the whole object.");
+        row(ui, "Material", |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.material_search)
+                    .hint_text("search")
+                    .desired_width(140.0),
+            );
+        });
+        let before = self.material.clone();
+        row(ui, "Painted with", |ui| {
+            egui::ComboBox::from_id_salt("sym_material")
+                .selected_text(self.material.clone().unwrap_or_else(|| "Default".into()))
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(self.material.is_none(), "Default (the symbol's own)")
+                        .clicked()
+                    {
+                        self.material = None;
+                    }
+                    for m in lib.search(&self.material_search) {
+                        if ui
+                            .selectable_label(self.material.as_deref() == Some(&m.name), &m.name)
+                            .clicked()
+                        {
+                            self.material = Some(m.name.clone());
+                        }
+                    }
+                });
+        });
+        if self.material != before {
+            self.material_changed = true;
+        }
+        if let Some(d) = self.material.as_deref().and_then(|n| lib.resolve(n)) {
+            row(ui, "Color", |ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(40.0, 14.0), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    rect,
+                    2.0,
+                    egui::Color32::from_rgb(d.color[0], d.color[1], d.color[2]),
+                );
+            });
+            ui.weak(format!("Class {}", d.class.name()));
+        }
+    }
+
     fn options(&mut self, ui: &mut Ui) {
         section(ui, "Options");
         ui.checkbox(&mut self.draft.flip, "Flip (mirror left to right)");
@@ -318,6 +405,7 @@ impl SpecPages for SymbolForm {
         match TABS.get(tab).map(|t| t.name) {
             Some("General") => self.general(ui),
             Some("Options") => self.options(ui),
+            Some("Materials") => self.materials(ui),
             Some("Layer") => self.layer(ui),
             Some("Label") => self.label(ui),
             _ => {}
@@ -439,6 +527,29 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(unknown.form.name, "nope");
+    }
+
+    #[test]
+    fn the_materials_tab_remembers_the_choice() {
+        let s = PlacedSymbol::new("nope", Point::ZERO, 10.0, 10.0, 10.0);
+        let mut dlg = SymbolDialog::new(s, Vec::new()).with_material(Some("Drywall".into()));
+        assert_eq!(dlg.form.material.as_deref(), Some("Drywall"));
+        assert_eq!(dlg.material_choice(), None, "not changed yet");
+        let ctx = egui::Context::default();
+        let tab = TABS.iter().position(|t| t.name == "Materials").unwrap();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| dlg.form.page(ui, tab));
+        });
+        assert_eq!(
+            dlg.material_choice(),
+            None,
+            "drawing the tab changes nothing"
+        );
+        dlg.form.material = Some("Quartz – White".into());
+        dlg.form.material_changed = true;
+        assert_eq!(dlg.material_choice(), Some(Some("Quartz – White".into())));
+        dlg.form.material = None;
+        assert_eq!(dlg.material_choice(), Some(None));
     }
 
     #[test]

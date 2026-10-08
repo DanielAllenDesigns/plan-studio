@@ -108,6 +108,28 @@ impl Default for ViewSettings {
 }
 
 impl ViewSettings {
+    /// Preview: the fast interactive view (no shadows or occlusion, low
+    /// quality) that Chief shows while the camera is being moved.
+    pub fn preview() -> ViewSettings {
+        ViewSettings {
+            shadows: false,
+            ambient_occlusion: false,
+            quality: Quality::Low,
+            ..ViewSettings::default()
+        }
+    }
+
+    /// Final View: sun shadows, occlusion and anti-aliasing at the default
+    /// (Medium) quality; the Shading menu raises the quality to High.
+    pub fn final_view() -> ViewSettings {
+        ViewSettings {
+            shadows: true,
+            ambient_occlusion: true,
+            quality: Quality::Medium,
+            ..ViewSettings::default()
+        }
+    }
+
     /// `key=value` text, one line, for saving with a view.
     pub fn to_text(&self) -> String {
         format!(
@@ -413,6 +435,17 @@ pub fn sky_colors(horizon: [f32; 4]) -> ([f32; 3], [f32; 3], [f32; 3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_is_cheaper_than_final_view() {
+        let (p, f) = (ViewSettings::preview(), ViewSettings::final_view());
+        assert!(!p.shadows && !p.ambient_occlusion && p.quality == Quality::Low);
+        assert!(f.shadows && f.ambient_occlusion && f.quality == Quality::Medium);
+        assert_eq!(f, ViewSettings::default(), "Final View is the default look");
+        assert!(p.quality.shadow_size() < f.quality.shadow_size());
+        // Exposure is the user's own and survives both presets.
+        assert_eq!(p.exposure, ViewSettings::default().exposure);
+    }
 
     #[test]
     fn shadow_map_fits_the_scene_bounds() {

@@ -776,6 +776,175 @@ pub struct PlanDefaults {
     /// Roof detail: eave cut, fascia, soffit, rafter tails, attic walls,
     /// and the Build Roof baseline rule (Default Settings > Roof Defaults).
     pub roof_detail: RoofDetailDefaults,
+    /// Starting values the plan's code minimums set (Default Settings >
+    /// Plan Check > Apply code minimums to defaults).
+    pub code: CodeDefaults,
+    /// The values of the Default Settings pages that have no typed slot of
+    /// their own (CAD, Camera Tools, Schedules, Text, ...), by
+    /// `"<page>.<field>"`. A page field that is missing here reads as the
+    /// page's built-in value, so only changed values are stored; see
+    /// [`PageValue`] and `plan-app`'s `dialogs/default_pages`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub pages: std::collections::BTreeMap<String, PageValue>,
+}
+
+/// One stored value of a Default Settings page field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PageValue {
+    Bool(bool),
+    /// A whole number (counts, percentages, undo levels).
+    Int(i64),
+    /// A length (inches), an angle (degrees) or another measure.
+    Num(f64),
+    /// A name or a choice.
+    Text(String),
+}
+
+impl PageValue {
+    /// The value as a number (a flag is 0 or 1, text is 0).
+    pub fn num(&self) -> f64 {
+        match self {
+            PageValue::Bool(b) => f64::from(u8::from(*b)),
+            PageValue::Int(i) => *i as f64,
+            PageValue::Num(n) => *n,
+            PageValue::Text(t) => t.trim().parse().unwrap_or(0.0),
+        }
+    }
+
+    /// The value as a whole number.
+    pub fn int(&self) -> i64 {
+        self.num().round() as i64
+    }
+
+    /// The value as a flag.
+    pub fn flag(&self) -> bool {
+        match self {
+            PageValue::Bool(b) => *b,
+            PageValue::Text(t) => matches!(t.as_str(), "true" | "yes" | "on"),
+            other => other.num() != 0.0,
+        }
+    }
+
+    /// The value as text.
+    pub fn text(&self) -> String {
+        match self {
+            PageValue::Bool(b) => b.to_string(),
+            PageValue::Int(i) => i.to_string(),
+            PageValue::Num(n) => n.to_string(),
+            PageValue::Text(t) => t.clone(),
+        }
+    }
+
+    /// Equal values regardless of how they are stored (`Int(2)` is `Num(2.0)`).
+    pub fn same(&self, other: &PageValue) -> bool {
+        match (self, other) {
+            (PageValue::Text(a), PageValue::Text(b)) => a == b,
+            (PageValue::Text(_), _) | (_, PageValue::Text(_)) => false,
+            (a, b) => (a.num() - b.num()).abs() < 1e-9,
+        }
+    }
+}
+
+impl PlanDefaults {
+    /// The stored value of page field `key`, if the page changed it.
+    pub fn page_value(&self, key: &str) -> Option<&PageValue> {
+        self.pages.get(key)
+    }
+
+    /// A stored number, else `fallback`.
+    pub fn page_num(&self, key: &str, fallback: f64) -> f64 {
+        self.pages.get(key).map_or(fallback, PageValue::num)
+    }
+
+    /// A stored flag, else `fallback`.
+    pub fn page_flag(&self, key: &str, fallback: bool) -> bool {
+        self.pages.get(key).map_or(fallback, PageValue::flag)
+    }
+
+    /// A stored text, else `fallback`.
+    pub fn page_text(&self, key: &str, fallback: &str) -> String {
+        self.pages
+            .get(key)
+            .map_or_else(|| fallback.to_string(), PageValue::text)
+    }
+
+    /// Stores page field `key`; a value equal to the built-in `builtin`
+    /// removes the entry so the template stays small.
+    pub fn set_page_value(&mut self, key: &str, value: PageValue, builtin: &PageValue) {
+        if value.same(builtin) {
+            self.pages.remove(key);
+        } else {
+            self.pages.insert(key.to_string(), value);
+        }
+    }
+
+    /// Forgets every stored value of the page whose keys start with `prefix`
+    /// (a page's Reset button).
+    pub fn clear_page(&mut self, prefix: &str) {
+        self.pages.retain(|k, _| !k.starts_with(prefix));
+    }
+}
+
+/// The code-legal values that tools and dialogs start from where the plan
+/// defaults have no other slot: stairs, railings, the bedroom window, the
+/// footing and the garage wall type. Inches. The app seeds them from the
+/// plan's code minimums (`apply_code_minimums` in plan-app); the values here
+/// are the 2021 IRC ones.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CodeDefaults {
+    /// Riser height a new stair aims for (R311.7.5.1: 7 3/4" at most).
+    pub stair_riser: f64,
+    /// Tread depth (R311.7.5.2: 10" at least).
+    pub stair_tread: f64,
+    /// Stair width (R311.7.1: 36" at least).
+    pub stair_width: f64,
+    /// Headroom (R311.7.2: 80" at least).
+    pub stair_headroom: f64,
+    /// Guard height (R312.1.2: 36").
+    pub guard_height: f64,
+    /// Handrail height (R311.7.8.1: 34" to 38").
+    pub handrail_height: f64,
+    /// Widest opening in a guard (R312.1.3: a 4" sphere must not pass).
+    pub baluster_opening: f64,
+    /// The window a new bedroom window starts as: egress-sized.
+    pub bedroom_window: WindowDefaults,
+    /// Footing width under a foundation wall (Table R403.1(1)).
+    pub footing_width: f64,
+    /// Footing thickness (R403.1.1: 6" at least).
+    pub footing_thickness: f64,
+    /// Wall type for the wall between a garage and the house ("" = none).
+    pub garage_wall_type: String,
+}
+
+impl Default for CodeDefaults {
+    fn default() -> Self {
+        Self {
+            stair_riser: 7.5,
+            stair_tread: 10.0,
+            stair_width: 36.0,
+            stair_headroom: 80.0,
+            guard_height: 36.0,
+            handrail_height: 36.0,
+            baluster_opening: 4.0,
+            bedroom_window: WindowDefaults {
+                width: 36.0,
+                height: 60.0,
+                sill_height: 36.0,
+                window_type: "Single Casement".into(),
+                frame_width: 0.75,
+                sash_width: 1.5,
+                lites_across: 1,
+                lites_vertical: 1,
+                egress: true,
+                tempered: false,
+            },
+            footing_width: crate::floors::WALL_FOOTING.0,
+            footing_thickness: crate::floors::WALL_FOOTING.1,
+            garage_wall_type: String::new(),
+        }
+    }
 }
 
 /// How walls connect when drawn or edited.
@@ -1192,6 +1361,8 @@ impl PlanDefaults {
             opening_labels: crate::openings::OpeningLabelDefaults::default(),
             opening_variants: crate::openings::OpeningVariantDefaults::default(),
             roof_detail: RoofDetailDefaults::default(),
+            code: CodeDefaults::default(),
+            pages: Default::default(),
         }
     }
 }

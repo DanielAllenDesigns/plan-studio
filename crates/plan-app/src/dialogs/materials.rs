@@ -21,7 +21,17 @@ use std::cell::RefCell;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
     List,
+    /// The take-off by surface and material: a room, the floor or the plan.
+    Surfaces,
     Master,
+}
+
+/// What the Surfaces tab adds up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RegionPick {
+    Room,
+    Floor,
+    Plan,
 }
 
 /// What the Materials List window remembers.
@@ -32,6 +42,8 @@ struct State {
     master: Option<MasterList>,
     stock_text: String,
     status: String,
+    region: RegionPick,
+    room: usize,
 }
 
 impl Default for State {
@@ -43,6 +55,8 @@ impl Default for State {
             master: None,
             stock_text: String::new(),
             status: String::new(),
+            region: RegionPick::Floor,
+            room: 0,
         }
     }
 }
@@ -150,6 +164,7 @@ pub fn show(ctx: &egui::Context, cx: &mut EditorContext) -> bool {
 fn contents(ui: &mut Ui, cx: &mut EditorContext, st: &mut State) {
     ui.horizontal(|ui| {
         ui.selectable_value(&mut st.tab, Tab::List, "Materials List");
+        ui.selectable_value(&mut st.tab, Tab::Surfaces, "By Surface");
         ui.selectable_value(&mut st.tab, Tab::Master, "Master List");
         ui.separator();
         ui.radio_value(&mut st.all_floors, false, "Active floor");
@@ -160,6 +175,7 @@ fn contents(ui: &mut Ui, cx: &mut EditorContext, st: &mut State) {
     ui.separator();
     match st.tab {
         Tab::List => list_tab(ui, cx, st, &all),
+        Tab::Surfaces => surfaces_tab(ui, cx, st),
         Tab::Master => master_tab(ui, st, &all),
     }
     if !st.status.is_empty() {
@@ -262,6 +278,91 @@ fn list_tab(ui: &mut Ui, cx: &mut EditorContext, st: &mut State, all: &[Material
             st.status = lw::send_materials(cx, floor, st.category.clone());
         }
     });
+}
+
+/// The region of the Surfaces tab as the take-off wants it.
+fn region_of(st: &State) -> plan_materials::Region {
+    match st.region {
+        RegionPick::Room => plan_materials::Region::Room(st.room),
+        RegionPick::Floor => plan_materials::Region::Floor,
+        RegionPick::Plan => plan_materials::Region::Plan,
+    }
+}
+
+/// The by-surface list of the selected region: each library material with
+/// manufacturer, supplier, price, unit and the quantity its surfaces come to.
+fn surfaces_tab(ui: &mut Ui, cx: &mut EditorContext, st: &mut State) {
+    use crate::tools::materials::surfaces;
+    let rooms = surfaces::room_names(cx);
+    if st.room >= rooms.len() {
+        st.room = 0;
+    }
+    ui.horizontal(|ui| {
+        ui.label("Region");
+        ui.radio_value(&mut st.region, RegionPick::Room, "Room");
+        ui.add_enabled_ui(st.region == RegionPick::Room, |ui| {
+            egui::ComboBox::from_id_salt("materials_surface_room")
+                .selected_text(
+                    rooms
+                        .get(st.room)
+                        .cloned()
+                        .unwrap_or_else(|| "no rooms".into()),
+                )
+                .show_ui(ui, |ui| {
+                    for (i, n) in rooms.iter().enumerate() {
+                        ui.selectable_value(&mut st.room, i, n);
+                    }
+                });
+        });
+        ui.radio_value(&mut st.region, RegionPick::Floor, "Active floor");
+        ui.radio_value(&mut st.region, RegionPick::Plan, "Whole plan");
+    });
+    let lines = surfaces::lines(cx, region_of(st));
+    egui::ScrollArea::both().max_height(380.0).show(ui, |ui| {
+        egui::Grid::new("materials_surface_grid")
+            .striped(true)
+            .num_columns(plan_materials::SURFACE_COLUMNS.len())
+            .show(ui, |ui| {
+                for c in plan_materials::SURFACE_COLUMNS {
+                    ui.strong(c);
+                }
+                ui.end_row();
+                for l in &lines {
+                    for (i, cell) in l.cells().into_iter().enumerate() {
+                        if i >= 5 {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| ui.label(cell),
+                            );
+                        } else {
+                            ui.label(cell);
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+    });
+    ui.separator();
+    let cost: f64 = lines.iter().map(|l| l.cost).sum();
+    let area: f64 = lines.iter().map(|l| l.area_sq_ft).sum();
+    ui.horizontal(|ui| {
+        ui.label(format!(
+            "{} materials, {area:.0} sq ft of surface",
+            lines.len()
+        ));
+        if cost > 0.0 {
+            ui.strong(format!("Total {}", fmt_money(Some(cost))));
+        } else {
+            ui.weak("Enter prices in each material's specification (Materials List tab)");
+        }
+    });
+    if ui.button("Export CSV\u{2026}").clicked() {
+        st.status = save_text(
+            "materials_by_surface.csv",
+            "csv",
+            &plan_materials::to_csv(&lines),
+        );
+    }
 }
 
 fn master_tab(ui: &mut Ui, st: &mut State, all: &[MaterialLine]) {

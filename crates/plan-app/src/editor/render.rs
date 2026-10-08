@@ -207,6 +207,9 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         let printed = printed_text_object(cx, c, attrs.get(&c.id));
         let c = printed.as_ref().unwrap_or(c);
         match attrs.get(&c.id) {
+            Some(a) if matches!(c.item, CadItem::Text { .. }) && a.text_box.needs_layout() => {
+                draw_text_box(cx, painter, cam, c, a)
+            }
             Some(a) => crate::tools::cad::draw_cad_styled(cx, painter, cam, c, Some(a)),
             None => weighted(cx, painter, &c.layer, || {
                 draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
@@ -353,7 +356,11 @@ fn draw_rooms(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 cam.world_to_screen(crate::editor::rooms_edit::label_position(cx, room)),
                 Align2::CENTER_CENTER,
                 crate::editor::rooms_edit::room_label_text(cx, room),
-                match face_of(cx.project.text_styles.resolve("Room Label Style")) {
+                match face_of(
+                    cx.project
+                        .text_styles
+                        .resolve(&crate::editor::rooms_edit::label_text_style(cx, room)),
+                ) {
                     Some(spec) => crate::fonts::font_id(
                         painter.ctx(),
                         &spec,
@@ -919,6 +926,162 @@ pub fn printed_text_object(
     Some(o)
 }
 
+/// A text with a box (TXT-1, TXT-3, TXT-16): background fill, wrapped lines
+/// aligned inside the box, and the border. `c` is the text at its drawn
+/// size (see [`printed_text_object`]). Lines are laid out by
+/// [`plan_core::text_box`]; their runs are placed by the glyph widths of the
+/// face in use so alignment is exact on screen.
+pub fn draw_text_box(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    c: &plan_core::CadObject,
+    attrs: &plan_core::cad::CadAttrs,
+) {
+    use plan_core::text_box::{BoxLayout, HAlign};
+    let Some(pb) = plan_core::text_box::placed(&c.item, attrs) else {
+        return;
+    };
+    let pal = &cx.palette;
+    let px = cam.px_per_in as f32;
+    let (pos, angle, tb) = (pb.pos, pb.angle, pb.tb);
+    // Screen angle: plan angles run counter-clockwise, the screen's clockwise.
+    let (sin_a, cos_a) = (angle.sin() as f32, angle.cos() as f32);
+    let along = Vec2::new(cos_a, -sin_a);
+    let sc = |x: f64, y: f64| cam.world_to_screen(BoxLayout::to_plan(pos, angle, Point::new(x, y)));
+    // Glyphs first: their widths decide where each line starts and, for an
+    // unwrapped box, how wide the box is.
+    struct Piece {
+        galley: std::sync::Arc<egui::Galley>,
+        run: plan_core::text_styles::RichRun,
+        color: Color32,
+    }
+    let base_px = (pb.text_height as f32 * px).clamp(6.0, 200.0);
+    let lines: Vec<Vec<Piece>> = pb
+        .layout
+        .lines
+        .iter()
+        .map(|l| {
+            l.runs
+                .iter()
+                .filter(|r| !r.text.is_empty())
+                .map(|r| {
+                    let color = r
+                        .color
+                        .map_or(pal.text, |k| Color32::from_rgb(k[0], k[1], k[2]));
+                    let size = (base_px * r.scale as f32).clamp(6.0, 200.0);
+                    Piece {
+                        galley: painter.layout_no_wrap(
+                            r.text.clone(),
+                            text_font(painter, size),
+                            color,
+                        ),
+                        run: r.clone(),
+                        color,
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let line_px: Vec<f32> = lines
+        .iter()
+        .map(|l| l.iter().map(|p| p.galley.size().x).sum())
+        .collect();
+    let box_w = if tb.width > 0.0 {
+        tb.width
+    } else {
+        f64::from(line_px.iter().copied().fold(0.0_f32, f32::max)) / f64::from(px.max(1e-6))
+    };
+    let box_h = pb.layout.height;
+    let grow = pb.grow();
+    // Background, then the frame.
+    let quad_pts = |g: f64| -> Vec<Pos2> {
+        vec![
+            sc(-g, -g),
+            sc(box_w + g, -g),
+            sc(box_w + g, box_h + g),
+            sc(-g, box_h + g),
+        ]
+    };
+    if let Some(k) = tb.background {
+        painter.add(Shape::convex_polygon(
+            quad_pts(grow),
+            Color32::from_rgb(k[0], k[1], k[2]),
+            Stroke::NONE,
+        ));
+    }
+    if tb.border {
+        let k = if cx.view_flags.contains(&ViewFlag::LineWeights) && tb.border_weight > 0 {
+            restyle::weight_factor(tb.border_weight)
+        } else {
+            1.0
+        };
+        painter.add(Shape::closed_line(quad_pts(grow), Stroke::new(k, pal.text)));
+    }
+    for ((line, pieces), w_px) in pb.layout.lines.iter().zip(&lines).zip(&line_px) {
+        let w_in = f64::from(*w_px) / f64::from(px.max(1e-6));
+        let x0 = match tb.halign {
+            HAlign::Left => 0.0,
+            HAlign::Center => (box_w - w_in) * 0.5,
+            HAlign::Right => box_w - w_in,
+        };
+        let mut x_px = 0.0_f32;
+        for piece in pieces {
+            let size = piece.galley.size();
+            let h_in = f64::from(size.y) / f64::from(px.max(1e-6));
+            // The galley's top-left, `h_in` above the line's bottom.
+            let top_left = sc(
+                x0 + f64::from(x_px) / f64::from(px.max(1e-6)),
+                line.y + h_in,
+            );
+            let shape = egui::epaint::TextShape::new(top_left, piece.galley.clone(), piece.color)
+                .with_angle(-angle as f32);
+            if piece.run.bold {
+                let nudge = along * 0.7;
+                let mut bold = shape.clone();
+                bold.pos += nudge;
+                painter.add(bold);
+            }
+            painter.add(shape);
+            if piece.run.underline {
+                let a = sc(x0 + f64::from(x_px) / f64::from(px.max(1e-6)), line.y)
+                    - Vec2::new(-sin_a, -cos_a) * 1.0;
+                let b = a + along * size.x;
+                painter.line_segment([a, b], Stroke::new(1.0_f32, piece.color));
+            }
+            x_px += size.x;
+        }
+    }
+}
+
+/// The outline of a text's box and frame, for the selection and hover
+/// highlight.
+fn highlight_text_box(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    c: &plan_core::CadObject,
+    stroke: Stroke,
+) -> bool {
+    let attrs = cx.floor().cad_attrs(c.id);
+    let Some(attrs) = attrs.filter(|a| a.text_box.needs_layout()) else {
+        return false;
+    };
+    let drawn = printed_text_object(cx, c, Some(&attrs));
+    let item = drawn.as_ref().map_or(&c.item, |o| &o.item);
+    let Some(pb) = plan_core::text_box::placed(item, &attrs) else {
+        return false;
+    };
+    let pts: Vec<Pos2> = pb
+        .layout
+        .corners(pb.pos, pb.angle, pb.grow())
+        .iter()
+        .map(|p| cam.world_to_screen(*p))
+        .collect();
+    painter.add(Shape::closed_line(pts, stroke));
+    true
+}
+
 /// Settles the CAD text hits of `hits` (from the stored-height picking) with
 /// the drawn size: a printed-size text found by its stored box but not by the
 /// drawn one is dropped, one found only by the drawn box is added.
@@ -933,13 +1096,21 @@ pub fn settle_text_hits(
     let mut drop = Vec::new();
     let mut add = Vec::new();
     for c in floor.cad.iter().rev() {
-        let Some(drawn) = printed_text_object(cx, c, attrs.get(&c.id)) else {
+        // A text with a box is hit by its box and frame (TXT-1, S-25).
+        let printed = printed_text_object(cx, c, attrs.get(&c.id));
+        let boxed = attrs.get(&c.id).and_then(|a| {
+            plan_core::text_box::placed(printed.as_ref().map_or(&c.item, |o| &o.item), a)
+        });
+        let Some(drawn) = printed.or_else(|| boxed.as_ref().map(|_| c.clone())) else {
             continue;
         };
         let r = ObjectRef::Cad(c.id);
         let found = hits.contains(&r);
-        let now = cx.layers().is_visible(&c.layer)
-            && crate::editor::selection::cad_distance(&drawn.item, p) <= tol;
+        let dist = match &boxed {
+            Some(pb) => pb.distance(p),
+            None => crate::editor::selection::cad_distance(&drawn.item, p),
+        };
+        let now = cx.layers().is_visible(&c.layer) && dist <= tol;
         match (found, now) {
             (true, false) => drop.push(r),
             (false, true) => add.push(r),
@@ -966,6 +1137,11 @@ pub struct DimLook {
     pub past: f64,
     /// Number above the line (otherwise centered on it, over a break).
     pub above: bool,
+    /// A fixed extension line length back from the dimension line.
+    pub ext_length: Option<f64>,
+    /// The end mark (Arrow tab) and whether an arrowhead or dot is solid.
+    pub mark: plan_core::dimension::DimArrow,
+    pub filled: bool,
 }
 
 impl DimLook {
@@ -995,12 +1171,19 @@ impl DimLook {
             1.0
         };
         let or = |v: f64, fallback: f64| if v > 0.0 { v } else { fallback };
+        // What the dimension sets for itself wins (DIM-31, DIM-38).
+        let o = &d.look;
         DimLook {
             text_h,
-            arrow: or(set.arrow_size, 2.25) * k,
-            gap: set.extension_gap.max(0.0) * k,
-            past: set.extension_past.max(0.0) * k,
+            arrow: o.arrow_size.unwrap_or(or(set.arrow_size, 2.25) * k),
+            gap: o.ext_gap.unwrap_or(set.extension_gap.max(0.0) * k),
+            past: o.ext_past.unwrap_or(set.extension_past.max(0.0) * k),
             above: set.text_above_line,
+            ext_length: o.ext_length.filter(|l| *l > 0.0),
+            mark: o
+                .arrow
+                .unwrap_or_else(|| plan_core::dimension::DimArrow::from_name(&set.arrow_style)),
+            filled: o.arrow_filled.unwrap_or(true),
         }
     }
 
@@ -1013,6 +1196,9 @@ impl DimLook {
             gap: 0.0,
             past: 0.0,
             above: false,
+            ext_length: None,
+            mark: plan_core::dimension::DimArrow::Tick,
+            filled: true,
         }
     }
 }
@@ -1062,18 +1248,11 @@ pub fn draw_dimension_look(
         if hidden {
             continue;
         }
-        let v = e.sub(m);
-        let len = v.length();
-        if len < 1e-6 {
+        let Some((from, to)) =
+            plan_core::dimension::extension_segment(m, e, look.gap, look.past, look.ext_length)
+        else {
             continue;
-        }
-        let u = v.scale(1.0 / len);
-        let from = if len > look.gap {
-            m.add(u.scale(look.gap))
-        } else {
-            m
         };
-        let to = e.add(u.scale(look.past));
         painter.line_segment(
             [cam.world_to_screen(from), cam.world_to_screen(to)],
             ext_stroke,
@@ -1089,10 +1268,7 @@ pub fn draw_dimension_look(
     } else {
         Vec2::X
     };
-    let tick = Vec2::new(-dir.y, dir.x) * (look.arrow as f32 * px * 0.5).clamp(2.5, 14.0);
-    for s in [sp, sq] {
-        painter.line_segment([s - tick, s + tick], stroke);
-    }
+    draw_dimension_ends(painter, sp, sq, dir, look, px, stroke);
 
     let font_px = (look.text_h as f32 * px).clamp(6.0, 200.0);
     let galley = painter.layout_no_wrap(
@@ -1144,6 +1320,60 @@ pub fn draw_dimension_look(
     let half = size * 0.5;
     let top_left = center - Vec2::new(half.x * cos - half.y * sin, half.x * sin + half.y * cos);
     painter.add(egui::epaint::TextShape::new(top_left, galley, pal.dimension_text).with_angle(ang));
+}
+
+/// The end marks of a dimension line from `sp` to `sq` (screen points, `dir`
+/// the unit vector from `sp` to `sq`): ticks across the line, arrowheads
+/// pointing outward, dots or nothing (the Arrow tab).
+fn draw_dimension_ends(
+    painter: &egui::Painter,
+    sp: Pos2,
+    sq: Pos2,
+    dir: Vec2,
+    look: &DimLook,
+    px: f32,
+    stroke: Stroke,
+) {
+    use plan_core::dimension::DimArrow;
+    let perp = Vec2::new(-dir.y, dir.x);
+    let size = look.arrow as f32 * px;
+    match look.mark {
+        DimArrow::None => {}
+        DimArrow::Tick => {
+            let tick = perp * (size * 0.5).clamp(2.5, 14.0);
+            for s in [sp, sq] {
+                painter.line_segment([s - tick, s + tick], stroke);
+            }
+        }
+        DimArrow::Dot => {
+            let r = (size * 0.25).clamp(1.5, 6.0);
+            for s in [sp, sq] {
+                if look.filled {
+                    painter.circle_filled(s, r, stroke.color);
+                } else {
+                    painter.circle_stroke(s, r, stroke);
+                }
+            }
+        }
+        DimArrow::Arrow => {
+            let len = size.clamp(5.0, 30.0);
+            let half = len * 0.3;
+            // The tip is at the end of the line; the base lies along it.
+            for (tip, inward) in [(sp, dir), (sq, -dir)] {
+                let base = tip + inward * len;
+                if look.filled {
+                    painter.add(Shape::convex_polygon(
+                        vec![tip, base + perp * half, base - perp * half],
+                        stroke.color,
+                        Stroke::NONE,
+                    ));
+                } else {
+                    painter.line_segment([tip, base + perp * half], stroke);
+                    painter.line_segment([tip, base - perp * half], stroke);
+                }
+            }
+        }
+    }
 }
 
 /// A CAD primitive in `stroke`.
@@ -1247,7 +1477,9 @@ fn highlight(
         }
         ObjectRef::Cad(id) | ObjectRef::Text(id) => {
             if let Some(c) = floor.cad.iter().find(|c| c.id == id) {
-                draw_cad(painter, cam, &c.item, stroke, &cx.palette);
+                if !highlight_text_box(cx, painter, cam, c, stroke) {
+                    draw_cad(painter, cam, &c.item, stroke, &cx.palette);
+                }
             }
         }
         ObjectRef::Device(id) => {

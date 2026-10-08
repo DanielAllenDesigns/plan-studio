@@ -14,6 +14,13 @@
 //!
 //! Every pasted object gets a fresh id; groups wholly inside the copied set
 //! come back as groups.
+//!
+//! The clipboard also lives in a file, `~/.plan-studio/clipboard.json` (S-85):
+//! a Plan Studio plan holding only the copied objects. A Copy writes it, and a
+//! running copy of the program that sees a newer file takes it as its
+//! clipboard ([`poll_file`]), so a Copy in one plan pastes into another plan
+//! or another window. The layers the objects sit on travel with them by name;
+//! a layer the destination lacks is made when the objects land.
 
 use super::framing_view::{self, Record};
 use super::selection::ObjectRef;
@@ -36,8 +43,10 @@ use plan_terrain::{
     ElevationLine, ElevationPoint, ElevationRegion, Feature, Landscape, Modifier, RoadStrip,
     Terrain, TerrainBreak, TerrainWall,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime};
 
 /// A copied element of the terrain (the perimeter is the whole terrain and
 /// is not copied).
@@ -227,6 +236,9 @@ pub struct Clipboard {
     /// Types of selected objects the clipboard cannot take (roof planes,
     /// terrain elements, wall trim, rooms).
     pub skipped: Vec<&'static str>,
+    /// The layers the copied objects sit on, so a paste into another plan can
+    /// make the ones it lacks (S-85).
+    pub layers: Vec<plan_core::Layer>,
 }
 
 impl Clipboard {
@@ -361,6 +373,16 @@ impl Clipboard {
                 clip.groups.push(g.members.clone());
             }
         }
+        // The layers of everything copied (an opening rides on its wall's).
+        for o in &cx.selection.items {
+            if let Some(name) = super::selection::layer_of(f, *o) {
+                if clip.layers.iter().all(|l| l.name != name) {
+                    if let Some(l) = cx.project.layers.get(&name) {
+                        clip.layers.push(l.clone());
+                    }
+                }
+            }
+        }
         clip
     }
 
@@ -460,13 +482,16 @@ impl Clipboard {
             }
             map.insert(ObjectRef::Opening(o.id), ObjectRef::Opening(id));
         }
+        // The copies are free until the objects they were tied to are known
+        // (DIM-38, below).
+        let mut pasted_dims: Vec<(Id, [Option<plan_core::dim_assoc::DimAnchor>; 2])> = Vec::new();
         for d in &self.dimensions {
-            // The copy is not tied to the walls the original was.
             let mut copy = d.clone();
             copy.anchors = [None, None];
             copy.start = copy.start + offset;
             copy.end = copy.end + offset;
             let id = cx.project.add_dimension(fl, copy);
+            pasted_dims.push((id, d.anchors));
             map.insert(ObjectRef::Dimension(d.id), ObjectRef::Dimension(id));
             sel.push(ObjectRef::Dimension(id));
         }
@@ -521,6 +546,19 @@ impl Clipboard {
                 moved.push(new);
             }
         }
+        // DIM-38: a dimension pasted with every object it was tied to stays
+        // tied to the copies (it follows them); if any of those was not
+        // copied it pastes free.
+        for (id, old) in pasted_dims {
+            let anchors = retie_anchors(&old, &map, offset);
+            if let Some(d) = cx.project.floors[fl]
+                .dimensions
+                .iter_mut()
+                .find(|d| d.id == id)
+            {
+                d.anchors = anchors;
+            }
+        }
         // Records inserted at their old place move to the drop point.
         if !moved.is_empty() && offset.length() > 1e-9 {
             cx.translate_extra(&moved, offset);
@@ -544,8 +582,25 @@ impl Clipboard {
         if has_distribution {
             placed::sync_distributions(cx);
         }
+        self.ensure_layers(cx);
         cx.mark_dirty();
         sel
+    }
+
+    /// Makes the layers of the copied objects that the plan lacks (S-85).
+    /// Layers it has keep their own settings. Returns the names made.
+    pub fn ensure_layers(&self, cx: &mut EditorContext) -> Vec<String> {
+        let mut made = Vec::new();
+        for l in &self.layers {
+            if cx.project.layers.get(&l.name).is_none() {
+                let mut copy = l.clone();
+                copy.display = true;
+                copy.locked = false;
+                cx.project.layers.layers.push(copy);
+                made.push(l.name.clone());
+            }
+        }
+        made
     }
 }
 
@@ -617,6 +672,36 @@ fn capture_item(cx: &EditorContext, o: ObjectRef) -> Option<ClipItem> {
 
 /// Stores a copy of `item` on the active floor under a fresh id, at its
 /// original place, and returns the new reference.
+/// The anchors of a pasted dimension: each tied end moved to the copy of its
+/// object, or both ends free when an object it was tied to was not copied.
+fn retie_anchors(
+    old: &[Option<plan_core::dim_assoc::DimAnchor>; 2],
+    map: &HashMap<ObjectRef, ObjectRef>,
+    offset: Point,
+) -> [Option<plan_core::dim_assoc::DimAnchor>; 2] {
+    use plan_core::dim_assoc::AnchorTarget;
+    let mut out = [None, None];
+    for (k, a) in old.iter().enumerate() {
+        let Some(a) = a else { continue };
+        let was = match a.target {
+            AnchorTarget::Wall => ObjectRef::Wall(a.wall),
+            AnchorTarget::Opening => ObjectRef::Opening(a.wall),
+            AnchorTarget::Cabinet => ObjectRef::Cabinet(a.wall),
+            AnchorTarget::Symbol => ObjectRef::Symbol(a.wall),
+        };
+        let now = match map.get(&was) {
+            Some(ObjectRef::Wall(id) | ObjectRef::Opening(id) | ObjectRef::Cabinet(id))
+            | Some(ObjectRef::Symbol(id)) => *id,
+            _ => return [None, None],
+        };
+        let mut copy = *a;
+        copy.wall = now;
+        copy.last = copy.last + offset;
+        out[k] = Some(copy);
+    }
+    out
+}
+
 fn insert_item(
     cx: &mut EditorContext,
     item: &ClipItem,
@@ -785,7 +870,151 @@ pub fn take_system_clipboard_note() -> bool {
 impl EditorContext {
     /// Makes `clip` the clipboard.
     pub(super) fn store_clipboard(&mut self, clip: Clipboard) {
+        write_file(self, &clip);
         self.clipboard = Some(clip);
         NOTE_PENDING.with(|n| n.set(true));
+    }
+}
+
+// ----- the clipboard file (S-85) -----
+
+/// The file name under `~/.plan-studio`.
+pub const FILE_NAME: &str = "clipboard.json";
+const FORMAT: &str = "plan-studio-clipboard";
+
+thread_local! {
+    /// Where the clipboard file is (tests point it into a scratch folder; the
+    /// outer `Option` says whether it was set).
+    static PATH_OVERRIDE: RefCell<Option<Option<PathBuf>>> = const { RefCell::new(None) };
+    /// The modified time of the file as this process last wrote or read it.
+    static SEEN: RefCell<Option<SystemTime>> = const { RefCell::new(None) };
+    static LAST_POLL: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Points the clipboard file somewhere else (`Some(path)`), turns it off
+/// (`None`) or back to the default (`reset_file_path`).
+pub fn set_file_path(path: Option<PathBuf>) {
+    PATH_OVERRIDE.with(|p| *p.borrow_mut() = Some(path));
+    SEEN.with(|s| *s.borrow_mut() = None);
+}
+
+pub fn reset_file_path() {
+    PATH_OVERRIDE.with(|p| *p.borrow_mut() = None);
+    SEEN.with(|s| *s.borrow_mut() = None);
+}
+
+fn file_path() -> Option<PathBuf> {
+    if let Some(o) = PATH_OVERRIDE.with(|p| p.borrow().clone()) {
+        return o;
+    }
+    // Tests never touch the real home folder.
+    if cfg!(test) {
+        return None;
+    }
+    crate::paths::user_file(FILE_NAME)
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// A plan that holds exactly the copied objects, as JSON text.
+fn scratch_json(cx: &EditorContext, clip: &Clipboard) -> Option<String> {
+    let mut scratch = plan_core::Project::from_defaults("Clipboard", &cx.defaults);
+    scratch.layers = cx.project.layers.clone();
+    scratch.wall_types = cx.project.wall_types.clone();
+    let mut sc = EditorContext::with_project(scratch, cx.defaults.clone());
+    clip.paste(&mut sc, Point::ZERO, false);
+    let project = sc.project.to_json().ok()?;
+    let stamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    Some(format!(
+        "{{\"format\":\"{FORMAT}\",\"version\":1,\"stamp\":{stamp},\"project\":{project}}}"
+    ))
+}
+
+/// Writes `clip` to the clipboard file (best effort: a failure only means the
+/// clipboard stays inside this window).
+pub fn write_file(cx: &EditorContext, clip: &Clipboard) -> bool {
+    let Some(path) = file_path() else {
+        return false;
+    };
+    let Some(text) = scratch_json(cx, clip) else {
+        return false;
+    };
+    if let Some(dir) = path.parent() {
+        if std::fs::create_dir_all(dir).is_err() {
+            return false;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    let ok = std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &path).is_ok();
+    if ok {
+        SEEN.with(|s| *s.borrow_mut() = modified(&path));
+    }
+    ok
+}
+
+/// Reads a clipboard from the file at `path`.
+fn read_file(cx: &EditorContext, path: &Path) -> Option<Clipboard> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    if value.get("format").and_then(serde_json::Value::as_str) != Some(FORMAT) {
+        return None;
+    }
+    let project = plan_core::Project::from_json(&value.get("project")?.to_string()).ok()?;
+    let layers = project.layers.layers.clone();
+    let mut sc = EditorContext::with_project(project, cx.defaults.clone());
+    // Everything in the file was copied, whatever its layer shows.
+    for l in &mut sc.project.layers.layers {
+        l.display = true;
+        l.locked = false;
+    }
+    super::selection::select_all(&mut sc);
+    let mut clip = Clipboard::capture(&sc);
+    clip.layers = layers;
+    (!clip.is_empty()).then_some(clip)
+}
+
+/// Takes the clipboard file as the clipboard when it was written by someone
+/// else since this process last looked (a Copy in another window or plan).
+/// True when the clipboard changed.
+pub fn poll_file_now(cx: &mut EditorContext) -> bool {
+    let Some(path) = file_path() else {
+        return false;
+    };
+    let Some(mtime) = modified(&path) else {
+        return false;
+    };
+    if SEEN.with(|s| *s.borrow() == Some(mtime)) {
+        return false;
+    }
+    SEEN.with(|s| *s.borrow_mut() = Some(mtime));
+    match read_file(cx, &path) {
+        Some(clip) => {
+            cx.clipboard = Some(clip);
+            NOTE_PENDING.with(|n| n.set(true));
+            true
+        }
+        None => false,
+    }
+}
+
+/// [`poll_file_now`] at most twice a second; the Select tool calls it once a
+/// frame.
+pub fn poll_file(cx: &mut EditorContext) {
+    let now = Instant::now();
+    let due = LAST_POLL.with(|l| {
+        let due = l
+            .get()
+            .is_none_or(|t| now.duration_since(t).as_millis() >= 500);
+        if due {
+            l.set(Some(now));
+        }
+        due
+    });
+    if due {
+        poll_file_now(cx);
     }
 }

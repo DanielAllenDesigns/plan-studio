@@ -94,11 +94,11 @@ watches a hash of the floors, walls, openings, placed symbols, room names, cabin
 
 Create Orthographic View (Front, Back, Left, Right Elevation; Plan Overhead; Cross
 Section/Elevation; Back-Clipped Cross Section), Create Perspective View (Full Camera, Perspective
-Full Overview `Shift+K`, Perspective Floor Overview, Doll House View, Ray Trace...), **Create Auto
+Full Overview `Shift+K`, Perspective Floor Overview, Doll House View, **Glass House View**, **Floor Camera**, Ray Trace...), **Create Auto
 Elevations** (Auto Elevations, Auto Back-Clipped Elevations, Wall Elevation Camera), **Walkthroughs**
-(Create Walkthrough Path, Play Walkthrough, Record Walkthrough...), Rendering Techniques, Rebuild 3D,
-Export > glTF..., **Materials..., Material Painter, Adjust Materials... and Material Builder...** (10.8), **Lighting**
-(Add Lights, Adjust Lights), **Delete Surface**, and **3D View Defaults... `Cmd+1`**. Chief's camera-movement submenus, isometric views and camera view options are not in the menu (`DECISIONS.md`
+(Create Walkthrough Path, **Walkthrough Path from CAD Polyline**, Play Walkthrough, Record Walkthrough...), Rendering Techniques, Rebuild 3D,
+**Save Camera**, **View Quality** (Preview, Final View), Export > glTF..., **Materials..., Material Painter, Adjust Materials... and Material Builder...** (10.8), **Lighting**
+(**Lighting...**, Add Lights, Adjust Lights), **Delete Surface**, and **3D View Defaults... `Cmd+1`**. Chief's camera-movement submenus, isometric views and camera view options are not in the menu (`DECISIONS.md`
 item 19); Create Orthographic View covers the view directions.
 
 ### Navigating a 3D view
@@ -130,20 +130,38 @@ symbol with a viewing cone. Select it with the Camera tool (or Select Objects).
 - **Move** handle: drags the camera in plan; the 3D view updates live.
 - **Aim** handle: rotates the view direction; `Shift` snaps to 15 degrees.
 - **Clip** handle: sets the back clip distance.
+- **Angle of view** handles (the two far corners of the view cone, round) and the **Tilt** handle (a diamond a quarter of the way along the cone: drag it forward to look up, back to look down, 85 degrees either way) belong to Full and Floor Cameras. With the Camera tool active, select the camera and drag them; each drag is one undo step and the 3D view follows live. (The Select tool lists Move, Aim and Clip only; see the integration queue.)
 - Section cameras also have the **two line-end** handles.
 - `Tab` cycles cameras, `Delete` removes one, double-click opens the Camera Specification.
-- The Project Browser lists the plan's cameras (Cameras node). Click one to select it, switch to its floor and pan the plan to it; right-click for Rename, Delete and Send to Layout.
+- A camera marked **Locked camera** in its Camera Specification ignores every handle ("This camera is locked").
+- The Project Browser lists the plan's cameras (Cameras node). Click one to select it, switch to its floor and pan the plan to it; **double-click, or right-click > Restore (open 3D view)**, opens its 3D view; right-click also offers Rename, Delete and Send to Layout. **Save Camera** at the top of the node keeps the 3D view on screen as a camera (below).
+- Camera kinds: **Full Camera**, **Floor Camera** (a Full Camera whose 3D view shows only its own floor, clipped at that floor's ceiling), **Perspective Overview**, **Doll House View**, **Glass House** (the overview drawn as a Glass House), **Framing Overview** (the kind only: it opens like an overview, the framing view fills it), cross sections and elevations, and walkthroughs. Floor Camera and Glass House View are in the Camera and 3D View flyouts and the 3D > Create Perspective View menu.
 - A section or elevation camera also draws a **callout** in the plan (10.7).
 
 ### Dialog: Camera Specification
 
 | Tab | Fields |
 |---|---|
-| General | Name; Camera Type (read-only: Full Camera, Perspective Overview, Doll House View, Cross Section, Wall Elevation, Elevation, Walkthrough, Orthographic); Floor; Camera Position (or Cut Line and Center for a section); View Direction; Section Length (sections) or Height Above Floor and Angle of View (perspective). A walkthrough instead shows **Walking speed** and a **Path nodes** table (10.12) |
-| Options | **Clipping**: Back Clip Distance, Far Clip Distance (Limit view distance). **Display**: Show camera in plan, Locked camera (both disabled) |
-| Rendering | Technique (kept per camera for the session), Cast shadows (disabled). Elevation and cross-section cameras (and wall elevations) add an **Elevation rendering** section (10.7). |
+| Camera | Name; Camera Type (read-only); Floor; Camera Position (or Cut Line and Center for a section); View Direction; Section Length (sections) or Height Above Floor, Angle of View and **Tilt** (Full and Floor Cameras; positive looks up, 85 degrees either way); **Clipping**: Back Clip Distance, Far Clip Distance (Limit view distance); **Floors Displayed**: all floors or this floor and below (a Floor Camera always shows its own floor clipped at its ceiling); **Display**: Show camera in plan, Locked camera. A walkthrough instead shows **Walking speed**, the **Path nodes** table (10.12) and its Record Walkthrough rate |
+| Backdrop | **Default sky**, **Sky color**, or **Image**: a picture from Chief's Backdrops folder (`~/Documents/Chief Architect Premier X18 Data/Backdrops`, read when the view is drawn, never copied) or any JPEG/PNG path |
+| Rendering | **Technique** (all nine, saved with the camera), **View quality** (Preview or Final View), **Cast shadows**, and **Override the plan's lighting for this camera** (Ambient light and Sun intensity; otherwise 3D > Lighting rules). Elevation and cross-section cameras (and wall elevations) add an **Elevation rendering** section (10.7). |
+| Label | Label text (empty uses the camera's name), **Show the label beside the camera in the plan**, **Show the label over the 3D view** |
 
-The angle of view is limited to 5 to 170 degrees.
+The angle of view is limited to 5 to 170 degrees. Everything on the tabs is saved with the camera (`CameraObject.view`), so a saved camera reopens with its technique, tilt, backdrop and quality. OK is one undo step.
+
+**Backdrops.** The picture fills the view behind the model, scaled to cover it (the overflow is cropped), in the techniques that draw a sky (Standard, Physically Based, Clay, Watercolor, Duotone). A picture that is not found falls back to the default sky and the dialog says so. Pictures are decoded once and shrunk to 2048 pixels on the long side for the graphics card.
+
+**Preview and Final View.** The 3D bar has **Preview** (fast: no shadows or occlusion, low quality) and **Final View** (shadows, occlusion and anti-aliasing at the default Medium quality; Shading > Quality raises it to High) buttons, and 3D > View Quality has the same two rows. A camera opens in the quality saved on it; the Shading menu still adjusts the individual switches.
+
+### Saved cameras (Save Camera, Restore, Delete)
+
+**3D > Save Camera** (or **Save Camera** in the Project Browser's Cameras node) keeps the view on screen as a camera, in one undo step, named "Saved Camera n":
+
+- a **Full Camera** view becomes a Full Camera at the eye, with its direction, height, angle of view and tilt;
+- a **Perspective Overview** or **Doll House** view keeps its eye and target (`CameraView.pose`) so Restore brings back the exact orbit, and is not drawn in the plan (**Show camera in plan** off); a Glass House overview is saved as a Glass House camera;
+- the rendering technique, Preview or Final View and, for a Floor Overview, "this floor and below" are saved with it.
+
+The orthographic views (elevations, Plan Overhead) cannot be saved ("Save Camera works from the perspective views"). **Restore**: double-click the camera in the Project Browser, or right-click > Restore (open 3D view). **Delete**: right-click > Delete (or select it and press `Delete`); both are one undo step.
 
 ### Dialog: 3D View Defaults (`Cmd+1`)
 
@@ -399,9 +417,9 @@ a flat face, and the floor, ceiling, grass, mulch, water, asphalt and gravel mat
 
 - Textures (10.8a) come from 16 scene materials, Chief's own files when your install has them and generated ones otherwise, with no bump maps; there are still no exact colors: a painted object shows the closest of the viewport's 23 fixed scene materials (10.8, `DECISIONS.md` item 17). Pictures are flat in the ray tracer.
 - Many Chief techniques are approximations of the real look.
-- Cameras do not yet carry shadows (perspective), lock, or per-camera lighting. Elevation hatch is fixed at a 1/4" scale.
+- Cameras carry shadows, lock, tilt, backdrop, quality and a lighting override (10.3), but no Lighting set, fog or ground options, and Floors Displayed offers all floors or this floor and below (not a pick of floors). Elevation hatch is fixed at a 1/4" scale. The angle-of-view and tilt handles of a camera work in the Camera tool, not yet under Select Objects; the tilt handle is a Plan Studio design (the plan has no tilt gesture of its own; verify in Chief).
 - Electrical devices and Build Framing's wall, floor and roof members are in the live 3D view, but not in the vector elevations and sections (except the wall framing of the Framing Overview, chapter 11.11). 3D objects cannot be dragged, Alt-click does not set the orbit center, and there is no hover highlight (see Selecting in 3D under 10.2).
-- Walkthrough recording uses the path tracer at low quality (640 x 480, 8 samples per pixel, denoised, 12 frames a second) and writes a PNG sequence, not a video file (10.12).
+- Walkthrough recording uses the path tracer at low quality by default (640 x 480, 8 samples per pixel, denoised, 12 frames a second; the dialog changes all three) and writes a PNG sequence, not a video file (10.12).
 - Per-light color temperature and the other lighting tools of Chief are not built; lights are simple point lights (10.13). The live view's shadows are one sun shadow map with PCF; there are no shadows from point lights.
 
 ## 10.11 Auto Elevations and Wall Elevation cameras
@@ -424,15 +442,16 @@ A **walkthrough** is a camera object that moves along a path you draw in the pla
 
 - **Create Walkthrough Path** (Walkthrough flyout, 3D > Walkthroughs): click the first point, click each further node, and double-click or press `Enter` to finish. Press and drag at a node to fix its look direction
   (otherwise the camera looks along the path). The camera object keeps the path, an eye height for each node (66" by default) and the optional look directions.
-- **Camera Specification of a walkthrough**: **Walking speed** (6" to 600" per second, 36" by default) and a **Path nodes** table (x, y, height and look direction per node, with a remove button), and the length and the
-  time in seconds.
+- **Create a path from a CAD line**: select a CAD polyline (or line) and choose 3D > Walkthroughs > **Walkthrough Path from CAD Polyline**; every vertex becomes a node (a closed polyline comes back to its start). One undo step.
+- **Camera Specification of a walkthrough**: **Walking speed** (6" to 600" per second, 36" by default) and a **Path nodes** table (x, y, height, look direction, **tilt** and **hold** per node, with a remove button), and the length and the
+  time in seconds. Each node is a **key frame**: the camera tilts between the node values and stands still for a node's *hold* seconds before it sets off (holds are added to the time).
 - **Play Walkthrough** (Walkthrough flyout, 3D > Walkthroughs) opens the 3D view from the first node and plays the path at its speed. The bar shows **Play Walkthrough** (it becomes **Pause**), **Stop**,
-  a time slider in seconds you can scrub, the **Speed** in inches per second (editing it changes the camera, with merged undo) and **Record Walkthrough...**. "No walkthrough yet: draw one with Create Walkthrough Path" if there is none.
-- **Record Walkthrough...** asks for a folder and renders the walk as numbered PNG frames, `frame_0001.png`, `frame_0002.png` ..., with a `make_video.sh` script that runs `ffmpeg` to assemble `walkthrough.mp4` (ffmpeg is not needed to record). A
+  **|<** and **>|** (jump to the previous or next key frame), a time slider in seconds you can scrub with "frame n of m" beside it, the **Speed** in inches per second (editing it changes the camera, with merged undo) and **Record Walkthrough...**. "No walkthrough yet: draw one with Create Walkthrough Path" if there is none.
+- **Record Walkthrough...** opens a dialog: **Frames per second** (1 to 60, 12 by default), **Picture size** (640 x 480, 960 x 720, 1280 x 720, 1920 x 1080), **Samples per pixel**, and the **Folder** (typed, or Choose Folder...). It shows how many frames the walk comes to. Record saves the settings on the camera (one undo step) and renders the walk as numbered PNG frames, `frame_0001.png`, `frame_0002.png` ..., with a `make_video.sh` script that runs `ffmpeg` to assemble `walkthrough.mp4` (ffmpeg is not needed to record). A
   Record Walkthrough window shows "n / total frames" with a Cancel button, and the status bar reports "Recorded n frames to <folder>". The recording runs on a background thread.
 
-**Quality is low on purpose.** Recording uses the path tracer (`plan-render`), not the live viewport (the viewport has no offscreen target): 12 frames a second at 640 x 480, 8 samples per pixel, denoised, with the current Sun Angle sun and the plan's lights (10.13).
-A walk of a minute is about 720 frames. Expect soft, noisy stills; raise the quality by rendering stills with Ray Trace (10.6) from Full Camera views instead. The output is an image sequence, not a video file.
+**Quality is low by default.** Recording uses the path tracer (`plan-render`), not the live viewport (the viewport has no offscreen target): 12 frames a second at 640 x 480, 8 samples per pixel, denoised, with the current Sun Angle sun and the plan's lights (10.13); the dialog raises any of them. Frames are spread evenly in time, so key-frame holds and tilts show; `make_video.sh` uses the chosen rate.
+A walk of a minute at the defaults is about 720 frames. Expect soft, noisy stills; raise the quality by rendering stills with Ray Trace (10.6) from Full Camera views instead. The output is an image sequence, not a video file.
 
 ## 10.13 Lights and the Sun Angle
 
@@ -448,6 +467,15 @@ A walk of a minute is about 720 frames. Expect soft, noisy stills; raise the qua
 | New lights | The defaults of the Add Lights tool: **Fixed height** (84" when you tick it) or, by default, 12" below the ceiling; **Power** (1.0 lights a room from a 7' ceiling) and a color (warm white by default). |
 
 OK stores the changes as one undo step.
+
+**3D > Lighting > Lighting...** is the plan's light rig, saved with the plan (`Project.lighting`) and applied in one undo step:
+
+| Section | What it holds |
+|---|---|
+| Sun | Direction (degrees clockwise from north), Height above the horizon, Sun intensity (0 to 2) and Ambient light (0 to 1); "Set the sun from a date" turns a month, day, solar time and latitude into those angles |
+| Interior lights | One switch for **all** interior lights (the plan's lights and the electrical fixtures): off leaves them out of the live view and every ray trace without deleting them; below it the plan's lights with an on/off box and a power each. **Adjust Lights...** opens the full dialog above |
+
+The live view's key light follows the Sun direction and its strength the Sun intensity; a camera can override Ambient light and Sun intensity on its Rendering tab. The Sun Angle toggle (10.5) still overrides the direction while it is on.
 
 Lights are used by the **ray tracer** (Ray Trace... and the recorded walkthroughs), alongside the sun, and by the **live OpenGL view**, which lights each pixel from the nearest 8 point lights (the plan's lights and the electrical fixtures, 10.4a) without shadows from them. Chief's Lighting submenu, color temperature and
 light sets are not built. The Sun Angle (10.5) is the sun for the ray tracer, the viewport's key light and the shadows of vector elevations.

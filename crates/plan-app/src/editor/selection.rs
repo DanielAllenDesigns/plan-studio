@@ -253,6 +253,11 @@ impl Selection {
         (self.items.len() == 1).then(|| self.items[0])
     }
 
+    /// Whether two or more objects are selected and every one is a wall.
+    pub fn all_walls(&self) -> bool {
+        self.items.len() >= 2 && self.items.iter().all(|o| matches!(o, ObjectRef::Wall(_)))
+    }
+
     /// Drops objects that no longer exist on floor `fl` of `project`.
     pub fn retain_existing(&mut self, project: &Project, fl: usize) {
         self.items.retain(|o| o.exists_in(project, fl));

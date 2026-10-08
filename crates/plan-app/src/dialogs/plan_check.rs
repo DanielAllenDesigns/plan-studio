@@ -246,6 +246,7 @@ struct Clicks {
     next: bool,
     zoom: bool,
     ignore: bool,
+    fix: bool,
     restore: bool,
     rerun: bool,
     settings: bool,
@@ -306,6 +307,11 @@ pub fn check_window(
                     .add_enabled(w.current().is_some(), egui::Button::new("Ignore"))
                     .on_hover_text("Leave this finding out of the list; Restore brings it back")
                     .clicked();
+                let fixable = w.current().is_some_and(crate::editor::code::can_fix);
+                c.fix = ui
+                    .add_enabled(fixable, egui::Button::new("Fix"))
+                    .on_hover_text("Set the stair, railing or footing to the code minimum (one undo step)")
+                    .clicked();
             });
             ui.checkbox(&mut w.zoom_each, "Zoom to each finding");
             ui.separator();
@@ -335,6 +341,14 @@ pub fn check_window(
                 cx.mark_dirty();
                 c.rerun = true;
             }
+            SettingsResult::ApplyToDefaults(s) => {
+                w.settings = None;
+                cx.begin_change("Apply Code Minimums to Defaults");
+                s.store(&mut cx.project);
+                cx.mark_dirty();
+                cx.status = crate::editor::code::raise_defaults(cx);
+                c.rerun = true;
+            }
         }
     }
     handle(cx, cam, w, c);
@@ -348,6 +362,18 @@ fn handle(cx: &mut EditorContext, cam: &mut Camera, w: &mut CheckWindow, c: Clic
     }
     if c.next {
         zoom |= w.next() && w.zoom_each;
+    }
+    if c.fix {
+        if let Some(f) = w.current().cloned() {
+            match crate::editor::code::fix_finding(cx, &f) {
+                Some(msg) => {
+                    let run = run_check_full(cx, w.kind);
+                    w.replace_run(run);
+                    cx.status = msg;
+                }
+                None => cx.status = "Nothing to fix: the value already meets the code".into(),
+            }
+        }
     }
     if c.ignore && w.ignore_current(cx) {
         cx.status = w.summary();
@@ -568,6 +594,124 @@ pub fn add_report_page(cx: &mut EditorContext, table: &Schedule) -> String {
     format!("Added page {number}, Plan Check, to the layout")
 }
 
+// ----- Tools > Checks > Plan Check Settings -----
+
+/// Menu id: Tools > Checks > Plan Check Settings...
+pub const SETTINGS: &str = "check.settings";
+/// Menu id: Tools > Checks > Check While Drawing (a preference).
+pub const CHECK_LIVE: &str = "check.live";
+/// Menu id: Tools > Checks > Apply Code Minimums to Defaults.
+pub const APPLY_DEFAULTS: &str = "check.apply_defaults";
+
+/// Runs this module's menu commands by id; false when `id` is not ours.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    match id {
+        SETTINGS => {
+            super::build_tools::open_check_settings(cx);
+            true
+        }
+        CHECK_LIVE => {
+            super::preferences::pages::update(|p| {
+                p.architectural.check_while_drawing = !p.architectural.check_while_drawing;
+            });
+            let on = super::preferences::pages::current()
+                .architectural
+                .check_while_drawing;
+            cx.status = format!("Check while drawing is {}", if on { "on" } else { "off" });
+            true
+        }
+        APPLY_DEFAULTS => {
+            cx.status = crate::editor::code::apply_to_defaults(cx);
+            true
+        }
+        _ => false,
+    }
+}
+
+impl CheckWindow {
+    /// Opens the Plan Check Settings dialog over this window.
+    pub fn open_settings(&mut self, cx: &EditorContext) {
+        self.settings = Some(SettingsDialog::new(CheckSettings::load(&cx.project)));
+    }
+
+    /// Is the Plan Check Settings dialog showing?
+    #[cfg(test)]
+    pub fn settings_open(&self) -> bool {
+        self.settings.is_some()
+    }
+}
+
+// ----- a plain text report window (the Chief plan import report) -----
+
+struct TextReport {
+    title: String,
+    headline: String,
+    text: String,
+}
+
+thread_local! {
+    static REPORT: std::cell::RefCell<Option<TextReport>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Shows `text` (one line per fact) in a window titled `title`, with
+/// `headline` above it. Used for the full File > Import > Chief Plan report;
+/// the status bar only gets the headline.
+pub fn open_text_report(title: &str, headline: &str, text: &str) {
+    REPORT.with(|r| {
+        *r.borrow_mut() = Some(TextReport {
+            title: title.to_string(),
+            headline: headline.to_string(),
+            text: text.to_string(),
+        });
+    });
+}
+
+/// Is the text report window open?
+#[cfg(test)]
+pub fn text_report_open() -> bool {
+    REPORT.with(|r| r.borrow().is_some())
+}
+
+/// Draws the text report window (when open); Copy puts the text on the
+/// clipboard, Close (or the window's x) dismisses it.
+pub fn show_text_report(ctx: &egui::Context) {
+    let Some(report) = REPORT.with(|r| r.borrow_mut().take()) else {
+        return;
+    };
+    let mut open = true;
+    let mut close = false;
+    egui::Window::new(&report.title)
+        .id(egui::Id::new("text_report_window"))
+        .open(&mut open)
+        .collapsible(false)
+        .default_width(520.0)
+        .show(ctx, |ui| {
+            ui.label(RichText::new(&report.headline).strong());
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&report.text).monospace())
+                            .wrap()
+                            .selectable(true),
+                    );
+                });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Copy").clicked() {
+                    ui.ctx().copy_text(report.text.clone());
+                }
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if open && !close {
+        REPORT.with(|r| *r.borrow_mut() = Some(report));
+    }
+}
+
 // ----- Plan Check Settings -----
 
 type LimitField = fn(&mut CheckOptions) -> &mut f64;
@@ -624,6 +768,8 @@ enum SettingsResult {
     Open,
     Cancel,
     Apply(Box<CheckSettings>),
+    /// OK, and raise the plan defaults to these settings' code minimums.
+    ApplyToDefaults(Box<CheckSettings>),
 }
 
 /// Tools > Checks > Plan Check Settings: the jurisdiction preset, the limits
@@ -638,6 +784,7 @@ impl SettingsDialog {
     }
 
     fn show(&mut self, ctx: &egui::Context) -> SettingsResult {
+        crate::editor::code::note_settings_open();
         let mut result = SettingsResult::Open;
         let mut open = true;
         egui::Window::new("Plan Check Settings")
@@ -658,8 +805,8 @@ impl SettingsDialog {
                             }
                         });
                     if name != self.settings.jurisdiction {
-                        if name == JURISDICTIONS[0] {
-                            self.settings = CheckSettings::irc_2021();
+                        if let Some(p) = CheckSettings::preset(&name) {
+                            self.settings = p;
                         } else {
                             self.settings.jurisdiction = name;
                         }
@@ -670,6 +817,19 @@ impl SettingsDialog {
                     .max_height(380.0)
                     .show(ui, |ui| self.body(ui));
                 ui.separator();
+                ui.weak(format!(
+                    "Code: {}",
+                    plan_check::CodeMinimums::from(&self.settings).label()
+                ));
+                if ui
+                    .button("Apply code minimums to defaults")
+                    .on_hover_text(
+                        "OK, and raise the stair, railing, bedroom window, exterior door, footing and garage wall defaults to these minimums",
+                    )
+                    .clicked()
+                {
+                    result = SettingsResult::ApplyToDefaults(Box::new(self.settings.clone()));
+                }
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() {
                         result = SettingsResult::Apply(Box::new(self.settings.clone()));

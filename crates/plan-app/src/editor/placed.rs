@@ -632,6 +632,34 @@ pub fn draw_cabinet_parts(
     }
 }
 
+/// Fills a cabinet's outline in the plan as its Fill Style tab says: a
+/// translucent solid, or hatch lines at 45 degrees (and 135 for a cross
+/// hatch) clipped to the outline.
+pub fn draw_cabinet_fill(painter: &egui::Painter, cam: &Camera, cab: &Cabinet) {
+    let fill = &cab.fill;
+    if !fill.is_visible() {
+        return;
+    }
+    let ring = cab.footprint();
+    let alpha = (fill.alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let [r, g, b] = fill.color;
+    let color = Color32::from_rgba_unmultiplied(r, g, b, alpha);
+    if fill.pattern == plan_cabinets::FillPattern::Solid {
+        for t in plan_cabinets::triangulate(&ring, &[]) {
+            painter.add(Shape::convex_polygon(
+                t.iter().map(|p| sc(cam, *p)).collect(),
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        return;
+    }
+    let stroke = egui::Stroke::new(1.0_f32, color);
+    for [a, b] in fill.hatch_lines(&ring) {
+        painter.line_segment([sc(cam, a), sc(cam, b)], stroke);
+    }
+}
+
 /// Where a cabinet's label is drawn, its text height and angle (plan inches
 /// and radians), as the plan symbol places it with the label offset.
 pub fn cabinet_label_spot(c: &Cabinet) -> Option<(Point, String, f64, f64)> {
@@ -681,6 +709,7 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         } else {
             pal.text
         };
+        draw_cabinet_fill(painter, cam, c);
         draw_cabinet_parts(painter, cam, c, color, true, labels_visible);
     }
     let tops: Vec<Cabinet> = cabs
@@ -707,12 +736,21 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 None => draw_outline(painter, cam, &s.footprint(), stroke),
             }
         }
-        if !s.label.is_empty() {
+        // An unknown catalog item is a labelled box (its own label, else
+        // the words of its id).
+        let unknown =
+            s.image.is_none() && s.distribution.is_none() && find_item(&s.catalog_id).is_none();
+        let label = if s.label.is_empty() && unknown {
+            plan_library::standin::stand_in_label(&s.catalog_id)
+        } else {
+            s.label.clone()
+        };
+        if !label.is_empty() {
             draw_text(
                 painter,
                 cam,
                 symbol_center(s),
-                &s.label,
+                &label,
                 3.0,
                 s.angle.to_radians(),
                 pal.text,
@@ -1131,11 +1169,25 @@ pub fn cabinet_label(c: &Cabinet) -> String {
 /// [`run_command`]).
 pub const GENERATE_COUNTERTOP: &str = "cabinet.generate_countertop";
 
+/// Edit-toolbar command id of Convert Polyline to Soffit (CB-17): the
+/// selected closed CAD polylines become polygon soffits.
+pub const SOFFIT_FROM_POLYLINE: &str = "cabinet.soffit_from_polyline";
+
 /// Runs a cabinet command by id; false when the id is not one of ours.
 pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
     match id {
         GENERATE_COUNTERTOP => {
             generate_countertops(cx);
+            true
+        }
+        SOFFIT_FROM_POLYLINE => {
+            soffits_from_polylines(cx);
+            true
+        }
+        crate::tools::cabinet::BUMP_MODE_COMMAND => {
+            let next = crate::tools::cabinet::bump_mode().next();
+            crate::tools::cabinet::set_bump_mode(next);
+            cx.status = format!("Cabinets: {}", next.toolbar_label());
             true
         }
         // Underlays, Preferences and the material tools (their menu rows
@@ -1149,11 +1201,99 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
                 || crate::dialogs::app_info::run_command(cx, id)
                 || crate::dialogs::layer_sets::run_command(cx, id)
                 || crate::dialogs::plan_views::run_command(cx, id)
+                || crate::dialogs::plan_check::run_command(cx, id)
                 || crate::dialogs::defaults::run_command(cx, id)
                 || crate::tools::cad::run_edit_command(cx, id)
                 || crate::tools::dimension::run_command(cx, id)
         }
     }
+}
+
+/// The ring of a CAD polyline that can become a soffit: closed, or open with
+/// its end on its start, with at least three distinct corners and some area.
+pub fn closed_polyline_ring(item: &plan_core::cad::CadItem) -> Option<Vec<Point>> {
+    let plan_core::cad::CadItem::Polyline { points, closed } = item else {
+        return None;
+    };
+    let mut ring = points.clone();
+    if !closed && ring.len() > 3 && ring[0].dist(ring[ring.len() - 1]) < 0.01 {
+        ring.pop();
+    } else if !closed {
+        return None;
+    }
+    ring.dedup_by(|a, b| a.dist(*b) < 0.01);
+    if ring.len() > 1 && ring[0].dist(ring[ring.len() - 1]) < 0.01 {
+        ring.pop();
+    }
+    (ring.len() >= 3 && plan_cabinets::ring_area(&ring).abs() > 1e-6).then_some(ring)
+}
+
+/// Does the selection hold a closed CAD polyline? (The Edit toolbar offers
+/// Convert Polyline to Soffit then.)
+pub fn selection_has_closed_polyline(cx: &EditorContext) -> bool {
+    cx.selection.items.iter().any(|o| match o {
+        ObjectRef::Cad(id) => cx
+            .floor()
+            .cad
+            .iter()
+            .any(|c| c.id == *id && closed_polyline_ring(&c.item).is_some()),
+        _ => false,
+    })
+}
+
+/// Convert Polyline to Soffit (CB-17): each selected closed CAD polyline is
+/// replaced by a polygon soffit with the outline of the polyline, the height
+/// and elevation of the Soffit tool's defaults, on the soffit's layer. One
+/// undo step. Returns how many soffits were made.
+pub fn soffits_from_polylines(cx: &mut EditorContext) -> usize {
+    let rings: Vec<(Id, Vec<Point>)> = cx
+        .selection
+        .items
+        .iter()
+        .filter_map(|o| match o {
+            ObjectRef::Cad(id) => cx
+                .floor()
+                .cad
+                .iter()
+                .find(|c| c.id == *id)
+                .and_then(|c| closed_polyline_ring(&c.item))
+                .map(|r| (*id, r)),
+            _ => None,
+        })
+        .collect();
+    if rings.is_empty() {
+        cx.status = "Select a closed polyline first".into();
+        return 0;
+    }
+    if cx.layers().is_locked(cabinet_layer(CabinetKind::Soffit)) {
+        cx.status = "The soffit layer is locked".into();
+        return 0;
+    }
+    let base = crate::tools::cabinet::default_cabinet(cx, CabinetKind::Soffit);
+    cx.begin_change("Convert Polyline to Soffit");
+    let fl = cx.floor;
+    let mut made = Vec::new();
+    for (cad_id, ring) in rings {
+        let Some(cab) = Cabinet::soffit_polygon(&ring, base.height, base.elevation) else {
+            continue;
+        };
+        let Some(id) = add_cabinet(&mut cx.project, fl, cab) else {
+            continue;
+        };
+        cx.project.remove_cad(fl, cad_id);
+        made.push(ObjectRef::Cabinet(id));
+    }
+    if made.is_empty() {
+        cx.cancel_change();
+        cx.status = "The plan's cabinets could not be read".into();
+        return 0;
+    }
+    cx.project.prune_cad_data(fl);
+    let n = made.len();
+    cx.selection.items = made;
+    cx.mark_dirty();
+    cx.status = format!("Made {n} soffit{}", if n == 1 { "" } else { "s" });
+    n
 }
 
 /// Generate Countertop (CB-14, CB-15): joins the countertops of touching base

@@ -9,9 +9,11 @@ mod builder;
 mod casing;
 mod clip;
 mod cover;
+pub mod deck;
 pub mod details;
 mod doors;
 mod eave;
+pub mod fireplace;
 pub mod foundation;
 mod frame;
 pub mod gltf;
@@ -23,6 +25,8 @@ mod opening;
 mod railing;
 mod roof;
 mod slab;
+pub mod split_level;
+pub mod surface;
 pub mod triangulate;
 mod wall;
 pub mod wall_kinds;
@@ -47,6 +51,7 @@ pub use slab::{room_ceiling_top, slab_from_polygon};
 
 use plan_core::foundation::PlatformKind;
 use plan_core::geometry::point_in_polygon;
+use plan_core::walls::{platform_adjust, PlatformContext};
 use plan_core::{detect_rooms, Floor, Project, Room, Wall, WallKind, WallTypeDef};
 use wall::{InteriorSign, Shape, Split, WallLook};
 
@@ -148,9 +153,12 @@ pub fn build_scene_covered(
             cover: cover.floor(i),
             roof: Some(cover),
             floor: i,
+            platforms: PlatformContext::of(project, i),
         };
-        let open_above = open_below_holes(project.floors.get(i + 1));
-        add_floor(floor, &open_above, opts, &types, &mut scene);
+        let open_above = open_below_holes(project.floors.get(i + 1), floor);
+        // Chimney chases pass through the platforms (CB-87).
+        let chase = fireplace::chase_holes(project, i);
+        add_floor(floor, &open_above, &chase, opts, &types, &mut scene);
     }
     let any = TypeLookup {
         project: &project.wall_types,
@@ -158,39 +166,47 @@ pub fn build_scene_covered(
         cover: None,
         roof: None,
         floor: 0,
+        platforms: PlatformContext::of(project, 0),
     };
     scene
         .meshes
         .extend(cover.attic_meshes_typed(&|n| any.exterior_material(n)));
+    // Deck planking (CB-86), fireplaces and chimneys (CB-87) and the risers of
+    // split-level floors (R-86).
+    scene.meshes.extend(deck::deck_meshes(project));
+    scene.meshes.extend(fireplace::fireplace_meshes(project));
+    scene.meshes.extend(split_level::riser_meshes(project));
     scene
 }
 
-/// Does the outline `hole` cover the whole of `room` (same extent and area
-/// within a hair)? Such a room is open to the floor above, not cut by it.
+/// Does the outline `hole` hold the whole of `room`? Such a room is open to
+/// the floor above, not cut by it.
 fn covers(hole: &[plan_core::Point], room: &[plan_core::Point]) -> bool {
-    let (hl, hh) = plan_core::foundation::bounds(hole);
-    let (rl, rh) = plan_core::foundation::bounds(room);
-    let near = |a: f64, b: f64| (a - b).abs() <= 1.0;
-    let (ha, ra) = (
-        plan_core::geometry::polygon_area(hole).abs(),
-        plan_core::geometry::polygon_area(room).abs(),
-    );
-    near(hl.x, rl.x) && near(hl.y, rl.y) && near(hh.x, rh.x) && near(hh.y, rh.y) && ha >= ra * 0.98
+    plan_core::rooms::polygon_inside(room, hole, 1.0)
 }
 
-/// The rooms of `above` that have no floor platform (Open Below, R-40): the
-/// ceiling of the floor under them is open to them, so each outline is a hole
-/// in that ceiling.
-fn open_below_holes(above: Option<&Floor>) -> Vec<Vec<plan_core::Point>> {
+/// The rooms of `below` that an Open Below room of `above` (a room with no
+/// floor platform, R-40) opens up: a room wholly inside the Open Below room
+/// has no ceiling and the outline of that room is the hole. A room under only
+/// part of an Open Below room keeps its ceiling whole.
+fn open_below_holes(above: Option<&Floor>, below: &Floor) -> Vec<Vec<plan_core::Point>> {
     let Some(above) = above else {
         return Vec::new();
     };
     if above.room_names.iter().all(|n| n.has_floor) {
         return Vec::new();
     }
-    detect_rooms(&above.walls, ROOM_TOLERANCE)
+    let open: Vec<Vec<plan_core::Point>> = detect_rooms(&above.walls, ROOM_TOLERANCE)
         .into_iter()
         .filter(|r| !slab::room_levels(above, r).has_floor)
+        .map(|r| r.polygon)
+        .collect();
+    if open.is_empty() {
+        return Vec::new();
+    }
+    detect_rooms(&below.walls, ROOM_TOLERANCE)
+        .into_iter()
+        .filter(|r| open.iter().any(|h| covers(h, &r.polygon)))
         .map(|r| r.polygon)
         .collect()
 }
@@ -206,6 +222,8 @@ struct TypeLookup<'a> {
     roof: Option<&'a RoofCover>,
     /// Index of the floor being built.
     floor: usize,
+    /// The platforms above and below that floor (Structure tab, R-69).
+    platforms: PlatformContext,
 }
 
 impl TypeLookup<'_> {
@@ -257,6 +275,21 @@ impl TypeLookup<'_> {
             .map(|t| t.thickness())
     }
 
+    /// Lateral offset of the wall type's main layer from the centerline (for
+    /// a footing centered on the main layer).
+    fn main_center(&self, wall: &Wall) -> f64 {
+        let ty = wall.wall_type.as_deref().and_then(|n| {
+            self.project
+                .iter()
+                .chain(self.defaults)
+                .find(|t| t.name == n)
+        });
+        plan_core::wall_layer_bands(wall, ty)
+            .iter()
+            .find(|b| b.is_main)
+            .map_or(0.0, |b| (b.outer + b.inner) * 0.5)
+    }
+
     fn named_material(&self, name: &str) -> Option<Material> {
         (!name.is_empty()).then(|| self.exterior_material(name))?
     }
@@ -299,6 +332,7 @@ fn wall_as_drawn(wall: &Wall, types: &TypeLookup) -> (Wall, WallLook) {
 fn add_floor(
     floor: &Floor,
     open_above: &[Vec<plan_core::Point>],
+    chase: &(Vec<Vec<plan_core::Point>>, Vec<Vec<plan_core::Point>>),
     opts: &SceneOptions,
     types: &TypeLookup,
     scene: &mut Scene,
@@ -311,7 +345,11 @@ fn add_floor(
     // mesh; a named room's overrides (R-23, R-24) split it from the rest.
     let mut groups: Vec<(slab::RoomLevels, Vec<Room>)> = Vec::new();
     for room in &rooms {
-        let levels = slab::room_levels(floor, room);
+        let mut levels = slab::room_levels(floor, room);
+        // A deck draws its own boards (CB-86): no platform slab under them.
+        if deck::draws_boards(floor, room) {
+            levels.has_floor = false;
+        }
         match groups.iter_mut().find(|(l, _)| *l == levels) {
             Some((_, rs)) => rs.push(room.clone()),
             None => groups.push((levels, vec![room.clone()])),
@@ -326,9 +364,11 @@ fn add_floor(
             .meshes
             .extend(slab::stem_walls(floor, room, &levels, stem));
     }
-    let floor_holes = foundation::platform_holes(floor, PlatformKind::Floor);
+    let mut floor_holes = foundation::platform_holes(floor, PlatformKind::Floor);
+    floor_holes.extend(chase.0.iter().cloned());
     let mut ceiling_holes = foundation::platform_holes(floor, PlatformKind::Ceiling);
     ceiling_holes.extend(open_above.iter().cloned());
+    ceiling_holes.extend(chase.1.iter().cloned());
     for (levels, group) in &groups {
         let finished_floor = floor.elevation + levels.floor_offset + levels.floor_finish;
         let ceiling = floor.elevation + levels.floor_offset + levels.ceiling_height;
@@ -408,6 +448,19 @@ fn add_wall(
             types.cover,
             &mut scene.meshes,
         );
+        scene.meshes.extend(wall::spec_meshes(
+            wall,
+            floor.elevation,
+            types.main_center(wall),
+        ));
+        // The Wall Covering tab's bands (W-115).
+        let class_holes: Vec<_> = floor
+            .openings_on(wall.id)
+            .filter_map(|o| wall::hole_for(wall, o))
+            .collect();
+        scene
+            .meshes
+            .extend(wall::covering_meshes(floor, wall, floor.elevation, &class_holes));
         return;
     }
     if wall.flags.railing {
@@ -436,7 +489,9 @@ fn add_wall(
         .openings_on(wall.id)
         .filter_map(|o| wall::hole_for(&drawn, o).map(|h| (o, h)))
         .collect();
-    let holes: Vec<_> = hosted.iter().map(|(_, h)| *h).collect();
+    let mut holes: Vec<_> = hosted.iter().map(|(_, h)| *h).collect();
+    // A fireplace built into the wall takes its stretch of wall (CB-87).
+    holes.extend(fireplace::wall_holes(floor, &drawn));
     let interior = interior_sign(wall, rooms);
     // A wall standing on a roof below it is cut along the roof (Roof Cuts
     // Wall at Bottom): it reaches down to the roof or is cut up to it.
@@ -444,10 +499,20 @@ fn add_wall(
         .roof
         .and_then(|r| r.wall_bottom(types.floor, wall, base, drawn.height));
     let drop = cut.as_ref().map_or(0.0, |c| c.drop);
+    // Platform intersections (Structure tab, R-69): the bottom reaches down
+    // to the floor below, a balloon wall up through the platforms above. A
+    // wall the roof shapes, or one cut along a roof below, keeps its ends.
+    let adj = platform_adjust(&wall.spec.structure, &types.platforms);
+    let lower = if cut.is_none() { adj.lower } else { 0.0 };
+    let raise = if top.is_none() && drawn.height == wall.height {
+        adj.raise
+    } else {
+        0.0
+    };
     let mut body = drawn.clone();
-    body.bottom_offset -= drop;
-    body.height += drop;
-    let raised_top = top.as_ref().map(|t| t.raised(drop));
+    body.bottom_offset -= drop + lower;
+    body.height += drop + lower + raise;
+    let raised_top = top.as_ref().map(|t| t.raised(drop + lower));
     let split = types.split_for(wall, base, top.as_ref(), drop);
     let shape = Shape {
         top: raised_top.as_ref(),
@@ -464,6 +529,15 @@ fn add_wall(
         &shape,
         &cuts,
     ));
+    scene.meshes.extend(wall::spec_meshes(
+        &body,
+        floor.elevation,
+        types.main_center(wall),
+    ));
+    // The Wall Covering tab's bands (W-115).
+    scene
+        .meshes
+        .extend(wall::covering_meshes(floor, &drawn, floor.elevation, &holes));
     for (opening, hole) in &hosted {
         // The wall's other openings, so a mulled unit shares one frame post
         // and one casing (DW-51, DW-52).

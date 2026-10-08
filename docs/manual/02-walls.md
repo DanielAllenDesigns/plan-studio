@@ -22,7 +22,7 @@ A wall is one straight segment (or one arc, see Curve below), drawn along its
 
 - **Kind**: Exterior or Interior.
 - **Bottom height**: where the wall starts above the floor it is drawn on, in inches (0 by default, like Chief's wall "Bottom" value). A wall spans from its bottom height to its bottom
-  height plus its height. The 3D view honors it for standard walls and every straight wall class; the plan view, room detection, elevations, schedules and wall framing do not know it yet (2.9).
+  height plus its height. The 3D view honors it for standard walls and every straight wall class; room detection, elevations, schedules and wall framing do not know it yet (2.9). In plan a wall raised **48" or more** off the floor is drawn **dashed and unfilled** (a raised wall, such as a clerestory or a header wall), and it no longer closes a room.
 - **Wall type**: a named stack of layers, for example `Stucco-6` (stucco,
   sheathing, 5 1/2" framing, drywall). Exactly one layer is the **Main layer**.
   The type decides the wall's thickness. See 2.8.
@@ -131,8 +131,8 @@ What a curved wall does (Round 12):
   Foundation, pony, half-wall and the other special classes keep their flat or roof-cut tops
   as in chapter 8.
 - **The arc can be edited by number.** The Arc section of the Wall Specification gives radius,
-  arc angle and rise (each recomputes the others), the arc length and the center point
-  (2.6). Change Line/Arc and its bulge handle, Make Arc Tangent and the three-click tool
+  arc angle and rise (each recomputes the others), the arc length and the center point,
+  and (Round 13) **Radius to** and **Lock** (2.6). Change Line/Arc and its bulge handle, Make Arc Tangent and the three-click tool
   (2.5) draw and edit the same arc.
 - **Opening offsets** are measured along the arc, and Auto Exterior Dimensions include curved
   walls (chapter 5).
@@ -145,8 +145,7 @@ Limits of curved walls today:
   the gate, not by this chapter's author).
 - An opening's **plan symbol** (jambs, leaf, swing arc) is drawn on the **chord** of the curved
   wall, not along the arc. The 3D opening follows the arc.
-- The Radius-to and Lock options of the Arc section and Automatic Facet Angle stay dimmed.
-  The facet angle is fixed at 7.5 degrees.
+- Automatic Facet Angle stays dimmed. The facet angle is fixed at 7.5 degrees.
 - There is no Curved Glass Wall or Curved Glass Pony Wall button on the Curved Wall flyout;
   draw a Curved Exterior Wall and set its Wall Class to Glass or Glass Pony in the Wall
   Specification (or use Change Line/Arc on a straight glass wall).
@@ -283,10 +282,29 @@ dimensions**.
 | The same, holding `Alt` | Free move in any direction; connected ends follow. |
 | An end handle | Moves that end, with snapping. The other end stays put. Walls joined at the dragged end follow it. Dropping the end on another wall's centerline makes a T and splits that wall. |
 | A door or window | Slides it along its wall, or onto another wall (chapter 3). |
-| Empty space | Marquee: left to right selects what is enclosed, right to left what is touched. |
+| Empty space | Marquee: left to right selects what is enclosed, right to left what is touched (Edit > **Marquee Selection** chooses By Drag Direction, Enclosing or Touching). |
 
 Every drag is one undo step. `Esc` during a drag cancels it and restores the
 geometry. A drag begins only after the pointer moves a few pixels.
+
+**Select feel (Round 14).**
+
+- Hold `Alt` when you press to start a marquee even on top of an object. Hold `Ctrl` (`Cmd` on a Mac) when you
+  start a move drag to **copy** the selection instead of moving it.
+- While you drag a move or a rotate, **type a number**: digits give the distance (`Tab` then the angle) of the
+  move or the degrees of the turn, `Enter` finishes, `Esc` cancels.
+- A drag that reaches the edge of the canvas scrolls the view that way.
+- The status bar names what is under the pointer and, once selected, describes the selection (kind, size, Z);
+  it also shows the **Edit Behavior** in force (Edit > Edit Behaviors).
+- **Edit > Edit Area** asks for a rubber band; the rectangle left behind is an *edit area*: drag inside it to move
+  everything wholly inside (with `Ctrl` or `Cmd` held at the start, to copy), drag its Rotate handle to turn it, `Delete`
+  removes the contents, `Esc` or a click outside ends the mode. A wall that crosses the edge stretches: the end
+  inside moves, the end outside stays, and its doors and windows keep their place. **Edit Area Visible** takes only
+  objects on displayed layers. **Edit > Stretch CAD** takes the same band and then one drag: every CAD vertex inside
+  moves with the pointer. Each drag is one undo step.
+- Copy also writes the objects to `~/.plan-studio/clipboard.json`, so a Copy in one plan (or one window) pastes into
+  another; the layers the objects sit on travel by name and are made if the destination lacks them.
+- The **Fill Window Selected Objects** button frames the selection (Window > Fill Window Selected Objects).
 
 ### Typed dimensions
 
@@ -356,15 +374,24 @@ bar says so. Objects on a hidden layer cannot be selected.
   their `Esc`.
 
 Wall buttons on the Edit toolbar: **Reverse Layers** (any number of walls; the layer
-stack swaps faces), **Break Wall** (then click the wall where it should break; openings
+stack swaps faces and the **main layer stays where it was**: the centerline moves by twice the main
+layer's offset, so the framing does not shift, and the ends of walls joined to it follow; a wall whose main layer is
+centered does not move; arcs stay concentric), **Break Wall** (then click the wall where it should break; openings
 go with the half that holds them), **Remove Break** (merges a straight continuation
 back), **Change Line/Arc** (a straight wall becomes an arc with a bulge handle at its
 apex; drag it to set the bulge, drag it flat to straighten; openings keep their
 proportion along the arc) and **Make Arc Tangent** (refits a curved wall tangent to the
 wall it is connected to). Edit > Edit Behaviors changes what dragging does: Default,
 Resize (scales a CAD selection from the opposite corner), Concentric (offset copies of a
-polyline, line, circle or arc), Fillet (drag a polyline corner), Alternate (one axis only)
-and Replicate (copies at the drag distance).
+polyline, line, circle or arc), Fillet (drag a polyline corner to round it), **Chamfer** (drag a polyline corner to
+cut it off; the dialog's Chamfer Distance, 0 follows the drag), Alternate (one axis only)
+and Replicate (copies at the drag distance; tick **Open Transform/Replicate after the drag** and releasing a
+drag opens Transform/Replicate Object with the move and the copy count already filled in).
+
+Select two or more walls and press the Edit toolbar's Open Object (double-click and `Enter` still open one wall) and the
+**Wall Specification (Multiple Walls)** opens: General (Thickness, Bottom Height, the Invisible, No Room Definition and
+No Locate options), Structure, Foundation, Wall Types, Wall Cap and Layer. A field the walls disagree on is
+blank or shows a dash; only the fields you edit are written, all in one undo step.
 
 **Convert to Polyline** turns the selected walls' centerlines into CAD polylines and removes the walls and their openings.
 
@@ -384,12 +411,13 @@ does not parse.
 | Tab | Status |
 |---|---|
 | General | Works |
-| Structure | Works (first part) |
+| Structure | Works (Default Wall Heights, Platform Intersections, Wall Intersections; the framing groups are dimmed) |
 | Roof | Works for exterior walls (roof kind, pitch, upper pitch, overhang, Auto Roof Return; chapter 8.7); dimmed for the other wall kinds |
-| Foundation | (disabled) |
+| Foundation | Works on a placed wall (Footing, Slab chamfers, Sill Plate; 2.6) |
 | Wall Types | Works |
+| Wall Cap | Works on a placed wall (2.6) |
 | Rail Style | Works |
-| Wall Cap, Wall Covering, Newels/Balusters, Rails | (disabled) |
+| Wall Covering, Newels/Balusters, Rails | (disabled) |
 | Layer | Works |
 | Materials | (disabled) |
 | Label | Works (the plan-label switch and a specified label text are stored; the rest is session only) |
@@ -421,18 +449,42 @@ does not parse.
 - **Options**: Invisible, No Room Definition, No Locate (stored on the wall, see 2.9; disabled in the Default Settings dialog);
   Lock Center, No Room Moldings Exterior, No Room Moldings Interior, Automatically
   Generated Wall, Ignored by Hide Exterior Walls (disabled).
-- **Arc** (a curved wall): Radius, Arc Angle and Rise (each recomputes the others; the
-  ends stay put and Wall Length is the chord), with the arc length and the center point
-  shown below. Radius to Outer Surface / Main Layer Outside, Lock Arc Center / Ends and
-  Automatic Facet Angle are disabled.
+- **Arc** (a curved wall): the **Curved Wall (Change Line/Arc)** check box, then Radius, Arc Angle and Rise
+  (each recomputes the others; the ends stay put and Wall Length is the chord), a Bulges Left / Right choice, with
+  the arc length and the center point shown below.
+  - **Radius to** (Round 13) says which line the Radius number measures: Outer Surface, Main Layer Outside,
+    Wall Center, Main Layer Inside or Inner Surface. Switch it and the Radius field shows the same arc to the new
+    line; typing a radius sets the arc so that line has it.
+  - **Lock** says what holds still when you type a Radius or an Arc Angle: **Ends** keeps the wall's ends
+    (the center moves), **Arc Center** keeps the center (the ends move along their radii). Openings keep
+    their proportion along the arc when the wall gets longer or shorter.
+  - Both are available on a curved wall only. Automatic Facet Angle is disabled.
 
 ### Structure
 
 - **Default Wall Heights**: Default Wall Top Height (checked: the wall follows the
-  floor's ceiling height and platform), Wall Height, Default Wall Bottom Height (disabled).
-- **Platform Intersections**, **Wall Intersections**, **Rim Joist**, **Double Wall**,
-  **Stud Layout**, **Framing** (all disabled): Chief's framing-related options such as
-  Through Wall At Start/End, Bearing Wall, Stud Rollout.
+  floor's ceiling height and platform), Wall Height, Default Wall Bottom Height (checked: the bottom is 0;
+  not in the Default Settings dialogs).
+- **Platform Intersections** (placed walls): **Ceiling Platform** (Automatic, Stop at Ceiling Above, Balloon Through
+  Ceiling Above, Hang Floor Platform Above on Wall with Subflooring to Wall Interior and Include Ledger) and **Floor
+  Platform** (Automatic, Stop at Floor Below, Balloon/Extend Through Floor Below) change how far the wall's top and
+  bottom reach in 3D. **Invisible Walls and Railings: Generate Between Platforms** is stored, and the gap is
+  measured, but nothing is created yet.
+- **Wall Intersections**: Through Wall At Start / At End change the plan outline at that end (3D and framing
+  still build the wall to its centerline ends).
+- **Rim Joist**, **Double Wall**, **Stud Layout**, **Framing** (disabled): Chief's framing-related options such as
+  Bearing Wall and Stud Rollout.
+
+### Foundation and Wall Cap (placed walls; Round 14)
+
+- **Foundation**: the Foundation Wall and Slab Footing check boxes, Wall Thickness; **Footing** (Width, Height,
+  Automatic Footing Bottom Height or Footing Bottom, Vertical Footing, Footing Offset, Center Footing on Main
+  Layer, Align Footing on Outside); **Slab** (Add Chamfer on Monolithic or Regular Slab, Chamfer Width and Height,
+  Monolithic Slab Pour Number); **Sill Plate** (the check box; the Construction list is dimmed). The footing, the
+  sill plate (foundation walls) and the cap are built in 3D on straight walls; the slab chamfer, the pour number and the sill
+  construction are stored and not built yet.
+- **Wall Cap**: Wall Cap, a table of profiles (name, width, height), Full Wall Width, Split Pony Wall, and the
+  Horizontal Position (Inside Wall, Wall Center, Outside Wall). The profile table is a fixed list of three: Flat Cap (5 1/2" x 1 1/2"), Overhanging Cap (9 1/2" x 2") and Thick Coping (7 1/2" x 3").
 
 ### Wall Types
 
@@ -462,7 +514,8 @@ walls the tab says to draw a Railing or Deck Railing wall, or tick Railing on th
 ### Layer
 
 **Layer** (with a Default check box) picks the plan layer: Walls, Normal; Walls,
-Invisible; and the other wall layers. **Drawing Group** is disabled.
+Invisible; and the other wall layers. **Drawing Group** is disabled. A standard wall you draw goes on the
+active layer of the exterior or interior wall tool (Tools > Layer Settings > Active Layers by Tool, chapter 5).
 
 ### Label
 
@@ -524,9 +577,11 @@ edits the same values.
 - Curved walls are mitered in plan and in 3D against the walls that join them by treating the
   arc as its tangent line at the joined end (a wide arc at a steep corner shows a small kink); a
   curved wall is a run of 7.5 degree facets in 3D; the plan symbols of its doors and windows sit
-  on the chord; the Arc section's Radius-to and Lock options are dimmed (2.2, Curved Wall Tools).
+  on the chord (2.2, Curved Wall Tools).
 - Pony, glass, half-wall, railing, deck and fencing default types and heights are typical values, not
   Chief's, and are not editable from Default Settings. Terrain walls and curbs are terrain objects, not wall classes (chapter 9.6); Wall Hatching, Wall Material
   Region and the Polygon Shaped Deck are in chapter 17.
-- The Foundation, Wall Cap, Wall Covering, Newels/Balusters and Rails tabs of the Wall
+- The Wall Covering, Newels/Balusters and Rails tabs of the Wall
   Specification are still (disabled), and the Roof tab is dimmed on interior and other non-exterior walls.
+  Crossing walls with the T-split turned off overlap in plan (their fill and layer lines are not merged at the
+  crossing).

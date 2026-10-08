@@ -19,7 +19,7 @@ use super::roofs::{self, plane_json, same_outline};
 use super::stairs::{self, flight_json, landing_json};
 use super::symbols::{self, fallback_catalog_id};
 use super::tree::ObjectTree;
-use super::{ImportOptions, ImportReport};
+use super::{ImportOptions, ImportReport, SymbolQuery};
 use plan_core::geometry::{dist_to_segment, Point};
 use plan_core::model::{Project, RoomName, Wall};
 use plan_core::PlacedSymbol;
@@ -102,11 +102,20 @@ pub(crate) fn import_objects(
         "cabinets",
         "cabinet_soffits",
         "countertops",
+        "cabinet_corners",
         "symbols",
+        "symbols_with_guid",
+        "symbols_linked",
         "electrical_devices",
+        "electrical_in_groups",
+        "electrical_connections",
         "stairs",
         "stair_landings",
+        "stairs_stacked",
         "roof_planes",
+        "roof_edges_joined",
+        "roof_gable_edges",
+        "roof_overhangs",
         "room_labels",
         "room_labels_applied",
     ] {
@@ -170,6 +179,7 @@ fn import_cabinets(
     imported: &mut [bool],
 ) {
     let (mut placed, mut soffits, mut tops, mut failed) = (0usize, 0usize, 0usize, 0usize);
+    let mut corners = 0usize;
     let mut kinds = std::collections::BTreeMap::<&'static str, usize>::new();
     for cn in tree.of_kind(cabinets::CABINET, 0) {
         let Some(fi) = floor_of(tree, chief_floors, cn) else {
@@ -186,7 +196,12 @@ fn import_cabinets(
             continue;
         };
         let id = project.alloc_id();
-        project.floors[fi].cabinets.push(cabinet_json(&c, id));
+        let mut json = cabinet_json(&c, id);
+        if let Some(at) = cabinets::corner_at(&c, &project.floors[fi].walls) {
+            cabinets::make_corner(&mut json, &c, at);
+            corners += 1;
+        }
+        project.floors[fi].cabinets.push(json);
         imported[cn] = true;
         if let Some(p) = tree.node(cn).parent {
             if tree.node(p).class == cabinets::GROUP {
@@ -217,10 +232,11 @@ fn import_cabinets(
     report.count("cabinets", placed);
     report.count("cabinet_soffits", soffits);
     report.count("countertops", tops);
+    report.count("cabinet_corners", corners);
     if placed > 0 {
         let by_kind: Vec<String> = kinds.iter().map(|(k, n)| format!("{n} {k}")).collect();
         report.warnings.push(format!(
-            "{placed} cabinet box(es) imported ({}) with position, size and kind; door and drawer layouts are inferred from the style names, and corner and blind cabinets come in as plain boxes",
+            "{placed} cabinet box(es) imported ({}) with position, size and kind; door and drawer layouts are inferred from the style names, {corners} square box(es) standing in a wall corner became corner cabinets (guessed from where they stand) and blind cabinets come in as plain boxes",
             by_kind.join(", ")
         ));
     }
@@ -240,8 +256,8 @@ fn import_symbols(
     report: &mut ImportReport,
     imported: &mut [bool],
 ) {
-    let (mut placed, mut in_cabinets, mut failed, mut unresolved) =
-        (0usize, 0usize, 0usize, 0usize);
+    let (mut placed, mut in_cabinets, mut failed, mut unresolved, mut with_guid) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     for sn in tree.of_kind(symbols::SYMBOL, 0) {
         let Some(fi) = floor_of(tree, chief_floors, sn) else {
             continue;
@@ -258,7 +274,17 @@ fn import_symbols(
             failed += 1;
             continue;
         };
-        let resolved = opts.symbol_resolver.and_then(|f| f(&s.name, &s.tags));
+        if s.catalog_guid.is_some() {
+            with_guid += 1;
+        }
+        let resolved = opts.symbol_resolver.and_then(|f| {
+            f(&SymbolQuery {
+                name: s.name.clone(),
+                tags: s.tags.clone(),
+                unique_id: s.catalog_guid.clone(),
+                candidates: s.guid_candidates.clone(),
+            })
+        });
         if resolved.is_none() {
             unresolved += 1;
         }
@@ -279,9 +305,19 @@ fn import_symbols(
     }
     report.count("symbols", placed);
     report.count("symbols_in_cabinets", in_cabinets);
+    report.count("symbols_with_guid", with_guid);
+    report.count("symbols_linked", placed - unresolved);
     if placed > 0 {
+        let how = if opts.symbol_resolver.is_some() {
+            format!(
+                "{} linked to a catalog item and {unresolved} left as \"chief-plan.<name>\" boxes",
+                placed - unresolved
+            )
+        } else {
+            "all as \"chief-plan.<name>\" boxes (no catalog resolver given)".to_string()
+        };
         report.warnings.push(format!(
-            "{placed} library object(s) imported by name: the plan holds its own copy of each and no catalog link, so {unresolved} import as \"chief-plan.<name>\" boxes until a catalog match is supplied"
+            "{placed} library object(s) imported by name; {with_guid} carry the library item's GUID: {how}"
         ));
     }
     if failed > 0 {
@@ -289,6 +325,34 @@ fn import_symbols(
             "{failed} library object(s) had no placement record or name and were skipped"
         ));
     }
+}
+
+/// A device placed on a floor, kept until the connections are resolved.
+struct PlacedDevice {
+    id: u64,
+    kind: &'static str,
+    pos: (f64, f64),
+    json: Value,
+}
+
+/// How far from a device's point a connection arc may end: a wall switch's arc
+/// leaves its symbol 10" to 18" off the point.
+const CONNECTION_REACH: f64 = 20.0;
+
+fn is_switch(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Switch" | "Switch3Way" | "Switch4Way" | "SwitchDimmer"
+    )
+}
+
+fn nearest_device(devs: &[PlacedDevice], p: (f64, f64)) -> Option<usize> {
+    devs.iter()
+        .enumerate()
+        .map(|(i, d)| (i, (d.pos.0 - p.0).hypot(d.pos.1 - p.1)))
+        .filter(|(_, d)| *d <= CONNECTION_REACH)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
 }
 
 fn import_electrical(
@@ -299,15 +363,23 @@ fn import_electrical(
     report: &mut ImportReport,
     imported: &mut [bool],
 ) {
-    let mut per_floor: Vec<Vec<Value>> = vec![Vec::new(); project.floors.len()];
-    let (mut placed, mut unknown, mut undecoded, mut on_wall) = (0usize, 0usize, 0usize, 0usize);
+    let mut per_floor: Vec<Vec<PlacedDevice>> =
+        (0..project.floors.len()).map(|_| Vec::new()).collect();
+    let (mut placed, mut unknown, mut undecoded, mut on_wall, mut in_groups) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     for dn in tree.of_kind(electrical::DEVICE, 0) {
         let Some(fi) = floor_of(tree, chief_floors, dn) else {
             continue;
         };
-        if parent_class(tree, dn) != Some(FLOOR_CLASS) {
-            continue;
-        }
+        // Loose devices, and the devices of a multi-gang box.
+        let in_group = match parent_class(tree, dn) {
+            Some(FLOOR_CLASS) => false,
+            Some(electrical::GANG_BOX) => tree
+                .node(dn)
+                .parent
+                .is_some_and(|g| parent_class(tree, g) == Some(FLOOR_CLASS)),
+            _ => continue,
+        };
         let bounds = wall_bounds(project, fi).unwrap_or((-1.0e5, -1.0e5, 1.0e5, 1.0e5));
         let Some(d) = electrical::decode_device(bytes, tree, dn, bounds) else {
             undecoded += 1;
@@ -328,32 +400,101 @@ fn import_electrical(
         }
         let id = project.alloc_id();
         let ceiling = project.floors[fi].ceiling_height;
-        per_floor[fi].push(json!({
-            "id": id,
-            "kind": kind,
-            "position": {"x": d.x, "y": d.y},
-            "angle": host.map_or(0.0, |h| h.1),
-            "height": default_height(kind, ceiling),
-            "wall_id": host.map(|h| h.0),
-            "circuit": null,
-            "label": d.name,
-            "switched_by": [],
-            "finish": "",
-            "hide_label": true,
-        }));
+        per_floor[fi].push(PlacedDevice {
+            id,
+            kind,
+            pos: (d.x, d.y),
+            json: json!({
+                "id": id,
+                "kind": kind,
+                "position": {"x": d.x, "y": d.y},
+                "angle": host.map_or(0.0, |h| h.1),
+                "height": default_height(kind, ceiling),
+                "wall_id": host.map(|h| h.0),
+                "circuit": null,
+                "label": d.name,
+                "switched_by": [],
+                "finish": "",
+                "hide_label": true,
+            }),
+        });
         imported[dn] = true;
+        if in_group {
+            if let Some(g) = tree.node(dn).parent {
+                imported[g] = true;
+            }
+            in_groups += 1;
+        }
         placed += 1;
     }
-    for (fi, devices) in per_floor.into_iter().enumerate() {
-        if !devices.is_empty() {
-            project.floors[fi].electrical = Some(json!({"devices": devices, "connections": []}));
+
+    // The dashed arcs between devices.
+    let mut connections_total = 0usize;
+    let mut connections: Vec<Vec<Value>> = vec![Vec::new(); project.floors.len()];
+    let mut switched: Vec<Vec<(u64, u64)>> = vec![Vec::new(); project.floors.len()];
+    for cn in tree.of_kind(electrical::CONNECTION, 1) {
+        let Some(fi) = floor_of(tree, chief_floors, cn) else {
+            continue;
+        };
+        if parent_class(tree, cn) != Some(FLOOR_CLASS) || per_floor[fi].is_empty() {
+            continue;
         }
+        let Some(c) = electrical::decode_connection(bytes, tree, cn) else {
+            continue;
+        };
+        let devs = &per_floor[fi];
+        let (Some(a), Some(b)) = (nearest_device(devs, c.start), nearest_device(devs, c.end))
+        else {
+            continue;
+        };
+        if a == b {
+            continue;
+        }
+        // The switch end controls the other: `from` is the switch.
+        let (from, to, bulge) = if !is_switch(devs[a].kind) && is_switch(devs[b].kind) {
+            (b, a, -c.bulge())
+        } else {
+            (a, b, c.bulge())
+        };
+        if is_switch(devs[from].kind) && !is_switch(devs[to].kind) {
+            switched[fi].push((devs[to].id, devs[from].id));
+        }
+        connections[fi].push(json!({
+            "from": devs[from].id,
+            "to": devs[to].id,
+            "arc_bulge": bulge,
+        }));
+        imported[cn] = true;
+        connections_total += 1;
+    }
+
+    for (fi, devs) in per_floor.into_iter().enumerate() {
+        if devs.is_empty() {
+            continue;
+        }
+        let list: Vec<Value> = devs
+            .into_iter()
+            .map(|d| {
+                let mut v = d.json;
+                let by: Vec<u64> = switched[fi]
+                    .iter()
+                    .filter(|(load, _)| *load == d.id)
+                    .map(|(_, sw)| *sw)
+                    .collect();
+                v["switched_by"] = json!(by);
+                v
+            })
+            .collect();
+        project.floors[fi].electrical =
+            Some(json!({"devices": list, "connections": connections[fi]}));
     }
     report.count("electrical_devices", placed);
     report.count("electrical_on_wall", on_wall);
+    report.count("electrical_in_groups", in_groups);
+    report.count("electrical_connections", connections_total);
     if placed > 0 {
         report.warnings.push(format!(
-            "{placed} electrical device(s) imported with position and kind; heights come from the kind, wall devices face out of the nearest wall, and circuits and switch connections were not decoded"
+            "{placed} electrical device(s) imported with position and kind ({in_groups} from multi-gang boxes); heights come from the kind, wall devices face out of the nearest wall, {connections_total} connection arc(s) link devices (the switch end controls the other), circuits were not decoded"
         ));
     }
     if unknown > 0 {
@@ -403,25 +544,55 @@ fn import_stairs(
             None => failed += 1,
         }
     }
+    let mut stacked = 0usize;
     for (fi, f) in &flights {
         let id = project.alloc_id();
         let elev = project.floors[*fi].elevation;
+        if f.base_above(elev).is_some_and(|b| b > 0.0) {
+            stacked += 1;
+        }
         project.floors[*fi].stairs.push(flight_json(f, id, elev));
         imported[f.node] = true;
     }
+    let mut landing_exact = 0usize;
     for (fi, l) in &landings {
         let id = project.alloc_id();
         let elev = project.floors[*fi].elevation;
-        // The landing's height is not stored: half the rise of the floor's flights.
-        let rise = flights
+        // The landing is where a flight starts or ends: its surface is that
+        // flight's bottom, or the top of the flight that arrives plus a riser.
+        let from_flights = flights
             .iter()
             .filter(|(f, _)| f == fi)
-            .map(|(_, f)| f.rise)
-            .fold(0.0f64, f64::max);
-        let rise = if rise > 0.0 {
-            rise / 2.0
-        } else {
-            project.floors[*fi].ceiling_height / 2.0
+            .find_map(|(_, f)| {
+                let start = (f.x, f.y);
+                let h = if near_outline(&l.outline, start, 8.0) {
+                    f.bottom
+                } else if near_outline(&l.outline, f.end_point(), 8.0) {
+                    f.top.map(|t| t + f.riser)
+                } else {
+                    None
+                };
+                h.map(|h| h - stairs::FLOOR_FINISH - elev)
+            })
+            .filter(|h| *h > 1.0);
+        let rise = match from_flights {
+            Some(h) => {
+                landing_exact += 1;
+                h
+            }
+            None => {
+                // Not stored for this landing: half the rise of the floor's flights.
+                let rise = flights
+                    .iter()
+                    .filter(|(f, _)| f == fi)
+                    .map(|(_, f)| f.rise)
+                    .fold(0.0f64, f64::max);
+                if rise > 0.0 {
+                    rise / 2.0
+                } else {
+                    project.floors[*fi].ceiling_height / 2.0
+                }
+            }
         };
         project.floors[*fi]
             .stairs
@@ -430,9 +601,10 @@ fn import_stairs(
     }
     report.count("stairs", flights.len());
     report.count("stair_landings", landings.len());
+    report.count("stairs_stacked", stacked);
     if !flights.is_empty() || !landings.is_empty() {
         report.warnings.push(format!(
-            "{} stair flight(s) and {} landing(s) imported as separate straight stairs and landings; each flight gets its own riser count from its run, and landing heights are half the rise (approximate)",
+            "{} stair flight(s) and {} landing(s) imported as separate straight stairs and landings; each flight gets its own riser count from its run, {stacked} stand on a landing (height from the file) and {landing_exact} of the landings have the height of the flight that leaves them (the others are half the rise); rail sides were not decoded",
             flights.len(),
             landings.len()
         ));
@@ -442,6 +614,29 @@ fn import_stairs(
             "{failed} stair or landing object(s) had no readable line or spec and were skipped"
         ));
     }
+}
+
+/// Whether `p` is inside `outline` or within `tol` of one of its edges.
+fn near_outline(outline: &[(f64, f64)], p: (f64, f64), tol: f64) -> bool {
+    let n = outline.len();
+    let mut inside = false;
+    for k in 0..n {
+        let (a, b) = (outline[k], outline[(k + 1) % n]);
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0 {
+            inside = !inside;
+        }
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 < 1e-12 {
+            0.0
+        } else {
+            (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0)
+        };
+        if (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy) <= tol {
+            return true;
+        }
+    }
+    inside
 }
 
 fn import_roofs(
@@ -454,6 +649,7 @@ fn import_roofs(
 ) {
     let mut seen: Vec<Vec<roofs::ChiefRoofPlane>> = vec![Vec::new(); project.floors.len()];
     let (mut placed, mut duplicates, mut failed) = (0usize, 0usize, 0usize);
+    let (mut joined, mut gables, mut overhangs) = (0usize, 0usize, 0usize);
     for pn in tree.of_kind(roofs::ROOF_PLANE, 0) {
         let Some(fi) = floor_of(tree, chief_floors, pn) else {
             continue;
@@ -474,14 +670,24 @@ fn import_roofs(
         project.floors[fi]
             .roofs
             .push(plane_json(&p, id, "Roof Planes"));
+        joined += p.edges.iter().filter(|e| e.link.is_some()).count();
+        gables += p
+            .edges
+            .iter()
+            .filter(|e| e.role == roofs::EdgeRole::Rake)
+            .count();
+        overhangs += usize::from(p.overhang > 0.0);
         seen[fi].push(p);
         placed += 1;
     }
     report.count("roof_planes", placed);
     report.count("roof_duplicates", duplicates);
+    report.count("roof_edges_joined", joined);
+    report.count("roof_gable_edges", gables);
+    report.count("roof_overhangs", overhangs);
     if placed > 0 {
         report.warnings.push(format!(
-            "{placed} roof plane(s) imported with outline, pitch and baseline height; per-edge hips and gables, overhangs and materials were not decoded"
+            "{placed} roof plane(s) imported with outline (eave edge first), pitch and baseline height; {joined} edge(s) are joined to a neighbouring plane (ridge, hip, valley), {gables} are gable ends, {overhangs} plane(s) carry an eave overhang measured from the baseline; fascia sizes, holes and materials were not decoded"
         ));
     }
     if duplicates > 0 {

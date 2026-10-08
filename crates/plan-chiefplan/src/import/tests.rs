@@ -11,6 +11,7 @@ use super::walls::tests::{line_obj, point_obj, wall_obj, wall_type_obj};
 use super::*;
 use crate::scan::testutil::build_template;
 use plan_core::model::{OpeningKind, WallKind};
+use serde_json::json;
 
 fn types_body() -> Vec<u8> {
     let mut b = Vec::new();
@@ -487,19 +488,20 @@ fn object_stage_end_to_end() {
 fn symbol_resolver_and_stage_switches() {
     let bytes = build_template(&objects_house(), &[]);
     let opts = ImportOptions {
-        symbol_resolver: Some(|name: &str, tags: &[String]| {
-            (name == "Elongated Toilet" && tags.iter().any(|t| t == "ADA"))
+        symbol_resolver: Some(|q: &SymbolQuery| {
+            (q.name == "Elongated Toilet" && q.tags.iter().any(|t| t == "ADA"))
                 .then(|| "chief.abc.7".to_string())
         }),
         ..ImportOptions::default()
     };
     let r = import_bytes(&bytes, "Objects.plan", &opts).unwrap();
     assert_eq!(r.project.floors[0].symbols[0].catalog_id, "chief.abc.7");
+    assert_eq!(r.report.counts["symbols_linked"], 1);
     assert!(r
         .report
         .warnings
         .iter()
-        .all(|w| !w.contains("library object(s) imported by name") || w.contains("so 0 import")));
+        .any(|w| w.contains("1 linked to a catalog item and 0 left")));
 
     let off = ImportOptions {
         cabinets: false,
@@ -520,4 +522,244 @@ fn symbol_resolver_and_stage_switches() {
     // Left unread, the classes show up as skipped.
     assert!(r.report.skipped_classes.iter().any(|s| s.class == 15));
     assert!(r.report.skipped_classes.iter().any(|s| s.class == 21));
+}
+
+/// The stage-3 objects: a library item with a catalog GUID, a U stair that
+/// stacks on a landing, a switch and its light joined by an arc (and the
+/// reverse arc of a second pair), a gang box, and a roof plane with joined
+/// edges and an overhang.
+fn stage3_house() -> Vec<u8> {
+    use super::electrical::tests::{connection_obj, device_obj, gang_obj};
+    use super::lines::tests::put_rect;
+    use super::roofs::tests::plane_obj_flags;
+    use super::stairs::tests::flight_obj_stacked;
+    use super::symbols::tests::symbol_obj_guid;
+    let mut body = types_body();
+    let ext = |x: f64, y: f64, dx: f64, dy: f64, len: f64| {
+        wall_obj(line_obj(x, y, dx, dy, len), Some(581), Some(121.125), &[])
+    };
+    let partition = wall_obj(
+        line_obj(200.0, 0.0, 0.0, 1.0, 300.0),
+        Some(351),
+        Some(121.125),
+        &[],
+    );
+    let switch =
+        |y: f64, name: &str| device_obj(751, 203.0, y, &[name, "Switches", "Wall Mounted"]);
+    let light = |x: f64, y: f64| {
+        device_obj(
+            755,
+            x,
+            y,
+            &["Recessed Down Light 6", "Ceiling Mounted", "Lighting"],
+        )
+    };
+    let duplex = |y: f64| {
+        device_obj(
+            751,
+            203.0,
+            y,
+            &["Duplex", "110V", "Outlets", "Wall Mounted"],
+        )
+    };
+    let toilet_guid = [
+        0x4c, 0x52, 0x82, 0x23, 0xd7, 0x12, 0x45, 0xe5, 0xb7, 0xa3, 0x27, 0xf7, 0x5f, 0x3e, 0x88,
+        0xc1,
+    ];
+    let kids = vec![
+        ext(0.0, 0.0, 1.0, 0.0, 400.0),
+        ext(400.0, 0.0, 0.0, 1.0, 300.0),
+        ext(400.0, 300.0, -1.0, 0.0, 400.0),
+        ext(0.0, 300.0, 0.0, -1.0, 300.0),
+        partition,
+        symbol_obj_guid(
+            [150.0, 100.0, 0.0, 1.0, 30.0, 30.0, 30.0, 30.0],
+            "Elongated Toilet",
+            &["ADA"],
+            Some(toilet_guid),
+        ),
+        switch(100.0, "Single Pole"),
+        light(300.0, 150.0),
+        switch(250.0, "Three Way"),
+        light(350.0, 250.0),
+        gang_obj(&[duplex(60.0), duplex(65.25)]),
+        connection_obj((213.0, 100.0), (250.0, 140.0), (300.0, 150.0)),
+        connection_obj((350.0, 250.0), (280.0, 270.0), (213.0, 250.0)),
+        flight_obj_stacked(
+            (300.0, 100.0, 0.0, 1.0, 94.5),
+            42.0,
+            10.5,
+            133.875,
+            7.875,
+            0.875,
+        ),
+        sized(47, 0, 2000, |b| put_rect(b, 671, 276.0, 194.5, 48.0, 46.0)),
+        flight_obj_stacked(
+            (300.0, 240.5, 0.0, 1.0, 63.0),
+            42.0,
+            10.5,
+            133.875,
+            7.875,
+            79.625,
+        ),
+    ];
+    body.extend(floor_obj(0.0, 121.125, &kids));
+    // South eave and east gable overhang; north (ridge) and west (hip) joined.
+    let roof = plane_obj_flags(
+        &[
+            (412.0, -12.0), // starts at the east side so the eave is not first
+            (412.0, 312.0),
+            (-12.0, 312.0),
+            (-12.0, -12.0),
+        ],
+        (0.0, 0.0, 1.0, 0.0, 400.0),
+        129.84,
+        (8.0f64 / 12.0).atan(),
+        &[
+            (None, true),
+            (Some(1), false),
+            (Some(0), false),
+            (None, true),
+        ],
+    );
+    body.extend(floor_obj(137.875, 109.125, &[roof]));
+    body
+}
+
+#[test]
+fn stage3_catalog_guid_reaches_the_resolver() {
+    let bytes = build_template(&stage3_house(), &[]);
+    let opts = ImportOptions {
+        symbol_resolver: Some(|q: &SymbolQuery| {
+            (q.unique_id.as_deref() == Some("4c528223-d712-45e5-b7a3-27f75f3e88c1"))
+                .then(|| "chief.core-arch.77".to_string())
+        }),
+        ..ImportOptions::default()
+    };
+    let r = import_bytes(&bytes, "Stage3.plan", &opts).unwrap();
+    let f = &r.project.floors[0];
+    assert_eq!(f.symbols.len(), 1);
+    assert_eq!(f.symbols[0].catalog_id, "chief.core-arch.77");
+    assert_eq!(r.report.counts["symbols_with_guid"], 1);
+    assert_eq!(r.report.counts["symbols_linked"], 1);
+    // Without a resolver it stays a stand-in and the GUID is still counted.
+    let r = import_bytes(&bytes, "Stage3.plan", &ImportOptions::default()).unwrap();
+    assert_eq!(
+        r.project.floors[0].symbols[0].catalog_id,
+        "chief-plan.elongated-toilet"
+    );
+    assert_eq!(r.report.counts["symbols_with_guid"], 1);
+    assert_eq!(r.report.counts["symbols_linked"], 0);
+    assert!(r
+        .report
+        .warnings
+        .iter()
+        .any(|w| w.contains("no catalog resolver")));
+}
+
+#[test]
+fn stage3_electrical_connections_and_gang_boxes() {
+    let bytes = build_template(&stage3_house(), &[]);
+    let r = import_bytes(&bytes, "Stage3.plan", &ImportOptions::default()).unwrap();
+    let (f, rep) = (&r.project.floors[0], &r.report);
+    let layer = f.electrical.as_ref().unwrap();
+    let devices = layer["devices"].as_array().unwrap();
+    // Two switches, two lights and the two outlets of the gang box.
+    assert_eq!(devices.len(), 6, "{devices:?}");
+    assert_eq!(rep.counts["electrical_devices"], 6);
+    assert_eq!(rep.counts["electrical_in_groups"], 2);
+    assert_eq!(rep.counts["electrical_connections"], 2);
+    let by = |kind: &str, nth: usize| {
+        devices
+            .iter()
+            .filter(|d| d["kind"] == kind)
+            .nth(nth)
+            .unwrap_or_else(|| panic!("no {kind} #{nth}"))
+    };
+    let (sw, sw3) = (by("Switch", 0), by("Switch3Way", 0));
+    let (l1, l2) = (by("RecessedCan", 0), by("RecessedCan", 1));
+    let conns = layer["connections"].as_array().unwrap();
+    assert_eq!(conns.len(), 2);
+    // Forward arc: switch (the start) to the light, bending left.
+    assert_eq!(conns[0]["from"], sw["id"]);
+    assert_eq!(conns[0]["to"], l1["id"]);
+    let b0 = conns[0]["arc_bulge"].as_f64().unwrap();
+    assert!(b0 > 15.0 && b0 < 17.0, "{b0}");
+    // Reverse arc (drawn from the light): the switch is still `from`, and the
+    // bulge flips sign with the direction.
+    assert_eq!(conns[1]["from"], sw3["id"]);
+    assert_eq!(conns[1]["to"], l2["id"]);
+    assert!((conns[1]["arc_bulge"].as_f64().unwrap() - 20.0).abs() < 1e-6);
+    // The lights know their switches.
+    assert_eq!(l1["switched_by"], json!([sw["id"]]));
+    assert_eq!(l2["switched_by"], json!([sw3["id"]]));
+    assert_eq!(sw["switched_by"], json!([]));
+    // The gang box's outlets are on the partition.
+    let outlets: Vec<_> = devices
+        .iter()
+        .filter(|d| d["kind"] == "Outlet110")
+        .collect();
+    assert_eq!(outlets.len(), 2);
+    assert!(outlets.iter().all(|d| !d["wall_id"].is_null()));
+    // Nothing of it is reported as skipped.
+    for class in [21u8, 34, 150] {
+        assert!(
+            !rep.skipped_classes.iter().any(|s| s.class == class),
+            "class {class} listed as skipped"
+        );
+    }
+    // The layer survives JSON as the real types would read it.
+    let back = Project::from_json(&r.project.to_json().unwrap()).unwrap();
+    assert_eq!(back.floors[0].electrical, f.electrical);
+}
+
+#[test]
+fn stage3_stairs_stack_on_the_landing() {
+    let bytes = build_template(&stage3_house(), &[]);
+    let r = import_bytes(&bytes, "Stage3.plan", &ImportOptions::default()).unwrap();
+    let f = &r.project.floors[0];
+    assert_eq!(f.stairs.len(), 3);
+    // Flights come first (file order), then the landing.
+    let (a, b, landing) = (&f.stairs[0], &f.stairs[1], &f.stairs[2]);
+    assert_eq!(a["base"], 0.0);
+    // The second flight leaves the landing at 79.625 - 0.875 = 78.75 = 10 risers.
+    assert!((b["base"].as_f64().unwrap() - 78.75).abs() < 1e-9);
+    // The landing is at that height too (from the flight that arrives).
+    assert!((landing["params"]["total_rise"].as_f64().unwrap() - 78.75).abs() < 1e-9);
+    assert_eq!(r.report.counts["stairs_stacked"], 1);
+    assert!(r
+        .report
+        .warnings
+        .iter()
+        .any(|w| w.contains("1 stand on a landing") && w.contains("1 of the landings")));
+}
+
+#[test]
+fn stage3_roof_plane_has_its_eave_first_and_edge_flags() {
+    let bytes = build_template(&stage3_house(), &[]);
+    let r = import_bytes(&bytes, "Stage3.plan", &ImportOptions::default()).unwrap();
+    let roofs = &r.project.floors.last().unwrap().roofs;
+    assert_eq!(roofs.len(), 1);
+    let plane = &roofs[0];
+    // The eave (south) edge is first: the first two vertices share y = -12 and
+    // sit at the baseline height less the 12" of overhang rise.
+    let poly = plane["polygon3d"].as_array().unwrap();
+    assert!((poly[0][2].as_f64().unwrap() - 12.0).abs() < 1e-9);
+    assert!((poly[1][2].as_f64().unwrap() - 12.0).abs() < 1e-9);
+    assert!(poly[0][1].as_f64().unwrap() < 129.84);
+    assert_eq!(plane["overhang"], 12.0);
+    let edges = plane["chief_edges"].as_array().unwrap();
+    let roles: Vec<&str> = edges.iter().map(|e| e["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["eave", "rake", "ridge", "hip_or_valley"]);
+    assert_eq!(edges[1]["overhangs"], true);
+    assert_eq!(edges[2]["joined"], true);
+    let c = &r.report.counts;
+    assert_eq!(
+        (
+            c["roof_edges_joined"],
+            c["roof_gable_edges"],
+            c["roof_overhangs"]
+        ),
+        (2, 1, 1)
+    );
 }

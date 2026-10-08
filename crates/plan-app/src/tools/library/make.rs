@@ -61,7 +61,8 @@ pub fn model_from_import(imported: &ImportedModel) -> Model3d {
     Model3d { parts }.cleaned().normalized()
 }
 
-/// Parses a 3D file's `bytes` (`obj`, `gltf` or `glb`, by `ext`) with `opts`.
+/// Parses a 3D file's `bytes` (`obj`, `gltf`, `glb`, `stl`, `3ds` or `dae`, by
+/// `ext`) with `opts`.
 pub fn parse_model(
     ext: &str,
     bytes: &[u8],
@@ -75,9 +76,11 @@ pub fn parse_model(
             plan_import::obj::parse_obj(&text, mtl, opts)
         }
         "gltf" | "glb" => plan_import::gltf::parse_gltf(bytes, resolve, opts),
+        // STL, 3DS, COLLADA, and SketchUp (which explains how to export).
+        "stl" | "3ds" | "dae" | "skp" => plan_import::parse_3d(ext, bytes, mtl, resolve, opts),
         other => {
             return Err(format!(
-                "Cannot import .{other} files; use OBJ, glTF (.gltf) or binary glTF (.glb)"
+                "Cannot import .{other} files; use STL, 3DS, COLLADA (.dae), OBJ, glTF (.gltf) or binary glTF (.glb)"
             ))
         }
     };

@@ -7,6 +7,7 @@ use plan_core::geometry::Point;
 use std::f64::consts::TAU;
 
 use crate::cabinet::{Cabinet, CabinetKind, CornerStyle, MoldingKind};
+use crate::dress::{FootStyle, PilasterStyle};
 use crate::geom;
 use crate::mesh3d::{build_fronts, pick, Builder, Frame, FrontCtx, FRAME, PANEL, V3};
 use crate::top::{CutoutKind, EdgeProfile};
@@ -411,5 +412,77 @@ fn wall(tris: &mut Vec<[V3; 3]>, lower: &[Point], z_lo: f64, z_hi: f64, upper: &
         let (a1, b1) = (at(upper[i], z_hi), at(upper[j], z_hi));
         tris.push([a0, b0, b1]);
         tris.push([a0, b1, a1]);
+    }
+}
+
+impl Builder {
+    /// Four feet under a base cabinet in place of the toe kick board
+    /// (Accessories tab). `front` is where the kick's front face would be.
+    pub(crate) fn feet(&mut self, cab: &Cabinet, front: f64, height: f64) {
+        let (w, s) = (cab.width, cab.accessories.foot_size.max(1.0));
+        if w < 2.0 * s + 2.0 || front < s + 1.5 {
+            return;
+        }
+        let mat = pick(cab.materials.toe_kick, Material::WallInterior);
+        let xs = [1.0, w - 1.0 - s];
+        let ys = [1.0, (front - s).max(1.0)];
+        for &x in &xs {
+            for &y in &ys {
+                match cab.accessories.feet {
+                    FootStyle::None => {}
+                    FootStyle::Block => {
+                        self.add_box([x, y, 0.0], [x + s, y + s, height], mat);
+                    }
+                    FootStyle::Bun => {
+                        // Turned foot: a narrow pad, the swell, a narrow neck.
+                        let (cx, cy) = (x + s / 2.0, y + s / 2.0);
+                        for (z0, z1, k) in [(0.0, 0.25, 0.6), (0.25, 0.75, 1.0), (0.75, 1.0, 0.7)] {
+                            let r = s * k / 2.0;
+                            self.add_box(
+                                [cx - r, cy - r, height * z0],
+                                [cx + r, cy + r, height * z1],
+                                mat,
+                            );
+                        }
+                    }
+                    FootStyle::Bracket => {
+                        // Two thin boards meeting at the outside corner.
+                        let t = 0.75_f64.min(s / 2.0);
+                        let fx = if x < w / 2.0 { x } else { x + s - t };
+                        let fy = if y < front / 2.0 { y } else { y + s - t };
+                        self.add_box([x, fy, 0.0], [x + s, fy + t, height], mat);
+                        self.add_box([fx, y, 0.0], [fx + t, y + s, height], mat);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pilasters on the front corners (Accessories tab): a board standing
+    /// proud of the front, fluted ones with two grooves' worth of ribs.
+    pub(crate) fn pilasters(&mut self, cab: &Cabinet, z0: f64, z1: f64) {
+        let (left, right) = cab.accessories.pilasters();
+        let pw = cab
+            .accessories
+            .pilaster_width
+            .clamp(0.5, (cab.width / 3.0).max(0.5));
+        let d = cab.depth;
+        let mat = pick(cab.materials.door, Material::WallInterior);
+        for (on, x0) in [(left, 0.0), (right, cab.width - pw)] {
+            if !on || z1 - z0 < 1.0 {
+                continue;
+            }
+            self.add_box([x0, d, z0], [x0 + pw, d + 0.75, z1], mat);
+            if cab.accessories.pilaster == PilasterStyle::Fluted {
+                for k in 1..=2 {
+                    let cx = x0 + pw * f64::from(k) / 3.0;
+                    self.add_box(
+                        [cx - 0.1, d + 0.75, z0 + 1.0],
+                        [cx + 0.1, d + 0.85, z1 - 1.0],
+                        mat,
+                    );
+                }
+            }
+        }
     }
 }

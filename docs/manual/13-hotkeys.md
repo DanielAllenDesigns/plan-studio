@@ -138,7 +138,7 @@ Two details worth knowing:
 Status: **Works** (the command runs today), **(planned)** (the command is on a dimmed button; the key is kept and reports
 "Not yet implemented"), **No matching command yet** (Chief has the command; Plan Studio has no equivalent
 and shows the key under "Chief bindings with no action in Plan Studio yet" in the dialog), or a flag toggle.
-Of the 143 named bindings, 121 work or toggle a flag, 3 are planned (Display Options, Object Eyedropper, Zoom), 18 have no matching command and 1 (Straight Railing) works from the toolbar but not from its key (counted from the table below at the Round 10 working tree; the unit test in `shell/hotkeys.rs` pins the 143 and the Customize Hotkeys dialog shows the live tally). Round 10 made the door and window flyout keys, Floor Defaults, Preferences, Print and Revision Cloud live, along with the clipboard keys; off macOS Down One Floor loses its key, 13.6).
+Of the 143 named bindings, 122 work or toggle a flag, 3 are planned (Display Options, Object Eyedropper, Zoom), 17 have no matching command and 1 (Straight Railing) works from the toolbar but not from its key (counted from the table below at the Round 10 working tree, with Refresh Display, which became live in a later round, moved from the third group to the first; the unit test in `shell/hotkeys.rs` pins the 143 and may count 121 and 18; the unit test in `shell/hotkeys.rs` pins the 143 and the Customize Hotkeys dialog shows the live tally). Round 10 made the door and window flyout keys, Floor Defaults, Preferences, Print and Revision Cloud live, along with the clipboard keys; off macOS Down One Floor loses its key, 13.6).
 
 | Command | Daniel's key | Status |
 |---|---|---|
@@ -249,7 +249,7 @@ Of the 143 named bindings, 121 work or toggle a flag, 3 are planned (Display Opt
 | Redo | `Cmd+Y` | Works |
 | Reference Display | `F9` | Toggles a flag: draws the floor below in gray |
 | Reference Grid | `Shift+F9` | Works |
-| Refresh Display | `F5` | No matching command yet |
+| Refresh Display | `F5` | Works (View > Refresh Display; the key is read directly) |
 | Revision Cloud | `Ctrl+Alt+Shift+Cmd+!` | Works |
 | Rich Text | `Ctrl+Alt+Cmd+J` | Works |
 | Roof Hole | `Ctrl+Alt+Shift+Cmd+T` | Works |
@@ -408,6 +408,14 @@ These go to the active tool, not the hotkey map.
 | `Enter` | **Recover Unsaved Work** prompt (after a crash, or when an autosave is newer than the plan) | `Enter` Recover. Discard has no key, so a stray `Enter` cannot delete the copy. |
 | `Shift` | Select, hotkey modifiers | Adds to the selection; `Shift`+drag pans in 3D. |
 | Arrow keys | 3D Full Camera; Electrical free device | Walk; turn the device (`Shift` = 90 degrees). |
+| Arrow keys, `Shift`+arrow keys | 3D view, Select Objects, an object selected (not the Full Camera) | Nudge the selection one snap unit (ten with `Shift`) along the plan axis nearest the arrow's direction on screen. One undo step, "Move Objects". |
+| Alt-click | 3D overview and doll house views | Makes the clicked surface point the orbit centre (Round 13). |
+| Double-click | 3D view | On an object, opens its specification; on empty space, frames the whole building again, keeping the viewing angle. |
+| Drag a selected object | 3D view, Select Objects (cabinet, placed symbol, device, detail, stair) | Slides it along the floor with the plan's snapping; `Alt` suspends the snap, `Shift` holds the move to the object's own axis (or the one across it), `Esc` puts it back. One undo step, "Move Objects". |
+| `Alt` + press | Select Objects | Starts a marquee even on top of an object (chapter 2.5). |
+| `Ctrl` (`Cmd` on a Mac) held at the start of a drag | Select Objects; Edit Area | Copies the selection instead of moving it (chapter 2.5). |
+| Digits, `Tab`, `Enter`, `Esc` | Select Objects while dragging a move or a rotate | Type the distance (and, after `Tab`, the angle) of a move, or the degrees of a turn (chapter 2.5). |
+| `Shift` | Draw Line | Holds the line to 15-degree steps (chapter 5.4). |
 | `W` `A` `S` `D`, `Page Up`, `Page Down` | 3D Full Camera | Walk; raise or lower the eye. |
 | `Backspace` | Polyline, spline | Drops the last vertex. |
 | `Enter`, double-click | Slab tools, platform holes, Truss Base | Closes the polygon and makes the object. |

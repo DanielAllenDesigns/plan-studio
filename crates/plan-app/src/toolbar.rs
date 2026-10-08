@@ -18,6 +18,7 @@ use crate::tools::foundation::FoundationVariant;
 use crate::tools::framing::FramingVariant;
 use crate::tools::images::ImageMode;
 use crate::tools::opening::OpeningVariant;
+use crate::tools::painters::PainterMode;
 use crate::tools::wall::{WallStyle as Style, WallVariant};
 use crate::tools::ToolId;
 
@@ -718,6 +719,17 @@ pub fn railing_deck() -> Flyout {
             sep(wall_item("deck_edge", Style::DeckEdge, false)),
             wall_item("deck_edge", Style::DeckEdge, true),
             sep(det("deck_edge", DetailsVariant::PolygonDeck)),
+            // CB-86: framing for the deck rooms of the floor.
+            sep(item(
+                "deck_edge",
+                "Build Deck Framing",
+                Action::Custom(crate::editor::fireplace_view::cmd::BUILD_DECK),
+            )),
+            item(
+                "deck_edge",
+                "Delete Deck Framing",
+                Action::Custom(crate::editor::fireplace_view::cmd::CLEAR_DECK),
+            ),
         ],
     )
 }
@@ -944,6 +956,8 @@ pub fn electrical() -> Flyout {
                 E::Gfci,
             ),
             plain("outlet_110", E::OutletFloor),
+            plain("outlet_110", E::OutletWp),
+            plain("outlet_220", E::OutletDedicated),
             elec("switch", "Switch", "E, S", E::Switch),
             plain("switch", E::Switch3Way),
             plain("switch", E::Switch4Way),
@@ -1030,6 +1044,22 @@ pub fn stairs() -> Flyout {
     )
 }
 
+/// The Fireplace flyout: a fireplace beside a wall, built into a wall, a
+/// prefab one and a chimney on its own (CB-87).
+pub fn fireplace() -> Flyout {
+    use crate::tools::fireplace::FireplaceMode as M;
+    let fp = |icon, m: M| item(icon, m.name(), Action::SetTool(ToolId::FireplaceVariant(m)));
+    fly(
+        "Fireplace",
+        vec![
+            fp("foundation", M::Masonry),
+            fp("wall_exterior", M::InWall),
+            fp("box", M::Prefab),
+            fp("post", M::Chimney),
+        ],
+    )
+}
+
 pub fn floor() -> Flyout {
     fly(
         "Floor",
@@ -1048,6 +1078,13 @@ pub fn floor() -> Flyout {
                 Action::InsertFloorBelow,
             ),
             item("floor_defaults", "Floor Defaults", Action::FloorDefaults),
+            // Split-level floors: stairs where rooms of one floor meet at
+            // different heights (R-86).
+            item(
+                "stairs",
+                "Add Steps at Level Changes",
+                Action::Custom(crate::editor::fireplace_view::cmd::ADD_STEPS),
+            ),
             with_hotkey(
                 item("foundation", "Build Foundation", Action::BuildFoundation),
                 "\u{2318}F",
@@ -1170,7 +1207,12 @@ pub fn roof() -> Flyout {
                 "roof_plane",
                 "Edit All Roof Planes",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}P",
-                M::Edit,
+                M::EditAll,
+            ),
+            item(
+                "roof_plane",
+                "Edit Roof Planes",
+                Action::SetTool(ToolId::RoofVariant(M::Edit)),
             ),
             with_hotkey(
                 item(
@@ -1332,6 +1374,8 @@ pub fn image() -> Flyout {
             img("drawing_sheet", ImageMode::CreateImage),
             img("drawing_sheet", ImageMode::BillboardImage),
             img("library_browser", ImageMode::ImageLibrary),
+            sep(img("dim_manual", ImageMode::PointToPointResize)),
+            img("crosshairs", ImageMode::RotateToAlign),
         ],
     )
 }
@@ -1591,6 +1635,16 @@ pub fn site_objects() -> Flyout {
             terr("terrain", "North Pointer", T::NorthPointer),
             terr("terrain", "Scale Bar", T::ScaleBar),
             terr("terrain", "Building Pad", T::BuildingPad),
+            sep(terr(
+                "terrain",
+                "Import Terrain Data\u{2026}",
+                T::ImportData,
+            )),
+            terr(
+                "terrain",
+                "Terrain Cut and Fill Report\u{2026}",
+                T::CutFillReport,
+            ),
         ],
     )
 }
@@ -1650,6 +1704,8 @@ pub fn terrain_feature() -> Flyout {
             terr("terrain", "Rectangular Feature", T::RectFeature),
             terr("terrain", "Kidney Shaped Feature", T::KidneyFeature),
             terr("spline", "Spline Feature", T::SplineFeature),
+            terr("polyline", "Polyline Feature", T::PolylineFeature),
+            terr("terrain", "Round Feature", T::RoundFeature),
             terr(
                 "terrain",
                 "Terrain Hole",
@@ -1743,6 +1799,17 @@ pub fn sidewalk() -> Flyout {
     )
 }
 
+/// Road Marking: a painted stripe laid on the ground or on a road.
+pub fn road_marking() -> Flyout {
+    fly(
+        "Road Marking",
+        vec![
+            terr("road", "Polyline Road Marking", T::RoadMarking),
+            terr("road", "Spline Road Marking", T::SplineRoadMarking),
+        ],
+    )
+}
+
 pub fn plant() -> Flyout {
     fly(
         "Plant",
@@ -1777,7 +1844,7 @@ fn single(f: Flyout) -> MenuGroup {
     }
 }
 
-/// The sixteen Build submenus, in Chief's order.
+/// The seventeen Build submenus, in Chief's order.
 pub fn build_menu() -> Vec<MenuGroup> {
     vec![
         MenuGroup {
@@ -1797,6 +1864,7 @@ pub fn build_menu() -> Vec<MenuGroup> {
         },
         single(trim()),
         single(stairs()),
+        single(fireplace()),
         single(cabinet()),
         single(electrical()),
         single(solid_3d()),
@@ -1819,6 +1887,7 @@ pub fn terrain_menu() -> Vec<Flyout> {
         road(),
         driveway(),
         sidewalk(),
+        road_marking(),
         plant(),
         sprinkler(),
         site_objects(),
@@ -1852,6 +1921,7 @@ pub fn view_3d() -> Flyout {
             ),
             camera_tool("view_3d", "Perspective Floor Overview", V::FloorOverview),
             camera_tool("view_3d", "Doll House View", V::DollHouse),
+            camera_tool("view_3d", "Glass House View", V::GlassHouse),
             sep(view3d(
                 "view_plan",
                 "Orthographic Full Overview",
@@ -1871,6 +1941,7 @@ pub fn full_camera() -> Flyout {
                 camera_tool("camera_full", "Full Camera", V::FullCamera),
                 "\u{21E7}J",
             ),
+            camera_tool("camera_full", "Floor Camera", V::FloorCamera),
             camera_tool(
                 "cross_section",
                 "Cross Section/Elevation Camera",
@@ -1988,6 +2059,11 @@ fn row1_slots() -> Vec<Slot> {
         Sep,
         Slot::Button(with_hotkey(item("undo", "Undo", Action::Undo), "\u{2318}Z")),
         Slot::Button(with_hotkey(item("redo", "Redo", Action::Redo), "\u{2318}Y")),
+        Slot::Button(item(
+            "note",
+            "Check Spelling",
+            Action::Custom(crate::dialogs::spell_check::OPEN),
+        )),
         Sep,
         Slot::Button(item(
             "preferences",
@@ -2136,13 +2212,31 @@ fn row2_slots() -> Vec<Slot> {
             Action::SetTool(ToolId::CadVariant(crate::tools::cad::CadMode::Spline)),
         )),
         Sep,
-        button("auto_detail", "Auto Detail"),
+        Slot::Button(item(
+            "auto_detail",
+            "Auto Detail",
+            Action::Custom(crate::tools::details::AUTO_DETAIL),
+        )),
         Slot::Button(item(
             "cad_layer",
             "Current CAD Layer",
             Action::Custom(crate::dialogs::layer_sets::ACTIVE_LAYERS),
         )),
+        Sep,
+        painter_toggle("cad_layer", PainterMode::LayerPaint),
+        painter_toggle("material_eyedropper", PainterMode::LayerEyedropper),
+        painter_toggle("material_painter", PainterMode::ObjectPaint),
+        painter_toggle("object_eyedropper", PainterMode::ObjectEyedropper),
     ]
+}
+
+/// A toggle of the Layer / Object Painter family (Tools menu).
+fn painter_toggle(icon: &'static str, mode: PainterMode) -> Slot {
+    Slot::Toggle(item(
+        icon,
+        mode.name(),
+        Action::SetTool(ToolId::PainterVariant(mode)),
+    ))
 }
 
 fn view_slots() -> Vec<Slot> {
@@ -2168,7 +2262,11 @@ fn view_slots() -> Vec<Slot> {
         Slot::Button(item("zoom_in", "Zoom In", Action::ZoomIn)),
         Slot::Button(item("zoom_out", "Zoom Out", Action::ZoomOut)),
         Slot::Button(item("zoom_undo", "Undo Zoom", Action::UndoZoom)),
-        button("fill_selected", "Fill Window Selected Objects"),
+        Slot::Button(item(
+            "fill_selected",
+            "Fill Window Selected Objects",
+            Action::Custom(crate::dialogs::app_info::FILL_SELECTED),
+        )),
         button("fill_building", "Fill Window Building Only"),
         Slot::Button(with_hotkey(
             item("fill_window", "Fill Window", Action::FillWindow),
@@ -2480,7 +2578,11 @@ fn paint_glyph(ui: &egui::Ui, zone: Rect, id: &str, st: ZoneState, brightness: f
     let img = Image::new(icons::icon(id)).tint(icon_tint(dimmed, brightness));
     img.paint_at(
         ui,
-        Rect::from_center_size(zone.center(), Vec2::splat(ICON_PX)),
+        // Preferences > Appearance > Icon size.
+        Rect::from_center_size(
+            zone.center(),
+            Vec2::splat(crate::dialogs::preferences::pages::icon_px()),
+        ),
     );
 }
 
@@ -2513,7 +2615,31 @@ fn single_button(
     if resp.clicked() {
         out.push(it.action);
     }
+    if it.action == Action::PlanCheck {
+        code_badge(ui, rect);
+    }
     resp.on_hover_text(tooltip(it));
+}
+
+/// The live Plan Check count (errors and warnings) as a small red badge on
+/// the corner of the Plan Check button; nothing while the count is zero.
+fn code_badge(ui: &egui::Ui, rect: Rect) {
+    let n = crate::editor::code::badge_count();
+    if n == 0 {
+        return;
+    }
+    let text = if n > 99 { "99+".to_string() } else { n.to_string() };
+    let center = egui::pos2(rect.right() - 6.0, rect.top() + 6.0);
+    let r = if text.len() > 1 { 8.0 } else { 6.5 };
+    ui.painter()
+        .circle_filled(center, r, Color32::from_rgb(0xC6, 0x28, 0x28));
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(9.0),
+        Color32::WHITE,
+    );
 }
 
 fn show_flyout(

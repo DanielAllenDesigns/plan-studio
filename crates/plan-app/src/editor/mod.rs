@@ -9,12 +9,14 @@ pub mod actions;
 pub mod behaviors;
 pub mod camera;
 pub mod clipboard;
+pub mod code;
 pub mod connect;
 pub mod details_view;
 pub mod dispatch;
 pub mod edit_commands;
 #[cfg(test)]
 mod edit_tests;
+pub mod fireplace_view;
 pub mod foundation_view;
 pub mod framing_view;
 pub mod handles;

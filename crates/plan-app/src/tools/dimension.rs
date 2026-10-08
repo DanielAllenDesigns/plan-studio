@@ -86,10 +86,16 @@ pub enum DimMode {
     AutoElevation,
     AutoStoryPole,
     AutoNkba,
+    /// Click a dimension's line to add an extension line (a measured point)
+    /// there, or on a hidden extension line to bring it back (DIM-41).
+    ExtensionAdd,
+    /// Click an extension line to delete it: the dimension on each side
+    /// merges into one, or an end's line is hidden (DIM-41).
+    ExtensionDelete,
 }
 
 impl DimMode {
-    pub const ALL: [DimMode; 14] = [
+    pub const ALL: [DimMode; 16] = [
         DimMode::Manual,
         DimMode::EndToEnd,
         DimMode::Interior,
@@ -104,6 +110,8 @@ impl DimMode {
         DimMode::AutoElevation,
         DimMode::AutoStoryPole,
         DimMode::AutoNkba,
+        DimMode::ExtensionAdd,
+        DimMode::ExtensionDelete,
     ];
 
     /// Chief's name from the toolbar flyouts.
@@ -123,6 +131,8 @@ impl DimMode {
             DimMode::AutoElevation => "Auto Elevation Dimensions",
             DimMode::AutoStoryPole => "Auto Story Pole Dimensions",
             DimMode::AutoNkba => "Auto NKBA Dimensions",
+            DimMode::ExtensionAdd => "Add Extension Line",
+            DimMode::ExtensionDelete => "Delete Extension Line",
         }
     }
 
@@ -148,13 +158,15 @@ impl DimMode {
             DimMode::AutoElevation => "Auto Elevation",
             DimMode::AutoStoryPole => "Auto Story Pole",
             DimMode::AutoNkba => "Auto NKBA",
+            DimMode::ExtensionAdd => "Add Extension",
+            DimMode::ExtensionDelete => "Delete Extension",
         }
     }
 
     fn hint(self) -> &'static str {
         match self {
             DimMode::Manual => {
-                "Manual Dimension: click two points, then click to place the dimension line"
+                "Manual Dimension: click two points, then click to place the dimension line; further clicks add points to the string, double-click or Esc ends it"
             }
             DimMode::EndToEnd => {
                 "End to End Dimension: click a wall or line, then click to place the dimension line"
@@ -193,6 +205,12 @@ impl DimMode {
             DimMode::AutoNkba => {
                 "Auto NKBA Dimensions: click to dimension the kitchen and bath cabinet runs (faces, sink and appliance centers, overall)"
             }
+            DimMode::ExtensionAdd => {
+                "Add Extension Line: click a dimension line where a new measured point goes, or a hidden extension line to bring it back"
+            }
+            DimMode::ExtensionDelete => {
+                "Delete Extension Line: click an extension line; strings on both sides merge, an end's line is hidden"
+            }
         }
     }
 
@@ -210,7 +228,15 @@ impl DimMode {
             DimMode::AutoElevation => "Auto Elevation Dimensions",
             DimMode::AutoStoryPole => "Auto Story Pole Dimensions",
             DimMode::AutoNkba => "Auto NKBA Dimensions",
+            DimMode::ExtensionAdd => "Add Extension Line",
+            DimMode::ExtensionDelete => "Delete Extension Line",
         }
+    }
+
+    /// The two Add / Delete Extension Line tools, which edit existing
+    /// dimensions instead of drawing new ones.
+    fn is_extension(self) -> bool {
+        matches!(self, DimMode::ExtensionAdd | DimMode::ExtensionDelete)
     }
 
     fn is_auto(self) -> bool {
@@ -678,13 +704,15 @@ fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Po
                 if let Some(w) = floor.wall(o.wall_id).filter(|w| !no_locate(cx, w)) {
                     if openings_mode == OpeningLocate::Centers {
                         return Located {
-                            point: w.point_at(o.center_offset),
+                            point: w.point_along(o.center_offset),
                             what: "Opening center",
                             obj: Some(ObjectRef::Opening(oid)),
                         };
                     }
-                    let (t, _) = project_on_segment(p.world, w.start, w.end);
-                    let along = t * w.length();
+                    // Along the wall is the arc length on a curved wall
+                    // (DW-88): `locate` gives it with the signed distance
+                    // off the centerline.
+                    let (along, perp) = w.locate(p.world);
                     let edge = if (along - o.start_offset()).abs() <= (along - o.end_offset()).abs()
                     {
                         o.start_offset()
@@ -692,14 +720,13 @@ fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Po
                         o.end_offset()
                     };
                     let (lo, hi) = wall_span(cx, w, walls_mode);
-                    let perp = p.world.sub(w.start).dot(w.normal());
                     let off = if (perp - lo).abs() <= (perp - hi).abs() {
                         lo
                     } else {
                         hi
                     };
                     return Located {
-                        point: w.point_at(edge).add(w.normal().scale(off)),
+                        point: w.point_offset(edge, off),
                         what: "Opening edge",
                         obj: Some(ObjectRef::Opening(oid)),
                     };
@@ -743,6 +770,13 @@ fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Po
         what: snap.kind.label(),
         obj: None,
     }
+}
+
+/// The point a dimension click at `p` lands on (Locate Objects), for the
+/// scenario tests.
+#[cfg(test)]
+pub fn locate_point(cx: &EditorContext, p: &PointerEvent, centers: bool) -> Point {
+    locate(cx, p, centers, None).point
 }
 
 /// What a located object is tied to (DIM-3).
@@ -810,9 +844,8 @@ fn find_moveable(cx: &EditorContext, pt: Point, axis: Point) -> Option<Moveable>
         let Some(w) = floor.wall(o.wall_id) else {
             continue;
         };
-        let (t, _) = project_on_segment(pt, w.start, w.end);
-        let along = t * w.length();
-        let perp = pt.sub(w.start).dot(w.normal()).abs();
+        let (along, lateral) = w.locate(pt);
+        let perp = lateral.abs();
         let near_edge = (along - o.start_offset()).abs() <= LOCATE_TOL
             || (along - o.end_offset()).abs() <= LOCATE_TOL;
         if perp <= w.thickness * 0.5 + LOCATE_TOL
@@ -882,6 +915,21 @@ struct ValueEdit {
     buf: String,
 }
 
+/// A manual dimension string that further clicks continue (DIM-2, DIM-11):
+/// each click adds a measured point on the same line, one segment per pair of
+/// points with its own value; a double-click, Esc, Enter or another tool ends it.
+#[derive(Clone, Copy)]
+struct StringState {
+    /// The last measured point, where the next segment starts.
+    last: Point,
+    /// Unit direction of the measuring line.
+    dir: Point,
+    /// The offset of the dimension line from the measured line, as a vector.
+    off: Point,
+    /// What the last point is tied to.
+    anchor: Option<plan_core::dim_assoc::DimAnchor>,
+}
+
 pub struct DimensionTool {
     mode: DimMode,
     pts: Vec<Located>,
@@ -899,6 +947,8 @@ pub struct DimensionTool {
     grab: Option<DimGrab>,
     edit: Option<ValueEdit>,
     strip: OptionStrip,
+    /// The manual string being continued.
+    string: Option<StringState>,
 }
 
 impl Default for DimensionTool {
@@ -917,6 +967,7 @@ impl Default for DimensionTool {
             grab: None,
             edit: None,
             strip: OptionStrip::default(),
+            string: None,
         }
     }
 }
@@ -960,6 +1011,7 @@ impl DimensionTool {
         self.drag = None;
         self.grab = None;
         self.edit = None;
+        self.string = None;
     }
 
     fn in_progress(&self) -> bool {
@@ -1293,10 +1345,10 @@ impl DimensionTool {
                 continue;
             }
             let pts: Vec<f64> = match mode {
-                OpeningLocate::Centers => vec![w.point_at(o.center_offset).sub(a).dot(u)],
+                OpeningLocate::Centers => vec![w.point_along(o.center_offset).sub(a).dot(u)],
                 _ => vec![
-                    w.point_at(o.start_offset()).sub(a).dot(u),
-                    w.point_at(o.end_offset()).sub(a).dot(u),
+                    w.point_along(o.start_offset()).sub(a).dot(u),
+                    w.point_along(o.end_offset()).sub(a).dot(u),
                 ],
             };
             if pts.iter().all(|t| *t > 0.5 && *t < len - 0.5) {
@@ -1591,6 +1643,7 @@ impl DimensionTool {
         if !cx.check_unlocked(ObjectRef::Dimension(g.id)) {
             return;
         }
+        self.string = None;
         cx.begin_change("Move Dimension");
         self.drag = Some(DimDrag {
             id: g.id,
@@ -1761,7 +1814,7 @@ impl DimensionTool {
                     cx.cancel_change();
                     return Err("Opening not found".into());
                 };
-                let center = o.center_offset + delta * axis.dot(w.direction());
+                let center = o.center_offset + delta * axis.dot(w.tangent_along(o.center_offset));
                 if !ops::place_opening_at(&mut cx.project, fl, oid, wid, center) {
                     cx.cancel_change();
                     return Err("The opening does not fit there".into());
@@ -1855,10 +1908,11 @@ impl DimensionTool {
     /// What a click does when it is not on a handle: edit a selected
     /// dimension's value, select a dimension, or work on the new dimension.
     fn click_rest(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
-        if !self.in_progress() {
+        if !self.in_progress() && !self.mode.is_extension() {
             // Clicking the selected dimension's text edits its value (DIM-32).
             if let Some(d) = self.selected(cx) {
                 if Self::label_pos(&d).dist(p.world) <= 22.0 / cx.px_per_in.max(1e-6) {
+                    self.string = None;
                     if cx.check_unlocked(ObjectRef::Dimension(d.id)) {
                         self.begin_edit(cx, d.id);
                     }
@@ -1867,6 +1921,8 @@ impl DimensionTool {
             }
             if !self.mode.is_auto() {
                 if let Some(id) = Self::dim_under(cx, p.world) {
+                    // Picking a dimension ends the string.
+                    self.string = None;
                     cx.selection.set(ObjectRef::Dimension(id));
                     return ToolResult::consumed();
                 }
@@ -1876,7 +1932,12 @@ impl DimensionTool {
     }
 
     fn start_click(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        if let Some(st) = self.string {
+            return self.continue_string(cx, p, st);
+        }
         match self.mode {
+            DimMode::ExtensionAdd => self.extension_add(cx, p),
+            DimMode::ExtensionDelete => self.extension_delete(cx, p),
             DimMode::Manual | DimMode::PointToPoint | DimMode::Centerline => {
                 let loc = self.locate_for(cx, p);
                 match self.pts.len() {
@@ -1893,7 +1954,12 @@ impl DimensionTool {
                     _ => {
                         let dims = self.build(cx, p.snapped);
                         self.reset();
-                        return self.commit(cx, dims);
+                        let res = self.commit(cx, dims);
+                        // The string stays open for the next point (DIM-2).
+                        if res.commit.is_some() {
+                            self.open_string(cx);
+                        }
+                        return res;
                     }
                 }
                 ToolResult::consumed()
@@ -2036,6 +2102,268 @@ impl DimensionTool {
             | DimMode::AutoStoryPole
             | DimMode::AutoNkba => self.run_auto(cx, Some(p.snapped)),
         }
+    }
+
+    /// Opens the string after the manual dimension just placed (the selected
+    /// one), so the next clicks add measured points to it.
+    fn open_string(&mut self, cx: &mut EditorContext) {
+        let Some(ObjectRef::Dimension(id)) = cx.selection.single() else {
+            return;
+        };
+        let Some(d) = cx.floor().dimensions.iter().find(|d| d.id == id) else {
+            return;
+        };
+        let dir = d.end.sub(d.start).normalized();
+        self.string = Some(StringState {
+            last: d.end,
+            dir,
+            off: dir.perp().scale(d.offset),
+            anchor: d.anchors[1],
+        });
+        cx.status = "Click the next point to add it to the string; double-click or Esc ends".into();
+    }
+
+    /// The next segment of the open string for a point at `to`: from the
+    /// last point along the measuring line, the dimension line staying put.
+    fn string_segment(st: &StringState, to: Point) -> Option<Dimension> {
+        let along = to.sub(st.last).dot(st.dir);
+        if along.abs() < MIN_LENGTH {
+            return None;
+        }
+        let end = st.last.add(st.dir.scale(along));
+        let forward = st.dir.scale(along.signum());
+        let offset = st.off.dot(forward.perp());
+        Some(Dimension::new(
+            0,
+            DimensionKind::Manual,
+            st.last,
+            end,
+            offset,
+        ))
+    }
+
+    /// A click on an open string: adds the segment to that point (DIM-2).
+    fn continue_string(
+        &mut self,
+        cx: &mut EditorContext,
+        p: &PointerEvent,
+        st: StringState,
+    ) -> ToolResult {
+        let loc = self.locate_for(cx, p);
+        let Some(d) = Self::string_segment(&st, loc.point) else {
+            return ToolResult::consumed();
+        };
+        let end = d.end;
+        self.hint_src = vec![loc];
+        let res = self.commit(cx, vec![d]);
+        if res.commit.is_some() {
+            // The segment starts where the last one ended, tied the same way.
+            if let Some(ObjectRef::Dimension(id)) = cx.selection.single() {
+                if let Some(nd) = cx.project.floors[cx.floor]
+                    .dimensions
+                    .iter_mut()
+                    .find(|x| x.id == id)
+                {
+                    if nd.anchors[0].is_none() {
+                        nd.anchors[0] = st.anchor;
+                    }
+                    self.string = Some(StringState {
+                        last: end,
+                        anchor: nd.anchors[1],
+                        ..st
+                    });
+                }
+            }
+        }
+        res
+    }
+
+    /// Add Extension Line: a click on a hidden extension line brings it back;
+    /// a click on a dimension line splits that dimension in two at the point
+    /// (DIM-41).
+    fn extension_add(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        let tol = cx.pick_tol();
+        // A hidden extension line first.
+        let hidden = cx.floor().dimensions.iter().find_map(|d| {
+            d.extension_lines()
+                .iter()
+                .enumerate()
+                .find(|(k, (a, b))| d.hide_ext[*k] && dist_to_segment(p.world, *a, *b) <= tol * 1.5)
+                .map(|(k, _)| (d.id, k))
+        });
+        if let Some((id, k)) = hidden {
+            if !cx.check_unlocked(ObjectRef::Dimension(id)) {
+                return ToolResult::consumed();
+            }
+            cx.begin_change("Add Extension Line");
+            let fl = cx.floor;
+            if let Some(d) = cx.project.floors[fl]
+                .dimensions
+                .iter_mut()
+                .find(|d| d.id == id)
+            {
+                d.hide_ext[k] = false;
+            }
+            cx.mark_dirty();
+            cx.selection.set(ObjectRef::Dimension(id));
+            return ToolResult::committed("Add Extension Line");
+        }
+        let Some(id) = Self::dim_under(cx, p.world) else {
+            cx.status = "Click a dimension line to add an extension line there".into();
+            return ToolResult::consumed();
+        };
+        if !cx.check_unlocked(ObjectRef::Dimension(id)) {
+            return ToolResult::consumed();
+        }
+        let Some(d) = cx.floor().dimensions.iter().find(|d| d.id == id).cloned() else {
+            return ToolResult::consumed();
+        };
+        let loc = self.locate_for(cx, p);
+        let len = d.length();
+        let u = d.end.sub(d.start).normalized();
+        let t = loc.point.sub(d.start).dot(u);
+        if t < MIN_LENGTH || t > len - MIN_LENGTH {
+            cx.status = "Click between the two extension lines".into();
+            return ToolResult::consumed();
+        }
+        let mid = d.start.add(u.scale(t));
+        cx.begin_change("Add Extension Line");
+        let fl = cx.floor;
+        let mut second = d.clone();
+        second.start = mid;
+        second.anchors = [None, d.anchors[1]];
+        second.hide_ext = [false, d.hide_ext[1]];
+        second.text_override = None;
+        let hint = dim_hint(&loc);
+        if let Some(first) = cx.project.floors[fl]
+            .dimensions
+            .iter_mut()
+            .find(|x| x.id == id)
+        {
+            first.end = mid;
+            first.anchors = [d.anchors[0], None];
+            first.hide_ext = [d.hide_ext[0], false];
+            first.text_override = None;
+        }
+        let second_id = cx.project.add_dimension(fl, second);
+        cx.project.floors[fl].attach_dimension_hinted(id, [None, hint]);
+        cx.project.floors[fl].attach_dimension_hinted(second_id, [hint, None]);
+        // Ties the original ends had that the geometry does not find again.
+        for (did, k) in [(id, 0), (second_id, 1)] {
+            if let Some(x) = cx.project.floors[fl]
+                .dimensions
+                .iter_mut()
+                .find(|x| x.id == did)
+            {
+                if x.anchors[k].is_none() {
+                    x.anchors[k] = d.anchors[k];
+                }
+            }
+        }
+        cx.selection.set(ObjectRef::Dimension(second_id));
+        cx.mark_dirty();
+        cx.status.clear();
+        ToolResult::committed("Add Extension Line")
+    }
+
+    /// Delete Extension Line: a click on an extension line merges the two
+    /// dimensions that share it into one, or hides the line of an end that
+    /// nothing continues (DIM-41).
+    fn extension_delete(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        let tol = cx.pick_tol();
+        let mut best: Option<(f64, Id, usize)> = None;
+        for d in &cx.floor().dimensions {
+            for (k, (a, b)) in d.extension_lines().iter().enumerate() {
+                if d.hide_ext[k] {
+                    continue;
+                }
+                let dist = dist_to_segment(p.world, *a, *b);
+                if dist <= tol * 1.5 && best.is_none_or(|(bd, _, _)| dist < bd) {
+                    best = Some((dist, d.id, k));
+                }
+            }
+        }
+        let Some((_, id, k)) = best else {
+            cx.status = "Click an extension line to delete it".into();
+            return ToolResult::consumed();
+        };
+        if !cx.check_unlocked(ObjectRef::Dimension(id)) {
+            return ToolResult::consumed();
+        }
+        let fl = cx.floor;
+        let Some(d) = cx.floor().dimensions.iter().find(|d| d.id == id).cloned() else {
+            return ToolResult::consumed();
+        };
+        let pt = if k == 0 { d.start } else { d.end };
+        let dir = d.end.sub(d.start).normalized();
+        let off_vec = dir.perp().scale(d.offset);
+        // The dimension continuing the string through `pt`: the same line,
+        // the same dimension line, on the other side of the point.
+        let neighbour = cx
+            .floor()
+            .dimensions
+            .iter()
+            .filter(|n| n.id != id && n.kind == DimensionKind::Manual)
+            .find_map(|n| {
+                let (far, near_k) = if n.start.dist(pt) < 0.01 {
+                    (n.end, 0)
+                } else if n.end.dist(pt) < 0.01 {
+                    (n.start, 1)
+                } else {
+                    return None;
+                };
+                let nd = n.end.sub(n.start).normalized();
+                let same_line = nd.cross(dir).abs() < 1e-6;
+                let n_off = nd.perp().scale(n.offset);
+                let side = far.sub(pt).dot(dir);
+                let beyond = if k == 0 {
+                    side < -MIN_LENGTH
+                } else {
+                    side > MIN_LENGTH
+                };
+                (same_line && n_off.dist(off_vec) < 0.01 && beyond)
+                    .then(|| (n.id, far, n.anchors[1 - near_k]))
+            });
+        cx.begin_change("Delete Extension Line");
+        match neighbour {
+            Some((nid, far, far_anchor)) => {
+                if !cx.check_unlocked(ObjectRef::Dimension(nid)) {
+                    cx.cancel_change();
+                    return ToolResult::consumed();
+                }
+                if let Some(x) = cx.project.floors[fl]
+                    .dimensions
+                    .iter_mut()
+                    .find(|x| x.id == id)
+                {
+                    if k == 0 {
+                        x.start = far;
+                        x.anchors[0] = far_anchor;
+                        x.hide_ext[0] = false;
+                    } else {
+                        x.end = far;
+                        x.anchors[1] = far_anchor;
+                        x.hide_ext[1] = false;
+                    }
+                    x.text_override = None;
+                    x.offset = off_vec.dot(x.end.sub(x.start).normalized().perp());
+                }
+                cx.project.remove_dimension(fl, nid);
+            }
+            None => {
+                if let Some(x) = cx.project.floors[fl]
+                    .dimensions
+                    .iter_mut()
+                    .find(|x| x.id == id)
+                {
+                    x.hide_ext[k] = true;
+                }
+            }
+        }
+        cx.selection.set(ObjectRef::Dimension(id));
+        cx.mark_dirty();
+        cx.status.clear();
+        ToolResult::committed("Delete Extension Line")
     }
 
     fn locate_for(&self, cx: &EditorContext, p: &PointerEvent) -> Located {
@@ -2186,7 +2514,7 @@ impl Tool for DimensionTool {
             self.end_edit(cx);
             cx.status.clear();
         }
-        if !self.in_progress() && self.grab_handle(cx, &p) {
+        if !self.in_progress() && !self.mode.is_extension() && self.grab_handle(cx, &p) {
             return ToolResult::consumed();
         }
         self.click_rest(cx, &p)
@@ -2229,6 +2557,19 @@ impl Tool for DimensionTool {
     }
 
     fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        // The click that began the double-click already added the last point
+        // of a manual string; this one ends it (DIM-2), unless it is a
+        // double-click on a dimension, which opens its specification.
+        if self.string.is_some() {
+            self.string = None;
+            cx.status.clear();
+            if let Some(id) = Self::dim_under(cx, p.world) {
+                cx.selection.set(ObjectRef::Dimension(id));
+                cx.requests
+                    .push(EditorRequest::OpenSpec(ObjectRef::Dimension(id)));
+            }
+            return ToolResult::consumed();
+        }
         if self.mode == DimMode::Running && self.pts.len() >= 2 {
             let dims = self.build_running_final(cx, p.snapped);
             self.reset();
@@ -2250,7 +2591,7 @@ impl Tool for DimensionTool {
             return self.edit_key(cx, &k);
         }
         if k.is(egui::Key::Escape) {
-            let had = self.in_progress() || cx.readout.is_some();
+            let had = self.in_progress() || self.string.is_some() || cx.readout.is_some();
             self.reset();
             cx.readout = None;
             return if had {
@@ -2258,6 +2599,11 @@ impl Tool for DimensionTool {
             } else {
                 ToolResult::ignored()
             };
+        }
+        if k.is(egui::Key::Enter) && self.string.is_some() {
+            self.string = None;
+            cx.status.clear();
+            return ToolResult::consumed();
         }
         if k.is(egui::Key::Enter) {
             match self.mode {
@@ -2313,6 +2659,14 @@ impl Tool for DimensionTool {
             }
         }
 
+        // The next segment of an open string.
+        if let Some(st) = &self.string {
+            if let Some(d) = Self::string_segment(st, hover) {
+                let look = render::DimLook::of(cx, &d);
+                render::draw_dimension_look(painter, cam, &d, &fmt, ghost, pal, &look);
+            }
+            painter.circle_filled(cam.world_to_screen(st.last), 3.5, pal.selection);
+        }
         // The dimension in progress.
         for d in self.build(cx, hover) {
             let look = render::DimLook::of(cx, &d);
@@ -2400,6 +2754,8 @@ pub const CMD_REVERSE: &str = "dim.reverse";
 pub const CMD_TO_MANUAL: &str = "dim.to_manual";
 pub const CMD_ALIGN: &str = "dim.align";
 pub const CMD_DISTRIBUTE: &str = "dim.distribute";
+pub const CMD_EXT_ADD: &str = "dim.ext_add";
+pub const CMD_EXT_DELETE: &str = "dim.ext_delete";
 
 /// The selected dimensions, in selection order.
 fn selected_dimensions(cx: &EditorContext) -> Vec<Id> {
@@ -2440,12 +2796,25 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
         button(CMD_TO_MANUAL, "Convert to Manual Dimension", any_auto),
         button(CMD_ALIGN, "Align Dimensions", ids.len() >= 2),
         button(CMD_DISTRIBUTE, "Distribute Dimensions", ids.len() >= 3),
+        button(CMD_EXT_ADD, "Add Extension Line", true),
+        button(CMD_EXT_DELETE, "Delete Extension Line", true),
     ]
 }
 
 /// Runs a dimension Edit toolbar command on the selection (one undo step);
 /// false when `id` is not one of ours.
 pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    // Add / Delete Extension Line are tools: the command switches to them.
+    if matches!(id, CMD_EXT_ADD | CMD_EXT_DELETE) {
+        let mode = if id == CMD_EXT_ADD {
+            DimMode::ExtensionAdd
+        } else {
+            DimMode::ExtensionDelete
+        };
+        cx.requests
+            .push(EditorRequest::SetTool(ToolId::DimensionVariant(mode)));
+        return true;
+    }
     let label = match id {
         CMD_REVERSE => "Reverse Dimension",
         CMD_TO_MANUAL => "Convert to Manual Dimension",
@@ -3006,7 +3375,9 @@ mod tests {
                 ("Reverse Dimension", true),
                 ("Convert to Manual Dimension", true),
                 ("Align Dimensions", false),
-                ("Distribute Dimensions", false)
+                ("Distribute Dimensions", false),
+                ("Add Extension Line", true),
+                ("Delete Extension Line", true)
             ]
         );
         assert!(t
@@ -3270,6 +3641,9 @@ mod tests {
         click(&mut t, &mut cx, 50.0, 96.0);
         click(&mut t, &mut cx, 80.0, 50.0);
         assert_eq!(cx.floor().dimensions.len(), 1);
+        // The string stays open for more points; Esc ends it (and the tool
+        // stays).
+        assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
         // The dimension is selected and its end handle sits at (50, 97):
         // a plain click there starts the next dimension.
         click(&mut t, &mut cx, 50.0, 96.0);
@@ -3829,5 +4203,131 @@ mod tests {
             .all(|d| d.auto_group == AutoGroup::Interior));
         click(&mut t, &mut cx, 120.0, 60.0);
         assert_eq!(cx.floor().dimensions.len(), n);
+    }
+    #[test]
+    fn a_placed_dimension_stays_open_for_more_points_but_its_handles_still_work() {
+        let mut cx = new_cx();
+        two_walls(&mut cx);
+        let mut t = tool(DimMode::Manual);
+        click(&mut t, &mut cx, 50.0, 4.0);
+        click(&mut t, &mut cx, 50.0, 96.0);
+        click(&mut t, &mut cx, 80.0, 50.0);
+        // The next click adds a point to the string: a second segment from
+        // where the first ended, on the same dimension line, projected onto
+        // the measuring line.
+        let r = click(&mut t, &mut cx, 61.0, 150.0);
+        assert_eq!(r.commit.as_deref(), Some("Manual Dimension"));
+        let dims = &cx.floor().dimensions;
+        assert_eq!(dims.len(), 2);
+        assert_eq!(dims[1].start, dims[0].end);
+        assert_eq!(dims[1].end, Point::new(50.0, 150.0));
+        assert_eq!(dims[1].offset, dims[0].offset);
+        assert!(t.clicked().is_empty(), "no new dimension was started");
+        // A click closer than the minimum length adds nothing.
+        click(&mut t, &mut cx, 50.2, 150.2);
+        assert_eq!(cx.floor().dimensions.len(), 2);
+        // The selected segment's offset handle still drags (and ends the string).
+        let id = cx.floor().dimensions[1].id;
+        let (a, b) = cx.floor().dimensions[1].line_points();
+        let grab = Point::lerp(a, b, 0.25);
+        let down = PointerEvent::at(&cx, grab);
+        t.pointer_down(&mut cx, down.with_down(true));
+        let to = PointerEvent::at(&cx, Point::new(110.0, grab.y));
+        t.pointer_move(&mut cx, to.with_down(true));
+        let r = t.pointer_up(&mut cx, to);
+        assert_eq!(r.commit.as_deref(), Some("Move Dimension"));
+        assert_eq!(
+            cx.floor()
+                .dimensions
+                .iter()
+                .find(|d| d.id == id)
+                .unwrap()
+                .offset
+                .abs(),
+            60.0
+        );
+        // The string is closed: a click now starts a new dimension.
+        click(&mut t, &mut cx, 200.0, 20.0);
+        assert_eq!(t.clicked().len(), 1);
+        // Esc ends a string without leaving the tool; a second Esc leaves it.
+        let mut t = tool(DimMode::Manual);
+        let mut cx = new_cx();
+        two_walls(&mut cx);
+        click(&mut t, &mut cx, 50.0, 4.0);
+        click(&mut t, &mut cx, 50.0, 96.0);
+        click(&mut t, &mut cx, 80.0, 50.0);
+        assert!(t.key(&mut cx, KeyEvent::escape()).consumed);
+        assert!(!t.key(&mut cx, KeyEvent::escape()).consumed);
+        // A double-click on a dimension opens its specification, and also ends
+        // the string.
+        let mut t = tool(DimMode::Manual);
+        let mut cx = new_cx();
+        two_walls(&mut cx);
+        click(&mut t, &mut cx, 50.0, 4.0);
+        click(&mut t, &mut cx, 50.0, 96.0);
+        click(&mut t, &mut cx, 80.0, 50.0);
+        let id = cx.floor().dimensions[0].id;
+        cx.requests.clear();
+        let p = PointerEvent::at(&cx, Point::new(80.0, 30.0));
+        assert!(t.double_click(&mut cx, p).consumed);
+        assert_eq!(
+            cx.requests,
+            vec![EditorRequest::OpenSpec(ObjectRef::Dimension(id))]
+        );
+        click(&mut t, &mut cx, 150.0, 30.0);
+        assert_eq!(t.clicked().len(), 1, "a new dimension starts");
+    }
+
+    #[test]
+    fn openings_on_a_curved_wall_are_located_by_arc_length() {
+        let mut cx = new_cx();
+        let w = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        cx.project.floors[0].wall_mut(w).unwrap().curve =
+            plan_core::WallCurve::from_radius(240.0, 120.0, true);
+        let o = cx
+            .project
+            .add_opening(0, w, 100.0, OpeningKind::Window)
+            .unwrap();
+        cx.refresh();
+        let wall = cx.floor().wall(w).unwrap().clone();
+        let op = cx
+            .floor()
+            .openings
+            .iter()
+            .find(|x| x.id == o)
+            .unwrap()
+            .clone();
+        // The center of the opening on the arc.
+        let center = wall.point_along(op.center_offset);
+        let ev = PointerEvent::at(&cx, center);
+        let hit = locate(&cx, &ev, true, None);
+        assert_eq!(hit.what, "Opening center");
+        assert!(
+            hit.point.dist(center) < 1e-9,
+            "{:?} vs {center:?}",
+            hit.point
+        );
+        // A jamb: the click near it finds the jamb on the arc, on the wall's
+        // surface (the line a Locate Walls setting asks for).
+        cx.defaults
+            .dimensions
+            .set_opening_locate(OpeningLocate::Sides);
+        let jamb = wall.point_along(op.start_offset());
+        let ev = PointerEvent::at(&cx, jamb);
+        let edge = locate(&cx, &ev, false, None);
+        assert_eq!(edge.what, "Opening edge");
+        let (along, side) = wall.locate(edge.point);
+        assert!((along - op.start_offset()).abs() < 0.5, "{along}");
+        assert!((side.abs() - 3.0).abs() < 0.5 || side.abs() < 0.5, "{side}");
+        // Typing a value slides the opening along the arc.
+        let moved = find_moveable(&cx, center, wall.tangent_along(op.center_offset));
+        assert_eq!(moved, Some(Moveable::Opening(o, w)));
     }
 }

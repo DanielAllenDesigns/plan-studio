@@ -25,7 +25,7 @@ use plan_core::cad::{CadItem, CadObject};
 use plan_core::geometry::Point;
 use plan_core::units::parse_ft_in;
 use plan_core::{Layer, WallKind};
-use plan_elevation::{elevation_from_project, Options, ViewDir};
+use plan_elevation::{elevation, Options, ViewDir};
 use plan_import::{
     cad_to_walls, parse_dxf, to_cad_objects_with, to_inches_factor, CadToWallsOptions,
     CadToWallsResult, DxfDrawing, DxfEntity, DxfUnits, ImportOptions, LayerMapping, LayerTarget,
@@ -48,7 +48,116 @@ pub fn floor_dxf(cx: &mut EditorContext) -> String {
         dim_printed_size: set.printed_size,
         dim_format: Some(cx.dim_format()),
     };
-    framing_view::floor_dxf_with(&cx.project, cx.floor, &cx.rooms, annotation)
+    // The schedules placed on the floor go along as tables on their layer.
+    let with_tables =
+        project_with_schedules(&cx.project, cx.floor, &cx.rooms, annotation.inches_per_foot);
+    framing_view::floor_dxf_with(&with_tables, cx.floor, &cx.rooms, annotation)
+}
+
+/// Paper size of a DXF schedule table's row and text, inches (like the
+/// tables of a layout page: 1/4" rows, 8 pt text).
+const TABLE_ROW_IN: f64 = 0.25;
+const TABLE_TEXT_IN: f64 = 8.0 / 72.0;
+
+/// The schedules placed on `floor` as CAD: for each, its title, a header and
+/// one line per row in a ruled grid hanging from the schedule's position, on
+/// the schedule's layer. `inches_per_foot` is the sheet scale (paper inches
+/// per plan foot) that turns the table's paper size into plan inches; `0`
+/// uses 1/4" = 1'.
+pub fn schedule_tables_cad(
+    project: &plan_core::Project,
+    floor: usize,
+    rooms: &[plan_core::Room],
+    inches_per_foot: f64,
+) -> Vec<(String, CadItem)> {
+    use plan_core::schedules::ScheduleLayer;
+    let Some(f) = project.floors.get(floor) else {
+        return Vec::new();
+    };
+    // Plan inches per paper inch.
+    let k = 12.0
+        / if inches_per_foot > 0.0 {
+            inches_per_foot
+        } else {
+            0.25
+        };
+    let (row_h, text_h) = (TABLE_ROW_IN * k, TABLE_TEXT_IN * k);
+    let mut out = Vec::new();
+    for def in ScheduleLayer::load(f).schedules {
+        let t = plan_docs::schedule_kinds::table(project, &def, floor, Some((floor, rooms)));
+        let widths: Vec<f64> = (0..t.columns.len())
+            .map(|c| {
+                let longest = std::iter::once(plan_docs::PdfDoc::text_width(&t.columns[c], 8.0))
+                    .chain(
+                        t.rows
+                            .iter()
+                            .filter_map(|r| r.get(c))
+                            .map(|v| plan_docs::PdfDoc::text_width(v, 8.0)),
+                    )
+                    .fold(0.0, f64::max);
+                (longest / 72.0 + 0.14) * k
+            })
+            .collect();
+        let total: f64 = widths.iter().sum();
+        let at = def.position;
+        let layer = def.layer.clone();
+        let line = |a: Point, b: Point| (layer.clone(), CadItem::Line { a, b });
+        let text = |x: f64, y: f64, s: &str| {
+            (
+                layer.clone(),
+                CadItem::Text {
+                    pos: Point::new(x, y),
+                    text: s.to_string(),
+                    height: text_h,
+                    angle: 0.0,
+                },
+            )
+        };
+        // Title above the grid, then the header row and the data rows.
+        out.push(text(at.x, at.y + 0.3 * row_h, &t.title));
+        let n_rows = t.rows.len() + 1;
+        for r in 0..=n_rows {
+            let y = at.y - row_h * r as f64;
+            out.push(line(Point::new(at.x, y), Point::new(at.x + total, y)));
+        }
+        let bottom = at.y - row_h * n_rows as f64;
+        let mut x = at.x;
+        for (c, w) in widths.iter().enumerate() {
+            out.push(line(Point::new(x, at.y), Point::new(x, bottom)));
+            out.push(text(x + 0.07 * k, at.y - 0.75 * row_h, &t.columns[c]));
+            for (r, row) in t.rows.iter().enumerate() {
+                if let Some(cell) = row.get(c) {
+                    out.push(text(
+                        x + 0.07 * k,
+                        at.y - row_h * (r + 2) as f64 + 0.25 * row_h,
+                        cell,
+                    ));
+                }
+            }
+            x += w;
+        }
+        out.push(line(Point::new(x, at.y), Point::new(x, bottom)));
+    }
+    out
+}
+
+/// A copy of `project` whose `floor` also holds its placed schedules as CAD
+/// (see [`schedule_tables_cad`]); the plan itself is not touched.
+fn project_with_schedules(
+    project: &plan_core::Project,
+    floor: usize,
+    rooms: &[plan_core::Room],
+    inches_per_foot: f64,
+) -> plan_core::Project {
+    let tables = schedule_tables_cad(project, floor, rooms, inches_per_foot);
+    if tables.is_empty() {
+        return project.clone();
+    }
+    let mut copy = project.clone();
+    for (layer, item) in tables {
+        copy.add_cad(floor, layer, item);
+    }
+    copy
 }
 
 /// The four exterior elevations (Front, Back, Left, Right) as one DXF, side
@@ -57,6 +166,9 @@ pub fn floor_dxf(cx: &mut EditorContext) -> String {
 pub fn elevations_dxf(project: &plan_core::Project) -> Option<String> {
     const GAP: f64 = 120.0;
     let opts = Options::default();
+    // The 3D view's own scene, so roofs, stairs, dormers and the like appear
+    // (and the plan's casing and sills).
+    let scene = crate::shell::layout_window::view_scene(project);
     let mut sheet = plan_core::Project::new("Elevations");
     let mut x = 0.0;
     let mut any = false;
@@ -66,7 +178,7 @@ pub fn elevations_dxf(project: &plan_core::Project) -> Option<String> {
         ("Left Elevation", ViewDir::Left),
         ("Right Elevation", ViewDir::Right),
     ] {
-        let drawing = elevation_from_project(project, dir, &opts);
+        let drawing = elevation(&scene, dir, &opts);
         if drawing.lines.is_empty() {
             continue;
         }
@@ -141,6 +253,21 @@ fn save_text(default_name: &str, ext: &str, text: &str) -> String {
         return "Export cancelled".into();
     };
     write_file(&path, text)
+}
+
+/// Asks for a file name and writes `bytes` there (an Excel workbook).
+fn save_bytes(default_name: &str, ext: &str, bytes: &[u8]) -> String {
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(default_name)
+        .add_filter(ext, &[ext])
+        .save_file()
+    else {
+        return "Export cancelled".into();
+    };
+    match std::fs::write(&path, bytes) {
+        Ok(()) => format!("Saved {}", path.display()),
+        Err(e) => format!("Could not save {}: {e}", path.display()),
+    }
 }
 
 fn write_file(path: &Path, text: &str) -> String {
@@ -683,6 +810,8 @@ pub fn dispatch_framing(cx: &mut EditorContext, c: FramingCommand) {
 pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext) {
     let mut w = with_windows(std::mem::take);
     w.show(ctx, cx);
+    super::export_picture::show(ctx, cx);
+    super::symbol::show_import(ctx, cx);
     super::defaults::show_templates_page(ctx, cx);
     with_windows(|slot| {
         // A command run while the windows were out may have opened new ones.
@@ -1154,6 +1283,7 @@ fn cad_walls_window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut CadWall
 fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) -> Option<bool> {
     let mut open = true;
     let mut export = false;
+    let mut export_xlsx = false;
     let mut export_list = false;
     let data = framing_view::takeoff_data(&cx.project, cx.floor, all);
     // By member type with cut lengths (the framing schedule), or the lumber list.
@@ -1208,6 +1338,9 @@ fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) ->
                 export = ui
                     .add_enabled(data.members > 0, egui::Button::new("Export CSV\u{2026}"))
                     .clicked();
+                export_xlsx = ui
+                    .add_enabled(data.members > 0, egui::Button::new("Export Excel\u{2026}"))
+                    .clicked();
                 export_list = ui
                     .add_enabled(
                         data.members > 0,
@@ -1220,6 +1353,18 @@ fn takeoff_window(ctx: &egui::Context, cx: &mut EditorContext, mut all: bool) ->
     if export {
         let csv = if by_member { &data.cut_csv } else { &data.csv };
         cx.status = save_text("framing_takeoff.csv", "csv", csv);
+    }
+    if export_xlsx {
+        let (title, cols, rows) = if by_member {
+            ("Framing Takeoff", &data.cut_columns, &data.cut_rows)
+        } else {
+            ("Lumber List", &data.columns, &data.rows)
+        };
+        cx.status = save_bytes(
+            "framing_takeoff.xlsx",
+            "xlsx",
+            &plan_docs::xlsx::to_xlsx(title, cols, rows),
+        );
     }
     if export_list {
         cx.status = save_text("framing_material_list.csv", "csv", &data.material_csv);
@@ -1462,6 +1607,82 @@ mod tests {
         for name in ["Front Elevation", "Right Elevation"] {
             assert!(d.layers.iter().any(|l| l.name.starts_with(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn a_floor_dxf_carries_the_placed_schedules_as_tables() {
+        use plan_core::schedules::{Schedule, ScheduleKind, ScheduleLayer};
+        let mut cx = cx();
+        box_house(&mut cx);
+        cx.project
+            .add_opening(
+                0,
+                cx.floor().walls[0].id,
+                100.0,
+                plan_core::OpeningKind::Door,
+            )
+            .unwrap();
+        cx.refresh();
+        let plain = floor_dxf(&mut cx);
+        assert!(!plain.contains("Door Schedule"));
+        let mut layer = ScheduleLayer::default();
+        let mut def = Schedule::new(ScheduleKind::Door, Point::new(0.0, -100.0));
+        def.layer = "Schedules".into();
+        layer.add(def);
+        layer.store(&mut cx.project.floors[0]);
+        let text = floor_dxf(&mut cx);
+        assert!(text.contains("Door Schedule"), "the title is in the DXF");
+        // The table is lines and text on the schedule's layer; the plan itself
+        // is not touched.
+        assert!(text.len() > plain.len());
+        assert!(cx.floor().cad.is_empty(), "the plan gained no CAD");
+        let d = parse_dxf(&text).unwrap();
+        assert!(d.layers.iter().any(|l| l.name == "Schedules"));
+        let cad = schedule_tables_cad(&cx.project, 0, &cx.rooms, 0.25);
+        assert!(cad.iter().all(|(layer, _)| layer == "Schedules"));
+        let lines = cad
+            .iter()
+            .filter(|(_, i)| matches!(i, CadItem::Line { .. }))
+            .count();
+        // Rows + 1 horizontal rules and one rule per column edge.
+        assert!(lines >= 4, "{lines}");
+        let texts: Vec<String> = cad
+            .iter()
+            .filter_map(|(_, i)| match i {
+                CadItem::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "Door Schedule"));
+        assert!(texts.len() > 3, "headings and cells");
+        // The same table at 1/8" is twice as tall in plan inches.
+        let at = |ipf: f64| {
+            schedule_tables_cad(&cx.project, 0, &cx.rooms, ipf)
+                .iter()
+                .filter_map(|(_, i)| match i {
+                    CadItem::Text { height, .. } => Some(*height),
+                    _ => None,
+                })
+                .fold(0.0, f64::max)
+        };
+        assert!((at(0.125) / at(0.25) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_elevation_dxf_draws_the_3d_views_scene() {
+        let mut cx = cx();
+        box_house(&mut cx);
+        let walls_only = elevations_dxf(&cx.project).expect("elevations");
+        let stair = plan_stairs::Stair::new(
+            cx.project.alloc_id(),
+            Point::new(60.0, 60.0),
+            0.0,
+            plan_stairs::StairParams::default(),
+        );
+        cx.project.floors[0].set_stairs(&[stair]).unwrap();
+        let with_stair = elevations_dxf(&cx.project).expect("elevations");
+        assert_ne!(walls_only, with_stair, "the stair is in the drawing");
+        assert!(with_stair.len() > walls_only.len());
     }
 
     #[test]

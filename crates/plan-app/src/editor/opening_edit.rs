@@ -1,14 +1,16 @@
 //! Door and window Edit toolbar commands: Center on Wall Segment (DW-24),
 //! Mull and Unmull (DW-51, DW-52: a door mulls with the windows beside it),
 //! Reset Label Position (DW-63), and the standard widths a jamb handle snaps
-//! to (DW-27). The buttons come from `EditorContext::extra_edit_actions` and
+//! to (DW-27), and Renumber Schedule (DW-61, L-26: the marks of the doors or
+//! the windows set in the order they were drawn). The buttons come from `EditorContext::extra_edit_actions` and
 //! run through `run_custom`.
 
 use super::selection::ObjectRef;
 use super::{EditAction, EditActionKind, EditorContext};
 use crate::dialogs::OpeningTarget;
 use plan_core::openings::{StandardWidths, MULL_DOOR_STYLES, MULL_MAX_GAP};
-use plan_core::{Id, OpeningKind, OpeningStyle};
+use plan_core::schedules::{Numbering, ScheduleKind};
+use plan_core::{Id, OpeningKind, OpeningStyle, Project};
 
 /// Custom command ids (the `id` of `EditActionKind::Custom`).
 pub const CENTER_SEGMENT: &str = "opening.center_segment";
@@ -18,6 +20,11 @@ pub const REVERSE_SIDE: &str = "opening.reverse_side";
 pub const RESET_LABEL: &str = "opening.reset_label";
 /// Add a transom over the selected door or window.
 pub const ADD_TRANSOM: &str = "opening.add_transom";
+/// Renumber Schedule for the kinds of the selected openings (Edit toolbar).
+pub const RENUMBER: &str = "opening.renumber";
+/// Schedules menu: Renumber Door / Window Schedule.
+pub const RENUMBER_DOORS: &str = "opening.renumber_doors";
+pub const RENUMBER_WINDOWS: &str = "opening.renumber_windows";
 /// 3D menu: show every door open / closed.
 pub const DOORS_OPEN: &str = "opening.doors_open_3d";
 /// 3D menu: casing, jambs, sills and thresholds on / off.
@@ -209,6 +216,7 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
     {
         v.push(button(UNMULL, "Unmull", "", true));
     }
+    v.push(button(RENUMBER, "Renumber Schedule", "", true));
     v
 }
 
@@ -221,11 +229,98 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         REVERSE_SIDE => reverse_side(cx),
         RESET_LABEL => reset_label(cx),
         ADD_TRANSOM => add_transom(cx),
+        RENUMBER => renumber_selected(cx),
+        RENUMBER_DOORS => renumber(cx, &[OpeningKind::Door]),
+        RENUMBER_WINDOWS => renumber(cx, &[OpeningKind::Window]),
         DOORS_OPEN => toggle_doors_open(cx),
         CASING_3D => toggle_casing(cx),
         _ => return false,
     }
     true
+}
+
+fn schedule_kind(kind: OpeningKind) -> ScheduleKind {
+    match kind {
+        OpeningKind::Door => ScheduleKind::Door,
+        OpeningKind::Window => ScheduleKind::Window,
+    }
+}
+
+/// Sets the mark of every door or window of the plan in the order they were
+/// drawn: floor by floor, in the order each floor holds them (Renumber
+/// Schedule, DW-61). A mark is `prefix` and a two-digit number (`D01`);
+/// [`Numbering::ByFloor`] restarts on every floor. An opening left out of the
+/// schedule has no mark. Returns how many marks changed.
+pub fn renumber_marks(
+    project: &mut Project,
+    kind: OpeningKind,
+    prefix: &str,
+    numbering: Numbering,
+) -> usize {
+    let mut changed = 0;
+    let mut whole = 0usize;
+    for f in &mut project.floors {
+        let mut on_floor = 0usize;
+        for o in f.openings.iter_mut().filter(|o| o.kind == kind) {
+            let mark = if o.extras.spec.schedule.include {
+                on_floor += 1;
+                whole += 1;
+                let n = match numbering {
+                    Numbering::ByFloor => on_floor,
+                    Numbering::Whole => whole,
+                };
+                Some(format!("{prefix}{n:02}"))
+            } else {
+                None
+            };
+            if o.schedule_number != mark {
+                o.schedule_number = mark;
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
+/// Renumber Schedule (DW-61, L-26) for the doors and/or windows of the plan,
+/// using the prefix and numbering of the schedule on the floor that shows
+/// that kind's callouts (else `D` / `W`, by floor). One undo step.
+pub fn renumber(cx: &mut EditorContext, kinds: &[OpeningKind]) {
+    let layer = super::schedule_view::load(cx);
+    cx.begin_change("Renumber Schedule");
+    let mut changed = 0;
+    for &kind in kinds {
+        let sk = schedule_kind(kind);
+        let (prefix, numbering) = layer
+            .schedules
+            .iter()
+            .find(|s| s.kind == sk)
+            .map(|s| (s.label_prefix.clone(), s.numbering))
+            .unwrap_or_else(|| (sk.default_prefix().to_string(), Numbering::ByFloor));
+        changed += renumber_marks(&mut cx.project, kind, &prefix, numbering);
+    }
+    if changed == 0 {
+        cx.cancel_change();
+        cx.status = "The marks already follow the order they were drawn in".into();
+    } else {
+        cx.mark_dirty();
+        cx.status = format!("Renumbered {changed} marks in the order they were drawn");
+    }
+}
+
+/// The Edit toolbar's Renumber Schedule: the kinds among the selection.
+fn renumber_selected(cx: &mut EditorContext) {
+    let sel = selected_openings(cx);
+    let f = cx.floor();
+    let mut kinds: Vec<OpeningKind> = Vec::new();
+    for o in f.openings.iter().filter(|o| sel.contains(&o.id)) {
+        if !kinds.contains(&o.kind) {
+            kinds.push(o.kind);
+        }
+    }
+    if !kinds.is_empty() {
+        renumber(cx, &kinds);
+    }
 }
 
 /// Show every door of the plan open (or closed again) in the 3D view; kept
@@ -727,5 +822,115 @@ mod tests {
         assert!(door_z(&cx).1 > 25.0, "the door stands open");
         assert!(run_command(&mut cx, CASING_3D));
         assert_eq!(door_z(&cx).0, 0);
+    }
+    // ----- Renumber Schedule (DW-61, L-26) -----
+
+    /// Two floors: doors drawn right to left, so the draw order is the
+    /// opposite of reading order.
+    fn doors_drawn_right_to_left() -> (EditorContext, Vec<Id>) {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let w = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(400.0, 0.0),
+            6.0,
+            109.125,
+            WallKind::Exterior,
+        );
+        let ids = [300.0, 200.0, 100.0]
+            .iter()
+            .map(|c| cx.project.add_opening(0, w, *c, OpeningKind::Door).unwrap())
+            .collect();
+        (cx, ids)
+    }
+
+    fn mark(cx: &EditorContext, id: Id) -> Option<String> {
+        cx.floor()
+            .openings
+            .iter()
+            .find(|o| o.id == id)
+            .unwrap()
+            .schedule_number
+            .clone()
+    }
+
+    #[test]
+    fn renumber_sets_the_marks_in_draw_order_as_one_undo_step() {
+        let (mut cx, ids) = doors_drawn_right_to_left();
+        // The Edit toolbar of a selected door offers it.
+        cx.selection.set(ObjectRef::Opening(ids[0]));
+        let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
+        assert!(labels.contains(&"Renumber Schedule"), "{labels:?}");
+        assert!(run_command(&mut cx, RENUMBER));
+        // Draw order, not reading order: the first door drawn is D01.
+        assert_eq!(mark(&cx, ids[0]).as_deref(), Some("D01"));
+        assert_eq!(mark(&cx, ids[1]).as_deref(), Some("D02"));
+        assert_eq!(mark(&cx, ids[2]).as_deref(), Some("D03"));
+        assert_eq!(cx.undo_label(), Some("Renumber Schedule"));
+        // Nothing to change the second time: no extra undo step.
+        assert!(run_command(&mut cx, RENUMBER_DOORS));
+        assert_eq!(cx.undo().as_deref(), Some("Renumber Schedule"));
+        assert_eq!(mark(&cx, ids[0]), None);
+        assert!(!cx.can_undo());
+    }
+
+    #[test]
+    fn renumber_keeps_to_one_kind_and_skips_what_the_schedule_leaves_out() {
+        let (mut cx, ids) = doors_drawn_right_to_left();
+        let w = cx.floor().walls[0].id;
+        let win = cx
+            .project
+            .add_opening(0, w, 30.0, OpeningKind::Window)
+            .unwrap();
+        // The middle door is left out of the schedule.
+        cx.project.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == ids[1])
+            .unwrap()
+            .extras
+            .spec
+            .schedule
+            .include = false;
+        assert!(run_command(&mut cx, RENUMBER_DOORS));
+        assert_eq!(mark(&cx, ids[0]).as_deref(), Some("D01"));
+        assert_eq!(mark(&cx, ids[1]), None);
+        assert_eq!(mark(&cx, ids[2]).as_deref(), Some("D02"));
+        // Windows are untouched until their own command runs.
+        assert_eq!(mark(&cx, win), None);
+        assert!(run_command(&mut cx, RENUMBER_WINDOWS));
+        assert_eq!(mark(&cx, win).as_deref(), Some("W01"));
+    }
+
+    #[test]
+    fn renumber_by_floor_restarts_and_whole_counts_on() {
+        let (mut cx, ids) = doors_drawn_right_to_left();
+        let up = cx.project.insert_floor_above(0).unwrap();
+        let w2 = cx.project.add_wall(
+            up,
+            Point::new(0.0, 0.0),
+            Point::new(400.0, 0.0),
+            6.0,
+            109.125,
+            WallKind::Exterior,
+        );
+        let upper = cx
+            .project
+            .add_opening(up, w2, 100.0, OpeningKind::Door)
+            .unwrap();
+        renumber_marks(&mut cx.project, OpeningKind::Door, "D", Numbering::ByFloor);
+        let up_mark = |cx: &EditorContext| {
+            cx.project.floors[up]
+                .openings
+                .iter()
+                .find(|o| o.id == upper)
+                .unwrap()
+                .schedule_number
+                .clone()
+        };
+        assert_eq!(up_mark(&cx).as_deref(), Some("D01"));
+        assert_eq!(mark(&cx, ids[2]).as_deref(), Some("D03"));
+        renumber_marks(&mut cx.project, OpeningKind::Door, "DR", Numbering::Whole);
+        assert_eq!(up_mark(&cx).as_deref(), Some("DR04"));
     }
 }

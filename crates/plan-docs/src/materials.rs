@@ -14,6 +14,12 @@
 //!   (`ceil(length / 16) + 1`, plus 2 kings and 2 trimmers for every opening)
 //!   and plates (bottom plate plus doubled top plate). Exterior walls are 2x6,
 //!   interior walls 2x4. Wall sheathing sheets are framing too.
+//! * **Wall components**: a wall whose type (Wall Specification > Components)
+//!   has layers beyond the structural one counts each layer's face area:
+//!   sheathing and drywall in 4x8 sheets, siding, stucco, brick or stone in
+//!   Siding, insulation in Framing, other layers in Interior Finishes; an air
+//!   space is not a purchase. Such walls skip the formula's siding, sheathing
+//!   and drywall.
 //! * **Roofing**: the stored roof planes' true sloped area in square feet and
 //!   in squares (100 sq ft), shingle bundles (3 per square), drip edge along
 //!   the eaves and gutters where a plane has them.
@@ -280,8 +286,67 @@ struct Takeoff {
     plate_lf: [f64; 2],
     drywall_sq_ft: f64,
     exterior_sq_ft: f64,
+    /// Sheathing and siding from walls whose type lists those layers, on top
+    /// of the formula's `exterior_sq_ft` (walls without a type).
+    sheathing_extra_sq_ft: f64,
+    siding_extra_sq_ft: f64,
+    /// Other wall-type layers (stucco, brick, insulation...): category, layer
+    /// name and material, square feet.
+    layers: BTreeMap<(String, String, String), f64>,
     doors: BTreeMap<SizeKey, f64>,
     windows: BTreeMap<SizeKey, f64>,
+}
+
+/// What one non-structural layer of a wall type becomes in the list.
+#[derive(Debug, Clone, PartialEq)]
+enum Component {
+    /// Left out: air spaces and layers with no material.
+    Skip,
+    Sheathing,
+    Drywall,
+    /// The layer named "Siding": merged with the formula's siding row.
+    Siding,
+    /// Any other layer, listed by its own name in a category.
+    Other(&'static str),
+}
+
+/// Reads a wall-type layer (Wall Specification > Components) as a material
+/// row: sheathing and drywall count in 4x8 sheets, exterior finishes
+/// (siding, stucco, brick, stone...) in Siding, insulation in Framing, and
+/// anything else among the Interior Finishes.
+fn component_of(name: &str, material: &str) -> Component {
+    let n = name.to_lowercase();
+    let m = material.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| n.contains(w) || m.contains(w));
+    if n.contains("air space")
+        || (m == "air" && n.contains("air"))
+        || (n.is_empty() && m.is_empty())
+    {
+        Component::Skip
+    } else if has(&["sheath"]) {
+        Component::Sheathing
+    } else if has(&["drywall", "gypsum", "plaster", "gwb"]) {
+        Component::Drywall
+    } else if n.trim() == "siding" {
+        Component::Siding
+    } else if has(&[
+        "siding", "stucco", "brick", "stone", "veneer", "cladding", "shingle", "hardie", "cement",
+    ]) {
+        Component::Other("Siding")
+    } else if has(&["insul"]) {
+        Component::Other("Framing")
+    } else {
+        Component::Other("Interior Finishes")
+    }
+}
+
+/// The wall type of `w` when it has layers beyond the structural one.
+fn layered_type<'a>(
+    project: &'a Project,
+    w: &plan_core::Wall,
+) -> Option<&'a plan_core::WallTypeDef> {
+    let def = project.wall_type_def(w.wall_type.as_deref()?)?;
+    def.layers.iter().any(|l| !l.is_main).then_some(def)
 }
 
 fn floor_range(project: &Project, scope: MaterialsScope) -> std::ops::Range<usize> {
@@ -365,18 +430,37 @@ fn take_off(
             let len = w.length();
             let openings: Vec<_> = f.openings_on(w.id).collect();
             let k = usize::from(w.kind == WallKind::Interior);
+            let layered = layered_type(project, w);
             if !framed {
                 t.studs[k] += (len / STUD_SPACING).ceil() + 1.0 + 4.0 * openings.len() as f64;
                 t.plate_lf[k] += len / 12.0 * 3.0;
             }
             let opening_sq_ft: f64 = openings.iter().map(|o| o.width * o.height / 144.0).sum();
             let net = (len * w.height / 144.0 - opening_sq_ft).max(0.0);
-            match w.kind {
-                WallKind::Exterior => {
-                    t.exterior_sq_ft += net;
-                    t.drywall_sq_ft += net;
+            if let Some(def) = layered {
+                // Components: every layer of the wall type is a quantity of
+                // its own, instead of the formula's siding and drywall.
+                for l in def.layers.iter().filter(|l| !l.is_main) {
+                    match component_of(&l.name, &l.material) {
+                        Component::Skip => {}
+                        Component::Sheathing => t.sheathing_extra_sq_ft += net,
+                        Component::Drywall => t.drywall_sq_ft += net,
+                        Component::Siding => t.siding_extra_sq_ft += net,
+                        Component::Other(category) => {
+                            *t.layers
+                                .entry((category.to_string(), l.name.clone(), l.material.clone()))
+                                .or_default() += net;
+                        }
+                    }
                 }
-                WallKind::Interior => t.drywall_sq_ft += 2.0 * net,
+            } else {
+                match w.kind {
+                    WallKind::Exterior => {
+                        t.exterior_sq_ft += net;
+                        t.drywall_sq_ft += net;
+                    }
+                    WallKind::Interior => t.drywall_sq_ft += 2.0 * net,
+                }
             }
             for o in openings {
                 let key = size_key(o.width, o.height);
@@ -512,15 +596,20 @@ fn take_off(
             "bf",
         ));
     }
-    if t.exterior_sq_ft > 0.0 {
+    if t.exterior_sq_ft + t.sheathing_extra_sq_ft > 0.0 {
         out.push(MaterialLine::new(
             "Framing",
             "Wall sheathing 7/16\" OSB 4x8 sheet",
             "Wall sheathing 7/16\" OSB 4x8 sheet",
             "4x8",
-            (t.exterior_sq_ft / SHEET_SQ_FT).ceil(),
+            ((t.exterior_sq_ft + t.sheathing_extra_sq_ft) / SHEET_SQ_FT).ceil(),
             "sheet",
         ));
+    }
+    for ((category, name, material), sq_ft) in &t.layers {
+        if category == "Framing" && *sq_ft > 0.0 {
+            out.push(layer_line(category, name, material, *sq_ft));
+        }
     }
 
     // ---- Roofing ----
@@ -590,15 +679,20 @@ fn take_off(
     }
 
     // ---- Siding ----
-    if t.exterior_sq_ft > 0.0 {
+    if t.exterior_sq_ft + t.siding_extra_sq_ft > 0.0 {
         out.push(MaterialLine::new(
             "Siding",
             "Siding",
             "Siding",
             "",
-            t.exterior_sq_ft.ceil(),
+            (t.exterior_sq_ft + t.siding_extra_sq_ft).ceil(),
             "sq ft",
         ));
+    }
+    for ((category, name, material), sq_ft) in &t.layers {
+        if category == "Siding" && *sq_ft > 0.0 {
+            out.push(layer_line(category, name, material, *sq_ft));
+        }
     }
 
     // ---- Windows, Doors ----
@@ -755,8 +849,24 @@ fn take_off(
             "sheet",
         ));
     }
+    for ((category, name, material), sq_ft) in &t.layers {
+        if category == "Interior Finishes" && *sq_ft > 0.0 {
+            out.push(layer_line(category, name, material, *sq_ft));
+        }
+    }
     out.extend(room_lines);
     out
+}
+
+/// The row of a wall-type layer measured in square feet: `Stucco (Sand
+/// Finish)` is priced by the key `<category>|<layer name>`.
+fn layer_line(category: &str, name: &str, material: &str, sq_ft: f64) -> MaterialLine {
+    let item = if material.trim().is_empty() || material.eq_ignore_ascii_case(name) {
+        name.to_string()
+    } else {
+        format!("{name} ({material})")
+    };
+    MaterialLine::new(category, name, item, "", sq_ft.ceil(), "sq ft")
 }
 
 /// Numbers the rows of each category (`FRM-001`) after sorting by category.
@@ -1225,5 +1335,66 @@ mod tests {
         assert_eq!(s.columns.len(), 8);
         assert_eq!(s.rows.last().unwrap()[0], "Total");
         assert_eq!(s.rows.last().unwrap()[7], "$18.00");
+    }
+
+    /// A 40' x 30' box of walls of the named type from Daniel's defaults.
+    fn typed_box(ty: &str, kind: WallKind) -> Project {
+        let mut p = Project::new("typed");
+        for t in plan_core::PlanDefaults::chief_x18_daniel().wall_types {
+            p.register_wall_type(t);
+        }
+        let ids = rect_walls(&mut p, 480.0, 360.0, 6.5, kind);
+        for id in ids {
+            let w = p.floors[0].walls.iter_mut().find(|w| w.id == id).unwrap();
+            w.wall_type = Some(ty.to_string());
+        }
+        p
+    }
+
+    #[test]
+    fn a_wall_types_layers_become_quantities() {
+        // 140' of 109 1/8" wall, no openings.
+        let net: f64 = 1_680.0 * 109.125 / 144.0;
+        let l = materials_list(&typed_box("Stucco-6", WallKind::Exterior), 0, &[]);
+        let stucco = l
+            .iter()
+            .find(|l| l.category == "Siding" && l.item.starts_with("Stucco"))
+            .expect("a Stucco row");
+        assert_eq!(stucco.unit, "sq ft");
+        assert_eq!(stucco.quantity, net.ceil());
+        assert!(stucco.item.contains("Sand Finish"), "{}", stucco.item);
+        // The formula's plain Siding row does not appear for a stucco wall.
+        assert!(!l.iter().any(|l| l.item == "Siding"));
+        // Sheathing and drywall come from the type's own layers, once.
+        assert_eq!(
+            qty(&l, "Wall sheathing 7/16\" OSB 4x8 sheet"),
+            (net / 32.0).ceil()
+        );
+        assert_eq!(qty(&l, "Wall drywall 1/2\" 4x8 sheet"), (net / 32.0).ceil());
+    }
+
+    #[test]
+    fn a_siding_wall_merges_with_the_siding_row_and_brick_gets_its_own() {
+        let net: f64 = 1_680.0 * 109.125 / 144.0;
+        let l = materials_list(&typed_box("Siding-6", WallKind::Exterior), 0, &[]);
+        assert_eq!(qty(&l, "Siding"), net.ceil());
+        let l = materials_list(&typed_box("Brick-6", WallKind::Exterior), 0, &[]);
+        let brick = l.iter().find(|l| l.item == "Brick").expect("a Brick row");
+        assert_eq!(brick.category, "Siding");
+        assert_eq!(brick.quantity, net.ceil());
+        // The air space is not a purchase.
+        assert!(!l.iter().any(|l| l.item.contains("Air")), "{l:?}");
+    }
+
+    #[test]
+    fn walls_without_a_type_keep_the_formula() {
+        let mut p = typed_box("Siding-6", WallKind::Exterior);
+        for w in &mut p.floors[0].walls {
+            w.wall_type = None;
+        }
+        let net: f64 = 1_680.0 * 109.125 / 144.0;
+        let l = materials_list(&p, 0, &[]);
+        assert_eq!(qty(&l, "Siding"), net.ceil());
+        assert_eq!(qty(&l, "Wall drywall 1/2\" 4x8 sheet"), (net / 32.0).ceil());
     }
 }

@@ -122,7 +122,17 @@ pub struct TerrainWall {
     pub retain: f64,
     /// Cut the surface along the wall (a gap with the wall's vertical faces).
     pub cut: bool,
+    /// A stepped retaining wall: the top holds level over a stretch and drops
+    /// in `step` inch courses as the ground falls, instead of following every
+    /// bump of the ground.
+    pub stepped: bool,
+    /// Height of one course of a stepped wall, inches.
+    pub step: f64,
 }
+
+/// Height of one course of a stepped wall until the specification changes it
+/// (a standard 8" block).
+pub const DEFAULT_WALL_STEP: f64 = 8.0;
 
 /// Slope ratio of the graded ground on the cut side of a wall (4 = 1:4).
 pub const WALL_SLOPE_RATIO: f64 = 4.0;
@@ -144,6 +154,8 @@ impl TerrainWall {
             style: ObjectStyle::default(),
             retain: 0.0,
             cut: true,
+            stepped: false,
+            step: DEFAULT_WALL_STEP,
         }
     }
 
@@ -184,6 +196,59 @@ pub enum ShapeKind {
     Spline,
 }
 
+/// How a plant is built in the 3D view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PlantForm {
+    /// From the plant: conifers (spruce, pine, cedar, arborvitae, ...) are
+    /// cones, other tall plants trees on a trunk, the rest round shrubs.
+    #[default]
+    Auto,
+    /// A round canopy (a shrub, or a tree on a trunk when tall).
+    Round,
+    /// A cone: an evergreen.
+    Cone,
+    /// Two crossed upright planes: a flat cut-out of a plant, cheap to draw.
+    Billboard,
+}
+
+impl PlantForm {
+    pub const ALL: [PlantForm; 4] = [
+        PlantForm::Auto,
+        PlantForm::Round,
+        PlantForm::Cone,
+        PlantForm::Billboard,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PlantForm::Auto => "Automatic",
+            PlantForm::Round => "Round canopy",
+            PlantForm::Cone => "Cone (evergreen)",
+            PlantForm::Billboard => "Billboard",
+        }
+    }
+}
+
+/// Words in a plant's name or catalog id that make it a conifer.
+const CONIFER_WORDS: [&str; 9] = [
+    "spruce",
+    "pine",
+    "cedar",
+    "fir",
+    "arborvitae",
+    "juniper",
+    "cypress",
+    "evergreen",
+    "conifer",
+];
+
+/// Whether `text` (a plant name or catalog id) names a conifer.
+pub fn is_conifer(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|w| CONIFER_WORDS.contains(&w))
+}
+
 /// One landscaping object. The numeric fields mean (inches unless noted):
 ///
 /// | kind | `height` | `size` | `spacing` | `depth` | `edging` |
@@ -216,6 +281,20 @@ pub struct Landscape {
     /// Control points of a kidney or spline outline: `points` is the spline
     /// through them (closed for regions). Empty for a clicked polyline.
     pub control: Vec<Point>,
+    /// How a plant is built in 3D.
+    pub form: PlantForm,
+}
+
+impl Landscape {
+    /// The form a plant is built with: its own, or for `Auto` a cone for a
+    /// conifer and a round canopy for the rest.
+    pub fn plant_form(&self) -> PlantForm {
+        match self.form {
+            PlantForm::Auto if is_conifer(&self.plant) => PlantForm::Cone,
+            PlantForm::Auto => PlantForm::Round,
+            f => f,
+        }
+    }
 }
 
 impl Landscape {
@@ -235,6 +314,7 @@ impl Landscape {
             arc: 360.0,
             style: ObjectStyle::default(),
             control: Vec::new(),
+            form: PlantForm::Auto,
         };
         match kind {
             LandscapeKind::GardenBed => Landscape {
@@ -411,6 +491,41 @@ pub fn sprinkler_heads(pts: &[Point], spacing: f64) -> Vec<(Point, f64)> {
         .into_iter()
         .map(|(p, dir)| (p, dir + PI / 2.0))
         .collect()
+}
+
+/// The dashes of a dashed line along `pts`: pieces `dash` inches long with
+/// `gap` inches between them, the last one cut short at the end of the path.
+pub fn dash_path(pts: &[Point], dash: f64, gap: f64) -> Vec<Vec<Point>> {
+    let len = path_length(pts);
+    if dash <= 0.0 || len <= 0.0 {
+        return Vec::new();
+    }
+    let period = dash + gap.max(0.0);
+    let mut out = Vec::new();
+    let mut start = 0.0;
+    while start < len - 1e-6 {
+        let end = (start + dash).min(len);
+        let mut piece = Vec::new();
+        if let Some((p, _)) = point_at(pts, start) {
+            piece.push(p);
+        }
+        // Original vertices strictly inside the dash keep its corners.
+        let mut run = 0.0;
+        for w in pts.windows(2) {
+            run += w[0].dist(w[1]);
+            if run > start + 1e-6 && run < end - 1e-6 {
+                piece.push(w[1]);
+            }
+        }
+        if let Some((p, _)) = point_at(pts, end) {
+            piece.push(p);
+        }
+        if piece.len() >= 2 {
+            out.push(piece);
+        }
+        start += period;
+    }
+    out
 }
 
 /// The four corners of the rectangle with opposite corners `a` and `b`.

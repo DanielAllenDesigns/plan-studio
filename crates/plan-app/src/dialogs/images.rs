@@ -16,8 +16,7 @@ use crate::tools::images::{load_spec, pick_image_file, texture};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, Ui, Vec2};
 use plan_core::geometry::Point;
 use plan_core::images::{
-    DistKind, ImageFormat, RegionPattern, BILLBOARD_PLAN_DEPTH, DEFAULT_BILLBOARD_HEIGHT,
-    MIN_SPACING,
+    DistKind, RegionPattern, BILLBOARD_PLAN_DEPTH, DEFAULT_BILLBOARD_HEIGHT, MIN_SPACING,
 };
 use plan_core::PlacedSymbol;
 
@@ -83,13 +82,147 @@ fn label_row(ui: &mut Ui, label: &mut String) {
     });
 }
 
+// ----- Point to Point Resize prompt -----
+
+/// The window that asks for the real distance after the two clicks of Point
+/// to Point Resize on a picture.
+struct ResizePrompt {
+    id: plan_core::Id,
+    a: Point,
+    b: Point,
+    text: String,
+}
+
+thread_local! {
+    static RESIZE: std::cell::RefCell<Option<ResizePrompt>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Asks for the real distance between `a` and `b` on picture `id`.
+pub fn begin_resize_prompt(id: plan_core::Id, a: Point, b: Point) {
+    RESIZE.with(|r| {
+        *r.borrow_mut() = Some(ResizePrompt {
+            id,
+            a,
+            b,
+            text: String::new(),
+        });
+    });
+}
+
+/// Is the distance prompt open?
+#[cfg(test)]
+pub fn resize_prompt_open() -> bool {
+    RESIZE.with(|r| r.borrow().is_some())
+}
+
+/// Applies the typed `text` to the open prompt (what OK does). True when the
+/// picture was scaled; false leaves the prompt open, with a status message.
+pub fn submit_resize_prompt(cx: &mut crate::editor::EditorContext, text: &str) -> bool {
+    let Some((id, a, b)) = RESIZE.with(|r| r.borrow().as_ref().map(|p| (p.id, p.a, p.b))) else {
+        return false;
+    };
+    let Some(real) = plan_core::units::parse_ft_in(text) else {
+        cx.status = "Type the real distance, such as 24'-0\"".into();
+        return false;
+    };
+    if crate::tools::underlay::trace::resize_picture(cx, id, a, b, real) {
+        RESIZE.with(|r| *r.borrow_mut() = None);
+        true
+    } else {
+        false
+    }
+}
+
+/// Closes the distance prompt without scaling.
+pub fn cancel_resize_prompt() {
+    RESIZE.with(|r| *r.borrow_mut() = None);
+}
+
+/// Draws the distance prompt when it is open.
+pub fn show_windows(ctx: &egui::Context, cx: &mut crate::editor::EditorContext) {
+    let Some((a, b)) = RESIZE.with(|r| r.borrow().as_ref().map(|p| (p.a, p.b))) else {
+        return;
+    };
+    let mut apply = false;
+    let mut cancel = false;
+    egui::Window::new("Point to Point Resize")
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "The two points are {} apart on the picture now.",
+                cx.fmt_dim(a.dist(b))
+            ));
+            ui.horizontal(|ui| {
+                ui.label("Real distance");
+                RESIZE.with(|r| {
+                    if let Some(p) = r.borrow_mut().as_mut() {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut p.text)
+                                .hint_text("e.g. 24'-0\"")
+                                .desired_width(110.0),
+                        );
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            apply = true;
+                        }
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    apply = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if apply {
+        let text = RESIZE.with(|r| r.borrow().as_ref().map(|p| p.text.clone()));
+        if let Some(t) = text {
+            submit_resize_prompt(cx, &t);
+        }
+    }
+    if cancel {
+        cancel_resize_prompt();
+    }
+}
+
 // ----- pictures -----
+
+/// Keep aspect ratio: after a size field was typed, the other side follows
+/// so the picture keeps the file's proportions (`aspect` is width over
+/// height of the file). The side that was just typed leads; a billboard's
+/// other side is its height, a flat picture's its depth.
+pub fn keep_proportions(
+    d: &mut PlacedSymbol,
+    aspect: f64,
+    billboard: bool,
+    width_changed: bool,
+    tall_changed: bool,
+) {
+    if aspect <= 0.0 {
+        return;
+    }
+    if width_changed {
+        let tall = d.width / aspect;
+        if billboard {
+            d.height = tall;
+        } else {
+            d.depth = tall;
+        }
+    } else if tall_changed {
+        d.width = (if billboard { d.height } else { d.depth }) * aspect;
+    }
+}
 
 pub struct ImageForm {
     pub draft: PlacedSymbol,
     layers: Vec<String>,
     fields: Fields,
     note: String,
+    /// Keep the picture's proportions while a size is typed.
+    pub keep_aspect: bool,
 }
 
 impl ImageForm {
@@ -99,6 +232,7 @@ impl ImageForm {
             layers,
             fields: Fields::default(),
             note: String::new(),
+            keep_aspect: true,
         }
     }
 
@@ -181,12 +315,17 @@ impl ImageForm {
             ui.weak(&self.note);
         }
         section(ui, "Size");
-        f.length_row(ui, "Width", "width", &mut d.width);
-        if billboard {
-            f.length_row(ui, "Height", "height", &mut d.height);
+        let aspect = d.image.as_ref().map_or(1.0, |i| i.aspect());
+        let w_changed = f.length_row(ui, "Width", "width", &mut d.width);
+        let t_changed = if billboard {
+            f.length_row(ui, "Height", "height", &mut d.height)
         } else {
-            f.length_row(ui, "Depth", "depth", &mut d.depth);
+            f.length_row(ui, "Depth", "depth", &mut d.depth)
+        };
+        if self.keep_aspect {
+            keep_proportions(d, aspect, billboard, w_changed, t_changed);
         }
+        ui.checkbox(&mut self.keep_aspect, "Keep aspect ratio");
         if ui.button("Match picture proportions").clicked() {
             proportions = true;
         }
@@ -196,6 +335,43 @@ impl ImageForm {
         f.length_row(ui, "Position Y (back center)", "pos_y", &mut d.position.y);
         f.degrees_row(ui, "Rotation", "deg_angle", &mut d.angle);
         ui.checkbox(&mut d.flip, "Flip (mirror left to right)");
+        let mut corner = false;
+        if let Some(spec) = &mut d.image {
+            section(ui, "Transparent colour");
+            let mut on = spec.transparency.is_some();
+            if ui
+                .checkbox(&mut on, "Make one colour transparent")
+                .changed()
+            {
+                spec.transparency = on.then(|| spec.transparency.unwrap_or([255, 255, 255]));
+            }
+            if let Some(key) = &mut spec.transparency {
+                row(ui, "Transparent colour", |ui| {
+                    ui.color_edit_button_srgb(key);
+                    if ui
+                        .button("Use corner colour")
+                        .on_hover_text("The colour of the picture's top-left pixel")
+                        .clicked()
+                    {
+                        corner = true;
+                    }
+                });
+                row(ui, "Tolerance", |ui| {
+                    ui.add(egui::Slider::new(&mut spec.tolerance, 0..=128));
+                });
+            }
+        }
+        if corner {
+            if let Some(c) = d
+                .image
+                .as_ref()
+                .and_then(|i| crate::tools::images::corner_color(&i.path))
+            {
+                if let Some(spec) = &mut d.image {
+                    spec.transparency = Some(c);
+                }
+            }
+        }
         if browse {
             if let Some(path) = pick_image_file() {
                 self.set_file(&path);
@@ -209,31 +385,18 @@ impl ImageForm {
     fn image(&mut self, ui: &mut Ui) {
         let mut billboard = self.billboard();
         let was = billboard;
-        if let Some(spec) = &mut self.draft.image {
-            section(ui, "Transparency");
-            let mut on = spec.transparency.is_some();
-            if ui
-                .checkbox(&mut on, "Make one colour transparent")
-                .changed()
-            {
-                spec.transparency = on.then(|| spec.transparency.unwrap_or([255, 255, 255]));
-            }
-            if let Some(key) = &mut spec.transparency {
-                row(ui, "Transparent colour", |ui| {
-                    ui.color_edit_button_srgb(key);
-                });
-                row(ui, "Tolerance", |ui| {
-                    ui.add(egui::Slider::new(&mut spec.tolerance, 0..=128));
-                });
-            }
-            if spec.format != ImageFormat::Png {
-                ui.weak("Transparency applies to PNG pictures only");
-            }
-            section(ui, "Behavior");
-        }
+        section(ui, "Behavior");
         ui.checkbox(&mut billboard, "Billboard (stands up and faces the camera)");
         if billboard != was {
             self.set_billboard(billboard);
+        }
+        if self
+            .draft
+            .image
+            .as_ref()
+            .is_some_and(|i| i.transparency.is_some())
+        {
+            ui.weak("The transparent colour is set on the General page");
         }
     }
 }
@@ -687,6 +850,38 @@ mod tests {
         // An empty path blocks OK.
         form.draft.image = Some(ImageSpec::new("", 0, 0));
         assert!(form.error().is_some());
+    }
+
+    #[test]
+    fn keep_aspect_ratio_follows_the_side_that_was_typed() {
+        let mut cx = cx();
+        let path = fixture_file("aspect.png"); // 4 x 2: aspect 2
+        let spec = crate::tools::images::load_spec(&path).unwrap();
+        let id = place_image(&mut cx, &spec, Point::new(0.0, 0.0), false);
+        let mut d = cx.floor().symbol(id).unwrap().clone();
+        d.width = 80.0;
+        keep_proportions(&mut d, 2.0, false, true, false);
+        assert_eq!((d.width, d.depth), (80.0, 40.0));
+        d.depth = 10.0;
+        keep_proportions(&mut d, 2.0, false, false, true);
+        assert_eq!((d.width, d.depth), (20.0, 10.0));
+        // A billboard keeps its width-to-height ratio the same way.
+        d.height = 30.0;
+        keep_proportions(&mut d, 2.0, true, false, true);
+        assert_eq!((d.width, d.height), (60.0, 30.0));
+        // Nothing typed, or no aspect: nothing moves.
+        let before = d.clone();
+        keep_proportions(&mut d, 2.0, true, false, false);
+        keep_proportions(&mut d, 0.0, true, true, true);
+        assert_eq!(d, before);
+        // The form starts with the box ticked, and draws with the key colour
+        // set (the transparent colour block, its tolerance and corner button).
+        let mut form = ImageForm::new(cx.floor().symbol(id).unwrap().clone(), Vec::new());
+        assert!(form.keep_aspect);
+        form.draft.image.as_mut().unwrap().transparency = Some([255, 255, 255]);
+        smoke(&mut form);
+        form.keep_aspect = false;
+        smoke(&mut form);
     }
 
     #[test]

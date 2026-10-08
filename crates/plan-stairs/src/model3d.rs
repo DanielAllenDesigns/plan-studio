@@ -109,8 +109,12 @@ pub fn tagged_meshes(stair: &Stair) -> Vec<(StairPart, Mesh)> {
             }
             if f.treads > 0 {
                 ctx.stringers(f, h, p);
-                if p.handrail {
-                    ctx.handrails(f, h);
+                let (left, right) = (
+                    p.handrail || p.left_side == SideKind::Handrail,
+                    p.handrail || p.right_side == SideKind::Handrail,
+                );
+                if left || right {
+                    ctx.handrails(f, h, left, right);
                 }
             }
         }
@@ -156,15 +160,17 @@ pub fn tagged_meshes(stair: &Stair) -> Vec<(StairPart, Mesh)> {
             (RailSide::Left, p.left_side),
             (RailSide::Right, p.right_side),
         ] {
+            let railing = p.railing_for(side);
             match kind {
-                SideKind::None => {}
+                // A Handrail side is drawn with the flights' handrails.
+                SideKind::None | SideKind::Handrail => {}
                 SideKind::Railing => out.extend(
-                    stair_railing(stair, side, &p.railing)
+                    stair_railing(stair, side, &railing)
                         .into_iter()
                         .map(|m| (StairPart::Handrail, m)),
                 ),
                 SideKind::Wall | SideKind::HalfWall => out.extend(
-                    stair_half_wall(stair, side, &p.railing, kind == SideKind::Wall)
+                    stair_half_wall(stair, side, &railing, kind == SideKind::Wall)
                         .into_iter()
                         .map(|m| (StairPart::Stringer, m)),
                 ),
@@ -296,8 +302,8 @@ impl Ctx<'_> {
         }
     }
 
-    /// A handrail on each side, parallel to the pitch line.
-    fn handrails(&mut self, f: &Flight, h: f64) {
+    /// A handrail on the chosen sides, parallel to the pitch line.
+    fn handrails(&mut self, f: &Flight, h: f64, left: bool, right: bool) {
         let rise = f64::from(f.treads) * h;
         let (y0, y1) = (
             f.base + h + HANDRAIL_HEIGHT,
@@ -309,7 +315,13 @@ impl Ctx<'_> {
             (f.len, y1 - HANDRAIL_SIZE),
             (0.0, y0 - HANDRAIL_SIZE),
         ];
-        for lat in [0.0, (f.width - HANDRAIL_SIZE).max(0.0)] {
+        for lat in [
+            left.then_some(0.0),
+            right.then_some((f.width - HANDRAIL_SIZE).max(0.0)),
+        ]
+        .into_iter()
+        .flatten()
+        {
             self.side_board(
                 StairPart::Handrail,
                 Material::WallInterior,

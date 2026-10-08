@@ -2,7 +2,7 @@
 
 use crate::model::{BoxSource, ScheduleKind};
 use crate::render::LayoutRenderContext;
-use plan_3d::{build_scene, Scene};
+use plan_3d::{build_scene_with, Scene, SceneOptions};
 use plan_core::{detect_rooms, Floor, Point, Project};
 use plan_docs::{
     door_schedule, room_schedule, wall_schedule, window_schedule, PdfDoc, Scale, Schedule,
@@ -28,16 +28,31 @@ const IMAGE_SIZE_IN: (f64, f64) = (4.0, 3.0);
 /// Line height as a multiple of the text size.
 pub(crate) const LINE_SPACING: f64 = 1.25;
 
-/// The scene for elevations and sections: the caller's, or one built on demand.
+/// The scene for elevations and sections: the caller's, one the context's
+/// builder makes on demand, or the plan's own opening display (casing, jambs,
+/// sills; `SceneOptions::for_project`) built here.
 pub(crate) struct SceneSource<'a> {
     given: Option<&'a Scene>,
+    builder: Option<&'a dyn Fn(&Project) -> Scene>,
     built: OnceCell<Scene>,
 }
 
 impl<'a> SceneSource<'a> {
+    #[cfg(test)]
     pub(crate) fn new(given: Option<&'a Scene>) -> Self {
         Self {
             given,
+            builder: None,
+            built: OnceCell::new(),
+        }
+    }
+
+    /// The scene source of a render context: its scene, else its scene
+    /// builder, else the built-in one.
+    pub(crate) fn for_context(cx: &'a LayoutRenderContext<'_>) -> Self {
+        Self {
+            given: cx.scene,
+            builder: cx.scene_builder.as_deref(),
             built: OnceCell::new(),
         }
     }
@@ -45,7 +60,10 @@ impl<'a> SceneSource<'a> {
     pub(crate) fn get(&self, project: &Project) -> &Scene {
         match self.given {
             Some(s) => s,
-            None => self.built.get_or_init(|| build_scene(project)),
+            None => self.built.get_or_init(|| match self.builder {
+                Some(f) => f(project),
+                None => build_scene_with(project, &SceneOptions::for_project(project)),
+            }),
         }
     }
 }
@@ -119,9 +137,52 @@ pub(crate) fn table_metrics(s: &Schedule) -> TableMetrics {
     }
 }
 
+/// The plan's own Schedule Specification for a standard schedule box: the
+/// first placed schedule of the same kind (door, window, room or wall) and
+/// the floor it sits on.
+fn spec_for(
+    kind: ScheduleKind,
+    project: &Project,
+) -> Option<(usize, plan_core::schedules::Schedule)> {
+    use plan_core::schedules::{ScheduleKind as K, ScheduleLayer};
+    let want = match kind {
+        ScheduleKind::Door => K::Door,
+        ScheduleKind::Window => K::Window,
+        ScheduleKind::Room => K::Room,
+        ScheduleKind::Wall => K::Wall,
+    };
+    project.floors.iter().enumerate().find_map(|(i, f)| {
+        ScheduleLayer::load(f)
+            .schedules
+            .into_iter()
+            .find(|s| s.kind == want)
+            .map(|s| (i, s))
+    })
+}
+
 /// One table for `kind` covering every floor. With several floors the number
 /// column is prefixed with the floor number (`2-D01`).
+///
+/// When the plan has a placed schedule of that kind, the table is built from
+/// its Schedule Specification (the columns shown and their order, headings,
+/// sort, grouping, filter and totals), over all floors, so the schedule on
+/// the sheet reads the way the one in the plan does.
 pub(crate) fn schedule_for(kind: ScheduleKind, cx: &LayoutRenderContext) -> Schedule {
+    if let Some((floor, mut def)) = spec_for(kind, cx.project) {
+        let legacy = standard_schedule_for(kind, cx);
+        def.floor_scope = plan_core::schedules::FloorScope::All;
+        let rooms = cx.rooms_by_floor.get(floor).map(|r| (floor, r.as_slice()));
+        let mut t = plan_docs::schedule_kinds::table(cx.project, &def, floor, rooms);
+        if def.title.trim().is_empty() {
+            t.title = legacy.title;
+        }
+        return t;
+    }
+    standard_schedule_for(kind, cx)
+}
+
+/// The standard columns of `kind`, every floor in one table.
+fn standard_schedule_for(kind: ScheduleKind, cx: &LayoutRenderContext) -> Schedule {
     let floors = cx.project.floors.len();
     let mut out: Option<Schedule> = None;
     for floor in 0..floors {
@@ -155,6 +216,20 @@ pub(crate) fn schedule_for(kind: ScheduleKind, cx: &LayoutRenderContext) -> Sche
         ScheduleKind::Wall => wall_schedule(cx.project, 0),
         ScheduleKind::Room => room_schedule(cx.project, 0, &[]),
     })
+}
+
+/// The table a schedule, placed schedule, Materials List or sheet index box
+/// shows (for Export CSV / Excel); `None` for every other box.
+pub fn box_table(b: &crate::model::LayoutBox, cx: &LayoutRenderContext) -> Option<Schedule> {
+    match &b.source {
+        BoxSource::Schedule { kind } => Some(schedule_for(*kind, cx)),
+        BoxSource::PlacedSchedule { floor, id } => placed_schedule_table(cx, *floor, *id),
+        BoxSource::Materials { floor, category } => {
+            Some(cx.materials_table(*floor, category.as_deref()))
+        }
+        BoxSource::SheetIndex => Some(cx.sheet_index_table()),
+        _ => None,
+    }
 }
 
 /// The table of the placed schedule `id` on `floor`, as the plan shows it;
@@ -299,7 +374,7 @@ pub(crate) fn frame_for(
 /// elevations and sections the projected model with a 12" margin; schedules
 /// the text-measured table (0.25" rows); text its measured lines.
 pub fn source_size_in(source: &BoxSource, scale: Scale, cx: &LayoutRenderContext) -> (f64, f64) {
-    let scenes = SceneSource::new(cx.scene);
+    let scenes = SceneSource::for_context(cx);
     size_of(frame_for(source, cx, &scenes), scale)
 }
 

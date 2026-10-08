@@ -20,6 +20,7 @@
 //! `72 * s.inches_per_foot() / 12` PDF points.
 
 mod annot;
+mod arrange;
 mod canvas;
 mod clip;
 mod extent;
@@ -37,30 +38,34 @@ pub use annot::{
     arc_from_points, cloud_outline, AnnotationKind, PageLeader, RevisionCloud, CLOUD_BUMP_IN,
     LEADER_TEXT_IN, MIN_CLOUD_IN,
 };
+pub use arrange::{align_boxes, copy_boxes, distribute_boxes, AlignEdge, Spread, COPY_OFFSET_IN};
 pub use hatch::{pattern_for, wall_face_hatch, HatchStroke, MAX_HATCH_STROKES};
 pub use layers::{
     LayoutLayer, LayoutLayers, LAYER_BOX_BORDERS, LAYER_CAD, LAYER_REVISION_CLOUDS, LAYER_TEXT,
     LAYER_TITLE_BLOCK, MAX_WEIGHT_PT, MIN_WEIGHT_PT,
 };
 pub use model::{
-    perspective_pixels, BoxSource, Layout, LayoutBox, LayoutPage, ScaleExt, ScheduleKind,
-    TextAlign, DEFAULT_PERSPECTIVE_DPI, DEFAULT_PERSPECTIVE_SAMPLES, LABEL_GAP_IN,
-    LAYOUT_EDGE_WEIGHT, MAX_PERSPECTIVE_PIXELS, MAX_PERSPECTIVE_SIDE_PX,
+    perspective_pixels, BoxSource, CustomSheetSize, Layout, LayoutBox, LayoutPage, ScaleExt,
+    ScheduleKind, SheetChoice, TextAlign, DANIEL_SIZES, DEFAULT_PERSPECTIVE_DPI,
+    DEFAULT_PERSPECTIVE_SAMPLES, LABEL_GAP_IN, LAYOUT_EDGE_WEIGHT, MAX_PERSPECTIVE_PIXELS,
+    MAX_PERSPECTIVE_SIDE_PX, MAX_SHEET_SIDE_IN, MIN_SHEET_SIDE_IN,
 };
 pub use print::{
-    plan_print_scale, plan_view_image, print_layout_pdf, print_model_pdf, print_plan_view_pdf,
-    rasterize_lines, tile_grid, with_perspective_quality, PaperSize, PrintColor, PrintOptions,
+    layout_print_preview, plan_print_scale, plan_view_image, plan_view_print_preview,
+    print_layout_pdf, print_model_pdf, print_plan_view_pdf, rasterize_lines, tile_grid,
+    with_perspective_quality, PaperSize, PreviewItem, PreviewPage, PrintColor, PrintOptions,
     PrintScale, TileGrid,
 };
 pub use render::{
     macros_for, perspective_request, render_box_artwork, render_box_artwork_in, render_box_lines,
     render_pdf, BoxArtwork, BoxImage, BoxText, CameraDrawingFn, LayoutRenderContext, PerspectiveFn,
-    PerspectiveImage, PerspectiveRenderFn, PerspectiveRequest, PictureFn,
+    PerspectiveImage, PerspectiveRenderFn, PerspectiveRequest, PictureFn, SceneBuilderFn,
 };
 pub use send::{
-    add_materials_page, append_construction_set, default_construction_set,
-    default_construction_set_with, fit_largest_scale, plan_label, send_camera_to_layout,
-    send_to_layout, send_to_layout_auto, AUTO_SCALE_CEILING,
+    add_materials_page, append_construction_set, append_construction_set_in,
+    default_construction_set, default_construction_set_with, fit_largest_scale, plan_label,
+    send_camera_to_layout, send_to_layout, send_to_layout_auto, send_to_layout_sized,
+    AUTO_SCALE_CEILING,
 };
 pub use template::{template_file_stem, LayoutTemplate, TEMPLATE_EXTENSION, TEMPLATE_VERSION};
 pub use textfit::{fit_text_box, wrap_lines, FittedText, TextFit, MIN_SHRINK_PT};
@@ -68,7 +73,7 @@ pub use titleblock::{
     long_date, MacroContext, TitleBlockStyle, TitleBlockTemplate, DANIEL_REVISION_ROWS,
 };
 
-pub use extent::source_size_in;
+pub use extent::{box_table, source_size_in};
 
 #[cfg(test)]
 mod feature_tests;
@@ -76,5 +81,7 @@ mod feature_tests;
 mod font_tests;
 #[cfg(test)]
 mod page_tools_tests;
+#[cfg(test)]
+mod round14_tests;
 #[cfg(test)]
 mod tests;

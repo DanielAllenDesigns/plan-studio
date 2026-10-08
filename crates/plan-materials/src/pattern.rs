@@ -73,6 +73,113 @@ impl Pattern {
     }
 }
 
+impl Pattern {
+    /// This pattern `k` times its size (course heights, tile sizes, line
+    /// spacing); the stipple and symbol patterns have no size and are
+    /// unchanged. A non-positive or non-finite `k` changes nothing.
+    pub fn scaled(&self, k: f64) -> Pattern {
+        if !(k.is_finite() && k > 0.0) || (k - 1.0).abs() < 1e-12 {
+            return self.clone();
+        }
+        match *self {
+            Pattern::Lines { angle_deg, spacing } => Pattern::Lines {
+                angle_deg,
+                spacing: spacing * k,
+            },
+            Pattern::CrossHatch { angle_deg, spacing } => Pattern::CrossHatch {
+                angle_deg,
+                spacing: spacing * k,
+            },
+            Pattern::Brick { length, height } => Pattern::Brick {
+                length: length * k,
+                height: height * k,
+            },
+            Pattern::Block { length, height } => Pattern::Block {
+                length: length * k,
+                height: height * k,
+            },
+            Pattern::Shingle { exposure, width } => Pattern::Shingle {
+                exposure: exposure * k,
+                width: width * k,
+            },
+            Pattern::LapSiding { exposure } => Pattern::LapSiding {
+                exposure: exposure * k,
+            },
+            Pattern::BoardAndBatten { spacing } => Pattern::BoardAndBatten {
+                spacing: spacing * k,
+            },
+            Pattern::Tile { w, h } => Pattern::Tile { w: w * k, h: h * k },
+            Pattern::Herringbone { length, width } => Pattern::Herringbone {
+                length: length * k,
+                width: width * k,
+            },
+            Pattern::None
+            | Pattern::Insulation
+            | Pattern::Concrete
+            | Pattern::Earth
+            | Pattern::Grass => self.clone(),
+        }
+    }
+
+    /// Does the hatch have a direction of its own that an angle can turn
+    /// exactly (line sets turn in place)?
+    fn is_line_set(&self) -> bool {
+        matches!(self, Pattern::Lines { .. } | Pattern::CrossHatch { .. })
+    }
+}
+
+/// [`pattern_strokes`] for a pattern drawn `scale` times its size and turned
+/// `angle_deg` degrees counter-clockwise (the Pattern tab of the Material
+/// Specification). Line sets take the angle directly; the courses, tiles and
+/// boards of the other patterns are drawn over a square that covers the
+/// rectangle's circumscribed circle and turned about the rectangle's centre,
+/// so callers still clip the result to their polygon. The result is capped at
+/// [`MAX_STROKES`].
+pub fn pattern_strokes_turned(
+    p: &Pattern,
+    rect: (Point, Point),
+    scale_in_per_ft: f64,
+    scale: f64,
+    angle_deg: f64,
+) -> Vec<(Point, Point)> {
+    let p = p.scaled(scale);
+    let angle = if angle_deg.is_finite() {
+        angle_deg
+    } else {
+        0.0
+    };
+    if angle.rem_euclid(360.0) < 1e-9 {
+        return pattern_strokes(&p, rect, scale_in_per_ft);
+    }
+    if p.is_line_set() {
+        let turned = match p {
+            Pattern::Lines { angle_deg, spacing } => Pattern::Lines {
+                angle_deg: angle_deg + angle,
+                spacing,
+            },
+            Pattern::CrossHatch { angle_deg, spacing } => Pattern::CrossHatch {
+                angle_deg: angle_deg + angle,
+                spacing,
+            },
+            other => other,
+        };
+        return pattern_strokes(&turned, rect, scale_in_per_ft);
+    }
+    let (a, b) = rect;
+    let c = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+    let r = 0.5 * ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
+    let square = (Point::new(c.x - r, c.y - r), Point::new(c.x + r, c.y + r));
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let turn = |q: Point| {
+        let (dx, dy) = (q.x - c.x, q.y - c.y);
+        Point::new(c.x + dx * cos - dy * sin, c.y + dx * sin + dy * cos)
+    };
+    pattern_strokes(&p, square, scale_in_per_ft)
+        .into_iter()
+        .map(|(q, w)| (turn(q), turn(w)))
+        .collect()
+}
+
 type Seg = (Point, Point);
 
 /// Axis-aligned clip window with a bounded segment sink.

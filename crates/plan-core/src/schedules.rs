@@ -81,6 +81,15 @@ const DOOR_FIELDS: &[Field] = &[
     f("swing", "Swing", true),
     f("style", "Style", false),
     f("label", "Plan Label", false),
+    f("manufacturer", "Manufacturer", false),
+    f("model", "Model", false),
+    f("supplier", "Supplier", false),
+    f("comment", "Comment", false),
+    f("rough", "Rough Opening", false),
+    f("u_factor", "U-Factor", false),
+    f("shgc", "SHGC", false),
+    f("description", "Description", false),
+    f("object_id", "ID", false),
 ];
 const WINDOW_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
@@ -93,6 +102,15 @@ const WINDOW_FIELDS: &[Field] = &[
     f("floor", "Floor", false),
     f("style", "Style", false),
     f("label", "Plan Label", false),
+    f("manufacturer", "Manufacturer", false),
+    f("model", "Model", false),
+    f("supplier", "Supplier", false),
+    f("comment", "Comment", false),
+    f("rough", "Rough Opening", false),
+    f("u_factor", "U-Factor", false),
+    f("shgc", "SHGC", false),
+    f("description", "Description", false),
+    f("object_id", "ID", false),
 ];
 const ROOM_FIELDS: &[Field] = &[
     f("mark", "Number", true),
@@ -163,12 +181,14 @@ const SYMBOL_FIELDS: &[Field] = &[
 const STAIR_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
     f("type", "Type", true),
-    f("width", "Width", true),
-    f("rise", "Total rise", true),
+    f("treads", "Treads", true),
     f("risers", "Risers", true),
     f("riser", "Riser height", true),
     f("tread", "Tread depth", true),
+    f("rise", "Total rise", true),
     f("run", "Total run", true),
+    f("width", "Width", true),
+    f("headroom", "Headroom", true),
     f("floor", "Floor", false),
 ];
 const ROOM_FINISH_FIELDS: &[Field] = &[
@@ -459,8 +479,11 @@ impl Schedule {
     /// or changing the kind.
     pub fn reconcile_columns(&mut self) {
         let fields = self.kind.fields();
-        self.columns
-            .retain(|c| fields.iter().any(|fd| fd.id == c.field));
+        // Custom property columns (`prop:Name`) are the project's to define.
+        self.columns.retain(|c| {
+            c.field.starts_with(crate::props::COLUMN_PREFIX)
+                || fields.iter().any(|fd| fd.id == c.field)
+        });
         for fd in fields {
             if !self.columns.iter().any(|c| c.field == fd.id) {
                 self.columns.push(ColumnSpec::new(fd.id, fd.title, false));

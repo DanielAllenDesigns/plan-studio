@@ -6,6 +6,7 @@
 //! layer set, the floor and the Appearance menu (UI scale, larger text, reduce
 //! motion). Clicking the message opens a log of the last 50 messages.
 
+use crate::editor::EditorContext;
 use crate::theme::{self, AppSettings};
 use eframe::egui::{self, Align, Layout, RichText, Sense};
 use std::cell::RefCell;
@@ -67,6 +68,18 @@ pub fn zoom_label(px_per_in: f64) -> String {
 pub struct StatusFields {
     /// Formatted cursor X and Y; `None` while the pointer is off the canvas.
     pub cursor: Option<(String, String)>,
+    /// The elevation the cursor sits at (the active floor's finished-floor
+    /// level), shown after X and Y (S-98).
+    pub z: Option<String>,
+    /// "1 Straight Wall selected, Z 0\" to 9'-0\"" (S-98).
+    pub selection: Option<String>,
+    /// What the pointer is over: "Hinged Door 3068" (S-6, DW-65).
+    pub hover: Option<String>,
+    /// "Edit Behavior: Resize" while a behavior other than Default is on (S-66).
+    pub behavior: Option<String>,
+    /// "Code: IRC 2021" while the Plan Check settings are open and
+    /// "Live check: 2 errors" while the live check has findings.
+    pub code: Option<String>,
     /// A hotkey sequence in progress ("D, ...").
     pub pending_prefix: Option<String>,
     /// The tool's live readout (a length, an angle).
@@ -95,10 +108,15 @@ impl StatusFields {
             Some((x, y)) => format!("X: {x}  Y: {y}"),
             None => "X: --  Y: --".to_string(),
         });
+        out.extend(self.z.as_ref().map(|z| format!("Z: {z}")));
         out.extend(self.pending_prefix.clone());
         out.extend(self.readout.clone());
         out.extend(self.snap.as_ref().map(|s| format!("Snap: {s}")));
-        if !self.hint.is_empty() {
+        out.extend(self.behavior.clone());
+        out.extend(self.code.clone());
+        out.extend(self.selection.clone());
+        out.extend(self.hover.clone());
+        if !self.hint.is_empty() && self.selection.is_none() && self.hover.is_none() {
             out.push(self.hint.clone());
         }
         if !self.message.is_empty() {
@@ -115,6 +133,36 @@ impl StatusFields {
         }
         out
     }
+}
+
+/// The facts about the selection and the pointer that depend on the editor
+/// (everything else comes from the shell): Z, the selection text, the hover
+/// text and the Edit Behavior indicator. `select_active` is true while Select
+/// Objects is the tool: the hover text and the indicator belong to it.
+pub fn context_fields(cx: &EditorContext, select_active: bool) -> StatusFields {
+    use crate::tools::select::describe;
+    let hovering = select_active && cx.cursor_world.is_some();
+    StatusFields {
+        z: cx
+            .cursor_world
+            .is_some()
+            .then(|| cx.fmt_dim(cx.floor().elevation)),
+        selection: describe::selection_summary(cx),
+        hover: if hovering {
+            describe::hover_text(cx)
+        } else {
+            None
+        },
+        behavior: crate::editor::behaviors::indicator(cx),
+        code: crate::editor::code::status_text(cx),
+        ..StatusFields::default()
+    }
+}
+
+/// The tooltip that hangs at the pointer after a short rest over an object
+/// (S-6, DW-65); `None` while no object is under it.
+pub fn hover_tooltip(cx: &EditorContext) -> Option<String> {
+    crate::tools::select::describe::hover_text(cx)
 }
 
 fn log_id() -> egui::Id {
@@ -189,6 +237,9 @@ fn left(ui: &mut egui::Ui, f: &StatusFields) {
         Some((x, y)) => ui.monospace(format!("X: {x}  Y: {y}")),
         None => ui.monospace("X: --  Y: --"),
     };
+    if let Some(z) = &f.z {
+        ui.monospace(format!("Z: {z}"));
+    }
     if let Some(p) = &f.pending_prefix {
         ui.separator();
         ui.strong(p);
@@ -201,7 +252,23 @@ fn left(ui: &mut egui::Ui, f: &StatusFields) {
         ui.separator();
         ui.label(format!("Snap: {s}"));
     }
-    if !f.hint.is_empty() {
+    if let Some(b) = &f.behavior {
+        ui.separator();
+        ui.strong(b);
+    }
+    if let Some(c) = &f.code {
+        ui.separator();
+        ui.label(c);
+    }
+    if let Some(sel) = &f.selection {
+        ui.separator();
+        ui.label(sel);
+    }
+    if let Some(h) = &f.hover {
+        ui.separator();
+        ui.label(egui::RichText::new(h).italics());
+    }
+    if !f.hint.is_empty() && f.selection.is_none() && f.hover.is_none() {
         ui.separator();
         ui.label(&f.hint);
     }
@@ -285,6 +352,7 @@ mod tests {
             zoom: zoom_label(2.0),
             undo: Some("Move Wall".into()),
             saved: "Saved 2 min ago".into(),
+            ..StatusFields::default()
         }
     }
 
@@ -357,6 +425,55 @@ mod tests {
         assert_eq!(t.last().unwrap(), "Saved 2 min ago");
         let off = StatusFields::default().texts();
         assert_eq!(off[0], "X: --  Y: --");
+    }
+
+    #[test]
+    fn selection_hover_z_and_behavior_have_a_place_in_the_bar() {
+        let mut f = fields();
+        f.z = Some("0\"".into());
+        f.selection = Some("1 Straight Wall selected, Z 0\" to 9'-0\"".into());
+        f.hover = Some("Hinged Door 3068".into());
+        f.behavior = Some("Edit Behavior: Resize".into());
+        let t = f.texts();
+        assert!(t.contains(&"Z: 0\"".to_string()));
+        assert!(t.contains(&"Edit Behavior: Resize".to_string()));
+        assert!(t.contains(&"1 Straight Wall selected, Z 0\" to 9'-0\"".to_string()));
+        assert!(t.contains(&"Hinged Door 3068".to_string()));
+        // The tool's hint steps aside for them.
+        assert!(!t.contains(&"Click the first wall point".to_string()));
+        let ctx = egui::Context::default();
+        crate::theme::apply_settings(&ctx, &AppSettings::default());
+        let _ = painted(&ctx, &f, vec![]);
+        let text = painted(&ctx, &f, vec![]);
+        for want in ["Z: 0\"", "Edit Behavior: Resize", "Hinged Door 3068"] {
+            assert!(text.contains(want), "missing {want:?}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn context_fields_read_the_editor() {
+        use crate::editor::{EditorContext, ObjectRef};
+        use plan_core::geometry::Point;
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        let id = cx.project.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(120.0, 0.0),
+            6.0,
+            96.0,
+            plan_core::WallKind::Interior,
+        );
+        cx.selection.set(ObjectRef::Wall(id));
+        cx.hover = Some(ObjectRef::Wall(id));
+        cx.cursor_world = Some(Point::new(10.0, 1.0));
+        let f = context_fields(&cx, true);
+        assert!(f.z.is_some());
+        assert!(f.selection.unwrap().starts_with("1 Straight Wall selected"));
+        assert!(f.hover.unwrap().starts_with("Interior Wall"));
+        assert_eq!(f.behavior, None);
+        // Another tool shows no hover text.
+        assert!(context_fields(&cx, false).hover.is_none());
+        assert!(hover_tooltip(&cx).is_some());
     }
 
     #[test]

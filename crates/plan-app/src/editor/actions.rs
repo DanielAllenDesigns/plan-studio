@@ -85,7 +85,7 @@ impl EditorContext {
             return Vec::new();
         }
         let mut v = Vec::new();
-        if self.selection.single().is_some() {
+        if self.selection.single().is_some() || self.selection.all_walls() {
             v.push(EditAction::new(EditActionKind::OpenObject));
         }
         v.push(EditAction::new(EditActionKind::Delete));
@@ -105,7 +105,12 @@ impl EditorContext {
     pub fn apply_edit_action(&mut self, kind: EditActionKind) {
         match kind {
             EditActionKind::OpenObject => {
-                if let Some(o) = self.selection.single() {
+                // Several walls open one dialog over all of them (W-83).
+                if let Some(o) = self
+                    .selection
+                    .single()
+                    .or_else(|| self.selection.all_walls().then(|| self.selection.items[0]))
+                {
                     self.requests.push(EditorRequest::OpenSpec(o));
                 }
             }

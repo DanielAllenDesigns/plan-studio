@@ -324,6 +324,36 @@ impl CutFillReport {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+
+    /// The report as CSV text: one row per pad (name, top elevation in inches,
+    /// area in square feet, cut and fill in cubic yards) and a total row.
+    pub fn to_csv(&self) -> String {
+        fn field(s: &str) -> String {
+            if s.contains([',', '"', '\n']) {
+                format!("\"{}\"", s.replace('"', "\"\""))
+            } else {
+                s.to_string()
+            }
+        }
+        let mut out =
+            String::from("Pad,Top elevation (in),Area (sq ft),Cut (cu yd),Fill (cu yd)\n");
+        for i in &self.items {
+            out.push_str(&format!(
+                "{},{:.1},{:.1},{:.2},{:.2}\n",
+                field(&i.name),
+                i.top,
+                i.area_sq_ft,
+                i.cut_cy(),
+                i.fill_cy()
+            ));
+        }
+        out.push_str(&format!(
+            "Total,,,{:.2},{:.2}\n",
+            self.cut_cy(),
+            self.fill_cy()
+        ));
+        out
+    }
 }
 
 /// Cubic inches moved by one pad, split under the pad and in its sides.
@@ -384,12 +414,7 @@ pub fn pad_volumes(
 }
 
 fn feature_name(i: usize, f: &Feature) -> String {
-    let kind = match f.kind {
-        FeatureKind::Rectangular => "Rectangular",
-        FeatureKind::Kidney => "Kidney",
-        FeatureKind::Spline => "Spline",
-        FeatureKind::Hole => "Hole",
-    };
+    let kind = f.kind_name();
     if f.material.trim().is_empty() {
         format!("{kind} Feature {}", i + 1)
     } else {

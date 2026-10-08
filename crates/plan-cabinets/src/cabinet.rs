@@ -4,6 +4,7 @@ use plan_core::geometry::Point;
 use plan_core::Id;
 use serde::{Deserialize, Serialize};
 
+use crate::dress::{Accessories, ObjectInfo, PlanFill};
 use crate::face::{FaceItem, FaceLayout};
 use crate::geom;
 use crate::top::{treat_corners, CornerTreatment, CustomTop, Cutout, CutoutKind, EdgeProfile};
@@ -414,6 +415,12 @@ pub struct DoorStyle {
     pub hinge_from_edge: f64,
     /// Length of a pull (bar, edge or cup), inches.
     pub handle_length: f64,
+    /// The Library object this style was picked from (category "Cabinet
+    /// Doors"); empty for a built-in style. The look (profile, frame, glass)
+    /// is copied into this style when it is picked, so the cabinet keeps it
+    /// when the library is not there.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub library: String,
 }
 
 impl Default for DoorStyle {
@@ -431,6 +438,7 @@ impl Default for DoorStyle {
             hinge: HingeStyle::Hidden,
             hinge_from_edge: 3.0,
             handle_length: 4.0,
+            library: String::new(),
         }
     }
 }
@@ -451,6 +459,7 @@ impl DoorStyle {
             Some((n, profile)) => {
                 self.name = (*n).to_string();
                 self.profile = *profile;
+                self.library.clear();
                 true
             }
             None => false,
@@ -473,6 +482,10 @@ pub struct DrawerStyle {
     pub handle_from_top: f64,
     /// Length of a pull (bar, edge or cup), inches.
     pub handle_length: f64,
+    /// The Library object this style was picked from; empty for a built-in
+    /// style (see [`DoorStyle::library`]).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub library: String,
 }
 
 impl Default for DrawerStyle {
@@ -485,6 +498,7 @@ impl Default for DrawerStyle {
             handle_centered: true,
             handle_from_top: 1.5,
             handle_length: 4.0,
+            library: String::new(),
         }
     }
 }
@@ -503,6 +517,7 @@ impl DrawerStyle {
             Some((n, profile)) => {
                 self.name = (*n).to_string();
                 self.profile = *profile;
+                self.library.clear();
                 true
             }
             None => false,
@@ -821,6 +836,30 @@ pub struct Cabinet {
     /// The library type this cabinet was made from, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<CabinetPreset>,
+    /// The plan fill of the Fill Style tab.
+    #[serde(default, skip_serializing_if = "is_default_fill")]
+    pub fill: PlanFill,
+    /// The Object Information tab.
+    #[serde(default, skip_serializing_if = "ObjectInfo::is_empty")]
+    pub info: ObjectInfo,
+    /// Front pilasters and feet (Accessories tab).
+    #[serde(default, skip_serializing_if = "Accessories::is_default")]
+    pub accessories: Accessories,
+    /// Listed in the Cabinet Schedule (Schedule tab); on unless switched off.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub in_schedule: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+fn is_default_fill(f: &PlanFill) -> bool {
+    *f == PlanFill::default()
 }
 
 fn is_zero_point(p: &Point) -> bool {
@@ -860,6 +899,10 @@ impl Cabinet {
             label_offset: Point::ZERO,
             indicators_3d: false,
             preset: None,
+            fill: PlanFill::default(),
+            info: ObjectInfo::default(),
+            accessories: Accessories::default(),
+            in_schedule: true,
         }
     }
 

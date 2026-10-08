@@ -21,6 +21,8 @@ use plan_core::{
     Wall, WallKind,
 };
 
+mod tabs;
+
 /// Minimum clear distance between an opening jamb and a wall end or another
 /// opening. Mirrors the private constant `Project::add_opening` uses.
 pub const OPENING_MARGIN: f64 = 2.0;
@@ -43,22 +45,22 @@ const DOOR_TABS: &[Tab] = &[
     on("Options"),
     on("Casing"),
     on("Lintel"),
-    off("Sill/Threshold"),
+    on("Sill/Threshold"),
     on("Lites"),
     on("Jamb"),
     on("Arch"),
     on("Hardware"),
     on("Shutters"),
-    off("Opening Indicators"),
-    off("Rough Opening"),
-    off("Framing"),
-    off("Energy Values"),
-    off("Layer"),
-    off("Materials"),
+    on("Opening Indicators"),
+    on("Rough Opening"),
+    on("Framing"),
+    on("Energy Values"),
+    on("Layer"),
+    on("Materials"),
     on("Label"),
     off("Components"),
-    off("Object Information"),
-    off("Schedule"),
+    on("Object Information"),
+    on("Schedule"),
 ];
 
 const WINDOW_TABS: &[Tab] = &[
@@ -66,24 +68,24 @@ const WINDOW_TABS: &[Tab] = &[
     on("Options"),
     on("Casing"),
     on("Lintel"),
-    off("Sill/Threshold"),
+    on("Sill/Threshold"),
     on("Sash"),
     on("Frame"),
     on("Lites"),
-    off("Shape"),
+    on("Shape"),
     on("Arch"),
-    off("Treatments"),
+    on("Treatments"),
     on("Shutters"),
-    off("Opening Indicators"),
-    off("Rough Opening"),
-    off("Framing"),
-    off("Energy Values"),
-    off("Layer"),
-    off("Materials"),
+    on("Opening Indicators"),
+    on("Rough Opening"),
+    on("Framing"),
+    on("Energy Values"),
+    on("Layer"),
+    on("Materials"),
     on("Label"),
     off("Components"),
-    off("Object Information"),
-    off("Schedule"),
+    on("Object Information"),
+    on("Schedule"),
 ];
 
 /// What an opening dialog is bound to.
@@ -372,6 +374,12 @@ struct OpeningForm {
     /// The style whose standard widths the General tab edits, and the text.
     widths_style: OpeningStyle,
     widths_text: String,
+    /// The Materials tab's search text and the library it lists (read when
+    /// the tab is first shown).
+    material_filter: String,
+    material_lib: Option<plan_materials::MaterialLibrary>,
+    /// The layers the Layer tab lists (empty: the usual ones).
+    layer_choices: Vec<String>,
 }
 
 /// `0.25, 0.5` as `25, 50`.
@@ -500,6 +508,9 @@ impl OpeningDialog {
                 custom_up,
                 widths_style: OpeningStyle::default_for(kind),
                 widths_text,
+                material_filter: String::new(),
+                material_lib: None,
+                layer_choices: Vec::new(),
             },
         }
     }
@@ -562,6 +573,13 @@ impl OpeningDialog {
         self
     }
 
+    /// The layers of the plan, for the Layer tab to list. Call before the
+    /// dialog is shown; without it the tab lists the usual opening layers.
+    pub fn with_layer_choices(mut self, layers: Vec<String>) -> Self {
+        self.form.layer_choices = layers;
+        self
+    }
+
     /// The label settings as edited (what the Default Settings dialogs store).
     pub fn label_settings(&self) -> &LabelSettings {
         &self.form.label
@@ -607,6 +625,25 @@ impl OpeningDialog {
 
     pub fn extras(&self) -> &OpeningExtras {
         &self.form.extras
+    }
+
+    /// Draws the tab called `tab` in a headless frame, so a test runs that
+    /// page's code; false when the dialog has no live tab of that name.
+    #[cfg(test)]
+    pub fn draw_tab_for_test(&mut self, ctx: &egui::Context, tab: &str) -> bool {
+        let Some(i) = self
+            .form
+            .tabs()
+            .iter()
+            .position(|t| t.name == tab && t.enabled)
+        else {
+            return false;
+        };
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| self.form.page(ui, i));
+        });
+        self.sync_stored();
+        true
     }
 }
 
@@ -677,7 +714,15 @@ fn plan_3d_arch_applies(kind: OpeningKind, style: OpeningStyle) -> bool {
 
 fn overlap(a: &Opening, b: &Opening) -> bool {
     // A window standing over a door (a transom) shares no height with it.
-    plan_core::openings::openings_conflict(a, b, OPENING_MARGIN)
+    // Two windows may touch (DW-4): the clear distance is zero between them.
+    // (A hair of slack: a position the placement rules worked out to the
+    // exact clearance must not fail on rounding.)
+    let margin = if a.kind == OpeningKind::Window && b.kind == OpeningKind::Window {
+        -1e-6
+    } else {
+        OPENING_MARGIN - 1e-6
+    };
+    plan_core::openings::openings_conflict(a, b, margin)
 }
 
 impl OpeningForm {
@@ -793,6 +838,8 @@ impl OpeningForm {
         {
             self.draft.sill_height = bottom.max(0.0);
         }
+        // Egress size of a bedroom window / the required exit door (code minimums).
+        super::code_notice::opening_notices(ui, &mut self.draft);
 
         section(ui, "Position");
         match self.wall.as_ref().map(|w| w.length) {
@@ -955,6 +1002,17 @@ impl OpeningForm {
                 ));
             }
         }
+        if self.draft.effective_style() == OpeningStyle::DoubleDoor {
+            self.door_swing_group(ui);
+        }
+        if matches!(style, OpeningStyle::Hinged | OpeningStyle::DoubleDoor) {
+            ui.checkbox(
+                &mut self.draft.extras.spec.swings_both,
+                "Swings Both Directions",
+            )
+            .on_hover_text("A double-acting door: the plan draws the swing arc on both sides");
+        }
+        self.recessed_into_wall(ui);
         ui.add_enabled_ui(false, |ui| {
             dis_check(ui, "All Glass", false);
             section(ui, "Plan Display");
@@ -966,8 +1024,6 @@ impl OpeningForm {
             section(ui, "Safety");
             dis_check(ui, "Tempered Glass", false);
             dis_check(ui, "Fire Door", false);
-            section(ui, "Recessed into Wall");
-            dis_check(ui, "Recessed To Layer", true);
             section(ui, "Plinth Blocks");
             dis_check(ui, "Interior Plinth Block", false);
             dis_check(ui, "Exterior Plinth Block", false);
@@ -1115,13 +1171,14 @@ impl OpeningForm {
                 dis_radio(ui, "Enlarged", false);
                 dis_radio(ui, "Double", false);
             });
-            section(ui, "Curved Wall Casing");
-            row(ui, "Curved wall", |ui| {
-                dis_radio(ui, "Straight", false);
-                dis_radio(ui, "Radial", true);
-                dis_radio(ui, "Parallel", false);
-            });
         });
+        section(ui, "Curved Wall Casing");
+        row(ui, "Curved wall", |ui| {
+            for m in plan_core::openings::spec::CurvedCasing::ALL {
+                ui.radio_value(&mut self.draft.extras.spec.curved_casing, m, m.name());
+            }
+        });
+        ui.weak("Radial boards stand square to the wall where each one is; straight boards are square at the middle of the opening; parallel boards bend with the curve.");
     }
 
     /// The Jamb tab (doors) and Frame tab (windows) share their controls.
@@ -1137,14 +1194,21 @@ impl OpeningForm {
         ui.checkbox(&mut e.has_jamb, has)
             .on_hover_text(super::SESSION_NOTE);
         ui.add_enabled_ui(e.has_jamb, |ui| {
+            // Stored with the opening: the plan clears a wider opening in the
+            // wall when the size leaves the frame out (DW-82).
+            let spec = &mut self.draft.extras.spec;
             row(ui, "Positioning", |ui| {
-                ui.radio_value(&mut e.size_includes_jamb, true, positioning);
+                ui.radio_value(&mut spec.size_includes_frame, true, positioning);
                 ui.radio_value(
-                    &mut e.size_includes_jamb,
+                    &mut spec.size_includes_frame,
                     false,
                     positioning.replace("Includes", "Excludes"),
                 );
             });
+            if door {
+                ui.checkbox(&mut spec.jamb_in_plan, "Show Jamb in Plan")
+                    .on_hover_text("The jamb blocks beside each jamb line of the plan symbol");
+            }
             self.fields
                 .length_row(ui, "Sides Width", "j_side", &mut e.jamb_side);
             self.fields
@@ -1509,6 +1573,116 @@ impl OpeningForm {
         }
     }
 
+    /// "Recessed into Wall" (DW-57): the leaf stands this far in from the
+    /// exterior face instead of on the wall centerline, in plan.
+    fn recessed_into_wall(&mut self, ui: &mut Ui) {
+        section(ui, "Recessed into Wall");
+        let thick = self.wall.as_ref().map_or(4.5, |w| w.thickness);
+        let spec = &mut self.draft.extras.spec;
+        let mut on = spec.recess_depth.is_some();
+        if ui
+            .checkbox(&mut on, "Recessed To Layer")
+            .on_hover_text("Stands the door leaf and its swing in from the exterior face")
+            .changed()
+        {
+            spec.recess_depth = on.then_some(thick * 0.5);
+        }
+        if let Some(d) = spec.recess_depth {
+            let mut depth = d;
+            if self
+                .fields
+                .length_row(ui, "Depth from Exterior Face", "recess_d", &mut depth)
+            {
+                spec.recess_depth = Some(depth.clamp(0.0, thick));
+            }
+        }
+    }
+
+    /// The Sill/Threshold tab (DW-81, DW-85): the threshold line of an
+    /// exterior door, the exterior sill of a window.
+    fn sill_threshold(&mut self, ui: &mut Ui) {
+        if self.is_door() {
+            let spec = &mut self.draft.extras.spec;
+            section(ui, "Threshold");
+            ui.checkbox(&mut spec.threshold, "Show Threshold in Plan")
+                .on_hover_text("A thin line across the opening of a door in an exterior wall");
+            ui.weak("Hinged, double, sliding and fixed doors in exterior walls.");
+        } else {
+            let spec = &mut self.draft.extras.spec;
+            section(ui, "Exterior Sill");
+            ui.checkbox(&mut spec.sill.enabled, "Use Exterior Sill")
+                .on_hover_text("Also under Lintel; the plan draws it past the exterior face");
+            ui.add_enabled_ui(spec.sill.enabled, |ui| {
+                self.fields
+                    .length_row(ui, "Projection", "sill_d", &mut spec.sill.depth);
+                self.fields
+                    .length_row(ui, "Extend", "sill_x", &mut spec.sill.extend);
+            });
+            spec.sill.depth = spec.sill.depth.max(0.25);
+            spec.sill.extend = spec.sill.extend.max(0.0);
+        }
+    }
+
+    /// The Opening Indicators tab (DW-83).
+    fn indicators(&mut self, ui: &mut Ui) {
+        let swings = matches!(
+            self.draft.effective_style(),
+            OpeningStyle::Hinged
+                | OpeningStyle::DoubleDoor
+                | OpeningStyle::Shower
+                | OpeningStyle::Casement
+        );
+        let ind = &mut self.draft.extras.spec.indicators;
+        section(ui, "Plan Display");
+        ui.checkbox(&mut ind.show_in_plan, "Show Opening Indicators in Plan")
+            .on_hover_text(
+                "An X over a fixed unit, an arrow for the way an awning or hopper opens",
+            );
+        ui.add_enabled_ui(swings, |ui| {
+            ui.checkbox(&mut ind.swing_arrows, "Swing Direction Arrows")
+                .on_hover_text("An arrowhead at the free end of the swing arc");
+        });
+        if !swings {
+            ui.weak("This style has no swing arc.");
+        }
+    }
+
+    /// The Schedule tab (L-29, DW-61): the mark and the supplier data the
+    /// door and window schedules list.
+    fn schedule_tab(&mut self, ui: &mut Ui) {
+        section(ui, "Schedule");
+        ui.checkbox(
+            &mut self.draft.extras.spec.schedule.include,
+            "Include in Schedule",
+        )
+        .on_hover_text("A cleared box leaves it out of the schedule and its numbering");
+        let mut mark = self.draft.schedule_number.clone().unwrap_or_default();
+        row(ui, "Mark", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut mark).desired_width(120.0))
+                .on_hover_text("Blank numbers it automatically (D01, W03); Renumber Schedule sets them in draw order");
+        });
+        self.draft.schedule_number = (!mark.trim().is_empty()).then(|| mark.trim().to_string());
+        let sch = &mut self.draft.extras.spec.schedule;
+        section(ui, "Product");
+        for (label, text) in [
+            ("Manufacturer", &mut sch.manufacturer),
+            ("Model", &mut sch.model),
+            ("Supplier", &mut sch.supplier),
+        ] {
+            row(ui, label, |ui| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(260.0));
+            });
+        }
+        row(ui, "Comment", |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut sch.comment)
+                    .desired_rows(3)
+                    .desired_width(260.0),
+            );
+        });
+        ui.weak("Add the Manufacturer, Model, Supplier and Comment columns in the schedule's Specification.");
+    }
+
     fn label(&mut self, ui: &mut Ui) {
         let door = self.is_door();
         section(ui, "Display Options");
@@ -1651,6 +1825,17 @@ impl SpecPages for OpeningForm {
             "Hardware" => self.hardware(ui),
             "Shutters" => self.shutters(ui),
             "Label" => self.label(ui),
+            "Sill/Threshold" => self.sill_threshold(ui),
+            "Opening Indicators" => self.indicators(ui),
+            "Schedule" => self.schedule_tab(ui),
+            "Rough Opening" => self.rough_opening(ui),
+            "Framing" => self.framing(ui),
+            "Energy Values" => self.energy_values(ui),
+            "Layer" => self.layer_tab(ui),
+            "Materials" => self.materials_tab(ui),
+            "Object Information" => self.object_information(ui),
+            "Shape" => self.shape_tab(ui),
+            "Treatments" => self.treatments_tab(ui),
             _ => {}
         }
     }
@@ -1746,8 +1931,8 @@ fn plan_preview(p: &Painter, area: Rect, len: f64, thick: f64, o: &Opening) {
     p.rect_stroke(body, 0.0, ink, StrokeKind::Inside);
     // The cut across the opening.
     let (a, b) = (
-        to(Point::new(o.start_offset(), 0.0)).x,
-        to(Point::new(o.end_offset(), 0.0)).x,
+        to(Point::new(sym.span.0, 0.0)).x,
+        to(Point::new(sym.span.1, 0.0)).x,
     );
     let (lo, hi) = (sym.cut.0 as f32, sym.cut.1 as f32);
     let (top, bottom) = (
@@ -1975,9 +2160,50 @@ fn dimension_text(p: &Painter, r: Rect, floor_y: f32, o: &Opening) {
     );
 }
 
+/// A window with a Shape tab outline: the outline filled with glass and the
+/// lite dividers clipped to it.
+fn shaped_window_elevation(p: &Painter, r: Rect, floor_y: f32, o: &Opening, e: &OpeningExtras) {
+    let s = r.width() / o.width.max(1.0) as f32;
+    let at = |q: (f64, f64)| Pos2::new(r.min.x + q.0 as f32 * s, r.max.y - q.1 as f32 * s);
+    let shape = &o.extras.spec.shape;
+    let pts: Vec<Pos2> = shape
+        .outline(o.width, o.height)
+        .into_iter()
+        .map(at)
+        .collect();
+    p.add(Shape::convex_polygon(
+        pts,
+        PV_GLASS,
+        Stroke::new(2.0_f32, PV_INK),
+    ));
+    let muntin = Stroke::new((e.muntin_width as f32 * s).clamp(0.8, 3.0), PV_INK);
+    for (a, b) in shape.lite_lines(
+        &o.extras.spec,
+        (e.lites_across, e.lites_vertical),
+        o.width,
+        o.height,
+        1.0,
+    ) {
+        p.line_segment([at(a), at(b)], muntin);
+    }
+    p.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(r.min.x - 6.0, r.max.y + 3.0),
+            Pos2::new(r.max.x + 6.0, r.max.y + 6.0),
+        ),
+        0.0,
+        PV_WALL,
+    );
+    dimension_text(p, r, floor_y, o);
+}
+
 fn window_elevation(p: &Painter, area: Rect, o: &Opening, e: &OpeningExtras) {
     let (r, floor_y) = fit_on_floor(area, o.width, o.height, o.sill_height);
     p.hline(area.x_range(), floor_y, Stroke::new(1.0_f32, PV_INK));
+    if o.is_shaped() {
+        shaped_window_elevation(p, r, floor_y, o, e);
+        return;
+    }
     outlined(p, r.expand(3.0), PV_TRIM);
     let glass = r.shrink(3.0);
     outlined(p, glass, PV_GLASS);
@@ -2537,5 +2763,107 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, 0));
         });
+    }
+    #[test]
+    fn the_schedule_indicator_and_sill_threshold_tabs_are_live() {
+        for o in [
+            Opening::default_door(5, 1, 100.0),
+            Opening::default_window(6, 1, 100.0),
+        ] {
+            let d = OpeningDialog::for_opening(o, &host(), Vec::new(), OpeningExtras::default());
+            for name in ["Schedule", "Opening Indicators", "Sill/Threshold"] {
+                let tab = d
+                    .form
+                    .tabs()
+                    .iter()
+                    .find(|t| t.name == name)
+                    .unwrap_or_else(|| panic!("no {name} tab"));
+                assert!(tab.enabled, "{name} is dimmed");
+            }
+        }
+    }
+
+    #[test]
+    fn schedule_plan_detail_values_are_stored_with_the_opening() {
+        let mut d = OpeningDialog::for_opening(
+            Opening::default_door(5, 1, 100.0),
+            &host(),
+            Vec::new(),
+            OpeningExtras::default(),
+        );
+        {
+            let o = d.draft_mut();
+            o.schedule_number = Some("A7".into());
+            let spec = &mut o.extras.spec;
+            spec.schedule.include = false;
+            spec.schedule.supplier = "Acme".into();
+            spec.schedule.comment = "Primed".into();
+            spec.swings_both = true;
+            spec.threshold = false;
+            spec.recess_depth = Some(1.5);
+            spec.size_includes_frame = false;
+            spec.indicators.swing_arrows = true;
+        }
+        d.sync_stored();
+        let back: Opening =
+            serde_json::from_str(&serde_json::to_string(d.draft()).unwrap()).unwrap();
+        assert_eq!(format!("{back:?}"), format!("{:?}", d.draft()));
+        assert_eq!(back.schedule_number.as_deref(), Some("A7"));
+        assert!(!back.extras.spec.schedule.include);
+        assert_eq!(back.extras.spec.schedule.supplier, "Acme");
+        assert_eq!(back.extras.spec.recess_depth, Some(1.5));
+        // A plan from before the tabs reads with their defaults.
+        let mut v: serde_json::Value = serde_json::to_value(&back).unwrap();
+        let spec = v["extras"]["spec"].as_object_mut().unwrap();
+        for k in [
+            "swings_both",
+            "threshold",
+            "jamb_in_plan",
+            "size_includes_frame",
+            "recess_depth",
+            "indicators",
+            "schedule",
+        ] {
+            spec.remove(k);
+        }
+        let old: Opening = serde_json::from_value(v).unwrap();
+        let spec = &old.extras.spec;
+        assert!(spec.schedule.include && spec.threshold && spec.jamb_in_plan);
+        assert!(spec.size_includes_frame && !spec.swings_both);
+        assert_eq!(spec.recess_depth, None);
+        assert_eq!(
+            spec.indicators,
+            plan_core::openings::spec::OpeningIndicators::default()
+        );
+    }
+
+    #[test]
+    fn two_windows_may_touch_but_a_door_keeps_its_clearance() {
+        let mut p = Project::new("t");
+        let w = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(300.0, 0.0),
+            6.0,
+            109.125,
+            WallKind::Exterior,
+        );
+        let mut win = Opening::default_window(0, 0, 0.0);
+        win.width = 36.0;
+        place_from_template(&mut p, 0, w, 100.0, &win).unwrap();
+        // Flush against the first (82..118): 118..154, centered 136.
+        assert!(place_from_template(&mut p, 0, w, 136.0, &win).is_some());
+        // One inch of overlap with the second (118..154) is still refused;
+        // flush against it is fine.
+        assert!(place_from_template(&mut p, 0, w, 171.0, &win).is_none());
+        assert!(place_from_template(&mut p, 0, w, 172.0, &win).is_some());
+        // A door beside a window keeps 2".
+        let mut door = Opening::default_door(0, 0, 0.0);
+        door.width = 30.0;
+        door.sill_height = 0.0;
+        assert!(place_from_template(&mut p, 0, w, 120.0, &door).is_none());
+        // Touching the last window (ending at 190) is too close, 2" clear is fine.
+        assert!(place_from_template(&mut p, 0, w, 205.0, &door).is_none());
+        assert!(place_from_template(&mut p, 0, w, 207.0, &door).is_some());
     }
 }

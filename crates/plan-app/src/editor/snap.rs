@@ -760,6 +760,156 @@ pub fn snap_with_reference(
     base
 }
 
+// ----- Alignment guides (W-14) -----
+
+/// What a dashed guide aligns the cursor with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuideKind {
+    /// The cursor lines up with a wall end, face corner or midpoint, in x or y.
+    Alignment,
+    /// The cursor is on a 0, 45 or 90 degree direction (multiples of 45) from
+    /// the pending start.
+    Direction,
+}
+
+/// A dashed alignment guide: the line from `from` (the wall point or the
+/// pending start) to the cursor point `to`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Guide {
+    pub from: Point,
+    pub to: Point,
+    pub kind: GuideKind,
+}
+
+/// The points a drawn point can line up with: the ends, midpoints and face
+/// corners of the visible walls (`exclude` walls left out).
+pub fn alignment_anchors(floor: &Floor, layers: &LayerSet, exclude: &[Id]) -> Vec<Point> {
+    let mut out = Vec::new();
+    for w in floor
+        .walls
+        .iter()
+        .filter(|w| !exclude.contains(&w.id) && layers.is_visible(&w.layer) && !w.flags.invisible)
+    {
+        out.push(w.start);
+        out.push(w.end);
+        out.push(Point::lerp(w.start, w.end, 0.5));
+        if !w.is_curved() && w.length() > 1e-6 {
+            out.extend(w.footprint());
+        }
+    }
+    out
+}
+
+/// Directions (unit vectors) of the 45 degree multiples.
+fn direction_rays() -> [Point; 8] {
+    std::array::from_fn(|k| {
+        let a = k as f64 * std::f64::consts::FRAC_PI_4;
+        Point::new(a.cos(), a.sin())
+    })
+}
+
+/// Where `p` lands when it is within `tol` of a guide, and the guides it is
+/// on (W-14): a vertical or horizontal line through an anchor, and the 45
+/// degree multiples through `origin`. A direction and an alignment together
+/// give the point where they cross. The free coordinate is rounded to `grid`.
+/// Returns `None` when nothing is near.
+pub fn align_to_guides(
+    anchors: &[Point],
+    origin: Option<Point>,
+    p: Point,
+    tol: f64,
+    grid: f64,
+) -> Option<Point> {
+    let on_grid = |v: f64| {
+        if grid > 0.0 {
+            (v / grid).round() * grid
+        } else {
+            v
+        }
+    };
+    // The nearest anchor in x and in y.
+    let near_x = anchors
+        .iter()
+        .filter(|a| (a.x - p.x).abs() <= tol)
+        .min_by(|a, b| (a.x - p.x).abs().total_cmp(&(b.x - p.x).abs()));
+    let near_y = anchors
+        .iter()
+        .filter(|a| (a.y - p.y).abs() <= tol)
+        .min_by(|a, b| (a.y - p.y).abs().total_cmp(&(b.y - p.y).abs()));
+    // The nearest ray from the origin.
+    let ray = origin.and_then(|o| {
+        let v = p - o;
+        if v.length() <= tol {
+            return None;
+        }
+        direction_rays()
+            .into_iter()
+            .map(|d| (d, v.cross(d).abs(), v.dot(d)))
+            .filter(|(_, off, along)| *off <= tol && *along > tol)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(d, _, _)| (o, d))
+    });
+    match (ray, near_x, near_y) {
+        (Some((o, d)), Some(ax), _) if d.x.abs() > 1e-9 => {
+            let t = (ax.x - o.x) / d.x;
+            (t > 0.0).then(|| o + d * t)
+        }
+        (Some((o, d)), _, Some(ay)) if d.y.abs() > 1e-9 => {
+            let t = (ay.y - o.y) / d.y;
+            (t > 0.0).then(|| o + d * t)
+        }
+        (Some((o, d)), _, _) => {
+            let along = (p - o).dot(d);
+            Some(o + d * on_grid(along))
+        }
+        (None, Some(ax), Some(ay)) => Some(Point::new(ax.x, ay.y)),
+        (None, Some(ax), None) => Some(Point::new(ax.x, on_grid(p.y))),
+        (None, None, Some(ay)) => Some(Point::new(on_grid(p.x), ay.y)),
+        (None, None, None) => None,
+    }
+}
+
+/// The guides `p` is exactly on (within `eps`): the nearest aligned anchor in
+/// x and in y, and the 45 degree ray from `origin` when `p` lies on one.
+pub fn guides_through(anchors: &[Point], origin: Option<Point>, p: Point, eps: f64) -> Vec<Guide> {
+    let mut out = Vec::new();
+    let nearest = |it: Vec<&Point>| {
+        it.into_iter()
+            .filter(|a| a.dist(p) > eps)
+            .min_by(|a, b| a.dist(p).total_cmp(&b.dist(p)))
+            .copied()
+    };
+    if let Some(a) = nearest(anchors.iter().filter(|a| (a.x - p.x).abs() <= eps).collect()) {
+        out.push(Guide {
+            from: a,
+            to: p,
+            kind: GuideKind::Alignment,
+        });
+    }
+    if let Some(a) = nearest(anchors.iter().filter(|a| (a.y - p.y).abs() <= eps).collect()) {
+        out.push(Guide {
+            from: a,
+            to: p,
+            kind: GuideKind::Alignment,
+        });
+    }
+    if let Some(o) = origin {
+        let v = p - o;
+        if v.length() > eps
+            && direction_rays()
+                .iter()
+                .any(|d| v.cross(*d).abs() <= eps && v.dot(*d) > 0.0)
+        {
+            out.push(Guide {
+                from: o,
+                to: p,
+                kind: GuideKind::Direction,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1346,5 +1496,48 @@ mod tests {
         s.store_in(&mut e);
         assert!(e.snap_extension && !e.snap_markers);
         assert_eq!(SnapSettings::from_editing(&e), s);
+    }
+
+    #[test]
+    fn a_point_near_a_wall_end_lines_up_with_it_in_x_or_y() {
+        let anchors = vec![Point::new(100.0, 0.0), Point::new(0.0, 80.0)];
+        // 2" off the x of the first anchor: x aligns, y rounds to the grid.
+        let a = align_to_guides(&anchors, None, Point::new(102.0, 55.4), 5.0, 1.0).unwrap();
+        assert_eq!(a, Point::new(100.0, 55.0));
+        // Near both: the point is the crossing of the two guides.
+        let a = align_to_guides(&anchors, None, Point::new(98.0, 83.0), 5.0, 1.0).unwrap();
+        assert_eq!(a, Point::new(100.0, 80.0));
+        // Nowhere near anything.
+        assert!(align_to_guides(&anchors, None, Point::new(50.0, 40.0), 5.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_direction_guide_holds_45_degrees_and_crosses_an_alignment() {
+        let o = Point::new(0.0, 0.0);
+        // Near the 45 degree ray.
+        let a = align_to_guides(&[], Some(o), Point::new(100.0, 97.0), 5.0, 1.0).unwrap();
+        assert!((a.x - a.y).abs() < 1e-9, "{a:?}");
+        // The ray meets the vertical through an anchor at 150".
+        let anchors = vec![Point::new(150.0, -40.0)];
+        let a = align_to_guides(&anchors, Some(o), Point::new(148.0, 146.0), 5.0, 1.0).unwrap();
+        assert!((a.x - 150.0).abs() < 1e-9 && (a.y - 150.0).abs() < 1e-9, "{a:?}");
+        // Behind a ray's origin is the opposite ray, also 45 degrees.
+        let back = align_to_guides(&[], Some(o), Point::new(-100.0, -98.0), 5.0, 1.0).unwrap();
+        assert!((back.x - back.y).abs() < 1e-9, "{back:?}");
+        let g = guides_through(&anchors, Some(o), Point::new(150.0, 150.0), 0.01);
+        assert!(g.iter().any(|g| g.kind == GuideKind::Alignment && g.from == anchors[0]));
+        assert!(g.iter().any(|g| g.kind == GuideKind::Direction && g.from == o));
+    }
+
+    #[test]
+    fn anchors_are_the_ends_midpoints_and_faces_of_visible_walls() {
+        let p = project();
+        let layers = LayerSet::default();
+        let a = alignment_anchors(&p.floors[0], &layers, &[]);
+        let walls = p.floors[0].walls.len();
+        assert!(a.len() >= walls * 3, "{} anchors for {walls} walls", a.len());
+        assert!(a.contains(&Point::new(120.0, 0.0)));
+        let ids: Vec<Id> = p.floors[0].walls.iter().map(|w| w.id).collect();
+        assert!(alignment_anchors(&p.floors[0], &layers, &ids).is_empty());
     }
 }

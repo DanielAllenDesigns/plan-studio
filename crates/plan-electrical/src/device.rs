@@ -17,6 +17,10 @@ pub enum DeviceKind {
     Gfci,
     /// Floor-mounted receptacle.
     OutletFloor,
+    /// Weatherproof (WP) GFCI receptacle for exterior walls.
+    OutletWp,
+    /// Single receptacle on its own dedicated circuit (refrigerator, disposal, freezer).
+    OutletDedicated,
     Switch,
     Switch3Way,
     /// Four-way switch (the middle of a three-way run).
@@ -59,7 +63,9 @@ pub const FINISHES: [&str; 6] = [
 /// Receptacle height to the center of the plate, inches.
 pub const OUTLET_HEIGHT: f64 = 12.0;
 /// Counter-height receptacle (kitchen backsplash), inches to the plate center.
-pub const COUNTER_OUTLET_HEIGHT: f64 = 42.0;
+pub const COUNTER_OUTLET_HEIGHT: f64 = 44.0;
+/// Weatherproof exterior receptacle height above the finished floor, inches.
+pub const WP_OUTLET_HEIGHT: f64 = 18.0;
 /// Switch height to the center of the plate, inches.
 pub const SWITCH_HEIGHT: f64 = 48.0;
 
@@ -72,6 +78,8 @@ impl DeviceKind {
             DeviceKind::Outlet220 => "220V Outlet",
             DeviceKind::Gfci => "GFCI Outlet",
             DeviceKind::OutletFloor => "Floor Outlet",
+            DeviceKind::OutletWp => "WP Outlet",
+            DeviceKind::OutletDedicated => "Dedicated Outlet",
             DeviceKind::Switch => "Switch",
             DeviceKind::Switch3Way => "3-Way Switch",
             DeviceKind::Switch4Way => "4-Way Switch",
@@ -101,6 +109,8 @@ impl DeviceKind {
             DeviceKind::Outlet220 => "Receptacle, 220 V dedicated",
             DeviceKind::Gfci => "Duplex receptacle, GFCI protected",
             DeviceKind::OutletFloor => "Floor receptacle",
+            DeviceKind::OutletWp => "Weatherproof receptacle, GFCI protected",
+            DeviceKind::OutletDedicated => "Single receptacle, dedicated circuit",
             DeviceKind::Switch => "Single-pole switch",
             DeviceKind::Switch3Way => "Three-way switch",
             DeviceKind::Switch4Way => "Four-way switch",
@@ -123,13 +133,15 @@ impl DeviceKind {
     }
 
     /// One of each kind, in schedule/legend order (`RopeLight` has length 0).
-    pub fn all() -> [DeviceKind; 23] {
+    pub fn all() -> [DeviceKind; 25] {
         [
             DeviceKind::Outlet110,
             DeviceKind::Outlet110Quad,
             DeviceKind::Outlet220,
             DeviceKind::Gfci,
             DeviceKind::OutletFloor,
+            DeviceKind::OutletWp,
+            DeviceKind::OutletDedicated,
             DeviceKind::Switch,
             DeviceKind::Switch3Way,
             DeviceKind::Switch4Way,
@@ -161,8 +173,10 @@ impl DeviceKind {
             | DeviceKind::Outlet110Quad
             | DeviceKind::Outlet220
             | DeviceKind::Gfci
+            | DeviceKind::OutletDedicated
             | DeviceKind::DataJack
             | DeviceKind::PhoneJack => OUTLET_HEIGHT,
+            DeviceKind::OutletWp => WP_OUTLET_HEIGHT,
             DeviceKind::OutletFloor => 0.0,
             DeviceKind::Switch
             | DeviceKind::Switch3Way
@@ -188,6 +202,8 @@ impl DeviceKind {
                 | DeviceKind::Outlet110Quad
                 | DeviceKind::Outlet220
                 | DeviceKind::Gfci
+                | DeviceKind::OutletWp
+                | DeviceKind::OutletDedicated
                 | DeviceKind::Switch
                 | DeviceKind::Switch3Way
                 | DeviceKind::Switch4Way
@@ -282,8 +298,56 @@ impl DeviceKind {
                 | DeviceKind::Outlet110Quad
                 | DeviceKind::Outlet220
                 | DeviceKind::Gfci
+                | DeviceKind::OutletWp
+                | DeviceKind::OutletDedicated
                 | DeviceKind::OutletFloor
         )
+    }
+
+    /// Supply voltage of a receptacle: 220 for the 220 V outlet, 110 for the
+    /// other receptacles, `None` for everything else.
+    pub fn voltage(&self) -> Option<u32> {
+        match self {
+            DeviceKind::Outlet220 => Some(220),
+            k if k.is_outlet() => Some(110),
+            _ => None,
+        }
+    }
+
+    /// Ground-fault protected: the GFCI and weatherproof receptacles.
+    pub fn is_gfci(&self) -> bool {
+        matches!(self, DeviceKind::Gfci | DeviceKind::OutletWp)
+    }
+
+    /// Weatherproof (exterior) receptacle.
+    pub fn is_weatherproof(&self) -> bool {
+        matches!(self, DeviceKind::OutletWp)
+    }
+
+    /// Always on a circuit of its own: the 220 V and dedicated receptacles.
+    pub fn is_dedicated(&self) -> bool {
+        matches!(self, DeviceKind::Outlet220 | DeviceKind::OutletDedicated)
+    }
+
+    /// The flags a schedule or legend shows after the type: `110V`/`220V`,
+    /// `GFCI`, `WP`, `Dedicated`.
+    pub fn flags(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        match self.voltage() {
+            Some(110) => out.push("110V"),
+            Some(_) => out.push("220V"),
+            None => {}
+        }
+        if self.is_gfci() {
+            out.push("GFCI");
+        }
+        if self.is_weatherproof() {
+            out.push("WP");
+        }
+        if self.is_dedicated() {
+            out.push("Dedicated");
+        }
+        out
     }
 
     /// A lighting load (fixtures, sconces, rope light).

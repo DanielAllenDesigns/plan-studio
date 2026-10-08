@@ -21,10 +21,12 @@
 
 pub mod materials;
 pub mod pdf;
+pub mod props_exchange;
 pub mod schedule;
 pub mod schedule_kinds;
 pub mod terrain_report;
 pub mod xlsx;
+pub mod xlsx_read;
 
 pub use materials::{
     fmt_money, materials_list, materials_report, price_keys, row_cells as materials_cells,

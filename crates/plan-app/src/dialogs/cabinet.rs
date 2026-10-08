@@ -4,25 +4,30 @@
 //! backsplash, toe kick, plus the corner, blind, appliance-opening and
 //! custom-top settings of those kinds), Box Construction, Front/Sides/Back
 //! (the face-item tree and a front elevation whose dividers drag),
-//! Door/Drawer (built-in slab, shaker and raised styles, handles, hinges),
-//! Accessories, Opening Indicators, Moldings (crown and light rail), Layer,
-//! Materials (per part) and Label. The preview shows the plan symbol and a
+//! Door/Drawer (built-in slab, shaker and raised styles and the library's
+//! "Cabinet Doors", handles, hinges), Accessories (front pilasters, feet,
+//! finished end panels), Opening Indicators, Moldings (crown and light
+//! rail), Layer, Fill Style (plan hatch), Materials (per part), Label,
+//! Components (the parts with counts, sizes and materials), Object
+//! Information and Schedule. The preview shows the plan symbol and a
 //! front elevation of the resolved face items. The face-tree commands (Add,
-//! Delete, Move, Split Vertical/Horizontal, Equalize) are plain functions on
+//! Delete, Move, Split Vertical/Horizontal, Merge With Next, Equalize) are
+//! plain functions on
 //! `plan_cabinets::FaceLayout` addressed by a path of indices, so they test
 //! without a GUI.
 
 use super::{
-    dis_check, dis_combo, dis_radio, fmt_short, off, on, pv_text, row, section, Fields, Outcome,
+    dis_check, dis_combo, dis_radio, fmt_short, on, pv_text, row, section, Fields, Outcome,
     SpecDialog, SpecPages, Tab, PV_GLASS, PV_INK, PV_WALL,
 };
 use crate::editor::placed::{cabinet_label, cabinet_layer};
+use crate::tools::library::door_styles::{self, LibraryStyle};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use plan_cabinets::{
     plan_symbol, Backsplash, BlindSide, Cabinet, CabinetKind, CornerSpec, CornerStyle,
     CornerTreatment, Countertop, CutoutKind, Divider, DoorProfile, DoorStyle, DrawerStyle,
-    EdgeProfile, FaceCell, FaceItem, FaceLayout, FaceSide, HandleStyle, HingeStyle, MaterialChoice,
-    Molding, Overlay, SideKind, ToeKick,
+    EdgeProfile, FaceCell, FaceItem, FaceLayout, FaceSide, FillPattern, FootStyle, HandleStyle,
+    HingeStyle, MaterialChoice, Molding, Overlay, PilasterStyle, SideKind, ToeKick,
 };
 use plan_core::geometry::Point;
 
@@ -38,12 +43,12 @@ const TABS: &[Tab] = &[
     on("Opening Indicators"),
     on("Moldings"),
     on("Layer"),
-    off("Fill Style"),
+    on("Fill Style"),
     on("Materials"),
     on("Label"),
-    off("Components"),
-    off("Object Information"),
-    off("Schedule"),
+    on("Components"),
+    on("Object Information"),
+    on("Schedule"),
 ];
 
 // ----- the face-item tree -----
@@ -245,6 +250,46 @@ pub fn delete_item(layout: &mut FaceLayout, path: &[usize]) -> Option<Path> {
     Some(p)
 }
 
+/// Merge With Next: joins the selected item and the one after it into one
+/// (the selected item stays, the next one goes). In a vertical stack the
+/// merged item is as tall as both together (auto when either is auto); in a
+/// horizontal layout it is as wide as both (auto when either is auto). A
+/// layout left with one cell becomes that cell. Returns the path to select
+/// afterwards, or `None` when the item is the last of its list.
+pub fn merge_with_next(layout: &mut FaceLayout, path: &[usize]) -> Option<Path> {
+    let (idx, parent) = path.split_last()?;
+    match container(layout, parent)? {
+        Cont::Items(v) => {
+            let next = v.get(idx + 1)?.height();
+            let own = v.get(*idx)?.height();
+            let merged = if own > 0.0 && next > 0.0 {
+                own + next
+            } else {
+                0.0
+            };
+            let item = v.get_mut(*idx)?;
+            *item = item.with_height(merged);
+        }
+        Cont::Cells(v) => {
+            let next = v.get(idx + 1)?.width;
+            let own = v.get(*idx)?.width;
+            v.get_mut(*idx)?.width = match (own, next) {
+                (Some(a), Some(b)) => Some(a + b),
+                _ => None,
+            };
+        }
+    }
+    let mut next_path = parent.to_vec();
+    next_path.push(idx + 1);
+    delete_item(layout, &next_path)?;
+    if item_at(layout, path).is_some() {
+        Some(path.to_vec())
+    } else {
+        // The layout collapsed into its remaining cell.
+        Some(parent.to_vec())
+    }
+}
+
 /// Split Vertical: stacks a copy of the item under it (the two share its
 /// height). Only items of a vertical stack split this way.
 pub fn split_vertical(layout: &mut FaceLayout, path: &[usize]) -> Option<Path> {
@@ -411,6 +456,10 @@ struct CabinetForm {
     new_type: ItemType,
     /// The face the Front/Sides/Back tab edits.
     side: FaceSide,
+    /// The library's "Cabinet Doors" styles the Door/Drawer tab offers.
+    styles: Vec<LibraryStyle>,
+    /// What the last Chief scan said.
+    style_note: String,
 }
 
 impl CabinetDialog {
@@ -423,6 +472,8 @@ impl CabinetDialog {
                 sel: Vec::new(),
                 new_type: ItemType::Drawer,
                 side: FaceSide::Front,
+                styles: door_styles::available(),
+                style_note: String::new(),
             },
         }
     }
@@ -910,6 +961,15 @@ impl CabinetForm {
                     sel = p;
                 }
             }
+            if ui
+                .add_enabled(has, egui::Button::new("Merge With Next"))
+                .on_hover_text("Joins the selected item and the one after it")
+                .clicked()
+            {
+                if let Some(p) = merge_with_next(layout, &sel) {
+                    sel = p;
+                }
+            }
             if ui.add_enabled(has, egui::Button::new("Equalize")).clicked() {
                 equalize(layout, &sel);
             }
@@ -998,27 +1058,56 @@ impl CabinetForm {
     }
 
     fn door_drawer(&mut self, ui: &mut Ui) {
+        let mut rescan = false;
         let f = &mut self.fields;
         let d = &mut self.draft;
         section(ui, "Door Panel");
+        let styles = &self.styles;
         row(ui, "Main Style", |ui| {
-            let mut pick = None;
+            let mut pick: Option<StylePick> = None;
             egui::ComboBox::from_id_salt("door_style")
                 .selected_text(d.door_style.name.clone())
                 .show_ui(ui, |ui| {
                     for (name, _) in DoorStyle::BUILTIN {
-                        if ui
-                            .selectable_label(d.door_style.name == name, name)
-                            .clicked()
-                        {
-                            pick = Some(name);
+                        let here = d.door_style.library.is_empty() && d.door_style.name == name;
+                        if ui.selectable_label(here, name).clicked() {
+                            pick = Some(StylePick::Builtin(name));
+                        }
+                    }
+                    let lib = door_styles::doors(styles);
+                    if !lib.is_empty() {
+                        ui.separator();
+                        ui.weak("Library: Cabinet Doors");
+                        for s in lib {
+                            let here = d.door_style.library == s.id;
+                            if ui
+                                .selectable_label(here, format!("{} ({})", s.name, s.source))
+                                .clicked()
+                            {
+                                pick = Some(StylePick::Library(s.id.clone()));
+                            }
                         }
                     }
                 });
-            if let Some(name) = pick {
-                d.door_style.apply_builtin(name);
+            if let Some(pick) = pick {
+                pick_door_style(&mut d.door_style, pick, styles);
             }
         });
+        if crate::tools::library::chief::enabled() {
+            row(ui, "Chief styles", |ui| {
+                let label = if door_styles::chief_scanned() {
+                    "Scan Chief Library Again"
+                } else {
+                    "Load Chief Library Styles"
+                };
+                if ui.button(label).clicked() {
+                    rescan = true;
+                }
+                ui.weak(self.style_note.as_str());
+            });
+        } else {
+            ui.weak("Library styles come from the \"Cabinet Doors\" category; turn on the Chief catalogs in Preferences to list Chief's.");
+        }
         profile_row(ui, "door_profile", &mut d.door_style.profile);
         f.length_row(ui, "Thickness", "door_thick", &mut d.door_style.thickness);
         if d.door_style.profile != DoorProfile::Slab {
@@ -1084,21 +1173,32 @@ impl CabinetForm {
         );
         section(ui, "Drawer Panel");
         row(ui, "Main Style", |ui| {
-            let mut pick = None;
+            let mut pick: Option<StylePick> = None;
             egui::ComboBox::from_id_salt("drawer_style")
                 .selected_text(d.drawer_style.name.clone())
                 .show_ui(ui, |ui| {
                     for (name, _) in DrawerStyle::BUILTIN {
-                        if ui
-                            .selectable_label(d.drawer_style.name == name, name)
-                            .clicked()
-                        {
-                            pick = Some(name);
+                        let here = d.drawer_style.library.is_empty() && d.drawer_style.name == name;
+                        if ui.selectable_label(here, name).clicked() {
+                            pick = Some(StylePick::Builtin(name));
+                        }
+                    }
+                    if !styles.is_empty() {
+                        ui.separator();
+                        ui.weak("Library: Cabinet Doors and Drawers");
+                        for s in styles.iter() {
+                            let here = d.drawer_style.library == s.id;
+                            if ui
+                                .selectable_label(here, format!("{} ({})", s.name, s.source))
+                                .clicked()
+                            {
+                                pick = Some(StylePick::Library(s.id.clone()));
+                            }
                         }
                     }
                 });
-            if let Some(name) = pick {
-                d.drawer_style.apply_builtin(name);
+            if let Some(pick) = pick {
+                pick_drawer_style(&mut d.drawer_style, pick, styles);
             }
         });
         profile_row(ui, "drawer_profile", &mut d.drawer_style.profile);
@@ -1139,6 +1239,11 @@ impl CabinetForm {
             );
         }
         ui.weak("Cup and edge pulls always sit at the top edge of the drawer front.");
+        if rescan {
+            let n = door_styles::scan_chief();
+            self.style_note = format!("{n} Chief door and drawer styles found");
+            self.styles = door_styles::available();
+        }
     }
 
     fn indicators(&mut self, ui: &mut Ui) {
@@ -1161,19 +1266,220 @@ impl CabinetForm {
         );
     }
 
-    fn accessories(ui: &mut Ui) {
+    fn accessories(&mut self, ui: &mut Ui) {
+        let f = &mut self.fields;
+        let d = &mut self.draft;
+        let acc = &mut d.accessories;
         section(ui, "Front Pilasters");
         row(ui, "Front Pilaster", |ui| {
-            dis_combo(ui, "acc_pilaster", "None")
+            egui::ComboBox::from_id_salt("acc_pilaster")
+                .selected_text(acc.pilaster.name())
+                .show_ui(ui, |ui| {
+                    for p in PilasterStyle::ALL {
+                        ui.selectable_value(&mut acc.pilaster, p, p.name());
+                    }
+                });
         });
+        if acc.pilaster != PilasterStyle::None {
+            row(ui, "Place On", |ui| {
+                ui.checkbox(&mut acc.pilaster_left, "Left");
+                ui.checkbox(&mut acc.pilaster_right, "Right");
+            });
+            f.length_row(ui, "Width", "acc_pilaster_w", &mut acc.pilaster_width);
+        }
         section(ui, "Feet");
-        row(ui, "Foot Style", |ui| dis_combo(ui, "acc_feet", "None"));
-        section(ui, "Side Panels");
-        row(ui, "Main Panel Style", |ui| {
-            dis_combo(ui, "acc_panel", "Slab Panels")
+        let has_kick = d.toe_kick.is_some_and(|t| t.height > 0.0);
+        ui.add_enabled_ui(has_kick, |ui| {
+            row(ui, "Foot Style", |ui| {
+                egui::ComboBox::from_id_salt("acc_feet")
+                    .selected_text(acc.feet.name())
+                    .show_ui(ui, |ui| {
+                        for p in FootStyle::ALL {
+                            ui.selectable_value(&mut acc.feet, p, p.name());
+                        }
+                    });
+            });
+            if acc.feet != FootStyle::None {
+                f.length_row(ui, "Foot Size", "acc_foot_size", &mut acc.foot_size);
+            }
         });
-        dis_check(ui, "Full Size Panel", true);
-        ui.weak("Accessories are not stored in the model yet.");
+        if !has_kick {
+            ui.weak("Feet stand in place of a toe kick: give the cabinet one on the General tab.");
+        } else {
+            ui.weak("Four feet replace the toe kick board.");
+        }
+        section(ui, "Side Panels");
+        for (side, label) in [
+            (FaceSide::Left, "Finished panel on the left end"),
+            (FaceSide::Right, "Finished panel on the right end"),
+        ] {
+            let mut finished = d.side_kind(side) == SideKind::Finished;
+            if ui.checkbox(&mut finished, label).changed() {
+                let layout = d
+                    .side_face(side)
+                    .map_or_else(FaceLayout::empty, |s| s.layout.clone());
+                let kind = if finished {
+                    SideKind::Finished
+                } else {
+                    SideKind::Plain
+                };
+                d.set_side_face(side, kind, layout);
+            }
+        }
+        ui.weak("The same as Side Type on the Front/Sides/Back tab.");
+    }
+
+    fn fill_style(&mut self, ui: &mut Ui) {
+        let fill = &mut self.draft.fill;
+        section(ui, "Fill Style");
+        row(ui, "Pattern", |ui| {
+            egui::ComboBox::from_id_salt("cab_fill")
+                .selected_text(fill.pattern.name())
+                .show_ui(ui, |ui| {
+                    for p in FillPattern::ALL {
+                        ui.selectable_value(&mut fill.pattern, p, p.name());
+                    }
+                });
+        });
+        if fill.pattern != FillPattern::None {
+            row(ui, "Color", |ui| {
+                ui.color_edit_button_srgb(&mut fill.color);
+            });
+            row(ui, "Opacity", |ui| {
+                ui.add(egui::Slider::new(&mut fill.alpha, 0.1..=1.0));
+            });
+            if matches!(fill.pattern, FillPattern::Hatch | FillPattern::CrossHatch) {
+                self.fields
+                    .length_row(ui, "Line Spacing", "cab_fill_gap", &mut fill.spacing);
+                fill.spacing = fill.spacing.max(0.5);
+            }
+        }
+        ui.weak("Drawn inside the cabinet's outline in the plan view only.");
+    }
+
+    /// The parts the cabinet is made of, with counts, sizes and materials.
+    fn components(&mut self, ui: &mut Ui) {
+        section(ui, "Components");
+        let rows = plan_cabinets::components(&self.draft);
+        if rows.is_empty() {
+            ui.weak("This kind of cabinet has no parts to list.");
+            return;
+        }
+        egui::Grid::new("cab_components")
+            .num_columns(4)
+            .spacing([14.0, 4.0])
+            .striped(true)
+            .show(ui, |ui| {
+                for h in ["Component", "Count", "Size (W x H x T)", "Material"] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                for c in &rows {
+                    ui.label(&c.name);
+                    ui.label(c.count.to_string());
+                    ui.label(&c.size);
+                    ui.label(&c.material);
+                    ui.end_row();
+                }
+            });
+        ui.weak("Counts and sizes follow the box, Front/Sides/Back, Door/Drawer and Accessories tabs; materials are chosen on the Materials tab.");
+    }
+
+    fn object_information(&mut self, ui: &mut Ui) {
+        let d = &self.draft;
+        section(ui, "Cabinet");
+        let size = format!(
+            "{} x {} x {}",
+            fmt_short(d.width),
+            fmt_short(d.depth),
+            fmt_short(d.height)
+        );
+        let source = d.preset.map_or_else(
+            || "Plan Studio cabinet".to_string(),
+            |p| p.name().to_string(),
+        );
+        let rows = [
+            ("Object", d.kind.name().to_string()),
+            ("Label", d.display_label()),
+            ("Size (W x D x H)", size),
+            ("Elevation", fmt_short(d.elevation)),
+            ("Layer", cabinet_layer(d.kind).to_string()),
+            ("Made from", source),
+            (
+                "Door style",
+                if d.door_style.library.is_empty() {
+                    d.door_style.name.clone()
+                } else {
+                    format!("{} ({})", d.door_style.name, d.door_style.library)
+                },
+            ),
+        ];
+        egui::Grid::new("cab_info").striped(true).show(ui, |ui| {
+            for (k, v) in rows {
+                ui.label(k);
+                ui.label(v);
+                ui.end_row();
+            }
+        });
+        section(ui, "Product");
+        let info = &mut self.draft.info;
+        row(ui, "Manufacturer", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut info.manufacturer).desired_width(220.0));
+        });
+        row(ui, "Model Number", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut info.model).desired_width(220.0));
+        });
+        row(ui, "Description", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut info.description).desired_width(220.0));
+        });
+        ui.label("Notes");
+        ui.add(
+            egui::TextEdit::multiline(&mut info.notes)
+                .desired_rows(3)
+                .desired_width(320.0),
+        );
+    }
+
+    fn schedule(&mut self, ui: &mut Ui) {
+        section(ui, "Cabinet Schedule");
+        ui.checkbox(
+            &mut self.draft.in_schedule,
+            "List this cabinet in the Cabinet Schedule",
+        );
+        let d = &self.draft;
+        section(ui, "Schedule Row");
+        egui::Grid::new("cab_schedule_row")
+            .striped(true)
+            .show(ui, |ui| {
+                for h in [
+                    "Label",
+                    "Type",
+                    "Width",
+                    "Depth",
+                    "Height",
+                    "Door Style",
+                    "Finish",
+                    "Hardware",
+                ] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                ui.label(d.display_label());
+                ui.label(
+                    d.preset
+                        .map_or_else(|| d.kind.name().to_string(), |p| p.name().to_string()),
+                );
+                ui.label(fmt_short(d.width));
+                ui.label(fmt_short(d.depth));
+                ui.label(fmt_short(d.height));
+                ui.label(&d.door_style.name);
+                ui.label(d.finish_name());
+                ui.label(d.hardware_name());
+                ui.end_row();
+            });
+        if !d.in_schedule {
+            ui.weak("Left out of the schedule (and its callouts).");
+        }
     }
 
     fn moldings(&mut self, ui: &mut Ui) {
@@ -1288,6 +1594,42 @@ impl CabinetForm {
             }
         });
         ui.weak("Drag the square handle next to the label in the plan to move it.");
+    }
+}
+
+/// What the Main Style list picked.
+#[derive(Debug, Clone, PartialEq)]
+enum StylePick {
+    Builtin(&'static str),
+    Library(String),
+}
+
+/// Applies a Main Style pick to the door panel: a built-in style by name, or
+/// a library style by id (its look and id are copied in).
+fn pick_door_style(door: &mut DoorStyle, pick: StylePick, styles: &[LibraryStyle]) {
+    match pick {
+        StylePick::Builtin(name) => {
+            door.apply_builtin(name);
+        }
+        StylePick::Library(id) => {
+            if let Some(s) = styles.iter().find(|s| s.id == id) {
+                door_styles::apply_door(s, door);
+            }
+        }
+    }
+}
+
+/// The same for the drawer panel.
+fn pick_drawer_style(drawer: &mut DrawerStyle, pick: StylePick, styles: &[LibraryStyle]) {
+    match pick {
+        StylePick::Builtin(name) => {
+            drawer.apply_builtin(name);
+        }
+        StylePick::Library(id) => {
+            if let Some(s) = styles.iter().find(|s| s.id == id) {
+                door_styles::apply_drawer(s, drawer);
+            }
+        }
     }
 }
 
@@ -1515,12 +1857,16 @@ impl SpecPages for CabinetForm {
             Some("Box Construction") => self.box_construction(ui),
             Some("Front/Sides/Back") => self.front(ui),
             Some("Door/Drawer") => self.door_drawer(ui),
-            Some("Accessories") => Self::accessories(ui),
+            Some("Accessories") => self.accessories(ui),
             Some("Opening Indicators") => self.indicators(ui),
             Some("Moldings") => self.moldings(ui),
             Some("Layer") => self.layer(ui),
             Some("Materials") => self.materials(ui),
             Some("Label") => self.label(ui),
+            Some("Fill Style") => self.fill_style(ui),
+            Some("Components") => self.components(ui),
+            Some("Object Information") => self.object_information(ui),
+            Some("Schedule") => self.schedule(ui),
             _ => {}
         }
     }
@@ -1777,6 +2123,11 @@ impl CabinetDefaultsDialog {
 
     pub fn draft(&self) -> &CabinetDefaults {
         &self.form.draft
+    }
+
+    /// Opens on the tab at index `tab` (Default Settings > Cabinets leaves).
+    pub fn start_on(&mut self, tab: usize) {
+        self.frame.start_on(tab.min(DEFAULTS_TABS.len() - 1));
     }
 
     #[cfg(test)]
@@ -2215,7 +2566,7 @@ mod tests {
         assert!(dlg.form.error().is_some());
         dlg.form.draft.width = 30.0;
         assert_eq!(dlg.draft().width, 30.0);
-        assert_eq!(TABS.iter().filter(|t| t.enabled).count(), 10);
+        assert_eq!(TABS.iter().filter(|t| t.enabled).count(), 14);
 
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -2551,5 +2902,208 @@ mod tests {
         assert!(label.iter().any(|t| t.contains("Label position")));
         assert_eq!(HandleStyle::ALL.len(), 5);
         assert_eq!(handle_name(HandleStyle::Cup), "Cup Pull");
+    }
+
+    #[test]
+    fn every_tab_of_the_specification_is_live_and_the_new_ones_show_their_content() {
+        assert!(TABS.iter().all(|t| t.enabled), "no tab is greyed out");
+        let mut dlg = CabinetDialog::new(Cabinet::base(24.0));
+        let tab = |name: &str| TABS.iter().position(|t| t.name == name).unwrap();
+        let has = |texts: &[String], want: &str| texts.iter().any(|t| t.contains(want));
+        // Components: the box and its parts, with counts and materials.
+        let comps = cabinet_page_texts(&mut dlg, tab("Components"));
+        for want in ["Component", "Box side", "Countertop", "Toe kick"] {
+            assert!(has(&comps, want), "{want} in {comps:?}");
+        }
+        // Object Information: the facts, then the product fields.
+        let info = cabinet_page_texts(&mut dlg, tab("Object Information"));
+        for want in ["Base Cabinet", "Manufacturer", "Model Number", "Notes"] {
+            assert!(has(&info, want), "{want} in {info:?}");
+        }
+        // Schedule: the checkbox and the row.
+        let sched = cabinet_page_texts(&mut dlg, tab("Schedule"));
+        for want in ["List this cabinet in the Cabinet Schedule", "Door Style"] {
+            assert!(has(&sched, want), "{want} in {sched:?}");
+        }
+        dlg.form.draft.in_schedule = false;
+        let sched = cabinet_page_texts(&mut dlg, tab("Schedule"));
+        assert!(has(&sched, "Left out of the schedule"), "{sched:?}");
+        // Fill Style: a pattern first, then colour and spacing once chosen.
+        let fill = cabinet_page_texts(&mut dlg, tab("Fill Style"));
+        assert!(has(&fill, "Pattern") && !has(&fill, "Opacity"), "{fill:?}");
+        dlg.form.draft.fill.pattern = FillPattern::Hatch;
+        let fill = cabinet_page_texts(&mut dlg, tab("Fill Style"));
+        for want in ["Color", "Opacity", "Line Spacing"] {
+            assert!(has(&fill, want), "{want} in {fill:?}");
+        }
+        // Accessories: pilasters, feet (a base has a toe kick) and end panels.
+        let acc = cabinet_page_texts(&mut dlg, tab("Accessories"));
+        for want in [
+            "Front Pilaster",
+            "Foot Style",
+            "Finished panel on the left end",
+        ] {
+            assert!(has(&acc, want), "{want} in {acc:?}");
+        }
+        dlg.form.draft.accessories.pilaster = PilasterStyle::Fluted;
+        let acc = cabinet_page_texts(&mut dlg, tab("Accessories"));
+        assert!(has(&acc, "Place On") && has(&acc, "Width"), "{acc:?}");
+        // A wall cabinet has no toe kick: feet say so.
+        let mut wall = CabinetDialog::new(Cabinet::new(CabinetKind::Wall, 30.0));
+        let acc = cabinet_page_texts(&mut wall, tab("Accessories"));
+        assert!(has(&acc, "give the cabinet one"), "{acc:?}");
+    }
+
+    #[test]
+    fn components_follow_the_accessories_and_the_face() {
+        let mut dlg = CabinetDialog::new(Cabinet::base(24.0));
+        let comps = |dlg: &CabinetDialog| plan_cabinets::components(&dlg.form.draft);
+        assert!(comps(&dlg).iter().all(|c| !c.name.contains("Foot")));
+        dlg.form.draft.accessories.feet = FootStyle::Block;
+        assert!(comps(&dlg)
+            .iter()
+            .any(|c| c.name == "Block Foot" && c.count == 4));
+        // Finished end panels replace the plain sides in the list.
+        dlg.form
+            .draft
+            .set_side_face(FaceSide::Left, SideKind::Finished, FaceLayout::empty());
+        let c = comps(&dlg);
+        assert_eq!(c.iter().find(|c| c.name == "Box side").unwrap().count, 1);
+        assert_eq!(
+            c.iter()
+                .find(|c| c.name == "Finished end panel")
+                .unwrap()
+                .count,
+            1
+        );
+    }
+
+    #[test]
+    fn a_library_style_pick_copies_its_look_and_a_built_in_pick_clears_it() {
+        let styles = vec![
+            LibraryStyle {
+                id: "chief.abc.7".into(),
+                name: "Glass Shaker Door".into(),
+                source: "Core".into(),
+                profile: DoorProfile::Shaker,
+                glass: true,
+                drawer_only: false,
+            },
+            LibraryStyle {
+                id: "user.drawer.1".into(),
+                name: "Cup Front".into(),
+                source: "User Library".into(),
+                profile: DoorProfile::Raised,
+                glass: false,
+                drawer_only: true,
+            },
+        ];
+        let mut cab = Cabinet::base(24.0);
+        pick_door_style(
+            &mut cab.door_style,
+            StylePick::Library("chief.abc.7".into()),
+            &styles,
+        );
+        assert_eq!(cab.door_style.name, "Glass Shaker Door");
+        assert_eq!(cab.door_style.library, "chief.abc.7");
+        assert_eq!(cab.door_style.profile, DoorProfile::Shaker);
+        assert!(cab.door_style.glass);
+        // The 3D door builds from the profile and the glass flag.
+        assert!(!plan_cabinets::meshes(&cab).is_empty());
+        pick_door_style(
+            &mut cab.door_style,
+            StylePick::Builtin("Slab Door"),
+            &styles,
+        );
+        assert_eq!(cab.door_style.library, "");
+        assert_eq!(cab.door_style.profile, DoorProfile::Slab);
+        // A drawer-only style is still offered for drawer fronts.
+        pick_drawer_style(
+            &mut cab.drawer_style,
+            StylePick::Library("user.drawer.1".into()),
+            &styles,
+        );
+        assert_eq!(cab.drawer_style.library, "user.drawer.1");
+        assert_eq!(cab.drawer_style.profile, DoorProfile::Raised);
+        // An unknown id changes nothing.
+        let before = cab.drawer_style.clone();
+        pick_drawer_style(
+            &mut cab.drawer_style,
+            StylePick::Library("nope".into()),
+            &styles,
+        );
+        assert_eq!(cab.drawer_style, before);
+        // The dialog lists what the library has: door styles for the door.
+        let doors = door_styles::doors(&styles);
+        assert_eq!(doors.len(), 1);
+        // And the Door/Drawer tab draws with styles loaded.
+        let mut dlg = CabinetDialog::new(Cabinet::base(24.0));
+        dlg.form.styles = styles;
+        let tab = TABS.iter().position(|t| t.name == "Door/Drawer").unwrap();
+        let texts = cabinet_page_texts(&mut dlg, tab);
+        assert!(texts.iter().any(|t| t.contains("Main Style")), "{texts:?}");
+    }
+
+    #[test]
+    fn merging_joins_an_item_with_the_next_one() {
+        // Two fixed-height doors: the merged door is as tall as both.
+        let mut l = FaceLayout {
+            items: vec![
+                FaceItem::DoorAuto { height: 10.0 },
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::Drawer { height: 6.0 },
+            ],
+            frame_width: 1.5,
+        };
+        let p = merge_with_next(&mut l, &[0]).unwrap();
+        assert_eq!(p, vec![0]);
+        assert_eq!(l.items.len(), 2);
+        assert_eq!(l.items[0], FaceItem::DoorAuto { height: 11.5 });
+        // With an auto item in the pair the merge is auto too.
+        let mut l = FaceLayout {
+            items: vec![
+                FaceItem::DoorAuto { height: 0.0 },
+                FaceItem::Drawer { height: 6.0 },
+            ],
+            frame_width: 1.5,
+        };
+        merge_with_next(&mut l, &[0]).unwrap();
+        assert_eq!(l.items, vec![FaceItem::DoorAuto { height: 0.0 }]);
+        // The last item has nothing to merge with.
+        assert!(merge_with_next(&mut l, &[0]).is_none());
+        // Cells of a horizontal layout: widths add; one cell left collapses.
+        let mut l = FaceLayout {
+            items: vec![FaceItem::HorizontalLayout {
+                height: 0.0,
+                cells: vec![
+                    FaceCell {
+                        item: FaceItem::DoorLeft { height: 0.0 },
+                        width: Some(10.0),
+                    },
+                    FaceCell {
+                        item: FaceItem::DoorRight { height: 0.0 },
+                        width: Some(8.0),
+                    },
+                ],
+            }],
+            frame_width: 1.5,
+        };
+        let p = merge_with_next(&mut l, &[0, 0]).unwrap();
+        assert_eq!(p, vec![0], "the layout became its remaining cell");
+        assert_eq!(l.items, vec![FaceItem::DoorLeft { height: 0.0 }]);
+        // Splitting then merging puts the face back.
+        let mut l = base();
+        let before = l.clone();
+        let at = l
+            .items
+            .iter()
+            .position(|i| !matches!(i, FaceItem::Separation { .. }))
+            .unwrap();
+        let sel = split_vertical(&mut l, &[at]).unwrap();
+        assert_eq!(sel.len(), 1);
+        assert_eq!(l.items.len(), before.items.len() + 1);
+        let merged = merge_with_next(&mut l, &[at]).unwrap();
+        assert_eq!(merged, vec![at]);
+        assert_eq!(l.items.len(), before.items.len());
     }
 }

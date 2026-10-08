@@ -223,13 +223,19 @@ mod tests {
             .any(|el| el.contains("stroke=\"#FFFFFF\"") && el.contains("stroke-opacity"))
     }
 
+    /// The coral (red) glyphs: Daniel asked for thin red linework with no
+    /// white outline or halo, so they are exempt from the halo rule.
+    fn is_red_glyph(svg: &str) -> bool {
+        svg.contains("#FF8E7B")
+    }
+
     /// White and light-gray glyphs are their own halo on the dark chrome; any
-    /// icon with colored ink must carry the white halo stroke.
+    /// other icon with colored ink must carry the white halo stroke.
     #[test]
     fn every_colored_icon_has_the_white_halo() {
         let offenders: Vec<String> = svgs()
             .into_iter()
-            .filter(|(_, s)| has_color_ink(s) && !has_halo(s))
+            .filter(|(_, s)| has_color_ink(s) && !has_halo(s) && !is_red_glyph(s))
             .map(|(n, _)| n)
             .collect();
         assert!(

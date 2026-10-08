@@ -131,7 +131,7 @@ make_samples`, so treat them as examples to open and take apart, not files to ed
   message ("Not implemented yet", "Saved", an error).
 - **Plan view tabs** (top left of the canvas, drawn when two or more saved plan views are open): each tab is a saved
   plan view with its own floor, layer set, reference display, zoom and pan. Click a tab to switch (the view you leave keeps
-  where it was), drag a tab to reorder, middle-click to close it; a small menu at the end opens a saved view that is not a tab
+  where it was), drag a tab to reorder, click its small x (or middle-click the tab) to close it; the **+** menu at the end opens a saved view that is not a tab
   yet. The Project Browser's Plan Views node and Tools > Plan Views open views as tabs too (1.6, chapter 5.5).
 - **Edit toolbar** (floating, bottom left of the canvas): appears when
   something is selected. Open Object, Delete Objects, Cut, Copy Selected Objects,
@@ -273,7 +273,7 @@ entry shows its icon, name and hotkey and unbuilt ones are dimmed. Working today
   Specification..., Build Terrain, Clear Terrain, Make Terrain Hole Around Building and the submenus.
 - **Library**: Catalog Settings... (opens the Library page of Preferences), Library Browser, **Add Selection to Library** and **Add Active Material to Library**, **Import 3D Model (OBJ, glTF)...** (opens the Library Browser's import window), and **Export Library (Plan Studio only)...** / **Import Library...**, which write and read Plan Studio's own library zip (chapter 6.4a, 12.7a). Chief's catalogs are read in place and are not imported.
 - **3D**: Create Orthographic View, Create Perspective View (with Ray Trace...), Create Auto Elevations (Auto
-  Elevations, Auto Back-Clipped Elevations, Wall Elevation Camera), Walkthroughs (Create Walkthrough Path, Play
+  Elevations, Auto Back-Clipped Elevations, Wall Elevation Camera, **Auto Interior Elevations**), Walkthroughs (Create Walkthrough Path, Play
   Walkthrough, Record Walkthrough...), the material tools (Materials..., Material Painter, Adjust Materials..., Material Builder...; chapter 10.8), Lighting (Add Lights,
   Adjust Lights), Rendering Techniques, Delete Surface, Rebuild 3D, Export > glTF..., 3D View Defaults... (chapter 10).
 - **Tools**: **Layer Settings** (Display Options..., **Layer Set Management...**, **Active Layers by Tool...**; chapter 5.5), **Floor/Reference Display...** (4.5), **Underlays...** (12.4a), Active View (the saved plan views), **Plan Views** (Plan View Specification..., Save Plan View, Reset Plan View, Add Template Plan Views; chapter 5.5), Active Defaults..., Checks (Plan

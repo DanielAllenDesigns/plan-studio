@@ -102,14 +102,16 @@ Columns each kind can show (the first group is shown in a new schedule, the rest
 | Window | Mark, Width, Height, Sill, Head, Type, Wall | Floor |
 | Room | Number, Name, Area sq ft (interior), Perimeter ft, Ceiling height | Standard Area, Floor Finish, Ceiling Finish, Floor |
 | Wall | Number, Type, Length, Thickness, Height, Area sq ft, Openings | Floor |
-| Cabinet | Mark, Label, Type, Width, Depth, Height | Elevation, Countertop, Floor |
-| Electrical | Mark, Type, Label, Mount Height, Circuit | Wall, Floor |
-| Framing | Mark, Member, Size, Length, Qty | Floor |
+| Cabinet | Mark, Label, Type, Width, Depth, Height | Elevation, Countertop, Floor, Door Style, Drawer Style, Finish, Hardware |
+| Electrical | Mark, Type, Count, Label, Mount Height, Circuit | Wall, Floor |
+| Framing | Mark, Member, Size, Length, Qty | Linear ft, Board ft, Floor |
 | Fixture, Furniture, Plant | Mark, Name, Category, Width, Depth, Height | Elevation, Floor |
 | Stair | Mark, Type, Width, Total rise, Risers, Riser height, Tread depth, Total run | Floor |
 | Room Finish | Number, Name, Floor Finish, Base, Wall Finish, Ceiling Finish | Crown, Area sq ft, Ceiling height, Floor |
 | Note | No., Type, Note | Floor |
 | General (Create Schedule) | Mark, Category, Name, Size, Floor | |
+
+The Electrical schedule gained a Count column and the Framing schedule the Linear ft and Board ft columns in Round 12; a schedule saved in the plan earlier keeps its old column list until the column list is reset.
 
 **Selecting a schedule.** A placed schedule is a normal selectable object (Round 8, `ObjectRef::Schedule`): Select Objects picks it by clicking its table or by a marquee,
 it moves when you drag it or move a selection that includes it, `Delete` removes it (one undo step, "Delete Schedule"), and a double-click, `Enter` or
@@ -219,6 +221,7 @@ The tool row of the layout view makes the boxes and drawings that are not views 
 - **Leaders.** The **Leader** tool drags from what the leader points at to where its text goes, then asks for the text (several lines), the **Text height** (0.04" to 2"; 1/8" by default) and whether it has an **Arrowhead**. A leader is one straight line to an elbow, then a landing line under the text, with a filled arrowhead at the tip. Double-click a leader to edit it. Its text is on the `Text` layer.
 - **Revision clouds.** The **Revision Cloud** tool drags the rectangle to go around and asks for the **Revision** mark (`1`, `A` ...) drawn in a triangle at the cloud's corner (empty: no tag). The cloud is a run of scalloped bumps (0.3" wide) with a smallest side of 0.3". Double-click a cloud to change its mark. Clouds are on the `Revision Clouds` layer.
 - **Selecting and editing page drawings.** Every page drawing, leader and cloud is picked by clicking its line, moves when you drag it, nudges with the arrow keys (`Shift` for the larger step) and resizes by the eight handles of its bounding rectangle (a circle's radius, an arc's, a text's height and a cloud's rectangle follow); each is one undo step ("Move Layout Drawing", "Resize Layout Drawing").
+- **Plan Check report page.** The Plan Check window's **Add to Layout** button (chapter 18.4) adds a page named **Plan Check** after the last page, holding the findings as one text box: a numbered paragraph per finding with its severity, code reference, place, message and fix. It is an ordinary text box once added; edit or restyle it like any other.
 - **Sheet index.** **Add Sheet Index** puts the index of the layout's printed sheets on the page as a table box that stays current as pages are added, renamed and exchanged.
 - **Layer Display Options.** The toolbar's **Layers...** button opens the *Layout Layer Display Options*: the layout's own five layers, each with a **Show** box, a **Line weight** (0.05 to 6 pt) and a **Color**: `Layout Box Borders` (0.75 pt), `Layout CAD` (0.5 pt), `Text` (0.5 pt), `Title Block` (0.75 pt, the default pens of the title block scale with it) and `Revision Clouds` (1 pt). The window and the printed page follow them; a hidden layer does not print. One undo step, "Layout Layer Display".
 
@@ -241,7 +244,7 @@ Every printed sheet of a layout PDF gets a **bookmark** (`A-1 Page 1`), so a PDF
 
 **Print Model...** (the layout toolbar's tool row; `LayoutCommand::PrintModel`) prints one perspective camera big: a dialog asks for the **Camera** (the plan's perspective cameras, the one in the 3D view first), a **Resolution** (20 to 600 dpi; 150 by default) and a **Quality** (1 to 512 samples per pixel; 16 by default), the paper, orientation and margin, and the destination (PDF, printer, viewer), and says how many pixels it renders. The camera is ray traced onto one sheet. "Print Model needs a perspective camera: add one with the Camera tools" if there is none.
 
-**Print Image of the 3D view.** The engine and the size dialog for a 3D Print Image exist (`print_image_3d`, `Image3dDialog`: 64 to 4096 pixels each way, 24 samples, starting at the view's aspect ratio, ray traced from the viewport's camera with the default sun and sky because the viewport has no offscreen target to read back), but the File > Print > Print Image command is not connected to it yet: with a 3D view open the command still saves the plan view as a PNG (planned).
+**Print Image of the 3D view.** With a 3D view open, **File > Print > Print Image...** opens a size dialog (64 to 4096 pixels each way, 24 samples, starting at the view's aspect ratio) and ray traces the picture from the viewport's camera with the default sun and sky, because the live view has no offscreen target to read back (`print_image_3d`, `Image3dDialog`); you then save the PNG. With the floor plan showing, the command saves the plan view as a PNG as before. **Print Model...** is also in the File > Print menu, and **Layer Display Options...** and **Add Sheet Index** are rows of the Layout menu (as well as buttons of the layout window's toolbar).
 
 ## 11.4 Project Information and the title block
 
@@ -560,6 +563,6 @@ Opens the **Framing Takeoff** window, a lumber list of the framing built so far 
   **Export Material List...** (default `framing_material_list.csv`) writes the piece counts by size and length.
   With no framing the window says "No framing yet. Use Build > Framing > Build Framing."
 
-The Framing schedule that can be placed in the plan (11.2) lists pieces by member type, size and cut length, with Linear and Board Feet columns available.
+The Framing schedule that can be placed in the plan (11.2) lists pieces by member type, size and cut length, with Linear ft and Board ft columns available.
 
 Not built yet: combined headers for adjacent openings, framing of the stairwell in a floor framed from a Joist Direction or Bearing Line (directed floors do not frame stairwell holes), a per-group Build Framing dialog or automatic re-framing, dimensions on the wall detail, wall-top slopes, connectors and notches, rim joists in directed floor framing, truss-to-truss girder placement, and beam sizing.

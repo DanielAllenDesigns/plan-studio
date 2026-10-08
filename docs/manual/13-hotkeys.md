@@ -327,16 +327,21 @@ Key (Chief command id): `Shift+F4` (106); `W` (202); `2` (231); `Cmd+D` (237); `
 
 | Control | What it does |
 |---|---|
-| **Show Commands/Hotkeys Containing** | A filter. It matches command names and the hotkey text; the list is sorted by name. |
-| **Command Name / Hotkey table** | Every command and its current keys (several sequences are shown separated by semicolons). Dimmed names are commands not built yet; hover for "Not built yet; the key is kept for later". Click a row to select the command. |
-| **Chief bindings with no action in Plan Studio yet** | A collapsed list of Daniel's named bindings that have no command here. |
+| **Show Commands/Hotkeys Containing** | A search. It matches the command name, its group and its hotkey text; the list is sorted by group, then name. |
+| **Show:** All, Assigned, Unassigned, In conflict | A filter on the table: every command, only the commands that have a key, only those without one, or only the commands whose keys clash with another's. |
+| **Command Name / Hotkey / Group table** | Every command, its current keys (several sequences are shown separated by semicolons) and its group (File, Edit, Walls ...). Dimmed names are commands not built yet; hover for "Not built yet; the key is kept for later". A clashing row ends with "(conflict)" in amber. Click a row to select the command. |
+| **Conflicts (n)** | An amber list under the table of every sequence that two or more commands share, as `sequence: command, command`. It is open while there are conflicts. Reassign (below) or Remove a key to clear one; a conflict is not a refusal, so a map that already has them (an old `hotkeys.json`, or an import) still loads. |
+| **Chief bindings with no action in Plan Studio yet** | A collapsed list of Daniel's named bindings that have no command here. A line above the table counts Daniel's bindings: how many are named, how many have a Plan Studio command and how many work today. |
 | **Assign a sequence of up to 4 hotkeys to <command>** | Click the field (it says "Click here, then press keys"; it shows "Press keys..."), then press the keys one after another, up to four chords. `Esc` stops recording. |
 | **Clear** | Empties the recorded sequence. |
 | **Assign** | Adds the recorded sequence to the selected command. |
-| **Already used by: ...** and **Reassign** | If the sequence is the same as, a prefix of, or begins with another command's sequence, nothing changes and the clashing commands are named. **Reassign** takes the sequence from them. |
+| **Already used by: ...** and **Reassign** | **While you record**, the dialog warns as soon as the sequence is the same as, a prefix of, or begins with another command's sequence, and names the commands. Assign then changes nothing; **Reassign** takes the sequence from them. |
 | **Current hotkeys** and **Remove** | The selected command's sequences; pick one and press Remove. |
 | **Reset Hotkeys** | Returns to the base table plus Daniel's keys, dropping all your edits. |
-| **Help**, **Cancel**, **OK** | Help shows a one-line instruction. Cancel discards the edits. OK applies them and writes `~/.plan-studio/hotkeys.json`. |
+| **Import Chief Hotkeys...** | Reads a Chief `UserHotkeys.xml` over the keys above: every command the file binds that Plan Studio has gets the file's keys (its current keys are replaced, and any other command holding a key loses it); commands the file does not bind keep what they have. Plan Studio's own extra keys on an imported command, such as the number keys, are replaced too; Reset Hotkeys brings them back. The names are recovered from Chief's command catalog because the file stores ids only. A line reports how many bindings, commands and unmapped keys the file had. |
+| **Export...** | Saves the keys. **JSON** (`hotkeys.json`) is the file of differences described below; **CSV** is the whole list as `Group,Command,Hotkeys` for a spreadsheet. The extension you type picks the format. |
+| **Print List** | Makes a two-column PDF (US Letter, "Plan Studio hotkeys" with the number of commands with keys, in groups) of every assigned key in a temporary file and opens it in your system viewer, where you print it. |
+| **Help**, **Cancel**, **OK** | Help opens this chapter in the Help viewer (1.6a). Cancel discards the edits. OK applies them and writes `~/.plan-studio/hotkeys.json`. |
 
 The dialog edits a copy of the map. While it is open the main window ignores the keyboard so you can record any key.
 
@@ -373,6 +378,7 @@ Where the manual covers each tool's keys in detail:
 | Stairs | 7 |
 | Roofs | 8 |
 | Electrical, terrain | 9 |
+| Plan Check | 18 |
 | 3D views | 10 |
 | Framing tools and Build Framing | 11.11 |
 | Layout view, schedules, Project Information | 11.2 to 11.4 |
@@ -389,6 +395,7 @@ These go to the active tool, not the hotkey map.
 | `Enter` | Select, polyline and text tools | Opens the specification of the selection; finishes a polyline, text or typed value. |
 | `Tab` | Select Objects | Cycles objects under the pointer. |
 | `Tab` | Cabinet, Stairs, Electrical tools | Next cabinet kind; flips the turn of an L, U, winder or curved stair; flips a wall device to the other side of the wall. |
+| `Shift+Tab` | Cabinet tool | Next **library type**: Vanity, Pantry, Tall Oven, Refrigerator, then back to the plain kinds (chapter 6.2). |
 | `Tab` | 3D view | Next camera. |
 | `Delete`, `Backspace` | Select and most tools | Delete the selection (Terrain: the element under the pointer). |
 | `Alt` | Wall tool | Suspends every snap (object, angle and grid). |
@@ -408,6 +415,7 @@ These go to the active tool, not the hotkey map.
 | `Shift` or `Cmd` + click | Framing tools | Picks a placed framing object (`Shift` on a picked one drops it). |
 | `Cmd` + click or drag | Slab tools | Picks an object, or moves it. |
 | `Shift`, `Alt` | Roof Return | `Shift` makes a half return, `Alt` a boxed one. |
+| `Enter` | Cabinet tool, a temporary dimension being edited | Applies the typed value by moving or resizing the selected cabinet (chapter 6.2). |
 | `G` | Cabinet tool | Generate Countertop: joins the countertops of touching base cabinets (chapter 6.2). |
 | `Enter`, `Backspace`, `Esc` | Custom Countertop, Backsplash, Counter Hole; polygon details | Finish, drop the last corner, cancel (chapters 6.2, 17.2). |
 | `Cmd` + click or drag | Details tools | Picks an existing detail, or moves it (chapter 17.2). |

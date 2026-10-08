@@ -100,7 +100,7 @@ Each object has its own Specification dialog on the shared frame (tab list, pane
   is a square crossed by its diagonals and a pier a circle crossed by a plus, both on `Piers/Pads`. Platform holes are dashed outlines on `Floors, Holes` (red) and `Ceilings, Holes`
   (blue). The layers are added to the plan the first time a tool needs them; turning one off hides its objects (they stay in the plan).
 - **3D**: a slab is a prism of its thickness with its holes cut out, plus its footing; pads are boxes, piers 16-sided prisms with their footings, in concrete unless the
-  object's material names stone or brick. A hole in the floor or ceiling platform is cut out of that platform's mesh over the rooms (so a stairwell shows through).
+  object's material names stone or brick. A hole in the floor or ceiling platform is cut out of that platform's mesh over the rooms (so a stairwell shows through). Build Framing frames a Floor Hole as an opening in the floor framing: trimmer joists on each side, header joists across the ends, the common joists cut short (chapter 11.11); the Floor tab of Framing Defaults sets the plies.
 - The Materials List counts slab, pad and pier concrete in cubic yards under its Foundation category (11.5), with the Master List's waste factor; the dialogs show the same cubic yards.
 
 ## 16.5 Differences from Chief

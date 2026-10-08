@@ -12,24 +12,52 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
-Round 11 is partly done: what has landed is under "Round 11" below. The rest is still being built in the working tree and is listed here, so nothing in this section is in the program yet.
-
-### In flight
-
-- Reading a Chief `.plan` for its content, not only its defaults (`plan-chiefplan::import` exists as a library module; no menu command calls it yet).
-- Electrical and framing follow-ups (`plan-electrical` device finishes and meshes; `plan-framing` corner and tee backing, a header table, birdsmouth and tail cuts, eave framing, floor holes).
-- The Library Browser work (a user library, model import from OBJ and glTF through `plan-import`, archive, browse, manage and preview modules in `plan-library`).
-- Theme, docks and toolbar rendering changes (new and redrawn icons, `shell/docks.rs`, `shell/status.rs`, `shell/tooltips.rs`).
+Nothing yet beyond the Round 12 work below, which is in the working tree and not committed. Everything in this file from Round 10 on is uncommitted; the first tagged release (`v0.1.0`) will fold all of the rounds together (see [docs/release-checklist.md](docs/release-checklist.md)).
 
 ### Planned
 
 - Open doors, casing, sills and thresholds in the editor's 3D view; threshold marks in plan; a transom over a door.
 - Attic floors from Build Roof.
 - Replace Fonts; ties from dimensions to stairs, roof planes and framing.
-- Layout: Save As Template, opening labels on pages, CAD-detail boxes from the Send to Layout dialog, and the File and Layout menu rows for Print Model, Layer Display Options, Add Sheet Index and Print Image of the 3D view.
+- Layout: Save As Template, opening labels on pages, CAD-detail boxes from the Send to Layout dialog.
 - Bump maps, and the ray tracer drawing pictures with their bitmaps.
+- Chief `.plan` import: cabinets, roof planes, library symbols and the other classes that are recognized but not decoded.
+- A live manual QA pass on macOS, Windows and Linux, then the first tagged release.
 
-## Round 11 - 2026-10-08 (working tree; the commit is not made yet; part of the round is still in flight)
+## Round 12 - 2026-10-08 (working tree; the commit is not made yet)
+
+About 3,120 tests (3,161 `#[test]` functions less 39 that are `#[ignore]`d, counted from the source, not from a `cargo test` run; Round 11 was about 2,750 at its last count). Run `cargo test --workspace` for the exact number before tagging. Round 12 also finished the Round 11 work that was still in flight when that section was written.
+
+### Added
+
+- **Curved walls, complete** (`plan-core/{joins, walls}.rs`, `plan-3d/{wall/arc, opening, wall_kinds}.rs`, `tools/wall.rs`): doors and windows are cut through arcs in 3D with each unit standing square to the arc's tangent; the plan outline and every layer of a curved wall are exact arcs (`curved_layer_outlines`); curved walls are mitered against straight and curved neighbors and get tee cuts where an end meets a side; curved pony, half, foundation and glass walls and curved gable ends; a radius, arc length and chord readout while the arc is set. Limits: a straight wall drawn to meet an arc ends square until the connection hook is wired at the gate; an opening's plan symbol is drawn on the chord.
+- **Sections and elevations** (`plan-elevation/{view, dims, mlabels, dxf, styles}.rs`, `plan-core/camera.rs`, `tools/camera.rs`, `dialogs/camera.rs`): free-angle cuts (a section or wall elevation along a camera line at any angle); plan callouts with view numbers and layout sheet references (`A-3`), their shape, size and name set in 3D View Defaults; automatic elevation dimension strings (floor to floor, openings, overall); material labels; per-layer line weights in vector views; Auto Interior Elevations (four wall elevations of a room); Export DXF from the vector view and from the Camera Specification, with the lines on layers by weight class.
+- **Plan Check** (`plan-check/{rules_code, rules_fixtures, rules_mep, settings, report}.rs`, `dialogs/plan_check.rs`, chapter 18): 52 rules with IRC, NEC and NKBA code references; a Settings dialog with the IRC 2021 preset, 32 limits and a tick per rule; Previous, Next, Zoom to, Ignore and Restore Ignored; a status line (`Plan Check: 2 errors, 3 warnings, 6 info (4 ignored)`); Markdown, PDF and layout-page reports. Settings and the ignore list are stored in the plan's Project Information custom fields.
+- **Terrain polish** (`plan-terrain/{grading, site_symbols}.rs`, `tools/terrain.rs`, `dialogs/terrain*`): terrain walls and curbs cut the surface with a grade step; cut and fill pads with a slope ratio and cubic-yard volumes; the building pad; contour labels and settings; draggable control points on kidney and spline features; ripple water; road crown and curbs; Build Terrain stages in the readout; an auto-rebuild switch; the North Pointer (sets the plan's north angle) and the Scale Bar.
+- **Rendering** (`plan-view3d/{quality, pipeline}.rs`, `plan-render/{sky, denoise, integrator}.rs`, `shell/view3d_panel.rs`, `dialogs/camera.rs`): in the live view, sun shadow maps with PCF, screen-space ambient occlusion, a sky gradient, GGX shading with Fresnel and per-material roughness, up to 8 point lights, FXAA, Technical Illustration edge lines and the Watercolor wash, and a Shading menu (Shadows, Ambient occlusion, Low/Medium/High quality, Exposure); in the ray tracer, next-event estimation of area lights, an edge-preserving denoiser guided by albedo, normal and depth, the Preetham clear sky with a turbidity slider, depth of field (aperture and focus), exposure in EV, and Save Image at 1x, 2x or 4x.
+- **Cabinets** (`plan-cabinets`, `tools/cabinet.rs`, `dialogs/cabinet.rs`): temporary dimensions you can type into; a cabinet clicked into a gap takes the gap's size; label macros (`<L> <T> <W> <D> <H> <WxD> <N> <S> <F> <HW> <A>`) and a `Cabinets, Labels` layer with a draggable label; the Vanity, Pantry, Tall Oven and Refrigerator library types (flyout entries and `Shift+Tab`); a Waterfall countertop edge; full-height backsplashes; appliance bays that library appliances snap into; hardware styles (Knob, Pull, Cup Pull, Edge Pull); the Cabinet Defaults dialog (ten tabs, Edit > Default Settings); more schedule columns; Opening Indicators in 3D.
+- **Layers and views** (`dialogs/{layer_display, layer_sets, plan_views}.rs`, `editor/plan_tabs.rs`, `shell/docks.rs`): a Layer Display Options table per layer set with multi-select and Modify All Layer Sets; Layer Set Management (New, Copy, Rename, Delete, Make Active, Import From Plan File); plan views as tabs above the plan; Plan View Specification, Save Plan View and Reset Plan View; Add Template Plan Views (Daniel's 20); Active Layers by Tool; Project Browser nodes for plan views, schedules and CAD details.
+- **Customization and help** (`toolbar/config.rs`, `dialogs/{customize_toolbars, help, hotkeys, app_info}.rs`, `scripts/macos-dmg.sh`, `release.yml`): a toolbar set per view type (floor plan, 3D, vector elevation, layout) saved in `~/.plan-studio/toolbars.json`; Customize Toolbars with Chief `.toolbar` import, export and reset; Customize Hotkeys with filters, a conflict list, Chief `UserHotkeys.xml` import, JSON and CSV export and a printable PDF list; an in-app Help viewer (chapter tree, search, back and forward) built from `docs/manual`; About Plan Studio; the app icon; a `.dmg` for each macOS package of the Release workflow.
+- **Library management** (`plan-library/{manage, browse, archive, model, preview}.rs`, `plan-import/{obj, gltf}.rs`, `shell/library_browser/user_ui.rs`, `tools/library/user.rs`): the User Catalog with folders, favorites, recents and filters; a preview pane (2D symbol or a software-shaded 3D view); Add Selection to Library and Add Active Material to Library; OBJ and glTF/GLB model import with units and up axis; `.psm` models; export and import of Plan Studio's own library zip (`.calibz` extension, not readable by Chief).
+- **Electrical and framing polish** (`plan-electrical`, `plan-framing`, `tools/electrical.rs`, `dialogs/{electrical, framing}.rs`, `editor/framing_view.rs`): connections that bend, 3-way and 4-way pairs, Auto Place Switches, 23 device kinds with 3D fixture meshes in the finish chosen for each, the Electrical Service Specification tabs; corner and tee studs, blocking, the header table, stairwell trimmers and headers, rafter tail cuts and birdsmouths, built framing in the 3D view, the Framing Defaults window, the Framing Overview, and the takeoff by member type.
+- **Chief `.plan` import** (`plan-chiefplan/import/`, `docs/chief-plan-format.md`): File > Import > Chief Plan... reads a project's floors, walls (types, heights, arcs), doors, windows, named rooms, dimensions and text; floor names are positional, door styles are guessed from the width, dimension lines are placed 36" outside; cabinets, roof planes, stairs, electrical, framing and library symbols are counted and skipped. The command does not ask about unsaved changes yet.
+- **Menus**: Print Image prints the open 3D view (ray traced); Print Model, Layer Display Options and Add Sheet Index have their menu rows; Tools > Plan Views, Layer Settings and Toolbars and Hotkeys submenus; Library > Add Selection to Library, Import 3D Model, Export Library and Import Library.
+- **Tests and QA**: ten more scenario files, `s15` to `s24` (95 tests), and findings QA-08 to QA-11 in `docs/qa-findings.md` (Auto Exterior on a hand-drawn shell, the File menu rows that reached nothing, archive rotation, a billboard vanishing in the Doll House).
+
+### Changed
+
+- The Help menu rows (Launch Help, View Tutorial Guide, View Reference Manual, Keyboard Shortcuts) open the in-app viewer instead of the system's default application; the manual is embedded at build time by `crates/plan-app/build.rs`, so a new chapter needs no code change.
+- The standard widths, snap-to-standard and the shaping-tab values that new openings start with are now saved with the plan defaults when a Default Door, Exterior Door or Window dialog is accepted (`opening_variants`).
+- The manual is brought up to Round 12: chapters 1 to 6 and 9 to 15, a new chapter 18 (Plan Check), the glossary and the status table of chapter 0. README, ROADMAP and the release checklist are refreshed.
+
+### Known issues
+
+- A straight wall drawn to meet an arc ends square until the connection hook is wired at the gate; an opening's plan symbol on a curved wall sits on the chord.
+- File > Import > Chief Plan... replaces the open plan without the unsaved-changes prompt and has no report window (the status bar carries the counts and notes).
+- The Status column of `docs/qa-findings.md` may still say "open" for QA-08 to QA-11 although no scenario test is `#[ignore]`d any more.
+- The `#[allow(dead_code)]` comments in `dialogs/cabinet.rs` and `dialogs/framing.rs` still say the Cabinet and Framing Defaults windows are not opened from a menu; they are.
+
+## Round 11 - 2026-10-08 (working tree; the commit is not made yet; the parts that were still in flight when this section was first written landed in Round 12)
 
 About 2,750 tests (2,821 `#[test]` functions less 45 that are `#[ignore]`d, at the last count; the number is still rising as the unfinished Round 11 work lands, counted from the source, not from a `cargo test` run; Round 10 was about 2,430). Run `cargo test --workspace` for the exact number before tagging.
 
@@ -47,11 +75,11 @@ About 2,750 tests (2,821 `#[test]` functions less 45 that are `#[ignore]`d, at t
 
 - The Release workflow (`.github/workflows/release.yml`) runs `cargo test --workspace` on each runner before it builds a package.
 - Create Construction Set now adds the sheets to the plan's layout as well as offering the PDF copy.
-- The manual brought up to Round 11 so far: chapters 1 to 5, 8, 10 to 15 (file management is the new 12.2a, Roof Defaults 8.4a, textures 10.8a), and the status table of chapter 0. The parts of Round 11 that are still being built are not described.
+- The manual brought up to Round 11: chapters 1 to 5, 8, 10 to 15 (file management is the new 12.2a, Roof Defaults 8.4a, textures 10.8a), and the status table of chapter 0. The in-flight parts (Chief `.plan` import, electrical and framing, the Library Browser, toolbars and help) are described under Round 12.
 
 ### Known issues
 
-- The standard widths and the tab values new openings start with are not yet saved with the plan defaults (`docs/integration-queue.md`).
+- (Fixed in Round 12.) The standard widths and the tab values new openings start with were not saved with the plan defaults.
 
 ## Round 10 - 2026-10-08 (working tree; the commit is not made yet)
 

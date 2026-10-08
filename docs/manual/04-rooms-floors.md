@@ -3,7 +3,7 @@
 In Plan Studio you never draw a room. You draw walls, and every closed loop of
 walls becomes a room automatically. This chapter explains how rooms are found,
 named and measured, how to stack floors and foundations, and the two planning
-helpers that work with rooms: the Space Planning Assistant and Plan Check.
+helpers that work with rooms: the Space Planning Assistant and Plan Check (the check itself is chapter 18).
 
 ## 4.1 How rooms are detected
 
@@ -281,18 +281,12 @@ Assistant. Open it from Tools > Space Planning > Space Planning Assistant....
 
 ## 4.8 Tools > Checks
 
-Plan Check applies twelve rules based on the 2021 International Residential Code
-(IRC) to the active floor: room size, bedroom egress, ventilation, door widths
-and swings, hallways, stairs, garage, wall geometry, opening geometry, room access
-and natural light. Limits live in `CheckOptions` and default to the 2021 IRC;
-there is no settings dialog for them yet.
+**Plan Check** applies 52 rules based on the 2021 International Residential Code (IRC), with a few NEC and NKBA guidelines, to the active floor: room size, bedroom egress, ventilation and light,
+door widths and swings, hallways, stairs and guards, bath and kitchen clearances, the garage, roof slope, smoke and CO alarms, GFCI and receptacle spacing, headers and joists, wall and opening geometry. The
+window steps through the findings with Previous, Next, Zoom to and Ignore; **Settings...** holds the IRC 2021 preset, 32 editable limits and a tick box for every rule; the report is written as Markdown, as a PDF or as a
+page of the layout. Chapter 18 describes all of it.
 
-- **Plan Check** runs all rules. **Door/Window Check** runs only the opening rules.
-- The Check window shows one finding at a time: severity (error, warning, info), the
-  rule and its IRC section, what is wrong, and a suggested fix.
-- **Previous** and **Next** step through findings. **Zoom to** centers the view on
-  the finding and selects its object. **Check Again** re-runs after you fix something.
-  **Save Report...** writes a Markdown report grouped by severity.
+- **Plan Check** runs all the rules that are on. **Door/Window Check** runs only the two opening rules (door widths and opening geometry).
 - Room types come from the room names. Rooms are measured to wall centerlines.
 - **Plan Footprint** (Tools > Checks > Plan Footprint) traces the outer boundary of the
   rooms and adds it to the plan as a closed CAD polyline with an area note.

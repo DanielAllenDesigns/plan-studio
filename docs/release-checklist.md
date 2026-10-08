@@ -3,10 +3,10 @@
 How to cut a Plan Studio release, what the release workflow produces, the licensing check,
 and the manual QA pass that is still owed. Work top to bottom; tick as you go.
 
-Status when this was written (Rounds 10 and 11 so far in the working tree on top of the Round 9 commit `0ceb404`; part of Round 11 is still being built): no version has ever been
+Status when this was written (Rounds 10, 11 and 12 in the working tree on top of the Round 9 commit `0ceb404`, not committed yet): no version has ever been
 tagged, the workspace is `0.1.0`, and the live manual QA pass in section 4 has **not** been done.
-The automated gate (about 2,750 tests, counted from the source; run `cargo test --workspace` for the exact number) is expected to pass; that is not the same as a person using the program.
-Sections 4.7 (textures) and 4.11 (file management) are new in Round 11 and have never been run by hand.
+The automated gate (about 3,120 tests, counted from the source; run `cargo test --workspace` for the exact number) is expected to pass; that is not the same as a person using the program.
+Sections 4.7 (textures), 4.11 (file management) and 4.12 (Round 12: Plan Check, Chief plan import, toolbar sets, the Help viewer, curved walls, sections, rendering quality and the rest) are new and have never been run by hand.
 
 ## 1. The gate (must be green before you tag)
 
@@ -25,7 +25,8 @@ cargo test --workspace
 - [ ] `git status` is clean and you are on `main`, up to date with `origin/main`.
 - [ ] The hotkey list is current: the `plan-config` test fails if `docs/chief-hotkeys-resolved.md` is stale
       (regenerate with `cargo run -p plan-config --example gen_hotkeys_md > docs/chief-hotkeys-resolved.md`).
-- [ ] Section 4 (manual QA) is done and its findings are fixed or written down as known issues in the release notes.
+- [ ] Section 4 (manual QA, including 4.12) is done and its findings are fixed or written down as known issues in the release notes.
+- [ ] The manual builds into the program: `cargo build -p plan-app` embeds `docs/manual/*.md` (`crates/plan-app/build.rs`); open Help > Launch Help and see all 18 chapters in the tree.
 - [ ] Section 3 (licensing) is confirmed.
 
 ## 2. Cut the release
@@ -107,7 +108,7 @@ no signed Windows binary, no checksums, and no ARM builds for Windows or Linux. 
 ### 2.5 After the workflow finishes
 
 - [ ] The release page lists exactly the four packages, the two `.dmg` images and three `.psplan` samples.
-- [ ] Open a `.dmg` on a Mac: it shows `Plan Studio.app` and an Applications shortcut; the app has the Plan Studio icon in the Dock and Finder; Help > Launch Help opens the manual inside the program.
+- [ ] Open a `.dmg` on a Mac: it shows `Plan Studio.app` and an Applications shortcut; drag the app to Applications and launch it from there (right-click > Open the first time). The app has the Plan Studio icon in the Dock, in Finder and on `.psplan` files; Help > Launch Help opens the manual inside the program with a chapter tree on the left, and Help > About Plan Studio shows the new version, the MIT license and the Chief notice. The release page has both `plan-studio-$TAG-macos-arm64.dmg` and `plan-studio-$TAG-macos-x86_64.dmg`; open the one that matches your Mac.
 - [ ] Edit the release body: paste the new `CHANGELOG.md` section above the generated notes, and add the Gatekeeper and SmartScreen notes.
 - [ ] Download each package you can run. The About dialog shows the new version; File > Open Plan loads a sample; a wall, a door and a save and reopen work.
 - [ ] Windows and Linux are built by CI but have **not** been tried by hand yet (ROADMAP). Do not announce them as supported until someone has run section 4 on each.
@@ -133,7 +134,7 @@ no signed Windows binary, no checksums, and no ARM builds for Windows or Linux. 
 
 ## 4. Manual QA pass (still pending)
 
-The 115 scenario tests drive the tools through synthetic events and check the model; nobody has yet sat at the real window and worked
+The scenario tests (24 files, about 210 tests) drive the tools through synthetic events and check the model; nobody has yet sat at the real window and worked
 through a house. Do this on **each** operating system you will announce, starting with macOS. Use a fresh plan (File > New Plan) and keep the status bar in view:
 each step names what should happen. Anything that looks wrong goes in `docs/qa-findings.md` with a repro.
 
@@ -251,3 +252,20 @@ This covers safe saves, archives, autosave, crash recovery, the unsaved-changes 
 - [ ] **Manage Auto Archives.** The window lists the plan's newest ten archives; Open on one asks first if there are unsaved edits; Show Archives Folder opens the folder; the settings survive a restart (`files` in `~/.plan-studio/settings.json`). Open Recent lists the last ten, drops a moved plan, and Clear Menu empties it.
 - [ ] **Finder double-click (macOS, from the downloaded `.app` that was right-click > Opened).** With Plan Studio **not** running, double-click a `.psplan` in Finder: the app launches and that plan opens (not a blank plan, and no recovery prompt hiding it). With the app running, double-click another `.psplan`: it opens in the running app (after the unsaved-changes prompt if the open plan has edits), `open -a "Plan Studio" file.psplan` does the same, and dropping a `.psplan` on the Dock icon too. The `.psplan` files show the app's document icon and "Plan Studio Plan" as their kind, and Get Info > Open with offers Plan Studio.
 - [ ] **Opening from outside, Windows and Linux.** `plan-studio house.psplan` from a terminal opens the plan at launch (also a `file://` path with `%20` in it). On Linux copy `scripts/linux/plan-studio-psplan.xml` from the repository (the release workflow does not put it in the tarball yet, though `plan-studio.desktop` points at it) to `~/.local/share/mime/packages`, run `update-mime-database ~/.local/share/mime`, install the `.desktop` file, and double-click a `.psplan` in the file manager. On Windows, associate `.psplan` with `plan-studio.exe` by hand (there is no installer) and double-click one. Dropping a `.psplan` on the window opens it on every platform; dropping another file says "Drop a .psplan file to open it".
+
+### 4.12 Round 12 (checked against the code as of 2026-10-08; none of it has been run by hand)
+
+- [ ] **Curved walls.** Draw a Curved Exterior Wall between two straight walls: the ends miter and the layer lines (siding, drywall) are exact arcs. Place a door and a window in the arc and look in 3D and in an elevation: the jambs follow the arc and the unit stands square to it. Change its Wall Class to Glass and to Pony; add a roof over it (a gable end follows the roof). Watch the Radius / Arc / Chord readout while setting the arc, and type a radius in the Arc section of the Wall Specification. Known: a straight wall drawn to meet the arc ends square, and the door symbol in plan sits on the chord.
+- [ ] **Sections and elevations.** Cross Section/Elevation at an angle (not square to the plan): the vector view is cut along the line. The plan shows a callout bubble with a number; send the view to a layout page and the callout gains `A-n` under a line. In the Camera Specification turn on Automatic dimensions, Material labels and Line weights from the layers, then Export drawing as DXF and open the DXF in another program (layers by weight). 3D View Defaults: change the Callout shape and size. Auto Interior Elevations: click inside a room and get four wall elevations; click again and see no duplicates.
+- [ ] **Plan Check.** Tools > Checks > Plan Check on a house with a deliberately small bedroom, a steep stair and no smoke alarm: Previous / Next / Zoom to select the object; Ignore removes a finding and Restore Ignored (n) brings it back; Settings: change a limit (the jurisdiction becomes Custom), switch a rule off, choose the IRC 2021 preset again; Save Report (Markdown), Report PDF, Add to Layout (needs a layout). Close and reopen the plan: settings and the ignore list are still there.
+- [ ] **Chief plan import** (needs a project `.plan` from your own Chief install; never commit it). File > Import > Chief Plan on a 2-3 floor project: floors, walls, doors, windows, named rooms, dimensions and text appear; the status bar gives the counts and the notes; compare the wall layout against the Chief plan or its PDF; the project saves with Save As. Check that save first if you have unsaved work: the import replaces the open plan without asking.
+- [ ] **Toolbar sets.** Open a 3D view, a vector elevation and the layout: each shows its own toolbar set. Tools > Toolbars and Hotkeys > Customize Toolbars: hide a button, add a row with a name, Move Up and Down, Lock Toolbars, Import Chief Toolbar File (any `.toolbar` from your Chief install), Export and Load Exported File; quit and relaunch: the changes persist (`~/.plan-studio/toolbars.json`). Reset This View.
+- [ ] **Customize Hotkeys.** Filter by All / Assigned / Unassigned / In conflict; record a key that another command uses and see the conflict warning and Reassign; Import Chief Hotkeys (a `UserHotkeys.xml`); Export as JSON and CSV; Print List opens a PDF.
+- [ ] **Help viewer and About.** Help > Launch Help: search a word, follow a link between chapters, Back and Forward, Contents; View Tutorial Guide opens chapter 1; Keyboard Shortcuts opens chapter 13.
+- [ ] **Rendering.** In a Standard 3D view: the Shading menu (Shadows, Ambient occlusion, Quality Low / Medium / High, Exposure); orbit and watch for flicker or stalls on a large plan; Technical Illustration edges and Watercolor wash; Sun Angle moves the shadows. Ray Trace: Clear sky and a turbidity change, Exposure, Aperture and Focus, Denoise, then Save Image at Same size, 2x and 4x (the 4x file must open).
+- [ ] **Cabinets.** Cabinet tool: `Shift+Tab` walks Vanity, Pantry, Tall Oven, Refrigerator; click a temporary dimension of a selected cabinet and type a width; click a base cabinet into a gap 1-2" off its width and see it fit; Waterfall edge and a full-height backsplash; labels with macros (`<N> <WxD>`) and the `Cabinets, Labels` layer; Opening Indicators in 3D; Edit > Default Settings > Cabinets > Cabinet Defaults.
+- [ ] **User Catalog.** Library Browser: New Folder, Add Selection to Library (a cabinet and a symbol), favorites, filters, the 3D preview; Import 3D Model with an OBJ and a glTF (check units and up axis); Export Library, then Import Library into a fresh settings folder (`HOME` pointed at a temp folder) and see the items return.
+- [ ] **Terrain.** A terrain wall that cuts the surface (grade step) and a kidney feature with Grade the terrain: cut/fill cubic yards in the Terrain Specification; drag a spline control point; a crowned road with curbs; North Pointer then Sun Angle shadows turn; Scale Bar; Build Terrain reports its stages; turn off the auto-rebuild and see "Terrain out of date".
+- [ ] **Layers and plan views.** Layer Display Options: select several layers and hide them in one click; Modify All Layer Sets; Layer Set Management (New, Copy, Rename, Delete, Make Active, Import From Plan File); Active Layers by Tool; Tools > Plan Views: Add Template Plan Views (20), Plan View Specification, Save and Reset Plan View, and tabs above the plan (switch, reorder, middle-click closes). Project Browser shows Floors, Plan Views, Cameras, Schedules, CAD Details and Layout.
+- [ ] **Electrical and framing.** Electrical: Auto Place Switches in a two-door room (3-way pair), drag the bend handle of a connection, devices in 3D with their finishes. Framing: Edit > Default Settings > Framing (change the header table and rebuild), corner and tee backing in a wall plan, a stairwell framed with trimmers and headers, rafters with birdsmouths in 3D, Framing Overview and back, the Framing Takeoff by member type.
+- [ ] **Print.** With a 3D view open File > Print > Print Image (size dialog, then a PNG); Print Model; Layout menu Layer Display Options and Add Sheet Index.

@@ -200,7 +200,7 @@ Use it for a dormer that sits on top of the roof surface instead of breaking thr
     in the wall are still cut.
   - An **interior** wall rises to the ceiling planes over it (a vaulted ceiling), and is cut by the roof above.
   - A wall with no plane above it keeps its flat top. A wall's own **Bottom Height** and the planes of other floors are honored: a plane that is not at least 1" above the wall's bottom does not shape it (a dormer wall stands on the roof surface).
-  - **Half, pony, foundation and curved walls** are cut by the roof like a standard wall (a curved wall by its facets) but are never raised to a gable: a half wall stays a half wall under the gable.
+  - **Half, pony and foundation walls** are cut by the roof like a standard wall but are never raised to a gable: a half wall stays a half wall under the gable. A **curved** exterior or interior wall is cut by the roof facet by facet and (Round 12) is raised to the gable like a straight wall, so a gable end on an arc follows the roof; a curved wall of another class (glass, pony ...) is cut but not raised.
   - **Roof Cuts Wall at Bottom** (Roof Defaults, 8.4a; on by default): the bottom of a wall that stands over a lower roof (a second-floor wall on a first-floor roof) is cut along the top surface of that roof instead of ending in a flat line.
   - **Attic and lower wall types.** The part of a wall above its plate (a gable above the top plate) takes the **Attic Wall Type** of Roof Defaults, and the part below a butting roof's line takes the **Lower Wall Type**; empty keeps the wall's own type.
   - **Butting roofs.** Where a lower roof meets a wall that rises well above it (more than 1" above the plane and running at least 6" through it), the
@@ -320,7 +320,7 @@ What Build Roof does with them:
 - Build Ceiling Planes follows the roof planes only. In 3D an interior wall rises to the ceiling planes over it (8.3).
 - Roof holes must sit wholly inside one plane; Chief's holes across a ridge need one hole per plane here.
 - No automatic attic floor from Build Roof.
-- Half, pony, foundation and curved walls are cut by the roof but never raised to a gable; railing, glass, fencing, deck and the other special classes keep a flat top. With the baseline-at-plate rule off (and in plans built before it existed) the gable triangle's corners stand about 6" above the plate because the
+- Half, pony and foundation walls (and curved walls of those classes) are cut by the roof but never raised to a gable; railing, glass, fencing, deck and the other special classes keep a flat top. With the baseline-at-plate rule off (and in plans built before it existed) the gable triangle's corners stand about 6" above the plate because the
   roof slab is 6" thick (the wall rises to the roof's underside).
 - The eave cut is Plumb, Level or Square (no other angle); gutters are a plain board-shaped box hung along the eave (no profile, downspouts or slope), and rafter tails are rectangular boxes (no bird's-mouth or decorative end cut). The flat roof plane (a room's **Flat Roof Over This Room**, chapter 4.4) has no overhang.
 

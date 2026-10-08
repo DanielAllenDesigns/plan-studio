@@ -20,8 +20,8 @@ and Wall Elevation cameras, walkthroughs, lights and glTF export.
   - **railing** and **deck railing** walls are posts (at most 8' apart and one at each end), top and bottom rails and
     3/4" balusters; a **deck edge** is a rim board; **fencing** is posts every 8' at most with pickets, boards or
     rails by Fence Style;
-  - a **curved** wall is built as a run of straight facets (one per 7.5 degrees) of its class, and **doors and windows
-    are not cut through it**.
+  - a **curved** wall is built as a run of straight facets (one per 7.5 degrees) of its class, its ends mitered against the walls joined to it, and **doors and windows
+    are cut through it**: the jambs and head follow the arc and each unit stands square to the arc's tangent at its center (chapter 2.2); a gable end on an arc rises to the roof.
 - Door leaves and window frames, sashes and glass for every opening style (chapter 3.2), with lite grids: hinged and double
   doors, sliding doors (two to four overlapping panels on two tracks), pocket, bifold (a pair of panels, or two pairs), garage, barn, shower and
   fixed doors, a doorway (jambs only); hung and fixed windows, casements (one sash, two from 4' wide), sliding windows, awnings and hoppers
@@ -35,7 +35,7 @@ and Wall Elevation cameras, walkthroughs, lights and glTF export.
   an Open Below, Attic or Courtyard room has no floor platform, and the ceiling of the room under an Open Below room is open to it. The floor and ceiling layers of a Floor/Ceiling
   Structure Define give the platform its thickness. A room nested inside another room leaves a hole in the surrounding room's platforms. A dropped Garage floor, and any room with a **Stem Wall** height, get concrete **stem walls** under the room's exterior walls, from the underside of the floor platform up to the floor level, interrupted at garage doors (chapter 4.4).
 - **Walls follow the roof** (chapter 8.3): gable ends rise to the roof in a triangle, hip and shed roofs clip the walls under them, interior walls rise to a vaulted ceiling, and
-  butting roofs are trimmed with flashing and attic walls fill the gap above a lower roof. Half, pony, foundation and curved walls are cut by the roof the same way but are never raised to a gable; with **Roof Cuts Wall at Bottom** a wall standing over a lower roof is cut along that roof (chapter 8.4a). Railing, glass, fencing and the other special classes keep flat tops.
+  butting roofs are trimmed with flashing and attic walls fill the gap above a lower roof. Half, pony and foundation walls are cut by the roof the same way but are never raised to a gable (a curved standard wall is, facet by facet); with **Roof Cuts Wall at Bottom** a wall standing over a lower roof is cut along that roof (chapter 8.4a). Railing, glass, fencing and the other special classes keep flat tops.
 - Slabs, slab holes, footings, square pads and round piers (chapter 16).
 - Wall **bottom heights**: a wall that starts above the floor (chapter 2.9) is built from its bottom to its top, for standard walls and every straight wall class;
   the openings keep their sill heights measured from the floor, so only the part of an opening inside the wall is cut.
@@ -45,9 +45,9 @@ The editor appends:
 - **Roofs** (chapter 8): each plane as a 6" slab with its holes cut (and trimmed where it butts a taller wall), skylights (curb, frame, glass), vaulted ceiling planes
   and dormers, and the eave detail: the eave cut (plumb, level or square), fascia, soffit or exposed rafter tails, rake boards, optional frieze, gutters, ridge and hip caps, and flashing (Trim, Roof and Metal materials), each mesh tagged with its plane
   so a click in 3D picks the plane. The sizes and switches come from Roof Defaults (chapter 8.4a) and a plane can override them.
-- **Manual framing** (chapter 11.11): the members placed by the framing tools and those Build Framing makes from the layout
-  lines (directed joists, bearing beams, laid-out trusses). The members Build Framing makes from the walls, floors and roof
-  are drawn in plan only, not in 3D.
+- **Framing** (chapter 11.11): the members placed by the framing tools and all the members Build Framing makes (wall studs, plates and headers, floor joists, rafters with their
+  tail cuts and birdsmouths, trusses), one box per piece, on the Framing layers.
+- **Electrical devices** (chapter 9.4a): cover plates, trim rings, pendants, fans, sconces, detectors, the panel and rope lights, in the finish chosen for each.
 - **Placed library symbols**: a box of the symbol's width, depth and height for a built-in symbol, and the decoded meshes
   for a Chief catalog object (a box when the geometry is partial, nothing when the catalog is unavailable; chapter 6.6).
 - **Exterior details** (chapter 17): corner boards, quoins, moldings, floor and wall material regions, polygon decks and the 3D solids.
@@ -61,7 +61,7 @@ The editor appends:
   beds, grass, water, stepping stones, plants, sprinklers). The landscape uses its own Grass, Mulch, Foliage and Water materials: lawn and grass regions Grass, garden beds Mulch (or their named material), canopies Foliage, water Water (translucent), trunks Framing, edging and stones Stone.
 - **Pictures, billboards and 3D solid features** (chapter 6.7): a picture or billboard is a quad that shows its **own bitmap** in the GL view (PNG or JPEG, with the picture's transparent color cut out; 10.8a), or a flat-colored quad when the file is missing or cannot be decoded, and always in the ray tracer; billboards turn to face the camera in the live view (glTF export and the ray tracer keep the stored angle); a 3D Solid Feature draws its library item in Concrete.
 
-Electrical devices have a 3D builder in their crate that the view does not draw (planned). Coordinates: X is plan x, Y is up, Z is
+Coordinates: X is plan x, Y is up, Z is
 negative plan y, all in inches. The scene is rebuilt automatically when the plan changes (it
 watches a hash of the floors, walls, openings, placed symbols, room names, cabinets, stairs, roofs, foundation objects, details and the terrain), and **3D > Rebuild 3D** forces it.
 

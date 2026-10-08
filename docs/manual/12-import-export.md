@@ -16,20 +16,25 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 | PDF (construction set) | Write | Yes: Tools > Schedules > Create Construction Set... | `plan-layout`, `plan-docs` |
 | PDF (the plan's layout, or a plan view) | Write | Yes: File > Print > Print..., Print Layout... and Export Layout PDF... (chapter 11.3) | `plan-layout`, `plan-docs` |
 | PDF (the Materials List) | Write | Yes: Materials List > Export PDF... (chapter 11.5) | `plan-docs` |
-| PNG (ray-traced stills) | Write | Yes: Ray Trace > Save PNG... | `plan-render` |
-| PNG (the plan's lines) | Write | Yes: File > Print > Print Image... (chapter 11.3) | `plan-app` |
+| PNG (ray-traced stills) | Write | Yes: Ray Trace > Save Image... at the same size, 2x or 4x (chapter 10.6) | `plan-render` |
+| PNG (the plan's lines, or a ray-traced picture of the open 3D view) | Write | Yes: File > Print > Print Image... (chapter 11.3) | `plan-app` |
 | PNG, baseline JPEG, scanned PDF (underlay pictures for tracing) | Read | Yes: File > Import > Underlay Picture... (12.4a) | `plan-app` |
 | PNG and JPEG (baseline and progressive) as textures and pictures | Read | Yes, in 3D: the textures of the 3D view and the ray tracer (Chief's own texture files when your install has them, else generated ones), the bitmaps of pictures and billboards, and picture boxes in a layout (10.8a) | `plan-library` (`image`), `plan-materials` (`textures`) |
 | CSV (schedules, materials list) | Write | Yes: Export CSV... buttons | `plan-docs` |
 | Layout JSON | Read and write | Yes: File > Export > Layout (JSON)... and File > Import > Layout (JSON)... | `plan-layout` |
-| Markdown (Plan Check report) | Write | Yes: Save Report... | `plan-check` |
-| DXF (ASCII, R12) | Write | Yes: File > Export > DXF..., Elevation DXF... | `plan-core::export::dxf`, `plan-elevation` |
+| Markdown and PDF (Plan Check report) | Write | Yes: Save Report... and Report PDF... (chapter 18.4) | `plan-check` |
+| DXF (ASCII, R12) | Write | Yes: File > Export > DXF..., Elevation DXF..., and Export DXF from a section or elevation's vector view and its Camera Specification (chapter 10.7) | `plan-core::export::dxf`, `plan-elevation` |
 | DXF import, CAD to Walls | Read | Yes: File > Import > Import Drawing (DXF)..., CAD > CAD to Walls... | `plan-import` |
 | DWG | Neither | (planned) | |
 | Chief catalogs `.calib`, `.calibz` | Read in place | Yes: the Library Browser's Chief nodes (chapter 6.6); no import command | `plan-calib` |
 | Chief templates `.plan`, `.tpl`, `.layout` | Read names and some values | Yes: File > Templates > Import Chief Template... | `plan-chiefplan` |
-| Chief hotkeys, toolbars, preferences | Read | Hotkeys (chapter 13), and the default plan and layout template names from the preferences INI (chapter 1.7.1) | `plan-config` |
-| OBJ and glTF 3D models into the user library | Read | In progress (Round 11, the Library Browser work: `plan-import::{obj, gltf}` and the library's Import Model command); not described in this chapter yet | `plan-import` |
+| Chief project `.plan` (the building itself) | Read | Yes: File > Import > Chief Plan... (12.8a): floors, walls, doors, windows, named rooms, dimensions and text | `plan-chiefplan` (`import`) |
+| Chief hotkeys, toolbars, preferences | Read | Hotkeys: Customize Hotkeys > Import (chapter 13.7); toolbars: Customize Toolbars > Import Chief Toolbar File (chapter 1.4a); the default plan and layout template names from the preferences INI (chapter 1.7.1) | `plan-config` |
+| OBJ (`.obj` + `.mtl`) and glTF 2.0 (`.gltf`, `.glb`) 3D models into the user library | Read | Yes: Library > Import 3D Model (OBJ, glTF)... (chapter 6.4a, 12.7a) | `plan-import` (`obj`, `gltf`), `plan-library` (`model`) |
+| Plan Studio library zip (`.calibz` extension, stored zip of JSON and `.psm` models) | Read and write | Yes: Library > Export Library (Plan Studio only)... and Import Library... (12.7a); Chief cannot open it | `plan-library` (`archive`) |
+| `.psm` (Plan Studio model, `PSM1`) | Read and write | Inside the library zip and in `~/.plan-studio/user-models/` | `plan-library` (`model`) |
+| Toolbar configuration JSON | Read and write | Yes: Customize Toolbars > Export... and Load Exported File... (chapter 1.4a); `~/.plan-studio/toolbars.json` | `plan-app` (`toolbar::config`) |
+| Hotkey list (JSON, CSV, PDF) | Write | Yes: Customize Hotkeys > Export and Print List (chapter 13.7) | `plan-app` |
 | IFC, SketchUp, Revit | Neither | (planned) | |
 
 ### Tools: the commands that read and write files
@@ -52,6 +57,7 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 | File > Import > Import Drawing (DXF)... | | Adds a DXF drawing to the active floor as CAD objects (12.4). | Works. |
 | File > Import > Underlay Picture (PNG, JPEG, PDF)... (also Tools > Underlays...) | | Places a picture under the plan for tracing (12.4a). | Works. |
 | File > Import > (DWG) | | Not in the menu. | (planned) |
+| File > Import > Chief Plan... | | Reads a Chief project `.plan` into a new plan in the window (12.8a). | Works. |
 | File > Templates > Import Chief Template... | | Seeds your defaults from a Chief `.plan`, `.tpl` or `.layout` (12.8). | Works. |
 | File > New Layout | | Makes the plan's layout and shows the layout view (11.3). | Works. |
 | File > Open Layout... | | Shows the layout view. | Works. |
@@ -65,10 +71,14 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 | Door/Window/Room/Wall Schedule > Export CSV... | | Writes a CSV. | Works. |
 | Schedule Specification > Export CSV... (a schedule placed in the plan) | | Writes a CSV of the placed schedule (11.2). | Works. |
 | Materials List... > Export CSV..., Export PDF... | | Writes the priced take-off as a CSV or a PDF (11.5). | Works. |
-| Checks window > Save Report... | | Writes Markdown. | Works. |
-| Ray Trace... > Save PNG... | | Writes a PNG. | Works. |
-| Library > Import Library..., Export Library... | | Writes or reads the User catalog as a `.calibz` zip (JSON + `.psm` models). Plan Studio only: Chief cannot open it, and Chief `.calib` files are read in place instead (`DECISIONS.md` item 19). | Works. |
-| Library > Import 3D Model (OBJ, glTF)... | | Adds an OBJ, glTF or GLB model to the User catalog with unit and up-axis options (6.4a). | Works. |
+| Checks window > Save Report..., Report PDF..., Add to Layout | | Writes Markdown or a PDF, or adds a page to the layout (chapter 18.4). | Works. |
+| Ray Trace... > Save Image... | | Writes a PNG at the render size, 2x or 4x. | Works. |
+| Vector view > Export DXF..., Camera Specification > Export drawing as DXF... | | Writes the section or elevation drawing as a DXF (10.7). | Works. |
+| Customize Hotkeys > Import, Export, Print List | | Reads a Chief `UserHotkeys.xml`; writes the keys as JSON or CSV; prints the list as a PDF (13.7). | Works. |
+| Customize Toolbars > Import Chief Toolbar File..., Export..., Load Exported File... | | Reads a Chief `.toolbar`; writes or reads the toolbar configuration as JSON (1.4a). | Works. |
+| Library > Export Library (Plan Studio only)..., Import Library... | | Writes or reads the User catalog as a `.calibz` zip (JSON, folders, favorites and recents, `.psm` models). Plan Studio only: Chief cannot open it, and Chief `.calib` files are read in place instead (12.7a, 12.7). | Works. |
+| Library > Import 3D Model (OBJ, glTF)... | | Adds an OBJ, glTF or GLB model to the User catalog with unit and up-axis options (6.4a, 12.7a). | Works. |
+| Library > Add Selection to Library, Add Active Material to Library | | Saves plan objects (a symbol, cabinet, CAD pieces, text) or the Material Painter's material into the User catalog (6.4a). | Works. |
 | CAD > CAD to Walls... | | Converts pairs of parallel CAD lines to walls (12.4). | Works. |
 
 ## 12.2 Plan files (`.psplan`)
@@ -102,11 +112,14 @@ layout and the wall types stored in the plan. Lengths are inches.
   | `Project.layout` | The plan's one layout: pages, boxes, title block and page setup (chapter 11.3) |
   | `Project.info` | Project Information: client, designer, job number, date, revisions, custom fields (chapter 11.4) |
   | `Project.lights`, `Project.light_options` | The lights Add Lights places, and whether electrical light fixtures emit light (chapter 10.13) |
+  | `Project.info.custom` (reserved keys) | `plancheck.settings` and `plancheck.ignored`: the Plan Check settings and the findings you ignored, as JSON text (chapter 18.2) |
+  | `Floor.framing` (one reserved record) | The Framing Defaults of the plan, stored under the key `FramingSettings` among the framing members (chapter 11.11) |
+  | `Project.plan_views`, `Project.layer_sets` | Saved plan views (floor, layer set, reference display, zoom and pan) and the named layer sets (chapter 5.5) |
 
   Typed, serde-default **extras** hold what dialogs used to keep per session: a wall's label switch, specified label text and last
   picked wall type; an opening's style name, thickness, swing angle, jamb or frame width and Show Open in 2D; a room's
   conditioned setting, stem wall height, base and crown moldings, fill and label options. A wall also stores its class and
-  curve, a camera object its section line (with the back clip) and its elevation rendering options (hatch, shadows, sun, line weight by distance, labels).
+  curve, a camera object its section line (with the back clip), its elevation rendering options (hatch, shadows, sun, line weight by distance, labels), its Vector View options and its plan callout (number and visibility), and a cabinet its library type, label offset and Opening Indicators in 3D. The terrain record also holds the plan's north angle.
 - **Migration.** Files from before these slots kept the roofs, electrical devices, terrain and slabs as hidden, locked text records on
   reserved layers (`Roof Planes, Data`, `Electrical, Data`, `Terrain, Data`, `Foundation, Data`, `Lights, Data` for lights, and, until Round 8, `CAD, Data` for CAD styles, CAD blocks, text macros and note types). When you open such a file the editor moves each
   record into its slot and deletes the legacy items and the hidden layers; it happens as the file loads, so it is not an undo step. A slot that is already filled
@@ -311,8 +324,7 @@ empty" if the plan has no geometry. Open the file in Blender, a glTF viewer or a
 
 ## 12.7 Chief catalogs (`.calib`, `.calibz`)
 
-`plan-calib` reads the user's own Chief library catalogs in place, and the Library Browser shows them (chapter 6.6). The Library menu's Import
-Library (.calib, .calibz)... is dimmed: catalogs are read where Chief keeps them, never imported.
+`plan-calib` reads the user's own Chief library catalogs in place, and the Library Browser shows them (chapter 6.6). There is no command that imports a Chief catalog: catalogs are read where Chief keeps them. (The Library menu's **Import Library...** reads only Plan Studio's own export zip, 12.7a.)
 
 What the engine does:
 
@@ -365,6 +377,21 @@ use when your Chief install is present (chapter 10.8a): they are decoded in memo
 fixtures built at test time; tests against a real install are marked `#[ignore]`. This is decision 3 in
 `DECISIONS.md`.
 
+## 12.7a Your own library: models and the export zip
+
+The User catalog (chapter 6.4a) takes in 3D models and moves between computers as one zip. None of these formats are Chief's, and Chief Architect cannot read them.
+
+**OBJ and glTF models.** Library > **Import 3D Model (OBJ, glTF)...** picks a Wavefront `.obj` (colors from a `.mtl` beside it), a glTF 2.0 `.gltf` with its `.bin` or a binary `.glb`. `plan-import::{obj, gltf}` reads them into an indexed triangle mesh in inches (`ImportedModel`):
+glTF scenes and node transforms, triangle meshes and base colors, but not textures, sparse accessors or Draco compression. The window asks for the file's **units** (inches, feet, millimeters, centimeters, meters; glTF defaults to meters), the **up axis** (Y or Z), the
+**folder** and the **placement**, and shows the triangle count and size. The result is stored as a `.psm` model beside your library.
+
+**`.psm` (Plan Studio model).** A compact binary file: the magic `PSM1`, a part count, then per part its name, an optional color and the vertices and triangle indices, all little-endian. The model is normalized in the library: centered at x = 0, bottom at y = 0, back face at z = 0, front facing +Z (the
+frame of a placed symbol). The Library Browser draws its preview pane from the model with a small software rasterizer (one headlight and a key light, 2 x 2 supersampling).
+
+**The export zip.** Library > **Export Library (Plan Studio only)...** writes a zip with the extension `.calibz` so it sits next to Chief libraries in a file picker. It is a plain zip of stored (uncompressed) entries: `plan-studio-library.json` (`format`, `version`, the catalog and the folders, favorites and
+recents), `user-models/<name>.psm` for each model, and a `README.txt` that says it is not a Chief library. **Import Library...** reads exactly what Export writes (items with the same id are replaced). A zip made by another tool imports only if its entries are stored, not deflated. Do not confuse it with a Chief `.calibz`
+(deflated textures plus a SQLite `.calib`, 12.7), which Plan Studio reads in place and never imports.
+
 ## 12.8 Chief templates (`.plan`, `.tpl`, `.layout`)
 
 **File > Templates > Import Chief Template...** picks a Chief `.plan`, `.tpl` or `.layout` file, seeds your
@@ -389,7 +416,7 @@ rough ceiling and stem wall heights), roof and floor finish materials, arrow sty
 (the template stores no page or box objects the reader could identify). Chief's own `Default Text Style` is 6" Arial in the stock template but 4.5"
 Avenir in Daniel's; the seed keeps the names Plan Studio already ships at their current values.
 
-**Reading a plan's content (Round 11, in progress).** Everything above reads a template's *defaults*. A new module, `plan_chiefplan::import` (`import_plan(path, &ImportOptions)`), reads the *content* of a Chief `.plan`: floors (count, order, elevation and ceiling height), walls (line, wall type, height, side), the doors and windows that are children of a wall (center, width, height), named rooms and dimensions, plus an `ImportReport` with the counts, warnings and the classes it skipped. Confidence is uneven (floor names, door styles and dimension line offsets are guesses) and everything else in the file is counted, not imported. As of this writing no menu command calls it and the format notes it cites are still being written, so File > Import has no `.plan` entry: the builder is still working, and this paragraph describes only what the code in the working tree shows.
+**Reading a plan's content: see 12.8a.** Everything above reads a template's *defaults*; the next section reads a project's *building*.
 
 **Automatic seeding.** You do not have to import to use these values. Plan Studio finds your default plan and layout templates (from Chief's preferences INI,
 else by their stock names), decodes them once into `~/.plan-studio/template-seed.json`, and lays the decoded wall types, text styles, dimension sets and default height over its
@@ -397,12 +424,38 @@ defaults when no saved `defaults.json` exists. **Edit > Default Settings > Prefe
 **Set as default plan / layout template** button writes a path there (chapter 1.7.1 has the whole story). The module is `plan-app/src/templates.rs`, with the Chief INI reader in
 `plan-config/src/templates.rs`.
 
+## 12.8a File > Import > Chief Plan...
+
+**File > Import > Chief Plan...** picks a Chief Architect project `.plan` and builds a new Plan Studio plan from it (`plan_chiefplan::import::import_plan`; the file formats are in `docs/chief-plan-format.md`). Nothing is copied from the file into the repository, and your Chief file is only read.
+The new plan replaces the one in the window, named after the file, with no file path yet (use Save As); **the command does not ask about unsaved changes, so save the plan you have open first**. The status bar reports the result, for example
+`Imported House.plan: House.plan: 4 floors, 228 walls, 46 doors, 34 windows, 19 named rooms, 174 dimensions, 137 texts`, followed by notes. A `.layout` file holds sheets, not a building, and is refused ("a .layout file holds sheets, not plan geometry").
+
+What is imported:
+
+| Plan Studio | From the Chief file | How well it is understood |
+|---|---|---|
+| Floors | Count, order, floor elevation and ceiling height | High. **Names are positional** (Foundation for a floor below grade, 1st Floor, 2nd Floor ..., Attic for a top floor that holds roof planes): the file stores no names. |
+| Walls | The wall line, the wall type (its layer stack replaces a same-named default so the registry and the thickness agree), the height, which side is exterior, and curved walls (the minor arc) | Line and type high; height, side and arcs medium. The line is the centerline of the main layer, shifted for asymmetric exterior walls from one measured type, so some types may sit a fraction of an inch off. Joined ends are healed. |
+| Doors and windows | The openings that belong to a wall: center, width, height | High for position and size. **The style is guessed from the width** (door vs doorway, window kind), swing is not read. |
+| Rooms | The names of rooms (`kitchen`, `F. Porch`) | Medium. Plan Studio detects the room shapes itself from the walls and anchors the names in them; a room whose label the file stores separately comes in without a name (one house: 19 of 68 rooms named). |
+| Dimensions | Linear dimension strings: their points | Medium for points. **The dimension line's position is not stored where it could be found**, so every string is placed 36" outside the floor's walls, one dimension per consecutive pair of points. Text overrides and arrows are not read. |
+| Text | Free text notes: position and string | Medium. The size is assumed (4.5" regular, 8" for bold text), angle 0. Automatic wall labels are skipped. |
+| Layers, layer sets, text styles, wall types | Read by the same scan as templates (12.8) | X18 files only. |
+
+An X17 file imports walls, wall types, openings and floors only (no layers, rooms or dimensions: the decoding of those is X18's).
+
+What is **not** decoded, and so not imported: **cabinets, placed library symbols, roof planes, stairs, railings, electrical devices, framing, moldings and trim** (the classes are recognized by name and counted, not read), room polygons, floor names, door styles, dimension line offsets, wall bottoms and sloped tops,
+wall connection records, major arcs and bay or bow walls. You will redraw the roof, cabinets, stairs and fixtures, or place them from the library, on the imported shell.
+
+The importer also builds a report (`ImportReport`): counts, per-floor counts, the skipped classes (class number, label, confidence, how many) and notes in plain language ("floor names are positional", "dimension offsets are assumed"). The status bar shows the counts and the notes; the full report is available to code
+and to the `import` example (`cargo run --release -p plan-chiefplan --example import -- "House.plan" --json`). A window listing the report is not built. Importing a 75 MB file takes about 0.3 s. All 191 archived Chief projects of the test set (3 to 170 MB) imported without an error.
+
 ## 12.9 Chief hotkeys, toolbars and preferences
 
 `plan-config` reads Chief's `UserHotkeys.xml`, the `.toolbar` files and the preferences INI. The app uses the
-hotkeys (chapter 13). Daniel's own files are embedded at compile time from `docs/chief-config-raw/`. The one thing read from the live Chief
+hotkeys (chapter 13) and the toolbar sets (chapter 1.4a: the per-view toolbar sets start from Daniel's four Chief toolbars, and Customize Toolbars can import any Chief `.toolbar` file, mapping each button to its Plan Studio counterpart). Daniel's own files are embedded at compile time from `docs/chief-config-raw/`. The one thing read from the live Chief
 INI (`~/.config/Chief Architect Inc/Chief Architect Premier X18.ini`, then X17's) is the names of the default plan and layout templates (chapter 1.7.1); reading its other values
-and rebuilding the toolbars from his four toolbar sets (Default, Extended Tool, Space Planning, Terrain) are (planned).
+is (planned).
 
 ## 12.10 Notes
 

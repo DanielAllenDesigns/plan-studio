@@ -16,6 +16,8 @@ on a Mac.
 **Angle snap.** A drawing aid that makes a line fall on a neat angle, here every 15 degrees from the last
 point (so 0, 15, 30 ... 90) unless Edit > Snap Settings sets another increment. Holding Shift keeps the increment even where angle snaps are off. See 2.3.
 
+**Appliance bay.** An open space in a cabinet left for an appliance: the Refrigerator and Tall Oven cabinet types have one, and a base cabinet can be given one for a dishwasher, range, refrigerator or microwave. A library appliance dropped near a bay turns and sits in it. See 6.2.
+
 **Arch (head).** A curved top on a window or door. The Arch tab of the opening specifications offers Round Top, Segmental, Tudor, Gothic and Eyebrow, drawn in 3D with the glass and the wall fill following the curve. See 3.5a.
 
 **Archive, Auto Archive.** The older copy of a plan that Plan Studio keeps each time you save over it, in an `Archives` folder beside the plan (the newest 20 by default). Manage Auto Archives lists them. See 12.2a.
@@ -56,9 +58,13 @@ including the counter, in Daniel's template.
 
 **Bearing wall.** A wall that carries the weight of the floor or roof above it, not just its own.
 
+**Birdsmouth.** The notch cut in the underside of a rafter where it sits on the top plate: a level seat on the plate and a plumb cut against its inside edge. Build Framing cuts one in each rafter, limited to a third of the rafter's depth. See 11.11.
+
 **Blind cabinet.** A cabinet whose hidden end tucks behind the cabinet at a perpendicular wall. See 6.2.
 
 **Bottom height.** Where a wall starts above the floor it is drawn on, in inches (0 by default). See 2.1 and 2.6.
+
+**Bulge.** How far a curved wall's arc stands off its chord at the middle, measured from the chord to the apex (positive toward the left of start-to-end). The arc's radius, arc angle and rise all follow from the chord and the bulge. See 2.2.
 
 **Bumping.** A rule that makes a moved cabinet stop against a wall or slide up against its neighbor instead of
 overlapping it.
@@ -74,6 +80,8 @@ are these 2D drawing items, as opposed to model objects such as walls.
 
 **Callout label.** The short mark (`D01`, `W03`, `C-12`) a schedule draws beside each door, window, cabinet or fixture so the object and its schedule row can be matched. See 11.2.
 
+**Callout (section or elevation).** The bubble Plan Studio draws in the plan behind the middle of a section or elevation camera's line. It holds the view number and, once the view is on a layout page, the sheet number under a dividing line (`A-3`), the way a drawing set cross-references its views. Not the same as the text callout above. See 10.7.
+
 **Casing.** The trim around a door or window opening on the wall surface. Defaults here are 3 1/2" interior
 and 3 1/4" exterior.
 
@@ -86,7 +94,11 @@ Daniel's template, which is 9 feet of room plus the thickness of the floor struc
 
 **Centerline.** The middle of a wall, drawn as one line. Plan Studio stores each wall by its centerline.
 
+**Chord.** The straight line between the two ends of an arc. A curved wall is drawn by its chord and then its bulge; Wall Length in the Wall Specification is the chord, and the plan symbols of doors and windows in a curved wall sit on the chord. See 2.2.
+
 **Clerestory.** A row of windows high on a wall, above eye level, to bring in light. (No special tool.)
+
+**Code reference.** The section of a building code a Plan Check rule is based on (`IRC R311.7.5.1 riser height`). It is the name of the rule in the finding and in the report. See 18.3.
 
 **Conditioned space.** A room that is heated or cooled. Garages, porches and crawl spaces are usually
 unconditioned.
@@ -103,9 +115,15 @@ unconditioned.
 
 **Cross section.** A drawing of the building as if sliced through, showing the inside from the cut. See 10.2.
 
+**Cut and fill.** Grading the ground by digging it away (cut) or building it up (fill). A terrain feature with Grade the terrain on becomes a flat pad whose sides slope back to the existing ground; the Terrain Specification lists the cubic yards cut and filled for each pad and in total. See 9.6.
+
 ## D
 
+**Daylight line.** Where the sloped side of a graded pad meets the existing ground. A cut slope rises from the pad edge to it, a fill slope falls from the pad edge to it. See 9.6.
+
 **Deck edge, deck railing.** Wall variants for a deck: the edge is a rim board with no railing, the railing has posts, rails and balusters. Both draw on the `Deck Railing` layer. See 2.2.
+
+**Depth of field.** How much of a picture is in focus. The ray tracer has an Aperture (0 is a pinhole: everything sharp; larger blurs what is nearer or farther than the Focus distance). See 10.6.
 
 **Dimension.** A measurement drawn on the plan with extension lines, a dimension line and a value. **Temporary
 dimension**: a measurement that appears while you draw or select something and is never saved.
@@ -162,9 +180,15 @@ footing), **monolithic slab** (one concrete pour with thickened edges) and **pie
 
 **Framing.** The wood or steel skeleton of a building: studs, joists, rafters, headers. Build > Framing builds it from the plan, and the framing tools place members by hand (11.11); the library is `plan-framing` (14.2).
 
+**Framing Overview.** A saved plan view and layer set that shows only the framing of the active floor. See 11.11.
+
+**Free-angle section.** A section or wall elevation camera whose cut line runs at any angle in the plan, not only square to a side. The drawing is cut along the line and shows what lies beyond. See 10.7.
+
 **Frieze.** A trim board where the top of the wall meets the soffit under the eave. Drawn in 3D when the frieze switch is on (off by default; Roof Defaults or per roof plane; 8.3, 8.4a).
 
 **Full camera.** A 3D view from a person's eye height, 66", looking in a chosen direction. See 10.2.
+
+**FXAA.** Fast approximate anti-aliasing: a screen pass that softens the jagged stair-steps on edges in the live 3D view. It is on at Medium and High quality. See 10.4a.
 
 ## G
 
@@ -179,6 +203,8 @@ with a gable at each end.
 
 **Glass wall.** A wall that is a glass pane in a frame; a **glass pony wall** has a solid lower part under the glass. See 2.2.
 
+**Grade step.** How much lower the ground on the cut side of a terrain wall sits than on the retained side. A new wall has 2'-0"; the ground slopes back up to the existing grade at 1 rise to 4 run. See 9.6.
+
 **Grid, reference grid and snap grid.** The reference grid is the visible background lines (12" in Daniel's
 template). The snap grid is the invisible spacing the cursor jumps to (1").
 
@@ -191,6 +217,8 @@ template). The snap grid is the invisible spacing the cursor jumps to (1").
 **Hatch.** A pattern of fine lines that stands for a material (brick, siding, stucco, stone, shingle ...) on a drawing. Elevations can hatch visible faces (10.7; the pattern scale is fixed for a 1/4" sheet), the CAD Hatch tool hatches a closed shape (5.4) and Wall Hatching hatches a wall in plan (17).
 
 **Header.** A beam over a door or window opening that carries the load of the wall above it.
+
+**Header table.** The list Build Framing reads to choose a header's size from the width of the opening: for example 2x6 up to 48", 2x8 up to 60", 2x10 up to 72", 2x12 beyond. It is edited on the Headers tab of Framing Defaults. See 11.11.
 
 **Hip roof.** A roof that slopes on all four sides. A **hip** is the sloping line where two roof planes meet at an outside corner.
 
@@ -213,6 +241,8 @@ template). The snap grid is the invisible spacing the cursor jumps to (1").
 **Joist.** One of the parallel horizontal beams that hold up a floor or ceiling.
 
 **Joist direction.** A framing line you draw to tell Build Framing which way the floor joists of a room run: perpendicular to the line. See 11.11.
+
+**Jurisdiction preset.** The set of limits Plan Check compares against. "IRC 2021 residential" is the one that ships; editing any limit makes the settings "Custom". See 18.2.
 
 ## K
 
@@ -237,6 +267,8 @@ and Dimensions each have their own. See 5.5.
 **Layout edge.** The weight of the border line around a layout page. See 11.3.
 
 **Leader.** A line with an arrowhead that points from a note to the thing it names. On a layout page, a leader is one line to an elbow with the text on a landing line; on the plan, Leader Line is a text tool. See 5.3, 11.3.
+
+**Library type.** A cabinet Chief's library offers as an entry of its own (Vanity, Pantry, Tall Oven, Refrigerator) that Plan Studio builds from a plain cabinet kind with its own size and face. Shift+Tab walks them in the Cabinet tool. See 6.2.
 
 **Light (plan light).** A point light placed in the plan with Add Lights; the ray tracer uses it. See 10.13.
 
@@ -272,9 +304,13 @@ and Dimensions each have their own. See 5.5.
 
 **Nested room.** A room wholly inside another, such as a closet pod; the surrounding room gives up the island in its areas and its floor and ceiling. See 4.1.
 
+**Next-event estimation.** A ray tracing trick: at each surface the renderer aims a ray straight at a light (a lighting fixture, say) instead of waiting for a bounced ray to find it by chance, so lit rooms need far fewer samples. See 10.6.
+
 **Niche (wall niche).** A recess in a wall that does not go all the way through. See 3.2.
 
 **Newel.** The post at the end or corner of a railing that holds the rails. A stair's newels sit at the foot, the head and at least every maximum spacing along the flight. See 7.5.
+
+**North angle.** The turn of the plan, in degrees clockwise from the top of the page to true north. The North Pointer sets it; the Sun Angle uses it to put the sun in the right compass direction. See 9.6.
 
 **Nosing.** The part of a stair tread that sticks out past the riser below it. 1" by default.
 
@@ -298,9 +334,13 @@ and Dimensions each have their own. See 5.5.
 
 **Partition.** An interior wall that divides space. In the cabinet tools, a vertical panel.
 
+**PCF (percentage-closer filtering).** Averaging several shadow-map samples around each pixel so the edge of a shadow is soft rather than jagged. Medium quality uses 3 x 3 samples and High 5 x 5. See 10.4a.
+
 **Pier.** A post, often concrete, that holds up part of the building above the ground. The Round Pier tool places one (chapter 16).
 
 **Pitch.** The slope of a roof, written as rise over 12 of run. An 8:12 roof rises 8 inches for every 12 inches of horizontal distance.
+
+**Plan view tab.** A saved plan view shown as a tab above the canvas. Each remembers its floor, layer set, reference display, zoom and pan. See 1.3 and 5.5.
 
 **Plate.** The horizontal board at the bottom (sole plate) or top (top plate) of a framed wall that the studs fit between.
 
@@ -314,7 +354,11 @@ and Dimensions each have their own. See 5.5.
 
 **Pocket door.** A door that slides into a hollow space inside the wall. The Pocket Door tool (`D, P`) draws it with a dashed pocket (3.2).
 
+**Preetham sky.** An analytic model of a clear sky that the ray tracer can use in place of a two-color gradient: it brightens toward the horizon and the sun and changes color from noon to sunset. Turbidity sets the haze. See 10.6.
+
 **Printed size.** A text or dimension size given on paper (a 1/8" label) that holds at any drawing scale, as opposed to a character height in plan inches. See 5.9.
+
+**`.psm`.** Plan Studio's own 3D model file (magic `PSM1`): the triangle meshes of a user-library item. Chief cannot read it. See 12.7a.
 
 ## Q
 
@@ -354,6 +398,8 @@ and Dimensions each have their own. See 5.5.
 
 ## S
 
+**Scale bar.** A bar of known length drawn on a site plan so the scale survives a change in print size. The Scale Bar tool of the Terrain menu draws one in whole feet. See 9.6.
+
 **Schedule.** A table that lists objects of one kind with their sizes: door schedule, window schedule, room schedule. It can be a window, or a live table placed in the plan with callout labels on the objects; a placed schedule is selected, moved and deleted like any other object. See 11.2.
 
 **Section.** See **cross section**.
@@ -376,6 +422,8 @@ and Dimensions each have their own. See 5.5.
 
 **Specification dialog.** Chief's name for the dialog you open by double-clicking an object, with tabs for every setting.
 
+**SSAO (screen-space ambient occlusion).** Darkening of creases and the places where surfaces meet, worked out from the depth of the picture. It is the "Ambient occlusion" switch of the 3D Shading menu. See 10.4a.
+
 **Stem wall.** A short foundation wall that rises from the footing to the floor. A garage whose floor is dropped below the house, and a room with a Stem Wall height, get one in the 3D view (4.4).
 
 **Stairwell.** The opening in the floor above where a stair passes through. Auto Stairwell cuts it as a platform hole and adds an invisible ring of room dividers, so a "Stairwell" room forms. See 7.4.
@@ -389,6 +437,8 @@ and Dimensions each have their own. See 5.5.
 **Stud.** One of the vertical boards in a framed wall, usually at 16" on center.
 
 ## T
+
+**Tail cut.** How the end of a rafter tail is cut at the eave: plumb (vertical), level (horizontal) or square (at right angles to the rafter). See 8.4a and 11.11.
 
 **T-junction.** Where one wall ends against the side of another. The corner join is an L; a crossing is an X.
 
@@ -404,13 +454,19 @@ and Dimensions each have their own. See 5.5.
 
 **Text fit.** How text sits in a layout text box: Wrap, Shrink to fit or As typed. See 11.3.
 
+**Toolbar set.** The buttons and rows the toolbars show for one kind of view (floor plan, 3D view, vector elevation or layout). Customize Toolbars edits them. See 1.4a.
+
 **Tread.** The flat part of a stair step you stand on. 10" deep or more by the code.
 
 **Toe kick.** The recessed strip at the bottom of a base cabinet so you can stand close. 4" high, 3" deep by default.
 
+**Trimmer joist, header joist.** The joists that frame an opening in a floor, such as a stairwell: trimmers run the full span on each side of the opening and header joists cross it at each end between the trimmers. See 11.11.
+
 **Truss.** A pre-built triangulated frame, usually used for roofs. The framing tools draw Fink, Howe, king post, scissor, attic and mono trusses, and Build Framing fills a Truss Base with them (11.11).
 
 **Truss base.** The closed outline you draw on a plan that Build Framing fills with roof trusses. See 11.11.
+
+**Turbidity.** The haziness of the air in the ray tracer's clear sky, from about 2 (very clear) to 10 (hazy). See 10.6.
 
 **Typed slot.** A field of the plan file that holds one kind of object, as JSON owned by a view module (roofs, details, schedules, stairs, the layout ...) or as a typed list (CAD styles and blocks, text macros, note types), saved and undone with the plan. See 12.2 and 14.3.
 
@@ -436,6 +492,10 @@ and Dimensions each have their own. See 5.5.
 
 **Walkthrough.** A camera that moves along a path drawn in the plan; it can be played in the 3D view or recorded as frames. See 10.12.
 
+**Watercolor wash.** The soft color, darkened edges and paper grain the Watercolor rendering technique lays over the live 3D view. See 10.4.
+
+**Waterfall edge.** A countertop edge that runs down to the floor at the end of a cabinet run, as an island's end often does. See 6.2.
+
 **Winder.** A pie-shaped stair tread that lets a stair turn a corner without a landing.
 
 ## Abbreviations
@@ -444,11 +504,17 @@ and Dimensions each have their own. See 5.5.
 |---|---|
 | ADA | Americans with Disabilities Act (ramp slope limit 1:12) |
 | DAD | Daniel Allen Designs |
+| EV | Exposure value; the ray tracer's exposure slider is in stops (EV) |
+| FXAA | Fast approximate anti-aliasing (10.4a) |
 | GFCI | Ground-fault circuit interrupter |
 | IRC | International Residential Code |
+| NEC | National Electrical Code (Plan Check cites 210.8 and 210.52, 18.3) |
+| NKBA | National Kitchen & Bath Association (kitchen aisle and counter depth guidelines in Plan Check) |
 | o.c. | On center (stud and joist spacing, 16") |
+| PCF | Percentage-closer filtering, the soft shadow edge (10.4a) |
 | OSB | Oriented strand board, a common sheathing |
 | psplan | Plan Studio plan file |
 | QA | Quality assurance; the scenario tests and `docs/qa-findings.md` (14.8) |
 | sq ft | Square feet |
+| SSAO | Screen-space ambient occlusion (10.4a) |
 | UTC | Coordinated Universal Time; the times in archive and recovery file names and in the recovery prompts (12.2a) |

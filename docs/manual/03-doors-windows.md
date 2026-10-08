@@ -307,9 +307,7 @@ active floor with its size, style and position, and export CSV (chapter 11).
   angle, the jamb or frame width, Show Open in 2D, its label settings and offset, its mull group, its
   lites, interior casing and every shaping tab of 3.5a (all saved with the plan and loaded with
   defaults from older files). Exterior casing widths stay session only (an opening has one casing). The Default Settings dialogs write
-  the template values that new openings copy, but the **standard widths**, **Snap to standard widths** and the shaping-tab values that new doors and windows start with are held for the
-  session only: saving them with the plan defaults (`OpeningDialog::apply_to_variants`) is not wired yet (`docs/integration-queue.md`), and until it is the embedded template JSON
-  lags the defaults (a new plan gets the two label layers when its first opening is placed).
+  the template values that new openings copy, and (Round 12) OK in the Default Door, Exterior Door and Window dialogs also saves the **standard widths**, **Snap to standard widths** and the shaping-tab values that new doors and windows start with into the plan defaults (`opening_variants`; `OpeningDialog::apply_to_variants`).
 - Double Door, Casement, Fixed, Sliding, Awning and Hopper Window are Plan Studio's own flyout entries
   (Chief picks them in the dialog). The threshold line, a transom over a door (stacked openings that overlap in plan), per-mesh shutter
   color, door jambs and Size Includes Frame in plan, Opening Indicators, and Custom left/right door panel counts are not built.

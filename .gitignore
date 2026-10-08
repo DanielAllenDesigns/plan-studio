@@ -1,0 +1,4 @@
+/target
+*.psplan.bak
+.DS_Store
+/.claude/

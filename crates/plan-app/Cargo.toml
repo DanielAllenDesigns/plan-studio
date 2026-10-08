@@ -1,0 +1,16 @@
+[package]
+name = "plan-app"
+description = "Plan Studio desktop editor (egui/eframe)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "plan-studio"
+path = "src/main.rs"
+
+[dependencies]
+plan-core = { path = "../plan-core" }
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+rfd = "0.15"
+serde_json = { workspace = true }

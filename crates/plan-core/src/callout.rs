@@ -1801,6 +1801,8 @@ impl Project {
                 changed |= wrote || differs;
             }
         }
+        // Text and Rich Text with macros follow the plan too (`crate::macros`).
+        changed |= self.sync_macro_texts();
         changed
     }
 

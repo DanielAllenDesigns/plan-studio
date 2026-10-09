@@ -393,7 +393,11 @@ fn feet_inches_text(inches: f64, f: &NumFormat) -> String {
     };
     let marks = f.unit_indicators;
     let feet_s = group_thousands(&feet.to_string(), f.thousands.sep());
-    let sign = if neg && (feet > 0 || !inch_zero) { "-" } else { "" };
+    let sign = if neg && (feet > 0 || !inch_zero) {
+        "-"
+    } else {
+        ""
+    };
     let mut out = String::from(sign);
     let show_feet = feet > 0 || f.leading_zeros;
     let show_inches = !inch_zero || f.trailing_zeros;
@@ -452,7 +456,13 @@ pub fn format_value(v: f64, kind: NumKind, f: &NumFormat) -> String {
                 Accuracy::Decimal(n) => n,
                 Accuracy::Fraction(_) => 1,
             };
-            let body = decimal_text(v, places, f.trailing_zeros, f.leading_zeros, f.thousands.sep());
+            let body = decimal_text(
+                v,
+                places,
+                f.trailing_zeros,
+                f.leading_zeros,
+                f.thousands.sep(),
+            );
             if !f.unit_indicators {
                 return body;
             }
@@ -475,7 +485,9 @@ mod tests {
     #[test]
     fn the_default_format_is_the_plan_text() {
         let f = NumFormat::default();
-        for v in [0.0, 0.5, 36.0, 80.0, 109.125, 150.5, 5.3333, 144.0, 12.0, 119.9] {
+        for v in [
+            0.0, 0.5, 36.0, 80.0, 109.125, 150.5, 5.3333, 144.0, 12.0, 119.9,
+        ] {
             assert_eq!(format_value(v, NumKind::Length, &f), fmt_ft_in(v), "{v}");
         }
     }

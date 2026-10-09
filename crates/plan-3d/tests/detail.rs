@@ -213,11 +213,12 @@ fn exterior_doors_get_a_threshold_only_with_casing() {
 }
 
 #[test]
-fn bay_box_and_bow_project_eighteen_inches() {
-    for style in [
-        OpeningStyle::BayWindow,
-        OpeningStyle::BoxWindow,
-        OpeningStyle::BowWindow,
+fn bay_box_and_bow_project_their_own_depth() {
+    // A bay is 1 ft deep, a box 1 ft 6 in, a bow 11 1/2 in (manual pp. 604, 605).
+    for (style, depth) in [
+        (OpeningStyle::BayWindow, 12.0),
+        (OpeningStyle::BoxWindow, 18.0),
+        (OpeningStyle::BowWindow, 11.5),
     ] {
         let (p, _, id) = with_opening(OpeningKind::Window, style, 72.0);
         let scene = build_scene(&p);
@@ -228,7 +229,7 @@ fn bay_box_and_bow_project_eighteen_inches() {
             .flat_map(|m| m.vertices.iter().map(|v| v.position[2]))
             .fold(f32::MIN, f32::max);
         assert!(
-            (zmax - (2.25 + 18.0)).abs() < 1e-3,
+            (zmax - (2.25 + depth)).abs() < 1e-3,
             "{style:?} projects {}",
             zmax - 2.25
         );

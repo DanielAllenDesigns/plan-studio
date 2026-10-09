@@ -498,14 +498,14 @@ fn a_door_and_the_window_beside_it_mull_into_one_unit_and_unmull_apart() {
         .into_iter()
         .map(|b| b.label)
         .collect();
-    assert!(labels.contains(&"Mull"), "{labels:?}");
+    assert!(labels.contains(&"Make Mulled Unit"), "{labels:?}");
     sim.app.cx.run_custom(opening_edit::MULL);
     let (d2, w2) = (opening(&sim, door), opening(&sim, side));
     assert!(d2.mull_group.is_some() && d2.mull_group == w2.mull_group);
+    // Nothing moves (Round 16): the components stay where they were put.
     assert_eq!(
-        d2.end_offset(),
-        w2.start_offset(),
-        "the mullion closes the gap"
+        w2.start_offset() - d2.end_offset(),
+        w.start_offset() - d.end_offset()
     );
     // Both still have their own 3D parts.
     let s = scene(&sim);
@@ -515,6 +515,6 @@ fn a_door_and_the_window_beside_it_mull_into_one_unit_and_unmull_apart() {
     assert!(opening(&sim, door).mull_group.is_none());
     assert!(opening(&sim, side).mull_group.is_none());
     // One undo per command.
-    assert_eq!(sim.undo().as_deref(), Some("Unmull Windows"));
+    assert_eq!(sim.undo().as_deref(), Some("Explode Mulled Unit"));
     assert!(opening(&sim, door).mull_group.is_some());
 }

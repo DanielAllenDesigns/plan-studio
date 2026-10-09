@@ -252,7 +252,7 @@ impl FramingTool {
                 }
                 _ => framing_view::add_record(cx, &label, |id| Record::BearingLine {
                     id,
-                    line: BearingLine { line: (a, b) },
+                    line: BearingLine::new((a, b)),
                 }),
             }
         };

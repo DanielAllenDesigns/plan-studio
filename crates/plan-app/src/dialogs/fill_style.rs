@@ -105,7 +105,7 @@ pub fn solid_mesh(
     for t in tris {
         let base = mesh.vertices.len() as u32;
         for &i in &t {
-            let Some(p) = all.get(i) else { return None };
+            let p = all.get(i)?;
             mesh.colored_vertex(to_screen(*p), color);
         }
         mesh.add_triangle(base, base + 1, base + 2);
@@ -934,6 +934,7 @@ pub fn read_fill(cx: &EditorContext, o: ObjectRef) -> Option<FillStyle> {
 
 /// Fill Style Painter: paints `style` on `o`. The caller opens the undo step
 /// (`cx.begin_change`) so a stroke over several objects is one step.
+#[allow(dead_code)] // hook for the owner named in integration-queue (brief 08)
 pub fn apply_fill(cx: &mut EditorContext, o: ObjectRef, style: &FillStyle) -> bool {
     let Some(t) = target_of(cx, o) else {
         return false;

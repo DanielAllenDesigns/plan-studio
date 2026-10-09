@@ -89,6 +89,7 @@ impl OpeningForm {
     /// The Rough Opening tab (DW-56): the opening the framer leaves, the
     /// concrete cutout under a door, and its plan display.
     pub(super) fn rough_opening(&mut self, ui: &mut Ui) {
+        self.use_default_row(ui, super::DynGroup::Rough);
         let door = self.is_door();
         section(ui, "Rough Opening");
         let (w, h, head) = (
@@ -150,6 +151,7 @@ impl OpeningForm {
 
     /// The Framing tab (DW-114): header, trimmers, king studs and sill.
     pub(super) fn framing(&mut self, ui: &mut Ui) {
+        self.use_default_row(ui, super::DynGroup::Framing);
         let door = self.is_door();
         let fr = &mut self.draft.extras.spec.framing;
         section(ui, "Header");
@@ -296,6 +298,7 @@ impl OpeningForm {
 
     /// The Materials tab (DW-117): a library material per component.
     pub(super) fn materials_tab(&mut self, ui: &mut Ui) {
+        self.use_default_row(ui, super::DynGroup::Materials);
         let parts: &[&str] = if self.is_door() {
             &DOOR_PARTS
         } else {
@@ -513,6 +516,7 @@ impl OpeningForm {
 
     /// The Treatments tab of a window (DW-123).
     pub(super) fn treatments_tab(&mut self, ui: &mut Ui) {
+        self.use_default_row(ui, super::DynGroup::Treatments);
         let t = &mut self.draft.extras.spec.treatments;
         section(ui, "Curtains");
         row(ui, "Style", |ui| {

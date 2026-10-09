@@ -2250,20 +2250,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "plan-agent-stub"
-version = "0.1.0"
-dependencies = [
- "plan-core",
-]
-
-[[package]]
 name = "plan-app"
 version = "0.1.0"
 dependencies = [
  "eframe",
  "egui_extras",
  "plan-3d",
- "plan-agent-stub",
+ "plan-agent",
  "plan-cabinets",
  "plan-calib",
  "plan-check",

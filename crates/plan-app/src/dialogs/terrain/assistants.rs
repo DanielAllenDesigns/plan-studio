@@ -37,7 +37,12 @@ pub(super) fn detect(text: &str) -> Source {
         Source::Empty
     } else if head.contains("<gpx") {
         Source::Gpx
-    } else if head.lines().map(str::trim).filter(|l| !l.is_empty()).take(2).collect::<Vec<_>>()
+    } else if head
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .take(2)
+        .collect::<Vec<_>>()
         == ["0", "section"]
     {
         Source::Dxf
@@ -70,7 +75,11 @@ fn limit_row(ui: &mut Ui, label: &str, limit: &mut Limit, data: (f64, f64)) {
             (limit.lo, limit.hi) = data;
         }
         ui.add_enabled_ui(limit.on, |ui| {
-            ui.add(egui::DragValue::new(&mut limit.lo).speed(1.0).prefix("from "));
+            ui.add(
+                egui::DragValue::new(&mut limit.lo)
+                    .speed(1.0)
+                    .prefix("from "),
+            );
             ui.add(egui::DragValue::new(&mut limit.hi).speed(1.0).prefix("to "));
         });
     });
@@ -221,7 +230,9 @@ impl ImportState {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Survey points",
-                &["dxf", "gpx", "txt", "csv", "prn", "xyz", "auf", "nez", "pts"],
+                &[
+                    "dxf", "gpx", "txt", "csv", "prn", "xyz", "auf", "nez", "pts",
+                ],
             )
             .pick_file()
         else {
@@ -291,8 +302,16 @@ impl ImportState {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.map, "Map this file point to the plan origin");
             ui.add_enabled_ui(self.map, |ui| {
-                ui.add(egui::DragValue::new(&mut self.map_x).speed(1.0).prefix("X "));
-                ui.add(egui::DragValue::new(&mut self.map_y).speed(1.0).prefix("Y "));
+                ui.add(
+                    egui::DragValue::new(&mut self.map_x)
+                        .speed(1.0)
+                        .prefix("X "),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.map_y)
+                        .speed(1.0)
+                        .prefix("Y "),
+                );
             });
         });
         row(ui, "Relief scale", |ui| {
@@ -302,11 +321,19 @@ impl ImportState {
                     .speed(0.01),
             )
         });
-        fields.degrees_row(ui, "Rotate north counterclockwise", "deg_import_rot", &mut self.scale.rotate_ccw);
+        fields.degrees_row(
+            ui,
+            "Rotate north counterclockwise",
+            "deg_import_rot",
+            &mut self.scale.rotate_ccw,
+        );
         ui.add_space(4.0);
         ui.add_enabled(
             draft.has_perimeter(),
-            egui::Checkbox::new(&mut self.center, "Center the points on the terrain perimeter"),
+            egui::Checkbox::new(
+                &mut self.center,
+                "Center the points on the terrain perimeter",
+            ),
         );
         ui.checkbox(&mut self.zero_lowest, "Make the lowest point elevation 0");
         ui.checkbox(
@@ -395,8 +422,10 @@ impl ImportState {
                 opts.relief_scale = self.scale.relief_scale;
                 opts.rotate_ccw = self.scale.rotate_ccw;
                 if self.map {
-                    opts.map_to_origin =
-                        Some((self.map_x * self.scale.unit_x.inches(), self.map_y * self.scale.unit_y.inches()));
+                    opts.map_to_origin = Some((
+                        self.map_x * self.scale.unit_x.inches(),
+                        self.map_y * self.scale.unit_y.inches(),
+                    ));
                 }
                 got.points = scale_points(&raw, &opts);
                 Ok(got)
@@ -448,15 +477,17 @@ impl GpsState {
         section(ui, "Select File");
         ui.weak("A GPS Exchange file (.gpx, version 1.1).");
         if ui.button("Choose File\u{2026}").clicked() {
-            if let Some(path) = rfd::FileDialog::new().add_filter("GPX", &["gpx"]).pick_file() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("GPX", &["gpx"])
+                .pick_file()
+            {
                 match std::fs::read_to_string(&path) {
                     Ok(t) => {
                         self.text = t;
                         self.message = None;
                     }
                     Err(e) => {
-                        self.message =
-                            Some(Err(format!("Could not read {}: {e}", path.display())));
+                        self.message = Some(Err(format!("Could not read {}: {e}", path.display())));
                     }
                 }
             }
@@ -484,20 +515,21 @@ impl GpsState {
 
     pub fn import_as(&mut self, ui: &mut Ui) {
         section(ui, "Import As");
-        let combo = |ui: &mut Ui, label: &str, salt: &str, value: &mut GpsImportAs, elevation: bool| {
-            row(ui, label, |ui| {
-                egui::ComboBox::from_id_salt(salt)
-                    .selected_text(value.name())
-                    .show_ui(ui, |ui| {
-                        for a in GpsImportAs::ALL {
-                            if a == GpsImportAs::ElevationData && !elevation {
-                                continue;
+        let combo =
+            |ui: &mut Ui, label: &str, salt: &str, value: &mut GpsImportAs, elevation: bool| {
+                row(ui, label, |ui| {
+                    egui::ComboBox::from_id_salt(salt)
+                        .selected_text(value.name())
+                        .show_ui(ui, |ui| {
+                            for a in GpsImportAs::ALL {
+                                if a == GpsImportAs::ElevationData && !elevation {
+                                    continue;
+                                }
+                                ui.selectable_value(value, a, a.name());
                             }
-                            ui.selectable_value(value, a, a.name());
-                        }
-                    })
-            });
-        };
+                        })
+                });
+            };
         combo(ui, "Way points", "gps_way", &mut self.waypoints_as, true);
         combo(ui, "Track points", "gps_track", &mut self.tracks_as, false);
         ui.weak(
@@ -508,20 +540,43 @@ impl GpsState {
 
     pub fn transform(&mut self, ui: &mut Ui, fields: &mut Fields, draft: &mut TerrainRecord) {
         section(ui, "Transform Coordinates");
-        fields.length_row(ui, "Lower elevation data by", "gps_lower", &mut self.transform.lower_by);
-        fields.degrees_row(ui, "Rotate north counterclockwise", "deg_gps_rot", &mut self.transform.rotate_ccw);
+        fields.length_row(
+            ui,
+            "Lower elevation data by",
+            "gps_lower",
+            &mut self.transform.lower_by,
+        );
+        fields.degrees_row(
+            ui,
+            "Rotate north counterclockwise",
+            "deg_gps_rot",
+            &mut self.transform.rotate_ccw,
+        );
         if ui
-            .checkbox(&mut self.set_origin, "Map a latitude and longitude to the plan origin")
+            .checkbox(
+                &mut self.set_origin,
+                "Map a latitude and longitude to the plan origin",
+            )
             .changed()
         {
             self.transform.origin = self.set_origin.then_some((0.0, 0.0));
         }
         if let Some((lat, lon)) = self.transform.origin.as_mut() {
             row(ui, "Latitude", |ui| {
-                ui.add(egui::DragValue::new(lat).range(-90.0..=90.0).speed(0.0001).max_decimals(6))
+                ui.add(
+                    egui::DragValue::new(lat)
+                        .range(-90.0..=90.0)
+                        .speed(0.0001)
+                        .max_decimals(6),
+                )
             });
             row(ui, "Longitude", |ui| {
-                ui.add(egui::DragValue::new(lon).range(-180.0..=180.0).speed(0.0001).max_decimals(6))
+                ui.add(
+                    egui::DragValue::new(lon)
+                        .range(-180.0..=180.0)
+                        .speed(0.0001)
+                        .max_decimals(6),
+                )
             });
         } else {
             ui.weak("The first point is the origin.");
@@ -544,13 +599,21 @@ impl GpsState {
 
     /// Runs the assistant and adds the elevation data and perimeter to the draft.
     pub fn run(&mut self, draft: &mut TerrainRecord) {
-        match import_gps(&self.text, self.waypoints_as, self.tracks_as, &self.transform) {
+        match import_gps(
+            &self.text,
+            self.waypoints_as,
+            self.tracks_as,
+            &self.transform,
+        ) {
             Ok(got) => {
                 let added = draft.terrain.add_elevation_points(&got.elevation_points);
                 if got.perimeter.len() >= 3 {
                     draft.terrain.perimeter = got.perimeter.clone();
                 }
-                self.message = Some(Ok(format!("{}; {added} elevation points added", got.summary())));
+                self.message = Some(Ok(format!(
+                    "{}; {added} elevation points added",
+                    got.summary()
+                )));
                 self.result = Some(got);
             }
             Err(e) => {

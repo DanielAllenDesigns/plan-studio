@@ -74,11 +74,19 @@ pub fn add_casing(ctx: &Ctx, set: &mut MeshSet, sill_set: &mut MeshSet) {
             (-half - depth, -half)
         };
         let mut legs = Vec::new();
-        if !unit.left {
+        if !unit.share_left {
             legs.push(((s_lo, (u0 - reveal).max(0.0)), (leg_bottom, head.0)));
         }
-        if !unit.right {
+        if !unit.share_right {
             legs.push((((u1 + reveal).min(len), s_hi), (leg_bottom, head.0)));
+        }
+        // Between two openings that mull automatically, one casing as wide as
+        // the gap (the Minimum Separation) is shared by both (manual p. 608).
+        if unit.gap_right > 0.01 {
+            legs.push((
+                (ctx.hole.s1, (ctx.hole.s1 + unit.gap_right).min(len)),
+                (leg_bottom, head.0),
+            ));
         }
         for (s, hh) in &legs {
             if s.1 - s.0 > 1e-6 && hh.1 - hh.0 > 1e-6 {

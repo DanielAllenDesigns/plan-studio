@@ -183,7 +183,13 @@ pub fn slab_mesh(
     let (f_bottom, f_top) = (y_bottom - size.depth, y_bottom);
     if slab.footing.is_some() {
         let outer = oriented(&slab.outline, true);
-        add_footing_ring(&mut mesh, &outer, size.width, f_bottom, f_top);
+        // Footing Offset: the footing reaches out past the slab's edges.
+        let ring = if slab.footing_offset > 0.0 {
+            offset_ring(&outer, -slab.footing_offset)
+        } else {
+            outer
+        };
+        add_footing_ring(&mut mesh, &ring, size.width, f_bottom, f_top);
     }
     let usable = usable_holes(&slab.outline, holes);
     for h in footed_holes {

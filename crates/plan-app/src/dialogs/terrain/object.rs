@@ -17,30 +17,20 @@ use super::super::{
 };
 use crate::editor::site_view::TerrainObject;
 
+use super::panels;
 use crate::tools::terrain::{
     apply_plant, plant_categories, plant_choices, plants_in, SPLINE_SAMPLES,
 };
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::Point;
-use super::panels;
 use plan_terrain::{
     FeatureKind, FillStyle, Landscape, LandscapeKind, ModifierKind, ObjectStyle, PlantForm,
     RoadKind, WallKind,
 };
 
 const GENERAL_ONLY: &[Tab] = &[on("General")];
-const POINT_TABS: &[Tab] = &[
-    on("General"),
-    on("Display"),
-    on("Line Style"),
-    on("Label"),
-];
-const DATA_TABS: &[Tab] = &[
-    on("General"),
-    on("Polyline"),
-    on("Line Style"),
-    on("Label"),
-];
+const POINT_TABS: &[Tab] = &[on("General"), on("Display"), on("Line Style"), on("Label")];
+const DATA_TABS: &[Tab] = &[on("General"), on("Polyline"), on("Line Style"), on("Label")];
 const MODIFIER_TABS: &[Tab] = &[
     on("General"),
     on("Polyline"),
@@ -451,8 +441,7 @@ impl Form {
                         let before = r.radius;
                         fields.length_row(ui, "Radius", "cds_radius", &mut r.radius);
                         if (r.radius - before).abs() > f64::EPSILON && r.radius > 0.0 {
-                            r.outline =
-                                plan_terrain::cul_de_sac(r.center, r.radius).outline;
+                            r.outline = plan_terrain::cul_de_sac(r.center, r.radius).outline;
                         }
                     } else if r.outline.len() < 3 && r.kind != RoadKind::Median {
                         fields.length_row(ui, "Width", "road_w", &mut r.width);
@@ -481,10 +470,7 @@ impl Form {
                 }
                 ui.add_enabled(
                     ex.interior_open,
-                    egui::Checkbox::new(
-                        &mut ex.tangent_to_edge,
-                        "Interpolate tangent to the edge",
-                    ),
+                    egui::Checkbox::new(&mut ex.tangent_to_edge, "Interpolate tangent to the edge"),
                 );
                 ui.weak(if flat {
                     format!(
@@ -1002,7 +988,9 @@ impl SpecPages for Form {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plan_terrain::{Feature, LandscapeKind, ObjectExtras, ShapeKind, TerrainBreak, TerrainWall};
+    use plan_terrain::{
+        Feature, LandscapeKind, ObjectExtras, ShapeKind, TerrainBreak, TerrainWall,
+    };
 
     fn pts() -> Vec<Point> {
         vec![
@@ -1110,9 +1098,20 @@ mod tests {
             match &obj {
                 TerrainObject::Road(r) => {
                     assert!(has("Polyline") && has("Layer"), "{tabs:?}");
-                    assert_eq!(has("Flare"), matches!(r.kind, RoadKind::Road | RoadKind::Driveway | RoadKind::Sidewalk));
-                    assert_eq!(has("Curb"), matches!(r.kind, RoadKind::Road | RoadKind::CulDeSac));
-                    assert!(tail.iter().all(|t| has(t) || r.kind == RoadKind::Marking && *t != "Label"));
+                    assert_eq!(
+                        has("Flare"),
+                        matches!(
+                            r.kind,
+                            RoadKind::Road | RoadKind::Driveway | RoadKind::Sidewalk
+                        )
+                    );
+                    assert_eq!(
+                        has("Curb"),
+                        matches!(r.kind, RoadKind::Road | RoadKind::CulDeSac)
+                    );
+                    assert!(tail
+                        .iter()
+                        .all(|t| has(t) || r.kind == RoadKind::Marking && *t != "Label"));
                 }
                 TerrainObject::Point(..) => {
                     assert_eq!(tabs, ["General", "Display", "Line Style", "Label"]);
@@ -1131,14 +1130,20 @@ mod tests {
                     assert!(tail.iter().all(|t| has(t)), "{tabs:?}");
                 }
                 TerrainObject::Landscape(l) => {
-                    assert_eq!(has("Blades") && has("Appearance"), l.kind == LandscapeKind::GrassRegion);
+                    assert_eq!(
+                        has("Blades") && has("Appearance"),
+                        l.kind == LandscapeKind::GrassRegion
+                    );
                     assert_eq!(has("Distributed Plant"), l.kind == LandscapeKind::GardenBed);
                     assert_eq!(has("Plant Image"), l.kind == LandscapeKind::Plants);
                     assert_eq!(has("Fill Style"), l.is_region());
                     assert!(tail.iter().all(|t| has(t)), "{tabs:?}");
                 }
                 TerrainObject::Break(_) => {
-                    assert_eq!(tabs, ["General", "Polyline", "Line Style", "Label", "Layer"]);
+                    assert_eq!(
+                        tabs,
+                        ["General", "Polyline", "Line Style", "Label", "Layer"]
+                    );
                 }
             }
             assert!(d.error().is_none(), "{}", obj.title());

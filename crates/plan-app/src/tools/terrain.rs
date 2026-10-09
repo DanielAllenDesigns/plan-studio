@@ -69,11 +69,11 @@ use plan_core::geometry::Point;
 use plan_core::units::{fmt_ft_in, parse_ft_in};
 use plan_core::WallCurve;
 use plan_terrain::{
-    arc_polyline, closed_spline, flatten_spline, kidney_control_points, rectangle_outline,
-    auto_sidewalks, cul_de_sac_at, retaining_wall, AutoSidewalk, GpsResult, ObjectKey,
-    ElevationLine, ElevationPoint, ElevationRegion, Feature, FeatureKind, Landscape, LandscapeKind,
-    Modifier, ModifierKind, RoadKind, RoadStrip, ShapeKind, TerrainBreak, TerrainWall, WallKind,
-    DEFAULT_TENSION, MARKING_WIDTH,
+    arc_polyline, auto_sidewalks, closed_spline, cul_de_sac_at, flatten_spline,
+    kidney_control_points, rectangle_outline, retaining_wall, AutoSidewalk, ElevationLine,
+    ElevationPoint, ElevationRegion, Feature, FeatureKind, GpsResult, Landscape, LandscapeKind,
+    Modifier, ModifierKind, ObjectKey, RoadKind, RoadStrip, ShapeKind, TerrainBreak, TerrainWall,
+    WallKind, DEFAULT_TENSION, MARKING_WIDTH,
 };
 use std::cell::RefCell;
 
@@ -1116,7 +1116,9 @@ impl TerrainTool {
                     self.after_commit(cx);
                     return ToolResult::consumed();
                 }
-                edit_terrain(cx, "Auto Generate Sidewalk", |r| r.terrain.roads.extend(made));
+                edit_terrain(cx, "Auto Generate Sidewalk", |r| {
+                    r.terrain.roads.extend(made)
+                });
                 "Auto Generate Sidewalk"
             }
             Pending::Road(kind, centerline) => {
@@ -1467,7 +1469,8 @@ impl Tool for TerrainTool {
                 }
             }
             Draw::Command if v == TerrainVariant::RemoveReferencePoint => {
-                let had = load_terrain(&cx.project).is_some_and(|r| r.terrain.reference_point.is_some());
+                let had =
+                    load_terrain(&cx.project).is_some_and(|r| r.terrain.reference_point.is_some());
                 if !had {
                     cx.status = "There is no Terrain Elevation Reference Point to remove".into();
                     return ToolResult::consumed();
@@ -1847,8 +1850,7 @@ impl Tool for TerrainTool {
                 if let Some(d) = slot.take() {
                     // The cut and fill report only reports.
                     if d.stores() {
-                        *self.applied_kind.borrow_mut() =
-                            Some((d.mode(), d.gps_result().cloned()));
+                        *self.applied_kind.borrow_mut() = Some((d.mode(), d.gps_result().cloned()));
                         *self.applied.borrow_mut() = Some(d.draft().clone());
                     }
                 }
@@ -3185,12 +3187,21 @@ mod tests {
         // Reference point.
         let mut rp = tool(TerrainVariant::ReferencePoint);
         let r = click(&mut rp, &mut cx, 100.0, 100.0);
-        assert_eq!(r.commit.as_deref(), Some("Terrain Elevation Reference Point"));
+        assert_eq!(
+            r.commit.as_deref(),
+            Some("Terrain Elevation Reference Point")
+        );
         assert_eq!(r.switch_to, Some(ToolId::Select));
-        assert_eq!(record(&cx).terrain.reference_point, Some(Point::new(100.0, 100.0)));
+        assert_eq!(
+            record(&cx).terrain.reference_point,
+            Some(Point::new(100.0, 100.0))
+        );
         let mut rm = tool(TerrainVariant::RemoveReferencePoint);
         let r = click(&mut rm, &mut cx, 0.0, 0.0);
-        assert_eq!(r.commit.as_deref(), Some("Remove Terrain Elevation Reference Point"));
+        assert_eq!(
+            r.commit.as_deref(),
+            Some("Remove Terrain Elevation Reference Point")
+        );
         assert_eq!(record(&cx).terrain.reference_point, None);
         // A road, a cul-de-sac on its end, sidewalks beside it.
         let mut road = tool(TerrainVariant::Road);

@@ -20,7 +20,12 @@ pub enum Season {
 }
 
 impl Season {
-    pub const ALL: [Season; 4] = [Season::Spring, Season::Summer, Season::Autumn, Season::Winter];
+    pub const ALL: [Season; 4] = [
+        Season::Spring,
+        Season::Summer,
+        Season::Autumn,
+        Season::Winter,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -367,7 +372,10 @@ impl GrassBlades {
         let ord = |a: f64, b: f64| (a.min(b), a.max(b));
         let (min_height, max_height) = ord(self.min_height.max(0.0), self.max_height.max(0.0));
         let (min_width, max_width) = ord(self.min_width.max(0.0), self.max_width.max(0.0));
-        let (min_curve, max_curve) = ord(self.min_curve.clamp(0.0, 1.0), self.max_curve.clamp(0.0, 1.0));
+        let (min_curve, max_curve) = ord(
+            self.min_curve.clamp(0.0, 1.0),
+            self.max_curve.clamp(0.0, 1.0),
+        );
         GrassBlades {
             density: self.density.clamp(0.0, 400.0),
             min_height,
@@ -442,7 +450,11 @@ impl GrassLook {
         }
         let n = self.colors.len() as u32;
         let sum = self.colors.iter().fold([0u32; 3], |a, c| {
-            [a[0] + u32::from(c[0]), a[1] + u32::from(c[1]), a[2] + u32::from(c[2])]
+            [
+                a[0] + u32::from(c[0]),
+                a[1] + u32::from(c[1]),
+                a[2] + u32::from(c[2]),
+            ]
         });
         [(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8]
     }

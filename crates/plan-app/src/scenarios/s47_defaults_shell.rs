@@ -232,6 +232,12 @@ fn every_leaf_of_the_tree_opens_its_window_and_a_page_saves_one_field() {
                 assert!(default_pages::electrical::is_open(), "{what}");
                 sim.cancel();
             }
+            Leaf::Platforms => {
+                edit_outcome(leaf);
+                sim.dialog_frame(false);
+                assert!(crate::dialogs::assembly_def::page_is_open(), "{what}");
+                sim.cancel();
+            }
             Leaf::Run(action) => {
                 assert_eq!(edit_outcome(leaf), DefaultsOutcome::Run(action), "{what}");
                 sim.action(action);

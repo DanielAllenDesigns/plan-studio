@@ -100,10 +100,7 @@ impl ArchBlockDialog {
         self.frame.show(ctx, &mut self.form)
     }
 
-    pub fn draft(&self) -> &ArchBlock {
-        &self.form.draft
-    }
-
+    #[cfg(test)]
     pub fn draft_mut(&mut self) -> &mut ArchBlock {
         &mut self.form.draft
     }
@@ -339,11 +336,13 @@ pub fn open(cx: &EditorContext, id: Id) {
 }
 
 /// Is the window open?
+#[cfg(test)]
 pub fn is_open() -> bool {
     DIALOG.with(|d| d.borrow().is_some())
 }
 
 /// Closes the window without applying it.
+#[cfg(test)]
 pub fn close() {
     DIALOG.with(|d| *d.borrow_mut() = None);
 }

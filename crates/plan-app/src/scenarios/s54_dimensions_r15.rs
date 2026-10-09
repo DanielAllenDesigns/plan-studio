@@ -137,7 +137,8 @@ fn a_continued_dimension_is_one_string_that_selects_moves_turns_and_deletes_as_o
         assert!((d.start.y - 50.0).abs() < 1e-9 && (d.end.y - 50.0).abs() < 1e-9);
     }
     // Turn it a quarter turn about the origin: the string stays together.
-    let rep = crate::editor::transform::rotate_selection(&mut sim.app.cx, FRAC_PI_2, Some(p(0.0, 0.0)));
+    let rep =
+        crate::editor::transform::rotate_selection(&mut sim.app.cx, FRAC_PI_2, Some(p(0.0, 0.0)));
     assert_eq!(rep.changed, 3);
     let turned = dims(&sim);
     assert!((turned[0].start.x + 50.0).abs() < 1e-9 && turned[0].start.y.abs() < 1e-9);
@@ -152,14 +153,20 @@ fn a_continued_dimension_is_one_string_that_selects_moves_turns_and_deletes_as_o
 
     // Taking one out, and joining again (Edit toolbar).
     sim.app.cx.selection.set(ObjectRef::Dimension(all[1].id));
-    assert!(crate::tools::dimension::run_command(&mut sim.app.cx, CMD_LEAVE));
+    assert!(crate::tools::dimension::run_command(
+        &mut sim.app.cx,
+        CMD_LEAVE
+    ));
     assert_eq!(sim.app.cx.floor().string_members(all[1].id).len(), 1);
     assert_eq!(sim.app.cx.floor().string_members(head).len(), 2);
     sim.app.cx.selection.items = vec![
         ObjectRef::Dimension(all[0].id),
         ObjectRef::Dimension(all[1].id),
     ];
-    assert!(crate::tools::dimension::run_command(&mut sim.app.cx, CMD_JOIN));
+    assert!(crate::tools::dimension::run_command(
+        &mut sim.app.cx,
+        CMD_JOIN
+    ));
     assert_eq!(sim.app.cx.floor().string_members(all[0].id).len(), 3);
     sim.app.cx.selection.set(ObjectRef::Dimension(all[2].id));
     assert!(crate::tools::dimension::run_command(
@@ -219,24 +226,60 @@ fn automatic_runs_make_strings_and_the_setup_decides_which_are_made() {
     }
     let with_all = all.len();
     // Setup Automatic: no inner strings.
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "exterior_inner", PageValue::Bool(false));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "exterior_inner",
+        PageValue::Bool(false),
+    );
     sim.click(-100.0, -100.0);
     let overall_only = dims(&sim).len();
     assert!(overall_only < with_all, "{overall_only} < {with_all}");
     // And no overall either: nothing is left to make.
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "exterior_overall", PageValue::Bool(false));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "exterior_overall",
+        PageValue::Bool(false),
+    );
     sim.click(-100.0, -100.0);
     assert!(sim.app.cx.status.contains("No exterior"));
     // Offset From: the wall center puts the line nearer the wall by half its
     // thickness than the dimension layer does.
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "exterior_inner", PageValue::Bool(true));
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "exterior_overall", PageValue::Bool(true));
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "offset_from", PageValue::Text("Dimension Layer".into()));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "exterior_inner",
+        PageValue::Bool(true),
+    );
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "exterior_overall",
+        PageValue::Bool(true),
+    );
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "offset_from",
+        PageValue::Text("Dimension Layer".into()),
+    );
     sim.click(-100.0, -100.0);
-    let far = dims(&sim).iter().map(|d| d.offset.abs()).fold(0.0, f64::max);
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "offset_from", PageValue::Text("Center".into()));
+    let far = dims(&sim)
+        .iter()
+        .map(|d| d.offset.abs())
+        .fold(0.0, f64::max);
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "offset_from",
+        PageValue::Text("Center".into()),
+    );
     sim.click(-100.0, -100.0);
-    let near = dims(&sim).iter().map(|d| d.offset.abs()).fold(0.0, f64::max);
+    let near = dims(&sim)
+        .iter()
+        .map(|d| d.offset.abs())
+        .fold(0.0, f64::max);
     assert!(near < far, "{near} < {far}");
 }
 
@@ -245,8 +288,18 @@ fn each_dimension_tool_reads_its_own_locate_panel() {
     let mut sim = Sim::new();
     shell(&mut sim);
     // Auto Exterior locates wall surfaces; Manual stays on the dimension layer.
-    set_page(&mut sim.app.cx.defaults, "locate_manual", "walls", PageValue::Text("Wall Dimension Layer".into()));
-    set_page(&mut sim.app.cx.defaults, "locate_auto_exterior", "walls", PageValue::Text("Wall Center".into()));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "locate_manual",
+        "walls",
+        PageValue::Text("Wall Dimension Layer".into()),
+    );
+    set_page(
+        &mut sim.app.cx.defaults,
+        "locate_auto_exterior",
+        "walls",
+        PageValue::Text("Wall Center".into()),
+    );
     sim.tool(ToolId::DimensionVariant(DimMode::AutoExterior));
     sim.click(-100.0, -100.0);
     let overall = |sim: &Sim| {
@@ -257,20 +310,44 @@ fn each_dimension_tool_reads_its_own_locate_panel() {
             .fold(0.0, f64::max)
     };
     let centers = overall(&sim);
-    assert!((centers - 480.0).abs() < 1e-6, "center to center: {centers}");
-    set_page(&mut sim.app.cx.defaults, "locate_auto_exterior", "walls", PageValue::Text("Surfaces".into()));
+    assert!(
+        (centers - 480.0).abs() < 1e-6,
+        "center to center: {centers}"
+    );
+    set_page(
+        &mut sim.app.cx.defaults,
+        "locate_auto_exterior",
+        "walls",
+        PageValue::Text("Surfaces".into()),
+    );
     sim.click(-100.0, -100.0);
     let faces = overall(&sim);
-    assert!((faces - 486.0).abs() < 1e-6, "outer face to outer face: {faces}");
+    assert!(
+        (faces - 486.0).abs() < 1e-6,
+        "outer face to outer face: {faces}"
+    );
     // Manual (the other panel) still reads the dimension layer.
-    let t = sim.app.cx.defaults.dimensions.tool_locate(plan_core::dimension::LocateTool::Manual);
+    let t = sim
+        .app
+        .cx
+        .defaults
+        .dimensions
+        .tool_locate(plan_core::dimension::LocateTool::Manual);
     assert_eq!(t.group.walls, plan_core::WallLocate::MainLayer);
     // A wall panel set to None locates no walls.
-    set_page(&mut sim.app.cx.defaults, "locate_manual", "walls", PageValue::Text("None".into()));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "locate_manual",
+        "walls",
+        PageValue::Text("None".into()),
+    );
     sim.tool(ToolId::DimensionVariant(DimMode::Manual));
     sim.click(240.0, 1.0);
     let loc = sim.app.cx.status.clone();
-    assert!(!loc.contains("Wall surface") && !loc.contains("Wall center"), "{loc}");
+    assert!(
+        !loc.contains("Wall surface") && !loc.contains("Wall center"),
+        "{loc}"
+    );
 }
 
 #[test]
@@ -285,15 +362,28 @@ fn the_second_format_tolerance_and_text_position_reach_the_label() {
     {
         let d = &mut sim.app.cx.defaults;
         set_page(d, "secondary", "include", PageValue::Bool(true));
-        set_page(d, "secondary", "tolerance", PageValue::Text("Plus or Minus".into()));
-        set_page(d, "general", "text_position", PageValue::Text("Below Dimension Line".into()));
+        set_page(
+            d,
+            "secondary",
+            "tolerance",
+            PageValue::Text("Plus or Minus".into()),
+        );
+        set_page(
+            d,
+            "general",
+            "text_position",
+            PageValue::Text("Below Dimension Line".into()),
+        );
         set_page(d, "general", "tilde_before", PageValue::Bool(true));
     }
     let fmt = sim.app.cx.dim_format();
     let d = dim(&sim, id);
     let parts = d.label_parts(&fmt);
     assert!(parts.primary.contains('\u{b1}'), "{}", parts.primary);
-    assert!(parts.second.as_deref().unwrap_or("").contains("3048"), "{parts:?}");
+    assert!(
+        parts.second.as_deref().unwrap_or("").contains("3048"),
+        "{parts:?}"
+    );
     assert_eq!(parts.lines().len(), 2);
     // Below the line, with the second format above it.
     let width = |s: &str| s.chars().count() as f64 * 2.0;
@@ -329,7 +419,12 @@ fn the_second_format_tolerance_and_text_position_reach_the_label() {
     assert!(!own.primary.contains('\u{b1}'));
     assert!(own.second.is_none());
     // Distance Rounding: the shown values stay what each part rounds to.
-    set_page(&mut sim.app.cx.defaults, "general", "rounding", PageValue::Text("Distance Rounding".into()));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "general",
+        "rounding",
+        PageValue::Text("Distance Rounding".into()),
+    );
     assert_eq!(
         sim.app.cx.dim_format().label.rounding,
         plan_core::dimension::RoundMethod::Distance
@@ -399,7 +494,9 @@ fn an_angle_between_walls_and_the_arcs_of_a_curved_wall_follow_the_walls_and_dra
     sim.app.cx.mark_dirty();
     sim.app.cx.refresh();
     assert!((dim(&sim, id).measure() - 45.0).abs() < 1e-6);
-    assert!(texts_of(&sim.plan_shapes()).iter().any(|t| t == "45.0\u{b0}"));
+    assert!(texts_of(&sim.plan_shapes())
+        .iter()
+        .any(|t| t == "45.0\u{b0}"));
     // Move the corner: the arc moves with the walls.
     let before = dim(&sim, id).curve().unwrap().center;
     for w in [a, b] {
@@ -435,7 +532,10 @@ fn an_angle_between_walls_and_the_arcs_of_a_curved_wall_follow_the_walls_and_dra
     sim.click(apex.x, apex.y);
     let r = sim.click(out.x, out.y);
     assert_eq!(r.commit.as_deref(), Some("Radius Dimension"));
-    let curves: Vec<Dimension> = dims(&sim).into_iter().filter(|d| d.curve().is_some()).collect();
+    let curves: Vec<Dimension> = dims(&sim)
+        .into_iter()
+        .filter(|d| d.curve().is_some())
+        .collect();
     assert_eq!(curves.len(), 3);
     let texts = texts_of(&sim.plan_shapes());
     assert!(texts.iter().any(|t| t.starts_with("R ")), "{texts:?}");
@@ -457,7 +557,14 @@ fn an_angle_between_walls_and_the_arcs_of_a_curved_wall_follow_the_walls_and_dra
     // A printed sheet draws the curved dimensions too.
     use plan_docs::{plan_sheet, Scale, SheetSize, TitleBlock};
     let tb = TitleBlock::default();
-    let with = plan_sheet(&sim.app.cx.project, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb);
+    let with = plan_sheet(
+        &sim.app.cx.project,
+        0,
+        &[],
+        SheetSize::ArchD,
+        Scale::QuarterInch,
+        &tb,
+    );
     let mut bare = sim.app.cx.project.clone();
     bare.floors[0].dimensions.retain(|d| d.curve().is_none());
     let without = plan_sheet(&bare, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb);
@@ -631,14 +738,28 @@ fn a_story_pole_locates_the_roof_marks_and_names_them() {
         .collect();
     assert!(names.iter().any(|n| n.starts_with("Ridge")), "{names:?}");
     assert!(names.iter().any(|n| n.starts_with("Eave")), "{names:?}");
-    assert!(names.iter().any(|n| n.contains("Top of Plate")), "{names:?}");
+    assert!(
+        names.iter().any(|n| n.contains("Top of Plate")),
+        "{names:?}"
+    );
     // The outer string includes the ridge (it is on it by default).
-    let outer: Vec<Dimension> = dims(&sim).into_iter().filter(|d| d.offset == 36.0).collect();
+    let outer: Vec<Dimension> = dims(&sim)
+        .into_iter()
+        .filter(|d| d.offset == 36.0)
+        .collect();
     assert!(!outer.is_empty());
-    let top = outer.iter().map(|d| d.end.y.max(d.start.y)).fold(0.0, f64::max);
+    let top = outer
+        .iter()
+        .map(|d| d.end.y.max(d.start.y))
+        .fold(0.0, f64::max);
     assert!((top - 157.0).abs() < 1e-6, "{top}");
     // The Locate Elevations page switches a mark off.
-    set_page(&mut sim.app.cx.defaults, "pole_elevations", "Eave_included", PageValue::Bool(false));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "pole_elevations",
+        "Eave_included",
+        PageValue::Bool(false),
+    );
     sim.click(-100.0, 0.0);
     let names: Vec<String> = sim
         .app
@@ -673,21 +794,52 @@ fn auto_interior_follows_the_room_setup() {
     sim.click(240.0, 180.0);
     let base = dims(&sim);
     assert!(!base.is_empty());
-    let inside_sign = base.iter().find(|d| d.offset != 0.0).unwrap().offset.signum();
+    let inside_sign = base
+        .iter()
+        .find(|d| d.offset != 0.0)
+        .unwrap()
+        .offset
+        .signum();
     // Lines outside the room flip the side.
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "room_inside", PageValue::Bool(false));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "room_inside",
+        PageValue::Bool(false),
+    );
     sim.click(240.0, 180.0);
     let out = dims(&sim);
     assert_eq!(out.len(), base.len());
-    assert_eq!(out.iter().find(|d| d.offset != 0.0).unwrap().offset.signum(), -inside_sign);
+    assert_eq!(
+        out.iter()
+            .find(|d| d.offset != 0.0)
+            .unwrap()
+            .offset
+            .signum(),
+        -inside_sign
+    );
     // No clear spans without the overall box.
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "room_overall", PageValue::Bool(false));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "room_overall",
+        PageValue::Bool(false),
+    );
     sim.click(240.0, 180.0);
     assert!(dims(&sim).len() < out.len());
     // A minimum area bigger than the room makes none.
-    set_page(&mut sim.app.cx.defaults, "setup_automatic", "room_min_area", PageValue::Num(5000.0));
+    set_page(
+        &mut sim.app.cx.defaults,
+        "setup_automatic",
+        "room_min_area",
+        PageValue::Num(5000.0),
+    );
     sim.click(240.0, 180.0);
-    assert!(sim.app.cx.status.contains("No rooms"), "{}", sim.app.cx.status);
+    assert!(
+        sim.app.cx.status.contains("No rooms"),
+        "{}",
+        sim.app.cx.status
+    );
 }
 
 #[test]
@@ -707,7 +859,13 @@ fn every_kind_a_dimension_can_locate_keeps_it_when_the_object_moves() {
     // Walls: the south wall's outer face to the CAD line's start.
     let d1 = sim.app.cx.project.add_dimension(
         0,
-        Dimension::new(0, DimensionKind::Manual, p(240.0, -3.0), p(240.0, 100.0), 30.0),
+        Dimension::new(
+            0,
+            DimensionKind::Manual,
+            p(240.0, -3.0),
+            p(240.0, 100.0),
+            30.0,
+        ),
     );
     let d2 = sim.app.cx.project.add_dimension(
         0,
@@ -716,12 +874,26 @@ fn every_kind_a_dimension_can_locate_keeps_it_when_the_object_moves() {
     assert!(sim.app.cx.project.floors[0].attach_dimension(d1) >= 1);
     assert_eq!(sim.app.cx.project.floors[0].attach_dimension(d2), 2);
     // An opening's edge on the north wall.
-    let op = sim.app.cx.floor().openings.iter().find(|o| o.wall_id == ids[2]).unwrap().clone();
+    let op = sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.wall_id == ids[2])
+        .unwrap()
+        .clone();
     let w = sim.app.cx.floor().wall(ids[2]).unwrap().clone();
     let edge = w.point_along(op.start_offset());
     let d3 = sim.app.cx.project.add_dimension(
         0,
-        Dimension::new(0, DimensionKind::Manual, edge, edge.add(p(0.0, -100.0)), 30.0),
+        Dimension::new(
+            0,
+            DimensionKind::Manual,
+            edge,
+            edge.add(p(0.0, -100.0)),
+            30.0,
+        ),
     );
     assert!(sim.app.cx.project.floors[0].attach_dimension(d3) >= 1);
 
@@ -763,7 +935,8 @@ fn copy_and_paste_keeps_strings_and_curved_dimensions_of_the_copied_walls() {
     let arc = cx
         .project
         .add_dimension(0, Dimension::curved(DimensionKind::Manual, curve, 20.0));
-    let mk = |a: f64, b: f64| Dimension::new(0, DimensionKind::Manual, p(a, 300.0), p(b, 300.0), 20.0);
+    let mk =
+        |a: f64, b: f64| Dimension::new(0, DimensionKind::Manual, p(a, 300.0), p(b, 300.0), 20.0);
     let s1 = cx.project.add_dimension(0, mk(0.0, 100.0));
     let s2 = cx.project.add_dimension(0, mk(100.0, 240.0));
     cx.project.floors[0].join_string(&[s1, s2]);
@@ -783,7 +956,12 @@ fn copy_and_paste_keeps_strings_and_curved_dimensions_of_the_copied_walls() {
     let arc_copy = copies.iter().find(|d| d.curve().is_some()).unwrap();
     assert_eq!(arc_copy.curve().unwrap().walls[0], Some(new_wall));
     assert!(
-        arc_copy.curve().unwrap().center.dist(curve.center.add(p(500.0, 0.0))) < 1e-6,
+        arc_copy
+            .curve()
+            .unwrap()
+            .center
+            .dist(curve.center.add(p(500.0, 0.0)))
+            < 1e-6,
         "the arc moved with the paste"
     );
     let strings: Vec<&&Dimension> = copies.iter().filter(|d| d.curve().is_none()).collect();
@@ -799,14 +977,23 @@ fn a_cad_box_shows_its_gaps_to_the_nearest_parallel_objects_and_typing_slides_it
     use plan_core::cad::CadItem;
     let mut sim = Sim::new();
     let cx = &mut sim.app.cx;
-    cx.project
-        .add_wall(0, p(300.0, -50.0), p(300.0, 150.0), 6.0, 96.0, WallKind::Interior);
+    cx.project.add_wall(
+        0,
+        p(300.0, -50.0),
+        p(300.0, 150.0),
+        6.0,
+        96.0,
+        WallKind::Interior,
+    );
     let rect = |x0: f64, y0: f64, x1: f64, y1: f64| CadItem::Polyline {
         points: vec![p(x0, y0), p(x1, y0), p(x1, y1), p(x0, y1)],
         closed: true,
     };
-    let b = cx.project.add_cad(0, "CAD, Default", rect(0.0, 0.0, 100.0, 60.0));
-    cx.project.add_cad(0, "CAD, Default", rect(20.0, 140.0, 80.0, 200.0));
+    let b = cx
+        .project
+        .add_cad(0, "CAD, Default", rect(0.0, 0.0, 100.0, 60.0));
+    cx.project
+        .add_cad(0, "CAD, Default", rect(20.0, 140.0, 80.0, 200.0));
     cx.selection.set(ObjectRef::Cad(b));
     cx.refresh();
     let kinds: Vec<TempDimKind> = cx.temp.dims.iter().map(|d| d.kind).collect();
@@ -814,12 +1001,31 @@ fn a_cad_box_shows_its_gaps_to_the_nearest_parallel_objects_and_typing_slides_it
     assert!(kinds.contains(&TempDimKind::CadAbove), "{kinds:?}");
     assert!(!kinds.contains(&TempDimKind::CadToLeft));
     assert!(!kinds.contains(&TempDimKind::CadBelow));
-    let right = cx.temp.dims.iter().find(|d| d.kind == TempDimKind::CadToRight).unwrap();
-    assert!((right.value - 197.0).abs() < 1e-9, "wall face at 297: {}", right.value);
-    let above = cx.temp.dims.iter().find(|d| d.kind == TempDimKind::CadAbove).unwrap();
+    let right = cx
+        .temp
+        .dims
+        .iter()
+        .find(|d| d.kind == TempDimKind::CadToRight)
+        .unwrap();
+    assert!(
+        (right.value - 197.0).abs() < 1e-9,
+        "wall face at 297: {}",
+        right.value
+    );
+    let above = cx
+        .temp
+        .dims
+        .iter()
+        .find(|d| d.kind == TempDimKind::CadAbove)
+        .unwrap();
     assert!((above.value - 80.0).abs() < 1e-9);
     // Typing a gap slides the box.
-    let i = cx.temp.dims.iter().position(|d| d.kind == TempDimKind::CadToRight).unwrap();
+    let i = cx
+        .temp
+        .dims
+        .iter()
+        .position(|d| d.kind == TempDimKind::CadToRight)
+        .unwrap();
     assert!(cx.temp.begin_edit(i));
     cx.temp.editing.as_mut().unwrap().text = "150".into();
     assert_eq!(tempdim::commit_edit(cx), Ok("Move Box"));
@@ -829,7 +1035,12 @@ fn a_cad_box_shows_its_gaps_to_the_nearest_parallel_objects_and_typing_slides_it
     };
     assert!((points[0].x - 47.0).abs() < 1e-9, "{points:?}");
     cx.refresh();
-    let right = cx.temp.dims.iter().find(|d| d.kind == TempDimKind::CadToRight).unwrap();
+    let right = cx
+        .temp
+        .dims
+        .iter()
+        .find(|d| d.kind == TempDimKind::CadToRight)
+        .unwrap();
     assert!((right.value - 150.0).abs() < 1e-9);
     assert_eq!(sim.undo().as_deref(), Some("Move Box"));
 }
@@ -843,6 +1054,7 @@ fn views_read_their_own_locate_panel_and_reach() {
     assert_eq!(d.reach_for_view(DimView::Layout), 1.0);
     assert_eq!(
         d.locate_for_view(DimView::Section).group,
-        d.tool_locate(plan_core::dimension::LocateTool::Elevations).group
+        d.tool_locate(plan_core::dimension::LocateTool::Elevations)
+            .group
     );
 }

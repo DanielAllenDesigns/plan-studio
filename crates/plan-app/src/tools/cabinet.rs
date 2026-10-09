@@ -393,9 +393,12 @@ fn without_generated_tops(cabs: &[Cabinet]) -> Vec<Cabinet> {
 /// fillers were added, replaced or removed.
 pub fn sync_auto_fillers(cx: &mut EditorContext) -> usize {
     let fl = cx.floor;
+    // Blind ends and exposed ends first (brief 24): the fillers and the
+    // generated tops below read them.
+    let special = crate::editor::cabinet_edit::sync_special(cx);
     let stored = placed::load_cabinets(cx.floor());
     if !stored.iter().any(|c| c.kind != CabinetKind::CounterHole) {
-        return 0;
+        return special;
     }
     // The cabinets as they are without any generated countertop on them (a
     // joined cabinet gave up its slab): fillers copy the cabinets' own tops.
@@ -406,7 +409,7 @@ pub fn sync_auto_fillers(cx: &mut EditorContext) -> usize {
     let want = auto_fillers(&logical, &wall_polys(cx), &filler_options(cx));
     let have: Vec<&Cabinet> = stored.iter().filter(|c| c.auto_filler).collect();
     let mut claimed: Vec<Id> = Vec::new();
-    let mut changes = 0;
+    let mut changes = special;
     let mut pending: Vec<Cabinet> = Vec::new();
     for w in want {
         // The same filler already stands: nothing to write.
@@ -450,6 +453,8 @@ pub fn sync_auto_fillers(cx: &mut EditorContext) -> usize {
             changes += 1;
         }
     }
+    // The fillers just made or removed change which ends are mated.
+    changes += crate::editor::cabinet_edit::sync_special(cx);
     if ensure_module_lines_layer(&mut cx.project.layers) {
         changes += 1;
     }
@@ -574,7 +579,7 @@ fn nearest_wall(cx: &EditorContext, anchor: Point, reach: f64) -> Option<WallHit
 
 /// The plan rectangles of the floor's visible walls (fillers measure their
 /// gap against them).
-fn wall_polys(cx: &EditorContext) -> Vec<Vec<Point>> {
+pub(crate) fn wall_polys(cx: &EditorContext) -> Vec<Vec<Point>> {
     visible_walls(cx)
         .map(|w| wall_polygon(w.start, w.end, w.thickness))
         .collect()

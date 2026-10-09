@@ -31,6 +31,7 @@
 //!   framing and terrain slots.
 
 pub mod arch_block;
+pub mod assemblies;
 pub mod cad;
 pub mod callout;
 pub mod camera;
@@ -62,6 +63,8 @@ pub mod io;
 pub mod joins;
 pub mod layer_sets;
 pub mod layers;
+pub mod living;
+pub mod macros;
 pub mod line_styles;
 pub mod material_region;
 pub mod materials_data;

@@ -175,7 +175,7 @@ fn a_door_beside_a_partition_keeps_its_jamb_off_the_partition_face() {
 }
 
 #[test]
-fn windows_touch_each_other_and_mull_with_the_edit_toolbar() {
+fn windows_keep_the_minimum_separation_and_block_into_a_unit_with_the_edit_toolbar() {
     let mut sim = house();
     sim.tool(ToolId::Window);
     sim.click(100.0, 0.5);
@@ -186,8 +186,9 @@ fn windows_touch_each_other_and_mull_with_the_edit_toolbar() {
         .collect();
     assert_eq!(v.len(), 2, "{:?}", sim.app.cx.status);
     v.sort_by(|a, b| a.center_offset.total_cmp(&b.center_offset));
-    assert!((v[1].start_offset() - v[0].end_offset()).abs() < 1e-9);
-    // Mull joins the pair (the second is selected, its neighbour is flush).
+    // They keep the Minimum Separation (2 in) and mull on their own (Round 16).
+    assert!((v[1].start_offset() - v[0].end_offset() - 2.0).abs() < 1e-9);
+    // Make Mulled Unit blocks the pair (the second is selected).
     sim.app.cx.selection.set(ObjectRef::Opening(v[1].id));
     sim.action(Action::Custom(crate::editor::opening_edit::MULL));
     let m = openings(&sim);
@@ -310,44 +311,57 @@ fn swings_both_ways_indicators_recess_and_size_without_frame_in_the_plan() {
 }
 
 #[test]
-fn renumber_schedule_follows_the_draw_order_from_the_menu_and_the_toolbar() {
+fn renumber_schedule_closes_gaps_from_the_menu_and_the_toolbar() {
     let mut sim = house();
     sim.tool(ToolId::Door);
-    // Drawn right to left; a schedule would read them left to right.
+    // Drawn right to left; a schedule reads them left to right at first.
     for x in [400.0, 250.0, 100.0] {
         sim.click(x, 0.5);
     }
     sim.esc();
     let ids: Vec<Id> = openings(&sim).iter().map(|o| o.id).collect();
     assert_eq!(ids.len(), 3);
-    // Schedules > Renumber Door Schedule.
+    let sid = crate::editor::schedule_view::add(
+        &mut sim.app.cx,
+        plan_core::schedules::ScheduleKind::Door,
+        Point::new(0.0, -300.0),
+    );
+    let marks = |sim: &Sim| -> Vec<(Id, String)> {
+        let d = crate::editor::schedule_view::find(&sim.app.cx, sid).unwrap();
+        plan_docs::schedule_kinds::rows(&sim.app.cx.project, &d, 0, None)
+            .into_iter()
+            .map(|e| (e.id, e.cell("mark").to_string()))
+            .collect()
+    };
+    assert_eq!(marks(&sim)[0], (ids[2], "D01".to_string()));
+    // The leftmost door goes; Schedules > Renumber Door Schedule closes the gap.
+    sim.app.cx.begin_change("Delete Door");
+    sim.app.cx.project.remove_opening(0, ids[2]);
+    sim.app.cx.mark_dirty();
+    sim.app.cx.refresh();
+    assert_eq!(marks(&sim)[0].1, "D02");
     sim.action(Action::Custom(RENUMBER_DOORS));
-    let marks: Vec<Option<String>> = openings(&sim)
-        .iter()
-        .map(|o| o.schedule_number.clone())
-        .collect();
     assert_eq!(
-        marks,
-        [Some("D01".into()), Some("D02".into()), Some("D03".into())]
+        marks(&sim),
+        [(ids[1], "D01".to_string()), (ids[0], "D02".to_string())]
     );
     assert_eq!(sim.app.cx.undo_label(), Some("Renumber Schedule"));
-    // The plan labels now read the new marks: the first drawn door is D01.
+    // No mark is written into the doors.
+    assert!(openings(&sim).iter().all(|o| o.schedule_number.is_none()));
+    // The plan labels read the schedule's marks.
     sim.app.cx.mark_dirty();
     sim.app.cx.refresh();
     let labels = crate::editor::opening_view::opening_labels(&sim.app.cx);
-    let first = labels.iter().find(|l| l.opening == ids[0]).unwrap();
+    let first = labels.iter().find(|l| l.opening == ids[1]).unwrap();
     assert!(first.text.contains("D01") || !first.is_mark, "{first:?}");
-    // Move one mark by hand, then the Edit toolbar's command puts it back in
-    // one undo step.
-    {
-        let fl = sim.app.cx.floor;
-        sim.app.cx.project.floors[fl].openings[0].schedule_number = Some("X9".into());
-    }
+    // The Edit toolbar's command is one undo step too.
+    sim.undo();
+    assert_eq!(marks(&sim)[0].1, "D02");
     sim.app.cx.selection.set(ObjectRef::Opening(ids[1]));
     sim.action(Action::Custom(RENUMBER));
-    assert_eq!(openings(&sim)[0].schedule_number.as_deref(), Some("D01"));
+    assert_eq!(marks(&sim)[0].1, "D01");
     assert_eq!(sim.undo().as_deref(), Some("Renumber Schedule"));
-    assert_eq!(openings(&sim)[0].schedule_number.as_deref(), Some("X9"));
+    assert_eq!(marks(&sim)[0].1, "D02");
 }
 
 #[test]

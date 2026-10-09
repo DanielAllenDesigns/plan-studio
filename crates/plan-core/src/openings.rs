@@ -19,12 +19,21 @@ use crate::rooms::Room;
 use crate::units::fmt_ft_in;
 use serde::{Deserialize, Serialize};
 
+pub mod bay;
+pub mod mull;
 pub mod placement;
 pub mod spec;
+pub mod types;
+pub use bay::{BayUnit, MIN_UNIT_WIDTH};
+pub use mull::{MulledArrangement, MulledLabel, MulledSpec};
 pub use spec::{
     door_panel_count, Arch, ArchType, BayRoof, BayRoofKind, CasingProfile, ExteriorSill,
-    HandleStyle, Hardware, Lintel, LintelStyle, LiteStyle, OpeningSpec, OpeningView3d,
+    HandleStyle, Hardware, Lintel, LintelStyle, LiteStyle, OpeningSpec, OpeningView3d, RecessTo,
     ShutterSides, ShutterStyle, Shutters, StandardWidths, StyleWidths,
+};
+pub use types::{
+    copy_group, group_eq, release_edited_groups, DefaultKey, DynGroup, OpenMode, TypeDefault,
+    UseDefault, WindowType,
 };
 
 /// Minimum clear distance between an opening jamb and a wall end or another
@@ -192,6 +201,16 @@ pub struct VariantSize {
 #[serde(default)]
 pub struct OpeningVariantDefaults {
     pub sizes: Vec<VariantSize>,
+    /// The Defaults dialog of each door and window type (DW-124, DW-154):
+    /// the opening a type places, looks and all. See [`types`].
+    pub types: Vec<types::TypeDefault>,
+    /// Counts the changes to `types`, so an opening using a default knows when
+    /// to look again.
+    pub revision: u32,
+    /// The revision the placed openings were last brought up to (not saved).
+    #[serde(skip)]
+    pub followed: types::Followed,
+
     /// Manufacturer widths per style and the snap-to-standard-widths option
     /// of the jamb handles (DW-27).
     pub widths: StandardWidths,
@@ -213,6 +232,9 @@ impl Default for OpeningVariantDefaults {
             widths: StandardWidths::default(),
             door_spec: OpeningSpec::default(),
             window_spec: OpeningSpec::default(),
+            types: Vec::new(),
+            revision: 0,
+            followed: types::Followed::default(),
             sizes: vec![
                 v(OpeningStyle::Doorway, 36.0, None, None),
                 v(OpeningStyle::DoubleDoor, 60.0, None, None),
@@ -225,9 +247,9 @@ impl Default for OpeningVariantDefaults {
                 v(OpeningStyle::SlidingWindow, 60.0, Some(48.0), Some(36.0)),
                 v(OpeningStyle::Awning, 36.0, Some(24.0), Some(60.0)),
                 v(OpeningStyle::Hopper, 36.0, Some(18.0), Some(72.0)),
-                v(OpeningStyle::BayWindow, 96.0, Some(60.0), None),
-                v(OpeningStyle::BowWindow, 96.0, Some(60.0), None),
-                v(OpeningStyle::BoxWindow, 60.0, Some(60.0), None),
+                v(OpeningStyle::BayWindow, 50.0, Some(60.0), None),
+                v(OpeningStyle::BowWindow, 70.0, Some(60.0), None),
+                v(OpeningStyle::BoxWindow, 50.0, Some(60.0), None),
                 v(OpeningStyle::PassThrough, 48.0, Some(36.0), Some(42.0)),
                 v(OpeningStyle::WallNiche, 24.0, Some(36.0), Some(36.0)),
             ],
@@ -260,6 +282,16 @@ impl OpeningVariantDefaults {
             if let Some(sill) = s.sill_height {
                 o.sill_height = sill;
             }
+            // Defaults saved before the manual's sizes carry the old stock
+            // widths of the projecting windows; those read as unset.
+            if style.projects() && (s.width - bay::legacy_unit_width(style)).abs() < 1e-9 {
+                o.width = bay::default_unit_width(style);
+            }
+        }
+        // A bay, box or bow window starts with the angle, depth and sections
+        // of its style.
+        if style.projects() && o.extras.spec.bay == bay::BayUnit::default() {
+            o.extras.spec.bay = bay::BayUnit::for_style(style);
         }
         o
     }
@@ -854,13 +886,14 @@ impl Project {
         let Some(host) = f.wall(cur.wall_id) else {
             return false;
         };
+        let rules = placement::Rules::of(self);
         let overlaps = f
             .openings
             .iter()
             .filter(|m| members.contains(&m.id))
             .any(|m| {
                 let (a0, a1) = (m.start_offset(), m.end_offset());
-                placement::zones_skipping(f, host, m, &members)
+                placement::zones_skipping_with(f, host, m, &members, &rules)
                     .iter()
                     .any(|z| {
                         let ov = |a: f64, b: f64| (b.min(z.hi) - a.max(z.lo)).max(0.0);
@@ -888,6 +921,7 @@ impl Project {
         let cur = f.openings.iter().find(|o| o.id == id)?;
         let len = f.wall(cur.wall_id)?.path_length();
         let (mut lo, mut hi) = (OPENING_MARGIN, len - OPENING_MARGIN);
+        let rules = placement::Rules::of(self);
         let members = self.mull_members(floor, id);
         for o in f.openings_on(cur.wall_id) {
             if o.id == id {
@@ -901,12 +935,27 @@ impl Project {
             if vertically_apart(cur, o) {
                 continue;
             }
-            let gap = if member { 0.0 } else { OPENING_MARGIN };
+            let gap = if member { 0.0 } else { rules.min_separation };
             if o.center_offset < cur.center_offset {
                 lo = lo.max(o.end_offset() + gap);
             } else {
                 hi = hi.min(o.start_offset() - gap);
             }
+        }
+        // An opening stops where its casing meets an intersecting wall
+        // (manual p. 615) unless Ignore Casing for Opening Resize is on. One
+        // already inside that reach may leave it but not go deeper.
+        if let Some(host) = f.wall(cur.wall_id) {
+            let (mut jlo, mut jhi) = (lo, hi);
+            for z in placement::junction_zones_with(f, host, rules.junction_clearance(cur)) {
+                if z.core_hi <= cur.center_offset {
+                    jlo = jlo.max(z.hi);
+                } else if z.core_lo >= cur.center_offset {
+                    jhi = jhi.min(z.lo);
+                }
+            }
+            lo = jlo.min(cur.start_offset().max(lo));
+            hi = jhi.max(cur.end_offset().min(hi));
         }
         Some((lo, hi))
     }
@@ -1187,7 +1236,8 @@ impl Project {
         let f = &self.floors[floor];
         let o = f.openings.iter().find(|o| o.id == id)?;
         if o.mull_group.is_none() {
-            return Some(None);
+            // Windows and doors whose casings touch share one (manual p. 608).
+            return Some(self.casing_span(floor, id));
         }
         let members = self.mull_members(floor, id);
         if f.openings
@@ -1196,7 +1246,54 @@ impl Project {
         {
             return None;
         }
-        Some(self.unit_span(floor, id))
+        Some(
+            self.casing_span(floor, id)
+                .or_else(|| self.unit_span(floor, id)),
+        )
+    }
+
+    /// Works out the depth of every opening recessed to a wall layer (Options
+    /// panel, Recessed To Layer): from the exterior face to the exterior side of
+    /// the main or the sheathing layer of the wall's type. An opening whose
+    /// wall has no such layer keeps its depth. Returns how many changed.
+    pub fn sync_recess_depths(&mut self) -> usize {
+        let types = self.wall_types.clone();
+        let mut changed = 0;
+        for f in &mut self.floors {
+            let depths: Vec<(Id, f64)> = f
+                .openings
+                .iter()
+                .filter(|o| o.extras.spec.recess_to != RecessTo::Depth)
+                .filter_map(|o| {
+                    let wt = f.wall(o.wall_id)?.wall_type.as_ref()?;
+                    let def = types.iter().find(|t| &t.name == wt)?;
+                    let mut offset = 0.0;
+                    for l in &def.layers {
+                        let hit = match o.extras.spec.recess_to {
+                            RecessTo::MainLayer => l.is_main,
+                            RecessTo::SheathingLayer => {
+                                l.name.to_ascii_lowercase().contains("sheath")
+                            }
+                            RecessTo::Depth => false,
+                        };
+                        if hit {
+                            return Some((o.id, offset));
+                        }
+                        offset += l.thickness;
+                    }
+                    None
+                })
+                .collect();
+            for (id, d) in depths {
+                if let Some(o) = f.openings.iter_mut().find(|o| o.id == id) {
+                    if o.extras.spec.recess_depth != Some(d) {
+                        o.extras.spec.recess_depth = Some(d);
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        changed
     }
 
     /// The plan position of the opening center on its wall centerline.
@@ -1430,7 +1527,13 @@ mod tests {
         assert_eq!((dbl.width, dbl.height), (60.0, 96.0));
         let win = Opening::default_window(0, 0, 0.0);
         let bay = v.apply(&win, OpeningStyle::BayWindow);
-        assert_eq!((bay.width, bay.sill_height), (96.0, 24.0));
+        // A bay is 4 ft 2 in across the wall to start with (manual p. 604).
+        assert_eq!((bay.width, bay.sill_height), (50.0, 24.0));
+        assert_eq!(bay.extras.spec.bay.angle_deg, 45.0);
+        let bow = v.apply(&win, OpeningStyle::BowWindow);
+        assert_eq!(bow.width, 70.0);
+        let box_ = v.apply(&win, OpeningStyle::BoxWindow);
+        assert_eq!((box_.width, box_.extras.spec.bay.angle_deg), (50.0, 90.0));
         let niche = v.apply(&win, OpeningStyle::WallNiche);
         assert_eq!(
             (niche.width, niche.height, niche.sill_height),
@@ -1566,6 +1669,124 @@ mod tests {
         // b is limited by a and the far wall end.
         assert!(p.center_opening(0, b));
         assert!(!p.center_opening(0, 999));
+    }
+
+    #[test]
+    fn an_opening_stops_where_its_casing_meets_an_intersecting_wall() {
+        let (mut p, w) = proj();
+        // A 4 1/2" partition crossing at 100: body 97.75..102.25.
+        p.add_wall(
+            0,
+            Point::new(100.0, -60.0),
+            Point::new(100.0, 60.0),
+            4.5,
+            DEFAULT_CEILING_HEIGHT,
+            WallKind::Interior,
+        );
+        let a = p.add_opening(0, w, 40.0, OpeningKind::Window).unwrap();
+        // The end jamb stops 3 3/4" (the casing) short of the wall.
+        p.resize_opening(0, a, Jamb::End, 150.0);
+        assert_eq!(span(&p, a).1, 97.75 - 3.75);
+        // Ignore Casing for Opening Resize lets it run up to the wall.
+        p.opening_display.ignore_casing = true;
+        p.resize_opening(0, a, Jamb::End, 150.0);
+        assert_eq!(span(&p, a).1, 97.75);
+        // An opening past the wall stops on the far side.
+        p.opening_display.ignore_casing = false;
+        let b = p.add_opening(0, w, 150.0, OpeningKind::Window).unwrap();
+        p.resize_opening(0, b, Jamb::Start, 0.0);
+        assert_eq!(span(&p, b).0, 102.25 + 3.75);
+    }
+
+    #[test]
+    fn an_opening_recessed_to_a_layer_stands_at_that_layers_exterior_side() {
+        use crate::defaults::{WallLayer, WallTypeDef};
+        let (mut p, w) = proj();
+        p.wall_types.push(WallTypeDef {
+            name: "Brick Veneer".into(),
+            kind: WallKind::Exterior,
+            layers: vec![
+                WallLayer::new("Brick", 4.0, false, "Brick"),
+                WallLayer::new("Sheathing", 0.5, false, "OSB"),
+                WallLayer::new("Framing", 5.5, true, "Fir"),
+                WallLayer::new("Drywall", 0.5, false, "Drywall"),
+            ],
+        });
+        p.floors[0].wall_mut(w).unwrap().wall_type = Some("Brick Veneer".into());
+        let d = p.add_opening(0, w, 100.0, OpeningKind::Door).unwrap();
+        let depth = |p: &Project| p.floors[0].openings[0].extras.spec.recess_depth;
+        p.floors[0].openings[0].extras.spec.recess_to = RecessTo::MainLayer;
+        assert_eq!(p.sync_recess_depths(), 1);
+        assert_eq!(depth(&p), Some(4.5));
+        p.floors[0].openings[0].extras.spec.recess_to = RecessTo::SheathingLayer;
+        assert_eq!(p.sync_recess_depths(), 1);
+        assert_eq!(depth(&p), Some(4.0));
+        assert_eq!(p.sync_recess_depths(), 0);
+        // A typed depth is left alone.
+        p.floors[0].openings[0].extras.spec.recess_to = RecessTo::Depth;
+        p.floors[0].openings[0].extras.spec.recess_depth = Some(1.0);
+        assert_eq!(p.sync_recess_depths(), 0);
+        assert_eq!(depth(&p), Some(1.0));
+        let _ = d;
+    }
+
+    #[test]
+    fn a_casement_window_has_the_sashes_of_its_type() {
+        let mut w = Opening::default_window(1, 1, 100.0);
+        w.style = OpeningStyle::Casement;
+        w.width = 60.0;
+        // An older plan: the width decides.
+        assert_eq!(w.casement_sashes(), 2);
+        w.width = 36.0;
+        assert_eq!(w.casement_sashes(), 1);
+        // A typed casement: its Single, Double or Triple.
+        w.extras.spec.window_type = WindowType::SingleCasement;
+        w.width = 60.0;
+        assert_eq!(w.casement_sashes(), 1);
+        w.extras.spec.window_type = WindowType::DoubleCasement;
+        assert_eq!(w.casement_sashes(), 2);
+        w.extras.spec.window_type = WindowType::TripleCasement;
+        assert_eq!(w.casement_sashes(), 3);
+        // The plan shows a leaf and a swing arc for each.
+        let wall = crate::model::Wall::new(
+            Point::ZERO,
+            Point::new(200.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        let sym = crate::opening_symbol::plan_symbol(&wall, &w, 1.0);
+        assert_eq!(sym.count(crate::opening_symbol::PartKind::Leaf), 3);
+        assert_eq!(sym.count(crate::opening_symbol::PartKind::Swing), 3);
+    }
+
+    #[test]
+    fn the_minimum_separation_limits_a_resize() {
+        let (mut p, w) = proj();
+        let a = p.add_opening(0, w, 40.0, OpeningKind::Window).unwrap();
+        let b = p.add_opening(0, w, 150.0, OpeningKind::Window).unwrap();
+        // a: 22..58, b: 132..168.
+        p.resize_opening(0, a, Jamb::End, 200.0);
+        assert_eq!(span(&p, a).1, 130.0, "2 in short of b");
+        p.opening_display.min_separation = 7.0;
+        p.resize_opening(0, a, Jamb::End, 200.0);
+        assert_eq!(span(&p, a).1, 125.0);
+        assert_eq!(span(&p, b), (132.0, 168.0));
+    }
+
+    #[test]
+    fn windows_whose_casings_touch_share_a_casing_span() {
+        let (mut p, w) = proj();
+        let a = p.add_opening(0, w, 40.0, OpeningKind::Window).unwrap();
+        let b = p.add_opening(0, w, 80.0, OpeningKind::Window).unwrap();
+        let c = p.add_opening(0, w, 170.0, OpeningKind::Window).unwrap();
+        // a: 22..58, b: 62..98 (4 in apart); c far away.
+        assert_eq!(p.casing_unit(0, a), Some(Some((22.0, 98.0))));
+        assert_eq!(p.casing_unit(0, b), Some(Some((22.0, 98.0))));
+        assert_eq!(p.casing_unit(0, c), Some(None));
+        // A blocked unit keeps working as before.
+        p.mull_openings(0, &[a, b]).unwrap();
+        assert!(p.casing_unit(0, a).is_some());
     }
 
     #[test]

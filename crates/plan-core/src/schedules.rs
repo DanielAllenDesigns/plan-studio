@@ -23,7 +23,10 @@ use crate::model::{Floor, Id};
 use serde::{Deserialize, Serialize};
 
 pub mod numfmt;
-pub use numfmt::{Accuracy, FractionFormat, FractionStyle, NumFormat, NumKind, NumUnit};
+pub use numfmt::{
+    format_value, Accuracy, FractionFormat, FractionStyle, NumFormat, NumKind, NumUnit, Reduce,
+    Thousands,
+};
 
 /// Layer schedules (and their callout labels) are drawn on.
 pub const SCHEDULE_LAYER: &str = "Schedules";
@@ -865,6 +868,30 @@ fn roman_number(mut n: u32, upper: bool) -> String {
     }
 }
 
+/// Which layer the callouts of a schedule are placed on (Callout Layer).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum CalloutLayer {
+    /// Each callout goes on the label layer of its object.
+    ObjectLabel,
+    /// Every callout goes on the layer of the schedule.
+    #[default]
+    Schedule,
+    /// Every callout goes on the named layer.
+    Custom(String),
+}
+
+impl CalloutLayer {
+    /// The layer the callouts of `schedule` are on, `None` when each object's
+    /// own label layer decides.
+    pub fn layer_of<'a>(&'a self, schedule: &'a Schedule) -> Option<&'a str> {
+        match self {
+            CalloutLayer::ObjectLabel => None,
+            CalloutLayer::Schedule => Some(schedule.layer.as_str()),
+            CalloutLayer::Custom(n) => Some(n.as_str()),
+        }
+    }
+}
+
 /// The Labels panel beyond the prefix and numbering: what the callouts look
 /// like (manual pp. 726 to 728).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -895,6 +922,8 @@ pub struct LabelOptions {
     /// The text angle follows the shape angle.
     pub auto_text_angle: bool,
     pub follow_label: bool,
+    /// Callout Layer.
+    pub layer: CalloutLayer,
 }
 
 impl Default for LabelOptions {
@@ -915,6 +944,7 @@ impl Default for LabelOptions {
             text_angle: 0.0,
             auto_text_angle: true,
             follow_label: false,
+            layer: CalloutLayer::default(),
         }
     }
 }
@@ -1195,7 +1225,8 @@ impl Schedule {
 
     /// Is the schedule limited to chosen floors or rooms?
     pub fn has_scope(&self) -> bool {
-        self.floor_scope == FloorScope::ThisFloor && !self.floors.is_empty() || !self.rooms.is_empty()
+        self.floor_scope == FloorScope::ThisFloor && !self.floors.is_empty()
+            || !self.rooms.is_empty()
     }
 
     /// Does the schedule list objects from `floor`, placed on `home`?
@@ -1673,5 +1704,203 @@ mod tests {
         );
         let blank = ProjectInfo::default();
         assert_eq!(blank.expand("%client%|"), "|");
+    }
+
+    #[test]
+    fn schedule_numbers_follow_the_start_style_and_leading_zero() {
+        let mut s = Schedule::new(ScheduleKind::Door, Point::ZERO);
+        assert_eq!(s.mark_text(1), "D01");
+        assert_eq!(s.mark_text(12), "D12");
+        s.label.start_number = 5;
+        assert_eq!(s.mark_text(1), "D05");
+        s.label.leading_zeros = false;
+        assert_eq!(s.mark_text(1), "D5");
+        s.label.number_style = NumberStyle::UpperAlpha;
+        assert_eq!(s.mark_text(1), "DE");
+        assert_eq!(s.mark_text(22), "DZ");
+        assert_eq!(s.mark_text(23), "DAA");
+        s.label.number_style = NumberStyle::LowerRoman;
+        s.label.start_number = 1;
+        assert_eq!(s.mark_text(3), "Diii");
+        s.label.number_style = NumberStyle::UpperRoman;
+        assert_eq!(s.mark_text(9), "DIX");
+    }
+
+    #[test]
+    fn area_and_volume_columns_total_by_default_in_the_three_schedules() {
+        for (kind, field, on) in [
+            (ScheduleKind::Door, "area", true),
+            (ScheduleKind::Window, "area", true),
+            (ScheduleKind::RoomFinish, "area", true),
+            (ScheduleKind::RoomFinish, "volume", true),
+            (ScheduleKind::Room, "area", false),
+            (ScheduleKind::Wall, "area", false),
+            (ScheduleKind::Door, "width", false),
+        ] {
+            let c = kind
+                .default_columns()
+                .into_iter()
+                .find(|c| c.field == field)
+                .unwrap();
+            assert_eq!(c.calc_total, on, "{kind:?} {field}");
+        }
+        assert!(ScheduleKind::Door.has_totals_row());
+        assert!(!ScheduleKind::Cabinet.has_totals_row());
+        assert_eq!(ScheduleKind::Window.num_kind("area"), Some(NumKind::Area));
+        assert_eq!(
+            ScheduleKind::Window.num_kind("width"),
+            Some(NumKind::Length)
+        );
+        assert_eq!(ScheduleKind::Window.num_kind("type"), None);
+        assert_eq!(
+            ScheduleKind::Cabinet.num_kind("quantity"),
+            Some(NumKind::Count)
+        );
+        assert!(ScheduleKind::Door.has_previews());
+        assert!(!ScheduleKind::Framing.has_previews());
+        assert!(is_preview_field("symbol_2d"));
+        assert!(!is_preview_field("width"));
+    }
+
+    #[test]
+    fn floors_and_rooms_scope_a_schedule() {
+        let mut s = Schedule::new(ScheduleKind::Door, Point::ZERO);
+        // This floor: the one it is placed on.
+        assert!(s.lists_floor(2, 2) && !s.lists_floor(1, 2));
+        // Chosen floors.
+        s.floors = vec![0, 1];
+        assert!(s.lists_floor(0, 2) && s.lists_floor(1, 2) && !s.lists_floor(2, 2));
+        // All floors wins.
+        s.floor_scope = FloorScope::All;
+        assert!(s.lists_floor(5, 0));
+        assert!(!s.has_scope());
+        s.floor_scope = FloorScope::ThisFloor;
+        assert!(s.has_scope());
+        s.floors.clear();
+        s.rooms.push(RoomRef::at(0, Point::new(10.0, 20.0)));
+        assert!(s.has_scope());
+        assert_eq!(s.rooms_on(0).count(), 1);
+        assert_eq!(s.rooms_on(1).count(), 0);
+        assert_eq!(s.rooms[0].point(), Point::new(10.0, 20.0));
+    }
+
+    #[test]
+    fn categories_default_by_the_caller_and_record_the_choice() {
+        let mut s = Schedule::new(ScheduleKind::Wall, Point::ZERO);
+        assert!(s.category_on("Wall/Siding", true));
+        assert!(!s.category_on("Custom/Glazing", false));
+        s.set_category("Wall/Siding", false);
+        s.set_category("Custom/Glazing", true);
+        assert!(!s.category_on("Wall/Siding", true));
+        assert!(s.category_on("Custom/Glazing", false));
+        // Wall and Room schedules take new types; Note schedules do not.
+        assert!(Schedule::new(ScheduleKind::Wall, Point::ZERO).new_types_included);
+        assert!(Schedule::new(ScheduleKind::Room, Point::ZERO).new_types_included);
+        assert!(!Schedule::new(ScheduleKind::Note, Point::ZERO).new_types_included);
+        s.set_kind(ScheduleKind::Note);
+        assert!(s.categories.is_empty(), "a new kind forgets the ticks");
+        assert!(!s.new_types_included);
+    }
+
+    #[test]
+    fn the_schedule_setup_keeps_defaults_and_custom_categories() {
+        let mut setup = ScheduleSetup::default();
+        assert!(setup.is_default());
+        // Defaults: a window schedule without a border, numbers and rooms of
+        // the template are not inherited.
+        let mut d = Schedule::new(ScheduleKind::Window, Point::new(5.0, 5.0));
+        d.border = false;
+        d.id = 9;
+        d.rooms.push(RoomRef::at(0, Point::ZERO));
+        d.numbers.push(NumRec {
+            kind: ScheduleKind::Window,
+            floor: 0,
+            id: 3,
+            n: 1,
+        });
+        setup.set_default(d);
+        let t = setup.template(ScheduleKind::Window, Point::new(40.0, 60.0));
+        assert!(!t.border);
+        assert_eq!(t.id, 0);
+        assert_eq!(t.position, Point::new(40.0, 60.0));
+        assert!(t.rooms.is_empty() && t.numbers.is_empty());
+        assert!(setup.template(ScheduleKind::Door, Point::ZERO).border);
+        assert!(setup.reset_default(ScheduleKind::Window));
+        assert!(!setup.reset_default(ScheduleKind::Window));
+        // Custom categories.
+        assert!(setup.add_category("Glazing").is_ok());
+        assert!(setup.add_category(" Glazing ").is_err());
+        assert!(setup.add_category("").is_err());
+        assert!(setup.assign("Glazing", "window:4"));
+        assert!(!setup.assign("Nope", "window:4"));
+        assert!(setup.assign("Glazing", "door:2"));
+        assert!(setup.assign("Glazing", "door:2"), "twice is once");
+        assert_eq!(setup.category("Glazing").unwrap().members.len(), 2);
+        assert_eq!(setup.categories_of("door:2"), ["Glazing"]);
+        assert!(setup.unassign("Glazing", "door:2"));
+        assert!(setup.categories_of("door:2").is_empty());
+        assert!(setup.rename_category("Glazing", "Glass").is_ok());
+        assert!(setup.rename_category("Glazing", "x").is_err());
+        let mut sched = Schedule::new(ScheduleKind::Door, Point::ZERO);
+        sched.set_category(&custom_category_id("Glazing"), true);
+        ScheduleSetup::rename_in(&mut sched, "Glazing", "Glass");
+        assert!(sched.category_on(&custom_category_id("Glass"), false));
+        setup.purge(|k| k != "window:4");
+        assert!(setup.category("Glass").unwrap().members.is_empty());
+        assert!(setup.delete_category("Glass"));
+        assert!(setup.is_default());
+    }
+
+    #[test]
+    fn a_schedule_saved_before_round_16_loads_with_the_new_settings_defaulted() {
+        let old = r#"{"id":4,"kind":"Door","position":{"x":1.0,"y":2.0},
+            "columns":[{"field":"mark","title":"Mark","visible":true,"width":0.0}],
+            "title":"Doors"}"#;
+        let s: Schedule = serde_json::from_str(old).unwrap();
+        assert_eq!(s.id, 4);
+        assert!(s.show_title && s.show_headings && s.border && s.grid_lines);
+        assert!(!s.swap && !s.wrap.enabled && !s.group_similar);
+        assert!(s.totals_row);
+        assert_eq!(s.totals_label, "Totals");
+        assert_eq!(s.columns[0].format, None);
+        assert!(!s.columns[0].calc_total);
+        assert!(s.numbers.is_empty() && s.rooms.is_empty() && s.categories.is_empty());
+        // And the new settings round-trip.
+        let mut t = Schedule::new(ScheduleKind::Window, Point::ZERO);
+        t.swap = true;
+        t.wrap.enabled = true;
+        t.wrap.by = WrapBy::MaxSize(120.0);
+        t.rooms.push(RoomRef::at(1, Point::new(3.0, 4.0)));
+        t.columns[1].format = Some(NumFormat::default());
+        t.columns[1].calc_total = true;
+        t.label.shape = Some(CalloutShape::Octagon);
+        t.label.layer = CalloutLayer::Custom("Labels".into());
+        t.set_category("Wall/Siding", false);
+        let back: Schedule = serde_json::from_value(serde_json::to_value(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
+    }
+
+    #[test]
+    fn callouts_come_from_every_schedule_that_shows_them() {
+        let mut layer = ScheduleLayer::default();
+        layer.add(Schedule::new(ScheduleKind::Door, Point::ZERO));
+        let mut second = Schedule::new(ScheduleKind::Door, Point::ZERO);
+        second.label_prefix = "FD".into();
+        layer.add(second);
+        let mut hidden = Schedule::new(ScheduleKind::Door, Point::ZERO);
+        hidden.show_labels = false;
+        layer.add(hidden);
+        assert_eq!(layer.label_sources(ScheduleKind::Door).count(), 2);
+        assert_eq!(
+            layer.label_source(ScheduleKind::Door).unwrap().label_prefix,
+            "D"
+        );
+        assert_eq!(layer.label_sources(ScheduleKind::Window).count(), 0);
+        let layer_of = CalloutLayer::Schedule;
+        assert_eq!(layer_of.layer_of(&layer.schedules[0]), Some("Schedules"));
+        assert_eq!(
+            CalloutLayer::ObjectLabel.layer_of(&layer.schedules[0]),
+            None
+        );
     }
 }

@@ -142,6 +142,10 @@ pub struct WallFoundation {
     /// here it starts off so existing foundation walls keep their height.
     pub sill_plate: bool,
     pub sill_construction: String,
+    /// "Create Wall/Footing Below": Build Foundation puts a foundation wall
+    /// or footing under this wall of the floor above (an interior wall,
+    /// railing or invisible wall; manual p. 742).
+    pub create_below: bool,
 }
 
 /// The Sill Plate construction a new wall starts with.
@@ -171,6 +175,7 @@ impl Default for WallFoundation {
             pour_number: 1,
             sill_plate: false,
             sill_construction: DEFAULT_SILL_CONSTRUCTION.to_string(),
+            create_below: false,
         }
     }
 }

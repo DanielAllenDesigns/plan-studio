@@ -23,7 +23,7 @@ pub fn aci_rgb(index: i32) -> Option<[u8; 3]> {
             // Value falls 100, 80, 60, 50, 30 percent in pairs; every second
             // entry is the half-saturated twin.
             let value = [1.0, 0.8, 0.6, 0.5, 0.3][step / 2];
-            let sat = if step % 2 == 0 { 1.0 } else { 0.5 };
+            let sat = if step.is_multiple_of(2) { 1.0 } else { 0.5 };
             Some(hsv(hue, sat, value))
         }
         250 => Some([51, 51, 51]),

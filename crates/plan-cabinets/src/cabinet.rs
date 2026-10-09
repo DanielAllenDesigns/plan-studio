@@ -970,7 +970,10 @@ pub struct Cabinet {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub suppress_fillers: bool,
     /// Auto door items are one door up to this opening width, inches.
-    #[serde(default = "default_auto_door", skip_serializing_if = "is_default_auto_door")]
+    #[serde(
+        default = "default_auto_door",
+        skip_serializing_if = "is_default_auto_door"
+    )]
     pub auto_door_threshold: f64,
     /// What the to Top and to Bottom elevations of the dialog measure from.
     #[serde(default, skip_serializing_if = "is_default_elevation_ref")]
@@ -1619,11 +1622,7 @@ impl Cabinet {
                     Point::new(0.0, d),
                 ],
                 CornerStyle::Diagonal => {
-                    let mut ring = vec![
-                        Point::new(0.0, 0.0),
-                        Point::new(w, 0.0),
-                        Point::new(w, a),
-                    ];
+                    let mut ring = vec![Point::new(0.0, 0.0), Point::new(w, 0.0), Point::new(w, a)];
                     if self.corner_bow.abs() > 1e-9 {
                         ring.extend(self.corner_front());
                     }

@@ -173,7 +173,7 @@ fn room_outline(cx: &EditorContext, room: usize) -> Option<Vec<plan_core::Point>
 /// The Make Tray Ceiling in Room dialog for room `room` of the active floor.
 pub fn dialog_for_room(cx: &EditorContext, room: usize) -> Option<TrayDialog> {
     let outline = room_outline(cx, room)?;
-    let spec = TrayCeiling::default();
+    let spec = default_spec(cx);
     let hole = tray::inset_outline(&outline, spec.width).unwrap_or_else(|| outline.clone());
     Some(TrayDialog::new(
         Target::MakeInRoom {
@@ -193,7 +193,7 @@ pub fn dialog_for_nested(cx: &EditorContext, parent: Id) -> Option<TrayDialog> {
     let spec = TrayCeiling {
         width: 12.0,
         depth: 4.0,
-        ..TrayCeiling::default()
+        ..default_spec(cx)
     };
     let hole = tray::inset_outline(&outline, spec.width).unwrap_or_else(|| outline.clone());
     Some(TrayDialog::new(
@@ -206,6 +206,53 @@ pub fn dialog_for_nested(cx: &EditorContext, parent: Id) -> Option<TrayDialog> {
         &hole,
         tray::LAYER.to_string(),
     ))
+}
+
+/// Command id: Edit > Default Settings > Roofs > Tray Ceiling.
+pub const DEFAULTS: &str = "defaults.tray_ceiling";
+
+/// The floor number that marks the dialog as the Tray Ceiling Defaults (no
+/// tray is made or edited; OK stores the plan defaults).
+const DEFAULTS_FLOOR: usize = usize::MAX;
+
+/// The tray a Make Tray Ceiling starts from: Default Settings > Roofs > Tray
+/// Ceiling, else the built-in tray.
+pub fn default_spec(cx: &EditorContext) -> TrayCeiling {
+    cx.defaults.tray_default()
+}
+
+/// The Tray Ceiling Defaults dialog: the Tray Ceiling Specification on the
+/// defaults a new tray starts from (no Width box, no polyline).
+pub fn dialog_for_defaults(cx: &EditorContext) -> TrayDialog {
+    let spec = default_spec(cx);
+    let mut d = TrayDialog::new(
+        Target::Edit {
+            floor: DEFAULTS_FLOOR,
+            id: 0,
+        },
+        spec,
+        Look::default(),
+        &[],
+        tray::LAYER.to_string(),
+    );
+    d.frame = SpecDialog::new("Tray Ceiling Defaults", "tray_ceiling_defaults");
+    d
+}
+
+/// Opens the Tray Ceiling Defaults dialog.
+pub fn open_defaults(cx: &EditorContext) -> bool {
+    host(Some(dialog_for_defaults(cx)))
+}
+
+/// Runs the commands of this module; false for any other id.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    match id {
+        DEFAULTS => {
+            open_defaults(cx);
+            true
+        }
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +743,13 @@ pub fn apply(
     draft: &TrayCeiling,
     look: &Look,
 ) -> Option<Id> {
+    if matches!(target, Target::Edit { floor: DEFAULTS_FLOOR, .. }) {
+        let mut spec = draft.clone();
+        spec.id = 0;
+        cx.defaults.tray_ceiling = (spec != TrayCeiling::default()).then_some(spec);
+        cx.status = "Saved the tray ceiling defaults".into();
+        return None;
+    }
     let label = match target {
         Target::Edit { .. } => "Tray Ceiling Specification",
         Target::MakeInRoom { .. } => "Make Tray Ceiling in Room",

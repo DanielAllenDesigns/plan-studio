@@ -221,6 +221,15 @@ impl EditorContext {
     /// Runs `f`, which may open several undo steps, and leaves them as one
     /// step named `label`.
     pub fn as_one_step(&mut self, label: &str, f: impl FnOnce(&mut Self)) {
+        // Inside an undo group the steps are not pushed until the group ends:
+        // the group's single step takes the label instead.
+        if self.history.group_is_empty() {
+            f(self);
+            if self.history.group_has_change() {
+                self.history.relabel_last(label);
+            }
+            return;
+        }
         let before = self.history.depth();
         f(self);
         let added = self.history.depth().saturating_sub(before);
@@ -582,6 +591,12 @@ impl EditorContext {
             v.push(custom_button(ids::UNGROUP, "Ungroup"));
         }
         v.push(custom_button(ids::SELECT_SAME, "Select Same Type"));
+        if crate::plan_defaults::can_set_as_default(self) {
+            v.push(custom_button(
+                crate::plan_defaults::SET_AS_DEFAULT,
+                "Set as Default",
+            ));
+        }
         v.extend(crate::dialogs::materials_list::edit_buttons(self));
         if crate::tools::painters::can_match(self) {
             v.push(custom_button(

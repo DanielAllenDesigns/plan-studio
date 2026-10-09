@@ -6,6 +6,7 @@
 use crate::editor::EditorContext;
 use crate::templates::{self, SeedCache, TemplateSettings};
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers};
+use plan_core::defaults::saved::SavedKind;
 use std::cell::RefCell;
 use std::path::PathBuf;
 
@@ -18,10 +19,15 @@ pub enum DefaultsEntry {
     InteriorDoor,
     ExteriorDoor,
     Window,
+    /// Opened from the Saved Defaults dialog of Manual Dimensions (its Edit
+    /// button), not from a leaf of its own any more.
+    #[allow(dead_code)]
     Dimensions,
     RoomTypes,
     /// Floors and Rooms > Floor Defaults (R-56).
     FloorDefaults,
+    /// Foundation > Foundation: the Foundation Defaults dialog (R-129).
+    Foundation,
     TextStyles,
     /// Preferences > Templates (the Templates page window).
     Templates,
@@ -44,6 +50,9 @@ pub(crate) enum Leaf {
     Page(&'static str),
     /// Electrical (`default_pages/electrical.rs`): the plan's device heights.
     Electrical,
+    /// Floors and Rooms > Floor/Ceiling Platform (`assembly_def.rs`): the
+    /// plan-wide layered Floor and Ceiling Structure and Finish.
+    Platforms,
     /// A command of the application (an existing dialog or tool window).
     Run(Action),
 }
@@ -62,7 +71,10 @@ const CABINET_LEAVES: &[(&str, Leaf)] = &[
     ("Backsplash", Leaf::CabinetDefaults(7)),
     // The General Cabinet Defaults dialog (`cabinet_defaults.rs`); it opens
     // from here only.
-    ("General Cabinet", Leaf::CabinetDefaults(GENERAL_CABINET_LEAF)),
+    (
+        "General Cabinet",
+        Leaf::CabinetDefaults(GENERAL_CABINET_LEAF),
+    ),
 ];
 
 /// The index of the General Cabinet leaf among the cabinet leaves; it opens
@@ -94,6 +106,12 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
             ("Lines", Leaf::Page("cad.lines")),
             ("Polylines", Leaf::Page("cad.polylines")),
             ("Splines", Leaf::Page("cad.splines")),
+            (
+                "Revision Clouds",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::RevisionClouds,
+                ))),
+            ),
         ],
     ),
     (
@@ -113,12 +131,20 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
     ("Corner Trim", &[("Corner Trim", Leaf::Page("corner_trim"))]),
     (
         "Default Sets",
-        &[("Default Sets", Leaf::Page("default_sets"))],
+        &[(
+            "Default Sets",
+            Leaf::Run(Action::Custom(super::default_sets::DEFAULT_SETS)),
+        )],
     ),
     (
         "Dimension",
         &[
-            ("Dimensions", Leaf::Entry(DefaultsEntry::Dimensions)),
+            (
+                "Dimensions",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::ManualDimensions,
+                ))),
+            ),
             ("General", Leaf::Page("dimension.general")),
             ("Setup Automatic", Leaf::Page("dimension.setup_automatic")),
             ("Setup Temporary", Leaf::Page("dimension.setup_temporary")),
@@ -142,10 +168,7 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
                 "Locate Auto Exterior",
                 Leaf::Page("dimension.locate_auto_exterior"),
             ),
-            (
-                "Locate Auto Room",
-                Leaf::Page("dimension.locate_auto_room"),
-            ),
+            ("Locate Auto Room", Leaf::Page("dimension.locate_auto_room")),
             (
                 "Locate Auto Elevation",
                 Leaf::Page("dimension.locate_auto_elevation"),
@@ -183,13 +206,26 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
         &[
             ("Floor Defaults", Leaf::Entry(DefaultsEntry::FloorDefaults)),
             ("Floor Levels", Leaf::Page("floor_levels")),
-            ("Floor/Ceiling Platform", Leaf::Page("platforms")),
+            ("Floor/Ceiling Platform", Leaf::Platforms),
             ("Room Types", Leaf::Entry(DefaultsEntry::RoomTypes)),
+            (
+                "Room Functions",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::RoomFunctions,
+                ))),
+            ),
             ("Rooms", Leaf::Page("rooms")),
             ("Room Label", Leaf::Page("room_label")),
         ],
     ),
-    ("Foundation", &[("Foundation", Leaf::Page("foundation"))]),
+    (
+        "Foundation",
+        &[
+            // The Foundation Defaults dialog (manual p. 738).
+            ("Foundation", Leaf::Entry(DefaultsEntry::Foundation)),
+            ("Footing and Wall", Leaf::Page("foundation")),
+        ],
+    ),
     (
         "Framing",
         &[
@@ -198,6 +234,12 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
             ("Headers", Leaf::FramingDefaults(1)),
             ("Floor Framing", Leaf::FramingDefaults(2)),
             ("Roof Framing", Leaf::FramingDefaults(3)),
+            (
+                "Framing Types",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::FramingTypes,
+                ))),
+            ),
         ],
     ),
     (
@@ -217,6 +259,12 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
                 Leaf::Run(Action::Custom("materials.defaults")),
             ),
             ("Materials List", Leaf::Page("materials_list")),
+            (
+                "Structural Member Reporting",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::StructuralMemberReporting,
+                ))),
+            ),
             ("Molding Polylines", Leaf::Page("molding_polylines")),
         ],
     ),
@@ -229,13 +277,26 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
                 Leaf::Run(Action::OpenLayerDisplay),
             ),
             ("Plan Check", Leaf::Run(Action::Custom("check.settings"))),
+            (
+                "Watermark",
+                Leaf::Run(Action::Custom(super::watermark::DEFAULTS)),
+            ),
         ],
     ),
     (
         "Railing and Deck",
         &[("Railing and Deck", Leaf::Page("railing_deck"))],
     ),
-    ("Roofs", &[("Roof Defaults", Leaf::RoofDefaults)]),
+    (
+        "Roofs",
+        &[
+            ("Roof Defaults", Leaf::RoofDefaults),
+            (
+                "Tray Ceiling",
+                Leaf::Run(Action::Custom(super::tray_ceiling::DEFAULTS)),
+            ),
+        ],
+    ),
     (
         "Schedules",
         &[
@@ -262,11 +323,43 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
         "Text",
         &[
             ("Text Styles", Leaf::Entry(DefaultsEntry::TextStyles)),
-            ("Rich Text", Leaf::Page("text.rich")),
-            ("Arrows", Leaf::Page("text.arrows")),
+            (
+                "Text",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::Text,
+                ))),
+            ),
+            (
+                "Rich Text",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::RichText,
+                ))),
+            ),
+            (
+                "Arrows",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::Arrows,
+                ))),
+            ),
             ("Leader Lines", Leaf::Page("text.leader_lines")),
-            ("Callouts", Leaf::Page("text.callouts")),
-            ("Markers", Leaf::Page("text.markers")),
+            (
+                "Callouts",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::Callouts,
+                ))),
+            ),
+            (
+                "Markers",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::Markers,
+                ))),
+            ),
+            (
+                "Notes",
+                Leaf::Run(Action::Custom(super::saved_defaults::command_id(
+                    SavedKind::Notes,
+                ))),
+            ),
         ],
     ),
     (
@@ -328,6 +421,9 @@ fn describe(leaf: Leaf) -> &'static str {
             "The Door Specification new doors start from."
         }
         Leaf::Entry(DefaultsEntry::Window) => "The Window Specification new windows start from.",
+        Leaf::Entry(DefaultsEntry::Foundation) => {
+            "The Foundation Defaults: footings, stem walls, slabs and piers of new foundations."
+        }
         Leaf::Entry(DefaultsEntry::Dimensions) => {
             "The saved dimension default sets: format, automatic dimensions, extensions and arrows."
         }
@@ -345,6 +441,9 @@ fn describe(leaf: Leaf) -> &'static str {
         Leaf::TerrainDefaults => "The Terrain Specification of this plan.",
         Leaf::Page(_) => "A page of default values for new objects of this kind.",
         Leaf::Electrical => "The height each kind of device is placed at; kept with this plan.",
+        Leaf::Platforms => {
+            "The layers of the floor and ceiling platforms and their finishes; kept with this plan."
+        }
         Leaf::Run(_) => "Opens the matching window.",
     }
 }
@@ -379,6 +478,10 @@ pub(crate) fn edit_outcome(leaf: Leaf) -> DefaultsOutcome {
         }
         Leaf::Electrical => {
             super::default_pages::electrical::request_open();
+            DefaultsOutcome::Open
+        }
+        Leaf::Platforms => {
+            super::assembly_def::request_page();
             DefaultsOutcome::Open
         }
         Leaf::Run(action) => DefaultsOutcome::Run(action),
@@ -579,6 +682,13 @@ pub fn reload_templates_page() {
 /// Draws the Templates page and the Roof Defaults page if they are open;
 /// call once a frame.
 pub fn show_templates_page(ctx: &egui::Context, cx: &mut EditorContext) {
+    // Objects that use a default follow it when a dialog or Set as Default
+    // changed it since the last frame.
+    crate::plan_defaults::track(cx);
+    super::saved_defaults::show(ctx, cx);
+    super::default_sets::show_all(ctx, cx);
+    super::template_chooser::show_all(ctx, cx);
+    super::import_settings::show_all(ctx, cx);
     show_roof_defaults(ctx, cx);
     show_cabinet_defaults(ctx, cx);
     super::cabinet_defaults::show(ctx, cx);
@@ -945,7 +1055,18 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
                 crate::editor::framing_view::activate_overview(cx);
             }
         }
-        _ => return false,
+        crate::plan_defaults::SET_AS_DEFAULT => {
+            crate::plan_defaults::set_as_default(cx);
+        }
+        // Saved Defaults, Default Sets and Active Defaults, the tray ceiling
+        // defaults, the template windows and the settings imports.
+        _ => {
+            return super::saved_defaults::run_command(cx, id)
+                || super::default_sets::run_command(cx, id)
+                || super::tray_ceiling::run_command(cx, id)
+                || super::template_chooser::run_command(cx, id)
+                || super::import_settings::run_command(cx, id)
+        }
     }
     true
 }

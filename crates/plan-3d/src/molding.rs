@@ -124,7 +124,9 @@ fn frames(pts: &[V], closed: bool) -> Vec<Frame> {
     let resolved: Vec<V> = (0..segs)
         .map(|i| {
             ns[i].unwrap_or_else(|| {
-                let prev = (1..=segs).map(|k| (i + segs - k) % segs).find(|j| known.contains(j));
+                let prev = (1..=segs)
+                    .map(|k| (i + segs - k) % segs)
+                    .find(|j| known.contains(j));
                 prev.and_then(|j| ns[j]).unwrap_or(fallback)
             })
         })
@@ -193,7 +195,7 @@ fn sweep_run(mb: &mut MeshBuilder, run: &Run, section: &[Point], dz: f64, joints
             })
             .collect()
     };
-    for j in 0..m {
+    for (j, &v) in pts.iter().enumerate() {
         let prev = if j > 0 {
             Some(j - 1)
         } else if closed {
@@ -202,7 +204,6 @@ fn sweep_run(mb: &mut MeshBuilder, run: &Run, section: &[Point], dz: f64, joints
             None
         };
         let next = if j < segs { Some(j) } else { None };
-        let v = pts[j];
         match (prev, next) {
             (Some(a), Some(b)) => {
                 let sum = add(fr[a].d, fr[b].d);
@@ -309,7 +310,13 @@ fn runs_of(path: &SweepPath, floor_elev: f64) -> Vec<Run> {
         return Vec::new();
     }
     let p3: Vec<V> = (0..n)
-        .map(|i| [path.points[i].x, path.points[i].y, floor_elev + path.bottoms[i]])
+        .map(|i| {
+            [
+                path.points[i].x,
+                path.points[i].y,
+                floor_elev + path.bottoms[i],
+            ]
+        })
         .collect();
     let edges = n - 1;
     let on = |i: usize| path.on.get(i).copied().unwrap_or(true);
@@ -389,7 +396,10 @@ fn sub_path3(pts: &[V], closed: bool, a: f64, b: f64) -> Vec<V> {
             continue;
         }
         let lerp = |t: f64| add(s[0], scale(sub(s[1], s[0]), t));
-        let (pa, pb) = (lerp(((a - s0) / l).clamp(0.0, 1.0)), lerp(((b - s0) / l).clamp(0.0, 1.0)));
+        let (pa, pb) = (
+            lerp(((a - s0) / l).clamp(0.0, 1.0)),
+            lerp(((b - s0) / l).clamp(0.0, 1.0)),
+        );
         if out.last().is_none_or(|q| len(sub(*q, pa)) > 1e-9) {
             out.push(pa);
         }
@@ -583,7 +593,11 @@ mod tests {
         let meshes = molding_meshes(&m, 0.0);
         assert_eq!(meshes.len(), 1);
         let want = (100.0 * 60.0 - 96.0 * 56.0) * 4.0;
-        assert!((volume(&meshes) - want).abs() < 1e-3 * want, "{}", volume(&meshes));
+        assert!(
+            (volume(&meshes) - want).abs() < 1e-3 * want,
+            "{}",
+            volume(&meshes)
+        );
         // No end caps on a closed ring: 4 segments x 4 section edges x 2.
         assert_eq!(meshes[0].triangle_count(), 4 * 8);
         // The inner mitre points are at (2, 2) and (98, 58) and the molding
@@ -623,7 +637,11 @@ mod tests {
         .unwrap();
         let m = line(vec![pt(0.0, 0.0), pt(10.0, 0.0)], l);
         let meshes = molding_meshes(&m, 0.0);
-        assert!((volume(&meshes) - 5.0 * 10.0).abs() < 1e-3, "{}", volume(&meshes));
+        assert!(
+            (volume(&meshes) - 5.0 * 10.0).abs() < 1e-3,
+            "{}",
+            volume(&meshes)
+        );
     }
 
     #[test]
@@ -645,7 +663,13 @@ mod tests {
     #[test]
     fn reverse_direction_and_extrude_inside_flip_the_side() {
         // Drawn clockwise, the default side (right) puts the profile inside.
-        let cw = vec![pt(0.0, 0.0), pt(0.0, 60.0), pt(100.0, 60.0), pt(100.0, 0.0), pt(0.0, 0.0)];
+        let cw = vec![
+            pt(0.0, 0.0),
+            pt(0.0, 60.0),
+            pt(100.0, 60.0),
+            pt(100.0, 0.0),
+            pt(0.0, 0.0),
+        ];
         let mut m = MoldingLine::with_profile(1, cw.clone(), box_profile(2.0, 4.0), 0.0);
         let inside = (100.0 * 60.0 - 96.0 * 56.0) * 4.0;
         let v = volume(&molding_meshes(&m, 0.0));
@@ -688,7 +712,10 @@ mod tests {
         // the back line (toward +z, away from the room) and sits 2.5 up.
         assert!((lo[1] - 30.0).abs() < 1e-4);
         assert!((hi[1] - 33.5).abs() < 1e-4, "{}", hi[1]);
-        assert!((lo[2] + 1.0).abs() < 1e-4 && (hi[2] - 0.25).abs() < 1e-4, "{lo:?} {hi:?}");
+        assert!(
+            (lo[2] + 1.0).abs() < 1e-4 && (hi[2] - 0.25).abs() < 1e-4,
+            "{lo:?} {hi:?}"
+        );
         // Off for one row removes it.
         m.table.rows[b].edge = EdgeMode::Off;
         assert_eq!(molding_meshes(&m, 0.0).len(), 1);
@@ -702,7 +729,11 @@ mod tests {
         assert!(m.is_sloped());
         let meshes = molding_meshes(&m, 0.0);
         let len3 = (96.0f64 * 96.0 + 24.0 * 24.0).sqrt();
-        assert!((volume(&meshes) - 5.0 * len3).abs() < 1e-2, "{}", volume(&meshes));
+        assert!(
+            (volume(&meshes) - 5.0 * len3).abs() < 1e-2,
+            "{}",
+            volume(&meshes)
+        );
         let (lo, hi) = bounds(&meshes);
         assert!((lo[1] - 10.0).abs() < 1.5 && hi[1] > 34.0, "{lo:?} {hi:?}");
         // 3D length and angles of the edge.
@@ -744,11 +775,18 @@ mod tests {
         m.table = table;
         let meshes = molding_meshes(&m, 0.0);
         // Ten elements of 4 x 2 x 2.
-        assert!((volume(&meshes) - 10.0 * 4.0 * 4.0).abs() < 1e-3, "{}", volume(&meshes));
+        assert!(
+            (volume(&meshes) - 10.0 * 4.0 * 4.0).abs() < 1e-3,
+            "{}",
+            volume(&meshes)
+        );
         // The first sits 3 inches in (half the 6 inch gap), the last ends 3
         // inches short of the end.
         let (lo, hi) = bounds(&meshes);
-        assert!((lo[0] - 3.0).abs() < 1e-3 && (hi[0] - 97.0).abs() < 1e-3, "{lo:?} {hi:?}");
+        assert!(
+            (lo[0] - 3.0).abs() < 1e-3 && (hi[0] - 97.0).abs() < 1e-3,
+            "{lo:?} {hi:?}"
+        );
         // Without an element length the element is half the repeat distance.
         m.table.rows[0].element_length = 0.0;
         assert!((volume(&molding_meshes(&m, 0.0)) - 10.0 * 5.0 * 4.0).abs() < 1e-3);
@@ -760,7 +798,10 @@ mod tests {
         let i = table.add_new(box_profile(1.0, 1.0));
         table.rows[i].repeat_distance = 40.0;
         table.rows[i].element_length = 20.0;
-        let mut m = line(vec![pt(0.0, 0.0), pt(20.0, 0.0), pt(20.0, 20.0)], box_profile(1.0, 1.0));
+        let mut m = line(
+            vec![pt(0.0, 0.0), pt(20.0, 0.0), pt(20.0, 20.0)],
+            box_profile(1.0, 1.0),
+        );
         m.table = table;
         let meshes = molding_meshes(&m, 0.0);
         // One element centred on the corner (the path is 40 long): 10 along
@@ -782,7 +823,10 @@ mod tests {
         let meshes = molding_meshes(&m, 0.0);
         let v = volume(&meshes);
         // Ring of the section's area around the rectangle (mitres included).
-        assert!(v > area * 2.0 * (120.0 + 96.0) * 0.9 && v < area * 2.0 * (120.0 + 96.0), "{v}");
+        assert!(
+            v > area * 2.0 * (120.0 + 96.0) * 0.9 && v < area * 2.0 * (120.0 + 96.0),
+            "{v}"
+        );
         assert!(entry.width > 0.0);
         let _ = MoldingProfile::Base;
     }

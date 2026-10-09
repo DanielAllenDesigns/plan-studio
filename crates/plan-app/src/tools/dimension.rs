@@ -1368,10 +1368,8 @@ impl DimensionTool {
             let tl = set.tool_locate(LocateTool::AutoExterior);
             // Setup Automatic: which strings, and where the first line
             // stands from (Offset from Wall).
-            let strings = plan_core::dimension::exterior_strings_for(
-                &set.exterior_strings(),
-                &set.setup,
-            );
+            let strings =
+                plan_core::dimension::exterior_strings_for(&set.exterior_strings(), &set.setup);
             let main = |w: &Wall| main_span(cx, w);
             let first_offset = Self::first_offset(cx, &walls, set.auto_exterior_offset);
             let setup = ExteriorSetup {
@@ -1588,10 +1586,22 @@ impl DimensionTool {
             let mut spans = Vec::new();
             if setup.room_overall {
                 if let Some((l, r)) = rays.left.zip(rays.right) {
-                    spans.push(Dimension::new(0, DimensionKind::AutoExterior, l, r, sep * side));
+                    spans.push(Dimension::new(
+                        0,
+                        DimensionKind::AutoExterior,
+                        l,
+                        r,
+                        sep * side,
+                    ));
                 }
                 if let Some((d, u)) = rays.down.zip(rays.up) {
-                    spans.push(Dimension::new(0, DimensionKind::AutoExterior, d, u, -sep * side));
+                    spans.push(Dimension::new(
+                        0,
+                        DimensionKind::AutoExterior,
+                        d,
+                        u,
+                        -sep * side,
+                    ));
                 }
             }
             for d in &mut spans {
@@ -1709,8 +1719,7 @@ impl DimensionTool {
         // overall dimension outside them.
         let setup = cx.defaults.dimensions.setup.clone();
         if !setup.elevation_left && !setup.elevation_right {
-            cx.status =
-                "Switch on Dimension on Left or Right in the Auto Elevation setup".into();
+            cx.status = "Switch on Dimension on Left or Right in the Auto Elevation setup".into();
             return ToolResult::consumed();
         }
         let base = plan_core::dimension::elevation_dimensions(&levels, datum, x, sep);
@@ -1812,7 +1821,8 @@ impl DimensionTool {
     fn auto_pole(&mut self, cx: &mut EditorContext, at: Option<Point>) -> ToolResult {
         let ps = cx.defaults.dimensions.setup.pole.clone();
         if !ps.left && !ps.right {
-            cx.status = "Switch on Dimension on Left or Right in the Auto Story Pole defaults".into();
+            cx.status =
+                "Switch on Dimension on Left or Right in the Auto Story Pole defaults".into();
             return ToolResult::consumed();
         }
         let datum = plan_core::dimension::elevation_datum(&cx.project.floors);
@@ -1831,11 +1841,7 @@ impl DimensionTool {
             let (inner, outer) = plan_core::dimension::pole_strings(&marks, &ps, x, left);
             groups.extend([inner, outer].into_iter().filter(|g| !g.is_empty()));
             for m in &marks {
-                let text = format!(
-                    "{}  {}",
-                    m.name,
-                    Self::level_text(cx, m.elevation - datum)
-                );
+                let text = format!("{}  {}", m.name, Self::level_text(cx, m.elevation - datum));
                 labels.push((text, m.elevation, left));
             }
         }
@@ -1966,7 +1972,12 @@ impl DimensionTool {
     /// its signed distance to the left of the centerline.
     fn curved_wall_at(cx: &EditorContext, p: Point) -> Option<(Id, f64)> {
         let tol = cx.pick_tol();
-        let mode = cx.defaults.dimensions.tool_locate(LocateTool::Manual).group.walls;
+        let mode = cx
+            .defaults
+            .dimensions
+            .tool_locate(LocateTool::Manual)
+            .group
+            .walls;
         cx.floor()
             .walls
             .iter()
@@ -1978,7 +1989,11 @@ impl DimensionTool {
             .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
             .map(|(w, t)| {
                 let (lo, hi) = wall_span(cx, w, mode);
-                let lateral = if (t - lo).abs() <= (t - hi).abs() { lo } else { hi };
+                let lateral = if (t - lo).abs() <= (t - hi).abs() {
+                    lo
+                } else {
+                    hi
+                };
                 (w.id, lateral)
             })
     }
@@ -2060,8 +2075,14 @@ impl DimensionTool {
             }
             let on_text = Self::label_pos(d).dist(p) <= 22.0 / cx.px_per_in.max(1e-6);
             if let Some(g) = d.curve_geom(0.0, 0.0) {
-                let on_line = g.line.windows(2).any(|w| dist_to_segment(p, w[0], w[1]) <= tol);
-                let on_ext = g.extensions.iter().any(|(s, e)| dist_to_segment(p, *s, *e) <= tol);
+                let on_line = g
+                    .line
+                    .windows(2)
+                    .any(|w| dist_to_segment(p, w[0], w[1]) <= tol);
+                let on_ext = g
+                    .extensions
+                    .iter()
+                    .any(|(s, e)| dist_to_segment(p, *s, *e) <= tol);
                 return (on_line || on_text || on_ext).then_some(d.id);
             }
             let (a, b) = d.line_points();
@@ -2234,7 +2255,9 @@ impl DimensionTool {
             rich: true,
         });
         set_typing(cx, true);
-        cx.status = "Edit the label (<b>bold</b>, <i>italic</i>, <size=1.5>); Enter applies, Esc cancels".into();
+        cx.status =
+            "Edit the label (<b>bold</b>, <i>italic</i>, <size=1.5>); Enter applies, Esc cancels"
+                .into();
     }
 
     /// Stores an edited label (one undo step).
@@ -2254,10 +2277,21 @@ impl DimensionTool {
             // Plain text with no formatting is the text override; anything
             // formatted is kept as runs.
             let formatted = runs.iter().any(|r| {
-                r.bold || r.italic || r.underline || r.strike || r.upper || r.color.is_some()
-                    || r.font.is_some() || (r.scale - 1.0).abs() > 1e-9 || r.link.is_some()
+                r.bold
+                    || r.italic
+                    || r.underline
+                    || r.strike
+                    || r.upper
+                    || r.color.is_some()
+                    || r.font.is_some()
+                    || (r.scale - 1.0).abs() > 1e-9
+                    || r.link.is_some()
             });
-            d.look.seg.runs = if formatted && !plain.is_empty() { runs } else { Vec::new() };
+            d.look.seg.runs = if formatted && !plain.is_empty() {
+                runs
+            } else {
+                Vec::new()
+            };
             d.text_override = (!formatted && !plain.is_empty()).then_some(plain);
             if d.kind == DimensionKind::AutoExterior {
                 d.convert_to_manual();
@@ -2412,11 +2446,21 @@ impl DimensionTool {
                 let signed = c.sweep.signum() * value.to_radians();
                 let turn = signed - c.sweep;
                 // The end of the second wall in the arm's direction moves.
-                let end = if c.toward_end[1] { WallEnd::End } else { WallEnd::Start };
-                let far = if end == WallEnd::End { wb.end } else { wb.start };
+                let end = if c.toward_end[1] {
+                    WallEnd::End
+                } else {
+                    WallEnd::Start
+                };
+                let far = if end == WallEnd::End {
+                    wb.end
+                } else {
+                    wb.start
+                };
                 let v = far.sub(c.center);
                 let (s, co) = turn.sin_cos();
-                let to = c.center.add(Point::new(v.x * co - v.y * s, v.x * s + v.y * co));
+                let to = c
+                    .center
+                    .add(Point::new(v.x * co - v.y * s, v.x * s + v.y * co));
                 cx.begin_change("Edit Dimension Value");
                 ops::move_wall_end_joined(&mut cx.project, fl, wb.id, end, to);
             }
@@ -2500,13 +2544,17 @@ impl DimensionTool {
                     }
                 };
             }
-            let angle = cx
-                .floor()
-                .dimensions
-                .iter()
-                .any(|d| d.id == ed.id && d.curve().is_some_and(|c| c.kind == CurveKind::Angle));
+            let angle =
+                cx.floor().dimensions.iter().any(|d| {
+                    d.id == ed.id && d.curve().is_some_and(|c| c.kind == CurveKind::Angle)
+                });
             let parsed = if angle {
-                ed.buf.trim().trim_end_matches('\u{b0}').trim().parse::<f64>().ok()
+                ed.buf
+                    .trim()
+                    .trim_end_matches('\u{b0}')
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
             } else {
                 parse_ft_in(&ed.buf)
             };
@@ -3894,7 +3942,9 @@ mod tests {
         // an object (DIM-18), not loose CAD lines.
         let mut cx = new_cx();
         let mut t = tool(DimMode::Angular);
-        for (x, y) in [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (45.0, 0.0)] {
+        // The third click angle-snaps from the second and rounds its length
+        // to the grid, so it sits on a whole grid length (96 in) from it.
+        for (x, y) in [(0.0, 0.0), (96.0, 0.0), (96.0, 96.0), (45.0, 0.0)] {
             click(&mut t, &mut cx, x, y);
         }
         assert!(cx.floor().cad.is_empty());
@@ -3903,8 +3953,8 @@ mod tests {
         let c = d.curve().expect("an angular dimension has a curve");
         assert_eq!(c.kind, CurveKind::Angle);
         assert!((c.radius - 45.0).abs() < 1e-9);
-        assert!((d.measure() - 90.0).abs() < 1e-6);
-        assert_eq!(d.label(&cx.dim_format()), "90.0\u{b0}");
+        assert!((d.measure() - 45.0).abs() < 1e-6, "{c:?}");
+        assert_eq!(d.label(&cx.dim_format()), "45.0\u{b0}");
         assert_eq!(cx.undo().as_deref(), Some("Angular Dimension"));
         assert!(cx.floor().dimensions.is_empty());
     }
@@ -3931,7 +3981,10 @@ mod tests {
         let mut t = tool(DimMode::Angular);
         click(&mut t, &mut cx, 120.0, 0.0);
         click(&mut t, &mut cx, 0.0, 120.0);
-        assert!(cx.floor().dimensions.is_empty(), "the arc is not placed yet");
+        assert!(
+            cx.floor().dimensions.is_empty(),
+            "the arc is not placed yet"
+        );
         let r = click(&mut t, &mut cx, 50.0, 50.0);
         assert_eq!(r.commit.as_deref(), Some("Angular Dimension"));
         let id = cx.floor().dimensions[0].id;
@@ -3974,13 +4027,20 @@ mod tests {
         // Radius.
         let mut t = tool(DimMode::Radius);
         click(&mut t, &mut cx, apex.x, apex.y + 0.0);
-        assert!(cx.floor().dimensions.is_empty(), "the line is not placed yet");
+        assert!(
+            cx.floor().dimensions.is_empty(),
+            "the line is not placed yet"
+        );
         let r = click(&mut t, &mut cx, out.x, out.y);
         assert_eq!(r.commit.as_deref(), Some("Radius Dimension"));
         let rad = cx.floor().dimensions[0].clone();
         assert_eq!(rad.curve().unwrap().kind, CurveKind::Radius);
         let (_, r_cl) = w.arc_center_radius().unwrap();
-        assert!((rad.measure() - r_cl).abs() <= 3.0 + 1e-6, "{} vs {r_cl}", rad.measure());
+        assert!(
+            (rad.measure() - r_cl).abs() <= 3.0 + 1e-6,
+            "{} vs {r_cl}",
+            rad.measure()
+        );
         assert!(rad.label(&cx.dim_format()).starts_with("R "));
         // Arc length.
         let mut t = tool(DimMode::ArcLength);
@@ -3988,7 +4048,11 @@ mod tests {
         click(&mut t, &mut cx, out.x, out.y);
         let arc = cx.floor().dimensions[1].clone();
         assert_eq!(arc.curve().unwrap().kind, CurveKind::ArcLength);
-        assert!((arc.measure() - w.path_length()).abs() <= 3.0 * 2.0, "{}", arc.measure());
+        assert!(
+            (arc.measure() - w.path_length()).abs() <= 3.0 * 2.0,
+            "{}",
+            arc.measure()
+        );
         // A straight wall is refused.
         let mut cx2 = new_cx();
         two_walls(&mut cx2);
@@ -3999,16 +4063,39 @@ mod tests {
         let rid = rad.id;
         let want = rad.measure() * 1.5;
         t.apply_value(&mut cx, rid, want).unwrap();
-        let d = cx.floor().dimensions.iter().find(|d| d.id == rid).unwrap().clone();
-        assert!((d.measure() - want).abs() < 1e-6, "{} vs {want}", d.measure());
+        let d = cx
+            .floor()
+            .dimensions
+            .iter()
+            .find(|d| d.id == rid)
+            .unwrap()
+            .clone();
+        assert!(
+            (d.measure() - want).abs() < 1e-6,
+            "{} vs {want}",
+            d.measure()
+        );
         let w2 = cx.floor().wall(id).unwrap();
-        assert!(w2.curve.unwrap().bulge.abs() < 60.0, "a larger radius is a flatter arc");
+        assert!(
+            w2.curve.unwrap().bulge.abs() < 60.0,
+            "a larger radius is a flatter arc"
+        );
         // Typing an arc length does the same.
         let aid = arc.id;
         let want = arc.measure() * 1.1;
         t.apply_value(&mut cx, aid, want).unwrap();
-        let d = cx.floor().dimensions.iter().find(|d| d.id == aid).unwrap().clone();
-        assert!((d.measure() - want).abs() < 1e-3, "{} vs {want}", d.measure());
+        let d = cx
+            .floor()
+            .dimensions
+            .iter()
+            .find(|d| d.id == aid)
+            .unwrap()
+            .clone();
+        assert!(
+            (d.measure() - want).abs() < 1e-3,
+            "{} vs {want}",
+            d.measure()
+        );
     }
 
     #[test]
@@ -4556,13 +4643,20 @@ mod tests {
             })
             .collect();
         assert_eq!(names.len(), 4);
-        assert!(names.iter().any(|n| n.contains("Top of Subfloor")), "{names:?}");
+        assert!(
+            names.iter().any(|n| n.contains("Top of Subfloor")),
+            "{names:?}"
+        );
         assert!(names.iter().any(|n| n.contains("Ceiling")), "{names:?}");
         // Running it again on the same line replaces, not stacks.
         click(&mut t, &mut cx, 400.0, 20.0);
         assert_eq!(cx.floor().dimensions.len(), 4);
         assert_eq!(
-            cx.floor().cad.iter().filter(|c| c.layer == AUTO_LAYER).count(),
+            cx.floor()
+                .cad
+                .iter()
+                .filter(|c| c.layer == AUTO_LAYER)
+                .count(),
             4
         );
         assert_eq!(cx.undo().as_deref(), Some("Auto Story Pole Dimensions"));

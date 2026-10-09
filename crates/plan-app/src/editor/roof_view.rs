@@ -588,6 +588,10 @@ pub struct RoofPlaneRecord {
     /// This plane's own structure (Structure > Define); `None` follows Roof
     /// Defaults.
     pub structure: Option<RoofStructure>,
+    /// The layered Roof Surface, Roof Structure and Roof Ceiling Finish
+    /// definitions of this plane (Structure panel, Round 16); `structure`
+    /// holds the numbers the builders read from them.
+    pub layers: Option<plan_core::assemblies::RoofLayers>,
     /// The per-edge record of a plane imported from a Chief plan (`role`,
     /// `joined`, `overhangs` per outline edge), kept as read so editing the
     /// plane does not lose it.
@@ -616,14 +620,47 @@ impl RoofPlaneRecord {
             source: None,
             edge: EdgeOverride::default(),
             structure: None,
+            layers: None,
             chief_edges: None,
             curved: None,
         }
     }
 
+    /// Gives the plane layered Roof Surface, Roof Structure and Roof Ceiling
+    /// Finish definitions (or, with `None`, hands it back to Roof Defaults).
+    /// The numbers the 3D roof and the framing read follow the layers;
+    /// `base` supplies what layers do not say (the ceiling framing, member
+    /// sizes when the structure has no Framing layer).
+    pub fn set_layers(
+        &mut self,
+        layers: Option<plan_core::assemblies::RoofLayers>,
+        base: RoofStructure,
+    ) {
+        match &layers {
+            Some(l) => {
+                let n = l.numbers();
+                let mut st = base;
+                st.framing = if n.trusses {
+                    RoofFraming::Trusses
+                } else {
+                    RoofFraming::Rafters
+                };
+                st.member_width = n.member_width.unwrap_or(base.member_width);
+                st.member_depth = n.member_depth.unwrap_or(base.member_depth);
+                st.spacing = n.spacing.unwrap_or(base.spacing);
+                st.sheathing = n.sheathing;
+                st.roofing = n.roofing;
+                self.set_structure(Some(st));
+            }
+            None => self.set_structure(None),
+        }
+        self.layers = layers;
+    }
+
     /// Gives the plane its own structure (or, with `None`, hands it back to
     /// Roof Defaults); the 3D thickness and rafter choices follow.
     pub fn set_structure(&mut self, structure: Option<RoofStructure>) {
+        self.layers = None;
         self.structure = structure;
         match structure {
             Some(s) => {
@@ -772,6 +809,11 @@ impl RoofPlaneRecord {
                 m.insert("structure".into(), e);
             }
         }
+        if let (Value::Object(m), Some(l)) = (&mut v, &self.layers) {
+            if let Ok(e) = serde_json::to_value(l) {
+                m.insert("layers".into(), e);
+            }
+        }
         if let (Value::Object(m), Some(edges)) = (&mut v, &self.chief_edges) {
             m.insert("chief_edges".into(), edges.clone());
         }
@@ -815,6 +857,7 @@ impl RoofPlaneRecord {
         r.gutters = field!(v, "gutters", bool).unwrap_or(false);
         r.eave = field!(v, "eave", plan_3d::EaveOverrides).unwrap_or_default();
         r.structure = field!(v, "structure", RoofStructure);
+        r.layers = field!(v, "layers", plan_core::assemblies::RoofLayers);
         r.chief_edges = v.get("chief_edges").filter(|e| e.is_array()).cloned();
         r.curved = field!(v, "curved", plan_roof::CurvedSpec);
         Some(r)
@@ -2946,6 +2989,7 @@ fn carry_over(old: &[RoofPlaneRecord], new: &mut [RoofPlaneRecord]) -> Vec<(Id, 
             n.gutters = o.gutters;
             n.eave = o.eave;
             n.structure = o.structure;
+            n.layers = o.layers.clone();
             map.push((o.id, n.id));
         }
     }
@@ -3380,6 +3424,7 @@ pub fn apply_edits(old: &mut RoofPlaneRecord, new: &RoofPlaneRecord) {
     old.gutters = new.gutters;
     old.eave = new.eave;
     old.structure = new.structure;
+    old.layers = new.layers.clone();
     // Curved Roof (RF-61); the curve follows the plane's (new) pitch.
     let curved = new.curved.map(|c| c.retarget(old.pitch));
     if curved != old.curved {
@@ -4252,9 +4297,10 @@ fn draw_slope_label(
 /// at each centroid the pitch label with a slope arrow (pointing down the
 /// slope).
 pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    // Fireplaces, chimney chases, decking and level changes (CB-86, CB-87,
-    // R-86) draw here, in the pass after the placed objects; they need no roof.
-    super::fireplace_view::draw(cx, painter, cam);
+    // Decking and level changes (CB-86, R-86) draw here, in the pass after the
+    // placed objects; they need no roof. Fireplaces and chimney chases draw
+    // after the walls (`render::draw_plan`).
+    super::fireplace_view::deck::draw(cx, painter, cam);
     // Roof Baseline Polylines and their directive letters (RF-62).
     crate::tools::roof_baseline::draw_baselines(cx, painter, cam);
     let set = load(cx.floor());
@@ -6047,6 +6093,11 @@ mod tests {
         let mut manual = set.planes[0].clone();
         manual.id = id;
         manual.auto = false;
+        // Stands clear of the rebuilt planes: one lying on a rebuilt plane
+        // replaces it (the Retain switches, DECISIONS RB8).
+        for v in &mut manual.polygon3d {
+            v[0] += 5000.0;
+        }
         set.planes.push(manual);
         store(&mut p, 0, &mut set);
         rebuild(&mut p, 1, style_settings(), false).unwrap();

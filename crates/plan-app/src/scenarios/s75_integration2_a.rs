@@ -112,7 +112,8 @@ fn an_opening_moved_by_the_editor_keeps_clear_of_a_meeting_wall() {
         south,
         240.0
     ));
-    let clear = 240.0 - 2.25 - 2.0 - width * 0.5;
+    // The jamb stops where its casing (3 3/4") meets the partition (Round 16).
+    let clear = 240.0 - 2.25 - 3.75 - width * 0.5;
     assert!(ops::place_opening_at(
         &mut sim.app.cx.project,
         0,

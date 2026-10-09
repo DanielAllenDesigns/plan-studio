@@ -22,12 +22,14 @@ mod place;
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::place_from_template;
+use crate::editor::opening_edit::{follow_defaults, sync_rules};
 use crate::editor::opening_view::{draw_opening, draw_opening_over};
 use crate::editor::tempdim::{self, opening_temp_dims, TempDims};
 use crate::editor::{render, Camera, EditAction, EditorContext, ObjectRef};
 use crate::toolbar::ViewFlag;
 use eframe::egui;
 use plan_core::geometry::Point;
+use plan_core::openings::bay::MIN_UNIT_WIDTH;
 use plan_core::openings::door_defaults_for_pointer;
 use plan_core::{Id, OpeningKind, OpeningStyle};
 
@@ -79,6 +81,9 @@ struct Hover {
     align: Option<place::Align>,
     /// A window over this door becomes its transom.
     transom_of: Option<Id>,
+    /// The width a bay, box or bow window takes in the room there is (never
+    /// under [`MIN_UNIT_WIDTH`]); `None` for everything else.
+    unit_width: Option<f64>,
 }
 
 /// The opening just placed while the button is still down: dragging slides it
@@ -141,7 +146,15 @@ impl OpeningTool {
         center: f64,
     ) -> (crate::dialogs::OpeningTarget, plan_core::Opening) {
         let (target_key, template) = cx.opening_template(self.kind, wall.kind);
-        let mut o = cx.defaults.opening_variants.apply(&template, self.style);
+        // The default of the type (Door/Window Defaults per type), else the
+        // older per-style size; the new opening follows the default in every
+        // dynamic setting.
+        let mut o = cx.defaults.opening_variants.place(
+            &template,
+            self.style,
+            wall.kind == plan_core::WallKind::Exterior,
+        );
+
         if self.swings() {
             (o.swing_flipped, o.hinge_at_end) = door_defaults_for_pointer(wall, pointer, center);
         }
@@ -183,7 +196,43 @@ impl OpeningTool {
                     center: d.center_offset,
                     align: None,
                     transom_of: Some(d.id),
+                    unit_width: None,
                 });
+            }
+        }
+        // A bay, box or bow window needs a straight wall and at least 30 in;
+        // it takes the width the place allows, up to its own (manual p. 604).
+        if self.style.projects() {
+            if wall.is_curved() {
+                return None;
+            }
+            let mut w = template.width;
+            loop {
+                let mut t = template.clone();
+                t.width = w;
+                if let Some(r) = place::resolve(
+                    &cx.project,
+                    cx.floor,
+                    wall,
+                    &t,
+                    raw,
+                    cx.snap_unit(),
+                    cx.pick_tol(),
+                    !alt,
+                    None,
+                ) {
+                    return Some(Hover {
+                        wall: wall.id,
+                        center: r.center,
+                        align: r.align,
+                        transom_of: None,
+                        unit_width: Some(w),
+                    });
+                }
+                if w <= MIN_UNIT_WIDTH + 1e-9 {
+                    return None;
+                }
+                w = (w - 2.0).max(MIN_UNIT_WIDTH);
             }
         }
         let r = place::resolve(
@@ -202,6 +251,7 @@ impl OpeningTool {
             center: r.center,
             align: r.align,
             transom_of: None,
+            unit_width: None,
         })
     }
 
@@ -340,6 +390,7 @@ impl Tool for OpeningTool {
         } else {
             self.placing = None;
         }
+        sync_rules(cx);
         self.hover =
             wall_under(cx, p.world).and_then(|w| self.placement(cx, w, p.world, p.modifiers.alt));
         self.hover_pointer = p.world;
@@ -367,12 +418,23 @@ impl Tool for OpeningTool {
             return ToolResult::consumed();
         };
         let wid = wall.id;
+        // Openings placed from the defaults follow them from now on, and the
+        // plan's Minimum Separation is the one of the Window Defaults.
+        sync_rules(cx);
+        follow_defaults(cx);
         let Some(hover) = self.placement(cx, &wall, p.world, p.modifiers.alt) else {
-            cx.status = "Opening does not fit there (wall too short or overlap)".into();
+            cx.status = if self.style.projects() {
+                "A bay, box or bow window needs a straight wall and at least 2'-6\" of room".into()
+            } else {
+                "Opening does not fit there (wall too short or overlap)".into()
+            };
             return ToolResult::consumed();
         };
         let center = hover.center;
-        let (target_key, template) = self.opening_for(cx, &wall, p.world, center);
+        let (target_key, mut template) = self.opening_for(cx, &wall, p.world, center);
+        if let Some(w) = hover.unit_width {
+            template.width = w;
+        }
         let extras = cx.default_opening_extras(target_key);
         let label = match self.kind {
             OpeningKind::Door => "Place Door",
@@ -408,7 +470,13 @@ impl Tool for OpeningTool {
                         .iter_mut()
                         .find(|o| o.id == id)
                     {
+                        let dynamic = o.extras.spec.dynamic;
+                        let bay = o.extras.spec.bay.clone();
                         o.extras.spec = spec;
+                        o.extras.spec.dynamic = dynamic;
+                        if o.style.projects() {
+                            o.extras.spec.bay = bay;
+                        }
                     }
                 }
                 cx.extras.openings.insert(id, extras);
@@ -437,6 +505,21 @@ impl Tool for OpeningTool {
     /// Esc first lets go of the opening just placed, leaving the tool ready
     /// for the next one; a second Esc ends the tool.
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        // Tab steps through the openings stacked at the selected one (Select
+        // Next Object, manual pp. 610, 612).
+        if k.is(egui::Key::Tab)
+            && cx
+                .selection
+                .items
+                .iter()
+                .any(|o| matches!(o, ObjectRef::Opening(_)))
+        {
+            crate::editor::opening_edit::select_next(cx);
+            return ToolResult {
+                repaint: true,
+                ..ToolResult::consumed()
+            };
+        }
         if k.is(egui::Key::Escape)
             && cx
                 .selection
@@ -499,6 +582,10 @@ impl Tool for OpeningTool {
                 (wall.height - ghost.sill_height).max(plan_core::openings::MIN_TRANSOM_HEIGHT),
             );
             draw_opening_over(painter, cam, wall, &ghost, pal, exterior);
+            return;
+        }
+        // Bay, box and bow windows have no preview outline (manual p. 604).
+        if self.style.projects() {
             return;
         }
         let (_, mut ghost) = self.opening_for(cx, wall, self.hover_pointer, hover.center);
@@ -948,10 +1035,11 @@ mod tests {
             WallKind::Interior,
         );
         let mut t = OpeningTool::default();
-        // Beside the partition: the door slides out to its face plus 2".
+        // Beside the partition: the door slides out to its face plus its
+        // casing (3 3/4"), where the casing would meet the wall.
         click(&mut t, &mut cx, 108.0, 0.0);
         let o = cx.floor().openings_on(w).next().unwrap().clone();
-        assert!((o.start_offset() - 104.25).abs() < 1e-9, "{o:?}");
+        assert!((o.start_offset() - 106.0).abs() < 1e-9, "{o:?}");
         // On the partition itself: refused, with a message and no undo step.
         let before = cx.floor().openings.len();
         click(&mut t, &mut cx, 100.0, 0.0);
@@ -960,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn two_windows_may_touch_and_a_window_over_a_door_ghosts_its_transom() {
+    fn windows_keep_the_separation_and_a_window_over_a_door_ghosts_its_transom() {
         let (mut cx, w) = setup();
         let mut t = OpeningTool::default();
         t.set_variant(ToolId::Window);
@@ -969,7 +1057,8 @@ mod tests {
         let mut ws: Vec<_> = cx.floor().openings_on(w).cloned().collect();
         ws.sort_by(|a, b| a.center_offset.total_cmp(&b.center_offset));
         assert_eq!(ws.len(), 2);
-        assert!((ws[1].start_offset() - ws[0].end_offset()).abs() < 1e-9);
+        // The Minimum Separation (2 in to start with) is the gap.
+        assert!((ws[1].start_offset() - ws[0].end_offset() - 2.0).abs() < 1e-9);
         // Over a door the hover is its transom.
         let (mut cx, w) = setup();
         let mut d = OpeningTool::default();

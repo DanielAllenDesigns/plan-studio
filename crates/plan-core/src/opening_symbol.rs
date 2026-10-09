@@ -27,8 +27,6 @@ pub const BOW_SEGMENTS: usize = 5;
 const SLIDING_OVERLAP: f64 = 2.0;
 /// Segments of a drawn swing arc.
 const ARC_SEGMENTS: usize = 16;
-/// Width from which a casement window has two sashes.
-const DOUBLE_CASEMENT_FROM: f64 = 48.0;
 
 /// What a part of a symbol is, so the caller can choose its pen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,7 +246,9 @@ fn arrow(ax: &Axes, s_from: f64, s_to: f64, t: f64, head: f64) -> SymbolPart {
 
 /// Outline of a projecting (bay, box or bow) window in wall `(s, t)`:
 /// starts and ends on the exterior face at `t0`, `sign` points away from the
-/// wall. `s0..s1` are the jambs.
+/// wall. `s0..s1` are the jambs. The unit has the style's own angle, depth and
+/// sections (a bay 1 ft deep at 45 degrees, a box 1 ft 6 in, a bow of five
+/// sections); a placed unit's own values are in [`projection_footprint_for`].
 pub fn projection_footprint(
     style: OpeningStyle,
     s0: f64,
@@ -256,34 +256,37 @@ pub fn projection_footprint(
     t0: f64,
     sign: f64,
 ) -> Vec<(f64, f64)> {
-    let w = s1 - s0;
-    let t1 = t0 + sign * PROJECTION;
-    match style {
-        OpeningStyle::BayWindow => {
-            let ds = PROJECTION.min((w - 6.0).max(0.0) * 0.5);
-            vec![(s0, t0), (s0 + ds, t1), (s1 - ds, t1), (s1, t0)]
-        }
-        OpeningStyle::BoxWindow => vec![(s0, t0), (s0, t1), (s1, t1), (s1, t0)],
-        _ => {
-            // Circular arc through both jambs with sagitta PROJECTION.
-            let c = w * 0.5;
-            let r = (c * c + PROJECTION * PROJECTION) / (2.0 * PROJECTION);
-            let (sc, tc) = ((s0 + s1) * 0.5, t0 - sign * (r - PROJECTION));
-            let phi0 = c.atan2(r - PROJECTION);
-            let arc: Vec<(f64, f64)> = (0..=BOW_SEGMENTS)
-                .map(|k| {
-                    let phi = -phi0 + 2.0 * phi0 * k as f64 / BOW_SEGMENTS as f64;
-                    (sc + r * phi.sin(), sign * r * phi.cos() + tc)
-                })
-                .collect();
-            // No segment vertex sits at the arc apex; rescale so the unit
-            // projects exactly PROJECTION from the wall face.
-            let depth = |p: &(f64, f64)| (p.1 - t0) * sign;
-            let max = arc.iter().map(depth).fold(f64::MIN, f64::max).max(1e-9);
-            let k = PROJECTION / max;
-            arc.iter().map(|p| (p.0, t0 + (p.1 - t0) * k)).collect()
-        }
-    }
+    let bay = crate::openings::bay::BayUnit::for_style(style);
+    footprint_of(style, &bay, s0, s1, t0, sign)
+}
+
+/// The outline of the projecting window `o` with its own Bay/Box and Bow
+/// Specification, in wall `(s, t)`; see [`projection_footprint`].
+pub fn projection_footprint_for(o: &Opening, t0: f64, sign: f64) -> Vec<(f64, f64)> {
+    footprint_of(
+        o.style,
+        &o.extras.spec.bay,
+        o.start_offset(),
+        o.end_offset(),
+        t0,
+        sign,
+    )
+}
+
+fn footprint_of(
+    style: OpeningStyle,
+    bay: &crate::openings::bay::BayUnit,
+    s0: f64,
+    s1: f64,
+    t0: f64,
+    sign: f64,
+) -> Vec<(f64, f64)> {
+    let shape = crate::openings::bay::bay_shape(style, s1 - s0, bay);
+    shape
+        .outline
+        .iter()
+        .map(|p| (s0 + p.0, t0 + sign * p.1))
+        .collect()
 }
 
 /// `poly` moved `d` toward the side its centroid is on (the inner face of the
@@ -801,9 +804,19 @@ fn straight_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
             jambs(&mut sym);
             window_base(&mut sym, true);
             if show_open {
-                if w >= DOUBLE_CASEMENT_FROM {
-                    let hw = w * 0.5;
-                    for (h, dir) in [(s0, 1.0), (s1, -1.0)] {
+                let sashes = o.casement_sashes();
+                if sashes >= 2 {
+                    // Two or three sashes side by side: the end ones hinge at
+                    // the jambs, a middle one at its start.
+                    let hw = w / sashes as f64;
+                    for k in 0..sashes {
+                        let (h, dir) = if k == 0 {
+                            (s0, 1.0)
+                        } else if k + 1 == sashes {
+                            (s1, -1.0)
+                        } else {
+                            (s0 + hw * k as f64, 1.0)
+                        };
                         sym.parts.push(part(
                             PartKind::Leaf,
                             vec![ax.p(h, 0.0), leaf_tip(&ax, h, dir, side, hw, angle)],
@@ -869,10 +882,33 @@ fn straight_symbol(wall: &Wall, o: &Opening, exterior: f64) -> OpeningSymbol {
         }
         OpeningStyle::BayWindow | OpeningStyle::BowWindow | OpeningStyle::BoxWindow => {
             let sign = if o.swing_flipped { -exterior } else { exterior };
-            let outer = projection_footprint(style, s0, s1, sign * half, sign);
+            let outer = projection_footprint_for(o, sign * half, sign);
             let inner = inset_polyline(&outer, PROJECTED_PANEL);
             sym.parts.push(part(PartKind::Frame, ax.pts(&outer)));
             sym.parts.push(part(PartKind::Frame, ax.pts(&inner)));
+            // The glass of each component window, between its trimmers.
+            let bay = &o.extras.spec.bay;
+            let shape = crate::openings::bay::bay_shape(style, o.width, bay);
+            let n = shape.sections.len();
+            for (i, sec) in shape.sections.iter().enumerate() {
+                let Some((a, b)) =
+                    crate::openings::bay::component_span(sec, i == 0, i + 1 == n, bay)
+                else {
+                    continue;
+                };
+                let len = sec.length().max(1e-9);
+                let at = |k: f64| {
+                    let f = k / len;
+                    (
+                        s0 + sec.a.0 + (sec.b.0 - sec.a.0) * f,
+                        sign * half + sign * (sec.a.1 + (sec.b.1 - sec.a.1) * f)
+                            - sign * PROJECTED_PANEL * 0.5,
+                    )
+                };
+                let (p, q) = (at(a), at(b));
+                sym.parts
+                    .push(part(PartKind::Glass, vec![ax.p(p.0, p.1), ax.p(q.0, q.1)]));
+            }
             // The sill line across the opening on the room side.
             sym.parts.push(part(
                 PartKind::Glass,
@@ -954,7 +990,10 @@ fn add_threshold_and_sill(
                     | OpeningStyle::Sliding
                     | OpeningStyle::Fixed
             );
-            if exterior_wall && thresholded && o.extras.spec.threshold {
+            // The threshold line crosses the opening of a door in an exterior
+            // wall and of one between floor heights (its sill off the floor);
+            // manual pp. 575, 589 (DECISIONS 43).
+            if (exterior_wall || o.sill_height > 0.5) && thresholded && o.extras.spec.threshold {
                 let leaf_th = o.extras.thickness.unwrap_or(1.375);
                 let t = (lt + exterior * (leaf_th * 0.5 + 0.4)).clamp(-half, half);
                 sym.parts
@@ -1443,20 +1482,20 @@ mod tests {
     }
 
     #[test]
-    fn projecting_windows_reach_eighteen_inches_past_the_face() {
-        for (style, n) in [
-            (OpeningStyle::BayWindow, 4),
-            (OpeningStyle::BoxWindow, 4),
-            (OpeningStyle::BowWindow, BOW_SEGMENTS + 1),
+    fn projecting_windows_reach_their_depth_past_the_face() {
+        // A bay 1 ft deep, a box 1 ft 6 in, a bow 11 1/2 in (manual pp. 604, 605).
+        for (style, n, depth) in [
+            (OpeningStyle::BayWindow, 4, 12.0),
+            (OpeningStyle::BoxWindow, 4, PROJECTION),
+            (OpeningStyle::BowWindow, BOW_SEGMENTS + 1, 11.5),
         ] {
             let s = sym(&open(OpeningKind::Window, style, 72.0));
             let outer = s.of(PartKind::Frame).next().unwrap();
             assert_eq!(outer.points.len(), n, "{style:?}");
             let reach = s.max_reach(&wall());
-            assert!(
-                (reach - (3.0 + PROJECTION)).abs() < 1e-6,
-                "{style:?} {reach}"
-            );
+            assert!((reach - (3.0 + depth)).abs() < 1e-6, "{style:?} {reach}");
+            // A component window's glass line per section.
+            assert_eq!(s.count(PartKind::Glass), n - 1 + 1, "{style:?}");
             assert_eq!(s.count(PartKind::Frame), 2);
             // Mirrored to the other side by Reverse Swing.
             let mut w = open(OpeningKind::Window, style, 72.0);
@@ -1467,7 +1506,7 @@ mod tests {
                 .flat_map(|p| p.points.iter())
                 .map(|p| p.y)
                 .fold(f64::MAX, f64::min);
-            assert!((below + 3.0 + PROJECTION).abs() < 1e-6);
+            assert!((below + 3.0 + depth).abs() < 1e-6);
         }
     }
 

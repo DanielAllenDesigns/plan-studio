@@ -26,6 +26,7 @@ pub mod electrical;
 pub mod fireplace;
 pub mod foundation;
 pub mod framing;
+pub mod gable_line;
 pub mod images;
 pub mod library;
 pub mod materials;
@@ -37,6 +38,7 @@ pub mod pan;
 pub mod regions;
 pub mod roof;
 pub mod roof_baseline;
+pub mod roof_trim;
 pub mod schedule;
 pub mod select;
 pub mod solids;
@@ -416,8 +418,14 @@ impl ToolSet {
         crate::dialogs::construction_order::host_frame(cx, ctx);
         // The Tray Ceiling Specification opens from the Edit toolbar.
         crate::dialogs::tray_ceiling::host_frame(cx, ctx);
+        // The Framing Group question and the Truss Detail window.
+        crate::dialogs::framing::host_frame(cx, ctx);
         // The Roof Baseline Specification and Join Curved Roof Plane dialogs.
         crate::dialogs::roof_baseline::host_frame(cx, ctx);
+        // The Gable Line Specification.
+        crate::dialogs::roof_trim::host_frame(cx, ctx);
+        // The Skylight Specification.
+        crate::dialogs::skylight::host_frame(cx, ctx);
         crate::dialogs::reference_display::host_frame(cx, ctx);
         // Line Style Management, the Fill Style dialogs and the Pattern window.
         crate::dialogs::line_style::host_frame(cx, ctx);

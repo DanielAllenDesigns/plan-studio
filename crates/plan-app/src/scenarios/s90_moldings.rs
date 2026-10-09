@@ -16,12 +16,11 @@ use crate::editor::details_view as dv;
 use crate::editor::ObjectRef;
 use crate::shell::view3d_panel::{build_view_scene, ViewScope};
 use crate::toolbar::Action;
-use crate::tools::cad::CadMode;
 use crate::tools::details::DetailsVariant;
 use crate::tools::molding as mold;
 use crate::tools::ToolId;
 use plan_3d::{Material, Scene};
-use plan_core::cad::CadItem;
+use plan_core::cad::{CadItem, CadObject};
 use plan_core::details::{DetailRef, MoldingSide};
 use plan_core::geometry::Point;
 use plan_core::moldings::{
@@ -81,33 +80,34 @@ fn inner_perimeter(sim: &mut Sim) -> f64 {
     path_length(&ring)
 }
 
-/// Draws a closed crown-like polyline beside the house with the CAD
-/// Polyline tool and selects it.
+/// Adds a closed crown-like polyline beside the house (a 4 x 4 in section
+/// is too small for the CAD Polyline tool's click spacing at plan zoom, so
+/// the points go in directly) and selects it.
 fn draw_profile_polyline(sim: &mut Sim) -> Id {
-    sim.tool(ToolId::CadVariant(CadMode::Polyline));
-    for (x, y) in [
+    let points = [
         (400.0, 20.0),
         (404.0, 20.0),
         (404.0, 22.0),
         (402.0, 24.0),
         (400.0, 24.0),
-        (400.0, 20.0),
-    ] {
-        sim.click(x, y);
-    }
-    sim.tool(ToolId::Select);
-    let cad = sim
-        .app
-        .cx
-        .floor()
-        .cad
-        .iter()
-        .rev()
-        .find(|c| matches!(c.item, CadItem::Polyline { closed: true, .. }))
-        .map(|c| c.id)
-        .expect("a closed polyline was drawn");
-    sim.cx().selection.set(ObjectRef::Cad(cad));
-    cad
+    ]
+    .iter()
+    .map(|&(x, y)| Point::new(x, y))
+    .collect();
+    let cx = sim.cx();
+    let id = cx.project.alloc_id();
+    let fl = cx.floor;
+    cx.project.floors[fl].cad.push(CadObject {
+        id,
+        layer: plan_core::cad::DEFAULT_CAD_LAYER.to_string(),
+        item: CadItem::Polyline {
+            points,
+            closed: true,
+        },
+    });
+    cx.mark_dirty();
+    cx.selection.set(ObjectRef::Cad(id));
+    id
 }
 
 fn custom(sim: &mut Sim, id: &'static str) {
@@ -125,7 +125,12 @@ fn a_crown_profile_goes_from_a_polyline_to_a_room_and_to_an_editable_polyline() 
     let profile = mold::active_profile();
     assert_eq!(profile.name, "Molding Profile");
     assert!(layer(&sim).profile("Molding Profile").is_some());
-    assert!((profile.width() - 4.0).abs() < 1e-6 && (profile.height() - 4.0).abs() < 1e-6);
+    assert!(
+        (profile.width() - 4.0).abs() < 1e-6 && (profile.height() - 4.0).abs() < 1e-6,
+        "{:?} {:?}",
+        profile.bounds(),
+        profile.parts
+    );
     // One undo step takes it out of the library again.
     assert_eq!(sim.undo().as_deref(), Some("Add to Library"));
     assert!(layer(&sim).profile("Molding Profile").is_none());
@@ -141,7 +146,10 @@ fn a_crown_profile_goes_from_a_polyline_to_a_room_and_to_an_editable_polyline() 
     assert!(after_room > before_trim, "{after_room} {before_trim}");
     let perimeter = inner_perimeter(&mut sim);
     let reported = trim_length(&sim, INTERIOR_TRIM);
-    assert!((reported - perimeter).abs() < 1.0, "{reported} vs {perimeter}");
+    assert!(
+        (reported - perimeter).abs() < 1.0,
+        "{reported} vs {perimeter}"
+    );
     // The crown hangs from the ceiling.
     let crown_top = scene(&sim)
         .meshes
@@ -162,11 +170,23 @@ fn a_crown_profile_goes_from_a_polyline_to_a_room_and_to_an_editable_polyline() 
     assert!(!l.moldings[0].automatic);
     assert!(l.room_moldings_at(ANCHOR).unwrap().table.rows.is_empty());
     sim.app.cx.refresh();
-    assert_eq!(trim_triangles(&scene(&sim)), after_room, "same moldings, now objects");
+    assert_eq!(
+        trim_triangles(&scene(&sim)),
+        after_room,
+        "same moldings, now objects"
+    );
     assert!((trim_length(&sim, INTERIOR_TRIM) - perimeter).abs() < 1.0);
     assert_eq!(sim.undo().as_deref(), Some("Make Room Molding Polyline"));
     assert!(layer(&sim).moldings.is_empty());
-    assert_eq!(layer(&sim).room_moldings_at(ANCHOR).unwrap().table.rows.len(), 1);
+    assert_eq!(
+        layer(&sim)
+            .room_moldings_at(ANCHOR)
+            .unwrap()
+            .table
+            .rows
+            .len(),
+        1
+    );
     sim.redo();
     assert_eq!(layer(&sim).moldings.len(), 1);
 
@@ -176,8 +196,14 @@ fn a_crown_profile_goes_from_a_polyline_to_a_room_and_to_an_editable_polyline() 
     let edge_len = layer(&sim).molding(id).unwrap().edge_length_3d(1);
     // (The Edit toolbar hook is in the integration queue; the buttons are
     // built by `tools::molding::edit_actions`.)
-    let buttons: Vec<&str> = mold::edit_actions(&sim.app.cx).iter().map(|a| a.label).collect();
-    assert!(buttons.contains(&"Remove Molding from Selected Edge"), "{buttons:?}");
+    let buttons: Vec<&str> = mold::edit_actions(&sim.app.cx)
+        .iter()
+        .map(|a| a.label)
+        .collect();
+    assert!(
+        buttons.contains(&"Remove Molding from Selected Edge"),
+        "{buttons:?}"
+    );
     custom(&mut sim, mold::REMOVE_EDGE);
     assert!(!layer(&sim).molding(id).unwrap().edge_on(1));
     assert!((trim_length(&sim, INTERIOR_TRIM) - (perimeter - edge_len)).abs() < 1.0);
@@ -197,7 +223,10 @@ fn a_crown_profile_goes_from_a_polyline_to_a_room_and_to_an_editable_polyline() 
         .unwrap();
     mold::set_active_profile(base.clone());
     custom(&mut sim, mold::REPLACE_FROM_LIBRARY);
-    assert_eq!(layer(&sim).molding(id).unwrap().table.rows[0].profile.name, base.name);
+    assert_eq!(
+        layer(&sim).molding(id).unwrap().table.rows[0].profile.name,
+        base.name
+    );
     assert_eq!(sim.undo().as_deref(), Some("Replace Moldings"));
     assert_eq!(
         layer(&sim).molding(id).unwrap().table.rows[0].profile.name,
@@ -225,7 +254,10 @@ fn the_molding_polyline_tool_drags_a_closed_clockwise_path_with_the_active_profi
     let m = &l.moldings[0];
     assert!(m.is_closed());
     assert_eq!(m.side, MoldingSide::Right);
-    assert_eq!(m.table.rows[0].profile.name, plan_core::moldings::SQUARE_PROFILE);
+    assert_eq!(
+        m.table.rows[0].profile.name,
+        plan_core::moldings::SQUARE_PROFILE
+    );
     // Clockwise: the profile is inside the rectangle in 3D.
     sim.app.cx.refresh();
     let s = scene(&sim);
@@ -242,7 +274,11 @@ fn the_molding_polyline_tool_drags_a_closed_clockwise_path_with_the_active_profi
     assert_eq!(l.moldings.len(), 2);
     assert_eq!(l.moldings[1].table.rows[0].profile.name, crown.name);
     // A crown starts at the ceiling.
-    assert!(l.moldings[1].elevation > 80.0, "{}", l.moldings[1].elevation);
+    assert!(
+        l.moldings[1].elevation > 80.0,
+        "{}",
+        l.moldings[1].elevation
+    );
     assert_eq!(sim.undo().as_deref(), Some("Molding Polyline"));
     assert_eq!(layer(&sim).moldings.len(), 1);
     assert_eq!(sim.undo().as_deref(), Some("Molding Polyline"));
@@ -386,7 +422,10 @@ fn corner_trim_holds_set_top_and_bottom_and_recesses_to_the_sheathing() {
         b.height = 60.0;
     });
     let b = layer(&sim).corner_boards[0].clone();
-    assert!(b.outline()[0].dist(plain[0]) > 0.5, "recessed boards sit back");
+    assert!(
+        b.outline()[0].dist(plain[0]) > 0.5,
+        "recessed boards sit back"
+    );
     // The walls grow; the board that holds its top stays, the others follow.
     for w in sim.cx().floor_mut().walls.iter_mut() {
         w.height = 120.0;
@@ -396,7 +435,11 @@ fn corner_trim_holds_set_top_and_bottom_and_recesses_to_the_sheathing() {
     let mut l = layer(&sim);
     assert!(l.refresh_trim_heights(&floor, &rooms));
     assert!((l.corner_board(id).unwrap().height - 60.0).abs() < 1e-9);
-    assert!(l.corner_boards.iter().filter(|b| b.id != id).all(|b| (b.height - 120.0).abs() < 1e-9));
+    assert!(l
+        .corner_boards
+        .iter()
+        .filter(|b| b.id != id)
+        .all(|b| (b.height - 120.0).abs() < 1e-9));
     let _ = DetailRef::CornerBoard(id);
 }
 
@@ -423,7 +466,10 @@ fn the_exterior_room_gets_a_molding_polyline_around_the_outer_faces() {
         "{lo:?} {hi:?} {ring_lo:?} {ring_hi:?}"
     );
     // Outward: the mesh reaches past the outer faces by the profile's width.
-    assert!(hi[0] > ring_hi.x as f32 + 0.5 || lo[0] < ring_lo.x as f32 - 0.5, "{lo:?} {hi:?}");
+    assert!(
+        hi[0] > ring_hi.x as f32 + 0.5 || lo[0] < ring_lo.x as f32 - 0.5,
+        "{lo:?} {hi:?}"
+    );
     assert_eq!(sim.undo().as_deref(), Some("Make Room Molding Polyline"));
     assert!(layer(&sim).moldings.is_empty());
 }
@@ -449,7 +495,10 @@ fn room_types_floors_and_rooms_set_moldings_in_that_order() {
     mold::set_type_molding_table(sim.cx(), "Den", MoldingTable::single(base.clone()));
     let l = layer(&sim);
     assert_eq!(default_table(&l, "Den").rows[0].profile.name, base.name);
-    assert_eq!(default_table(&l, "Kitchen").rows[0].profile.name, crown.name);
+    assert_eq!(
+        default_table(&l, "Kitchen").rows[0].profile.name,
+        crown.name
+    );
     // ...and the room itself can take both.
     let mut own = MoldingTable::single(base);
     own.add_new(crown);

@@ -564,6 +564,10 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
         }
         _ => project,
     };
+    // Objects whose height is measured from the ceiling, the roof, the terrain
+    // ... (Elevation Reference) stand where that puts them.
+    let referenced = crate::dialogs::elevation_ref::effective_project(proj);
+    let proj = referenced.as_ref().unwrap_or(proj);
     // The plan's own opening display: casing, jambs and sills, doors open.
     let mut scene = build_scene_with(proj, &SceneOptions::for_project(proj));
     // Walls already follow the roof (`build_scene` reads the roof records);
@@ -883,6 +887,12 @@ pub fn project_hash(p: &Project) -> u64 {
     // The terrain (surface, roads, landscape objects).
     if let Some(t) = &p.terrain {
         let _ = write!(HashFmt(&mut h), "{t:?}");
+    }
+    // What each object's height is measured from (Elevation Reference).
+    for (k, pages) in &p.props.pages {
+        if let Some(e) = pages.elevation {
+            let _ = write!(HashFmt(&mut h), "{k}{e:?}");
+        }
     }
     h.finish()
 }

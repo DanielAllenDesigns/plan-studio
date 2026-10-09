@@ -20,6 +20,7 @@
 //! Z = -plan y.
 
 mod build;
+pub mod catalog;
 pub mod deck;
 mod defaults;
 mod detail;
@@ -28,6 +29,7 @@ pub mod layout;
 mod lumber;
 pub mod manual;
 mod member;
+pub mod reporting;
 mod roof;
 pub mod span;
 mod takeoff;
@@ -40,7 +42,9 @@ pub use build::{
 };
 pub use defaults::{default_header_table, BearingMode, FramingDefaults, HeaderRow};
 pub use detail::{wall_detail, wall_detail_dims, DetailDim, DimKind, Stroke};
-pub use floor::{frame_ceiling, frame_floor, frame_floor_holes, JoistDirection};
+pub use floor::{
+    frame_ceiling, frame_floor, frame_floor_holes, frame_tray_ceiling, JoistDirection,
+};
 pub use layout::{
     frame_floor_directed, frame_wall_with_marker, frame_wall_with_marker_joined, layout_trusses,
     BearingLine, JoistDirection as JoistDirectionLine, ReferenceMarker, RoofTrussDirection,
@@ -54,14 +58,42 @@ pub use manual::{
     FramingMaterial, FramingMember, LumberSize, MaterialList, MaterialRow,
     MemberKind as ManualMemberKind, OrientedBox,
 };
-pub use member::{Birdsmouth, Member, MemberCuts, MemberKind, TailCut, Transform3, Vec3};
+pub use member::{
+    Birdsmouth, Member, MemberCuts, MemberKind, SectionShape, TailCut, Transform3, Vec3,
+};
 pub use roof::{
     frame_roof, frame_roof_eaves, roof_framing_takeoff, roof_plan_symbols, truss_id, EaveSpec,
     OverhangCut, RoofFramingDefaults,
 };
-pub use takeoff::{takeoff, CutLine, Takeoff};
+pub use takeoff::{takeoff, typed_takeoff, CutLine, Takeoff};
 pub use truss::{Truss, TrussEnvelope, TrussMember2, TrussRole, TrussSpec, TrussType};
 pub use wall::{frame_wall, frame_wall_joined, Tee, WallJoints};
+// Framing layout, detail options, Wall Detail and truss labels (Round 16, brief 30).
+pub use build::{
+    BlockingStyle, Connection, DetailOptions, FloorPick, Splice, WallConnection, LAP_LENGTH,
+    TRAY_MEMBER_FLAG,
+};
+pub use detail::{cut_symbol, start_end_marks, wall_detail_members, DetailMember};
+pub use floor::{frame_ceiling_ref, frame_floor_opts, frame_floor_ref};
+pub use layout::{frame_floor_supported, reference_delta};
+pub use manual::{EndProfile, EndShape, FlatTo, JoinKind};
+pub use roof::OverframeLayer;
+pub use truss::{
+    config_of, truss_configs, truss_labels, truss_schedule, TrussConfig, TrussRow,
+    ENERGY_HEEL_RAISE,
+};
+pub use wall::{frame_wall_with, header_cut_lengths};
+// Framing Types, Default Framing Members, Manual Framing Defaults and Structural
+// Member Reporting (Round 16, brief 29).
+pub use catalog::{
+    AlignExterior, AutoFramingExtras, BeamPlacement, CatalogError, CategoryChoice, Composition,
+    FramingCatalog, FramingMemberDef, FramingShape, FramingType, ManualFramingDefaults,
+    MaterialsCategory, Role,
+};
+pub use reporting::{
+    BoardSpec, LongRun, Report, ReportInput, ReportLine, ReportMethod, ReportUnits,
+    ReportingDefault, ReportingError, ReportingSet,
+};
 
 #[cfg(test)]
 mod tests {

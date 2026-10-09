@@ -44,9 +44,17 @@ impl Group {
     }
 }
 
+/// Set in the `wall_id` of the members framing a tray ceiling (the low bits are
+/// the tray's id): they belong to the Ceiling group, not the Wall group, though
+/// they are plates and studs.
+pub const TRAY_MEMBER_FLAG: Id = 1 << 62;
+
 /// The group an automatic member belongs to. Blocking is wall blocking when it
 /// belongs to a wall and floor blocking otherwise.
 pub fn group_of(m: &Member) -> Group {
+    if m.wall_id.is_some_and(|w| w & TRAY_MEMBER_FLAG != 0) {
+        return Group::Ceiling;
+    }
     match m.kind {
         MemberKind::Stud
         | MemberKind::KingStud
@@ -195,6 +203,226 @@ impl Default for PostDefaults {
     }
 }
 
+/// How joists that meet over a bearing wall, beam or line are joined
+/// (Bear Joists on Beams and on Bearing Walls, manual p. 891).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Splice {
+    /// The joists lap side by side over the support: 8" of lap, centred.
+    #[default]
+    Lap,
+    /// The joists butt end to end, centred over the support.
+    Butt,
+}
+
+impl Splice {
+    pub const ALL: [Splice; 2] = [Splice::Lap, Splice::Butt];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Splice::Lap => "Lap",
+            Splice::Butt => "Butt",
+        }
+    }
+}
+
+/// Length of the lap of two joists over a support, inches (centred).
+pub const LAP_LENGTH: f64 = 8.0;
+
+/// The Blocking style of a platform or roof (manual pp. 891, 898).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BlockingStyle {
+    /// Blocking pieces align with each other.
+    #[default]
+    InLine,
+    /// Blocking alternates on either side of the line.
+    Stagger,
+    /// Cross bridging: in line in plan, crossed pieces in 3D and the list.
+    Cross,
+}
+
+impl BlockingStyle {
+    pub const ALL: [BlockingStyle; 3] = [
+        BlockingStyle::InLine,
+        BlockingStyle::Stagger,
+        BlockingStyle::Cross,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BlockingStyle::InLine => "In Line",
+            BlockingStyle::Stagger => "Stagger",
+            BlockingStyle::Cross => "Cross/Bridging",
+        }
+    }
+}
+
+/// How the ends of doubled boards (rim joists, top plates) meet at a corner
+/// or intersection (manual pp. 891, 894).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Connection {
+    /// Ends alternate in a herringbone pattern.
+    #[default]
+    Stagger,
+    /// Every board ends flush with the one beside it.
+    Flush,
+}
+
+impl Connection {
+    pub const ALL: [Connection; 2] = [Connection::Stagger, Connection::Flush];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Connection::Stagger => "Stagger",
+            Connection::Flush => "Flush",
+        }
+    }
+}
+
+/// How the studs at a wall corner or intersection are made (manual p. 893).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WallConnection {
+    /// Three studs.
+    #[default]
+    Standard,
+    /// Two studs.
+    Reduced,
+    /// Two studs and horizontal ladder blocking between them.
+    Laddered,
+    /// Three studs in a U (corners only).
+    UShaped,
+}
+
+impl WallConnection {
+    pub const ALL: [WallConnection; 4] = [
+        WallConnection::Standard,
+        WallConnection::Reduced,
+        WallConnection::Laddered,
+        WallConnection::UShaped,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            WallConnection::Standard => "Standard",
+            WallConnection::Reduced => "Reduced Stud",
+            WallConnection::Laddered => "Laddered",
+            WallConnection::UShaped => "U Shaped",
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// The framing detail options of the Automatic Framing Defaults dialog that
+/// `FramingDefaults` does not hold: how joists meet over supports, rim joists,
+/// the connection styles of walls, blocking, mitred wall ends, headers and
+/// the plan display of framing. They belong in the Floor Level, Wall and
+/// Openings panels; they are kept here, with the build options, until the
+/// framing defaults owner folds them in (docs/integration-queue.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DetailOptions {
+    /// Bear Joists on Beams and Bearing Walls, floor framing.
+    pub splice: Splice,
+    /// The same for ceiling framing.
+    pub ceiling_splice: Splice,
+    /// Blocking style of floor framing (mid-span blocking and Joist Blocking).
+    pub blocking_style: BlockingStyle,
+    /// The same for ceiling framing.
+    pub ceiling_blocking_style: BlockingStyle,
+    /// Rim Joist Width: the horizontal thickness of one board.
+    pub rim_width: f64,
+    /// How doubled rim joists connect at the corners of a platform.
+    pub rim_connection: Connection,
+    /// Maximum Rim Joist Length; `0.0` runs each rim the full platform edge.
+    pub max_rim_length: f64,
+    /// Wall corners.
+    pub corner_style: WallConnection,
+    /// Wall intersections.
+    pub tee_style: WallConnection,
+    /// How the top plates connect at intersections.
+    pub top_plate_connection: Connection,
+    /// Stagger Blocking in walls: alternate on either side of the centre line.
+    pub stagger_blocking: bool,
+    /// Mitre Plate Ends of angled walls.
+    pub mitre_plate_ends: bool,
+    /// Rotate End Studs to the angle of the mitre.
+    pub rotate_end_studs: bool,
+    /// Horizontal Frame Through at an angled corner (butt the vertical walls
+    /// against the horizontal ones).
+    pub frame_through_horizontal: bool,
+    /// Header Maximum Depth: a rough opening whose top is closer than this to
+    /// the top plate gets a solid header filling the gap and no cripples.
+    /// `0.0` switches the rule off.
+    pub header_max_depth: f64,
+    /// List Cut Header Lengths in Mixed Reporting.
+    pub list_cut_header_lengths: bool,
+    /// Bearing walls get a header at least two plies thick and double top
+    /// plates.
+    pub bearing_wall_headers: bool,
+    /// Studs, kings, trimmers and posts draw as cross boxes in plan.
+    pub show_cross: bool,
+    /// Build Wall Framing Details from Exterior: a Wall Detail shows the wall
+    /// as seen from outside.
+    pub details_from_exterior: bool,
+    /// The default fill of wall framing members in Wall Details.
+    pub wall_detail_fill: Option<plan_core::fill_styles::FillStyle>,
+}
+
+impl Default for DetailOptions {
+    fn default() -> Self {
+        Self {
+            splice: Splice::Lap,
+            ceiling_splice: Splice::Lap,
+            blocking_style: BlockingStyle::InLine,
+            ceiling_blocking_style: BlockingStyle::InLine,
+            rim_width: 1.5,
+            rim_connection: Connection::Stagger,
+            max_rim_length: 0.0,
+            corner_style: WallConnection::Standard,
+            tee_style: WallConnection::Standard,
+            top_plate_connection: Connection::Stagger,
+            stagger_blocking: false,
+            mitre_plate_ends: true,
+            rotate_end_studs: false,
+            frame_through_horizontal: true,
+            header_max_depth: 0.0,
+            list_cut_header_lengths: false,
+            bearing_wall_headers: true,
+            show_cross: yes(),
+            details_from_exterior: yes(),
+            wall_detail_fill: None,
+        }
+    }
+}
+
+/// The floor choice of Build Framing Once (manual p. 915): which floors a
+/// Floor or Ceiling build covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FloorPick {
+    /// The floor the menu item names: the active floor for Build Framing,
+    /// every floor for Build All Framing.
+    #[default]
+    Same,
+    /// All Floors.
+    All,
+    /// One floor, by index.
+    Floor(usize),
+}
+
+impl FloorPick {
+    /// Whether floor `fi` is covered, given the active floor and whether the
+    /// menu item builds every floor.
+    pub fn covers(self, fi: usize, active: usize, all_floors: bool) -> bool {
+        match self {
+            FloorPick::Same => all_floors || fi == active,
+            FloorPick::All => true,
+            FloorPick::Floor(f) => fi == f,
+        }
+    }
+}
+
 /// The options of Build Framing (the dialog's Floor, Ceiling, Roof, Wall,
 /// Posts and Trusses tabs). A plan that never opened the dialog uses
 /// [`BuildOptions::default`]: build walls, floors and roofs, no ceiling
@@ -211,10 +439,24 @@ pub struct BuildOptions {
     pub retain: GroupFlags,
     /// Retain Wall Framing: walls whose framing a build leaves alone.
     pub retain_walls: Vec<Id>,
+    /// Retain Framing of roof planes (by id): a build leaves the roof framing
+    /// that stands over them alone.
+    pub retain_planes: Vec<Id>,
     /// Turn the framing layers on after a build.
     pub show_layers: bool,
     pub trusses: TrussDefaults,
     pub posts: PostDefaults,
+    /// Build Framing Once: the floors a Floor build covers.
+    pub floor_pick: FloorPick,
+    /// Build Framing Once: the floors a Ceiling build covers.
+    pub ceiling_pick: FloorPick,
+    /// Use Framing Reference per floor (joist and deck joist layout), by floor
+    /// index; a floor past the end of the list uses it.
+    pub floor_reference: Vec<bool>,
+    /// Use Framing Reference for the layout of rafters, plan wide.
+    pub roof_reference: bool,
+    /// The framing detail options.
+    pub detail: DetailOptions,
     /// Fingerprints of the inputs of each floor's groups at its last build,
     /// by floor, in [`Group::ALL`] order (see [`fingerprint`]).
     pub built: Vec<[u64; 4]>,
@@ -232,9 +474,15 @@ impl Default for BuildOptions {
             auto_rebuild: GroupFlags::NONE,
             retain: GroupFlags::NONE,
             retain_walls: Vec::new(),
+            retain_planes: Vec::new(),
             show_layers: true,
             trusses: TrussDefaults::default(),
             posts: PostDefaults::default(),
+            floor_pick: FloorPick::Same,
+            ceiling_pick: FloorPick::Same,
+            floor_reference: Vec::new(),
+            roof_reference: true,
+            detail: DetailOptions::default(),
             built: Vec::new(),
         }
     }
@@ -259,6 +507,41 @@ impl BuildOptions {
     /// and this wall's framing is not retained.
     pub fn builds_wall(&self, wall: Id) -> bool {
         !self.group_frozen(Group::Wall) && !self.retain_walls.contains(&wall)
+    }
+
+    /// Whether the joists of floor `fi` start from a Framing Reference Marker.
+    pub fn uses_reference(&self, fi: usize) -> bool {
+        self.floor_reference.get(fi).copied().unwrap_or(true)
+    }
+
+    /// Sets Use Framing Reference for floor `fi`.
+    pub fn set_reference(&mut self, fi: usize, on: bool) {
+        if self.floor_reference.len() <= fi {
+            self.floor_reference.resize(fi + 1, true);
+        }
+        self.floor_reference[fi] = on;
+    }
+
+    /// The groups a Build Framing Once of floor `fi` makes: the saved Build
+    /// flags, with Floor and Ceiling limited to the floors picked. A group
+    /// that is off keeps its members.
+    pub fn once_for(&self, fi: usize, active: usize, all_floors: bool) -> BuildOptions {
+        let mut o = self.clone();
+        o.build.floor &= self.floor_pick.covers(fi, active, all_floors);
+        o.build.ceiling &= self.ceiling_pick.covers(fi, active, all_floors);
+        // Walls and roofs follow the menu item.
+        let this_floor = all_floors || fi == active;
+        o.build.wall &= this_floor;
+        o.build.roof &= this_floor;
+        o
+    }
+
+    /// Marks the framing of roof plane `id` (not) retained.
+    pub fn set_plane_retained(&mut self, id: Id, retained: bool) {
+        self.retain_planes.retain(|w| *w != id);
+        if retained {
+            self.retain_planes.push(id);
+        }
     }
 
     /// Marks the framing of wall `id` (not) retained.
@@ -549,6 +832,82 @@ mod tests {
                 .unwrap()
                 .retain_walls,
             vec![3]
+        );
+    }
+
+    // ----- Round 16: Build Framing Once, references, detail options -----
+
+    #[test]
+    fn a_floor_pick_covers_the_named_floors() {
+        // "Same" follows the menu item: the active floor, or all of them.
+        assert!(FloorPick::Same.covers(1, 1, false));
+        assert!(!FloorPick::Same.covers(0, 1, false));
+        assert!(FloorPick::Same.covers(0, 1, true));
+        assert!(FloorPick::All.covers(0, 1, false));
+        assert!(FloorPick::Floor(2).covers(2, 0, false));
+        assert!(!FloorPick::Floor(2).covers(1, 0, true));
+    }
+
+    #[test]
+    fn build_once_limits_floor_and_ceiling_to_the_picked_floors() {
+        let mut o = BuildOptions::default();
+        o.build.ceiling = true;
+        o.floor_pick = FloorPick::Floor(1);
+        o.ceiling_pick = FloorPick::All;
+        // Active floor 0, Build Framing: floor 1's platform and every ceiling, but walls
+        // and roof only of floor 0.
+        let f0 = o.once_for(0, 0, false);
+        assert!(!f0.build.floor && f0.build.ceiling && f0.build.wall && f0.build.roof);
+        let f1 = o.once_for(1, 0, false);
+        assert!(f1.build.floor && f1.build.ceiling && !f1.build.wall && !f1.build.roof);
+        // A group that is off stays off for every floor.
+        o.build.floor = false;
+        assert!(!o.once_for(1, 0, false).build.floor);
+        // The walls of floor 1 are untouched by a build that is not "all floors":
+        // its old members are kept.
+        let wall = Member::new(
+            MemberKind::Stud,
+            crate::TWO_BY_FOUR,
+            90.0,
+            Transform3 {
+                origin: [0.0; 3],
+                axis_x: [0.0, 1.0, 0.0],
+                axis_y: [0.0, 0.0, 1.0],
+            },
+            Some(4),
+        );
+        assert!(f1.keeps(&wall));
+        assert!(!f0.keeps(&wall));
+    }
+
+    #[test]
+    fn framing_reference_is_per_floor_and_on_unless_switched_off() {
+        let mut o = BuildOptions::default();
+        assert!(o.uses_reference(0) && o.uses_reference(5));
+        o.set_reference(2, false);
+        assert!(o.uses_reference(0) && o.uses_reference(1));
+        assert!(!o.uses_reference(2));
+        assert!(o.roof_reference);
+        let json = serde_json::to_string(&o).unwrap();
+        assert_eq!(serde_json::from_str::<BuildOptions>(&json).unwrap(), o);
+    }
+
+    #[test]
+    fn detail_options_default_to_chiefs_choices_and_round_trip() {
+        let d = DetailOptions::default();
+        assert_eq!(d.splice, Splice::Lap);
+        assert_eq!(d.corner_style, WallConnection::Standard);
+        assert_eq!(d.blocking_style, BlockingStyle::InLine);
+        assert_eq!(d.rim_connection, Connection::Stagger);
+        assert!(d.mitre_plate_ends && d.show_cross && !d.stagger_blocking);
+        assert_eq!(Splice::ALL.len() + Connection::ALL.len(), 4);
+        assert_eq!(BlockingStyle::Cross.name(), "Cross/Bridging");
+        assert_eq!(WallConnection::UShaped.name(), "U Shaped");
+        let json = serde_json::to_string(&d).unwrap();
+        assert_eq!(serde_json::from_str::<DetailOptions>(&json).unwrap(), d);
+        assert_eq!(
+            serde_json::from_str::<DetailOptions>("{}").unwrap(),
+            DetailOptions::default()
         );
     }
 }

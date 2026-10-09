@@ -120,6 +120,19 @@ impl WindowShape {
         }
     }
 
+    /// Whether a side of the window is not a straight vertical edge: a
+    /// trapezoid, a triangle, a quarter round, or custom corner cuts and side
+    /// heights (Make Mulled Unit needs straight, parallel facing edges).
+    pub fn sides_slant(&self) -> bool {
+        match self.kind {
+            ShapeKind::Rectangle | ShapeKind::HalfRound => false,
+            ShapeKind::Custom => {
+                self.top_left.on || self.top_right.on || self.bottom_left.on || self.bottom_right.on
+            }
+            _ => true,
+        }
+    }
+
     /// `WindowShape` of a kind with the values a preset stands for on a window
     /// `w` x `h` (so the Custom fields show where the preset began).
     pub fn preset(kind: ShapeKind, w: f64, h: f64) -> Self {

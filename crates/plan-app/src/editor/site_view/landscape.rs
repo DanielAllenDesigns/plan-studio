@@ -14,8 +14,8 @@ use plan_terrain::{
         LAYER_STONES, LAYER_WALLS, LAYER_WATER,
     },
     landscape_meshes, terrain_object_id, terrain_object_of, ElevationLine, ElevationPoint,
-    ElevationRegion, Feature, Landscape, Modifier, ModifierKind, ObjectExtras, ObjectKey,
-    PlanItem, PlanShape, RoadStrip, Terrain, TerrainBreak, TerrainPart, TerrainWall,
+    ElevationRegion, Feature, Landscape, Modifier, ModifierKind, ObjectExtras, ObjectKey, PlanItem,
+    PlanShape, RoadStrip, Terrain, TerrainBreak, TerrainPart, TerrainWall,
 };
 
 /// An element of the terrain that has its own specification dialog.
@@ -408,7 +408,8 @@ pub fn move_terrain_vertex(t: &mut Terrain, hit: TerrainHit, n: usize, to: Point
             if r.kind == plan_terrain::RoadKind::CulDeSac {
                 // A handle drags the edge of the circle, which sets the radius.
                 r.radius = r.center.dist(to).max(12.0);
-                r.outline = plan_terrain::road_polygon(&plan_terrain::cul_de_sac(r.center, r.radius));
+                r.outline =
+                    plan_terrain::road_polygon(&plan_terrain::cul_de_sac(r.center, r.radius));
                 n < r.outline.len()
             } else if r.outline.len() >= 3 {
                 put(&mut r.outline, n, to)

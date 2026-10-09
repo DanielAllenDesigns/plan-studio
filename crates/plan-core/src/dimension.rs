@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 mod geom;
 mod label;
 mod layout;
+mod line;
 mod pole;
 mod seg;
 mod settings;
@@ -17,15 +18,18 @@ pub use label::{
     angle_text, grid_round, indicators, round_to_step, step_inches, DimLabelOptions, LabelParts,
     SecondFormat, TolMode, Tolerance,
 };
-pub use layout::{upright, LabelLayout, LabelLine, LabelParams};
+pub use layout::{upright, LabelLayout, LabelLine, LabelParams, LeaderDefaults};
+pub use line::{
+    migrate_dimension_strings, DimLine, ElevMark, ExtLen, ExtLine, ExtProps, ExtReach, MIN_SEG_LEN,
+};
 pub use pole::{
     floor_marks, pole_marks, pole_strings, roof_marks, roof_slope_dimensions, section_profile,
     section_roof_marks, ElevationMark, RoofMark,
 };
 pub use seg::{CurveKind, DimCurve, DimSeg, LeaderStyle};
 pub use settings::{
-    exterior_strings_for, mark_default, DimSetup, DimView, LocateTool, MarkKind, OffsetFrom, PoleMark,
-    PoleSetup, RoundMethod, TempWalls, TextPos, ToolLocate, ToolLocates, LOCATE_MARKS,
+    exterior_strings_for, mark_default, DimSetup, DimView, LocateTool, MarkKind, OffsetFrom,
+    PoleMark, PoleSetup, RoundMethod, TempWalls, TextPos, ToolLocate, ToolLocates, LOCATE_MARKS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +163,27 @@ pub struct DimOverrides {
     /// Rounded value indicators `(+ or - after, ~ before)`.
     pub indicators: Option<(bool, bool)>,
     pub text_pos: Option<TextPos>,
+    // --- Dimension panel (Dimension Line Specification, manual pp. 514 to 515) ---
+    /// The name of the Saved Dimension Default this line inherits from
+    /// (None: the active one).
+    pub inherits: Option<String>,
+    /// The height of the numbers, plan inches (None: the text style's).
+    pub number_height: Option<f64>,
+    /// Display Wall Widths: the segments that measure across one wall show
+    /// (None: yes, except for Interior Dimensions, which set it off).
+    pub wall_widths: Option<bool>,
+    /// Display Gaps Between Cabinet Face Items (elevation views).
+    pub cabinet_gaps: Option<bool>,
+    /// An angular dimension's own angle style `(decimals, degrees-minutes-
+    /// seconds)`; None is Use Default Angle Style.
+    pub angle_style: Option<(u32, bool)>,
+    // --- Layer panel ---
+    /// The layer the line is drawn on (None: the default for its kind).
+    pub layer: Option<String>,
+    // --- Marker Format panel ---
+    /// The number format of an elevation marker's height line (None: Use
+    /// Default Formatting, the primary format).
+    pub marker_format: Option<LengthFormat>,
     // --- Segment, string, label and curve ---
     pub seg: DimSeg,
 }

@@ -337,12 +337,32 @@ What Build Roof does with them:
   with none it is 60% of the roof's height). A second roof is built on the cut, with each edge at its upper pitch; a Dutch gable edge is a vertical gable end there, so the hip below it ends in a short gable. Edges that keep their pitch across the break become one plane again.
   If the two-stage roof cannot be built (the skeleton had to approximate, or the break is at or above the peak) Build Roof makes the plain roof.
 
+## 8.7a Roof trim, Gable/Roof Lines and skylights
+
+**Roof Trim.** Build > Roof > Roof Trim opens a dialog with a tab for each trim part: Rafter Tails, Ridge Caps, Gutters, Frieze, Shadow Boards, Subfascia, Lookouts and Soffits. Each part has a switch (nothing is made until it is on), a profile from the molding library (or a plain board) and its width and height. Build Roof then makes the parts as molding polylines on the layer Roofs, Trim, Automatically Generated; they select and edit like any molding polyline, they are listed under Exterior Trim in the Materials List, and a piece you edit stays when the trim is made again.
+
+| Part | What it does |
+|---|---|
+| Rafter Tails | Recipe Exposed (tails show, no soffit), Hidden (no tails, a soffit) or Partially Exposed (only the last few inches show past the soffit); Stretch to Fit Rafter or an own width and height; Extend Past Subfascia. |
+| Ridge Caps | Bend to Roof Pitch makes a strip on each plane of a ridge or hip; off makes one level strip. The Ridge Cap setting of a single edge is Automatic (ridges and hips), On or Off. |
+| Gutters | Along eaves that do not slope. |
+| Frieze | Against the wall under the eaves and under the gable overhangs. |
+| Shadow Boards | On the face of the fascia, eaves and rakes; needs a fascia. |
+| Subfascia, Lookouts | A board behind the fascia; blocks every 24" under the rake overhangs. |
+| Soffits | Boxed (horizontal) or Flush (follows the rafters), Higher Eaves Boxed, Trim Framing To Soffits. |
+
+**Gable/Roof Line objects.** A line drawn exactly parallel to an exterior wall and within 10 feet of the wall's Main Layer stays in the plan until you delete it. Each Build Roof turns it into a gable: two planes of the line's own pitch and overhang, running from the line into the roof, with valleys where they meet the old roof planes. The Gable Line Specification has the Gable Line (pitch, overhang), Line, Line Style and Arrow panels. With doors or windows on an exterior wall selected, **Gable Over Door/Window** draws a line 12" past each side of each one (openings within 30" of each other share a line); **Delete Gable Over Opening** takes those lines away again.
+
+**Skylights.** A click with the Skylight tool makes a 2 by 2 foot skylight, a drag a rectangle. The Skylight Specification: General (Shape Rectangle, Circle, Ellipse, Oval or Custom, Width and Length, Frame Width and Height, Display in Plan View, Edit Skylight Shape), Inside Hole Rim (Square, Plumb, Plumb/Square) and Ceiling Hole (Automatically Generate, Use Manual Polyline, Do Not Cut). Moving a corner of the opening makes the shape Custom.
+
+**Dormers.** The pure geometry for a gambrel dormer (second pitch, In from Eave), the Auto Roof Return of a gable dormer, the Dormer Room options of a floating dormer (shaft to the room below, Set to Existing Ceiling) and crickets behind up-slope walls is in `plan-roof` and tested; the Dormer Specification does not offer them yet (docs/integration-queue.md).
+
 ## 8.8 Differences from Chief
 
 - A roof with an upper pitch or a Dutch gable has one break height for the whole roof. The vertical face of a Dutch gable is not a roof plane: Build Roof stores it as a **face** record that 3D meshes like wall, which every rebuild and Delete Roof Planes replaces and which you cannot select (Round 13).
 - Extend Slope Downward drops the typed length when there is no wall below to reach, and Auto Roof Return applies only at gable ends. Include Frieze on the Wall Roof tab is stored but not edited (the frieze is a Roof Defaults switch and a per-plane choice); Roof Cuts Wall at Bottom is a Roof Defaults switch for the whole roof, not a per-wall one.
 - Explode Dormer keeps the walls (the gable dormer's front wall now reaches the ridge), and room detection does not read their Bottom Height. A dormer cannot straddle two planes.
-- Not built: a break line per edge on a staged roof, Build Roof per framing group, curved roofs and a skylight with a polygon outline.
+- Not built: a break line per edge on a staged roof, Build Roof per framing group. Round 16 brief 20 added skylight shapes, roof trim molding polylines and Gable/Roof Line objects (8.7a); Mansard, Barrel, Curved Eave and Eyebrow dormers and automatic crickets are still open.
 - A Roof Return is a full, half or boxed return of a length you set; its other options (slope, extend, shadow boards, ridge cap, frieze, gutter) are not modeled.
 - Build Ceiling Planes follows the roof planes only. In 3D an interior wall rises to the ceiling planes over it (8.3).
 - Roof holes must sit wholly inside one plane; Chief's holes across a ridge need one hole per plane here.

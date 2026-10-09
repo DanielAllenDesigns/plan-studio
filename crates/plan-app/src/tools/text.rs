@@ -5,8 +5,9 @@
 //! `CadItem::Text`, leaders and callout shapes are polylines and circles
 //! grouped with their text so they select together.
 //!
-//! * Text (TXT-1): click places the anchor (the text's bottom-left), typing
-//!   fills it, Enter commits, a click elsewhere commits and starts the next
+//! * Text (TXT-1): click places the text's upper-left corner (Chief clicks the
+//!   upper left of the block; the stored position stays the lower-left, so the
+//!   block hangs down from the click), typing fills it, Enter commits, a click elsewhere commits and starts the next
 //!   text, Esc cancels. Clicking existing text edits it in place. The height
 //!   is `defaults.text.height` in plan inches; when the Text layer's style
 //!   holds a printed size, the text is stored at the style's character height
@@ -27,8 +28,12 @@
 //!   markup typed in the text (and the B / I / U buttons) become
 //!   `RichRun`s stored with the text (`CadAttrs::runs`); the text item keeps
 //!   the plain words.
-//! * Text macros: `%room.name%`, `%plan.date%`, `%floor%` and the user's own
-//!   macros expand when text is placed or edited (Text Macro Management).
+//! * Text macros (`plan_core::macros`): `%room.name%`, `%date.short%`,
+//!   `%client.name%`, `%floor%` and the user's own macros. A Text or Rich
+//!   Text that holds macros stays live: what was typed is kept
+//!   (`Project::macro_texts`) and the object follows the plan (the room's
+//!   name, Project Information, the door its arrow points at). Callouts,
+//!   markers and notes expand their macros when their dialog is OK'd.
 //! * Notes take their number from the order they were placed in, per note
 //!   type (Note Type Management); the Note Schedule reads them back.
 //!
@@ -39,7 +44,8 @@
 use super::cad::{add_cad_items, arrowhead, set_typing, OptionStrip, StripButton};
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::text::annot::{self, AnnotKind};
-use crate::dialogs::text::manage::{MacroDialog, NoteTypeDialog, StyleOp, TextStyleDialog};
+use crate::dialogs::text::macro_manager::MacroManager;
+use crate::dialogs::text::manage::{NoteTypeDialog, StyleOp, TextStyleDialog};
 use crate::dialogs::Outcome;
 use crate::editor::selection::{cad_by_id, cad_distance, hit_test};
 use crate::editor::snap::SnapResult;
@@ -47,11 +53,10 @@ use crate::editor::{render, Camera, EditorContext, EditorRequest, ObjectRef};
 use eframe::egui::{self, Rect, Stroke};
 use plan_core::cad::{CadItem, TEXT_WIDTH_FACTOR};
 use plan_core::callout::{CalloutShape, MarkerKind};
-use plan_core::geometry::{point_in_polygon, Point};
+use plan_core::geometry::Point;
+use plan_core::macros::Env;
 use plan_core::text_box::{layout, TextBox};
-use plan_core::text_styles::{
-    expand_macros, runs_from_markup, runs_plain, runs_to_markup, MacroContext, RichRun,
-};
+use plan_core::text_styles::{runs_from_markup, runs_plain, runs_to_markup, RichRun};
 use plan_core::Id;
 use std::collections::HashMap;
 
@@ -219,13 +224,6 @@ pub fn note_text(n: u32, body: &str) -> String {
     format!("{NOTE_PREFIX}{n}: {body}")
 }
 
-/// Seconds since the Unix epoch (0 when the clock is unavailable).
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
 /// The note number of a note text (for a Note schedule).
 pub fn note_number(text: &str) -> Option<u32> {
     let rest = text.strip_prefix(NOTE_PREFIX)?;
@@ -269,6 +267,57 @@ pub fn marker_items(center: Point, number: u32, height: f64) -> Vec<CadItem> {
     ]
 }
 
+/// The lower-left corner of a text block that hangs down from the clicked
+/// upper-left corner `anchor`.
+fn hang(anchor: Point, text: &str, runs: &[RichRun], drawn_height: f64) -> Point {
+    let block = layout(text, runs, drawn_height, &TextBox::default()).height;
+    Point::new(anchor.x, anchor.y - block)
+}
+
+/// Facts about the object the arrow of text `id` points at, for the kinds
+/// plan-core cannot look up itself (cabinets, fixtures, devices...): kept
+/// with a live text so its reference macros keep an answer.
+pub fn app_reference_facts(cx: &EditorContext, id: Id) -> Vec<(String, String)> {
+    let f = cx.floor();
+    let Some(CadItem::Text {
+        pos, text, height, ..
+    }) = cad_by_id(f, id).map(|c| c.item.clone())
+    else {
+        return Vec::new();
+    };
+    let width = text.chars().count() as f64 * height * TEXT_WIDTH_FACTOR;
+    let Some(tip) = plan_core::macros::arrow_tip_of(f, pos, height, width) else {
+        return Vec::new();
+    };
+    let tol = cx.pick_tol().max(6.0);
+    for o in crate::editor::selection::hit_test_cx(cx, tip, tol) {
+        if matches!(
+            o,
+            ObjectRef::Cad(_)
+                | ObjectRef::Text(_)
+                | ObjectRef::Wall(_)
+                | ObjectRef::Opening(_)
+                | ObjectRef::Room(_)
+        ) {
+            continue;
+        }
+        let Some(key) = crate::dialogs::object_info::object_key(cx, o) else {
+            continue;
+        };
+        let Some(mut d) = crate::dialogs::common_pages::describe(&cx.project, &key) else {
+            continue;
+        };
+        crate::dialogs::common_pages::with_info(&cx.project, &key, &mut d.facts);
+        let kind = key.split(':').next().unwrap_or("");
+        let mut label = kind.to_string();
+        if let Some(c) = label.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        return plan_core::macros::facts_from_label(&label, &d.facts);
+    }
+    Vec::new()
+}
+
 // ----- the tool -----
 
 pub struct TextTool {
@@ -309,7 +358,7 @@ pub struct TextTool {
 /// The dialogs of the two management commands.
 enum TextUi {
     NoteTypes(Box<NoteTypeDialog>),
-    Macros(Box<MacroDialog>),
+    Macros(Box<MacroManager>),
     Styles(Box<TextStyleDialog>),
 }
 
@@ -462,30 +511,22 @@ impl TextTool {
         (self.height(cx) * 1.2).max(3.0)
     }
 
-    /// `text` with its `%macros%` expanded for a text placed at `at`.
+    /// `text` with its `%macros%` expanded for a text placed at `at`: the
+    /// global macros (the file, the room under `at`, the date, Project
+    /// Information, special characters) and the user's own. The macros of a
+    /// pointed-at object stay as typed.
     pub fn expand(cx: &EditorContext, text: &str, at: Point) -> String {
         if !text.contains('%') {
             return text.to_string();
         }
-        let room = cx
-            .rooms
-            .iter()
-            .find(|r| point_in_polygon(at, &r.inner_polygon) || point_in_polygon(at, &r.polygon));
-        let floor = cx.floor();
-        let ctx = MacroContext {
-            room_name: room.map(|r| cx.room_name(r)).unwrap_or_default(),
-            room_number: String::new(),
-            room_area: room
-                .map(|r| format!("{} sq ft", r.interior_area_sq_ft().round()))
-                .unwrap_or_default(),
-            plan_name: cx.project.name.clone(),
-            plan_date: plan_core::text_styles::date_string(unix_now()),
-            floor_name: floor.name.clone(),
-            floor_number: cx.floor + 1,
-            floor_count: cx.project.floors.len(),
-            ceiling_height: cx.fmt_dim(floor.ceiling_height),
-        };
-        expand_macros(text, &ctx, &cx.project.text_macros())
+        Env::new(
+            &cx.project,
+            cx.floor,
+            Some(at),
+            &cx.rooms,
+            plan_core::macros::unix_now(),
+        )
+        .expand(text)
     }
 
     /// The runs of Rich Text typed with inline markup and the B / I / U
@@ -509,12 +550,13 @@ impl TextTool {
         (runs, plain)
     }
 
-    /// Where the text being typed sits: its anchor, or for a text box the
-    /// lower left corner that keeps the dragged top edge (TXT-13).
+    /// Where the text being typed sits (its lower left corner): hanging
+    /// down from the clicked upper-left corner, or for a text box the corner
+    /// that keeps the dragged top edge (TXT-13).
     fn text_pos(&self, anchor: Point, text: &str, runs: &[RichRun], height: f64) -> Point {
         match self.text_box {
             Some((tb, top)) => Point::new(anchor.x, top - layout(text, runs, height, &tb).height),
-            None => anchor,
+            None => hang(anchor, text, runs, height),
         }
     }
 
@@ -599,6 +641,14 @@ impl TextTool {
         } else {
             (Vec::new(), raw.clone())
         };
+        // What was typed, macros and all: a text that holds macros stays
+        // live (`plan_core::macros`).
+        let source_runs: Vec<RichRun> = if runs.is_empty() {
+            vec![RichRun::plain(plain.clone())]
+        } else {
+            runs.clone()
+        };
+        let source_rich = !Self::normalized_runs(source_runs.clone()).is_empty();
         let text = Self::expand(cx, &plain, anchor);
         let runs: Vec<RichRun> = if runs.iter().any(|r| r.text.contains('%')) {
             // Expanding changed the words; keep the formats by run.
@@ -624,7 +674,7 @@ impl TextTool {
         cx.status.clear();
 
         if let Some(id) = editing {
-            return self.finish_edit(cx, id, text, runs);
+            return self.finish_edit(cx, id, text, runs, source_runs, source_rich);
         }
         let (items, label) = match mode {
             TextMode::Text | TextMode::RichText => {
@@ -637,7 +687,7 @@ impl TextTool {
                         anchor.x,
                         top - layout(&text, &runs, Self::drawn_height(cx, height), &tb).height,
                     ),
-                    None => anchor,
+                    None => hang(anchor, &text, &runs, Self::drawn_height(cx, height)),
                 };
                 (
                     vec![CadItem::Text {
@@ -699,6 +749,23 @@ impl TextTool {
                     cx.project
                         .edit_cad_attrs(fl, ids[0], |a| a.text_box.halign = h);
                 }
+                // The text's own id: the last object of a Text Line with
+                // Arrow, the only one of a plain text.
+                let text_id = if mode == TextMode::ArrowLine {
+                    ids.last().copied()
+                } else {
+                    ids.first().copied()
+                };
+                if let Some(tid) = text_id {
+                    let is_text = cad_by_id(cx.floor(), tid)
+                        .is_some_and(|c| matches!(c.item, CadItem::Text { .. }));
+                    if is_text {
+                        let facts = app_reference_facts(cx, tid);
+                        let fl = cx.floor;
+                        cx.project
+                            .set_live_text(fl, tid, source_runs, source_rich, facts);
+                    }
+                }
                 ToolResult::committed(label)
             }
             None => ToolResult::consumed(),
@@ -733,47 +800,64 @@ impl TextTool {
         cx.project.edit_cad_attrs(fl, id, |a| a.runs = runs);
     }
 
-    /// Writes the edited text back; empty text deletes the object.
+    /// Writes the edited text back; empty text deletes the object. `source`
+    /// is what was typed (macros not yet evaluated): a text that holds a
+    /// macro stays live.
     fn finish_edit(
         &mut self,
         cx: &mut EditorContext,
         id: Id,
         text: String,
         runs: Vec<RichRun>,
+        source: Vec<RichRun>,
+        source_rich: bool,
     ) -> ToolResult {
         if !cx.check_unlocked(ObjectRef::Cad(id)) {
             return ToolResult::consumed();
         }
         let old_runs = cx.floor().cad_attrs(id).map(|a| a.runs).unwrap_or_default();
         let runs = Self::normalized_runs(runs);
+        // A live text is the same when its source is; a plain one is the
+        // same unless it now holds a macro.
+        let live_same = match cx.project.live_text(id) {
+            Some(l) => l.runs == source,
+            None => !Env::new(&cx.project, cx.floor, None, &[], 0).has_macros(&runs_plain(&source)),
+        };
         let same = matches!(cad_by_id(cx.floor(), id).map(|c| &c.item),
             Some(CadItem::Text { text: t, .. }) if *t == text)
-            && runs == old_runs;
+            && runs == old_runs
+            && live_same;
         if same {
             return ToolResult::consumed();
         }
         cx.begin_change("Edit Text");
         let fl = cx.floor;
-        // A box grows and shrinks from its top edge (TXT-13).
+        // The block keeps its top edge as lines come and go (TXT-13).
         let tb = cx
             .floor()
             .cad_attrs(id)
             .map(|a| a.text_box)
-            .filter(TextBox::is_boxed);
-        if text.trim().is_empty() {
+            .unwrap_or_default();
+        let item_height = match cad_by_id(cx.floor(), id).map(|c| &c.item) {
+            Some(CadItem::Text { height, .. }) => *height,
+            _ => 0.0,
+        };
+        let drawn = Self::drawn_height(cx, item_height);
+        let deleted = text.trim().is_empty();
+        if deleted {
             Self::remove_text(cx, id);
             cx.selection.clear();
         } else if let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) {
             if let CadItem::Text {
                 text: t,
                 pos,
-                height,
                 angle,
+                ..
             } = &mut c.item
             {
-                if let (Some(tb), true) = (tb, angle.abs() < 1e-9) {
-                    let old = layout(t, &old_runs, *height, &tb).height;
-                    let new = layout(&text, &runs, *height, &tb).height;
+                if angle.abs() < 1e-9 {
+                    let old = layout(t, &old_runs, drawn, &tb).height;
+                    let new = layout(&text, &runs, drawn, &tb).height;
                     pos.y += old - new;
                 }
                 *t = text;
@@ -781,6 +865,12 @@ impl TextTool {
             if runs != old_runs {
                 Self::store_runs(cx, id, runs);
             }
+        }
+        if !deleted {
+            let facts = app_reference_facts(cx, id);
+            cx.project.set_live_text(fl, id, source, source_rich, facts);
+        } else {
+            cx.project.macro_texts.texts.retain(|t| t.id != id);
         }
         cx.mark_dirty();
         ToolResult::committed("Edit Text")
@@ -990,9 +1080,15 @@ impl TextTool {
                     styles,
                 ))))
             }
-            TextMode::Macros => Some(TextUi::Macros(Box::new(MacroDialog::new(
-                cx.project.text_macros(),
-            )))),
+            TextMode::Macros => Some(TextUi::Macros(Box::new(
+                MacroManager::new(cx.project.text_macros()).with_env(Env::new(
+                    &cx.project,
+                    cx.floor,
+                    None,
+                    &[],
+                    plan_core::macros::unix_now(),
+                )),
+            ))),
             TextMode::TextStyles => Some(TextUi::Styles(Box::new(TextStyleDialog::new(
                 cx.project
                     .text_styles
@@ -1404,11 +1500,26 @@ impl TextTool {
                     return ToolResult::consumed();
                 }
                 self.editing = Some(id);
-                self.begin_typing(cx, pos);
-                // A rich text comes back as markup so its formats can be edited.
-                self.buf = match cx.floor().cad_attrs(id) {
-                    Some(a) if !a.runs.is_empty() => runs_to_markup(&a.runs),
-                    _ => text,
+                // The block hangs from its upper-left corner (the click
+                // corner of a new text).
+                let attrs = cx.floor().cad_attrs(id);
+                let shown_runs = attrs.as_ref().map(|a| a.runs.clone()).unwrap_or_default();
+                let tb = attrs.map(|a| a.text_box).unwrap_or_default();
+                let item_h = match cad_by_id(cx.floor(), id).map(|c| &c.item) {
+                    Some(CadItem::Text { height, .. }) => *height,
+                    _ => 6.0,
+                };
+                let block = layout(&text, &shown_runs, Self::drawn_height(cx, item_h), &tb).height;
+                self.begin_typing(cx, Point::new(pos.x, pos.y + block));
+                // A rich text comes back as markup so its formats can be
+                // edited; a live text comes back as it was typed.
+                self.buf = match cx.project.live_text(id) {
+                    Some(l) if l.rich => runs_to_markup(&l.runs),
+                    Some(l) => l.source(),
+                    None => match cx.floor().cad_attrs(id) {
+                        Some(a) if !a.runs.is_empty() => runs_to_markup(&a.runs),
+                        _ => text,
+                    },
                 };
                 cx.selection.set(ObjectRef::Cad(id));
                 return ToolResult::consumed();
@@ -1591,6 +1702,9 @@ const CMD_IGNORE_NOTE: &str = "annot.ignore_note";
 const CMD_IGNORE_NOTES: &str = "annot.ignore_all_notes";
 const CMD_TEXT_TO_NOTE: &str = "annot.text_to_note";
 const CMD_FOLLOW_LINK: &str = "annot.follow_hyperlink";
+const CMD_TO_TEXT: &str = "annot.convert_to_text";
+const CMD_TO_RICH: &str = "annot.convert_to_rich";
+const CMD_RESET_COLUMNS: &str = "annot.reset_column_widths";
 
 fn custom_action(id: &'static str, label: &'static str) -> crate::editor::EditAction {
     use crate::editor::actions::{EditAction, EditActionKind};
@@ -1696,7 +1810,71 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
     if selected_hyperlink(cx).is_some() {
         v.push(custom_action(CMD_FOLLOW_LINK, "Follow Hyperlink"));
     }
+    // Convert to Rich Text and Convert to Text (TXT-41), Reset Column Widths
+    // for text with tab columns (TXT-37).
+    let texts = selected_plain_texts(cx);
+    if texts.iter().any(|id| is_rich(cx, *id)) {
+        v.push(custom_action(CMD_TO_TEXT, "Convert to Text"));
+    }
+    if texts.iter().any(|id| !is_rich(cx, *id)) {
+        v.push(custom_action(CMD_TO_RICH, "Convert to Rich Text"));
+    }
+    if texts.iter().any(|id| has_tabs(cx, *id)) {
+        v.push(custom_action(CMD_RESET_COLUMNS, "Reset Column Widths"));
+    }
     v
+}
+
+/// Is text `id` Rich Text (it has runs)?
+fn is_rich(cx: &EditorContext, id: Id) -> bool {
+    cx.project.live_text(id).is_some_and(|l| l.rich)
+        || cx.floor().cad_attrs(id).is_some_and(|a| !a.runs.is_empty())
+}
+
+/// Does text `id` have tab characters (columns)?
+fn has_tabs(cx: &EditorContext, id: Id) -> bool {
+    matches!(cad_by_id(cx.floor(), id).map(|c| &c.item),
+        Some(CadItem::Text { text, .. }) if text.contains('\t'))
+}
+
+/// Edit > Paste of text from another program onto the plan (TXT-44): a new
+/// Rich Text hanging from `at`, one undo step. Tabs between cells stay, so a
+/// pasted spreadsheet row set comes out in columns. Returns the new text.
+pub fn paste_text(cx: &mut EditorContext, text: &str, at: Point) -> Option<Id> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let text = text.trim_end_matches('\n').to_string();
+    if text.trim().is_empty() {
+        return None;
+    }
+    let layer = text_layer(cx);
+    if cx.layers().is_locked(&layer) {
+        cx.status = format!("The layer \"{layer}\" is locked");
+        return None;
+    }
+    let own = cx.project.annot_defaults.rich.height;
+    let height = if own > 0.0 {
+        own
+    } else {
+        cx.defaults.text.height
+    };
+    let height = if height > 0.0 { height } else { 6.0 };
+    let runs = vec![RichRun::plain(text.clone())];
+    let pos = hang(at, &text, &runs, TextTool::drawn_height(cx, height));
+    let ids = add_cad_items(
+        cx,
+        &layer,
+        vec![CadItem::Text {
+            pos,
+            text,
+            height,
+            angle: 0.0,
+        }],
+        "Paste Text",
+    )?;
+    let fl = cx.floor;
+    cx.project
+        .edit_cad_attrs(fl, ids[0], |a| a.runs = runs.clone());
+    Some(ids[0])
 }
 
 /// Runs one of the [`edit_actions`]; false for any other command.
@@ -1803,6 +1981,29 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             cx.selection.items = made;
             cx.mark_dirty();
         }
+        CMD_TO_TEXT | CMD_TO_RICH | CMD_RESET_COLUMNS => {
+            let texts = selected_plain_texts(cx);
+            if texts.is_empty() {
+                return true;
+            }
+            cx.begin_change(match id {
+                CMD_TO_TEXT => "Convert to Text",
+                CMD_TO_RICH => "Convert to Rich Text",
+                _ => "Reset Column Widths",
+            });
+            let mut n = 0;
+            for t in texts {
+                if !cx.check_unlocked(ObjectRef::Cad(t)) {
+                    continue;
+                }
+                n += usize::from(convert_text(cx, t, id));
+            }
+            if n == 0 {
+                cx.cancel_change();
+            } else {
+                cx.mark_dirty();
+            }
+        }
         CMD_FOLLOW_LINK => {
             if let Some(url) = selected_hyperlink(cx) {
                 cx.status = match follow_hyperlink(&url) {
@@ -1811,9 +2012,86 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
                 };
             }
         }
+        _ if crate::dialogs::text::rescheck::is_command(id) => {
+            return crate::dialogs::text::rescheck::run_command(cx, id);
+        }
+        crate::dialogs::find_replace::REPLACE_FONTS_PROMPT => {
+            crate::dialogs::find_replace::open_replace_fonts(cx);
+        }
+        crate::dialogs::find_replace::REPLACE_FONTS_APPLY => {
+            crate::dialogs::find_replace::apply_replace_fonts(cx);
+        }
         _ => return false,
     }
     true
+}
+
+/// One of the conversions of the Edit toolbar on text `id`: Convert to
+/// Text (the formats and column tabs are lost), Convert to Rich Text (the
+/// words become a run) or Reset Column Widths. Returns whether it changed
+/// anything.
+fn convert_text(cx: &mut EditorContext, id: Id, cmd: &str) -> bool {
+    let fl = cx.floor;
+    let Some(CadItem::Text { text, .. }) = cad_by_id(cx.floor(), id).map(|c| c.item.clone()) else {
+        return false;
+    };
+    let live = cx.project.live_text(id).cloned();
+    match cmd {
+        CMD_TO_TEXT => {
+            if !is_rich(cx, id) && !has_tabs(cx, id) {
+                return false;
+            }
+            let plain = text.replace('\t', " ");
+            let source = live
+                .as_ref()
+                .map_or_else(|| plain.clone(), |l| l.source().replace('\t', " "));
+            if let Some(o) = cx.project.floors[fl].cad.iter_mut().find(|o| o.id == id) {
+                if let CadItem::Text { text: t, .. } = &mut o.item {
+                    *t = plain;
+                }
+            }
+            cx.project.edit_cad_attrs(fl, id, |a| {
+                a.runs.clear();
+                a.text_box.tab_width = 0.0;
+            });
+            if live.is_some() {
+                let facts = live.map(|l| l.facts).unwrap_or_default();
+                cx.project
+                    .set_live_text(fl, id, vec![RichRun::plain(source)], false, facts);
+            }
+            true
+        }
+        CMD_TO_RICH => {
+            if is_rich(cx, id) {
+                return false;
+            }
+            if let Some(l) = live {
+                // The source becomes one run; the macros stay live.
+                let runs = vec![RichRun::plain(l.source())];
+                cx.project.set_live_text(fl, id, runs, true, l.facts);
+                cx.project.edit_cad_attrs(fl, id, |a| {
+                    if a.runs.is_empty() {
+                        a.runs = vec![RichRun::plain(text.clone())];
+                    }
+                });
+                return true;
+            }
+            cx.project
+                .edit_cad_attrs(fl, id, |a| a.runs = vec![RichRun::plain(text.clone())]);
+            true
+        }
+        _ => {
+            let has = cx
+                .floor()
+                .cad_attrs(id)
+                .is_some_and(|a| a.text_box.tab_width > 0.0);
+            if has {
+                cx.project
+                    .edit_cad_attrs(fl, id, |a| a.text_box.tab_width = 0.0);
+            }
+            has
+        }
+    }
 }
 
 /// Opens a hyperlink of a text in the default browser (a web address) or
@@ -2048,12 +2326,15 @@ mod tests {
         assert_eq!(r.commit.as_deref(), Some("Place Text"));
         let c = &cx.floor().cad[0];
         assert_eq!(c.layer, TEXT_LAYER);
+        // The click is the upper-left corner (DECISIONS 79): the block hangs
+        // down from it, one line high.
+        let h = cx.defaults.text.height;
         assert_eq!(
             c.item,
             CadItem::Text {
-                pos: Point::new(10.0, 10.0),
+                pos: Point::new(10.0, 10.0 - h * plan_core::text_box::LINE_SPACING),
                 text: "Hello".into(),
-                height: cx.defaults.text.height,
+                height: h,
                 angle: 0.0
             }
         );
@@ -2081,7 +2362,10 @@ mod tests {
         cx.project.text_styles.styles[i].set_printed_in(0.125);
         cx.project.text_styles.styles[i].use_printed_size(true);
         let mut t = tool(TextMode::Text);
-        click(&mut t, &mut cx, 10.0, 10.0);
+        // At 1/4" the text is drawn 6" high, one line is 7.2": the click is
+        // its upper-left corner, so the text stands at (10, 10).
+        cx.sheet.scale = Scale::QuarterInch;
+        click(&mut t, &mut cx, 10.0, 17.2);
         type_text(&mut t, &mut cx, "KITCHEN");
         enter(&mut t, &mut cx);
         // Stored at the style's height, not the tool's 6".
@@ -2563,12 +2847,13 @@ mod tests {
         // Clicking the text again edits it as markup; Enter with no change
         // adds no undo step.
         let steps = cx.undo_label().map(str::to_string);
-        click(&mut t, &mut cx, 61.0, 61.0);
+        // (The text hangs down from the click corner at (60, 60).)
+        click(&mut t, &mut cx, 61.0, 55.0);
         assert_eq!(t.typed(), Some(markup));
         t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
         assert_eq!(cx.undo_label().map(str::to_string), steps);
         // Edit a word: runs follow.
-        click(&mut t, &mut cx, 61.0, 61.0);
+        click(&mut t, &mut cx, 61.0, 55.0);
         for _ in 0..10 {
             t.key(&mut cx, KeyEvent::key(egui::Key::Backspace));
         }
@@ -2663,7 +2948,7 @@ mod tests {
         };
         let mut next = plan_core::text_styles::TextMacros::default();
         next.add("firm", "DAD");
-        let mut dialog = MacroDialog::new(next.clone());
+        let mut dialog = MacroManager::new(next.clone());
         std::mem::swap(&mut *d, &mut dialog);
         t.dialog_outcome(&mut cx, TextUi::Macros(d), Outcome::Ok);
         assert_eq!(cx.project.text_macros(), next);
@@ -2783,10 +3068,11 @@ mod tests {
         drag(&mut t, &mut cx, (0.0, 0.0), (4.0, 0.0));
         type_text(&mut t, &mut cx, "plain");
         enter(&mut t, &mut cx);
-        let (id, pos, _, tb) = the_text(&cx);
+        let (id, pos, h, tb) = the_text(&cx);
         assert!(tb.is_plain(), "{tb:?}");
         assert!(cx.floor().cad_attrs(id).is_none());
-        assert_eq!(pos, Point::new(0.0, 0.0));
+        // The press is the upper-left corner of the text.
+        assert_eq!(pos, Point::new(0.0, -h * plan_core::text_box::LINE_SPACING));
     }
 
     #[test]
@@ -2966,5 +3252,203 @@ mod tests {
         d.remove("Labels");
         t.dialog_outcome(&mut cx, TextUi::Styles(Box::new(d)), Outcome::Cancel);
         assert!(cx.project.text_styles.get("Room Label Style").is_some());
+    }
+
+    fn shown_text(cx: &EditorContext, id: Id) -> String {
+        match &cad_by_id(cx.floor(), id).unwrap().item {
+            CadItem::Text { text, .. } => text.clone(),
+            _ => panic!("text"),
+        }
+    }
+
+    #[test]
+    fn text_with_macros_stays_live_and_edits_as_typed() {
+        let mut cx = new_cx();
+        cx.project.name = "Smith".into();
+        let mut t = tool(TextMode::Text);
+        type_and(
+            &mut t,
+            &mut cx,
+            (0.0, 0.0),
+            "Plan %plan.name%",
+            egui::Key::Enter,
+        );
+        let (id, pos, h, _) = the_text(&cx);
+        assert_eq!(shown_text(&cx, id), "Plan Smith");
+        assert_eq!(
+            cx.project.live_text(id).unwrap().source(),
+            "Plan %plan.name%"
+        );
+        // The click was the upper-left corner.
+        assert_eq!(pos, Point::new(0.0, -h * plan_core::text_box::LINE_SPACING));
+        // The plan changes and the text follows.
+        cx.project.name = "Jones".into();
+        cx.mark_dirty();
+        cx.refresh();
+        assert_eq!(shown_text(&cx, id), "Plan Jones");
+        // Editing in place shows what was typed, and keeps the top edge.
+        click(&mut t, &mut cx, 3.0, -3.0);
+        assert_eq!(t.typed(), Some("Plan %plan.name%"));
+        type_text(&mut t, &mut cx, "!");
+        let r = enter(&mut t, &mut cx);
+        assert_eq!(r.commit.as_deref(), Some("Edit Text"));
+        assert_eq!(shown_text(&cx, id), "Plan Jones!");
+        assert_eq!(
+            cx.project.live_text(id).unwrap().source(),
+            "Plan %plan.name%!"
+        );
+        let CadItem::Text { pos: after, .. } = cad_by_id(cx.floor(), id).unwrap().item else {
+            panic!()
+        };
+        assert_eq!(after, pos);
+        // Editing out the macro makes the text plain again.
+        click(&mut t, &mut cx, 3.0, -3.0);
+        t.buf = "Just words".into();
+        enter(&mut t, &mut cx);
+        assert!(cx.project.live_text(id).is_none());
+        assert_eq!(shown_text(&cx, id), "Just words");
+        // Undo takes one edit back at a time.
+        assert_eq!(cx.undo().as_deref(), Some("Edit Text"));
+        assert_eq!(shown_text(&cx, id), "Plan Jones!");
+        assert!(cx.project.live_text(id).is_some());
+    }
+
+    #[test]
+    fn rich_text_with_macros_keeps_its_formats_live() {
+        let mut cx = new_cx();
+        cx.project.info.client_name = "Pat".into();
+        let mut t = tool(TextMode::RichText);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        type_text(&mut t, &mut cx, "<b>For</b> %client.name%");
+        t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        let (id, _, _, _) = the_text(&cx);
+        assert_eq!(shown_text(&cx, id), "For Pat");
+        let runs = cx.floor().cad_attrs(id).unwrap().runs;
+        assert!(runs[0].bold && runs[0].text == "For");
+        cx.project.info.client_name = "Sam".into();
+        cx.mark_dirty();
+        cx.refresh();
+        assert_eq!(shown_text(&cx, id), "For Sam");
+        assert!(cx.floor().cad_attrs(id).unwrap().runs[0].bold);
+        assert!(cx.project.live_text(id).unwrap().rich);
+    }
+
+    #[test]
+    fn a_text_line_with_arrow_reads_the_door_it_points_at() {
+        use plan_core::model::{OpeningKind, WallKind};
+        let mut cx = new_cx();
+        let w = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        let door = cx
+            .project
+            .add_opening(0, w, 120.0, OpeningKind::Door)
+            .unwrap();
+        cx.project
+            .materials
+            .info_mut(&format!("door:{door}"))
+            .comment = "Solid core".into();
+        cx.refresh();
+        let mut t = tool(TextMode::ArrowLine);
+        click(&mut t, &mut cx, 120.0, 0.0);
+        click(&mut t, &mut cx, 120.0, -50.0);
+        enter(&mut t, &mut cx);
+        type_text(&mut t, &mut cx, "%object_type%: %comment%");
+        enter(&mut t, &mut cx);
+        let id = cx
+            .floor()
+            .cad
+            .iter()
+            .rev()
+            .find(|c| matches!(c.item, CadItem::Text { .. }))
+            .unwrap()
+            .id;
+        assert_eq!(shown_text(&cx, id), "Door: Solid core");
+        assert!(cx.project.live_text(id).is_some());
+    }
+
+    #[test]
+    fn convert_buttons_toggle_rich_text_and_drop_column_tabs() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Text);
+        type_and(&mut t, &mut cx, (0.0, 0.0), "Item", egui::Key::Enter);
+        let (id, _, _, _) = the_text(&cx);
+        cx.selection.set(ObjectRef::Cad(id));
+        let labels =
+            |cx: &EditorContext| edit_actions(cx).iter().map(|a| a.label).collect::<Vec<_>>();
+        assert!(labels(&cx).contains(&"Convert to Rich Text"));
+        assert!(!labels(&cx).contains(&"Convert to Text"));
+        assert!(run_command(&mut cx, CMD_TO_RICH));
+        assert_eq!(cx.undo_label(), Some("Convert to Rich Text"));
+        assert!(!cx.floor().cad_attrs(id).unwrap().runs.is_empty());
+        assert!(labels(&cx).contains(&"Convert to Text"));
+        // Tabs make columns and Reset Column Widths puts them back to auto.
+        if let Some(o) = cx.project.floors[0].cad.iter_mut().find(|o| o.id == id) {
+            if let CadItem::Text { text, .. } = &mut o.item {
+                *text = "a\tb".into();
+            }
+        }
+        cx.project
+            .edit_cad_attrs(0, id, |a| a.text_box.tab_width = 80.0);
+        assert!(labels(&cx).contains(&"Reset Column Widths"));
+        assert!(run_command(&mut cx, CMD_RESET_COLUMNS));
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().text_box.tab_width, 0.0);
+        // Converting to Text loses the formats and the tabs.
+        assert!(run_command(&mut cx, CMD_TO_TEXT));
+        let a = cx.floor().cad_attrs(id);
+        assert!(a.is_none_or(|a| a.runs.is_empty()));
+        assert_eq!(shown_text(&cx, id), "a b");
+        assert_eq!(cx.undo().as_deref(), Some("Convert to Text"));
+        assert_eq!(shown_text(&cx, id), "a\tb");
+    }
+
+    #[test]
+    fn pasted_text_becomes_rich_text_with_its_tab_columns() {
+        let mut cx = new_cx();
+        let id = paste_text(
+            &mut cx,
+            "Item\tQty\r\nWindow\t4\r\n",
+            Point::new(100.0, 200.0),
+        )
+        .unwrap();
+        assert_eq!(cx.undo_label(), Some("Paste Text"));
+        assert_eq!(shown_text(&cx, id), "Item\tQty\nWindow\t4");
+        let a = cx.floor().cad_attrs(id).unwrap();
+        assert_eq!(a.runs.len(), 1);
+        let CadItem::Text { pos, height, .. } = cad_by_id(cx.floor(), id).unwrap().item else {
+            panic!()
+        };
+        // Two rows hang from the upper-left corner.
+        assert_eq!(pos.x, 100.0);
+        assert!((pos.y - (200.0 - 2.0 * height * plan_core::text_box::LINE_SPACING)).abs() < 1e-9);
+        // Columns: the cells of a row stand on one baseline, apart.
+        let lay = layout("Item\tQty\nWindow\t4", &a.runs, height, &a.text_box);
+        assert_eq!(lay.lines.len(), 4);
+        assert!(lay.lines[1].x > lay.lines[0].x);
+        assert!(paste_text(&mut cx, "  \n", Point::ZERO).is_none());
+        cx.project.layers.set_locked(TEXT_LAYER, true);
+        assert!(paste_text(&mut cx, "x", Point::ZERO).is_none());
+    }
+
+    #[test]
+    fn replace_fonts_and_the_exports_are_commands_of_the_text_tools() {
+        let mut cx = new_cx();
+        assert!(run_command(
+            &mut cx,
+            crate::dialogs::find_replace::REPLACE_FONTS_PROMPT
+        ));
+        assert!(run_command(
+            &mut cx,
+            crate::dialogs::text::rescheck::EXPORT_RESCHECK
+        ));
+        assert!(crate::dialogs::text::rescheck::dialog_open());
+        crate::dialogs::text::rescheck::close_dialog();
+        assert!(!run_command(&mut cx, "text.no_such_command"));
+        crate::dialogs::find_replace::close_replace_fonts();
     }
 }

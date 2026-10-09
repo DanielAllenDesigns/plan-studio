@@ -77,7 +77,13 @@ impl DimCurve {
     /// The angle between the lines of two walls, on the side of the clicks
     /// `p1` (on the first wall) and `p2` (on the second). The dimension
     /// follows both walls when they move.
-    pub fn between_walls(a: &Wall, b: &Wall, p1: Point, p2: Point, radius: f64) -> Option<DimCurve> {
+    pub fn between_walls(
+        a: &Wall,
+        b: &Wall,
+        p1: Point,
+        p2: Point,
+        radius: f64,
+    ) -> Option<DimCurve> {
         let (da, db) = (
             a.end.sub(a.start).normalized(),
             b.end.sub(b.start).normalized(),
@@ -145,7 +151,10 @@ impl Dimension {
                 let mid = c.start + c.sweep * 0.5;
                 CurveGeom {
                     extensions: vec![ext(a0), ext(a1)],
-                    inward: [unit(a0 + sgn * FRAC_PI_2).scale(1.0), unit(a1 + sgn * FRAC_PI_2).scale(-1.0)],
+                    inward: [
+                        unit(a0 + sgn * FRAC_PI_2).scale(1.0),
+                        unit(a1 + sgn * FRAC_PI_2).scale(-1.0),
+                    ],
                     line,
                     label_at: c.center.add(unit(mid).scale(r)),
                     label_dir: unit(mid + FRAC_PI_2),
@@ -157,12 +166,18 @@ impl Dimension {
                 let line = c.sample(0.0, n);
                 let ext = |a: f64| {
                     let u = unit(a);
-                    (c.center.add(u.scale(gap)), c.center.add(u.scale(r + past.max(6.0))))
+                    (
+                        c.center.add(u.scale(gap)),
+                        c.center.add(u.scale(r + past.max(6.0))),
+                    )
                 };
                 let mid = c.start + c.sweep * 0.5;
                 CurveGeom {
                     extensions: vec![ext(a0), ext(a1)],
-                    inward: [unit(a0 + sgn * FRAC_PI_2), unit(a1 + sgn * FRAC_PI_2).scale(-1.0)],
+                    inward: [
+                        unit(a0 + sgn * FRAC_PI_2),
+                        unit(a1 + sgn * FRAC_PI_2).scale(-1.0),
+                    ],
                     line,
                     label_at: c.center.add(unit(mid).scale(r)),
                     label_dir: unit(mid + FRAC_PI_2),
@@ -275,8 +290,12 @@ impl Floor {
     /// the grid to round the distance to). A straight dimension moves its
     /// whole string's line; an arc length or radius sets how far its line
     /// stands from the arc; an angle sets the radius of its arc. Returns
-    /// whether the dimension exists.
+    /// whether the dimension exists. A line with a Fixed Proximity
+    /// extension cannot be moved by hand (manual p. 505).
     pub fn drag_dimension_line(&mut self, id: Id, to: Point, snap: Option<f64>) -> bool {
+        if self.line_is_fixed(id) {
+            return self.dimensions.iter().any(|d| d.id == id);
+        }
         let round = |v: f64| snap.map_or(v, |u| (v / u.max(1e-9)).round() * u.max(1e-9));
         let Some(d) = self.dimensions.iter_mut().find(|d| d.id == id) else {
             return false;
@@ -338,7 +357,11 @@ impl Floor {
         let chains: Vec<Vec<Id>> = self
             .dimension_chains()
             .into_iter()
-            .map(|c| c.into_iter().map(|i| self.dimensions[i].id).collect::<Vec<_>>())
+            .map(|c| {
+                c.into_iter()
+                    .map(|i| self.dimensions[i].id)
+                    .collect::<Vec<_>>()
+            })
             .filter(|c: &Vec<Id>| {
                 c.iter().all(|id| {
                     ids.contains(id)
@@ -362,6 +385,7 @@ impl Floor {
     /// whether anything changed.
     pub fn refresh_dimensions(&mut self, fmt: &DimFormat) -> bool {
         let mut changed = self.sync_dimension_anchors();
+        changed |= self.enforce_fixed_proximity();
         changed |= self.sync_dimension_curves();
         changed |= self.regrid_dimensions(fmt);
         changed
@@ -395,20 +419,33 @@ mod tests {
             p.floors[0].wall(a).unwrap().clone(),
             p.floors[0].wall(b).unwrap().clone(),
         );
-        let near = DimCurve::between_walls(&wa, &wb, Point::new(60.0, 0.0), Point::new(0.0, 60.0), 30.0)
-            .unwrap();
+        let near =
+            DimCurve::between_walls(&wa, &wb, Point::new(60.0, 0.0), Point::new(0.0, 60.0), 30.0)
+                .unwrap();
         assert!((near.value() - 90.0).abs() < 1e-6);
         // Clicking the far side of the first wall gives the obtuse angle.
-        let wide = DimCurve::between_walls(&wa, &wb, Point::new(-60.0, 0.0), Point::new(0.0, 60.0), 30.0)
-            .unwrap();
-        assert!((wide.value() - 90.0).abs() < 1e-6, "both arms are perpendicular");
+        let wide = DimCurve::between_walls(
+            &wa,
+            &wb,
+            Point::new(-60.0, 0.0),
+            Point::new(0.0, 60.0),
+            30.0,
+        )
+        .unwrap();
+        assert!(
+            (wide.value() - 90.0).abs() < 1e-6,
+            "both arms are perpendicular"
+        );
         let mut d = Dimension::curved(DimensionKind::Manual, near, 0.0);
         let fmt = DimFormat::default();
         assert_eq!(d.label(&fmt), "90.0\u{b0}");
         let g = d.curve_geom(1.0, 6.0).unwrap();
         assert_eq!(g.extensions.len(), 2);
         assert!(g.line.len() > 4);
-        assert!(g.line.iter().all(|q| (q.dist(Point::ZERO) - 30.0).abs() < 1e-6));
+        assert!(g
+            .line
+            .iter()
+            .all(|q| (q.dist(Point::ZERO) - 30.0).abs() < 1e-6));
         // Turning it lets go of the walls and carries the arc.
         d.rotate_about(Point::ZERO, FRAC_PI_2);
         let c = d.curve().unwrap();
@@ -425,8 +462,14 @@ mod tests {
             p.floors[0].wall(a).unwrap().clone(),
             p.floors[0].wall(b).unwrap().clone(),
         );
-        let c = DimCurve::between_walls(&wa, &wb, Point::new(60.0, 0.0), Point::new(-40.0, 40.0), 24.0)
-            .unwrap();
+        let c = DimCurve::between_walls(
+            &wa,
+            &wb,
+            Point::new(60.0, 0.0),
+            Point::new(-40.0, 40.0),
+            24.0,
+        )
+        .unwrap();
         assert!((c.value() - 135.0).abs() < 1e-6, "{}", c.value());
     }
 
@@ -446,8 +489,18 @@ mod tests {
         assert!((inner.radius - outer.radius).abs() > 5.9);
         let d = Dimension::curved(DimensionKind::Manual, arc, 18.0);
         let g = d.curve_geom(1.0, 4.0).unwrap();
-        assert!(g.line.first().unwrap().dist(w.start) > 15.0, "the line stands off the wall");
-        let rad = Dimension::curved(DimensionKind::Manual, DimCurve { kind: CurveKind::Radius, ..arc }, 0.0);
+        assert!(
+            g.line.first().unwrap().dist(w.start) > 15.0,
+            "the line stands off the wall"
+        );
+        let rad = Dimension::curved(
+            DimensionKind::Manual,
+            DimCurve {
+                kind: CurveKind::Radius,
+                ..arc
+            },
+            0.0,
+        );
         let g = rad.curve_geom(1.0, 4.0).unwrap();
         assert_eq!(g.line.len(), 2);
         assert!(g.line[0].dist(arc.center) < 1e-9);
@@ -473,7 +526,14 @@ mod tests {
         assert_eq!(p.floors[0].pick_dimension_string(b), vec![a, b]);
         assert_eq!(p.floors[0].pick_dimension_string(lone), vec![lone]);
         assert_eq!(p.floors[0].move_string(b, Point::new(0.0, 10.0)), 2);
-        let get = |p: &Project, id: Id| p.floors[0].dimensions.iter().find(|d| d.id == id).unwrap().clone();
+        let get = |p: &Project, id: Id| {
+            p.floors[0]
+                .dimensions
+                .iter()
+                .find(|d| d.id == id)
+                .unwrap()
+                .clone()
+        };
         assert_eq!(get(&p, a).start, Point::new(0.0, 10.0));
         assert_eq!(get(&p, b).end, Point::new(220.0, 10.0));
         assert_eq!(get(&p, lone).start, Point::new(0.0, 0.0));
@@ -526,17 +586,25 @@ mod tests {
         p.floors[0].join_string(&[a, b]);
         // The copies, as a paste makes them: same strings, the old walls.
         let copy = |p: &mut Project, id: Id| {
-            let d = p.floors[0].dimensions.iter().find(|d| d.id == id).unwrap().clone();
+            let d = p.floors[0]
+                .dimensions
+                .iter()
+                .find(|d| d.id == id)
+                .unwrap()
+                .clone();
             p.add_dimension(0, d)
         };
         let (a2, b2, c2) = (copy(&mut p, a), copy(&mut p, b), copy(&mut p, curved));
         let w2 = wall(&mut p, (500.0, 0.0), (740.0, 0.0));
-        p.floors[0].repair_pasted_dimensions(
-            &[(a, a2), (b, b2), (curved, c2)],
-            &|w| (w == w1).then_some(w2),
-        );
+        p.floors[0].repair_pasted_dimensions(&[(a, a2), (b, b2), (curved, c2)], &|w| {
+            (w == w1).then_some(w2)
+        });
         assert_eq!(p.floors[0].string_members(a2), vec![a2, b2]);
-        assert_eq!(p.floors[0].string_members(a), vec![a, b], "the originals keep theirs");
+        assert_eq!(
+            p.floors[0].string_members(a),
+            vec![a, b],
+            "the originals keep theirs"
+        );
         let cd = p.floors[0].dimensions.iter().find(|d| d.id == c2).unwrap();
         assert_eq!(cd.curve().unwrap().walls[0], Some(w2));
         // A wall that was not copied lets the curve go.
@@ -558,8 +626,13 @@ mod tests {
         let d = p.floors[0].dimensions.iter().find(|d| d.id == did).unwrap();
         assert!((d.offset - 30.0).abs() < 1e-9);
         // An angle's pull sets its arc radius and keeps its ends on the arc.
-        let a = DimCurve::from_points(Point::ZERO, Point::new(100.0, 0.0), Point::new(0.0, 100.0), 20.0)
-            .unwrap();
+        let a = DimCurve::from_points(
+            Point::ZERO,
+            Point::new(100.0, 0.0),
+            Point::new(0.0, 100.0),
+            20.0,
+        )
+        .unwrap();
         let aid = p.add_dimension(0, Dimension::curved(DimensionKind::Manual, a, 0.0));
         assert!(p.floors[0].drag_dimension_line(aid, Point::new(40.0, 0.0), Some(1.0)));
         let d = p.floors[0].dimensions.iter().find(|d| d.id == aid).unwrap();
@@ -600,8 +673,9 @@ mod tests {
             p.floors[0].wall(a).unwrap().clone(),
             p.floors[0].wall(b).unwrap().clone(),
         );
-        let c = DimCurve::between_walls(&wa, &wb, Point::new(60.0, 0.0), Point::new(0.0, 60.0), 30.0)
-            .unwrap();
+        let c =
+            DimCurve::between_walls(&wa, &wb, Point::new(60.0, 0.0), Point::new(0.0, 60.0), 30.0)
+                .unwrap();
         let id = p.add_dimension(0, Dimension::curved(DimensionKind::Manual, c, 0.0));
         let fmt = DimFormat::default();
         assert!(!p.floors[0].refresh_dimensions(&fmt));

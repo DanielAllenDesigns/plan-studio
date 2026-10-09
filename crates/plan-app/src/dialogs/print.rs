@@ -1365,7 +1365,7 @@ fn scale_combo(ui: &mut Ui, current: &mut ScaleChoice, layout: bool) {
                 ui.selectable_value(current, ScaleChoice::Percent, "Percentage");
             } else {
                 ui.selectable_value(current, ScaleChoice::Actual, "1:1 (full size)");
-                for s in Scale::ALL {
+                for s in Scale::choices() {
                     ui.selectable_value(current, ScaleChoice::Drawing(s), s.label());
                 }
                 ui.selectable_value(current, ScaleChoice::Custom, "Custom ratio");
@@ -1818,7 +1818,7 @@ impl ImageDialog {
                     .selected_text(shown)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(scale, None, "Fit the plan");
-                        for s in Scale::ALL {
+                        for s in Scale::choices() {
                             ui.selectable_value(scale, Some(s), s.label());
                         }
                     });

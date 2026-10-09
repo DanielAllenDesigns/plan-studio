@@ -1209,7 +1209,7 @@ pub enum TableLine {
 /// The table of reference rows in draw order (front first) with the Current
 /// line among them. Empty `rows` means the default single row (the floor
 /// below, in the Reference Display's session choices).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReferenceTable {
     pub rows: Vec<ReferenceRow>,
@@ -1218,16 +1218,6 @@ pub struct ReferenceTable {
     /// XOR drawing: reference lines over identical lines of the current
     /// floor are not drawn, and the rest change color.
     pub xor: bool,
-}
-
-impl Default for ReferenceTable {
-    fn default() -> Self {
-        Self {
-            rows: Vec::new(),
-            current_at: 0,
-            xor: false,
-        }
-    }
 }
 
 impl ReferenceTable {
@@ -1708,8 +1698,10 @@ mod tests {
         assert!(w.dist(p(100.0, 60.0)) < 1e-9, "{w:?}");
         assert!(row.from_world(w).dist(p(10.0, 0.0)) < 1e-9);
         // Rows of this plan are not moved.
-        let mut here = ReferenceRow::default();
-        here.offset = [5.0, 5.0, 0.0];
+        let here = ReferenceRow {
+            offset: [5.0, 5.0, 0.0],
+            ..ReferenceRow::default()
+        };
         assert_eq!(here.to_world(p(1.0, 2.0)), p(1.0, 2.0));
     }
 

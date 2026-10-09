@@ -45,18 +45,23 @@ fn screen() -> egui::RawInput {
     }
 }
 
-/// One frame of the right-hand dock; the text it painted.
+/// A few frames of the right-hand dock (the first is egui's sizing pass);
+/// the text the last one painted.
 fn dock_frame(sim: &mut Sim) -> String {
-    let full = sim.ctx.run(screen(), |ctx| {
-        crate::shell::docks::panel(
-            ctx,
-            Dock::Agent,
-            &mut sim.app.cx,
-            &mut sim.app.docks,
-            &mut sim.app.settings,
-        );
-    });
-    painted_text(&full)
+    let mut text = String::new();
+    for _ in 0..3 {
+        let full = sim.ctx.run(screen(), |ctx| {
+            crate::shell::docks::panel(
+                ctx,
+                Dock::Agent,
+                &mut sim.app.cx,
+                &mut sim.app.docks,
+                &mut sim.app.settings,
+            );
+        });
+        text = painted_text(&full);
+    }
+    text
 }
 
 fn with_one_more_wall(sim: &Sim) -> plan_core::model::Project {
@@ -288,10 +293,52 @@ fn the_preferences_page_draws_headlessly() {
     let mut settings = crate::theme::AppSettings::default();
     let mut actions = Vec::new();
     crate::dialogs::preferences::open(crate::dialogs::preferences::Page::Agent);
-    let full = ctx.run(screen(), |ctx| {
-        crate::dialogs::preferences::show_all(ctx, &mut cx, &mut settings, &mut actions);
-    });
-    let text = painted_text(&full);
+    let mut text = String::new();
+    for _ in 0..3 {
+        let full = ctx.run(screen(), |ctx| {
+            crate::dialogs::preferences::show_all(ctx, &mut cx, &mut settings, &mut actions);
+        });
+        text = painted_text(&full);
+    }
     assert!(text.contains("Anthropic API key"), "{text}");
     assert!(text.contains("ANTHROPIC_API_KEY"), "{text}");
+}
+
+#[test]
+fn applying_a_result_repairs_wall_connections_in_the_same_step() {
+    let mut sim = Sim::new();
+    let mut p = sim.app.cx.project.clone();
+    // A room whose last wall stops a quarter inch short of the first.
+    for (a, b) in [
+        ((0.0, 0.0), (240.0, 0.0)),
+        ((240.0, 0.0), (240.0, 240.0)),
+        ((240.0, 240.0), (0.0, 240.0)),
+        ((0.0, 240.0), (0.0, 0.25)),
+    ] {
+        p.add_wall(
+            0,
+            Point::new(a.0, a.1),
+            Point::new(b.0, b.1),
+            6.0,
+            108.0,
+            WallKind::Exterior,
+        );
+    }
+    let mut st = AgentPanelState::default();
+    assert!(agent_panel::process_event(
+        &mut st,
+        &mut sim.app.cx,
+        AgentEvent::Finished {
+            project: p,
+            changed: true,
+            assistant_text: "Drew a room.".into(),
+        },
+    ));
+    // Nothing is left to repair, and it was all one undo step.
+    let opts = crate::editor::connect::ConnectOptions::from_defaults(&sim.app.cx.defaults);
+    let again =
+        crate::editor::connect::fix_all_connections_project(&mut sim.app.cx.project, 0, &opts);
+    assert_eq!(again, 0);
+    sim.undo();
+    assert!(!sim.app.cx.can_undo());
 }

@@ -57,6 +57,12 @@ pub enum DetailSource {
     Camera { camera: Id },
     /// CAD Detail From View: the lines of the plan floor of that name.
     PlanView { floor: String },
+    /// A Wall Detail (manual p. 924): the framing of one wall, drawn from its
+    /// members when the wall's framing is built.
+    WallDetail { wall: Id },
+    /// The Truss Detail (manual p. 943): one diagram of each truss
+    /// configuration of the plan.
+    TrussDetail,
 }
 
 /// The marker of a detail floor.

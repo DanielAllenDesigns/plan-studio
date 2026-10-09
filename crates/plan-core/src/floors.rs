@@ -5,10 +5,15 @@
 //! (if any) is index 0 and an attic (if any) is last. Structural commands
 //! keep the cameras' floor indices and the floor elevations consistent.
 
-use crate::foundation::{Footing, FoundationLayer, Pier, Slab};
+use crate::fireplace::{Fireplace, FireplaceKind};
+use crate::foundation::{
+    Footing, FoundationLayer, FoundationSettings, Pad, Pier, PierShape, Slab, STEP_TOLERANCE,
+};
 use crate::geometry::Point;
-use crate::model::{Floor, Id, Project, RoomName, Wall, WallKind};
-use crate::rooms::{apply_function_defaults, detect_rooms, function_defaults};
+use crate::model::{Floor, Id, Opening, OpeningKind, Project, RoomName, Wall, WallKind};
+use crate::openings::OpeningStyle;
+use crate::rooms::{apply_function_defaults, detect_rooms, function_defaults, Room};
+use crate::symbols::PlacedSymbol;
 use crate::walls::WallFlags;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +39,12 @@ pub const WALL_FOOTING: (f64, f64) = (16.0, 8.0);
 /// A foundation whose clear height (wall height less the floor platform
 /// above) reaches this is a basement; a lower one is a crawl space, inches.
 pub const BASEMENT_MIN_CLEAR_HEIGHT: f64 = 72.0;
+/// The most living floors a plan can have (manual p. 762); the foundation and
+/// the attic are not counted.
+pub const MAX_LIVING_FLOORS: usize = 30;
+/// A basement whose clear height reaches this counts toward the Living Area
+/// even without finishes, inches (manual p. 749).
+pub const BASEMENT_LIVING_CLEAR_HEIGHT: f64 = 48.0;
 /// Height of the walls of an attic floor, inches (the roof cuts them).
 pub const ATTIC_WALL_HEIGHT: f64 = 48.0;
 /// Ceiling height of an attic floor, inches.
@@ -77,7 +88,8 @@ pub enum FoundationRooms {
 }
 
 /// The choices of the Build Foundation dialog (R-61, R-62).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FoundationOptions {
     pub kind: FoundationKind,
     /// Footing under the foundation walls (Walls with Footings), inches;
@@ -89,11 +101,22 @@ pub struct FoundationOptions {
     /// Stem wall height of a Monolithic Slab, or the height of a grade
     /// beam, inches.
     pub edge_height: f64,
-    /// Height of the piers under grade beams, inches.
+    /// Height of the piers under grade beams, inches (the Piers group's
+    /// Depth).
     pub pier_height: f64,
-    /// Spacing of piers along the exterior walls, inches.
+    /// Greatest distance between piers along a wall (the Piers group's
+    /// Maximum Separation), inches.
     pub pier_spacing: f64,
     pub rooms: FoundationRooms,
+    /// Auto Rebuild, platform hanging, S markers, garage options, piers,
+    /// rebar and the rest of the Foundation Defaults dialog.
+    pub settings: FoundationSettings,
+}
+
+impl Default for FoundationOptions {
+    fn default() -> Self {
+        Self::new(FoundationKind::StemWall { height: 36.0 })
+    }
 }
 
 impl FoundationOptions {
@@ -111,16 +134,41 @@ impl FoundationOptions {
             pier_height: PIER_HEIGHT,
             pier_spacing: PIER_SPACING,
             rooms: FoundationRooms::Auto,
+            settings: FoundationSettings::default(),
         }
     }
 
     /// Height of the foundation floor: the walls (and the platform zone
     /// under the first floor's walls) from the bottom to the first floor.
+    /// This is the older measure; [`FoundationOptions::floor_height`] knows
+    /// about the platform that bears on grade beams.
     pub fn total_height(&self) -> f64 {
         match self.kind {
             FoundationKind::StemWall { height } => height.max(1.0),
             FoundationKind::MonolithicSlab => self.edge_height.max(1.0),
             FoundationKind::Pier => self.pier_height.max(1.0) + self.edge_height.max(1.0),
+        }
+    }
+
+    /// Distance from the bottom of the foundation to the finished level of
+    /// Floor 1 (so Floor 0 sits this far below it), given the floor
+    /// platform of Floor 1. Grade beams carry the platform on top of them
+    /// (DECISIONS 301 as corrected), so their floor is the platform taller.
+    pub fn floor_height(&self, platform: f64) -> f64 {
+        match self.kind {
+            FoundationKind::Pier => self.total_height() + platform.max(0.0),
+            _ => self.total_height(),
+        }
+    }
+
+    /// How far below the finished level of Floor 1 the tops of the stem
+    /// walls stop: the platform that bears on them, or nothing when the
+    /// platform hangs inside the walls (Walls with Footings only).
+    pub fn top_gap(&self, platform: f64) -> f64 {
+        match self.kind {
+            FoundationKind::MonolithicSlab => 0.0,
+            FoundationKind::StemWall { .. } if self.settings.hang_platform => 0.0,
+            _ => platform.max(0.0),
         }
     }
 }
@@ -165,6 +213,32 @@ pub struct FloorSettings {
     /// Foundation): footings and the like that the 3D view draws. Other
     /// floors ignore it.
     pub foundation: Option<FoundationBuild>,
+    /// The choices the foundation floor was built with, kept so Auto Rebuild
+    /// and a rebuild in place can run again with them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foundation_options: Option<FoundationOptions>,
+    /// A digest of what the foundation was built from (Floor 1's walls,
+    /// rooms, doors and fireplaces); Auto Rebuild compares it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub foundation_signature: u64,
+    /// Default fill of the rooms on this floor (the Floor Defaults Fill Style
+    /// panel); a room with its own fill keeps it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_fill: Option<crate::extras::RoomFill>,
+    /// The layered Floor/Ceiling Structure and Finish definitions of this
+    /// floor level; a slot that is not set keeps the single thickness above
+    /// (see [`crate::assemblies`]).
+    #[serde(skip_serializing_if = "crate::assemblies::PlatformAssemblies::is_legacy")]
+    pub platform: crate::assemblies::PlatformAssemblies,
+    /// A copy of the plan-wide definitions of the slots above that follow the
+    /// default, kept so a floor can be read without the plan; refreshed by
+    /// `sync_thicknesses`.
+    #[serde(skip_serializing_if = "crate::assemblies::PlatformAssemblies::is_legacy")]
+    pub platform_inherited: crate::assemblies::PlatformAssemblies,
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 impl Default for FloorSettings {
@@ -179,6 +253,11 @@ impl Default for FloorSettings {
             ceiling_material: String::new(),
             wall_material: String::new(),
             foundation: None,
+            foundation_options: None,
+            foundation_signature: 0,
+            room_fill: None,
+            platform: crate::assemblies::PlatformAssemblies::default(),
+            platform_inherited: crate::assemblies::PlatformAssemblies::default(),
         }
     }
 }
@@ -189,6 +268,8 @@ impl FloorSettings {
     pub fn without_foundation(&self) -> FloorSettings {
         FloorSettings {
             foundation: None,
+            foundation_options: None,
+            foundation_signature: 0,
             ..self.clone()
         }
     }
@@ -235,6 +316,12 @@ pub struct NewFloorOptions {
     pub ceiling_height: Option<f64>,
     /// Floor Defaults of the new floor; `None` follows the source floor.
     pub settings: Option<FloorSettings>,
+    /// Move the roof planes on the highest floor up with the new floor
+    /// (manual p. 764). Only roof records that hold planes move.
+    pub move_roof_up: bool,
+    /// Step the floor and ceiling heights of the new floor so the ceilings
+    /// (and, below, the floors) of the existing floor keep their heights.
+    pub step_elevations: bool,
 }
 
 /// "1st Floor", "2nd Floor", "3rd Floor", "4th Floor", ... for `n >= 1`.
@@ -247,6 +334,42 @@ pub fn ordinal_floor_name(n: usize) -> String {
         _ => "th",
     };
     format!("{n}{suffix} Floor")
+}
+
+/// Is `v` one of the records of a floor's roof slot (planes, settings,
+/// ceilings, dormers, faces)?
+fn is_roof_record(v: &serde_json::Value) -> bool {
+    v.get("kind").and_then(serde_json::Value::as_str).is_some()
+}
+
+/// Do the roof records hold any roof plane?
+fn roof_has_planes(roofs: &[serde_json::Value]) -> bool {
+    roofs
+        .iter()
+        .any(|v| v.get("kind").and_then(serde_json::Value::as_str) == Some("plane"))
+}
+
+/// Raises every roof record by `dy` inches: the vertices of planes, ceiling
+/// planes and the faces under Dutch gables are scene elevations.
+fn raise_roofs(roofs: &mut [serde_json::Value], dy: f64) {
+    if dy.abs() < 1e-9 {
+        return;
+    }
+    for rec in roofs.iter_mut() {
+        let Some(poly) = rec
+            .get_mut("polygon3d")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        for v in poly.iter_mut() {
+            if let Some(y) = v.get_mut(1) {
+                if let Some(h) = y.as_f64() {
+                    *y = serde_json::json!(h + dy);
+                }
+            }
+        }
+    }
 }
 
 impl Project {
@@ -338,33 +461,68 @@ impl Project {
         .unwrap_or(0)
     }
 
+    /// How many living floors the plan has (the foundation, the attic and
+    /// CAD details are not counted).
+    pub fn living_floor_count(&self) -> usize {
+        self.floors
+            .iter()
+            .filter(|f| f.kind == FloorKind::Normal && !f.is_cad_detail())
+            .count()
+    }
+
+    /// Why a floor cannot be built or inserted with `opts`, in words; `None`
+    /// when it can (R-59, R-121: not above the attic, not below the
+    /// foundation, at most [`MAX_LIVING_FLOORS`] living floors).
+    pub fn new_floor_blocker(&self, opts: &NewFloorOptions) -> Option<String> {
+        let src = opts
+            .source
+            .filter(|&i| i < self.floors.len())
+            .or_else(|| self.top_normal_floor());
+        match (opts.place, src) {
+            (FloorPlacement::Above, Some(i)) if self.floors[i].kind == FloorKind::Attic => {
+                return Some("Cannot build a floor above the attic".into());
+            }
+            (FloorPlacement::Below, Some(i)) if self.floors[i].kind == FloorKind::Foundation => {
+                return Some("Cannot build a floor below the foundation".into());
+            }
+            _ => {}
+        }
+        (self.living_floor_count() >= MAX_LIVING_FLOORS)
+            .then(|| format!("A plan can have at most {MAX_LIVING_FLOORS} living floors"))
+    }
+
     /// Build New Floor with the dialog's full set of choices (R-59): derive
     /// the exterior walls, every wall or nothing from the source floor, copy
-    /// its rooms and slab data, and take the heights from the options or the
-    /// source floor. Returns the new floor's index, or `None` when the
-    /// placement is impossible (above the attic, below the foundation).
+    /// its rooms and slab data, take the heights from the options or the
+    /// source floor, step the new floor's elevations to match the existing
+    /// floor and move the highest floor's roof up. Returns the new floor's
+    /// index, or `None` when the placement is impossible (above the attic,
+    /// below the foundation, past [`MAX_LIVING_FLOORS`]).
     pub fn build_new_floor_with(&mut self, opts: &NewFloorOptions) -> Option<usize> {
+        if self.new_floor_blocker(opts).is_some() {
+            return None;
+        }
         let src = opts
             .source
             .filter(|&i| i < self.floors.len())
             .or_else(|| self.top_normal_floor());
         let at = match (opts.place, src) {
-            (FloorPlacement::Above, Some(i)) if opts.source.is_some() => {
-                if self.floors[i].kind == FloorKind::Attic {
-                    return None;
-                }
-                i + 1
-            }
             (FloorPlacement::Above, Some(i)) => i + 1,
-            (FloorPlacement::Below, Some(i)) => {
-                if self.floors[i].kind == FloorKind::Foundation {
-                    return None;
-                }
-                i
-            }
+            (FloorPlacement::Below, Some(i)) => i,
             (_, None) => self.floors.len(),
         };
         let was_auto = self.auto_named();
+        // The roof planes of the highest floor wait out of the floor while
+        // the stack changes; they land on the new floor (above) or stay on
+        // their floor (below), raised by what the stack grew.
+        let top = self.top_normal_floor();
+        let top_elevation = top.map(|t| self.floors[t].elevation);
+        let carried = if opts.move_roof_up && (opts.place == FloorPlacement::Below || src == top) {
+            top.map(|t| self.floors[t].roofs.clone())
+                .filter(|r| roof_has_planes(r))
+        } else {
+            None
+        };
         let mut floor = Floor::new("", 0.0);
         floor.ceiling_height = opts.ceiling_height.unwrap_or_else(|| {
             src.map_or(crate::model::DEFAULT_CEILING_HEIGHT, |i| {
@@ -388,6 +546,21 @@ impl Project {
             if opts.copy_foundation {
                 floor.foundation = self.floors[i].foundation.clone();
             }
+            if opts.step_elevations {
+                self.step_new_floor_to(i, opts.place, &mut floor);
+            }
+        }
+        // Adding a floor above a split level resets the ceiling heights of the
+        // rooms whose floors are raised or lowered to the default, unless the
+        // step option keeps the ceilings (manual p. 772).
+        if let (FloorPlacement::Above, Some(i), false) = (opts.place, src, opts.step_elevations) {
+            if src == top {
+                for n in &mut self.floors[i].room_names {
+                    if n.floor_height_offset != 0.0 {
+                        n.ceiling_height = None;
+                    }
+                }
+            }
         }
         self.floors.insert(at, floor);
         self.shift_cameras(at, 1);
@@ -401,7 +574,81 @@ impl Project {
         self.floors[at].name = self.auto_floor_name(at);
         self.renumber_floors(&was_auto, &order);
         self.restack_floors();
+        if let (Some(mut roofs), Some(t0), Some(t)) = (carried, top_elevation, top) {
+            // `t` is the old index of the highest floor.
+            let new_top = if at <= t { t + 1 } else { t };
+            let rise = match opts.place {
+                FloorPlacement::Above => self.floors[at].elevation - t0,
+                FloorPlacement::Below => self.floors[new_top].elevation - t0,
+            };
+            raise_roofs(&mut roofs, rise);
+            match opts.place {
+                FloorPlacement::Above => {
+                    self.floors[new_top].roofs.retain(|v| !is_roof_record(v));
+                    self.floors[at].roofs = roofs;
+                }
+                FloorPlacement::Below => self.floors[new_top].roofs = roofs,
+            }
+        }
         Some(at)
+    }
+
+    /// Step Floor/Ceiling Elevations to Match Existing Floor (manual pp.
+    /// 764-765): the rooms of the new floor `target`, which is built above
+    /// or below floor `src`, get the floor (above) or ceiling (below)
+    /// heights that keep the ceilings (or floors) of `src`'s rooms where they
+    /// are.
+    fn step_new_floor_to(&self, src: usize, place: FloorPlacement, target: &mut Floor) {
+        let s = &self.floors[src];
+        let from = detect_rooms(&s.walls, 0.5);
+        let into = detect_rooms(&target.walls, 0.5);
+        for room in &from {
+            let Some(entry) = room.name_entry(&s.room_names) else {
+                continue;
+            };
+            let at = room.interior_point();
+            let Some(there) = into.iter().find(|r| r.contains(at)) else {
+                continue;
+            };
+            // How far the room's ceiling (above) or floor (below) is from
+            // the floor's default.
+            let (raise, ceiling) = match place {
+                FloorPlacement::Above => (
+                    entry.floor_height_offset + entry.ceiling_height.unwrap_or(s.ceiling_height)
+                        - s.ceiling_height,
+                    None,
+                ),
+                FloorPlacement::Below => {
+                    (0.0, Some(target.ceiling_height + entry.floor_height_offset))
+                }
+            };
+            if raise.abs() < 0.01
+                && ceiling.is_none_or(|c| (c - target.ceiling_height).abs() < 0.01)
+            {
+                continue;
+            }
+            let anchor = there.interior_point();
+            let slot = target
+                .room_names
+                .iter()
+                .position(|n| there.contains(n.anchor));
+            let n = match slot {
+                Some(i) => &mut target.room_names[i],
+                None => {
+                    target.room_names.push(RoomName::new(
+                        anchor,
+                        entry.name.clone(),
+                        entry.room_type.clone(),
+                    ));
+                    target.room_names.last_mut().expect("just pushed")
+                }
+            };
+            // Several rooms below one room above: it clears the tallest.
+            n.floor_height_offset = n.floor_height_offset.max(raise);
+            if let Some(c) = ceiling {
+                n.ceiling_height = Some(n.ceiling_height.map_or(c, |old| old.min(c)));
+            }
+        }
     }
 
     /// Copy the walls (and their openings) of floor `src` into `target` with
@@ -520,6 +767,10 @@ impl Project {
         if self.floors.len() <= 1 || idx >= self.floors.len() {
             return false;
         }
+        // Floor 0 stays while Auto Rebuild Foundation is on (manual p. 766).
+        if self.floors[idx].kind == FloorKind::Foundation && self.foundation_auto_rebuild() {
+            return false;
+        }
         let was_auto = self.auto_named();
         self.floors.remove(idx);
         self.cameras.retain(|c| c.floor != idx);
@@ -571,22 +822,59 @@ impl Project {
         self.build_foundation_with(&FoundationOptions::new(kind))
     }
 
-    /// Build Foundation (R-61, R-62): create (or rebuild) the Foundation
-    /// floor at index 0 under the exterior walls of the first normal floor.
-    /// Foundation walls share the exterior walls' centerlines so corners
-    /// keep joining.
-    ///
-    /// * Walls with Footings: foundation walls of the stated height with a
-    ///   footing under them; a basement or crawl space room is made on the
-    ///   floor (`opts.rooms`).
-    /// * Monolithic Slab: a stem wall of `edge_height` under the exterior
-    ///   walls and a slab of `slab_thickness` inside it.
-    /// * Grade Beams on Piers: round piers at the wall ends and every
-    ///   `pier_spacing` along them, with grade beams on top.
-    ///
-    /// Returns the foundation floor's index (always 0). Existing floors move
-    /// up by one when a foundation is newly created.
+    /// Does the plan have a foundation floor whose Auto Rebuild Foundation is
+    /// on? Floor 0 then cannot be deleted or edited by hand (manual p. 745).
+    pub fn foundation_auto_rebuild(&self) -> bool {
+        self.floors
+            .first()
+            .filter(|f| f.kind == FloorKind::Foundation)
+            .and_then(|f| f.settings.foundation_options)
+            .is_some_and(|o| o.settings.auto_rebuild)
+    }
+
+    /// Build Foundation (R-61, R-62) with the room types `Garage` and `Slab`
+    /// taken as the slab rooms (see [`Project::build_foundation_classified`]
+    /// for plans whose Room Types have other names for those functions).
     pub fn build_foundation_with(&mut self, opts: &FoundationOptions) -> usize {
+        self.build_foundation_classified(opts, &is_slab_room_type)
+    }
+
+    /// Build Foundation (R-61, R-62): create (or rebuild in place) the
+    /// Foundation floor at index 0 under the first normal floor, as the
+    /// manual describes on pp. 741-749.
+    ///
+    /// * Walls under every exterior wall of a room that has Build Foundation
+    ///   Below (never a railing or invisible wall), under interior walls
+    ///   that ask for Create Wall/Footing Below or bear the floor above, and
+    ///   under walls that separate a slab room from the rest or rooms of
+    ///   different floor heights. Their tops and bottoms follow the floor
+    ///   heights and stem wall heights of the rooms they bound, so a plan
+    ///   with several floor heights gets a stepped foundation.
+    /// * Walls with Footings: the stem wall height runs from the footing
+    ///   top to the underside of Floor 1's platform, which bears on top
+    ///   (`settings.hang_platform` builds the walls up to the platform's
+    ///   top instead). A basement or crawl space room is made inside: a
+    ///   clear height of 72 in gets a slab, 48 in counts as living area,
+    ///   less is a crawl space.
+    /// * Monolithic Slab: thickened edges under the exterior walls and a
+    ///   slab in every room; garage and slab rooms are lowered and curbed.
+    /// * Grade Beams on Piers: piers (round or square) at the wall ends and
+    ///   no further apart than the maximum separation, grade beams on them.
+    /// * Garage and slab rooms (and every room with Slab at Top of Stem
+    ///   Wall) get stem walls and a slab of their own; a door in their walls
+    ///   leaves a cutout in the stem wall or curb as wide as its rough
+    ///   opening plus Add for Concrete Cutout.
+    /// * Masonry fireplaces on Floor 1 get a fireplace foundation (Walls
+    ///   with Footings and Grade Beams on Piers).
+    ///
+    /// `is_slab_type` tells which Room Types have the Garage or Slab
+    /// function. Returns the foundation floor's index (always 0). Existing
+    /// floors move up by one when a foundation is newly created.
+    pub fn build_foundation_classified(
+        &mut self,
+        opts: &FoundationOptions,
+        is_slab_type: &dyn Fn(&str) -> bool,
+    ) -> usize {
         let has_foundation = self
             .floors
             .first()
@@ -596,17 +884,65 @@ impl Project {
             .iter()
             .position(|f| f.kind != FloorKind::Foundation)
             .unwrap_or(0);
+        let old_kind = has_foundation
+            .then(|| self.floors[0].settings.foundation_options)
+            .flatten()
+            .map(|o| o.kind);
         let platform = self.floors[first_normal].settings.floor_structure_thickness;
-        let exterior: Vec<Wall> = self.floors[first_normal]
-            .walls
-            .iter()
-            .filter(|w| w.kind == WallKind::Exterior && !w.flags.foundation && !w.flags.invisible)
-            .cloned()
-            .collect();
-        let height = opts.total_height();
-        // Rebuilding keeps what was drawn on the foundation floor (dimensions,
-        // CAD, symbols, hand-drawn walls and their openings, renamed rooms):
-        // only the walls and objects the build makes are replaced.
+        let s = opts.settings;
+        let mono = matches!(opts.kind, FoundationKind::MonolithicSlab);
+        let beams = matches!(opts.kind, FoundationKind::Pier);
+
+        // The Monolithic Slab boxes a monolithic build ticked are not the
+        // user's choice once another type is built (nor in a rebuild of it).
+        let stale_flags = old_kind == Some(FoundationKind::MonolithicSlab);
+        // Garage and slab rooms start lowered (manual p. 748: the default
+        // drop when the room's floor height is still 0).
+        if s.garage_floor {
+            let drop = if mono {
+                s.lower_garage_floor
+            } else {
+                s.garage_drop(platform)
+            };
+            for n in &mut self.floors[first_normal].room_names {
+                let flagged = !mono && !stale_flags && n.monolithic_slab.is_some();
+                if n.floor_height_offset == 0.0
+                    && (flagged || is_slab_type(&n.room_type))
+                    && n.options.build_foundation_below
+                {
+                    n.floor_height_offset = -drop;
+                }
+            }
+        }
+        let rooms = source_rooms(&self.floors[first_normal], opts, is_slab_type, stale_flags);
+
+        // ----- the walls -----
+        // The Minimum Height of the dialog is applied to the stem wall height
+        // when it becomes `height` (`FoundationSpec::to_kind`); here it keeps
+        // the walls under lowered rooms and garages from getting shorter.
+        let floor_h = opts.floor_height(platform).max(1.0);
+        let gap = opts.top_gap(platform);
+        let mut planned = plan_walls(&self.floors[first_normal], &rooms, opts, platform, floor_h);
+        if beams {
+            // Grade beams stand on piers at one height.
+            for w in &mut planned {
+                w.top = -gap;
+                w.bottom = -gap - opts.edge_height.max(1.0);
+            }
+        }
+        let l0 = if beams {
+            -floor_h
+        } else {
+            planned.iter().map(|w| w.bottom).fold(-floor_h, f64::min)
+        };
+        let height = -l0;
+        // Clear height of the rooms below Floor 1's platform before a slab.
+        let clear_nos = -l0 - gap;
+
+        // Rebuilding keeps what was drawn on the foundation floor
+        // (dimensions, CAD, symbols, hand-drawn walls and their openings,
+        // renamed rooms): only the walls and objects the build makes are
+        // replaced.
         let mut floor = if has_foundation {
             let mut old = self.floors[0].clone();
             let made: Vec<Id> = old
@@ -618,12 +954,21 @@ impl Project {
             old.walls.retain(|w| !w.flags.foundation);
             old.openings.retain(|o| !made.contains(&o.wall_id));
             old.room_names.retain(|n| {
-                !(n.name == n.room_type && matches!(n.room_type.as_str(), "Basement" | "Crawl Space"))
+                !(n.name == n.room_type
+                    && matches!(n.room_type.as_str(), "Basement" | "Crawl Space" | "Slab"))
             });
-            old.elevation = -height;
+            let bases: Vec<Id> = old
+                .fireplaces
+                .iter()
+                .filter(|f| f.base_of.is_some())
+                .map(|f| f.id)
+                .collect();
+            old.symbols.retain(|y| !bases.contains(&y.id));
+            old.fireplaces.retain(|f| f.base_of.is_none());
+            old.elevation = l0;
             old
         } else {
-            Floor::new("Foundation", -height)
+            Floor::new("Foundation", l0)
         };
         floor.kind = FloorKind::Foundation;
         floor.ceiling_height = height;
@@ -635,106 +980,218 @@ impl Project {
             footing_width: if footed { opts.footing_width } else { 0.0 },
             footing_depth: if footed { opts.footing_depth } else { 0.0 },
         });
+        floor.settings.foundation_options = Some(*opts);
         // The first floor's platform is the ceiling of the rooms below.
         floor.settings.ceiling_structure_thickness = platform;
-        let beams = matches!(opts.kind, FoundationKind::Pier);
-        for src in &exterior {
+        let thickness = if beams {
+            GRADE_BEAM_WIDTH
+        } else {
+            FOUNDATION_WALL_THICKNESS
+        };
+        let mut made_walls: Vec<(Id, Id)> = Vec::new();
+        for pw in &planned {
             let id = self.alloc_id();
-            let (thickness, wall_height, bottom) = if beams {
-                (
-                    GRADE_BEAM_WIDTH,
-                    opts.edge_height.max(1.0),
-                    opts.pier_height.max(1.0),
-                )
-            } else {
-                (FOUNDATION_WALL_THICKNESS, height, 0.0)
-            };
-            floor.walls.push(Wall {
+            let mut wall = Wall {
                 id,
                 thickness,
-                height: wall_height,
-                bottom_offset: bottom,
+                height: pw.top - pw.bottom,
+                bottom_offset: pw.bottom - l0,
                 flags: WallFlags {
                     foundation: true,
                     ..WallFlags::default()
                 },
                 wall_type: Some(FOUNDATION_WALL_TYPE.to_string()),
-                curve: src.curve,
+                curve: pw.curve,
                 ..Wall::new(
-                    src.start,
-                    src.end,
+                    pw.start,
+                    pw.end,
                     thickness,
-                    wall_height,
+                    pw.top - pw.bottom,
                     WallKind::Exterior,
                 )
-            });
+            };
+            // Stepped stem walls get vertical footings; the thickened edge
+            // of a monolithic slab a chamfer (manual p. 747).
+            if mono {
+                wall.spec.foundation.slab_footing = true;
+                wall.spec.foundation.chamfer_monolithic = true;
+                wall.spec.foundation.chamfer_width = s.chamfer_width;
+                wall.spec.foundation.chamfer_height = s.chamfer_height;
+            }
+            wall.spec.foundation.create_below = pw.create_below;
+            floor.walls.push(wall);
+            made_walls.push((pw.source, id));
         }
-        let mut layer = FoundationLayer::default();
-        match opts.kind {
-            FoundationKind::Pier => {
-                let mut spots: Vec<Point> = Vec::new();
-                let mut add = |p: Point| {
-                    if !spots.iter().any(|c| c.dist(p) < 1.0) {
-                        spots.push(p);
-                    }
+        if s.vertical_step_footings && !mono {
+            let steps = crate::foundation::step_markers(&floor);
+            for w in &mut floor.walls {
+                let stepped = steps.iter().any(|m| {
+                    m.tall_wall == w.id && (m.at.dist(w.start) < 0.5 || m.at.dist(w.end) < 0.5)
+                });
+                if stepped && footed {
+                    w.spec.foundation.footing = true;
+                    w.spec.foundation.vertical_footing = true;
+                    w.spec.foundation.footing_width = opts.footing_width;
+                    w.spec.foundation.footing_height = opts.footing_depth;
+                }
+            }
+        }
+
+        // ----- doors in garage and slab walls: cutouts in the stem wall -----
+        if s.garage_floor && rooms.iter().any(|r| r.slab) {
+            let src = &self.floors[first_normal];
+            let mut cuts: Vec<Opening> = Vec::new();
+            for pw in planned.iter().filter(|w| w.slab_edge) {
+                let Some(&(_, fid)) = made_walls.iter().find(|(sid, _)| *sid == pw.source) else {
+                    continue;
                 };
-                for w in &exterior {
-                    let n = (w.length() / opts.pier_spacing.max(12.0)).ceil().max(1.0) as usize;
-                    for i in 0..n {
-                        add(Point::lerp(w.start, w.end, i as f64 / n as f64));
+                let Some(fw) = floor.walls.iter().find(|w| w.id == fid) else {
+                    continue;
+                };
+                for op in src
+                    .openings
+                    .iter()
+                    .filter(|o| o.wall_id == pw.source && o.kind == OpeningKind::Door)
+                {
+                    let width = crate::foundation::garage_cut_width(op);
+                    let mut cut = Opening::new(
+                        fid,
+                        op.center_offset,
+                        OpeningKind::Door,
+                        width,
+                        fw.height.max(1.0),
+                        0.0,
+                    );
+                    cut.style = OpeningStyle::Doorway;
+                    cut.label_override = Some("Cutout".into());
+                    cuts.push(cut);
+                }
+            }
+            for mut cut in cuts {
+                cut.id = self.alloc_id();
+                floor.openings.push(cut);
+            }
+        }
+
+        // ----- piers, slabs -----
+        let mut layer = FoundationLayer::default();
+        if beams {
+            let mut spots: Vec<Point> = Vec::new();
+            let mut add = |p: Point| {
+                if !spots.iter().any(|c| c.dist(p) < 1.0) {
+                    spots.push(p);
+                }
+            };
+            for pw in &planned {
+                for p in crate::foundation::pier_positions(pw.start, pw.end, opts.pier_spacing) {
+                    add(p);
+                }
+            }
+            let depth = opts.pier_height.max(1.0);
+            let width = s.pier_width.max(1.0);
+            for c in spots {
+                let id = self.alloc_id();
+                match s.pier_shape {
+                    PierShape::Round => {
+                        let mut pier = Pier::new(id, c);
+                        pier.diameter = width;
+                        pier.height = depth;
+                        pier.elevation = depth;
+                        pier.footing = Some(Footing {
+                            width: 24.0,
+                            depth: 12.0,
+                        });
+                        layer.piers.push(pier);
                     }
-                    add(w.end);
-                }
-                for c in spots {
-                    let id = self.alloc_id();
-                    let mut pier = Pier::new(id, c);
-                    pier.height = opts.pier_height.max(1.0);
-                    pier.elevation = pier.height;
-                    pier.footing = Some(Footing {
-                        width: 24.0,
-                        depth: 12.0,
-                    });
-                    layer.piers.push(pier);
+                    PierShape::Square => {
+                        let mut pad = Pad::new(id, c);
+                        pad.size = width;
+                        pad.thickness = depth;
+                        pad.elevation = depth;
+                        layer.pads.push(pad);
+                    }
                 }
             }
-            FoundationKind::MonolithicSlab => {
-                let biggest = detect_rooms(&floor.walls, 0.5)
-                    .into_iter()
-                    .max_by(|a, b| a.interior_area_sq_in.total_cmp(&b.interior_area_sq_in));
-                if let Some(room) = biggest {
-                    let outline = if room.inner_polygon.len() >= 3 {
-                        room.inner_polygon
-                    } else {
-                        room.polygon
-                    };
-                    let id = self.alloc_id();
-                    let mut slab = Slab::new(id, outline);
-                    slab.thickness = opts.slab_thickness.max(1.0);
-                    // The slab's top meets the underside of the first
-                    // floor's slab (1" under its finished floor).
-                    slab.top_elevation = height - 1.0;
-                    layer.slabs.push(slab);
-                }
+        }
+        // Floor 0 as the walls leave it, to find the rooms of the slabs.
+        let below = detect_rooms(&floor.walls, 0.5);
+        let mut slab_under: Vec<bool> = vec![false; below.len()];
+        let src_room_of = |r: &Room| -> Option<&SourceRoom> {
+            let at = r.interior_point();
+            rooms.iter().find(|sr| sr.room.contains(at))
+        };
+        for (i, r0) in below.iter().enumerate() {
+            let sr = src_room_of(r0);
+            let slab_room = s.garage_floor && sr.is_some_and(|x| x.slab);
+            let outline = if r0.inner_polygon.len() >= 3 {
+                r0.inner_polygon.clone()
+            } else {
+                r0.polygon.clone()
+            };
+            if outline.len() < 3 {
+                continue;
             }
-            FoundationKind::StemWall { .. } => {}
+            let offset = sr.map_or(0.0, |x| x.offset);
+            let top = if mono {
+                // The slab's top meets the underside of the first floor's
+                // slab (1 in under its finished floor); a garage is lowered.
+                Some(offset.min(0.0) - l0 - 1.0)
+            } else if slab_room {
+                Some(offset - l0)
+            } else if s.slab_at_stem_top && matches!(opts.kind, FoundationKind::StemWall { .. }) {
+                Some(offset - opts.top_gap(platform) - l0)
+            } else {
+                None
+            };
+            if let Some(top) = top {
+                let id = self.alloc_id();
+                let mut slab = Slab::new(id, outline);
+                slab.thickness = opts.slab_thickness.max(1.0);
+                slab.top_elevation = top;
+                layer.slabs.push(slab);
+                // A monolithic slab leaves its house rooms unnamed; a garage
+                // or slab room under it supplies the floor above.
+                slab_under[i] = !mono || slab_room;
+            }
         }
         layer.store(&mut floor);
-        // Rooms of a basement or crawl space (R-18).
-        if matches!(opts.kind, FoundationKind::StemWall { .. }) {
-            let type_name = match opts.rooms {
-                FoundationRooms::None => None,
-                FoundationRooms::Basement => Some("Basement"),
-                FoundationRooms::CrawlSpace => Some("Crawl Space"),
-                FoundationRooms::Auto => Some(if height - platform >= BASEMENT_MIN_CLEAR_HEIGHT {
-                    "Basement"
-                } else {
-                    "Crawl Space"
-                }),
-            };
-            if let Some(t) = type_name {
-                name_foundation_rooms(&mut floor, t);
+
+        // ----- fireplace foundations -----
+        if !mono {
+            let src = &self.floors[first_normal];
+            let bases: Vec<(PlacedSymbol, Fireplace)> = src
+                .fireplace_symbols()
+                .into_iter()
+                .filter(|(_, fp)| fp.kind == FireplaceKind::Masonry)
+                .map(|(sym, fp)| (sym.clone(), fp))
+                .collect();
+            for (sym, fp) in bases {
+                let id = self.alloc_id();
+                let (base_sym, base_fp) = fireplace_base(&sym, &fp, id, clear_nos.max(12.0));
+                floor.symbols.push(base_sym);
+                floor.fireplaces.push(base_fp);
             }
         }
+
+        // ----- rooms of the foundation floor (R-18) -----
+        let slab_t = opts.slab_thickness.max(1.0);
+        let tier: Option<(&str, bool)> = if matches!(opts.kind, FoundationKind::StemWall { .. }) {
+            let slab_ok = clear_nos - slab_t >= BASEMENT_MIN_CLEAR_HEIGHT;
+            match opts.rooms {
+                FoundationRooms::None => None,
+                FoundationRooms::Basement => Some(("Basement", slab_ok)),
+                FoundationRooms::CrawlSpace => Some(("Crawl Space", false)),
+                FoundationRooms::Auto if slab_ok => Some(("Basement", true)),
+                FoundationRooms::Auto if clear_nos >= BASEMENT_LIVING_CLEAR_HEIGHT => {
+                    Some(("Basement", false))
+                }
+                FoundationRooms::Auto => Some(("Crawl Space", false)),
+            }
+        } else {
+            None
+        };
+        name_foundation_rooms(&mut floor, &below, &slab_under, tier);
+
         if has_foundation {
             self.floors[0] = floor;
         } else {
@@ -742,7 +1199,72 @@ impl Project {
             self.shift_cameras(0, 1);
         }
         self.restack_floors();
+
+        // ----- Floor 1 takes its floor from the foundation -----
+        let src_idx = first_normal + usize::from(!has_foundation);
+        let slab_flags: Vec<(Point, bool)> = rooms
+            .iter()
+            .filter_map(|r| r.anchor.map(|a| (a, r.slab)))
+            .collect();
+        let was_mono = old_kind == Some(FoundationKind::MonolithicSlab);
+        for n in &mut self.floors[src_idx].room_names {
+            let slab_room = slab_flags
+                .iter()
+                .any(|(p, slab)| *slab && p.dist(n.anchor) < 1e-6);
+            let on_slab = if mono {
+                true
+            } else {
+                (s.garage_floor && slab_room)
+                    || (s.slab_at_stem_top && matches!(opts.kind, FoundationKind::StemWall { .. }))
+            };
+            if on_slab {
+                n.options.floor_from_foundation = true;
+                if mono {
+                    n.monolithic_slab.get_or_insert(crate::rooms::RoomSlab {
+                        thickness: opts.slab_thickness,
+                        stem_height: opts.edge_height,
+                    });
+                }
+            }
+            if was_mono && !mono {
+                // The boxes a monolithic build ticked come off again (p. 738).
+                n.monolithic_slab = None;
+                if !on_slab {
+                    n.options.floor_from_foundation = false;
+                }
+            }
+        }
+        let sig = foundation_signature(&self.floors[src_idx], opts);
+        self.floors[0].settings.foundation_signature = sig;
         0
+    }
+
+    /// Auto Rebuild Foundation: when the foundation was built with Auto
+    /// Rebuild on and what Floor 1 offers it has changed since, build it
+    /// again with the same choices. Returns whether it was rebuilt.
+    pub fn auto_rebuild_foundation(&mut self, is_slab_type: &dyn Fn(&str) -> bool) -> bool {
+        let Some(f0) = self
+            .floors
+            .first()
+            .filter(|f| f.kind == FloorKind::Foundation)
+        else {
+            return false;
+        };
+        let Some(opts) = f0
+            .settings
+            .foundation_options
+            .filter(|o| o.settings.auto_rebuild)
+        else {
+            return false;
+        };
+        let Some(src) = self.floors.iter().find(|f| f.kind == FloorKind::Normal) else {
+            return false;
+        };
+        if foundation_signature(src, &opts) == f0.settings.foundation_signature {
+            return false;
+        }
+        self.build_foundation_classified(&opts, is_slab_type);
+        true
     }
 
     /// Build Attic Floor (R-68): add the attic floor above the highest normal
@@ -837,27 +1359,35 @@ impl Project {
                 });
             }
         }
-        // An Attic room inside the attic walls.
+        // Rooms cannot be created on the Attic floor (manual p. 773): no
+        // Attic room is made inside the attic walls, and the entries an
+        // earlier version made are dropped.
         let floor = &mut self.floors[attic];
-        let rooms = detect_rooms(&floor.walls, 0.5);
         let before = floor.room_names.len();
-        floor
-            .room_names
-            .retain(|n| rooms.iter().any(|r| r.contains(n.anchor)));
+        floor.room_names.clear();
         changed |= floor.room_names.len() != before;
-        for room in &rooms {
-            if room.name_entry(&floor.room_names).is_none() {
-                let mut n = RoomName::new(room.interior_point(), "Attic", "Attic");
-                let d = function_defaults("Utility", "Attic");
-                apply_function_defaults(&mut n, &d, floor.settings.floor_finish_thickness);
-                // The roof is the attic's ceiling: a flat platform at the
-                // attic's ceiling height would poke through it.
-                n.has_ceiling = false;
-                floor.room_names.push(n);
-                changed = true;
-            }
-        }
         changed
+    }
+
+    /// The warning that shows when walls or other objects are drawn on the
+    /// Attic floor (manual p. 773), `None` for other floors and for an attic
+    /// floor holding only the attic walls Build Roof makes.
+    pub fn attic_floor_warning(&self, idx: usize) -> Option<&'static str> {
+        let f = self
+            .floors
+            .get(idx)
+            .filter(|f| f.kind == FloorKind::Attic)?;
+        let drawn = f.walls.iter().any(|w| !w.flags.attic)
+            || !f.symbols.is_empty()
+            || !f.cabinets.is_empty()
+            || !f.stairs.is_empty()
+            || !f.cad.is_empty()
+            || !f.dimensions.is_empty()
+            || !f.framing.is_empty();
+        drawn.then_some(
+            "The Attic floor is not meant to be a living area: rooms cannot be created on it. \
+             Build an attic loft or bonus room on a numbered floor instead.",
+        )
     }
 
     /// Ids of the foundation walls on floor `idx`.
@@ -871,18 +1401,324 @@ impl Project {
     }
 }
 
-/// Names every room of the foundation floor `floor` a room of type `type_name`
-/// (Basement or Crawl Space), with that function's platform defaults.
-fn name_foundation_rooms(floor: &mut Floor, type_name: &str) {
-    for room in detect_rooms(&floor.walls, 0.5) {
+/// The room types the builder treats as slab rooms when the caller has no
+/// Room Types list to ask: Garage and Slab.
+pub fn is_slab_room_type(type_name: &str) -> bool {
+    matches!(type_name, "Garage" | "Slab")
+}
+
+/// A room of the first floor as the foundation builder sees it.
+struct SourceRoom {
+    room: Room,
+    /// Garage or Slab type, or flagged Monolithic Slab Foundation: the room
+    /// gets a slab of its own with stem walls or curbs.
+    slab: bool,
+    /// Build Foundation Below is off.
+    no_foundation: bool,
+    /// The room's floor height above the floor's datum.
+    offset: f64,
+    /// The room's own Stem Wall Height.
+    stem: Option<f64>,
+    /// The anchor of the room's name entry, if it has one.
+    anchor: Option<Point>,
+}
+
+fn source_rooms(
+    floor: &Floor,
+    opts: &FoundationOptions,
+    is_slab_type: &dyn Fn(&str) -> bool,
+    stale_flags: bool,
+) -> Vec<SourceRoom> {
+    let mono = matches!(opts.kind, FoundationKind::MonolithicSlab);
+    detect_rooms(&floor.walls, 0.5)
+        .into_iter()
+        .map(|room| {
+            let e = room.name_entry(&floor.room_names);
+            let slab = opts.settings.garage_floor
+                && e.is_some_and(|n| {
+                    is_slab_type(&n.room_type)
+                        || (!mono && !stale_flags && n.monolithic_slab.is_some())
+                });
+            SourceRoom {
+                slab,
+                no_foundation: e.is_some_and(|n| !n.options.build_foundation_below),
+                offset: e.map_or(0.0, |n| n.floor_height_offset),
+                stem: e.and_then(|n| n.stem_wall_height).filter(|h| *h > 0.5),
+                anchor: e.map(|n| n.anchor),
+                room,
+            }
+        })
+        .collect()
+}
+
+/// A foundation wall the builder will make: where, how high it stands and
+/// which wall of Floor 1 it is under.
+struct PlannedWall {
+    source: Id,
+    start: Point,
+    end: Point,
+    curve: Option<crate::walls::WallCurve>,
+    /// Top and bottom relative to Floor 1's finished level, inches.
+    top: f64,
+    bottom: f64,
+    /// The wall bounds a slab room (it gets cutouts for doors).
+    slab_edge: bool,
+    create_below: bool,
+}
+
+/// Which walls get a foundation and how tall (manual pp. 742, 746, 748).
+fn plan_walls(
+    floor: &Floor,
+    rooms: &[SourceRoom],
+    opts: &FoundationOptions,
+    platform: f64,
+    floor_h: f64,
+) -> Vec<PlannedWall> {
+    use crate::walls::WallClass;
+    let s = opts.settings;
+    let mono = matches!(opts.kind, FoundationKind::MonolithicSlab);
+    let gap = opts.top_gap(platform);
+    let natural = -floor_h;
+    let mut out = Vec::new();
+    for w in &floor.walls {
+        if w.flags.foundation || w.flags.attic || w.length() < 1.0 {
+            continue;
+        }
+        let hidden = w.flags.invisible
+            || w.flags.railing
+            || w.flags.room_divider
+            || matches!(
+                w.class,
+                WallClass::Railing
+                    | WallClass::DeckRailing
+                    | WallClass::DeckEdge
+                    | WallClass::Fencing { .. }
+                    | WallClass::RoomDivider
+            );
+        let along = w.path_length() * 0.5;
+        let mid = w.point_along(along);
+        let reach = w.thickness * 0.5 + 1.5;
+        let n = w.normal_along(along);
+        let mut adj: Vec<usize> = [1.0, -1.0]
+            .iter()
+            .filter_map(|sign| {
+                rooms
+                    .iter()
+                    .position(|r| r.room.contains(mid + n * (sign * reach)))
+            })
+            .collect();
+        adj.dedup();
+        let create_below = w.spec.foundation.create_below;
+        let all_declined = !adj.is_empty() && adj.iter().all(|&i| rooms[i].no_foundation);
+        let wanted = if w.kind == WallKind::Exterior && !hidden {
+            !all_declined || create_below
+        } else {
+            let two = adj.len() == 2;
+            let separates_slab = two && rooms[adj[0]].slab != rooms[adj[1]].slab;
+            let steps = two
+                && ((rooms[adj[0]].offset - rooms[adj[1]].offset).abs() > STEP_TOLERANCE
+                    || rooms[adj[0]].stem != rooms[adj[1]].stem);
+            let bearing = w.spec.structure.bearing_wall && !hidden;
+            (create_below || bearing || separates_slab || steps) && (!all_declined || create_below)
+        };
+        if !wanted {
+            continue;
+        }
+        let (mut top, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY);
+        for &i in &adj {
+            let r = &rooms[i];
+            let t = if mono {
+                if r.slab {
+                    0.0
+                } else {
+                    r.offset.max(0.0)
+                }
+            } else if r.slab {
+                r.offset + s.garage_floor_to_stem_top
+            } else {
+                r.offset - gap
+            };
+            let min_h = if r.slab {
+                s.min_garage_height
+            } else {
+                s.min_height
+            };
+            let b = match r.stem {
+                Some(h) => t - h,
+                None if mono => natural.min(t - opts.edge_height.max(1.0)),
+                // A room at the floor's own height keeps the height asked
+                // for; a lowered one or a slab room is never shorter than
+                // the minimum.
+                None if r.offset == 0.0 && !r.slab => natural,
+                None => natural.min(t - min_h),
+            };
+            top = top.max(t);
+            bottom = bottom.min(b);
+        }
+        if adj.is_empty() {
+            top = if mono { 0.0 } else { -gap };
+            bottom = natural;
+        }
+        out.push(PlannedWall {
+            source: w.id,
+            start: w.start,
+            end: w.end,
+            curve: w.curve,
+            top,
+            bottom,
+            slab_edge: adj.iter().any(|&i| rooms[i].slab),
+            create_below,
+        });
+    }
+    out
+}
+
+/// The block under a masonry fireplace on Floor 1: the same footprint,
+/// material and place in the wall, no firebox, hearth, mantel or chimney,
+/// `height` tall (manual p. 758).
+fn fireplace_base(
+    sym: &PlacedSymbol,
+    fp: &Fireplace,
+    id: Id,
+    height: f64,
+) -> (PlacedSymbol, Fireplace) {
+    let mut s = sym.clone();
+    s.id = id;
+    s.label = "Fireplace Foundation".into();
+    s.options.clear();
+    s.distribution = None;
+    s.owner = None;
+    let mut f = Fireplace::new(id, FireplaceKind::Masonry);
+    f.name = "Fireplace Foundation".into();
+    f.in_wall = fp.in_wall;
+    f.no_firebox = true;
+    f.base_of = Some(sym.id);
+    f.elevation = 0.0;
+    f.height = Some(height);
+    f.hearth.enabled = false;
+    f.mantel.enabled = false;
+    f.chimney.enabled = false;
+    f.materials = fp.materials.clone();
+    f.suppress_dimensions = true;
+    f.fit_to(s.width, s.depth);
+    (s, f)
+}
+
+/// Names the rooms of the foundation floor `floor` (found as `below`): a
+/// Slab room under each slab (it supplies the floor above), else the
+/// `tier` (a Basement, with a slab or without, or a Crawl Space), with that
+/// function's platform defaults.
+fn name_foundation_rooms(
+    floor: &mut Floor,
+    below: &[Room],
+    slab_under: &[bool],
+    tier: Option<(&str, bool)>,
+) {
+    for (i, room) in below.iter().enumerate() {
         if room.name_entry(&floor.room_names).is_some() {
             continue;
         }
+        let (type_name, with_slab) = if slab_under.get(i).copied().unwrap_or(false) {
+            ("Slab", false)
+        } else if let Some(t) = tier {
+            t
+        } else {
+            continue;
+        };
         let mut n = RoomName::new(room.interior_point(), type_name, type_name);
         let d = function_defaults(type_name, type_name);
         apply_function_defaults(&mut n, &d, 0.0);
+        let bare = type_name == "Slab" || (type_name == "Basement" && !with_slab);
+        if bare {
+            // The slab object (or nothing) is the floor and the platform
+            // above is the ceiling; a basement of 48 in has no finishes.
+            n.has_floor = false;
+            n.has_ceiling = false;
+            n.floor_height_offset = 0.0;
+            if let Some(m) = n.misc.as_mut() {
+                m.floor_structure.clear();
+            }
+        }
+        if type_name == "Slab" {
+            n.options.supplies_floor_above = true;
+        }
         floor.room_names.push(n);
     }
+}
+
+/// A digest of what Build Foundation reads from the first floor `floor`,
+/// for Auto Rebuild. It leaves out what the build writes back (the garage
+/// drop is in it as the floor heights are).
+pub fn foundation_signature(floor: &Floor, opts: &FoundationOptions) -> u64 {
+    struct Fnv(u64);
+    impl Fnv {
+        fn bytes(&mut self, b: &[u8]) {
+            for x in b {
+                self.0 ^= u64::from(*x);
+                self.0 = self.0.wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        fn f(&mut self, v: f64) {
+            self.bytes(&((v * 100.0).round() as i64).to_le_bytes());
+        }
+        fn p(&mut self, p: Point) {
+            self.f(p.x);
+            self.f(p.y);
+        }
+        fn u(&mut self, v: u64) {
+            self.bytes(&v.to_le_bytes());
+        }
+        fn s(&mut self, v: &str) {
+            self.bytes(v.as_bytes());
+            self.bytes(&[0]);
+        }
+    }
+    let mono = matches!(opts.kind, FoundationKind::MonolithicSlab);
+    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+    h.f(floor.settings.floor_structure_thickness);
+    for w in &floor.walls {
+        if w.flags.foundation || w.flags.attic {
+            continue;
+        }
+        h.p(w.start);
+        h.p(w.end);
+        h.u(u64::from(w.kind == WallKind::Exterior));
+        h.u(u64::from(w.flags.invisible)
+            | u64::from(w.flags.railing) << 1
+            | u64::from(w.flags.room_divider) << 2
+            | u64::from(w.spec.foundation.create_below) << 3
+            | u64::from(w.spec.structure.bearing_wall) << 4);
+        h.f(w.curve.map_or(0.0, |c| c.bulge));
+    }
+    for n in &floor.room_names {
+        h.p(n.anchor);
+        h.s(&n.room_type);
+        h.f(n.floor_height_offset);
+        h.f(n.stem_wall_height.unwrap_or(-1.0));
+        h.u(u64::from(n.options.build_foundation_below));
+        if !mono {
+            h.u(u64::from(n.monolithic_slab.is_some()));
+        }
+    }
+    for o in floor
+        .openings
+        .iter()
+        .filter(|o| o.kind == OpeningKind::Door)
+    {
+        h.u(o.wall_id);
+        h.f(o.center_offset);
+        h.f(o.width);
+        h.f(crate::foundation::garage_cut_width(o));
+    }
+    for (sym, fp) in floor.fireplace_symbols() {
+        h.p(sym.position);
+        h.f(sym.width);
+        h.f(sym.depth);
+        h.f(sym.angle);
+        h.u(fp.kind as u64);
+        h.u(u64::from(fp.in_wall));
+    }
+    h.0
 }
 
 #[cfg(test)]
@@ -1123,13 +1959,20 @@ mod tests {
             .filter(|w| w.flags.foundation)
             .map(|w| w.id)
             .collect();
-        assert_eq!(p.build_foundation(FoundationKind::StemWall { height: 48.0 }), 0);
+        assert_eq!(
+            p.build_foundation(FoundationKind::StemWall { height: 48.0 }),
+            0
+        );
         assert_eq!(p.floors.len(), 2, "rebuilt in place");
         let f = &p.floors[0];
         assert!(f.walls.iter().any(|w| w.id == part), "the partition stays");
         let foundation: Vec<_> = f.walls.iter().filter(|w| w.flags.foundation).collect();
         assert_eq!(foundation.len(), 4);
-        assert!(foundation.iter().all(|w| w.height == 48.0 && !old_ids.contains(&w.id)));
+        // The platform bears on the walls: they stop 10 1/4 in under the
+        // first floor's finished level.
+        assert!(foundation
+            .iter()
+            .all(|w| w.height == 48.0 - FLOOR_PLATFORM_THICKNESS && !old_ids.contains(&w.id)));
         assert_eq!(f.elevation, -48.0);
         assert!(f.room_names.iter().any(|n| n.name == "Wine Cellar"));
         assert!(f.room_names.len() >= kept, "{} rooms", f.room_names.len());
@@ -1156,7 +1999,7 @@ mod tests {
         for w in &f.walls {
             assert!(w.flags.foundation);
             assert_eq!(w.wall_type.as_deref(), Some("Foundation-8"));
-            assert_eq!(w.height, 36.0);
+            assert_eq!(w.height, 36.0 - FLOOR_PLATFORM_THICKNESS);
             assert_eq!(w.thickness, 8.0);
         }
         // Same centerlines as the exterior walls above; the partition has none.
@@ -1281,7 +2124,8 @@ mod tests {
             assert_eq!(w.height, 20.0);
             assert_eq!(w.thickness, GRADE_BEAM_WIDTH);
         }
-        assert_eq!(f.elevation, -50.0);
+        // The platform bears on the beams, so the floor is a platform taller.
+        assert_eq!(f.elevation, -(50.0 + FLOOR_PLATFORM_THICKNESS));
         let layer = FoundationLayer::load(f);
         // 240" walls take 4 spans of 60", 120" walls take 2: 12 piers.
         assert_eq!(layer.piers.len(), 12);
@@ -1309,7 +2153,7 @@ mod tests {
     }
 
     #[test]
-    fn the_attic_floor_gets_attic_walls_and_an_attic_room() {
+    fn the_attic_floor_gets_attic_walls_and_no_rooms() {
         let mut p = house();
         p.build_new_floor(true);
         let a = p.build_attic_floor().unwrap();
@@ -1323,11 +2167,11 @@ mod tests {
             .iter()
             .all(|w| w.flags.attic && w.kind == WallKind::Interior));
         assert!(f.walls.iter().all(|w| w.height == ATTIC_WALL_HEIGHT));
-        assert_eq!(f.room_names.len(), 1);
-        assert_eq!(f.room_names[0].room_type, "Attic");
+        // Rooms cannot be created on the Attic floor (manual p. 773).
+        assert!(f.room_names.is_empty());
         assert!(
-            !f.room_names[0].has_floor,
-            "an attic room has no floor platform"
+            p.attic_floor_warning(a).is_none(),
+            "attic walls alone are fine"
         );
         // Above the second floor.
         let top = &p.floors[1];

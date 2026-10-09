@@ -212,8 +212,8 @@ The preview shows the plan symbol and a front elevation of the resolved face ite
 | Tab | Status |
 |---|---|
 | General | Works |
-| Box Construction | Works |
-| Front/Sides/Back | Works. The **Cabinet Side** list picks Front, Left, Right or Back; each of the three sides is a Plain Panel, a Finished Panel, Open, or a **Custom Face** with its own face-item tree edited like the front (rectangular cabinets only; the sides are built in 3D) |
+| Box Construction | Works: Framed or Frameless with extended stiles, Top and Bottom Auto / Has / No, Side and Back Thickness, Box Corners, General Options |
+| Front/Sides/Back | Works: Side Properties, Show Open options, the 16 item types, a Face Item Specification for the selected item. The **Cabinet Side** list picks Front, Left, Right or Back; each of the three sides is a Plain Panel, a Finished Panel, Open, or a **Custom Face** with its own face-item tree edited like the front (rectangular cabinets only; the sides are built in 3D) |
 | Door/Drawer | Works |
 | Accessories | Works: front pilasters (plain or fluted, left and right, width), feet (block, bun or bracket, in place of the toe kick board) and finished end panels |
 | Opening Indicators | Works |
@@ -225,39 +225,51 @@ The preview shows the plan symbol and a front elevation of the resolved face ite
 | Components | Works: the parts with counts, sizes and materials |
 | Object Information | Works: the facts, plus manufacturer, model number, description and notes |
 | Schedule | Works: *List this cabinet in the Cabinet Schedule* and the cabinet's schedule row |
+| Manufacturer | Works: name, contact, phone, email, web site and catalog of a catalog cabinet |
 
 ### General
 
-- **Cabinet Style**: Type (shows the kind, disabled); Treat As Filler (checked for the filler kinds, disabled).
+- **Cabinet Style**: the **Type** list converts a base, wall or full height cabinet: Standard, Corner (the width must be greater than the depth, else the program says so and nothing changes), Left End, Right End, Left Radius End, Right Radius End, Peninsula Radius, Angled Front and Bow Front. A second field follows the choice: *Corner Cut* (End), *Radius* (Radius End, Peninsula Radius), *Right Depth* (Angled Front: the left depth is the cabinet's Depth) or *Bow Depth* (Bow Front, negative for an inside bow; at most half the width). A corner cabinet also has *Bow Depth* for its diagonal. The face items stay when the style changes. Cabinets that are not ordinary (appliance bays, library types) show the kind, disabled. Treat As Filler is checked for the filler kinds, disabled.
 - **Size/Position**: Width, Height (including countertop), Depth, Finished Floor to Bottom,
   Finished Floor to Top, Position X and Y (the back-left corner), Angle.
 - **Corner Cabinet** (corner kinds): Front Diagonal or Pie-Cut, Lazy Susan shelves, Arm Depth. **Blind Corner** (blind kinds): Hidden end, Blind Width.
 - **Appliance Opening** (base cabinets): the open-bay check box and the appliance.
-- **Custom Top** (custom kinds): Thickness; Edge Profile and Edge Size (countertop); Height (backsplash).
+- **Custom Top** (custom kinds): Thickness; Edge Profile and Edge Size (countertop); Height (backsplash). A Custom Countertop also shows the **Custom Countertop Specification** panels: *Polyline* (closed or open, line count and perimeter, area, **Hole in Countertop**, thickness and height from the cabinet below), *Selected Line* (pick Line n, then its Length and Angle; an edit that would collapse the outline is refused), *Molding on Selected Edge* (Automatic, No Molding, Has Molding, **Apply to All Edges**; with no molding on any edge the top is built square), *Waterfall* (**Add Waterfall to Selected Edge**, Remove Waterfall, Mitre All Waterfall Edges, the slab runs to the floor or to a height you type) and *Moldings* (**Display Molding Edges in Plan Views**).
 - **Countertop**: Thickness (1 1/2"), Overhang Front, Back and Sides (1"), **Edge Profile** (Square, Beveled, Bullnose, Ogee or Waterfall) and Corner Treatment
   None / Clipped / Rounded with a size (on the front corners of a cabinet's own top and on every convex corner of a custom or joined top). **Sink and Cooktop Cutouts**: Add Sink, Add Cooktop, Remove.
-- **Backsplash**: Height, Thickness, and **Full height** (to the underside of the wall cabinet above, else to 54").
-- **Toe Kick**: Height (4"), Depth (3").
+- **Backsplash**: Height, Thickness, and **Full height** (to the underside of the wall cabinet above, else to 54"), **Side Backsplash** (also up the side that stands against a wall or a taller cabinet) and **Always Present** (off: the backsplash is built only where the cabinet's back stands on a wall).
+- **Toe Kick**: Height (4"), Depth (3"), Flat Sides, Flat Back, Closed Toe (the side panel runs to the floor at an exposed end) and Always Closed (also where cabinets stand side by side).
 
 ### Box Construction
 
-- **Box Construction**: Framed (with Separation) or Frameless.
+- **Box Construction**: Framed (with Separation, and Extend Left and Right Stile, which act as fillers and put XL, XR or XLR in the label) or Frameless.
 - **Top/Bottom/Sides**: Top Auto / Has Top / No Top; Bottom Auto / Has Bottom / No Bottom;
-  Side / Back Thickness.
+  Side Thickness and Back Thickness.
+- **Box Corners**: Clipped or Rounded corners of the box with a size, on every corner that is not against a wall or a cabinet (Automatic Placement) or on the corners you tick.
+- **General Options**: Cut Room Moldings, Suppress Automatic Fillers, Auto Door Threshold (the width up to which an Auto door item is one door, 24" by default) and the Elevation Reference.
 - **Door/Drawer Overlay**: Traditional Overlay, Full Overlay, Inset.
 
 ### Front/Sides/Back
 
-- **Cabinet Side**: the list shows Front and is disabled, and so is Side Type: only the front face is editable, not the Sides or the Back.
+- **Cabinet Side**: Front, Left, Right or Back, each with a Side Type (Plain Panel, Finished Panel, Open or Custom Face).
+- **Side Properties** (front): Left and Right Stile and Reveal, each following the cabinet until you tick *Specify*. **Options**: Show Open for Doors, Drawers and Rollouts, and the Auto Door Threshold.
 - **Front Elevation** (the face editor): a drawing of the resolved face items; drag a divider to resize the items on either side of it.
 - **Face Items**: an indented tree such as `Vertical Layout > Separation, Layout > Drawer,
   Separation, Door - Auto Right, Separation`. Buttons: **Add New**, **Delete**, **Move
   Up**, **Move Down**, **Split Vertical**, **Split Horizontal**, **Equalize**, **Reset to
   Default Face**, **Sink Base Face**.
-- **Selected Item Properties**: Item Type (Door, Drawer, Separation, Opening, Appliance,
-  Horizontal Layout ...), Item Height (0 = auto), Item Width, Lock from Auto-Resize, and an
-  Appliance field.
+- **Selected Item Properties**: Item Type, Item Height (0 = auto), Item Width, the Appliance name, and the item's **Face Item Specification** (below). The 16 types you can add or change to are Blank Area, False Drawer, False Double Drawer, Drawer, Double Drawer, Cutting Board, Door - Auto Right (one right-hand door up to the Auto Door Threshold, a pair above it), Door - Auto Left, Door - Left, Door - Right, Double Door, Door Panel, Opening, Rollout, Separation and Appliance; Layout - Horizontal and Layout - Vertical are made by splitting (Split Horizontal, Split Vertical) and nest inside each other.
 - Splitting an item recomputes its siblings' heights and widths unless one is locked.
+
+#### Face Item Specification
+
+Under the item's properties, the page named for its kind (Door, Drawer or Side Panel Face Item Specification) holds the settings that item has of its own; an item that sets none follows the cabinet's Door/Drawer tab.
+
+- **Main Style**: Same as Cabinet, Slab, Framed or Library (a Library style comes from the "Cabinet Doors" category; Framed adds the stile and rail width, Glass Door).
+- **Hardware**: the handle style and **Hardware Size/Orientation**: Width, Height and Depth (Retain Aspect keeps the proportions) and the angle in 90 degree steps.
+- **Cabinet Shelf Specification** (doors, openings, rollouts): *Automatic* keeps the number the opening height gives; *Manual* lists the shelves with Thickness, Spacing (or Equal Spacing and **Equalize**), Depth (Full, Half or a size), Rollout with its amount, and a Library object. A Rollout item without shelves of its own holds one roll-out shelf for each 13" of height.
+- **Show Open**: Swing Angle of a door, Percent Open of a drawer or rollout; each follows the cabinet's Show Open until you specify it.
+- **Panel Overlaps** (Left, Right, Top, Bottom), **Door Back Inserts** with their order, the **Drawer Box/Pullout** insert, **Reverse Appliance** and **Lock from Auto Resize**.
 
 ### Door/Drawer, Accessories
 
@@ -285,6 +297,14 @@ base and full height read width, depth, height; a wall cabinet reads width, heig
 `R`, is added only when every door swings the same way (an Auto door gives none). Library types keep their own letters (`VB30`,
 `PN2484`). *Suppress Label* hides one cabinet's label; the layer *Cabinets, Labels* hides them all. Shelves, partitions and custom
 countertops have a blank automatic label; type one in *Specify label* if you want it.
+
+#### Several cabinets at once
+
+Select two or more cabinets and use Open Object (Edit toolbar, or Enter): one **Cabinet Specification (Multiple Cabinets)** opens with the tabs General, Box Construction and Door/Drawer. A field whose value differs between the cabinets shows **No Change** (a blank length, an indeterminate check box, no style chosen). Only the fields you edit are written, to every selected cabinet, as one undo step; everything else keeps its own value.
+
+#### Edit toolbar commands
+
+With cabinets selected the Edit toolbar offers **Open Cabinet Doors/Drawers** and **Close Cabinet Doors/Drawers** (they set Show Open for doors, drawers and rollouts), **Generate Custom Countertop** (joins the countertops of the selected base cabinets) and, when a cabinet has moldings, **Make Cabinet Molding Polyline** (each molding becomes a closed polyline on the layer *Cabinets, Moldings*, and the cabinet loses the molding).
 
 ### 6.3a Cabinet Defaults
 

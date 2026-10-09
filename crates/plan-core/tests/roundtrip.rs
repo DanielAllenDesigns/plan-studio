@@ -1007,8 +1007,8 @@ fn a_plan_missing_everything_loads_with_one_named_floor_and_a_sound_counter() {
     assert!(p.validate_ids().is_empty());
     let first = p.alloc_id();
     assert!(first >= 1);
-    let q = Project::from_json("{\"floors\": []}").unwrap();
-    assert_eq!(q.floors.len(), 1, "a plan always has a floor");
+    // Omitting `floors` is a default; saying there are none is a damaged file.
+    assert!(Project::from_json("{\"floors\": []}").is_err());
 }
 
 #[test]

@@ -1,5 +1,5 @@
-//! Note Type Management, Text Macro Management and Text Style Management
-//! (Text flyout).
+//! Note Type Management and Text Style Management (Text flyout). Text Macro
+//! Management is `super::macro_manager`.
 //!
 //! All are small list editors on a copy of the plan's settings; OK hands the
 //! edited copy (for text styles, the list of renames and removals) back to
@@ -9,7 +9,7 @@
 
 use crate::dialogs::Outcome;
 use eframe::egui::{self, Align2, RichText};
-use plan_core::text_styles::{NoteTypes, TextMacros, BUILT_IN_MACROS};
+use plan_core::text_styles::NoteTypes;
 
 fn finish(ctx: &egui::Context, open: bool, ok: bool, cancel: bool) -> Outcome {
     let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
@@ -139,116 +139,6 @@ impl NoteTypeDialog {
                     ui.add(egui::TextEdit::singleline(&mut self.new_name).desired_width(150.0));
                     ui.label("Prefix");
                     ui.add(egui::TextEdit::singleline(&mut self.new_prefix).desired_width(60.0));
-                    if ui.button("Add").clicked() {
-                        self.add_new();
-                    }
-                });
-                if let Some(e) = &self.error {
-                    ui.colored_label(egui::Color32::from_rgb(0xE0, 0x4B, 0x4B), e);
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button(RichText::new("   OK   ").strong()).clicked() {
-                        ok = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-        finish(ctx, open, ok, cancel)
-    }
-}
-
-/// Text Macro Management: the built-in macros and the user's own.
-pub struct MacroDialog {
-    draft: TextMacros,
-    new_name: String,
-    new_text: String,
-    error: Option<String>,
-}
-
-impl MacroDialog {
-    pub fn new(macros: TextMacros) -> Self {
-        Self {
-            draft: macros,
-            new_name: String::new(),
-            new_text: String::new(),
-            error: None,
-        }
-    }
-
-    pub fn draft(&self) -> &TextMacros {
-        &self.draft
-    }
-
-    /// Adds a macro from the "new" fields.
-    pub fn add_new(&mut self) -> bool {
-        let ok = self.draft.add(self.new_name.trim(), &self.new_text);
-        if ok {
-            self.new_name.clear();
-            self.new_text.clear();
-            self.error = None;
-        } else {
-            self.error = Some(
-                "Use a new name of letters, digits, '.', '_' or '-' that is not built in".into(),
-            );
-        }
-        ok
-    }
-
-    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        let (mut open, mut ok, mut cancel) = (true, false, false);
-        egui::Window::new("Text Macro Management")
-            .id(egui::Id::new("text_macro_management"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([520.0, 460.0])
-            .pivot(Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
-            .show(ctx, |ui| {
-                ui.label(RichText::new("Built-in macros").strong());
-                egui::Grid::new("builtin_macros")
-                    .striped(true)
-                    .show(ui, |ui| {
-                        for (name, what) in BUILT_IN_MACROS {
-                            ui.monospace(format!("%{name}%"));
-                            ui.label(*what);
-                            ui.end_row();
-                        }
-                    });
-                ui.separator();
-                ui.label(RichText::new("Your macros").strong());
-                let mut remove = None;
-                egui::ScrollArea::vertical()
-                    .id_salt("user_macros")
-                    .max_height(120.0)
-                    .show(ui, |ui| {
-                        if self.draft.macros.is_empty() {
-                            ui.weak("None yet.");
-                        }
-                        for m in &mut self.draft.macros {
-                            ui.horizontal(|ui| {
-                                ui.monospace(format!("%{}%", m.name));
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut m.text).desired_width(260.0),
-                                );
-                                if ui.button("Remove").clicked() {
-                                    remove = Some(m.name.clone());
-                                }
-                            });
-                        }
-                    });
-                if let Some(n) = remove {
-                    self.draft.remove(&n);
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Name");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_name).desired_width(110.0));
-                    ui.label("Text");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_text).desired_width(200.0));
                     if ui.button("Add").clicked() {
                         self.add_new();
                     }
@@ -481,21 +371,6 @@ mod tests {
         assert_eq!(out, Outcome::Open);
     }
 
-    #[test]
-    fn macro_dialog_adds_user_macros_only() {
-        let mut d = MacroDialog::new(TextMacros::default());
-        d.new_name = "room.name".into();
-        d.new_text = "x".into();
-        assert!(!d.add_new(), "built-in names are refused");
-        d.new_name = "firm".into();
-        d.new_text = "Daniel Allen Designs".into();
-        assert!(d.add_new());
-        assert_eq!(d.draft().get("firm").unwrap().text, "Daniel Allen Designs");
-        let ctx = egui::Context::default();
-        let mut out = Outcome::Open;
-        let _ = ctx.run(egui::RawInput::default(), |ctx| out = d.show(ctx));
-        assert_eq!(out, Outcome::Open);
-    }
     #[test]
     fn text_style_dialog_renames_and_removes_but_never_the_default() {
         let mut d = TextStyleDialog::new(vec![

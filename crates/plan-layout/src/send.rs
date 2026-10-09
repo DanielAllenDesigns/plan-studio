@@ -1,6 +1,10 @@
 //! Send to Layout and the default construction set.
 
-use crate::extent::{frame_for, size_of, source_size_in, Frame, SceneSource};
+use crate::boxops::{fit_check, largest_scale_that_fits, scale_for_ipf, FitCheck, SendOptions};
+use crate::boxview::{CameraLink, ScaleMode};
+use crate::extent::{
+    frame_for, size_of, source_size_in, view_frame_in, view_size_in, Frame, SceneSource,
+};
 use crate::model::{BoxSource, Layout, LayoutBox, ScheduleKind, LABEL_GAP_IN};
 use crate::render::LayoutRenderContext;
 use crate::titleblock::TitleBlockTemplate;
@@ -108,7 +112,7 @@ pub fn plan_label(project: &Project, floor: usize) -> String {
     format!("{name} PLAN").trim().to_string()
 }
 
-fn default_label(source: &BoxSource, project: &Project) -> Option<String> {
+pub(crate) fn default_label(source: &BoxSource, project: &Project) -> Option<String> {
     match source {
         BoxSource::PlanView { floor, .. } => Some(plan_label(project, *floor)),
         BoxSource::Elevation { dir } => Some(
@@ -250,6 +254,246 @@ pub fn fit_largest_scale(
             (false, Some(next)) => s = next,
         }
     }
+}
+
+/// How Send to Layout scales the view (the Scaling panel of the dialog).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SendScale {
+    /// The largest scale of the lists, no larger than this one, at which the
+    /// view fits the page (Largest that fits).
+    Largest(Scale),
+    /// This scale (a site scale such as 1 in = 100 ft too).
+    Named(Scale),
+    /// A typed scale: paper inches per foot of the building.
+    PerFoot(f64),
+    /// Fit to Sheet (No Scale): about half the size of the page's drawing
+    /// area; the box can be resized afterwards.
+    FitToSheet,
+}
+
+/// One view to send.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendRequest {
+    pub page: u32,
+    pub source: BoxSource,
+    pub scale: SendScale,
+    /// Lower left corner of the box; otherwise `centre`, else the first free
+    /// area of the page.
+    pub at: Option<Point>,
+    /// The paper point the box is centred on.
+    pub centre: Option<Point>,
+    pub options: SendOptions,
+}
+
+/// What a send made.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sent {
+    pub id: Id,
+    /// The box, paper inches.
+    pub size_in: (f64, f64),
+    /// The scale as asked, paper inches per foot.
+    pub ipf: f64,
+    /// The view is too big for the page's drawing area at this scale (the
+    /// "too big for the sheet" warning). The box is placed anyway.
+    pub too_large: bool,
+    /// The box against the drawing area it went into.
+    pub fit: FitCheck,
+}
+
+impl Sent {
+    /// The warning text for a view that does not fit, else `None`.
+    pub fn warning(&self) -> Option<String> {
+        self.too_large.then(|| fit_warning(&self.fit))
+    }
+}
+
+/// The "view is too big for the sheet" warning of a failed [`FitCheck`].
+pub fn fit_warning(fit: &FitCheck) -> String {
+    format!(
+        "The view is too big for the sheet at this scale: {:.1} x {:.1} in on a drawing area of {:.1} x {:.1} in",
+        fit.size_in.0, fit.size_in.1, fit.area_in.0, fit.area_in.1
+    )
+}
+
+/// Checks a view against a page before it is sent: the box it would make at
+/// `scale`, and whether the page's drawing area holds it. `labelled` leaves
+/// room for the caption.
+pub fn check_send(layout: &Layout, cx: &LayoutRenderContext, req: &SendRequest) -> (FitCheck, f64) {
+    let (tb, ipf) = trial_box(layout, cx, req);
+    let size = view_size_in(&tb.source, &tb.view, ipf, cx);
+    let size = if matches!(tb.source, BoxSource::Perspective { .. }) {
+        source_size_in(&tb.source, Scale::QuarterInch, cx)
+    } else {
+        size
+    };
+    (fit_check(layout, Some(req.page), size, true), ipf)
+}
+
+/// A box with the view's options applied (picture made when the camera link
+/// keeps one) and the scale the request asks for, in paper inches per foot.
+fn trial_box(layout: &Layout, cx: &LayoutRenderContext, req: &SendRequest) -> (LayoutBox, f64) {
+    let mut tb = LayoutBox::new(
+        0,
+        (Point::ZERO, Point::ZERO),
+        req.source.clone(),
+        Scale::QuarterInch,
+    );
+    req.options.apply_to(&mut tb);
+    if tb.has_camera_options() && tb.view.camera != CameraLink::Always {
+        tb.view.art = crate::render::make_art(&tb, cx);
+    }
+    let frame = view_frame_in(&tb.source, &tb.view, cx);
+    let labelled = true;
+    let area = layout
+        .page(req.page)
+        .map_or_else(|| layout.drawing_area(), |p| layout.page_drawing_area(p));
+    let (aw, ah) = (
+        area.1.x - area.0.x,
+        area.1.y - area.0.y - if labelled { LABEL_GAP_IN } else { 0.0 },
+    );
+    let ipf = match (req.scale, frame) {
+        (SendScale::Named(s), _) | (SendScale::Largest(s), None) => s.inches_per_foot(),
+        (SendScale::PerFoot(v), _) => v,
+        (SendScale::Largest(max), Some(f)) => {
+            largest_scale_that_fits(layout, Some(req.page), f, max, labelled).inches_per_foot()
+        }
+        (SendScale::FitToSheet, Some((fw, fh))) => {
+            12.0 * (aw * 0.5 / fw.max(1e-6)).min(ah * 0.5 / fh.max(1e-6))
+        }
+        (SendScale::FitToSheet, None) => Scale::QuarterInch.inches_per_foot(),
+    };
+    (tb, ipf)
+}
+
+/// Sends a view to the layout with the dialog's answers: its scale (any of
+/// the lists, a typed one, or Fit to Sheet), the Send Options and the Camera
+/// View Options (a Plot Lines or Update on Demand view keeps its picture
+/// from now on). The box is placed even when it is too big for the sheet;
+/// [`Sent::too_large`] says so.
+pub fn send_view(layout: &mut Layout, cx: &LayoutRenderContext, req: &SendRequest) -> Sent {
+    cx.set_sheet_index(layout);
+    let (mut tb, ipf) = trial_box(layout, cx, req);
+    let size = if matches!(tb.source, BoxSource::Perspective { .. }) {
+        source_size_in(&tb.source, Scale::QuarterInch, cx)
+    } else {
+        view_size_in(&tb.source, &tb.view, ipf, cx)
+    };
+    let label = default_label(&req.source, cx.project);
+    let id = layout.next_box_id();
+    if layout.page(req.page).is_none() {
+        layout.add_page(req.page, format!("Sheet A-{}", req.page));
+    }
+    let check = fit_check(layout, Some(req.page), size, label.is_some());
+    let (w, h) = size;
+    let lower_left = place(layout, req, w, h, label.is_some());
+    tb.id = id;
+    tb.rect_in = (lower_left, Point::new(lower_left.x + w, lower_left.y + h));
+    tb.label = label;
+    if matches!(req.scale, SendScale::FitToSheet) {
+        tb.scale = nominal_for(ipf);
+        tb.view.scale_mode = ScaleMode::NoScale(ipf);
+    } else {
+        let (s, mode) = scale_for_ipf(ipf);
+        tb.scale = s;
+        tb.view.scale_mode = mode;
+    }
+    // The hatch of a kept picture is made for the scale the box ends up at.
+    if tb.has_camera_options() && tb.view.camera != CameraLink::Always {
+        tb.view.art = crate::render::make_art(&tb, cx).or(tb.view.art.take());
+    }
+    if let Some(p) = layout.page_mut(req.page) {
+        p.boxes.push(tb);
+    }
+    Sent {
+        id,
+        size_in: size,
+        ipf,
+        too_large: check.too_large,
+        fit: check,
+    }
+}
+
+/// The lower left corner of a new `w` x `h` box on `req.page`: where the
+/// request says, else the first free area (leaving room for a caption).
+fn place(layout: &Layout, req: &SendRequest, w: f64, h: f64, labelled: bool) -> Point {
+    match (req.at, req.centre) {
+        (Some(p), _) => p,
+        (None, Some(c)) => Point::new(c.x - w / 2.0, c.y - h / 2.0),
+        (None, None) => {
+            let area = layout
+                .page(req.page)
+                .map_or_else(|| layout.drawing_area(), |p| layout.page_drawing_area(p));
+            let placed: Vec<Foot> = layout
+                .page(req.page)
+                .map(|p| p.boxes.iter().map(Foot::of).collect())
+                .unwrap_or_default();
+            let gap = if labelled { LABEL_GAP_IN } else { 0.0 };
+            let top_left = pack(area, &placed, w, h + gap);
+            Point::new(top_left.x, top_left.y - h)
+        }
+    }
+}
+
+/// Current Screen As Image: the view drawn once as a picture of the page's
+/// box size and embedded (150 dots per inch), a static box that is never
+/// updated, only replaced.
+pub fn send_as_image(layout: &mut Layout, cx: &LayoutRenderContext, req: &SendRequest) -> Sent {
+    cx.set_sheet_index(layout);
+    let (tb, ipf) = trial_box(layout, cx, req);
+    let size = view_size_in(&tb.source, &tb.view, ipf, cx);
+    let label = default_label(&req.source, cx.project);
+    let id = layout.next_box_id();
+    if layout.page(req.page).is_none() {
+        layout.add_page(req.page, format!("Sheet A-{}", req.page));
+    }
+    let check = fit_check(layout, Some(req.page), size, label.is_some());
+    let (w, h) = size;
+    let lower_left = place(layout, req, w, h, label.is_some());
+    // Draw the view alone on a box of its own size.
+    let mut draw = tb;
+    draw.rect_in = (Point::ZERO, Point::new(w, h));
+    let (sc, mode) = scale_for_ipf(ipf);
+    draw.scale = sc;
+    draw.view.scale_mode = mode;
+    draw.border = false;
+    draw.clip = false;
+    let lines: Vec<_> = crate::render::render_box_lines(&draw, cx)
+        .into_iter()
+        .map(|l| {
+            let px = match l.weight {
+                plan_elevation::LineWeight::Heavy => 2.0,
+                _ => 1.0,
+            };
+            ((l.a.x, l.a.y), (l.b.x, l.b.y), px)
+        })
+        .collect();
+    let width_px = ((w * 150.0).round() as u32).clamp(64, 4000);
+    let (pw, ph, rgba) = crate::print::rasterize_lines(&lines, (0.0, 0.0, w, h), width_px);
+    let mut b = LayoutBox::new(
+        id,
+        (lower_left, Point::new(lower_left.x + w, lower_left.y + h)),
+        BoxSource::ImageData {
+            width: pw,
+            height: ph,
+            rgba,
+        },
+        Scale::QuarterInch,
+    );
+    b.label = label;
+    if let Some(p) = layout.page_mut(req.page) {
+        p.boxes.push(b);
+    }
+    Sent {
+        id,
+        size_in: size,
+        ipf,
+        too_large: check.too_large,
+        fit: check,
+    }
+}
+
+fn nominal_for(ipf: f64) -> Scale {
+    crate::boxview::nominal_scale(ipf)
 }
 
 /// The scale [`send_to_layout_auto`] starts from: construction drawings are

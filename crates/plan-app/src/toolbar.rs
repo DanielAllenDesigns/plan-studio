@@ -180,6 +180,9 @@ pub enum Action {
     FloorDefaults,
     /// Edit > Default Settings > Floors and Rooms > Floor Defaults.
     PlanFloorDefaults,
+    /// Edit > Default Settings > Foundation > Foundation (the Foundation
+    /// Defaults dialog; Build > Floor lists it too).
+    FoundationDefaults,
     /// The Reference Display dialog (Tools > Floor/Reference Display).
     ReferenceDisplayOptions,
     DeleteFloor,
@@ -249,6 +252,13 @@ pub enum Slot {
     ViewSelector,
     /// The current floor number (row 1).
     FloorLabel,
+    /// Active Layer Set control: the layer set the plan view shows.
+    LayerSetSelector,
+    /// Active Dimension Defaults control.
+    DimensionDefaultsSelector,
+    /// Active Default Set control ("Using Active Defaults" when no set is in
+    /// force).
+    DefaultSetSelector,
 }
 
 /// App state the bars and menus need to draw themselves.
@@ -2152,7 +2162,7 @@ fn row1_slots() -> Vec<Slot> {
         Slot::Button(item(
             "view_save_as",
             "Save Active View As",
-            Action::Custom(crate::dialogs::app_info::NEW_PLAN_VIEW),
+            Action::Custom(crate::dialogs::plan_views::SAVE_AS),
         )),
         Slot::ViewSelector,
         Sep,
@@ -2482,7 +2492,77 @@ fn show_slot(
                 egui::Label::new(egui::RichText::new((state.floor + 1).to_string()).strong()),
             );
         }
+        Slot::LayerSetSelector => {
+            let bar = crate::dialogs::default_sets::bar();
+            default_control(
+                ui,
+                "layer_set_selector",
+                "Active Layer Set",
+                &bar.layer_sets,
+                &bar.shown_layer_set,
+                |n| crate::dialogs::default_sets::Pick::LayerSet(n),
+                out,
+            );
+        }
+        Slot::DimensionDefaultsSelector => {
+            let bar = crate::dialogs::default_sets::bar();
+            default_control(
+                ui,
+                "dimension_defaults_selector",
+                "Active Dimension Defaults",
+                &bar.dimension_sets,
+                &bar.active_dimension_set,
+                |n| crate::dialogs::default_sets::Pick::DimensionDefaults(n),
+                out,
+            );
+        }
+        Slot::DefaultSetSelector => {
+            let bar = crate::dialogs::default_sets::bar();
+            let shown = bar
+                .using_set
+                .clone()
+                .unwrap_or_else(|| crate::dialogs::default_sets::USING_ACTIVE.to_string());
+            default_control(
+                ui,
+                "default_set_selector",
+                "Active Default Set",
+                &bar.default_sets,
+                &shown,
+                |n| crate::dialogs::default_sets::Pick::DefaultSet(n),
+                out,
+            );
+        }
     }
+}
+
+/// One of the drop-down controls of the defaults (Active Layer Set, Active
+/// Dimension Defaults, Active Default Set): a combo box that lists `names`
+/// and asks the application for a pick.
+fn default_control(
+    ui: &mut egui::Ui,
+    salt: &'static str,
+    tip: &'static str,
+    names: &[String],
+    shown: &str,
+    pick: impl Fn(String) -> crate::dialogs::default_sets::Pick,
+    out: &mut Vec<Action>,
+) {
+    egui::ComboBox::from_id_salt(salt)
+        .width(VIEW_SELECTOR_PX)
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for n in names {
+                if ui.selectable_label(n == shown, n).clicked() && n != shown {
+                    crate::dialogs::default_sets::request_pick(pick(n.clone()));
+                    out.push(Action::Custom(crate::dialogs::default_sets::PICK));
+                }
+            }
+            if names.is_empty() {
+                let _ = ui.selectable_label(true, shown);
+            }
+        })
+        .response
+        .on_hover_text(tip);
 }
 
 fn separator(ui: &mut egui::Ui) {
@@ -2806,6 +2886,12 @@ fn show_flyout(
 
     if icon_resp.clicked() {
         out.push(cur.action);
+    }
+    // Double-clicking an Electrical Tools button opens its defaults (manual p. 691).
+    if icon_resp.double_clicked() {
+        if let Action::SetTool(ToolId::ElectricalVariant(v)) = cur.action {
+            crate::dialogs::default_pages::electrical::request_open_for(v);
+        }
     }
     if arrow_resp.clicked() {
         ui.memory_mut(|m| m.toggle_popup(popup_id));

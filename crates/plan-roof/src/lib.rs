@@ -45,19 +45,25 @@ pub use curved::{
     DEFAULT_FACET_ANGLE,
 };
 pub use dormer::{
-    auto_dormer, explode_dormer, Dormer, DormerKind, DormerSpec, DormerWall, ExplodedDormer,
-    WindowOpening,
+    auto_dormer, cricket_behind, dormer_returns, dormer_room_ceiling, dormer_shaft,
+    explode_dormer, gambrel_dormer, Cricket, Dormer, DormerKind, DormerRoom, DormerSpec,
+    DormerWall, ExplodedDormer, SecondPitch, WindowOpening,
 };
 pub use edges::{classify_edges, EdgeRole, PlaneEdge};
 pub use footprint::{flatten_curved_walls, footprint_from_walls};
 pub use group::{assign_roof_groups, has_groups, GroupedRoom, RoofAssignment};
 pub use gable::{
-    apply_gable_line, roof_return, roof_return_at, ReturnKind, ReturnSpec, RoofReturn,
+    apply_gable_line, apply_gable_lines, check_gable_line, gable_lines_over_openings, roof_return,
+    roof_return_at, GableLine, GableLineProblem, GabledRoof, OpeningSpan, PlaneOrigin, ReturnKind,
+    ReturnSpec, RoofReturn, WallFace, GABLE_LINE_REACH, MIN_GABLE_LINE, OPENING_GABLE_MARGIN,
+    OPENING_GABLE_MERGE,
 };
 pub use halfhip::DEFAULT_CLIP_FRACTION;
 pub use hole::{
-    hole_pieces, roof_plane_with_holes, HoleKind, RoofHole, RoofPolygonWithHoles, Skylight,
-    SkylightSpec,
+    ceiling_hole_outline, hole_pieces, move_shape_corner, rim_walls, roof_plane_with_holes,
+    shape_outline, CeilingHole, HoleKind, HoleRim, RimWall, RoofHole, RoofPolygonWithHoles,
+    Skylight, SkylightOptions, SkylightShape, SkylightSpec, DEFAULT_SKYLIGHT_SIZE,
+    SKYLIGHT_FACETS,
 };
 pub use join::join_planes;
 pub use retain::{drop_replaced, replaces as retained_plane_replaces};

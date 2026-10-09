@@ -118,6 +118,8 @@ fn source_text(cx: &EditorContext, i: usize) -> String {
             None => "From a view that is gone".into(),
         },
         DetailSource::PlanView { floor } => format!("From plan {floor}"),
+        DetailSource::WallDetail { .. } => "Wall Detail".into(),
+        DetailSource::TrussDetail => "Truss Detail".into(),
     }
 }
 

@@ -338,6 +338,12 @@ pub fn apply_drag(
             s.position = orig.position + u * if end { shift } else { -shift };
         }
         HandleKind::Reshape(_) => {
+            // A fireplace built into a wall slides through it instead.
+            if let Some(slid) =
+                crate::editor::fireplace_view::slide_in_wall(cx.floor(), orig, start, p.world)
+            {
+                return slid;
+            }
             let t = p.world.sub(orig.position).dot(v);
             s.depth = snap_to(t, unit, alt).max(1.0);
         }

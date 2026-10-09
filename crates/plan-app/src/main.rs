@@ -208,7 +208,7 @@ impl PlanApp {
             self.cx.defaults = found.defaults;
             dialogs::preferences::pages::apply_editing(&mut self.cx.defaults.editing);
             if untouched {
-                self.new_project();
+                self.new_project_plain();
             }
         }
         parts.join("; ")
@@ -429,6 +429,7 @@ impl PlanApp {
             | Action::InsertFloorBelow
             | Action::FloorDefaults
             | Action::PlanFloorDefaults
+            | Action::FoundationDefaults
             | Action::ReferenceDisplayOptions
             | Action::DeleteFloor
             | Action::DeleteFoundation
@@ -512,6 +513,8 @@ impl PlanApp {
             self.camera.center = center;
             self.camera.px_per_in = px.clamp(0.05, 50.0);
         }
+        // Show Color, the Selected Defaults and the rotation of the view.
+        dialogs::plan_views::view_shown(&mut self.cx, &view);
         self.cx.mark_dirty();
         self.cx.status = format!("Plan view: {}", view.name);
     }
@@ -566,7 +569,17 @@ impl PlanApp {
 
     // ----- file operations -----
 
+    /// File > New Plan: a plan from the default Plan Studio template when one
+    /// is set (File > Templates > Save as Template), else from the defaults.
     fn new_project(&mut self) {
+        if self.new_project_from_default_template() {
+            return;
+        }
+        self.new_project_plain();
+    }
+
+    /// A new plan from the installed defaults.
+    fn new_project_plain(&mut self) {
         editor::code::seed_new_plan(&mut self.cx.defaults);
         dialogs::preferences::pages::apply_editing(&mut self.cx.defaults.editing);
         let project = Project::from_defaults("Untitled", &self.cx.defaults);
@@ -1525,6 +1538,10 @@ impl PlanApp {
                 dialogs::build_tools::dispatch(&mut self.cx, toolbar::Action::PlanFloorDefaults);
                 None
             }
+            DefaultsEntry::Foundation => {
+                dialogs::build_tools::dispatch(&mut self.cx, toolbar::Action::FoundationDefaults);
+                None
+            }
             DefaultsEntry::TextStyles => {
                 self.lists = Some(dialogs::DefaultsList::text_styles(&self.cx));
                 None
@@ -1782,6 +1799,9 @@ impl eframe::App for PlanApp {
         // Framing groups with Auto rebuild on follow the walls (it refreshes
         // the context itself when it rebuilds).
         editor::framing_view::auto_rebuild(&mut self.cx);
+        // Auto Rebuild Foundation follows Floor 1; the Attic floor warns when
+        // walls or objects are drawn on it (Round 16, brief 17).
+        editor::foundation_view::frame(&mut self.cx);
         // Code minimums for the dialogs and the live Plan Check count.
         editor::code::frame(&mut self.cx);
         if !ctx.input(|i| i.pointer.any_down()) {
@@ -1862,11 +1882,20 @@ impl eframe::App for PlanApp {
         // The plan-view tabs read the camera before the dialogs run and may
         // ask for another one (a tab switch, Reset Plan View).
         editor::plan_tabs::report_camera(self.camera.center, self.camera.px_per_in);
+        shell::view_commands::report_rotation(self.camera.rotation);
+        shell::view_commands::show_rotate_dialog(ctx, &mut self.cx);
         shell::docks::show_dialogs(ctx, &mut self.cx, &mut self.docks, &mut self.hotkeys);
         if let Some((center, zoom)) = editor::plan_tabs::take_pending_camera() {
             self.camera.center = center;
             self.camera.px_per_in = zoom.clamp(0.05, 50.0);
         }
+        // A saved plan view's rotation, or the Rotate Plan View dialog's.
+        if let Some(rotation) = shell::view_commands::take_pending_rotation() {
+            self.camera.rotation = rotation;
+        }
+        // New Plan from Template, Save as Template and the missing-template
+        // prompt answer here.
+        self.poll_template_requests();
         dialogs::build_tools::show_all(ctx, &mut self.cx, &mut self.camera);
         dialogs::property_manager::show_all(ctx, &mut self.cx, self.path.as_deref());
         shell::layout_window::show_dialogs(ctx, &mut self.cx);

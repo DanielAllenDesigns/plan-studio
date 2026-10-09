@@ -394,15 +394,21 @@ fn layouts_nest_horizontal_inside_vertical_and_back() {
     assert_eq!(r[1].rect, (0.0, 0.0, 10.0, 24.0));
     assert_eq!(r[2].rect, (10.0, 0.0, 30.0, 24.0));
     assert_eq!(r[0].item.kind(), ItemKind::FalseDrawer);
-    assert!(layout.has_appliance("none") == false);
+    assert!(!layout.has_appliance("none"));
 }
 
 #[test]
 fn auto_doors_split_above_the_threshold() {
     let right = FaceItem::DoorAuto { height: 0.0 };
     let left = FaceItem::DoorAutoLeft { height: 0.0 };
-    assert_eq!(right.door_plan(18.0, 24.0), DoorPlan::Single { left: false });
-    assert_eq!(right.door_plan(24.0, 24.0), DoorPlan::Single { left: false });
+    assert_eq!(
+        right.door_plan(18.0, 24.0),
+        DoorPlan::Single { left: false }
+    );
+    assert_eq!(
+        right.door_plan(24.0, 24.0),
+        DoorPlan::Single { left: false }
+    );
     assert_eq!(right.door_plan(24.5, 24.0), DoorPlan::Pair);
     assert_eq!(left.door_plan(12.0, 24.0), DoorPlan::Single { left: true });
     assert_eq!(left.door_plan(36.0, 24.0), DoorPlan::Pair);
@@ -411,8 +417,14 @@ fn auto_doors_split_above_the_threshold() {
         FaceItem::DoorLeft { height: 0.0 }.door_plan(60.0, 24.0),
         DoorPlan::Single { left: true }
     );
-    assert_eq!(FaceItem::DoubleDoor { height: 0.0 }.door_plan(10.0, 24.0), DoorPlan::Pair);
-    assert_eq!(FaceItem::Drawer { height: 0.0 }.door_plan(10.0, 24.0), DoorPlan::None);
+    assert_eq!(
+        FaceItem::DoubleDoor { height: 0.0 }.door_plan(10.0, 24.0),
+        DoorPlan::Pair
+    );
+    assert_eq!(
+        FaceItem::Drawer { height: 0.0 }.door_plan(10.0, 24.0),
+        DoorPlan::None
+    );
     // The threshold is the cabinet's: more doors on a 48" cabinet with a
     // lower one.
     let mut c = Cabinet::wall(36.0);
@@ -576,8 +588,16 @@ fn setting_an_item_height_moves_the_difference_to_the_lowest_item() {
     // Shortening the lowest item leaves a separation and a blank area.
     f.set_item_height(34.5, 3, 15.0).unwrap();
     let kinds: Vec<ItemKind> = f.items.iter().map(FaceItem::kind).collect();
-    assert_eq!(&kinds[kinds.len() - 2..], &[ItemKind::Separation, ItemKind::BlankArea]);
-    let total: f64 = f.resolve(34.5, 24.0).unwrap().iter().map(|x| x.rect.3).sum();
+    assert_eq!(
+        &kinds[kinds.len() - 2..],
+        &[ItemKind::Separation, ItemKind::BlankArea]
+    );
+    let total: f64 = f
+        .resolve(34.5, 24.0)
+        .unwrap()
+        .iter()
+        .map(|x| x.rect.3)
+        .sum();
     assert!((total - 34.5).abs() < 1e-9);
     // Too small is refused and changes nothing.
     let before = f.clone();
@@ -636,7 +656,8 @@ fn a_bow_front_reaches_forward_by_its_bow_and_an_inside_bow_does_not() {
     assert!(meshes(&c).len() > meshes(&Cabinet::base(36.0)).len() / 2);
     // The bow depth is limited to half the width.
     let mut d = Cabinet::base(36.0);
-    d.convert(CabinetStyle::Special(SpecialShape::BowFront)).unwrap();
+    d.convert(CabinetStyle::Special(SpecialShape::BowFront))
+        .unwrap();
     assert!(d.set_special_amount(18.0).is_ok());
     assert!(d.set_special_amount(19.0).is_err());
     assert_eq!(d.special.unwrap().amount, 18.0);
@@ -647,10 +668,15 @@ fn angled_front_cabinets_have_two_depths() {
     let mut c = with_special(SpecialShape::AngledFront, 12.0, 30.0, 24.0);
     let ring = c.footprint_local();
     assert_eq!(ring.len(), 4);
-    assert!(ring.iter().any(|p| (p.y - 12.0).abs() < 1e-9 && (p.x - 30.0).abs() < 1e-9));
+    assert!(ring
+        .iter()
+        .any(|p| (p.y - 12.0).abs() < 1e-9 && (p.x - 30.0).abs() < 1e-9));
     let ms = meshes(&c);
     let (lo, hi) = bounds_all(&ms);
-    assert!((f64::from(hi[0]) - f64::from(lo[0]) - 30.0).abs() < 1.5, "width");
+    assert!(
+        (f64::from(hi[0]) - f64::from(lo[0]) - 30.0).abs() < 1.5,
+        "width"
+    );
     // The deepest part is the left side: 24" plus the handle.
     assert!(reach_front(&c) > 24.0 && reach_front(&c) < 26.5);
     c.special.as_mut().unwrap().amount = 24.0;
@@ -676,7 +702,10 @@ fn end_radius_and_peninsula_cabinets_clip_or_round_the_exposed_front() {
         // Everything stays inside the bounding box of the straight cabinet
         // (plus the handle and the top overhang).
         let (lo, hi) = bounds_all(&ms);
-        assert!(f64::from(lo[0]) >= -1.01 && f64::from(hi[0]) <= 13.01, "{shape:?}");
+        assert!(
+            f64::from(lo[0]) >= -1.01 && f64::from(hi[0]) <= 13.01,
+            "{shape:?}"
+        );
         assert!(reach_front(&c) <= 26.01, "{shape:?}");
     }
     // The right end is cut on the right.
@@ -706,13 +735,18 @@ fn converting_a_standard_cabinet_follows_the_manual() {
     assert_eq!(c.kind, CabinetKind::Base);
     assert!(c.corner.is_none());
     // End cabinets need width <= depth.
-    assert!(c.convert(CabinetStyle::Special(SpecialShape::LeftEnd)).is_err());
+    assert!(c
+        .convert(CabinetStyle::Special(SpecialShape::LeftEnd))
+        .is_err());
     c.width = 12.0;
-    c.convert(CabinetStyle::Special(SpecialShape::LeftEnd)).unwrap();
+    c.convert(CabinetStyle::Special(SpecialShape::LeftEnd))
+        .unwrap();
     assert_eq!(c.style(), CabinetStyle::Special(SpecialShape::LeftEnd));
     // Fillers and appliance bays do not change style.
     let mut f = Cabinet::filler(CabinetKind::BaseFiller, 3.0);
-    assert!(f.convert(CabinetStyle::Special(SpecialShape::BowFront)).is_err());
+    assert!(f
+        .convert(CabinetStyle::Special(SpecialShape::BowFront))
+        .is_err());
     let mut dw = Cabinet::dishwasher_opening();
     assert!(dw.convert(CabinetStyle::Corner).is_err());
     // A bowed corner diagonal bulges outward.
@@ -744,8 +778,18 @@ fn special_shapes_survive_the_plan_file() {
     assert_eq!(back, c);
     // A plain cabinet writes none of the new fields.
     let plain = serde_json::to_value(Cabinet::base(24.0)).unwrap();
-    for key in ["special", "box_construction", "top_spec", "stiles", "ends", "show_open"] {
-        assert!(plain.get(key).is_none(), "{key} is written for a plain cabinet");
+    for key in [
+        "special",
+        "box_construction",
+        "top_spec",
+        "stiles",
+        "ends",
+        "show_open",
+    ] {
+        assert!(
+            plain.get(key).is_none(),
+            "{key} is written for a plain cabinet"
+        );
     }
 }
 
@@ -796,7 +840,7 @@ fn exposed_ends_carry_the_overhang_and_mated_ends_do_not() {
         Point::new(100.0, -0.1),
         Point::new(-10.0, -0.1),
     ];
-    let ex = exposures(&cabs, &[wall.clone()]);
+    let ex = exposures(&cabs, std::slice::from_ref(&wall));
     assert_eq!(ex.len(), 3);
     let e = |id: u64| ex.iter().find(|(i, _)| *i == id).unwrap().1;
     assert_eq!(
@@ -805,7 +849,7 @@ fn exposed_ends_carry_the_overhang_and_mated_ends_do_not() {
     );
     assert_eq!((e(2).left, e(2).right), (true, true));
     assert_eq!((e(3).left, e(3).right), (true, false));
-    assert_eq!(apply_exposures(&mut cabs, &[wall.clone()]), 3);
+    assert_eq!(apply_exposures(&mut cabs, std::slice::from_ref(&wall)), 3);
     assert_eq!(apply_exposures(&mut cabs, &[wall]), 0);
     // The run's outer ends keep the 1" side overhang; the joints and the
     // wall side lose theirs.
@@ -822,7 +866,13 @@ fn exposed_ends_carry_the_overhang_and_mated_ends_do_not() {
     // The back overhang is gone against the wall.
     let mut lone = Cabinet::base(24.0);
     lone.countertop.as_mut().unwrap().overhang_back = 1.0;
-    let back_y = |c: &Cabinet| c.top_local().unwrap().iter().map(|p| p.y).fold(f64::MAX, f64::min);
+    let back_y = |c: &Cabinet| {
+        c.top_local()
+            .unwrap()
+            .iter()
+            .map(|p| p.y)
+            .fold(f64::MAX, f64::min)
+    };
     assert_eq!(back_y(&lone), -1.0);
     lone.ends = Some(Ends {
         back: true,
@@ -840,14 +890,16 @@ fn closed_toe_and_flat_sides_close_the_toe_space_beside_an_exposed_end() {
     c.toe_options.closed_toe = true;
     // Both ends are exposed: a closing panel each.
     assert_eq!(meshes(&c).len(), base + 2);
-    // Mated on the left: only the right gets one, unless Always Present.
+    // Mated on the left: the toe kick no longer wraps round the left end
+    // (one board fewer) and only the right gets a closing panel, unless
+    // Always Present closes the mated end as well.
     c.ends = Some(Ends {
         left: true,
         ..Ends::default()
     });
-    assert_eq!(meshes(&c).len(), base + 1);
+    assert_eq!(meshes(&c).len(), base);
     c.toe_options.closed_toe_always = true;
-    assert_eq!(meshes(&c).len(), base + 2);
+    assert_eq!(meshes(&c).len(), base + 1);
     // A free cabinet also gets toe kick on its exposed ends and back; Flat
     // Sides and Flat Back take them away.
     let mut free = Cabinet::base(24.0);
@@ -866,11 +918,14 @@ fn back_to_back_cabinets_make_an_island() {
     a.position = Point::new(0.0, 0.0);
     let mut b = Cabinet::base(48.0);
     b.id = 2;
-    // Turned half a turn, its back to a's back.
+    // Turned half a turn, its back on a's back (it stands in front of y = 0
+    // looking the other way).
     b.angle = std::f64::consts::PI;
-    b.position = Point::new(48.0, 48.0);
+    b.position = Point::new(48.0, 0.0);
     let ex = exposures(&[a.clone(), b.clone()], &[]);
-    assert!(ex.iter().all(|(_, e)| e.back && !e.back_wall && !e.left && !e.right));
+    assert!(ex
+        .iter()
+        .all(|(_, e)| e.back && !e.back_wall && !e.left && !e.right));
     let mut cabs = vec![a, b];
     apply_exposures(&mut cabs, &[]);
     for c in &cabs {
@@ -902,7 +957,10 @@ fn a_custom_top_waterfall_drops_to_the_floor() {
     // thick as the top.
     for m in &wf[1..] {
         let (lo, hi) = m.bounds().unwrap();
-        assert!(lo[1].abs() < 1e-4 && (hi[1] - 34.5).abs() < 1e-4, "{lo:?} {hi:?}");
+        assert!(
+            lo[1].abs() < 1e-4 && (hi[1] - 34.5).abs() < 1e-4,
+            "{lo:?} {hi:?}"
+        );
         let thick = (hi[0] - lo[0]).min(hi[2] - lo[2]);
         assert!((thick - 1.5).abs() < 1e-4, "{thick}");
     }
@@ -916,7 +974,12 @@ fn a_custom_top_waterfall_drops_to_the_floor() {
 #[test]
 fn islands_peninsulas_and_waterfall_tops_survive_a_json_round_trip() {
     let mut t = Cabinet::custom_countertop(
-        &[Point::ZERO, Point::new(60.0, 0.0), Point::new(60.0, 30.0), Point::new(0.0, 30.0)],
+        &[
+            Point::ZERO,
+            Point::new(60.0, 0.0),
+            Point::new(60.0, 30.0),
+            Point::new(0.0, 30.0),
+        ],
         1.5,
         36.0,
     )
@@ -927,14 +990,4 @@ fn islands_peninsulas_and_waterfall_tops_survive_a_json_round_trip() {
     let back: Cabinet = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
     assert_eq!(back, t);
     assert_eq!(back.waterfall_edges(), vec![2]);
-}
-
-#[test]
-fn zz_debug_bounds() {
-    let c = with_special(SpecialShape::RightRadiusEnd, 0.0, 12.0, 24.0);
-    let ms = meshes(&c);
-    for m in &ms {
-        let (lo, hi) = m.bounds().unwrap();
-        println!("{:?} {:?} {:?}", m.material, lo, hi);
-    }
 }

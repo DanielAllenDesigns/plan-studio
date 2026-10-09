@@ -57,6 +57,7 @@ const COMPOUND_TABS: &[Tab] = &[
 
 /// What the window edits.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Draft {
     /// A primitive: the record, its extra fields and the working pyramid.
     Primitive {
@@ -157,6 +158,7 @@ impl SolidDialog {
         &self.form.draft
     }
 
+    #[cfg(test)]
     pub fn draft_mut(&mut self) -> &mut Draft {
         &mut self.form.draft
     }
@@ -471,18 +473,14 @@ pub fn open_compound(cx: &EditorContext, id: Id) {
     open(cx, CoreRef::Solid(id));
 }
 
+#[cfg(test)]
 pub fn is_open() -> bool {
     DIALOG.with(|d| d.borrow().is_some())
 }
 
+#[cfg(test)]
 pub fn close() {
     DIALOG.with(|d| *d.borrow_mut() = None);
-}
-
-/// Test access to the open window's draft.
-#[cfg(test)]
-pub fn with_open<R>(f: impl FnOnce(&mut SolidDialog) -> R) -> Option<R> {
-    DIALOG.with(|d| d.borrow_mut().as_mut().map(f))
 }
 
 /// Draws the window when open and applies an OK.

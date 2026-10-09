@@ -255,18 +255,13 @@ mod tests {
     use super::*;
     use crate::extras::RoomMisc;
     use crate::model::RoomName;
-    use crate::walls::WallKind;
+    use crate::model::WallKind;
 
     /// A 20 x 12 ft house split into a 10 ft main room and a 10 ft sunken one.
     fn split_level() -> Project {
         let mut p = Project::new("split");
         let h = 96.0;
-        let pts = [
-            (0.0, 0.0),
-            (240.0, 0.0),
-            (240.0, 144.0),
-            (0.0, 144.0),
-        ];
+        let pts = [(0.0, 0.0), (240.0, 0.0), (240.0, 144.0), (0.0, 144.0)];
         for i in 0..4 {
             let a = pts[i];
             let b = pts[(i + 1) % 4];
@@ -320,8 +315,9 @@ mod tests {
         assert!(r.is_legacy());
         assert_eq!(r.base, ElevationBase::FromFloor);
         assert_eq!(r.edge, ElevationEdge::ToBottom);
-        assert!(!ElevationRef::new(ElevationBase::FromCeiling, ElevationEdge::ToBottom)
-            .is_legacy());
+        assert!(
+            !ElevationRef::new(ElevationBase::FromCeiling, ElevationEdge::ToBottom).is_legacy()
+        );
         // Old files and empty objects read as the default.
         let back: ElevationRef = serde_json::from_str("{}").unwrap();
         assert!(back.is_legacy());

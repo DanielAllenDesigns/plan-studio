@@ -260,7 +260,7 @@ fn make_filler(like: &Cabinet, class: RunClass, s: f64, t: f64, width: f64, dept
     f.toe_kick = like.toe_kick;
     f.backsplash = like.backsplash;
     f.moldings = like.moldings.clone();
-    f.materials = like.materials.clone();
+    f.materials = like.materials;
     f.door_style = like.door_style.clone();
     f.overlay = like.overlay;
     f.auto_filler = true;

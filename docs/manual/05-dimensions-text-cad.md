@@ -110,7 +110,7 @@ together.
 
 | Variant | Hotkey | How it works |
 |---|---|---|
-| Text | `Y` | Click to set the text's lower-left anchor, type, `Enter` to commit. A click elsewhere commits and starts the next text. `Esc` cancels. Clicking existing text edits it in place. **Press and drag** instead of clicking (Round 14) to draw a **text box**: its width wraps the text, its drag height is a minimum box height, and a ghost shows the box; a drag narrower than about three characters is an ordinary click. Rich Text takes the same drag. |
+| Text | `Y` | Click the text's **upper-left corner** (the block hangs down from the click, and keeps its top edge as lines are added), type, `Enter` to commit. A click elsewhere commits and starts the next text. `Esc` cancels. Clicking existing text edits it in place. **Press and drag** instead of clicking (Round 14) to draw a **text box**: its width wraps the text, its drag height is a minimum box height, and a ghost shows the box; a drag narrower than about three characters is an ordinary click. Rich Text takes the same drag. |
 | Rich Text | `Ctrl+Alt+Cmd+J` | Click, type; `Enter` adds a line; `Tab` finishes. Bold, italic, underline, size and color are stored with the text as runs (below). |
 | Leader Line | `Alt+L` | Click the arrow tip and the bends; double-click or `Enter` ends. |
 | Text Line with Arrow | `Alt+A` | As Leader Line, then asks for the text at the end. |
@@ -125,7 +125,9 @@ Text height defaults to the template's 6" plan height. A text style can instead 
 (Default Settings > Text Styles, 5.9): its text keeps its size on paper (a 1/8" label stays 1/8" at 1/4", 1/8" or 1/2" scale)
 because its plan height is recomputed from the sheet's scale; a new text on such a layer is placed at the style's own height, and the
 Text Specification says how big it is on paper. A **Character Height** style keeps the plan height you give it.
-Edit > Find/Replace Text finds a string in the text objects of the floor (or every floor) and replaces it, Replace All as one undo step. **Replace Fonts** (Edit > Replace Fonts..., or Default Settings > Text > Text Styles, 5.9) swaps one font family for another in every style at once; the Edit menu line opens the Text Styles window at its Replace Fonts section.
+**Edit > Find/Replace Text** finds a string in the text of the plan and replaces it. *Searching In* is Current View (the floor on screen), Current File (every floor), All Open Files (every floor and the plan's layout files: page titles, page text and leaders) or Selected Objects. Search options: *Case Sensitive*; *Expand Percent Signs* (a run of one or two `%` outside a macro is ignored, as imported text uses them for style commands); *Show in File* (go to the floor of the result and select it); *Highlight Color*. *Macro Options* say whether the names of macros take part: Exclude Macros, Macros Only or Include All; the macro's name is searched, never its value. The *Results* list shows each match with its file, view and object type; **Find Previous** and **Find Next** walk it, **Replace** changes the current result, **Replace All** every match in the scope as one undo step (the plan and the layouts together). Callout, marker and note labels are searched through their records.
+
+**Edit > Replace Fonts** lists the fonts the plan's text uses (text styles, rich text runs): the ones this computer lacks are marked Missing. Pick a *Replace With* family and a *Face* for each; the preview shows the choice. Replace changes the styles and runs in one undo step.
 
 ### Rich text
 
@@ -141,15 +143,26 @@ The Text Specification (5.8) shows the markup in its Text tab (tick *Rich text*)
 
 ### Text macros
 
-A `%macro%` in text is replaced when the text is placed or edited. The built-in macros:
+A `%macro%` in a text is replaced by what it reports. The **Insert Macro** button beside every text field (the Text Specification, the Rich Text Edit Bar, the callout, marker and note dialogs) lists them in submenus; every entry can be picked wherever the button is.
 
-| Macro | Gives |
+| Category | Macros |
 |---|---|
-| `%room.name%`, `%room.number%`, `%room.area%` | The name, number and floor area of the room under the text |
-| `%plan.name%`, `%plan.date%` | The plan's name; today's date as `YYYY-MM-DD` |
-| `%floor%`, `%floor.number%`, `%floor.count%`, `%floor.height%` | The floor's name; its number (1 is the lowest); the number of floors; its ceiling height |
+| Global > Project Information | `%client.name%`, `%client.address%`, `%client.phone%`, `%client.email%`, `%designer.name%`, `%designer.company%`, `%designer.drawn_by%`, `%designer.checked_by%`, `%project.number%`, `%project.address%`, `%project.lot%`, `%project.date%`, `%project.revision%` and the fields of any custom owner, `%builder.license_no%` |
+| Global > File | `%plan.name%`, `%plan.date%`, `%floor%`, `%floor.number%`, `%floor.count%`, `%floor.height%` |
+| Global > Room (the room the text is in) | `%room.name%`, `%room.nvp_name%` (a custom room label), `%room.number%`, `%room.type%`, `%room.area%`, `%room.perimeter%`, `%room.ceiling_height%` |
+| Global > Time Date | `%date.short%` (10/9/2026), `%date.long%`, `%date.iso%`, `%date.year%`, `%date.month%`, `%date.day%`, `%date.weekday%`, `%time.short%`, `%time.long%` (UTC) |
+| Global > Special Characters | `%char.degree%`, `%char.plusminus%`, `%char.diameter%`, `%char.feet%`, `%char.inches%`, `%char.bullet%`, `%char.copyright%`, `%char.half%`, `%char.newline%`... |
+| User Defined | your own, below |
+| Referenced Object | for a text with an arrow (Leader Line text, Text Line with Arrow): what the object under the arrow tip reports: `%comment%`, `%description%`, `%automatic_description%`, `%automatic_label%`, `%nominal_size%`, `%object_type%`, `%type%`, `%name%`, `%width%`, `%height%`, `%depth%`, `%length%`, `%elevation%`, `%schedule_number%`, `%code%`, `%manufacturer%`, `%supplier%` |
+| Callout, Marker and Note | `%linked_view_name%`, `%referenced_view_callout_label%`, `%layout_page_label%`, `%automatic_label%`, `%simple_schedule_number%`, `%height%`, `%note_text%` |
 
-**Text Macro Management** adds your own: a name (letters, digits, `.`, `_` or `-`; not a built-in's name; unique) and the text it expands to, used as `%name%`. They are saved with the plan.
+A **Text or Rich Text with macros stays live**: the object keeps what you typed and shows what the macros give, and follows the plan (rename the room, edit Project Information, resize the door). Editing it, in place or in the specification, shows the macros as typed. A text that something else changes (a spell check correction) keeps that edit and stops being live; copies are plain text. Callouts, markers and notes expand their macros when their dialog is OK'd, apart from their own annotation macros, which stay live.
+
+**Text Macro Management** (Text flyout) lists your macros with **Edit**, **New**, **Copy**, **Delete**, **Import** and **Export**. A name is letters, digits, `.`, `_` or `-`, unique, and not the name of a macro the program has; its text may use other macros (a macro that uses itself is reported). **Show Evaluation Error** (the red line under a macro that does not evaluate) says why. **Export** writes the selected macro (or all) to a file; **Import** reads one, and for a name the plan already has asks to *Rename*, *Discard* or *Replace*, or *Do for all*. Macros are saved with the plan. Ruby macros are not supported: a user macro is plain text with `%name%` substitutions.
+
+### Project Information
+
+**Tools > Project Information** lists the **Owners** on the left: Project, Designer and Client (they cannot be renamed or deleted) and custom owners such as Builder (italic). **Add**, **Duplicate**, **Rename** and **Delete** manage the custom ones. The right side lists the selected owner's **Name-Value Pairs**: the system names (Project: Number, Address, Lot, Date, Revision; Designer: Name, Company, Drawn By, Checked By; Client: Name, Address, Phone, Email) cannot be edited or deleted; custom names (italic) can be added with **Add Field**, renamed by a double-click and deleted with **Delete Field**; **Clear Values** blanks the owner. Every pair is the macro `%owner.name%` (lower case, spaces as `_`) in any text, and the layout title blocks read the same information. The Client and Designer information go to the REScheck export (18.9). The Revisions tab holds the revision table.
 
 ### Note types
 
@@ -354,9 +367,9 @@ fractions) is what dimensions use.
 
 | Tab | Fields |
 |---|---|
-| Text | The text, with a *Rich text* check box that shows it as markup (`<b>`, `<i>`, `<u>`, `<size=1.5>`, 5.3), Angle, Position (lower left X and Y). |
-| Text Style | **Style**: a named text style of the plan, or "(layer's style)"; the font it gives; **Format** check boxes Bold, Italic and Underline for the whole text (mixed formats are typed as markup on the Text tab). |
-| Appearance | **Size**: Text Height. **Alignment** (Left, Center, Right; Top, Middle, Bottom when the box is taller than the text). **Text Box** (Round 14): **Wrap Text at Box Width** with the **Box Width**, and the **Minimum Box Height** (the box grows taller to hold the text; 0 fits it). **Border** with its **Margin** and **Line Weight** (0 follows the layer). **Background Fill** and its **Fill Color**. The same box is drawn in the plan, on layout pages and in the PDF; the DXF export writes a boxed text as one text entity without its wrapping, border or fill. |
+| Text | The text, with a *Rich text* check box that shows it as markup (`<b>`, `<i>`, `<u>`, `<size=1.5>`, 5.3), the **Insert Macro** button (5.3), Check Spelling, Angle, Position (lower left X and Y). Rich Text shows the Edit Bar with its own Insert Macro, Print Size and Paragraph buttons. |
+| Text Style | **Use Layer Text Style**, **Use Text Style** (a named style of the plan) or **Use Custom Text Style**; the font the choice gives; with Custom the **Format** controls apply to the whole text: font, Bold, Italic, Underline, Strikethrough and **Uppercase** (mixed formats are typed as markup on the Text tab). |
+| Appearance | **Size**: Text Height. **Alignment** (Left, Center, Right; Top, Middle, Bottom when the box is taller than the text). **Text Box** (Round 14): **Wrap Text at Box Width** with the **Box Width**, and the **Minimum Box Height** (the box grows taller to hold the text; 0 fits it). **Border** with its **Margin** and **Line Weight** (0 follows the layer). **Background Fill** and its **Fill Color**. The same box is drawn in the plan, on layout pages and in the PDF; the DXF export writes a boxed text as one text entity without its wrapping, border or fill. **Paragraph Options** (Round 16): *Line Spacing* (single, 1.5, double or any), *Left Margin*, *Right Margin* and *First Line Indent*. **Tab Columns**: a tab character starts a new column, each as wide as its widest cell, or *Column Width*; **Reset Column Widths** goes back to automatic. **Font Sizing**: *Word processor sizing* is stored; the plan draws CAD style (size = capital height). **Convert to Text** (formats and column tabs are lost) and **Convert to Rich Text**. **Print Size Calculator**: a printed size and a printed scale give the text height; *Use as Text Height* applies it. Text pasted from another program (a spreadsheet's rows) becomes a Rich Text with its tab columns. |
 | Layer | The layer, editable. |
 
 ## 5.9 Default Settings: Dimensions and Text Styles

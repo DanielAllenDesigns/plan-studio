@@ -86,6 +86,43 @@ pub fn place_free(kind: DeviceKind, pos: Point) -> Device {
     }
 }
 
+/// How far past a wall face the probe point for [`face_is_exterior`] lies, inches.
+const PROBE_BEYOND_FACE: f64 = 4.0;
+
+/// Is the face of `wall` on `side` outdoors at `offset` along the wall?
+///
+/// A face is outdoors when the point just past it lies in an exterior room
+/// (`is_exterior_room`: a deck, balcony or court), or when it lies in no room
+/// at all and the wall is an exterior wall. The tools place a weatherproof
+/// outlet, switch or wall light there (manual p. 693).
+pub fn face_is_exterior(
+    wall: &Wall,
+    side: WallSide,
+    offset: f64,
+    rooms: &[Room],
+    is_exterior_room: &dyn Fn(&Room) -> bool,
+) -> bool {
+    let normal = wall.normal() * side.sign();
+    let probe = wall.point_at(offset.clamp(0.0, wall.length()))
+        + normal * (wall.thickness * 0.5 + PROBE_BEYOND_FACE);
+    let here: Vec<&Room> = rooms.iter().filter(|r| r.contains(probe)).collect();
+    if here.is_empty() {
+        wall.kind == plan_core::WallKind::Exterior
+    } else {
+        here.iter().all(|r| is_exterior_room(r))
+    }
+}
+
+/// The kind a tool places at a click: the `tool` kind indoors, its
+/// [`outdoor`](DeviceKind::outdoor) counterpart where `exterior`.
+pub fn kind_for_setting(tool: DeviceKind, exterior: bool) -> DeviceKind {
+    if exterior {
+        tool.outdoor()
+    } else {
+        tool
+    }
+}
+
 /// Knobs for [`auto_place_outlets`]; lengths in inches.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutoOutletOptions {
@@ -158,7 +195,10 @@ fn counter_intervals(wall: &Wall, counters: &[Vec<Point>]) -> Vec<(f64, f64)> {
             t0 = t0.min(t);
             t1 = t1.max(t);
         }
-        if near <= COUNTER_AGAINST_WALL && far <= COUNTER_MAX_DEPTH && t1 > 0.0 && t0 < wall.length()
+        if near <= COUNTER_AGAINST_WALL
+            && far <= COUNTER_MAX_DEPTH
+            && t1 > 0.0
+            && t0 < wall.length()
         {
             out.push((t0.max(0.0), t1.min(wall.length())));
         }

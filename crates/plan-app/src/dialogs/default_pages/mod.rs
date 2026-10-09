@@ -14,6 +14,7 @@ mod dimension;
 pub mod electrical;
 pub mod page;
 mod plan;
+mod saved;
 
 use crate::editor::EditorContext;
 use eframe::egui;
@@ -22,6 +23,9 @@ use std::cell::RefCell;
 
 /// The page with id `id`, if there is one.
 pub fn spec(id: &str) -> Option<PageSpec> {
+    if let Some(p) = saved::page(id) {
+        return Some(p);
+    }
     if let Some(slug) = id.strip_prefix("cad.") {
         return cad::page(slug);
     }
@@ -108,6 +112,7 @@ pub fn all_ids() -> Vec<String> {
     for s in ["railing", "fence", "pony", "half", "glass", "attic"] {
         v.push(format!("walls.{s}"));
     }
+    v.extend(saved::IDS.iter().map(|s| s.to_string()));
     v
 }
 
@@ -131,7 +136,7 @@ pub fn open_id() -> Option<String> {
 /// Is a generic page or the Electrical page open or asked for?
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn is_open() -> bool {
-    open_id().is_some() || electrical::is_open()
+    open_id().is_some() || electrical::is_open() || crate::dialogs::assembly_def::page_is_open()
 }
 
 /// Runs `f` on the open generic page (for the tests).
@@ -143,6 +148,7 @@ pub fn with_open<R>(f: impl FnOnce(&mut GenericPage) -> R) -> Option<R> {
 /// Draws the open page and applies OK; call once a frame.
 pub fn show(ctx: &egui::Context, cx: &mut EditorContext) {
     electrical::show(ctx, cx);
+    crate::dialogs::assembly_def::show_page(ctx, cx);
     if let Some(id) = WANTED.with(|w| w.borrow_mut().take()) {
         if let Some(spec) = spec(&id) {
             OPEN.with(|o| *o.borrow_mut() = Some(GenericPage::new(spec, &cx.defaults)));

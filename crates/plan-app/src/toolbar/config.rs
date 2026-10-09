@@ -142,6 +142,9 @@ pub fn slot_key(s: &Slot) -> Option<&'static str> {
         Slot::Flyout(f) => Some(f.group),
         Slot::ViewSelector => Some("View Selector"),
         Slot::FloorLabel => Some("Floor Number"),
+        Slot::LayerSetSelector => Some("Active Layer Set"),
+        Slot::DimensionDefaultsSelector => Some("Active Dimension Defaults"),
+        Slot::DefaultSetSelector => Some("Active Default Set"),
         Slot::Separator => None,
     }
 }
@@ -204,6 +207,24 @@ fn describe(slot: &Slot) -> (EntryKind, &'static str, String, Vec<&'static str>)
             EntryKind::Special,
             "floor_up",
             "The number of the floor being edited".into(),
+            Vec::new(),
+        ),
+        Slot::LayerSetSelector => (
+            EntryKind::Special,
+            "layer_display",
+            "The layer set the plan view shows".into(),
+            Vec::new(),
+        ),
+        Slot::DimensionDefaultsSelector => (
+            EntryKind::Special,
+            "default_settings",
+            "The saved dimension defaults new dimensions use".into(),
+            Vec::new(),
+        ),
+        Slot::DefaultSetSelector => (
+            EntryKind::Special,
+            "default_settings",
+            "The Default Set in use (saved defaults and layers)".into(),
             Vec::new(),
         ),
         Slot::Separator => (EntryKind::Special, "select", String::new(), Vec::new()),
@@ -282,6 +303,25 @@ fn sources() -> Vec<Source> {
         }
     }
     let extras: Vec<(&str, Slot)> = vec![
+        ("Saved Views", Slot::LayerSetSelector),
+        ("Saved Views", Slot::DimensionDefaultsSelector),
+        ("Saved Views", Slot::DefaultSetSelector),
+        (
+            "Saved Views",
+            Slot::Button(super::item(
+                "default_settings",
+                "Default Sets",
+                Action::Custom(crate::dialogs::default_sets::DEFAULT_SETS),
+            )),
+        ),
+        (
+            "Saved Views",
+            Slot::Button(super::item(
+                "default_settings",
+                "Active Defaults",
+                Action::Custom(crate::dialogs::default_sets::ACTIVE_DEFAULTS),
+            )),
+        ),
         ("Walls and Railings", Slot::Flyout(fencing())),
         ("Images and Objects", Slot::Flyout(image())),
         ("Images and Objects", Slot::Flyout(distributed_objects())),

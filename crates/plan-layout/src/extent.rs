@@ -482,8 +482,10 @@ pub(crate) fn frame_for_view(
         };
     }
     if let Some(art) = &view.art {
-        if !matches!(source, BoxSource::PlanView { .. } | BoxSource::CadDetail { .. })
-            && !art.lines.is_empty()
+        if !matches!(
+            source,
+            BoxSource::PlanView { .. } | BoxSource::CadDetail { .. }
+        ) && !art.lines.is_empty()
         {
             return pad(art.bounds.0, art.bounds.1, VIEW_MARGIN_IN);
         }

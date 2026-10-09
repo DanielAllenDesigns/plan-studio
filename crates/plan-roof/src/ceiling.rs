@@ -306,6 +306,7 @@ pub fn room_ceiling_height_at(
 /// of the hole that rises to the inner ceiling over a horizontal `run`.
 /// Heights are elevations on the scale the planes use (scene Y); `inner` and
 /// `outer` are the hole and the outside edge of the outer ceiling.
+#[allow(clippy::too_many_arguments)]
 pub fn tray_ceiling_planes(
     inner: &[Point],
     outer: &[Point],

@@ -159,3 +159,20 @@ Each finding names the room and the measured value, and **Zoom to** selects the 
 Each Apply is one step in Undo. **Use Selection** takes the width of the selected opening or the rise of the selected stair. The stair limits come from the plan's Plan Check Settings.
 
 The spans are computed from the lumber's published design values, not copied from the printed tables, and Southern Pine is not built in. The calculators are a design aid and not a structural design: the printed table of the adopted code decides.
+
+## 18.9 Thermal envelope and REScheck export
+
+**File > Export > Thermal Envelope Data** writes a comma-delimited `.csv` of the thermal envelope and opens it in the program that handles `.csv` files. **File > Export > Export to REScheck** writes an `.rxl` for REScheck (desktop or web) after a dialog with two options: **Group Similar Walls** (walls with the same assembly, R-values and direction are added together whatever floor they are on; off keeps floors apart) and **Group Similar Doors/Windows** (those with the same properties and direction are added together; off lists each). Like walls on one floor are always grouped by direction.
+
+What is read:
+
+- The **conditioned area** is the interior area of the rooms whose Room Specification says Conditioned, else whose room type does (interior types and Open Below; not exterior or hybrid types).
+- A **wall** belongs to the envelope when conditioned space lies on one side and not on the other. It faces the unconditioned side. Its gross area is its centerline length times its height; its doors and windows are listed separately and take its direction.
+- **Direction**: a face within 45 degrees of north is North, and likewise South, East and West. North is up the screen unless the plan has a North Pointer (Terrain > North Pointer), which turns it. The REScheck *front* is the side facing down the screen.
+- **Floors** and **ceilings** are conditioned rooms with no conditioned room under them or over them, with the cavity and continuous R-values summed from the layered Floor and Ceiling definitions (13). A first-floor room with a monolithic slab is a **slab on grade** (its perimeter is the length of the envelope walls on that floor).
+- A wall's **R-values** come from its wall type: layers called or made of insulation count as cavity insulation when they are the main layer and as continuous insulation otherwise (3.5 R per inch, 5 for foam); a type with none exports no insulation. Fill them in in REScheck.
+- **Doors and windows** export the U-factor and SHGC of their Energy Values tab; a door is a door even when it is glass or mulled. Skylights are not exported.
+- The **project data** comes from Project Information: the Client is the owner/agent, the Designer the designer/contractor. The project is New Construction, 1-and-2 Family, Detached; location and permit data are not exported. Wall labels carry over, and when walls are grouped the label is kept only if they are all the same.
+
+The `.csv` has a row for each piece (floor level, component, assembly, direction, area, R-values or U-factor and SHGC, slab perimeter, label), then a total for each kind and direction. The `.rxl` element names are our own reading of the manual, not copied from REScheck: open the file in REScheck to check it before relying on it.
+

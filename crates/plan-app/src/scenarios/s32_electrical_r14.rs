@@ -112,7 +112,8 @@ fn auto_place_outlets_adds_the_exterior_weatherproof_receptacles_in_one_step() {
     // Outside the shell: below the south wall and above the north wall.
     assert!(wp.iter().any(|d| d.position.y < 0.0));
     assert!(wp.iter().any(|d| d.position.y > H));
-    assert!(wp.iter().all(|d| d.height == 18.0));
+    // Weatherproof outlets are outlets: the Electrical Defaults Outlet height.
+    assert!(wp.iter().all(|d| d.height == 12.0));
     // The rest are 110V general receptacles at 12" inside the house.
     for d in all.iter().filter(|d| !d.kind.is_weatherproof()) {
         assert_eq!(d.kind, DeviceKind::Outlet110);
@@ -148,10 +149,14 @@ fn device_heights_come_from_the_plans_electrical_defaults() {
     let d = devices(&sim);
     assert_eq!(d[1].height, 18.0);
     assert_eq!(d[2].height, 42.0);
-    // The other kinds keep their own heights.
+    // One Outlet height serves every receptacle (round 16, four height groups).
     elec(&mut sim, ElecVariant::Gfci);
     sim.click(200.0, 8.0);
-    assert_eq!(devices(&sim)[3].height, 12.0);
+    assert_eq!(devices(&sim)[3].height, 18.0);
+    // Lights keep their own heights.
+    elec(&mut sim, ElecVariant::WallLight);
+    sim.click(260.0, 8.0);
+    assert_eq!(devices(&sim)[4].height, 66.0);
     // Auto Place Outlets uses them too.
     let mut sim2 = house();
     let mut defaults = ElectricalDefaults::default();

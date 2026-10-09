@@ -921,10 +921,11 @@ pub fn copy_placed(cx: &mut EditorContext) -> usize {
             PlacedRef::Cabinet(id) => {
                 cabinet_by_id(cx.floor(), id).map(|c| PlacedItem::Cabinet(Box::new(c)))
             }
+            // A fireplace carries its specification with the copy.
             PlacedRef::Symbol(id) => cx
                 .floor()
                 .symbol(id)
-                .cloned()
+                .map(|s| cx.floor().symbol_for_copy(s))
                 .map(|s| PlacedItem::Symbol(Box::new(s))),
         })
         .collect();
@@ -2127,6 +2128,9 @@ mod tests {
         let mut cx = cx();
         set_auto_join(false);
         let ids = bases(&mut cx, &[0.0, 24.0]);
+        // The first pass stores the program-made ends of the cabinets; after
+        // that nothing more is written.
+        rejoin_if_enabled(&mut cx);
         let before = cx.project.floors[0].cabinets.clone();
         assert_eq!(rejoin_if_enabled(&mut cx), 0);
         assert_eq!(cx.project.floors[0].cabinets, before);

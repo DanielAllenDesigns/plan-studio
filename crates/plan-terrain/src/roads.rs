@@ -217,9 +217,8 @@ fn ends(r: &RoadStrip) -> [Point; 2] {
 
 /// The strip roads joined end to end to road `start` (including it).
 pub fn connected_roads(t: &Terrain, start: usize) -> Vec<usize> {
-    let usable = |r: &RoadStrip| {
-        r.kind == RoadKind::Road && r.outline.len() < 3 && r.centerline.len() >= 2
-    };
+    let usable =
+        |r: &RoadStrip| r.kind == RoadKind::Road && r.outline.len() < 3 && r.centerline.len() >= 2;
     if !t.roads.get(start).is_some_and(usable) {
         return Vec::new();
     }

@@ -98,7 +98,11 @@ fn a_retaining_wall_is_a_break_and_a_wall_in_one_undo_step() {
     let t = rec(&sim).terrain;
     assert_eq!((t.breaks.len(), t.walls.len()), (1, 1));
     let wall = &t.walls[0];
-    assert!(wall.retain > 1.0, "the grade step is the drop across it: {}", wall.retain);
+    assert!(
+        wall.retain > 1.0,
+        "the grade step is the drop across it: {}",
+        wall.retain
+    );
     assert_eq!(wall.height, 0.0, "the top matches the high side");
     assert!(wall.cut && !wall.stepped);
     assert!(t.breaks[0].follow_ground);
@@ -107,10 +111,11 @@ fn a_retaining_wall_is_a_break_and_a_wall_in_one_undo_step() {
     let west = plan_terrain::elevation_at(&s, Point::new(240.0 - 8.0, 150.0)).unwrap();
     let east = plan_terrain::elevation_at(&s, Point::new(240.0 + 8.0, 150.0)).unwrap();
     assert!(west - east > wall.retain * 0.8, "{west} {east}");
-    assert!(scene(&sim)
-        .meshes
-        .iter()
-        .any(|m| m.object_id == Some(plan_terrain::terrain_object_id(plan_terrain::TerrainPart::Wall, 0))));
+    assert!(scene(&sim).meshes.iter().any(|m| m.object_id
+        == Some(plan_terrain::terrain_object_id(
+            plan_terrain::TerrainPart::Wall,
+            0
+        ))));
     // One undo takes both away.
     assert_eq!(sim.undo().as_deref(), Some("Straight Retaining Wall"));
     let t = rec(&sim).terrain;
@@ -122,7 +127,11 @@ fn a_retaining_wall_is_a_break_and_a_wall_in_one_undo_step() {
     sim.click(240.0, -100.0);
     sim.key(KeyEvent::key(Key::Enter));
     let wall = &rec(&sim).terrain.walls[0];
-    assert!(wall.points[0].dist(Point::new(240.0, -100.0)) < 1e-6, "{:?}", wall.points[0]);
+    assert!(
+        wall.points[0].dist(Point::new(240.0, -100.0)) < 1e-6,
+        "{:?}",
+        wall.points[0]
+    );
 }
 
 #[test]
@@ -163,8 +172,14 @@ fn absolute_elevation_moves_the_surface_to_the_floor_and_the_reference_point_too
     // Place the Terrain Elevation Reference Point with its tool.
     sim.tool(ToolId::TerrainVariant(V::ReferencePoint));
     sim.click(-300.0, -300.0);
-    assert_eq!(sim.app.cx.undo_label(), Some("Terrain Elevation Reference Point"));
-    assert_eq!(rec(&sim).terrain.reference_point, Some(Point::new(-300.0, -300.0)));
+    assert_eq!(
+        sim.app.cx.undo_label(),
+        Some("Terrain Elevation Reference Point")
+    );
+    assert_eq!(
+        rec(&sim).terrain.reference_point,
+        Some(Point::new(-300.0, -300.0))
+    );
     assert_eq!(sim.app.tools.active_id(), ToolId::Select);
     // Automatic leaves the survey where it is; retaining at the point puts it 6" under the floor.
     build(&mut sim);
@@ -181,7 +196,10 @@ fn absolute_elevation_moves_the_surface_to_the_floor_and_the_reference_point_too
     sim.tool(ToolId::TerrainVariant(V::RemoveReferencePoint));
     sim.click(0.0, 0.0);
     assert_eq!(rec(&sim).terrain.reference_point, None);
-    assert_eq!(sim.app.cx.undo_label(), Some("Remove Terrain Elevation Reference Point"));
+    assert_eq!(
+        sim.app.cx.undo_label(),
+        Some("Remove Terrain Elevation Reference Point")
+    );
     // Contour 0 retains the surface at elevation 0 instead.
     spec(&mut sim, |r| {
         r.terrain.absolute_elevation = AbsoluteElevation::ContourZero;
@@ -208,10 +226,15 @@ fn the_skirt_and_the_surface_detail_settings_reach_the_scene_and_the_build() {
     build(&mut sim);
     assert_eq!(meshes(&sim), plain + 1, "a skirt mesh");
     // Medium detail asks for about 2000 triangles.
-    spec(&mut sim, |r| r.terrain.triangle_detail = TriangleDetail::Medium);
+    spec(&mut sim, |r| {
+        r.terrain.triangle_detail = TriangleDetail::Medium
+    });
     build(&mut sim);
     let medium = surface(&sim).triangles.len();
-    assert!(medium != grid_triangles && (1000..4000).contains(&medium), "{medium}");
+    assert!(
+        medium != grid_triangles && (1000..4000).contains(&medium),
+        "{medium}"
+    );
     // The build reports its triangles for the specification.
     let stats = rec(&sim).terrain.last_build.expect("a build report");
     assert_eq!(stats.triangles as usize, medium);
@@ -279,7 +302,10 @@ fn contours_sit_on_their_own_layers_with_their_units_and_red_negatives() {
     build(&mut sim);
     let view = site_view::terrain_view(&sim.app.cx.project).unwrap();
     let levels: Vec<f64> = view.contours.iter().map(|c| c.z).collect();
-    assert!(!levels.is_empty() && levels.iter().all(|z| ((z - 12.0) % 24.0).abs() < 1e-6), "{levels:?}");
+    assert!(
+        !levels.is_empty() && levels.iter().all(|z| ((z - 12.0) % 24.0).abs() < 1e-6),
+        "{levels:?}"
+    );
     let texts: Vec<(&str, bool)> = view
         .symbols
         .iter()
@@ -288,10 +314,16 @@ fn contours_sit_on_their_own_layers_with_their_units_and_red_negatives() {
             _ => None,
         })
         .collect();
-    assert!(texts.iter().any(|(t, n)| t.starts_with('-') && *n), "{texts:?}");
+    assert!(
+        texts.iter().any(|(t, n)| t.starts_with('-') && *n),
+        "{texts:?}"
+    );
     assert!(texts.iter().all(|(t, _)| t.ends_with('\'')));
     // The two layers exist and hiding one removes its lines from the plan.
-    for name in [plan_terrain::LAYER_PRIMARY_CONTOURS, plan_terrain::LAYER_SECONDARY_CONTOURS] {
+    for name in [
+        plan_terrain::LAYER_PRIMARY_CONTOURS,
+        plan_terrain::LAYER_SECONDARY_CONTOURS,
+    ] {
         assert!(sim.app.cx.project.layers.get(name).is_some(), "{name}");
     }
     let all = sim.plan_shapes().len();
@@ -322,7 +354,13 @@ fn the_terrain_labels_tool_switches_a_label_on_and_the_schedule_lists_the_object
     let spots = plan_terrain::label_spots(&t);
     assert_eq!(spots.len(), 1);
     assert!(spots[0].text.starts_with("Terrain Wall"));
-    assert!(sim.app.cx.project.layers.get(plan_terrain::LAYER_TERRAIN_LABELS).is_some());
+    assert!(sim
+        .app
+        .cx
+        .project
+        .layers
+        .get(plan_terrain::LAYER_TERRAIN_LABELS)
+        .is_some());
     // Clicking again switches it off.
     sim.tool(ToolId::TerrainVariant(V::TerrainLabels));
     sim.click(200.0, 100.0);
@@ -341,9 +379,9 @@ fn the_terrain_labels_tool_switches_a_label_on_and_the_schedule_lists_the_object
         plan_core::schedules::ScheduleKind::General,
         None,
     );
-    assert!(entries
-        .iter()
-        .any(|e| e.cell("category") == "Terrain Paths" && e.cell("name").starts_with("Terrain Wall")));
+    assert!(entries.iter().any(
+        |e| e.cell("category") == "Terrain Paths" && e.cell("name").starts_with("Terrain Wall")
+    ));
 }
 
 #[test]
@@ -357,7 +395,12 @@ fn polyline_roads_medians_cul_de_sacs_and_sidewalks_are_placed_and_undone() {
     sim.key(KeyEvent::key(Key::Enter));
     assert_eq!(rec(&sim).terrain.roads.len(), 1);
     sim.tool(ToolId::TerrainVariant(V::Median));
-    for (x, y) in [(100.0, 290.0), (200.0, 290.0), (200.0, 310.0), (100.0, 310.0)] {
+    for (x, y) in [
+        (100.0, 290.0),
+        (200.0, 290.0),
+        (200.0, 310.0),
+        (100.0, 310.0),
+    ] {
         sim.click(x, y);
     }
     sim.key(KeyEvent::key(Key::Enter));
@@ -367,7 +410,11 @@ fn polyline_roads_medians_cul_de_sacs_and_sidewalks_are_placed_and_undone() {
     let t = rec(&sim).terrain;
     let cds = t.roads.last().unwrap();
     assert_eq!(cds.kind, RoadKind::CulDeSac);
-    assert_eq!(cds.center, Point::new(600.0, 300.0), "on the end of the road");
+    assert_eq!(
+        cds.center,
+        Point::new(600.0, 300.0),
+        "on the end of the road"
+    );
     sim.tool(ToolId::TerrainVariant(V::PolylineDriveway));
     for (x, y) in [(0.0, 200.0), (80.0, 200.0), (80.0, 100.0), (0.0, 100.0)] {
         sim.click(x, y);
@@ -384,22 +431,40 @@ fn polyline_roads_medians_cul_de_sacs_and_sidewalks_are_placed_and_undone() {
     assert_eq!(sim.app.cx.undo_label(), Some("Auto Generate Sidewalk"));
     let t = rec(&sim).terrain;
     assert_eq!(t.roads.len(), before + 2, "a sidewalk each side");
-    assert!(t.roads[before..].iter().all(|r| r.kind == RoadKind::Sidewalk));
+    assert!(t.roads[before..]
+        .iter()
+        .all(|r| r.kind == RoadKind::Sidewalk));
     // Hit-testing finds an outline road inside its shape.
     assert_eq!(
         site_view::hit_terrain(&t, Point::new(40.0, 150.0), 6.0),
-        Some(TerrainHit::Road(t.roads.iter().position(|r| r.kind == RoadKind::Driveway).unwrap()))
+        Some(TerrainHit::Road(
+            t.roads
+                .iter()
+                .position(|r| r.kind == RoadKind::Driveway)
+                .unwrap()
+        ))
     );
     // Build and look at the scene: meshes for every road object.
     build(&mut sim);
     let road_meshes = scene(&sim)
         .meshes
         .iter()
-        .filter(|m| matches!(m.object_id.and_then(plan_terrain::terrain_object_of), Some((plan_terrain::TerrainPart::Road, _))))
+        .filter(|m| {
+            matches!(
+                m.object_id.and_then(plan_terrain::terrain_object_of),
+                Some((plan_terrain::TerrainPart::Road, _))
+            )
+        })
         .count();
     assert!(road_meshes >= t.roads.len(), "{road_meshes}");
     // Undo the sidewalks in one step.
-    assert_eq!(sim.undo().as_deref(), Some("Terrain Build").or(Some("Build Terrain")).map(str::to_string).as_deref());
+    assert_eq!(
+        sim.undo().as_deref(),
+        Some("Terrain Build")
+            .or(Some("Build Terrain"))
+            .map(str::to_string)
+            .as_deref()
+    );
 }
 
 #[test]
@@ -411,7 +476,12 @@ fn plant_images_change_with_the_season_and_grow_with_the_slider() {
     sim.key(KeyEvent::key(Key::Enter));
     // Make the run a plant image with growth data.
     spec_object(&mut sim, |l| {
-        l.image = Some(plan_terrain::PlantImage::sized("maple.png", 120.0, 240.0, false));
+        l.image = Some(plan_terrain::PlantImage::sized(
+            "maple.png",
+            120.0,
+            240.0,
+            false,
+        ));
         l.size = 120.0;
         l.height = 240.0;
         l.mature_height = 240.0;
@@ -439,7 +509,11 @@ fn plant_images_change_with_the_season_and_grow_with_the_slider() {
     sim.dialog_frame(false);
     assert_eq!(sim.app.tools.active().name(), "Grow All Plants");
     sim.cancel();
-    assert_eq!(rec(&sim).terrain.landscape[0].height, 240.0, "Cancel changes nothing");
+    assert_eq!(
+        rec(&sim).terrain.landscape[0].height,
+        240.0,
+        "Cancel changes nothing"
+    );
     let mut draft = rec(&sim);
     assert!(plan_terrain::grow_plants(&mut draft.terrain.landscape, 2.0) == 1);
     let grown = draft.terrain.landscape[0].height;
@@ -529,5 +603,9 @@ fn the_object_dialogs_open_with_the_new_panels_and_keep_their_extras() {
     });
     let t = rec(&sim).terrain;
     assert_eq!(t.elevation_points.len(), 1);
-    assert_eq!(t.extras(ObjectKey::Point(0)).note, "", "the note went with its point");
+    assert_eq!(
+        t.extras(ObjectKey::Point(0)).note,
+        "",
+        "the note went with its point"
+    );
 }

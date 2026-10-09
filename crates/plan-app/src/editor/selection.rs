@@ -275,6 +275,16 @@ impl Selection {
         self.items.len() >= 2 && self.items.iter().all(|o| matches!(o, ObjectRef::Wall(_)))
     }
 
+    /// Whether two or more objects are selected and every one is a cabinet
+    /// (Open Object then edits them together, CB-631).
+    pub fn all_cabinets(&self) -> bool {
+        self.items.len() >= 2
+            && self
+                .items
+                .iter()
+                .all(|o| matches!(o, ObjectRef::Cabinet(_)))
+    }
+
     /// Drops objects that no longer exist on floor `fl` of `project`.
     pub fn retain_existing(&mut self, project: &Project, fl: usize) {
         self.items.retain(|o| o.exists_in(project, fl));
@@ -291,10 +301,10 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
             .find(|x| x.id == i)
             .map(|x| x.layer_name().to_string()),
         ObjectRef::Dimension(i) => floor.dimensions.iter().find(|d| d.id == i).map(|d| {
-            match d.kind {
+            d.layer_or(match d.kind {
                 DimensionKind::AutoExterior => "Dimensions, Automatic",
                 _ => "Dimensions, Manual",
-            }
+            })
             .to_string()
         }),
         ObjectRef::Cad(i) | ObjectRef::Text(i) => floor

@@ -174,7 +174,8 @@ fn the_stair_specification_dialog_opens_and_adjusts_the_stair() {
     assert!(sim.app.spec.is_open());
     sim.ok();
     assert!(!sim.app.spec.is_open());
-    assert_eq!(sim.app.cx.undo_label(), Some("Stair Specification"));
+    // OK with nothing changed adds no undo step (QA-26).
+    assert_eq!(sim.app.cx.undo_label(), Some("Draw Stairs"));
     // Widen it through the same dialog type and apply (one undo step).
     let mut d = crate::dialogs::stairs::StairDialog::new(stairs(&sim, 0)[0].clone());
     d.draft_mut().stair.params.width = 48.0;

@@ -1497,21 +1497,16 @@ impl SelectTool {
             return ToolResult::ignored();
         };
         let hits = hit_test_cx(cx, at, cx.pick_tol());
-        if hits.is_empty() {
-            return ToolResult::ignored();
+        // The Exterior Room comes after the objects under the pointer when
+        // it is just outside an exterior wall (R-106, manual p. 449).
+        match rooms_edit::exterior_cycle(cx, at, &hits, backwards) {
+            rooms_edit::Next::Hit(o) => {
+                select_hit(cx, o);
+                ToolResult::consumed()
+            }
+            rooms_edit::Next::Exterior => ToolResult::consumed(),
+            rooms_edit::Next::Nothing => ToolResult::ignored(),
         }
-        let n = hits.len();
-        let next = match cx
-            .selection
-            .single()
-            .and_then(|s| hits.iter().position(|h| *h == s))
-        {
-            Some(i) if backwards => (i + n - 1) % n,
-            Some(i) => (i + 1) % n,
-            None => 0,
-        };
-        select_hit(cx, hits[next]);
-        ToolResult::consumed()
     }
 
     fn nudge(&mut self, cx: &mut EditorContext, dir: Point, big: bool) -> ToolResult {
@@ -1523,17 +1518,21 @@ impl SelectTool {
         if items.iter().any(|o| !cx.check_unlocked(*o)) {
             return ToolResult::consumed();
         }
-        cx.begin_change("Nudge");
-        let before = cx.floor().walls.clone();
-        match cx.selection.single() {
-            Some(ObjectRef::Wall(id)) => move_wall(cx, id, delta, false),
-            Some(ObjectRef::Opening(id)) => slide_opening_by(cx, id, delta),
-            _ => move_group(cx, &items, delta),
-        }
-        let fl = cx.floor;
-        details_view::follow_walls(&mut cx.project, fl, &before);
-        // A nudged distribution record carries its copies along.
-        crate::editor::placed::sync_distributions(cx);
+        // A group: a nudge that moves nothing (a terrain point, say) leaves no
+        // undo step (QA-26).
+        cx.undo_group(|cx| {
+            cx.begin_change("Nudge");
+            let before = cx.floor().walls.clone();
+            match cx.selection.single() {
+                Some(ObjectRef::Wall(id)) => move_wall(cx, id, delta, false),
+                Some(ObjectRef::Opening(id)) => slide_opening_by(cx, id, delta),
+                _ => move_group(cx, &items, delta),
+            }
+            let fl = cx.floor;
+            details_view::follow_walls(&mut cx.project, fl, &before);
+            // A nudged distribution record carries its copies along.
+            crate::editor::placed::sync_distributions(cx);
+        });
         cx.mark_dirty();
         ToolResult::committed("Nudge")
     }
@@ -1660,6 +1659,11 @@ impl Tool for SelectTool {
         if rooms_edit::label_pointer_down(cx, p.world) {
             return ToolResult::consumed();
         }
+        // An edge grip of the selected Exterior Room sets the level's default
+        // heights (R-106).
+        if rooms_edit::exterior_drag_down(cx, p.world) {
+            return ToolResult::consumed();
+        }
         self.room_click = None;
         let tol = cx.pick_tol();
         // The padlock beside a measured value locks it into a permanent
@@ -1681,6 +1685,11 @@ impl Tool for SelectTool {
         }
         cx.temp.cancel();
         let shift = p.modifiers.shift;
+        // An edit handle of a selected schedule (side Resize, Rotate, Resize
+        // Column, Move Row, Move Column, Sort by Column, Wrap).
+        if let Some(res) = crate::tools::schedule::handle_press(cx, p.world) {
+            return res;
+        }
         if let Some(op) = Self::handle_op(cx, p.world, tol) {
             self.drag = Drag::Armed {
                 op,
@@ -1699,6 +1708,10 @@ impl Tool for SelectTool {
         let top_hit = top_hit.filter(|_| !p.modifiers.alt);
         if let Some(top) = top_hit {
             rooms_edit::clear_room_selection();
+            // A click on a schedule also picks the row it falls on.
+            if let ObjectRef::Schedule(sid) = top {
+                crate::editor::schedule_view::note_click(cx, sid, p.world);
+            }
             // A click on a group member names the whole group (S-35).
             let members = expand_groups(cx, &[top]);
             if shift {
@@ -1751,6 +1764,13 @@ impl Tool for SelectTool {
         }
         if p.down && rooms_edit::label_dragging() {
             rooms_edit::label_pointer_move(cx, p.world);
+            return ToolResult::consumed();
+        }
+        if p.down && rooms_edit::exterior_dragging() {
+            rooms_edit::exterior_drag_move(cx, p.world);
+            return ToolResult::consumed();
+        }
+        if p.down && crate::tools::schedule::handle_move(cx, p.world) {
             return ToolResult::consumed();
         }
         if !p.down {
@@ -1814,6 +1834,14 @@ impl Tool for SelectTool {
         if rooms_edit::label_pointer_up() {
             return ToolResult::consumed();
         }
+        match rooms_edit::exterior_drag_up(cx) {
+            Some(true) => return ToolResult::committed("Exterior Room"),
+            Some(false) => return ToolResult::consumed(),
+            None => {}
+        }
+        if let Some(res) = crate::tools::schedule::handle_release(cx, p.world) {
+            return res;
+        }
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Active(a) => self.finish(cx, *a),
             Drag::Armed {
@@ -1848,6 +1876,9 @@ impl Tool for SelectTool {
                 } else if let Some(room) = self.room_click.take() {
                     // A plain click on empty floor selects the room.
                     rooms_edit::select_room(cx, room);
+                } else if let Some(ext) = rooms_edit::exterior_at(cx, p.world) {
+                    // Just outside an exterior wall: the Exterior Room (R-106).
+                    rooms_edit::select_exterior(cx, ext);
                 }
                 ToolResult::consumed()
             }
@@ -1875,7 +1906,15 @@ impl Tool for SelectTool {
                     rooms_edit::request_room_dialog(cx, room);
                     ToolResult::consumed()
                 }
-                None => ToolResult::ignored(),
+                // Just outside an exterior wall: the Exterior Room's.
+                None => match rooms_edit::exterior_at(cx, p.world) {
+                    Some(ext) => {
+                        rooms_edit::select_exterior(cx, ext);
+                        rooms_edit::request_exterior_dialog(cx, ext);
+                        ToolResult::consumed()
+                    }
+                    None => ToolResult::ignored(),
+                },
             },
         }
     }
@@ -1902,7 +1941,8 @@ impl Tool for SelectTool {
             if self.cancel_drag(cx) {
                 return ToolResult::consumed();
             }
-            if rooms_edit::selected_room(cx).is_some() {
+            if rooms_edit::selected_room(cx).is_some() || rooms_edit::selected_exterior(cx).is_some()
+            {
                 rooms_edit::clear_room_selection();
                 return ToolResult::consumed();
             }
@@ -1922,6 +1962,10 @@ impl Tool for SelectTool {
         if k.is(Key::Enter) {
             if let (true, Some(room)) = (cx.selection.is_empty(), rooms_edit::selected_room(cx)) {
                 rooms_edit::request_room_dialog(cx, room);
+                return ToolResult::consumed();
+            }
+            if let (true, Some(ext)) = (cx.selection.is_empty(), rooms_edit::selected_exterior(cx)) {
+                rooms_edit::request_exterior_dialog(cx, ext);
                 return ToolResult::consumed();
             }
             return match cx.selection.single() {

@@ -467,6 +467,15 @@ impl CodeMinimums {
         crate::ctx::is_habitable(&room_type.to_lowercase())
     }
 
+    /// Is a room of this type and Room Function a habitable room for Plan
+    /// Check (manual p. 447)? The habitable-room rules (minimum area and
+    /// dimension, smoke alarm, egress) apply to interior-function rooms only:
+    /// a Deck or a Porch named like a living room is not checked as one.
+    pub fn is_habitable_in(room_type: &str, function: &str) -> bool {
+        Self::is_habitable(room_type)
+            && plan_core::rooms::plan_check_rules(function, room_type).habitable_rules
+    }
+
     /// Is a room of this type a sleeping room (a bedroom)?
     pub fn is_sleeping(room_type: &str) -> bool {
         crate::ctx::is_bedroom(&room_type.to_lowercase())
@@ -764,6 +773,18 @@ mod tests {
         assert_eq!(m.ceiling_min_for("Master Bath"), Some(80.0));
         assert_eq!(m.ceiling_min_for("Laundry"), Some(80.0));
         assert_eq!(m.ceiling_min_for("Garage"), None);
+    }
+
+    #[test]
+    fn plan_check_uses_the_room_function() {
+        // A bedroom is checked as one; the same name on a Deck is not.
+        assert!(CodeMinimums::is_habitable_in("Bedroom", "Standard"));
+        assert!(!CodeMinimums::is_habitable_in("Bedroom", "Deck"));
+        assert!(!CodeMinimums::is_habitable_in("Family Room", "Porch"));
+        assert!(!CodeMinimums::is_habitable_in("Kitchen", "Balcony"));
+        // Interior functions keep the rules, a closet has none either way.
+        assert!(CodeMinimums::is_habitable_in("Kitchen", "Utility"));
+        assert!(!CodeMinimums::is_habitable_in("Closet", "Standard"));
     }
 
     #[test]

@@ -2321,8 +2321,9 @@ mod tests {
                 ..arch_d_on_arch_d()
             },
         ));
-        // 0.24 pt, and the 0.5 pt a page starts with.
-        assert_eq!(single, [240, 500].into_iter().collect(), "{single:?}");
+        // 0.24 pt on every stroke (the 0.5 pt a page starts with is a state
+        // reset, never followed by a stroke).
+        assert_eq!(single, [240].into_iter().collect(), "{single:?}");
         // The hairline rule still wins over the single weight.
         let hair = widths(&print_layout_pdf(
             &l,
@@ -2398,9 +2399,9 @@ mod tests {
             "{}",
             &text_of(&pdf)[..200.min(text_of(&pdf).len())]
         );
-        // The sheet fits that area: 10 / 36 and 7 / 24 -> 0.27778.
+        // The sheet fits that area: 10 / 36 and 7 / 24 -> 0.277778.
         let k = (10.0f64 / 36.0).min(7.0 / 24.0);
-        assert!(text_of(&pdf).contains(&format!("{k:.5}")[..7]), "{k}");
+        assert!(text_of(&pdf).contains(&format!("{k:.6}")), "{k}");
         // The preview carries the same printable area.
         let pages = layout_print_preview(&l, &cx, &o);
         assert_eq!(pages[0].printable_pt, [18.0, 72.0, 738.0, 576.0]);

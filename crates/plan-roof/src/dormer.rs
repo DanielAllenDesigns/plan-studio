@@ -515,6 +515,348 @@ fn roof_pitch(poly: &[V3]) -> f64 {
     (n[0] * n[0] + n[2] * n[2]).sqrt() / n[1] * 12.0
 }
 
+// ===================================================================
+// Second pitch (gambrel), dormer rooms and returns, crickets (RF-84..RF-87)
+// ===================================================================
+
+/// The second pitch of a dormer roof: the roof rises at the dormer's own
+/// pitch for `in_from_eave` inches (measured across, from the eave), then at
+/// `pitch2` to the ridge. A gable dormer with a second pitch is a gambrel.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SecondPitch {
+    /// Rise per 12 of the upper part.
+    pub pitch2: f64,
+    /// Plan distance from the eave to the break, inches.
+    pub in_from_eave: f64,
+}
+
+/// A gambrel dormer: a gable dormer whose roof planes break at
+/// `second.in_from_eave` from each eave. `spec.pitch` is the lower pitch (the
+/// first, from the eave); the ridge stands where the upper pitch reaches the
+/// centre, and `height_to_ridge` is ignored. Four roof planes: lower left,
+/// upper left, lower right, upper right. The front wall follows the broken
+/// profile and the opening in the main roof is the plan of the planes.
+///
+/// `None` for a degenerate dimension, a break not between the eave and the
+/// ridge, a flat or reversed main plane or a footprint outside the plane.
+pub fn gambrel_dormer(
+    main_plane: &RoofPlane,
+    spec: DormerSpec,
+    second: SecondPitch,
+) -> Option<Dormer> {
+    if spec.width <= 1e-6 || spec.wall_height <= 1e-6 || main_plane.polygon3d.len() < 3 {
+        return None;
+    }
+    let hw = spec.width * 0.5;
+    if second.pitch2 <= 1e-6
+        || spec.pitch <= 1e-6
+        || second.in_from_eave <= 1e-6
+        || second.in_from_eave >= hw - 1e-6
+    {
+        return None;
+    }
+    let (a, b) = main_plane.baseline;
+    let u = b.sub(a).normalized();
+    if u == Point::ZERO {
+        return None;
+    }
+    let w = u.perp();
+    let h0 = main_plane.height_at(a)?;
+    let tm = main_plane.height_at(a.add(w))? - h0;
+    if tm <= 1e-6 {
+        return None;
+    }
+    let c = spec.position_along_eave;
+    let mut f = Frame {
+        a,
+        u,
+        w,
+        yb: 0.0,
+        s: spec.setback_from_eave,
+    };
+    f.yb = main_plane.height_at(f.plan(c, f.s))?;
+    let (wh, s) = (spec.wall_height, f.s);
+    let (ul, ur) = (c - hw, c + hw);
+    let inn = second.in_from_eave;
+    let h1 = wh + inn * spec.pitch / 12.0;
+    let hr = h1 + (hw - inn) * second.pitch2 / 12.0;
+    let (dw, d1, dr) = (wh / tm, h1 / tm, hr / tm);
+    let (bl, br) = (ul + inn, ur - inn);
+    let polys = vec![
+        // Lower left, upper left, lower right, upper right.
+        vec![
+            f.pt(ul, s, wh),
+            f.pt(ul, s + dw, wh),
+            f.pt(bl, s + d1, h1),
+            f.pt(bl, s, h1),
+        ],
+        vec![
+            f.pt(bl, s, h1),
+            f.pt(bl, s + d1, h1),
+            f.pt(c, s + dr, hr),
+            f.pt(c, s, hr),
+        ],
+        vec![
+            f.pt(ur, s, wh),
+            f.pt(ur, s + dw, wh),
+            f.pt(br, s + d1, h1),
+            f.pt(br, s, h1),
+        ],
+        vec![
+            f.pt(br, s, h1),
+            f.pt(br, s + d1, h1),
+            f.pt(c, s + dr, hr),
+            f.pt(c, s, hr),
+        ],
+    ];
+    let hole_outline = vec![
+        f.plan(ul, s),
+        f.plan(ur, s),
+        f.plan(ur, s + dw),
+        f.plan(br, s + d1),
+        f.plan(c, s + dr),
+        f.plan(bl, s + d1),
+        f.plan(ul, s + dw),
+    ];
+    let outline = geom::ccw(&main_plane.plan_polygon());
+    if !hole_outline
+        .iter()
+        .all(|&p| geom::strictly_inside(p, &outline, 1e-6))
+    {
+        return None;
+    }
+    let roof_planes: Vec<RoofPlane> = polys
+        .into_iter()
+        .map(|poly| {
+            let poly = geom::up_eave_first(poly);
+            let pitch = roof_pitch(&poly);
+            RoofPlane {
+                baseline: (geom::to_plan(poly[0]), geom::to_plan(poly[1])),
+                polygon3d: poly,
+                pitch_in_12: pitch,
+                source_edge: main_plane.source_edge,
+            }
+        })
+        .collect();
+    let (overhang_planes, valley_edges) =
+        overhang_roof(&roof_planes, main_plane, spec.overhang.max(0.0));
+    let front_out = f.w.scale(-1.0);
+    let front_poly = vec![
+        f.pt(ul, s, 0.0),
+        f.pt(ur, s, 0.0),
+        f.pt(ur, s, wh),
+        f.pt(br, s, h1),
+        f.pt(c, s, hr),
+        f.pt(bl, s, h1),
+        f.pt(ul, s, wh),
+    ];
+    let front_wall = DormerWall {
+        polygon3d: geom::orient_toward(front_poly, dir3(front_out)),
+        normal: dir3(front_out),
+        start: f.plan(ul, s),
+        end: f.plan(ur, s),
+        base_elevation: f.yb,
+        height: hr,
+    };
+    let cheek = |along: f64, out: Point| {
+        let tri = vec![
+            f.pt(along, s, 0.0),
+            f.pt(along, s, wh),
+            f.pt(along, s + dw, wh),
+            f.pt(along, s + dw, tm * dw),
+        ];
+        DormerWall {
+            polygon3d: geom::orient_toward(tri, dir3(out)),
+            normal: dir3(out),
+            start: f.plan(along, s),
+            end: f.plan(along, s + dw),
+            base_elevation: f.yb,
+            height: wh,
+        }
+    };
+    let side_walls = vec![cheek(ul, f.u.scale(-1.0)), cheek(ur, f.u)];
+    Some(Dormer {
+        kind: DormerKind::Gable,
+        spec,
+        front_wall,
+        side_walls,
+        roof_planes,
+        overhang_planes,
+        valley_edges,
+        hole_in_main_roof: RoofHole {
+            outline: hole_outline,
+            kind: HoleKind::Hole,
+            skylight: None,
+        },
+        window_opening: None,
+        ridge_elevation: f.yb + hr,
+        depth: dr,
+    })
+}
+
+/// Dormer Room options of a floating dormer (the dormer stands on the roof
+/// without a hole through it).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DormerRoom {
+    /// Create Shaft to Room Below: vertical walls from the dormer opening
+    /// down to the floor of the room below.
+    pub create_shaft: bool,
+    /// Form Room: the dormer interior becomes a room of its own.
+    pub form_room: bool,
+    /// Wall type of the shaft and room walls; empty is the default wall type.
+    pub wall_type: String,
+    /// Set to Existing Ceiling: the room's ceiling is the ceiling of the room
+    /// below instead of the top of the dormer walls.
+    pub set_to_existing_ceiling: bool,
+}
+
+/// The shaft walls under a dormer opening: plumb walls from the main roof
+/// surface down to `floor_y` (the floor of the room below), one per edge of
+/// the opening. Empty unless the room asks for a shaft.
+pub fn dormer_shaft(
+    main_plane: &RoofPlane,
+    dormer: &Dormer,
+    room: &DormerRoom,
+    floor_y: f64,
+) -> Vec<crate::hole::RimWall> {
+    if !room.create_shaft {
+        return Vec::new();
+    }
+    crate::hole::rim_walls(
+        main_plane,
+        &dormer.hole_in_main_roof.outline,
+        crate::hole::HoleRim::Plumb,
+        floor_y,
+    )
+}
+
+/// The ceiling of a dormer room, elevation: `existing_ceiling` when Set to
+/// Existing Ceiling is on and there is one, else the top of the dormer walls.
+pub fn dormer_room_ceiling(
+    dormer: &Dormer,
+    room: &DormerRoom,
+    existing_ceiling: Option<f64>,
+) -> f64 {
+    match (room.set_to_existing_ceiling, existing_ceiling) {
+        (true, Some(y)) => y,
+        _ => dormer.front_wall.base_elevation + dormer.spec.wall_height,
+    }
+}
+
+/// Auto Roof Return on a gable dormer: a return at each front eave corner of
+/// the dormer roof, wrapping the corner along the eave line and up the front
+/// rake. Hip and shed dormers have no gable end: nothing comes back. The
+/// returns are made on the planes with the overhang, so they wrap the
+/// corners of the finished roof.
+pub fn dormer_returns(
+    dormer: &Dormer,
+    spec: crate::gable::ReturnSpec,
+) -> Vec<crate::gable::RoofReturn> {
+    if dormer.kind != DormerKind::Gable {
+        return Vec::new();
+    }
+    let front = Point::new(dormer.front_wall.normal[0], -dormer.front_wall.normal[2]);
+    dormer
+        .overhang_planes
+        .iter()
+        .filter_map(|pl| {
+            let p = &pl.polygon3d;
+            if p.len() < 3 {
+                return None;
+            }
+            // Only the eave of a plane that has the front rake: its eave
+            // edge ends at the front wall line.
+            let (a, b) = (geom::to_plan(p[0]), geom::to_plan(p[1]));
+            let at_start = a.dot(front) > b.dot(front);
+            let reaches_front = (a.dot(front) - b.dot(front)).abs() > 1e-6;
+            reaches_front.then(|| crate::gable::roof_return_at(pl, 0, at_start, spec))?
+        })
+        .collect()
+}
+
+/// A cricket: the small saddle roof behind a chimney or an up-slope wall
+/// that sheds water round it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cricket {
+    /// The two triangular planes, left then right as seen looking up-slope.
+    pub planes: [RoofPlane; 2],
+    /// The level ridge, from the wall face up-slope to where it meets the
+    /// roof.
+    pub ridge: (V3, V3),
+    /// Height of the ridge above the roof at the wall, inches.
+    pub height: f64,
+    /// Plan length of the ridge, inches.
+    pub length: f64,
+    /// Pitch of the two planes, rise in 12.
+    pub pitch_in_12: f64,
+}
+
+/// The cricket behind the wall face `a` to `b` (plan points, for a chimney
+/// its up-slope side) on `main_plane`. The ridge starts at the middle of the
+/// face at `width / 2 * pitch / 12` above the roof and runs level up-slope
+/// until the rising roof meets it; each plane is a triangle from the ridge to
+/// one end of the face. `pitch` is the cricket's rise in 12; `None` uses half
+/// the roof's, the usual cricket. `None` comes back for a face under 6
+/// inches, a flat roof or a point off the plane.
+pub fn cricket_behind(
+    main_plane: &RoofPlane,
+    a: Point,
+    b: Point,
+    pitch: Option<f64>,
+) -> Option<Cricket> {
+    let width = a.dist(b);
+    if width < 6.0 {
+        return None;
+    }
+    let n = main_plane.normal();
+    let flat = (n[0] * n[0] + n[2] * n[2]).sqrt();
+    if n[1] < 1e-9 || flat < 1e-9 {
+        return None;
+    }
+    // Up the slope in plan; the gradient of the roof along it.
+    let up = Point::new(-n[0] / flat, n[2] / flat);
+    let slope = flat / n[1];
+    let cp = pitch.unwrap_or(main_plane.pitch_in_12 * 0.5);
+    if cp <= 1e-6 || cp / 12.0 >= slope {
+        // A cricket as steep as the roof never meets it.
+        return None;
+    }
+    let mid = Point::lerp(a, b, 0.5);
+    let h = width * 0.5 * cp / 12.0;
+    let length = h / slope;
+    let y0 = main_plane.height_at(mid)?;
+    let top = y0 + h;
+    let end = mid.add(up.scale(length));
+    let r0 = geom::lift(mid, top);
+    let r1 = geom::lift(end, top);
+    let corner = |p: Point| main_plane.height_at(p).map(|y| geom::lift(p, y));
+    let (va, vb) = (corner(a)?, corner(b)?);
+    // Left as seen looking up-slope: the corner with the larger cross product.
+    let (left, right) = if up.cross(a.sub(mid)) > 0.0 {
+        (va, vb)
+    } else {
+        (vb, va)
+    };
+    let make = |corner: V3| {
+        let poly = geom::up_eave_first(vec![corner, r0, r1]);
+        let pitch = roof_pitch(&poly);
+        RoofPlane {
+            baseline: (geom::to_plan(poly[0]), geom::to_plan(poly[1])),
+            polygon3d: poly,
+            pitch_in_12: pitch,
+            source_edge: main_plane.source_edge,
+        }
+    };
+    Some(Cricket {
+        planes: [make(left), make(right)],
+        ridge: (r0, r1),
+        height: h,
+        length,
+        pitch_in_12: cp,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,5 +1145,231 @@ mod tests {
         let mut sp = spec(DormerKind::Gable);
         sp.width = 0.0;
         assert!(auto_dormer(&main, sp).is_none());
+    }
+
+    // ----- second pitch, room, returns, crickets -----
+
+    fn gambrel_spec() -> DormerSpec {
+        DormerSpec {
+            pitch: 12.0,
+            window: None,
+            ..spec(DormerKind::Gable)
+        }
+    }
+
+    const SECOND: SecondPitch = SecondPitch {
+        pitch2: 4.0,
+        in_from_eave: 18.0,
+    };
+
+    #[test]
+    fn a_gambrel_dormer_has_two_pitches_and_a_ridge_where_the_upper_one_ends() {
+        let main = south();
+        let d = gambrel_dormer(&main, gambrel_spec(), SECOND).expect("fits the plane");
+        assert_eq!(d.roof_planes.len(), 4);
+        let mut pitches: Vec<f64> = d.roof_planes.iter().map(|p| p.pitch_in_12).collect();
+        pitches.sort_by(f64::total_cmp);
+        for (got, want) in pitches.iter().zip([4.0, 4.0, 12.0, 12.0]) {
+            assert!((got - want).abs() < 1e-6, "{pitches:?}");
+        }
+        // Wall 36 + 18 at 12:12 + 18 at 4:12 = 60 above the front base; the
+        // main roof is 108 + 30 * 8/12 = 128 there.
+        assert!(
+            (d.ridge_elevation - (128.0 + 60.0)).abs() < 1e-6,
+            "{}",
+            d.ridge_elevation
+        );
+        // Lower and upper planes meet at the same height along the break.
+        let top = |p: &RoofPlane| p.polygon3d.iter().map(|v| v[1]).fold(f64::MIN, f64::max);
+        let lower_top = top(&d.roof_planes[0]);
+        assert!((lower_top - (128.0 + 54.0)).abs() < 1e-6);
+        assert!((top(&d.roof_planes[1]) - d.ridge_elevation).abs() < 1e-6);
+        // Each side meets the main roof along two valleys.
+        assert_eq!(d.valley_edges.len(), 4);
+        for (k, e) in &d.valley_edges {
+            let p = &d.roof_planes[*k].polygon3d;
+            for v in [p[*e], p[(*e + 1) % p.len()]] {
+                let y = main.height_at(geom::to_plan(v)).unwrap();
+                assert!((y - v[1]).abs() < 1e-6, "valley point off the main roof");
+            }
+        }
+        // The opening is the plan of the dormer: 7 corners, inside the plane.
+        assert_eq!(d.hole_in_main_roof.outline.len(), 7);
+        assert!(d.front_wall.polygon3d.len() == 7);
+    }
+
+    #[test]
+    fn the_gambrel_break_must_lie_between_the_eave_and_the_ridge() {
+        let main = south();
+        for inn in [0.0, 36.0, 50.0, -3.0] {
+            let second = SecondPitch {
+                in_from_eave: inn,
+                ..SECOND
+            };
+            assert!(
+                gambrel_dormer(&main, gambrel_spec(), second).is_none(),
+                "{inn}"
+            );
+        }
+        let flat = SecondPitch {
+            pitch2: 0.0,
+            ..SECOND
+        };
+        assert!(gambrel_dormer(&main, gambrel_spec(), flat).is_none());
+        // Too far up the slope: the upper part would pass the ridge of the main roof.
+        let mut high = gambrel_spec();
+        high.setback_from_eave = 160.0;
+        assert!(gambrel_dormer(&main, high, SECOND).is_none());
+    }
+
+    #[test]
+    fn the_dormer_shaft_runs_plumb_to_the_floor_below_only_when_asked() {
+        let main = south();
+        let d = auto_dormer(&main, spec(DormerKind::Gable)).unwrap();
+        assert!(dormer_shaft(&main, &d, &DormerRoom::default(), 0.0).is_empty());
+        let room = DormerRoom {
+            create_shaft: true,
+            ..DormerRoom::default()
+        };
+        let walls = dormer_shaft(&main, &d, &room, 0.0);
+        assert_eq!(walls.len(), d.hole_in_main_roof.outline.len());
+        for w in &walls {
+            assert!(
+                (w[3][1]).abs() < 1e-9 && (w[2][1]).abs() < 1e-9,
+                "to the floor"
+            );
+            assert!((w[0][0] - w[3][0]).abs() < 1e-9 && (w[0][2] - w[3][2]).abs() < 1e-9);
+            assert!(w[0][1] > 100.0, "starts on the roof");
+        }
+    }
+
+    #[test]
+    fn a_dormer_room_takes_the_existing_ceiling_when_told_to() {
+        let main = south();
+        let d = auto_dormer(&main, spec(DormerKind::Gable)).unwrap();
+        let own = d.front_wall.base_elevation + 36.0;
+        let mut room = DormerRoom::default();
+        assert_eq!(dormer_room_ceiling(&d, &room, Some(96.0)), own);
+        room.set_to_existing_ceiling = true;
+        assert_eq!(dormer_room_ceiling(&d, &room, Some(96.0)), 96.0);
+        assert_eq!(
+            dormer_room_ceiling(&d, &room, None),
+            own,
+            "no ceiling to follow"
+        );
+    }
+
+    #[test]
+    fn auto_roof_return_wraps_the_front_corners_of_a_gable_dormer_only() {
+        use crate::gable::{ReturnKind, ReturnSpec};
+        let main = south();
+        let ret = ReturnSpec {
+            kind: ReturnKind::Full,
+            length: 12.0,
+        };
+        let mut sp = spec(DormerKind::Gable);
+        sp.overhang = 8.0;
+        let d = auto_dormer(&main, sp).unwrap();
+        let rs = dormer_returns(&d, ret);
+        assert_eq!(rs.len(), 2, "one at each front eave corner");
+        let front = Point::new(d.front_wall.normal[0], -d.front_wall.normal[2]);
+        for r in &rs {
+            // The corner is at the front of the dormer roof and the return
+            // projects out past it.
+            let c = geom::to_plan(r.corner);
+            assert!(r.plane.polygon3d.iter().all(|v| v[1] >= r.corner[1] - 1e-6));
+            assert!(r
+                .plane
+                .plan_polygon()
+                .iter()
+                .any(|q| q.sub(c).dot(front) > 1.0));
+        }
+        let boxed = dormer_returns(
+            &d,
+            ReturnSpec {
+                kind: ReturnKind::Boxed,
+                length: 12.0,
+            },
+        );
+        assert!(boxed.iter().all(|r| r.plane.pitch_in_12 == 0.0));
+        for k in [DormerKind::Hip, DormerKind::Shed] {
+            let other = auto_dormer(&main, spec(k)).unwrap();
+            assert!(dormer_returns(&other, ret).is_empty(), "{k:?}");
+        }
+    }
+
+    #[test]
+    fn a_cricket_is_two_triangles_on_a_level_ridge_that_meets_the_roof() {
+        let main = south();
+        // A 48" wide chimney face across the slope at y = 60.
+        let (a, b) = (Point::new(216.0, 60.0), Point::new(264.0, 60.0));
+        let c = cricket_behind(&main, a, b, None).expect("a cricket fits");
+        // Half the roof pitch: 4:12 over 24" half width is 8" high.
+        assert!((c.pitch_in_12 - 4.0).abs() < 1e-9);
+        assert!((c.height - 8.0).abs() < 1e-9);
+        // The ridge is level and the roof (8:12) climbs 8" in 12".
+        assert!((c.length - 12.0).abs() < 1e-9);
+        assert!((c.ridge.0[1] - c.ridge.1[1]).abs() < 1e-9);
+        let at_wall = main.height_at(Point::new(240.0, 60.0)).unwrap();
+        assert!((c.ridge.0[1] - (at_wall + 8.0)).abs() < 1e-9);
+        let end = geom::to_plan(c.ridge.1);
+        assert!(
+            (end.sub(Point::new(240.0, 72.0)).length()) < 1e-9,
+            "12\" up-slope"
+        );
+        let roof_there = main.height_at(end).unwrap();
+        assert!(
+            (roof_there - c.ridge.1[1]).abs() < 1e-9,
+            "the ridge ends on the roof"
+        );
+        for pl in &c.planes {
+            assert_eq!(pl.polygon3d.len(), 3);
+            assert!(pl.normal()[1] > 0.0);
+            assert!((pl.pitch_in_12 - 4.0).abs() < 1e-6, "{}", pl.pitch_in_12);
+        }
+        // One plane each side of the ridge.
+        let side = |pl: &RoofPlane| {
+            let cx = pl.polygon3d.iter().map(|v| v[0]).sum::<f64>() / 3.0;
+            cx - 240.0
+        };
+        assert!(side(&c.planes[0]) * side(&c.planes[1]) < 0.0);
+        // The two outer corners are on the roof at the ends of the face.
+        for (pl, x) in c.planes.iter().zip([216.0, 264.0]) {
+            let on_roof = pl.polygon3d.iter().any(|v| {
+                (v[0] - x).abs() < 1e-9
+                    && (main.height_at(geom::to_plan(*v)).unwrap() - v[1]).abs() < 1e-9
+            });
+            assert!(on_roof, "corner at x = {x}");
+        }
+    }
+
+    #[test]
+    fn a_cricket_needs_a_wide_enough_face_and_a_gentler_pitch_than_the_roof() {
+        let main = south();
+        let (a, b) = (Point::new(216.0, 60.0), Point::new(264.0, 60.0));
+        assert!(cricket_behind(&main, a, Point::new(218.0, 60.0), None).is_none());
+        assert!(
+            cricket_behind(&main, a, b, Some(8.0)).is_none(),
+            "as steep as the roof"
+        );
+        assert!(cricket_behind(&main, a, b, Some(0.0)).is_none());
+        // Steeper than half the roof pitch makes a taller, shorter cricket.
+        let c = cricket_behind(&main, a, b, Some(6.0)).unwrap();
+        assert!((c.height - 12.0).abs() < 1e-9 && (c.length - 18.0).abs() < 1e-9);
+        // Outside the plane's slope direction there is nothing to build on.
+        let flat = RoofPlane {
+            polygon3d: vec![
+                [0.0, 100.0, 0.0],
+                [100.0, 100.0, 0.0],
+                [100.0, 100.0, -100.0],
+                [0.0, 100.0, -100.0],
+            ],
+            pitch_in_12: 0.0,
+            baseline: (Point::new(0.0, 0.0), Point::new(100.0, 0.0)),
+            source_edge: 0,
+        };
+        assert!(
+            cricket_behind(&flat, Point::new(20.0, 50.0), Point::new(60.0, 50.0), None).is_none()
+        );
     }
 }

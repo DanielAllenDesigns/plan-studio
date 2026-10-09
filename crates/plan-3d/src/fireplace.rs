@@ -154,21 +154,27 @@ pub fn build_fireplace(
         roofs.height(p)
     });
 
-    if fp.kind.has_firebox() {
+    if fp.no_firebox {
+        // A solid block: the fireplace foundation, or a fireplace without
+        // its firebox. Its chimney, if it has one, rises from the top.
+        add_prism(set.material(body_mat), &body_poly(sym), base, body_top);
+    } else if fp.kind.has_firebox() {
         // The body, with the firebox opening cut into its front.
         let (w, d) = (sym.width, sym.depth);
         let fw = fp.firebox.width.min(w - 2.0) * 0.5;
+        // The firebox is moved off the center by its Offset.
+        let c = fp.firebox.offset;
         let fd = fp.firebox.depth.min(d - 1.0);
         let hearth_top = base + fp.hearth.height.max(0.0);
         let open_bottom = hearth_top + fp.firebox.raise;
         let open_top = (open_bottom + fp.firebox.height).min(body_top - 6.0);
         let b = set.material(body_mat);
         // Jambs to the sides of the opening and the mass behind it.
-        add_prism(b, &frame.rect(-w * 0.5, -fw, 0.0, d), base, body_top);
-        add_prism(b, &frame.rect(fw, w * 0.5, 0.0, d), base, body_top);
-        add_prism(b, &frame.rect(-fw, fw, 0.0, d - fd), base, body_top);
+        add_prism(b, &frame.rect(-w * 0.5, c - fw, 0.0, d), base, body_top);
+        add_prism(b, &frame.rect(c + fw, w * 0.5, 0.0, d), base, body_top);
+        add_prism(b, &frame.rect(c - fw, c + fw, 0.0, d - fd), base, body_top);
         // Under and over the opening.
-        let front = frame.rect(-fw, fw, d - fd, d);
+        let front = frame.rect(c - fw, c + fw, d - fd, d);
         add_prism(b, &front, base, open_bottom.min(body_top));
         add_prism(b, &front, open_top, body_top);
         // The firebox lining.
@@ -186,25 +192,25 @@ pub fn build_fireplace(
         if open_h.1 - open_h.0 > 1.0 {
             add_prism(
                 l,
-                &frame.rect(-fw, fw, d - fd, d - fd + t),
+                &frame.rect(c - fw, c + fw, d - fd, d - fd + t),
                 open_h.0,
                 open_h.1,
             );
             add_prism(
                 l,
-                &frame.rect(-fw, -fw + t, d - fd + t, d),
+                &frame.rect(c - fw, c - fw + t, d - fd + t, d),
                 open_h.0,
                 open_h.1,
             );
             add_prism(
                 l,
-                &frame.rect(fw - t, fw, d - fd + t, d),
+                &frame.rect(c + fw - t, c + fw, d - fd + t, d),
                 open_h.0,
                 open_h.1,
             );
             add_prism(
                 l,
-                &frame.rect(-fw + t, fw - t, d - fd + t, d),
+                &frame.rect(c - fw + t, c + fw - t, d - fd + t, d),
                 (open_h.0 - 0.5).max(base),
                 open_h.0,
             );
@@ -227,8 +233,9 @@ pub fn build_fireplace(
             let leg = fp.mantel.leg_width;
             if leg > 0.5 {
                 let half = fp.mantel_width() * 0.5;
+                let c = fp.firebox.offset;
                 let deep = (fp.mantel.depth * 0.5).max(1.0);
-                for (x0, x1) in [(-half, -half + leg), (half - leg, half)] {
+                for (x0, x1) in [(c - half, c - half + leg), (c + half - leg, c + half)] {
                     add_prism(
                         mb,
                         &frame.rect(x0, x1, d, d + deep),
@@ -245,7 +252,7 @@ pub fn build_fireplace(
         add_prism(b, &chimney_poly(fp, sym), base, (top - cap_h).max(body_top));
     }
 
-    if fp.chimney.enabled && fp.kind.has_firebox() {
+    if fp.chimney.enabled && (fp.kind.has_firebox() || fp.no_firebox) {
         let shaft = chimney_poly(fp, sym);
         let shaft_top = (top - cap_height(fp)).max(body_top);
         add_prism(set.material(chimney_mat), &shaft, body_top, shaft_top);

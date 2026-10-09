@@ -65,43 +65,43 @@ pub fn plan_symbol(cabinet: &Cabinet) -> Vec<Stroke> {
     if cabinet.special.is_some() {
         special_strokes(cabinet, &mut out);
     } else {
-    match cabinet.kind {
-        CabinetKind::Base
-        | CabinetKind::FullHeight
-        | CabinetKind::BaseFiller
-        | CabinetKind::FullHeightFiller
-        | CabinetKind::BlindBase => {
-            if cabinet.appliance.is_some() {
+        match cabinet.kind {
+            CabinetKind::Base
+            | CabinetKind::FullHeight
+            | CabinetKind::BaseFiller
+            | CabinetKind::FullHeightFiller
+            | CabinetKind::BlindBase => {
+                if cabinet.appliance.is_some() {
+                    out.push(Stroke::Line(p(0.0, 0.0), p(w, d)));
+                    out.push(Stroke::Line(p(w, 0.0), p(0.0, d)));
+                } else {
+                    out.push(Stroke::Line(p(0.0, d - INSET), p(w, d - INSET)));
+                }
+                blind_mark(cabinet, &mut out);
+            }
+            CabinetKind::Wall | CabinetKind::WallFiller | CabinetKind::BlindWall => {
+                let i = INSET.min(w / 2.0).min(d / 2.0);
+                out.push(Stroke::Polyline(
+                    vec![p(i, i), p(w - i, i), p(w - i, d - i), p(i, d - i)],
+                    true,
+                ));
                 out.push(Stroke::Line(p(0.0, 0.0), p(w, d)));
                 out.push(Stroke::Line(p(w, 0.0), p(0.0, d)));
-            } else {
-                out.push(Stroke::Line(p(0.0, d - INSET), p(w, d - INSET)));
+                blind_mark(cabinet, &mut out);
             }
-            blind_mark(cabinet, &mut out);
-        }
-        CabinetKind::Wall | CabinetKind::WallFiller | CabinetKind::BlindWall => {
-            let i = INSET.min(w / 2.0).min(d / 2.0);
-            out.push(Stroke::Polyline(
-                vec![p(i, i), p(w - i, i), p(w - i, d - i), p(i, d - i)],
-                true,
-            ));
-            out.push(Stroke::Line(p(0.0, 0.0), p(w, d)));
-            out.push(Stroke::Line(p(w, 0.0), p(0.0, d)));
-            blind_mark(cabinet, &mut out);
-        }
-        CabinetKind::CornerBase | CabinetKind::CornerWall => corner_strokes(cabinet, &mut out),
-        CabinetKind::CustomCountertop => {
-            if let Some(c) = &cabinet.custom {
-                edge_line(cabinet, c, &mut out);
+            CabinetKind::CornerBase | CabinetKind::CornerWall => corner_strokes(cabinet, &mut out),
+            CabinetKind::CustomCountertop => {
+                if let Some(c) = &cabinet.custom {
+                    edge_line(cabinet, c, &mut out);
+                }
             }
+            CabinetKind::Soffit
+            | CabinetKind::Shelf
+            | CabinetKind::Partition
+            | CabinetKind::CustomBacksplash
+            | CabinetKind::CounterHole
+            | CabinetKind::SoffitPolygon => {}
         }
-        CabinetKind::Soffit
-        | CabinetKind::Shelf
-        | CabinetKind::Partition
-        | CabinetKind::CustomBacksplash
-        | CabinetKind::CounterHole
-        | CabinetKind::SoffitPolygon => {}
-    }
     }
 
     for cut in &cabinet.cutouts {
@@ -143,7 +143,10 @@ fn special_strokes(cabinet: &Cabinet, out: &mut Vec<Stroke>) {
         }
         let deep = sp.max_depth(w, d);
         out.push(Stroke::Line(q(Point::ZERO), q(Point::new(w, deep))));
-        out.push(Stroke::Line(q(Point::new(w, 0.0)), q(Point::new(0.0, deep))));
+        out.push(Stroke::Line(
+            q(Point::new(w, 0.0)),
+            q(Point::new(0.0, deep)),
+        ));
         return;
     }
     let front = sp.front(w, d);
@@ -350,8 +353,16 @@ fn opening_indicators(cabinet: &Cabinet, out: &mut Vec<Stroke>) {
     for item in items {
         let (x, _, iw, _) = item.rect;
         let (x0, x1) = (x_off + x, x_off + x + iw);
-        let deg = item.props.as_ref().and_then(|p| p.swing_angle).unwrap_or(90.0);
-        let pct = item.props.as_ref().and_then(|p| p.percent_open).unwrap_or(100.0);
+        let deg = item
+            .props
+            .as_ref()
+            .and_then(|p| p.swing_angle)
+            .unwrap_or(90.0);
+        let pct = item
+            .props
+            .as_ref()
+            .and_then(|p| p.percent_open)
+            .unwrap_or(100.0);
         match item.item.door_plan(iw, cabinet.auto_door_threshold) {
             DoorPlan::Single { left } => swing(x0, x1, left, deg, out),
             DoorPlan::Pair => {

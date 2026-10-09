@@ -87,6 +87,74 @@ pub struct RoofFramingDefaults {
     /// Switch to trusses automatically when the building span (shorter
     /// bounding dimension) exceeds this many inches. `0.0` disables it.
     pub use_trusses_over_span: f64,
+    /// Lookouts (outriggers) under the gable overhangs.
+    pub lookouts: bool,
+    pub lookout: Lumber,
+    /// Maximum on-centre spacing of the lookouts.
+    pub lookout_spacing: f64,
+    /// Distance of the lowest lookout from the eave subfascia's centre line;
+    /// `0.0` (Match Spacing) uses the lookout spacing.
+    pub lookout_offset: f64,
+    /// Horizontal overhang of a gable (rake) edge, inches.
+    pub rake_overhang: f64,
+    /// Trim Framing To Soffits: rafters in the eave area are trimmed to the
+    /// top of the soffit (the label of such a rafter says so).
+    pub trim_to_soffits: bool,
+    /// Thickness of the soffit the rafters are trimmed to.
+    pub soffit_thickness: f64,
+    /// Roof Overframing: shoe plates for the rafters of an upper roof plane
+    /// that is built over a lower one.
+    pub overframing: bool,
+    pub overframe_layer: OverframeLayer,
+    pub shoe_plate: Lumber,
+    /// Hip Girder Truss: how many trusses side by side make the girder.
+    pub hip_girder_count: u32,
+    /// Distance of the nearest girder from the end wall's main layer;
+    /// `0.0` is automatic (4').
+    pub hip_girder_distance: f64,
+    /// Use Framing Reference: where rafters and trusses start from, set by
+    /// the caller from the Framing Reference Marker (never saved).
+    #[serde(skip)]
+    pub reference: Option<Point>,
+}
+
+/// The layer of the lower roof assembly an overframe shoe plate sits on
+/// (Roof Overframing, manual p. 900).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OverframeLayer {
+    /// On top of the roof surface (the finish layer).
+    #[default]
+    RoofFinish,
+    /// On top of the lowermost layer of the surface (the sheathing).
+    Sheathing,
+    /// On top of the structure.
+    Structural,
+}
+
+impl OverframeLayer {
+    pub const ALL: [OverframeLayer; 3] = [
+        OverframeLayer::RoofFinish,
+        OverframeLayer::Sheathing,
+        OverframeLayer::Structural,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            OverframeLayer::RoofFinish => "Roof Finish",
+            OverframeLayer::Sheathing => "Sheathing",
+            OverframeLayer::Structural => "Structural",
+        }
+    }
+
+    /// How far below the roof surface the plate's underside sits, inches
+    /// (the surface is taken as 3/4" sheathing under 1/2" of finish).
+    fn drop(self) -> f64 {
+        match self {
+            OverframeLayer::RoofFinish => 0.0,
+            OverframeLayer::Sheathing => 0.5,
+            OverframeLayer::Structural => 1.25,
+        }
+    }
 }
 
 impl Default for RoofFramingDefaults {
@@ -104,6 +172,19 @@ impl Default for RoofFramingDefaults {
             truss_spacing: 24.0,
             fascia: TWO_BY_SIX,
             use_trusses_over_span: 0.0,
+            lookouts: false,
+            lookout: TWO_BY_FOUR,
+            lookout_spacing: 24.0,
+            lookout_offset: 0.0,
+            rake_overhang: 12.0,
+            trim_to_soffits: false,
+            soffit_thickness: 0.75,
+            overframing: false,
+            overframe_layer: OverframeLayer::RoofFinish,
+            shoe_plate: TWO_BY_SIX,
+            hip_girder_count: 1,
+            hip_girder_distance: 0.0,
+            reference: None,
         }
     }
 }
@@ -163,6 +244,33 @@ fn positions(len: f64, spacing: f64, thickness: f64) -> Vec<f64> {
         v.push(hi);
     }
     v.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    v
+}
+
+/// [`positions`] on a grid anchored at `origin` (a Framing Reference Marker's
+/// distance along the line): members at `origin + k * spacing`, plus an end
+/// member where the grid leaves a gap wider than one thickness. `None` is
+/// [`positions`].
+fn positions_at(len: f64, spacing: f64, thickness: f64, origin: Option<f64>) -> Vec<f64> {
+    let Some(o) = origin else {
+        return positions(len, spacing, thickness);
+    };
+    if len <= thickness {
+        return Vec::new();
+    }
+    let spacing = spacing.max(thickness);
+    let (lo, hi) = (thickness / 2.0, len - thickness / 2.0);
+    let k0 = ((lo - o) / spacing - 1e-9).ceil() as i64;
+    let mut v: Vec<f64> = (k0..)
+        .map(|k| o + k as f64 * spacing)
+        .take_while(|&p| p <= hi + 1e-9)
+        .collect();
+    if v.first().is_none_or(|&p| p - lo > thickness) {
+        v.insert(0, lo);
+    }
+    if v.last().is_none_or(|&p| hi - p > thickness) {
+        v.push(hi);
+    }
     v
 }
 
@@ -335,6 +443,9 @@ fn frame_roof_inner(
         for e in &shared {
             edge_member(e, d, &mut out);
         }
+        if d.lookouts {
+            lookouts(&planes, &shared, d, &mut out);
+        }
         if d.collar_ties {
             collar_ties(&planes, &shared, d, &mut out);
         }
@@ -345,7 +456,112 @@ fn frame_roof_inner(
     for p in &planes {
         fascia(p, d, &mut out);
     }
+    if d.overframing {
+        shoe_plates(&planes, d, &mut out);
+    }
     out
+}
+
+/// Lookouts under the gable overhangs: along every free sloping edge of a
+/// plane (a rake), boards across the rafters in the plane of the roof,
+/// `d.lookout_spacing` apart from the first at `d.lookout_offset` from the
+/// eave, reaching out over the overhang and back across the first rafter.
+fn lookouts(planes: &[&RoofPlane], shared: &[Shared], d: &RoofFramingDefaults, out: &mut Vec<Member>) {
+    for (i, pl) in planes.iter().enumerate() {
+        let f = eave(pl);
+        let n3 = pl.normal();
+        let poly = &pl.polygon3d;
+        for k in 1..poly.len() {
+            let (p0, p1) = (poly[k], poly[(k + 1) % poly.len()]);
+            let is_shared = shared
+                .iter()
+                .any(|e| (e.a == i || e.b == i) && ((same(e.p0, p0) && same(e.p1, p1)) || (same(e.p0, p1) && same(e.p1, p0))));
+            if is_shared || (p0[1] - p1[1]).abs() < 0.5 {
+                continue;
+            }
+            let (lo, hi) = if p0[1] <= p1[1] { (p0, p1) } else { (p1, p0) };
+            let along = sub3(hi, lo);
+            let length = norm3(along);
+            if length < d.lookout_spacing.max(6.0) {
+                continue;
+            }
+            // Outward from a counter-clockwise polygon is right of the edge.
+            let trav = plan(sub3(p1, p0)).normalized();
+            let outward = Point::new(trav.y, -trav.x);
+            let across = if outward.dot(f.e) >= 0.0 { f.e } else { -f.e };
+            let reach = d.rake_overhang.max(0.0) + d.spacing;
+            let first = if d.lookout_offset > 0.0 {
+                d.lookout_offset
+            } else {
+                d.lookout_spacing
+            };
+            let mut s = first;
+            while s <= length - d.lookout_spacing * 0.5 {
+                let at = add(lo, scale(along, s / length));
+                let out_pt = plan(at).add(outward.scale(d.rake_overhang.max(0.0)));
+                let y = pl.height_at(out_pt).unwrap_or(at[1]);
+                let top = [out_pt.x, y, -out_pt.y];
+                let origin = add(top, scale(n3, -d.lookout.depth / 2.0));
+                // Pointing back in across the rafters.
+                let tf = Transform3 {
+                    origin,
+                    axis_x: dir3(-across),
+                    axis_y: n3,
+                };
+                let mut m = Member::new(MemberKind::Rafter, d.lookout, reach, tf, None);
+                m.label = format!("{} lookout x {}", d.lookout.nominal_name(), crate::lumber::format_inches(reach));
+                out.push(m);
+                s += d.lookout_spacing.max(6.0);
+            }
+        }
+    }
+}
+
+/// Roof Overframing: a shoe plate on the lower roof under the eave of every
+/// plane built over it, for that plane's rafters to join to.
+fn shoe_plates(planes: &[&RoofPlane], d: &RoofFramingDefaults, out: &mut Vec<Member>) {
+    for (i, up) in planes.iter().enumerate() {
+        let f = eave(up);
+        let (a, b) = (f.a, f.a.add(f.e.scale(f.len)));
+        let mid = Point::lerp(a, b, 0.5);
+        for (j, low) in planes.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let poly: Vec<Point> = low.polygon3d.iter().map(|v| plan(*v)).collect();
+            if !plan_core::geometry::point_in_polygon(mid, &poly) {
+                continue;
+            }
+            let (Some(ya), Some(yb), Some(ym)) = (low.height_at(a), low.height_at(b), low.height_at(mid)) else {
+                continue;
+            };
+            // Built over: the upper plane's eave stands on or above the lower one.
+            if f.y < ym - 0.5 {
+                continue;
+            }
+            let n3 = low.normal();
+            let a3 = [a.x, ya, -a.y];
+            let b3 = [b.x, yb, -b.y];
+            let axis_x = scale(sub3(b3, a3), 1.0 / norm3(sub3(b3, a3)).max(1e-9));
+            let w = cross3(n3, axis_x);
+            let w = if w[1] < 0.0 { scale(w, -1.0) } else { w };
+            let axis_y = scale(w, 1.0 / norm3(w).max(1e-9));
+            let origin = add(a3, scale(n3, d.shoe_plate.thickness / 2.0 - d.overframe_layer.drop()));
+            let tf = Transform3 { origin, axis_x, axis_y };
+            let mut m = Member::new(MemberKind::Ledger, d.shoe_plate, norm3(sub3(b3, a3)), tf, None);
+            m.label = format!("{} shoe plate x {}", d.shoe_plate.nominal_name(), crate::lumber::format_inches(m.length));
+            out.push(m);
+            break;
+        }
+    }
+}
+
+fn cross3(a: Vec3, b: Vec3) -> Vec3 {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 fn rafters(
@@ -369,7 +585,8 @@ fn rafters(
         .collect();
     let axis_x = [f.n.x * cs, sn, -f.n.y * cs];
     let axis_y = [-f.n.x * sn, cs, f.n.y * sn];
-    for s in positions(f.len, d.spacing, d.rafter.thickness) {
+    let origin = d.reference.map(|r| r.sub(f.a).dot(f.e));
+    for s in positions_at(f.len, d.spacing, d.rafter.thickness, origin) {
         for (t0, t1) in intervals(&poly, s) {
             let length = (t1 - t0) / cs;
             if length < MIN_MEMBER {
@@ -418,6 +635,9 @@ fn rafters(
             };
             let mut m = Member::new(MemberKind::Rafter, d.rafter, length, tf, None);
             m.cuts = cuts;
+            if d.trim_to_soffits && eave_spec.is_some() && t0 < 0.5 {
+                m.label = format!("{} (trimmed to soffit)", m.label);
+            }
             out.push(m);
         }
     }
@@ -476,7 +696,11 @@ fn collar_ties(
         let ha = drop * 12.0 / pa.pitch_in_12.max(0.01);
         let hb = drop * 12.0 / pb.pitch_in_12.max(0.01);
         let y = e.p0[1] - drop;
-        for (k, s) in positions(f.len, d.spacing, t).into_iter().enumerate() {
+        let origin = d.reference.map(|r| r.sub(f.a).dot(f.e));
+        for (k, s) in positions_at(f.len, d.spacing, t, origin)
+            .into_iter()
+            .enumerate()
+        {
             if k % 2 != 0 {
                 continue;
             }
@@ -612,10 +836,40 @@ fn trusses(roof: &Roof, d: &RoofFramingDefaults, lo: Vec3, hi: Vec3) -> Vec<Memb
         (MemberKind::TrussWeb, (2.0 * w / 3.0, 0.0), mid),
     ];
     let mut out = Vec::new();
-    for (i, c) in positions(lateral, d.truss_spacing, TRUSS_LUMBER.thickness)
-        .into_iter()
-        .enumerate()
-    {
+    let lat_origin = d
+        .reference
+        .map(|r| if span_x { r.y - lo_y } else { r.x - lo_x });
+    let mut at = positions_at(lateral, d.truss_spacing, TRUSS_LUMBER.thickness, lat_origin);
+    // Hip girder trusses: `hip_girder_count` trusses side by side, the
+    // nearest one `hip_girder_distance` (4' when 0) in from each end of the
+    // run, replacing the common trusses they stand on.
+    let hips = {
+        let planes: Vec<&RoofPlane> = roof.planes.iter().collect();
+        shared_edges(&planes)
+            .iter()
+            .any(|e| e.class == EdgeClass::Hip)
+    };
+    if hips && d.hip_girder_count >= 2 {
+        let t = TRUSS_LUMBER.thickness;
+        let dist = if d.hip_girder_distance > 0.0 {
+            d.hip_girder_distance
+        } else {
+            48.0
+        };
+        let n = d.hip_girder_count as usize;
+        let mut girders: Vec<f64> = Vec::new();
+        for start in [dist, lateral - dist - n as f64 * t] {
+            for j in 0..n {
+                girders.push(start + t / 2.0 + j as f64 * t);
+            }
+        }
+        if girders.iter().all(|g| *g > t && *g < lateral - t) {
+            at.retain(|p| girders.iter().all(|g| (p - g).abs() > t * (n as f64 + 1.0)));
+            at.extend(girders);
+            at.sort_by(f64::total_cmp);
+        }
+    }
+    for (i, c) in at.into_iter().enumerate() {
         let base = if span_x {
             Point::new(lo_x, lo_y + c)
         } else {
@@ -1124,5 +1378,182 @@ mod tests {
             .cuts
             .iter()
             .any(|c| c.member == "rafter" && c.size == "2x8"));
+    }
+
+    // ----- Round 16: reference, lookouts, shoe plates, girders, labels -----
+
+    fn gable() -> Roof {
+        let kinds = [
+            EdgeKind::Hip,
+            EdgeKind::Gable,
+            EdgeKind::Hip,
+            EdgeKind::Gable,
+        ];
+        build_roof(&rect(), &edges(kinds, 0.0), ELEV)
+    }
+
+    #[test]
+    fn rafters_start_from_the_framing_reference_marker() {
+        let on_grid = |m: &[Member], off: f64| {
+            m.iter()
+                .filter(|m| m.kind == MemberKind::Rafter)
+                .filter(|m| m.transform.axis_x[2].abs() > m.transform.axis_x[0].abs())
+                .filter(|m| ((m.transform.origin[0] - off).rem_euclid(16.0)).min(16.0 - (m.transform.origin[0] - off).rem_euclid(16.0)) < 1e-6)
+                .count()
+        };
+        let plain = frame_roof(&gable(), &RoofFramingDefaults::default());
+        assert!(on_grid(&plain, 8.0) < 5);
+        let d = RoofFramingDefaults {
+            reference: Some(Point::new(8.0, 0.0)),
+            ..RoofFramingDefaults::default()
+        };
+        let anchored = frame_roof(&gable(), &d);
+        // 31 stations a side, all but the two edge rafters on the marker's grid.
+        assert!(on_grid(&anchored, 8.0) >= 2 * 29, "{}", on_grid(&anchored, 8.0));
+        all_sane(&anchored);
+    }
+
+    #[test]
+    fn lookouts_reach_over_the_gable_overhang() {
+        let off = frame_roof(&gable(), &RoofFramingDefaults::default());
+        let is_lookout = |m: &&Member| m.label.contains("lookout");
+        assert_eq!(off.iter().filter(is_lookout).count(), 0);
+        let d = RoofFramingDefaults {
+            lookouts: true,
+            lookout_spacing: 24.0,
+            rake_overhang: 12.0,
+            ..RoofFramingDefaults::default()
+        };
+        let m = frame_roof(&gable(), &d);
+        let lookouts: Vec<&Member> = m.iter().filter(is_lookout).collect();
+        // Two rakes on each of two planes, 144"/cos of slope each.
+        assert!(lookouts.len() >= 4 * 4, "{}", lookouts.len());
+        // Out over the 12" overhang and back across the first 16" rafter bay.
+        assert!(lookouts.iter().all(|l| (l.length - 28.0).abs() < 1e-9));
+        assert!(lookouts.iter().all(|l| l.lumber.nominal_name() == "2x4"));
+        all_sane(&m);
+        // Match Spacing: the lowest sits one spacing up the rake; an offset moves it.
+        let near = RoofFramingDefaults {
+            lookout_offset: 12.0,
+            ..d.clone()
+        };
+        let mn = frame_roof(&gable(), &near);
+        assert!(mn.iter().filter(is_lookout).count() > lookouts.len());
+    }
+
+    #[test]
+    fn trim_to_soffits_marks_the_rafters_that_reach_the_eave() {
+        let roof = hip(16.0);
+        let eaves = vec![EaveSpec { overhang: 16.0, cut: None }; 4];
+        let off = frame_roof_eaves(&roof, &RoofFramingDefaults::default(), &eaves);
+        assert!(off.iter().all(|m| !m.label.contains("trimmed")));
+        let d = RoofFramingDefaults {
+            trim_to_soffits: true,
+            ..RoofFramingDefaults::default()
+        };
+        let on = frame_roof_eaves(&roof, &d, &eaves);
+        let trimmed = on.iter().filter(|m| m.label.contains("trimmed to soffit")).count();
+        assert!(trimmed >= 100, "{trimmed}");
+        assert_eq!(on.len(), off.len());
+    }
+
+    fn plane(poly: &[(f64, f64, f64)], pitch: f64, base: ((f64, f64), (f64, f64))) -> plan_roof::RoofPlane {
+        plan_roof::RoofPlane {
+            polygon3d: poly.iter().map(|&(x, y, z)| [x, y, -z]).collect(),
+            pitch_in_12: pitch,
+            baseline: (Point::new(base.0 .0, base.0 .1), Point::new(base.1 .0, base.1 .1)),
+            source_edge: 0,
+        }
+    }
+
+    #[test]
+    fn roof_overframing_puts_a_shoe_plate_where_a_plane_is_built_over_another() {
+        // A 4:12 roof, and a 8:12 plane whose eave stands on it at plan y = 60.
+        let low = plane(
+            &[(0.0, 100.0, 0.0), (240.0, 100.0, 0.0), (240.0, 140.0, 120.0), (0.0, 140.0, 120.0)],
+            4.0,
+            ((0.0, 0.0), (240.0, 0.0)),
+        );
+        let high = plane(
+            &[(60.0, 120.0, 60.0), (180.0, 120.0, 60.0), (180.0, 146.7, 100.0), (60.0, 146.7, 100.0)],
+            8.0,
+            ((60.0, 60.0), (180.0, 60.0)),
+        );
+        let roof = Roof {
+            planes: vec![low, high],
+            fascia_height: 6.0,
+            baseline_elevation: 100.0,
+            approximate: false,
+        };
+        let plates = |d: &RoofFramingDefaults| -> Vec<Member> {
+            frame_roof(&roof, d)
+                .into_iter()
+                .filter(|m| m.label.contains("shoe plate"))
+                .collect()
+        };
+        assert!(plates(&RoofFramingDefaults::default()).is_empty());
+        let d = RoofFramingDefaults {
+            overframing: true,
+            ..RoofFramingDefaults::default()
+        };
+        let p = plates(&d);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].kind, MemberKind::Ledger);
+        assert!((p[0].length - 120.0).abs() < 1e-6);
+        // It lies on the lower plane: 40" over 120" is 1/3 per inch, y = 60 -> 20".
+        assert!((p[0].transform.origin[1] - 120.0).abs() < 2.0, "{}", p[0].transform.origin[1]);
+        // Sheathing sits lower than the finish.
+        let sheathing = RoofFramingDefaults {
+            overframe_layer: OverframeLayer::Sheathing,
+            ..d.clone()
+        };
+        assert!(plates(&sheathing)[0].transform.origin[1] < p[0].transform.origin[1]);
+    }
+
+    #[test]
+    fn hip_girders_stand_side_by_side_near_each_end_of_a_trussed_hip_roof() {
+        let base = RoofFramingDefaults {
+            trusses: true,
+            ..RoofFramingDefaults::default()
+        };
+        let girders = RoofFramingDefaults {
+            hip_girder_count: 3,
+            hip_girder_distance: 48.0,
+            ..base.clone()
+        };
+        let n = |d: &RoofFramingDefaults| {
+            frame_roof(&hip(0.0), d)
+                .iter()
+                .filter(|m| m.kind == MemberKind::TrussBottomChord)
+                .count()
+        };
+        assert!(n(&girders) > n(&base));
+        // A count of one (or a gable roof) leaves the layout alone.
+        let one = RoofFramingDefaults {
+            hip_girder_count: 1,
+            ..base.clone()
+        };
+        assert_eq!(n(&one), n(&base));
+    }
+
+    #[test]
+    fn identical_roof_trusses_share_one_label_and_the_schedule_counts_them() {
+        let d = RoofFramingDefaults {
+            trusses: true,
+            ..RoofFramingDefaults::default()
+        };
+        let m = frame_roof(&hip(0.0), &d);
+        let trusses = m
+            .iter()
+            .filter(|m| m.kind == MemberKind::TrussBottomChord)
+            .count();
+        assert!(trusses > 5);
+        let configs = crate::truss::truss_configs(&[], &m);
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].label, "TR-1");
+        assert_eq!(configs[0].count, trusses);
+        assert!(configs[0].members.len() == 7 && configs[0].spec.is_none());
+        let rows = crate::truss::truss_schedule(&[], &m);
+        assert_eq!((rows.len(), rows[0].quantity), (1, trusses));
     }
 }

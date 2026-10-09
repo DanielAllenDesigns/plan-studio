@@ -12,6 +12,9 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
+### Added (Plan Agent, 2026-10-09)
+- **Plan Agent** (`crates/plan-agent`, `shell/agent_panel.rs`): a dock where a change is described in plain words ("add a 24' x 30' garage on the right with a door into the mudroom"); Claude edits the plan through 23 strict tools (walls, rectangles, openings, room names, floors, foundations, a plan validator, measure, tunable parameters) and the result lands as ONE undo step with Fix Wall Connections applied. Streaming transcript, "Tweaks" sliders, effort selector, usage and cost footer; Preferences > Plan Agent holds the masked key (user preferences only). Manual: `docs/manual/plan-agent.md`; decisions AG1 to AG7; `cargo run -p plan-agent --example smoke` for a live check.
+
 No version has been tagged yet; the first tagged release (`v0.1.0`) will fold all of the rounds together (see [docs/release-checklist.md](docs/release-checklist.md)). Round 13 is commit `9ba0ae7`; Round 14 is in the working tree.
 
 ### Round 13 - 2026-10-08 (commit 9ba0ae7)

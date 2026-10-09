@@ -42,8 +42,9 @@ pub use cover::{
     RoofDetail, RoofTypes, SplitKind, Surface,
 };
 pub use eave::{
-    eave_detail_meshes, eave_elements, rafter_count, EaveElement, EaveKind, EaveOverrides,
-    EavePlane,
+    eave_detail_meshes, eave_elements, rafter_count, roof_trim_lines, soffit_boxed, EaveElement,
+    EaveKind, EaveOverrides, EavePlane, RafterTailRecipe, RafterTailSpec, RidgeCapEdge,
+    RidgeCapSpec, RoofTrimOptions, SoffitStyle, TrimKind, TrimLine, TrimSpec,
 };
 pub use mesh::{Bounds, Material, Mesh, Scene, Vertex};
 pub use railing::post_count as railing_post_count;
@@ -399,6 +400,11 @@ fn add_floor(
             .filter(|r| !open_above.iter().any(|h| covers(h, &r.polygon)))
             .collect();
         let all: Vec<&Room> = group.iter().collect();
+        // Layered Floor/Ceiling Structure and Finish definitions (Round 16)
+        // build one slice per layer; a platform without them is one block.
+        let bands = group
+            .first()
+            .and_then(|r| slab::platform_bands(floor, r, levels));
         let slabs = [
             (
                 levels.has_floor,
@@ -407,6 +413,7 @@ fn add_floor(
                 &floor_holes,
                 finished_floor - levels.floor_thickness,
                 finished_floor,
+                bands.as_ref().map(|b| b.floor.as_slice()),
             ),
             (
                 levels.has_ceiling,
@@ -415,32 +422,42 @@ fn add_floor(
                 &ceiling_holes,
                 ceiling,
                 ceiling + levels.ceiling_thickness,
+                bands.as_ref().map(|b| b.ceiling.as_slice()),
             ),
         ];
-        for (wanted, material, rooms, holes, y0, y1) in slabs {
+        for (wanted, material, rooms, holes, y0, y1, layered) in slabs {
             if !wanted {
                 continue;
             }
+            let single = [slab::Band { material, y0, y1 }];
+            let slices = layered.unwrap_or(&single);
             // Holes in the platform (stairwells, light wells) are cut out,
             // and the ground under every nested room (R-11) from the room
             // around it; rooms with a nested room are built on their own.
             let (holed, plain): (Vec<&Room>, Vec<&Room>) =
                 rooms.into_iter().partition(|r| !r.holes.is_empty());
             let plain: Vec<Room> = plain.into_iter().cloned().collect();
-            scene.meshes.extend(foundation::build_platform(
-                material, &plain, holes, y0, y1, None,
-            ));
-            for room in holed {
-                let mut cut = holes.clone();
-                cut.extend(room.holes.iter().cloned());
+            for band in slices {
                 scene.meshes.extend(foundation::build_platform(
-                    material,
-                    std::slice::from_ref(room),
-                    &cut,
-                    y0,
-                    y1,
+                    band.material,
+                    &plain,
+                    holes,
+                    band.y0,
+                    band.y1,
                     None,
                 ));
+                for room in &holed {
+                    let mut cut = holes.clone();
+                    cut.extend(room.holes.iter().cloned());
+                    scene.meshes.extend(foundation::build_platform(
+                        band.material,
+                        std::slice::from_ref(*room),
+                        &cut,
+                        band.y0,
+                        band.y1,
+                        None,
+                    ));
+                }
             }
         }
     }

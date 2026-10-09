@@ -85,11 +85,10 @@ pub fn pump(st: &mut AgentPanelState, cx: &mut EditorContext, ctx: &egui::Contex
     let Some(handle) = st.handle.as_mut() else {
         return false;
     };
-    // Drain first, then look: a run that stopped before this drain has
-    // queued everything we are about to read.
-    let was_running = handle.is_running();
+    // Drain first, then look: `is_running` stays true until the terminal
+    // event has been drained, so the last events are never lost.
     let events = handle.drain(&mut st.session);
-    if !was_running {
+    if !handle.is_running() {
         st.handle = None;
     }
     let mut applied = false;
@@ -154,6 +153,13 @@ pub fn apply_finished(cx: &mut EditorContext, project: Project, assistant_text: 
     cx.begin_change(UNDO_LABEL);
     cx.project = project;
     cx.floor = cx.floor.min(cx.project.floors.len().saturating_sub(1));
+    // The agent joins walls by position only (DECISIONS AG5): run Fix Wall
+    // Connections on every floor, inside the same undo step.
+    let opts = crate::editor::connect::ConnectOptions::from_defaults(&cx.defaults);
+    for floor in 0..cx.project.floors.len() {
+        crate::editor::connect::fix_all_connections_project(&mut cx.project, floor, &opts);
+    }
+    cx.mark_dirty();
     // Ids in the old selection may be gone.
     cx.reset_view_state();
     cx.refresh();
@@ -211,7 +217,7 @@ pub fn start_run(st: &mut AgentPanelState, cx: &EditorContext, text: &str) -> bo
     if st.running() || text.is_empty() {
         return false;
     }
-    let cfg = agent_page::config_with(st.effort.clone());
+    let cfg = agent_page::config_with(st.effort);
     if !cfg.credentials_available() {
         return false;
     }
@@ -335,7 +341,7 @@ fn bottom(
     }
 
     ui.horizontal(|ui| {
-        let before = st.effort.clone();
+        let before = st.effort;
         egui::ComboBox::from_id_salt("agent_effort")
             .selected_text(agent_page::effort_label(&st.effort))
             .width(90.0)

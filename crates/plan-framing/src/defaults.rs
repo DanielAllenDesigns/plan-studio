@@ -193,3 +193,31 @@ impl FramingDefaults {
             .map_or(TWO_BY_SIX, |r| r.lumber)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_size_follows_the_opening_width_and_the_last_row_covers_wider_openings() {
+        let d = FramingDefaults::default();
+        assert_eq!(d.header_lumber_for(36.0), TWO_BY_SIX);
+        assert_eq!(d.header_lumber_for(48.0), TWO_BY_SIX, "a row includes its own width");
+        assert_eq!(d.header_lumber_for(54.0), TWO_BY_EIGHT);
+        assert_eq!(d.header_lumber_for(72.0), TWO_BY_TEN);
+        assert_eq!(d.header_lumber_for(200.0), TWO_BY_TWELVE);
+        assert_eq!(d.header_depth_for(54.0), 7.25);
+    }
+
+    #[test]
+    fn a_fixed_header_depth_overrides_the_table_and_an_edited_table_is_used() {
+        let mut d = FramingDefaults::default();
+        d.header_table[0].lumber = TWO_BY_EIGHT;
+        assert_eq!(d.header_lumber_for(30.0), TWO_BY_EIGHT);
+        d.header_depth = 11.25;
+        assert_eq!(d.header_lumber_for(30.0), TWO_BY_TWELVE);
+        d.header_table.clear();
+        d.header_depth = 0.0;
+        assert_eq!(d.header_lumber_for(30.0), TWO_BY_SIX, "an empty table falls back to 2x6");
+    }
+}

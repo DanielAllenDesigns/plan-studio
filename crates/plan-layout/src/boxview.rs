@@ -144,12 +144,24 @@ pub struct PlotLine {
     pub added: bool,
 }
 
-/// A filled area of a Plot Lines view: the poche of a cut, or a material's
-/// color when Color Fill is on.
+/// What a [`PlotFill`] stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FillRole {
+    /// The poche of a section cut.
+    Cut,
+    /// A cast shadow.
+    Shadow,
+    /// A surface in its material's color: drawn only when Color Fill is on.
+    Material,
+}
+
+/// A filled area of a Plot Lines view: the poche of a cut, a shadow, or a
+/// material's color when Color Fill is on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlotFill {
     pub polygon: Vec<Point>,
     pub rgb: [u8; 3],
+    pub role: FillRole,
 }
 
 /// The picture a semi-dynamic or Plot Lines view keeps: it is drawn from
@@ -396,6 +408,8 @@ impl BoxView {
             &self.saved_view,
             self.camera,
             &self.plot,
+        );
+        let rest = (
             self.show_color,
             self.poche,
             &self.default_set,
@@ -403,7 +417,7 @@ impl BoxView {
             &self.border,
             &self.label,
         );
-        format!("{small:?}").hash(&mut h);
+        format!("{small:?}{rest:?}").hash(&mut h);
         self.art
             .as_ref()
             .map(|a| (a.rev, a.lines.len(), a.fills.len()))

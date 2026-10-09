@@ -463,9 +463,16 @@ impl LocateTool {
     }
 }
 
+/// One category of Locate marks: `(key, label, [(mark key, label, default)])`.
+pub type LocateCategory = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str, bool)],
+);
+
 /// The marks of the Locate panels, by category: `(category, [(key, label,
 /// default)])`. A mark's key is `<category key>.<key>`.
-pub const LOCATE_MARKS: &[(&str, &str, &[(&str, &str, bool)])] = &[
+pub const LOCATE_MARKS: &[LocateCategory] = &[
     (
         "cabinets",
         "Cabinets",
@@ -484,12 +491,18 @@ pub const LOCATE_MARKS: &[(&str, &str, &[(&str, &str, bool)])] = &[
     (
         "fixtures",
         "Fixtures/Appliances",
-        &[("sides", "Sides/Corners", true), ("centers", "Centers", false)],
+        &[
+            ("sides", "Sides/Corners", true),
+            ("centers", "Centers", false),
+        ],
     ),
     (
         "furniture",
         "Furniture",
-        &[("sides", "Sides/Corners", true), ("centers", "Centers", false)],
+        &[
+            ("sides", "Sides/Corners", true),
+            ("centers", "Centers", false),
+        ],
     ),
     (
         "openings",

@@ -6,6 +6,7 @@
 
 #![allow(dead_code)]
 
+use super::assembly_def::AssemblyDefDialog;
 use super::{
     dis_check, fmt_short, on, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
     PV_INK,
@@ -15,6 +16,7 @@ use crate::editor::roof_view::{
     RoofSettings, RoofStructure, RoofStyle, ROOF_MATERIALS,
 };
 use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Stroke, Ui};
+use plan_core::assemblies::{AssemblyKind, AssemblyLibrary, RoofLayers};
 use plan_core::defaults::{EaveCut, RoofDetailDefaults};
 use plan_core::LineStyle;
 use plan_roof::{DormerKind, DormerSpec, ReturnKind, ReturnSpec};
@@ -489,8 +491,12 @@ struct PlanePages {
     fields: Fields,
     /// The structure Roof Defaults give a plane, which Define starts from.
     default_structure: RoofStructure,
-    /// The Define Roof Structure window while it is open.
+    /// The Define Roof Structure window while it is open (the all-planes
+    /// sheet keeps it; a single plane uses the layer definitions below).
     define: Option<RoofStructure>,
+    /// The Material Layers Definition window of a single plane's Roof
+    /// Surface, Roof Structure or Roof Ceiling Finish while it is open.
+    layers_edit: Option<AssemblyDefDialog>,
 }
 
 /// The Define Roof Structure window (RF-36): framing, member size and
@@ -598,10 +604,28 @@ impl PlanePages {
         }
     }
 
-    /// Structure > Define (RF-36): what frames the plane.
+    /// The layered definitions the plane has now: its own, or ones made from
+    /// the structure it follows (its own numbers or Roof Defaults).
+    fn roof_layers(&self) -> RoofLayers {
+        self.draft.layers.clone().unwrap_or_else(|| {
+            let st = self.draft.structure.unwrap_or(self.default_structure);
+            RoofLayers::from_numbers(
+                st.roofing,
+                st.sheathing,
+                st.member_depth,
+                st.member_width,
+                st.spacing,
+                st.framing == RoofFraming::Trusses,
+            )
+        })
+    }
+
+    /// Structure panel (RF-36, Round 16): the plane's Roof Surface, Roof
+    /// Structure and Roof Ceiling Finish, each a Material Layers Definition.
     fn structure_page(&mut self, ui: &mut Ui) {
         section(ui, "Structure");
         let shown = self.draft.structure.unwrap_or(self.default_structure);
+        let layers = self.roof_layers();
         row(ui, "Source", |ui| {
             ui.label(if self.draft.structure.is_some() {
                 "This plane"
@@ -621,22 +645,44 @@ impl PlanePages {
         row(ui, "Thickness", |ui| ui.label(fmt_short(shown.thickness())));
         row(ui, "Ceiling Framing", |ui| ui.label(shown.ceiling.label()));
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui.button("Define...").clicked() {
-                self.define = Some(shown);
-            }
-            if self.draft.structure.is_some() && ui.button("Use Roof Defaults").clicked() {
-                self.draft.set_structure(None);
-            }
-        });
-        if let Some(mut st) = self.define {
-            match define_window(ui.ctx(), &mut st, &mut self.fields) {
-                Some(true) => {
-                    self.draft.set_structure(Some(st));
-                    self.define = None;
+        let mut open = None;
+        for kind in [
+            AssemblyKind::RoofSurface,
+            AssemblyKind::RoofStructure,
+            AssemblyKind::RoofCeilingFinish,
+        ] {
+            row(ui, kind.label(), |ui| {
+                let a = layers.get(kind);
+                ui.label(format!(
+                    "{} layer{}, {}",
+                    a.layers.len(),
+                    if a.layers.len() == 1 { "" } else { "s" },
+                    fmt_short(a.total_thickness())
+                ));
+                if ui.button("Edit\u{2026}").clicked() {
+                    open = Some(kind);
                 }
-                Some(false) => self.define = None,
-                None => self.define = Some(st),
+            });
+        }
+        if let Some(kind) = open {
+            self.layers_edit = Some(AssemblyDefDialog::new(
+                kind,
+                layers.get(kind).clone(),
+                &AssemblyLibrary::default(),
+            ));
+        }
+        if self.draft.structure.is_some() && ui.button("Use Roof Defaults").clicked() {
+            self.draft.set_structure(None);
+        }
+        if let Some(mut d) = self.layers_edit.take() {
+            match d.show(ui.ctx()) {
+                Outcome::Open => self.layers_edit = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    let mut l = layers;
+                    l.set(d.kind(), d.into_assembly());
+                    self.draft.set_layers(Some(l), shown);
+                }
             }
         }
     }
@@ -863,6 +909,7 @@ impl RoofPlaneDialog {
                 fields: Fields::default(),
                 default_structure: RoofStructure::default(),
                 define: None,
+                layers_edit: None,
             },
         }
     }

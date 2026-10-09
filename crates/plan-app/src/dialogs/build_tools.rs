@@ -13,7 +13,7 @@ use super::project_info::{self, ProjectInfoDialog};
 use super::room::RoomDialog;
 use super::schedule_spec::ScheduleSpecDialog;
 use super::Outcome;
-use crate::editor::rooms_edit::{self, FoundationSpec};
+use crate::editor::rooms_edit;
 use crate::editor::schedule_view;
 use crate::editor::{Camera, EditorContext, ObjectRef};
 use crate::toolbar::Action;
@@ -586,10 +586,17 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
             rooms_edit::insert_floor(cx);
         }
         Action::InsertFloorBelow => {
-            rooms_edit::insert_floor_below(cx);
+            // Insert New Floor: a floor below this one, derived from its
+            // walls, with the Build New Floor options (manual p. 764).
+            let d = FloorDialog::insert_floor(&cx.project, cx.floor, &cx.defaults);
+            with_windows(|w| w.floor = Some(d));
         }
         Action::FloorDefaults => {
             let d = FloorDialog::defaults_for_floor(cx);
+            with_windows(|w| w.floor = Some(d));
+        }
+        Action::FoundationDefaults => {
+            let d = FloorDialog::foundation_defaults(cx);
             with_windows(|w| w.floor = Some(d));
         }
         Action::PlanFloorDefaults => {
@@ -618,7 +625,7 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
             rooms_edit::exchange_floor(cx, false);
         }
         Action::BuildFoundation => {
-            let d = FloorDialog::foundation(FoundationSpec::from_defaults(&cx.defaults));
+            let d = FloorDialog::build_foundation(cx);
             with_windows(|w| w.floor = Some(d));
         }
         Action::RebuildAll => rooms_edit::rebuild_all(cx),
@@ -766,8 +773,14 @@ fn schedule_spec_dialog(
     if !layers.contains(&def.layer) {
         layers.push(def.layer.clone());
     }
+    let size = {
+        let l = schedule_view::layout_of(cx, &def, floor);
+        (l.width, l.height)
+    };
     Some(
         ScheduleSpecDialog::new(floor, def, styles, layers)
+            .with_context(super::schedule_spec::SpecContext::from_cx(cx))
+            .with_size(size)
             .with_props(cx.project.props.defs.clone()),
     )
 }
@@ -778,6 +791,9 @@ pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext, cam: &mut Camera) {
     w.show(ctx, cx, cam);
     with_windows(|slot| *slot = w);
     super::plan_check::show_text_report(ctx);
+    // Schedule Defaults, Select Location, Manage Custom Schedule Categories
+    // and the other windows of the schedule commands.
+    super::schedule_spec::show_extras(ctx, cx, cam);
 }
 
 /// Tools > Checks > Plan Check Settings: opens the Plan Check window (running
@@ -830,6 +846,12 @@ impl Windows {
                     if outcome == Outcome::Ok {
                         let depth = super::property_manager::before_apply(cx);
                         rooms_edit::apply_room_spec(cx, d.room_index(), d.room_name(), d.extras());
+                        // Layer definitions saved from the Structure panel.
+                        for n in d.take_saved() {
+                            cx.project
+                                .assemblies
+                                .save_named(n.kind, &n.name, n.assembly);
+                        }
                         super::property_manager::after_apply(cx, self.room_props.as_ref(), depth);
                         super::object_info::after_apply(cx, self.room_info.as_ref(), depth);
                     }
@@ -841,12 +863,23 @@ impl Windows {
                 }
             }
         }
+        // Exterior Room Specification (R-106).
+        super::exterior_room::show(ctx, cx);
         // Floor dialogs.
         if let Some(mut d) = self.floor.take() {
             match d.show(ctx) {
                 Outcome::Open => self.floor = Some(d),
                 Outcome::Cancel => {}
-                Outcome::Ok => d.apply(cx),
+                Outcome::Ok => {
+                    let new_floor = matches!(d, FloorDialog::NewFloor { .. });
+                    let floors = cx.project.floors.len();
+                    d.apply(cx);
+                    // The Floor Defaults of the floor just built open next
+                    // (manual p. 762).
+                    if new_floor && cx.project.floors.len() > floors {
+                        self.floor = Some(FloorDialog::defaults_for_floor(cx));
+                    }
+                }
             }
         }
         if let Some(mut s) = self.space.take() {

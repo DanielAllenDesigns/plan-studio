@@ -2,7 +2,7 @@
 
 Build Framing turns the walls, floors, ceilings and roof of the plan into lumber: plates, studs, headers, joists, rafters and trusses, each a real piece
 with a size and a length. The pieces are drawn in the plan, built into the 3D view, counted in the Framing Schedule and the Materials List, and kept with
-the plan. This chapter covers the **Build Framing** dialog, the options that decide what a rebuild keeps, the framing layers, the Framing Overview and the
+the plan. This chapter covers the **Build Framing** command, the options that decide what a rebuild keeps, the framing layers, the Framing Overview and the
 wall detail. The manual framing tools (General Framing, Post, Joist, Bearing Line and so on), the Framing Takeoff and the schedules are in 11.11; the
 engine is the `plan-framing` crate.
 
@@ -12,45 +12,50 @@ Lengths are inches inside the program and show as feet and inches.
 
 | Command | What it does |
 |---|---|
-| **Build Framing...** | Opens the Build Framing dialog for the active floor. OK saves the options and builds, as one undo step ("Build Framing"). |
-| **Build All Framing...** | The same dialog with "Build every floor" checked ("Build All Framing"). |
-| **Framing Defaults...** | The Framing Defaults page (Walls, Headers, Floor, Roof) without building. |
+| **Build Framing...** | Opens the Build Framing command for the active floor. OK saves the choices and builds, as one undo step ("Build Framing"). |
+| **Build All Framing...** | The same with the walls and roof of every floor checked ("Build All Framing"). |
+| **Framing Defaults...** | The Automatic Framing Defaults panels (19.2) without building. |
+| **Truss Detail...** | The Truss Detail window (19.11). |
 | **Framing Overview** | Switches the plan to the Framing Overview plan view and back (19.5). |
 
 The **Build Framing** and **Build All Framing** items of the framing flyout, and Shift+Cmd+S, build at once with the saved options and no dialog (planned: they
 open the dialog like the menu items). **Delete Framing** removes the built framing of the active floor; manual members and layout lines stay.
 
-## 19.2 The Build Framing dialog
+## 19.2 The Build Framing command and the Automatic Framing Defaults
 
-Seven tabs, as in Chief. The first line of every tab is **Build every floor**.
+Build Framing is a command, as in Chief. Its window has one page:
 
-**Floor** (check boxes **Build floor framing**, **Auto rebuild floor framing**, **Retain existing floor framing**)
+- **Automatic Framing Defaults...** switches the window to the defaults panels below; OK or Cancel returns to the command (Cancel puts the defaults back).
+- **Automatically Rebuild Framing**: **Floor**, **Ceiling**, **Wall** and **Roof**. A checked part is rebuilt by itself when the walls, openings, rooms, roof planes or
+  layout lines it is made from change (19.3).
+- **Build Framing Once**: **Floor** and **Ceiling** each with a floor choice (**Current Floor**, **All Floors** or one floor by name), **Wall** and **Roof**. OK builds
+  the checked parts once. A part that is not checked keeps the framing it has. "Build the walls and roof of every floor" is what Build All Framing checks.
+- **Retain existing framing**: one box per part keeps a whole part as it is (Chief retains per object: see 19.3). **Retain Wall Framing** and the roof planes
+  that retain their framing are counted, with a **Clear** button. **Turn the framing layers on** after a build.
 
-- **Joist size** and **Joist spacing**, and **Joists run**: across the shorter side (the default), parallel to X or parallel to Y. A Joist Direction line in a room
-  overrides it. A line under the size shows what that size carries at that spacing (19.4).
-- **Rim joists** on or off, **Single** or **Double**; **Mid-span blocking**.
-- **Joists bear on**: **Every wall bears** (each room is framed on its own) or **Exterior walls and Bearing Lines** (only the exterior walls enclose a platform and
-  the Bearing Lines drawn with the Bearing Line tool split it, so joists run across interior partitions).
-- **Stairwell header and trimmer plies**: a Floor Hole in the platform (a stairwell) gets trimmers beside it and headers across its ends.
-- A room with no floor platform (**Open Below**, a deck) gets no floor joists.
+The **Automatic Framing Defaults** panels (Default Settings > Framing opens the same ones):
 
-**Ceiling**: **Build ceiling framing** is off by default. Ceiling joists rest on the top plates, with their own **Joist size**, **Joist spacing** and
-**Joists run**. They are skipped for a room open to the floor above, for a room with no ceiling, and when the roof is framed with trusses or with its own ceiling joists.
+**Floor Levels**: joist size, spacing and direction, rim joists (**Single** or **Double**, **Rim Joist Width**, **Rim Joist Connection** Stagger or Flush, **Max Rim
+Joist Length**), mid-span blocking, **Joists bear on** (every wall, or exterior walls and bearing lines), ceiling joists, the stairwell header and trimmer plies, and
+- **Joists over bearing walls and beams**: **Lap** (8" of lap, side by side, centred on the support) or **Butt** (end to end), for floors and for ceilings;
+- **Blocking**: **In Line**, **Stagger** or **Cross/Bridging** for floors and ceilings;
+- **Use Framing Reference** for each floor (19.8). A line under each size shows what it carries at that spacing (19.4).
 
-**Roof**: rafter size and spacing, ridge, hip and valley and fascia sizes, tail cut (plumb, level or square; a plane's own Eave cut wins), birdsmouth seat,
-collar ties, ceiling joists, and **Trusses instead of rafters**. Rafters get their tail cut and birdsmouth, and a ridge, hips and valleys where the roof has them.
+**Wall**: stud size and spacing, plates, kings and trimmers, cripple spacing, corner studs, tee backing, blocking with **Stagger Blocking**, and
+- **Wall connections**: corners and intersections **Standard** (three studs), **Reduced Stud** (two), **Laddered** (two and ladder blocking) or, for corners, **U Shaped**;
+  **Top plate connection** Stagger or Flush;
+- **Mitre ends of angled walls**: **Mitre Plate Ends**, **Rotate End Studs**, **Horizontal Frame Through**;
+- **Wall Detail views**: **Build Wall Framing Details from Exterior**; studs and posts as cross boxes in plan; bearing walls get double plates and headers.
 
-**Wall**: stud size and spacing, top and bottom plates, king studs and trimmers per side, cripple spacing, corner studs, tee backing, wall blocking, and the
-**header size by opening width** table (2x6 to 4', 2x8 to 5', 2x10 to 6', 2x12 beyond, as Chief's span table; a fixed depth overrides it). A 2x4 stud is
-upgraded to 2x6 in walls 6" or thicker. **Retain Wall Framing** shows how many walls are retained; **Clear** releases them.
+**Openings**: the **header size by opening width** table (2x6 to 4', 2x8 to 5', 2x10 to 6', 2x12 beyond; a fixed depth overrides it), the **Maximum Depth** rule (an
+opening whose top is that close to the top plate gets one solid header and no cripples) and **List Cut Header Lengths**.
 
-**Posts**: the size, material and footing the Post and Post with Footing tools start with. With **Footing under every new post** checked a Post becomes a Post
-with Footing.
+**Roof**: rafters, ridge, hip and valley and fascia sizes, tail cut, birdsmouth seat, collar ties, ceiling joists, **Trusses instead of rafters**, and
+**Use Framing Reference** and **Trim Framing To Soffits**, **Roof Lookouts** (spacing, offset from the subfascia, gable overhang), **Hip Girder Truss** (count, distance
+from the wall's main layer) and **Roof Overframing** with its Overframe Layer.
 
-**Trusses**: the truss a Truss Base is filled with (Fink, Howe, King post, Scissor, Attic or Mono), its pitch, heel height, overhang and spacing; and for roof planes
-**Trusses instead of rafters**, the roof truss spacing and "Trusses over a span of".
-
-**Framing Defaults**: **Turn the framing layers on** after a build, and a summary of the sizes in use.
+**Trusses**: the truss a Truss Base is filled with (type, pitch, heel height, overhang, spacing) and the roof truss spacing. **Posts**: the size, material and footing
+the Post tools start with.
 
 ## 19.3 Build, Auto rebuild and Retain
 
@@ -86,15 +91,76 @@ the building-code span tables and ignores shear and bearing; it is not a code ch
 - The **Framing Overview 3D camera** (a Perspective Overview of the framing) takes its scene from `framing_view::overview_scene`: every framing member of every
   floor and nothing else, shown even with the framing layers off. (Planned: the 3D panel's Framing Overview command calls it.)
 
-## 19.6 Wall detail
+## 19.6 Wall Details
 
-`framing_view::wall_detail_of` gives the framing elevation of one wall, and `paint_wall_detail` draws it with dimensions: the wall length and height, the on-centre spacing of the
-common studs, and for each opening the rough opening width and height, the header height and, for a window, the sill height. (Planned: a Wall Detail window from the
-wall's context menu; the dimensioned detail is not on screen yet. The 3D elevation of the Framing Overview already shows the studs.)
+Every wall with built framing gets a **Wall Detail**, made when the framing is built and named from the wall's label (the label typed in the Wall Specification, else
+`W1`, `W2`... in wall order). A Wall Detail is a CAD detail: it opens in a tab of its own, lists in the **Project Browser** under **Wall Details** (with the floor's name when
+there are several floors), takes the Text, Dimension and CAD tools, and **Send to Layout** prints it. Select a wall and click **Open Wall Detail** on the Edit toolbar.
 
-## 19.7 What is not done
+The drawing shows each member as a box, with its label, the wall's length and height, the stud spacing, and for each opening the rough opening, header height and sill
+height, and a title that names the wall and the side it is seen from (the exterior unless **Build Wall Framing Details from Exterior** is off). What you add stays when the
+detail is redrawn; the members, labels and dimensions the program drew are redrawn after every build and every member edit.
 
-- The Build Framing flyout item and the hotkey build without the dialog; auto rebuild is not called every frame; the Wall Specification's **Retain Wall Framing** check
-  box is still dimmed (all in the integration queue).
-- No Foundation framing group; no rollout or Reverse Rollout of studs; directed (Joist Direction) floors do not frame stairwell holes.
-- No deck or beam calculators; the dialog layout, the checkbox wording and the plan dash patterns are marked verify in Chief (DECISIONS 112 to 115).
+Select a member's box and the Edit toolbar offers **Build Framing for Parent Object(s)** (rebuilds the wall), **Find Wall**, **Flat to Inside**, **Flat to Outside** and
+**Delete Framing Member(s)**. These edit the wall's real members. Rebuilding the wall replaces them again unless **Retain Wall Framing** is on in the Wall Specification.
+
+## 19.7 Build Framing for Selected and Parent Objects
+
+With a wall, a room, a roof plane, a tray ceiling or a truss selected, **Build Framing for Selected Object(s)** rebuilds just that object's framing, as one undo step:
+
+- a **wall**: its studs, plates, headers and the posts under beams that cross it;
+- a **room** (its platform): the floor and ceiling joists; if other rooms of the room's Framing Group are in the same platform Chief asks whether to give the room a
+  **new Framing Group**: Yes, and the platforms are separate; No, and the platform is built as it is (19.8);
+- a **roof plane**: the roof framing that stands over it;
+- a **tray ceiling**: its side walls and joists;
+- a **truss**: its envelope and webbing are made again for where it stands (the same as **Force Truss Rebuild**).
+
+The button is dimmed for an object that retains its framing (**Retain Wall Framing**, **Retain Floor/Ceiling Framing** on the room, **Retain Framing** on the tray ceiling or
+roof plane). **Build Framing for Parent Object(s)** does the same from a member: the wall of a Wall Detail's member, the platform of a joist, the roof plane of a rafter, a truss.
+
+## 19.8 Framing Groups, bearing walls and beams, the Framing Reference, joins
+
+- **Framing Group** (Room Specification): when only the exterior walls bear, rooms of different groups are separate platforms, so floors can be built at different times.
+- **Bearing Wall** (Wall Specification) and **Bearing Beam** (Framing Specification): in that mode joists run across them and lap or butt over them (19.2). A beam standing
+  1" or more above the joists holds them by its sides. Without a Joist Direction line, joists run across the longest bearing wall or beam. A **Bearing Line** drawn with
+  the tool splits the joists with a gap and gets a beam of its own. Posts are placed under a Floor/Ceiling Beam where it crosses a wall.
+- **Framing Reference Marker**: each floor uses its own first marker, else the first floor's. With **Use Framing Reference** on (per floor; **Roof** for rafters), walls,
+  joists, ceiling joists and rafters start at the marker: a stud or joist is centred on it plus whole spacings. **Move to Framing Ref** moves the selected parallel
+  manual members so the first lies on that grid. Deck joists take the marker when the deck builder passes it (integration queue).
+- **Joist Direction** and **Roof Truss Direction** lines have a Specification (double-click): Construction, Depth, Width and Spacing for joists; Truss Spacing, chord and web
+  depths, Maximum Horizontal Span and Require Kingpost for trusses.
+- **Join and Lap Ends** / **Join and Mitre Ends** (two selected members), **Add Break** (one member, at its middle) and the **Rotate** choice (Flat to Inside or Outside)
+  of a General Framing member change manual members. **End Profile** gives each end of a joist, beam, rafter or General Framing member a shape and size.
+
+## 19.9 Display
+
+Studs, kings, trimmers, cripples and posts draw as **cross boxes** in plan (a box with an X; **Show Cross** on a post turns it off). The Framing Specification has **Fill
+Style** (plan and Wall Detail) and **Label** panels: an automatic label or a specified one with **Insert Macro** (`%nominal_size%`, `%size%`, `%width%`, `%depth%`,
+`%length%`, `%type%`...), drawn on the `Framing, Labels` layer. A selected line member shows an **S** and an **E** at its ends. In a section made into a detail, cut lumber is
+a box with an X and cut blocking a box with one diagonal.
+
+## 19.10 Truss specification
+
+A truss opens the **Roof Truss**, **Girder Truss** or **Floor/Ceiling Truss Specification**. Roof trusses: Truss Type (including Double Fink and Double Howe), pitch, heel
+height and overhang; **Member Sizing** (top chord, bottom chord, webbing; plies for a girder); **Maximum Horizontal Span** (a smaller span gives a finer web);
+**Horizontal Blocking** (vertical spacing, rollout offset with Automatic); **Roof Directives** (Require Kingpost, End Truss, Energy Heel, Drop Hip Truss, Reduced Gable,
+Attic Truss, Sloping Flat Truss); **Options** (Automatically Generated Truss, Force Truss Rebuild, Lock Truss Envelope and Webbing, Use Special Snapping, Calculate
+Chords/Webbing in Materials List, Show Multi-Ply Lines). Floor and ceiling trusses have member depths, thickness, maximum span, blocking and Vertical Supports. A moved
+roof truss takes the pitch of the roof plane where it lands unless it is locked. Trusses are for illustration; have an engineer approve every design.
+
+## 19.11 Truss labels, the Truss Detail and the schedule
+
+Trusses are labelled `TR-1`, `TR-2`... (roof and girder trusses) and `FTR-1`... (floor and ceiling), numbered by the order each distinct configuration first appears; trusses with
+the same configuration share a label. Labels show in plan on the `Framing, Roof Truss Labels` and `Framing, Floor/Ceiling Truss Labels` layers. The **Truss Detail** (a CAD
+detail, made with the first truss) draws each configuration once with its web layout, the label and, when several share it, the quantity in parentheses (`TR-1 (3)`).
+**Open Truss Detail** (a selected truss) opens it on that diagram; **Find Trusses** (a selected diagram) goes to the plan and selects the trusses. The **Truss Detail
+window** (Build > Framing) lists the configurations with those buttons and **Force Truss Rebuild**. `plan_framing::truss_schedule` gives the truss rows (label,
+quantity, type, span, pitch, plies, members) of the framing schedule.
+
+## 19.12 What is not done
+
+- The Build Framing flyout item and the hotkey build without the dialog; auto rebuild is not called every frame (integration queue).
+- No Foundation framing group; no rollout or Reverse Rollout of studs; directed (Joist Direction) floors do not frame stairwell holes or rim joists.
+- Jack, hip, girder and subgirder trusses and the Truss Base specification are Round 17. The Truss Detail is not linked back to the trusses (deleting a drawing deletes
+  nothing). Trim Framing To Soffits and End Profile do not change the 3D shape yet. Posts under beams do not cut the top plates.
+- The dialog layout, the checkbox wording, the plan dash patterns and the Double Fink and Double Howe webs are marked verify in Chief (DECISIONS 112 to 115, FL1 to FL16).

@@ -90,20 +90,29 @@ pub fn auto_label(t: &Terrain, key: ObjectKey) -> String {
     let z = |v: f64| t.contour_label_units.format(v);
     match key {
         ObjectKey::Perimeter => "Terrain Perimeter".into(),
-        ObjectKey::Point(i) => t.elevation_points.get(i).map_or_else(String::new, |e| z(e.z)),
-        ObjectKey::Line(i) => t.elevation_lines.get(i).map_or_else(String::new, |l| z(l.z)),
+        ObjectKey::Point(i) => t
+            .elevation_points
+            .get(i)
+            .map_or_else(String::new, |e| z(e.z)),
+        ObjectKey::Line(i) => t
+            .elevation_lines
+            .get(i)
+            .map_or_else(String::new, |l| z(l.z)),
         ObjectKey::Region(i) => t
             .elevation_regions
             .get(i)
             .map_or_else(String::new, |r| z(r.z)),
         ObjectKey::Break(i) => t.breaks.get(i).map_or_else(String::new, |b| z(b.z)),
-        ObjectKey::Modifier(i) => t.modifiers.get(i).map_or_else(String::new, |m| match m.kind {
-            ModifierKind::Hill => format!("Hill {}", z(m.height)),
-            ModifierKind::Valley => format!("Valley {}", z(m.height)),
-            ModifierKind::RaisedRegion => format!("Raised {}", z(m.height)),
-            ModifierKind::LoweredRegion => format!("Lowered {}", z(m.height)),
-            ModifierKind::FlatRegion => "Flat Region".into(),
-        }),
+        ObjectKey::Modifier(i) => t
+            .modifiers
+            .get(i)
+            .map_or_else(String::new, |m| match m.kind {
+                ModifierKind::Hill => format!("Hill {}", z(m.height)),
+                ModifierKind::Valley => format!("Valley {}", z(m.height)),
+                ModifierKind::RaisedRegion => format!("Raised {}", z(m.height)),
+                ModifierKind::LoweredRegion => format!("Lowered {}", z(m.height)),
+                ModifierKind::FlatRegion => "Flat Region".into(),
+            }),
         ObjectKey::Feature(i) => t.features.get(i).map_or_else(String::new, |f| {
             if f.kind == crate::model::FeatureKind::Hole {
                 "Terrain Hole".into()
@@ -174,7 +183,9 @@ pub fn label_spots(t: &Terrain) -> Vec<LabelSpot> {
             out.push(LabelSpot {
                 key,
                 at: anchor.add(Point::new(r + 2.0, r + 2.0)),
-                text: ex.note.replace("%elevation%", &t.contour_label_units.format(z)),
+                text: ex
+                    .note
+                    .replace("%elevation%", &t.contour_label_units.format(z)),
                 note: true,
             });
         }

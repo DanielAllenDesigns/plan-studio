@@ -491,6 +491,11 @@ pub struct SavedPlanView {
     /// Name of the text style new text takes in this view; empty = leave it.
     #[serde(default)]
     pub text_style: String,
+    /// The rest of the Plan View Specification: Saved, Remember
+    /// Zoom/Rotation and the rotation, Show Color, Link to Layout, Save
+    /// Options and the Selected Defaults.
+    #[serde(default)]
+    pub spec: crate::defaults::views::PlanViewSpec,
 }
 
 impl SavedPlanView {
@@ -504,6 +509,7 @@ impl SavedPlanView {
             camera: None,
             dimension_defaults: String::new(),
             text_style: String::new(),
+            spec: crate::defaults::views::PlanViewSpec::default(),
         }
     }
 

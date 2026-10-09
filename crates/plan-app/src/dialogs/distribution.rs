@@ -69,10 +69,6 @@ struct Form {
     item_size: [f64; 3],
     spacing: f64,
     options: DistOptions,
-    /// The options the record had when the window opened, `None` for a
-    /// record that still uses its older settings.
-    original: Option<DistOptions>,
-    original_spacing: f64,
     copies: usize,
     fields: Fields,
 }
@@ -98,8 +94,6 @@ impl DistributionDialog {
                 item: d.item.clone(),
                 item_size: d.item_size,
                 spacing: d.spacing,
-                original: d.options.clone(),
-                original_spacing: d.spacing,
                 options,
                 copies: cx.project.distribution_copies(cx.floor, id),
                 fields: Fields::default(),
@@ -111,10 +105,12 @@ impl DistributionDialog {
         self.frame.show(ctx, &mut self.form)
     }
 
+    #[cfg(test)]
     pub fn options_mut(&mut self) -> &mut DistOptions {
         &mut self.form.options
     }
 
+    #[cfg(test)]
     pub fn set_spacing(&mut self, spacing: f64) {
         self.form.spacing = spacing;
     }
@@ -347,10 +343,12 @@ pub fn open(cx: &EditorContext, id: Id) {
     }
 }
 
+#[cfg(test)]
 pub fn is_open() -> bool {
     DIALOG.with(|d| d.borrow().is_some())
 }
 
+#[cfg(test)]
 pub fn close() {
     DIALOG.with(|d| *d.borrow_mut() = None);
 }

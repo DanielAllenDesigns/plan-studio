@@ -1,47 +1,100 @@
-//! The small floor dialogs: Build New Floor, Build Foundation, the Delete
-//! Current Floor confirmation (R-59..R-63) and the Floor Defaults and
-//! Reference Display dialogs (R-56, R-65), which have their own modules.
+//! The small floor dialogs: Build New Floor and Insert New Floor, Build
+//! Foundation and the Foundation Defaults, the Delete Current Floor
+//! confirmation (R-59..R-63, R-119..R-121, R-129..R-134) and the Floor
+//! Defaults and Reference Display dialogs (R-56, R-65), which have their own
+//! modules.
 
 use super::floor_defaults::{FloorDefaultsDialog, FloorDefaultsTarget};
+use super::foundation::FoundationForm;
 use super::reference_display::{self, ReferenceDisplayDialog};
-use super::{Fields, Outcome, ERROR_RED};
+use super::{Outcome, ERROR_RED};
 use crate::editor::rooms_edit::{self, FoundationSpec, NewFloorSpec};
 use crate::editor::EditorContext;
 use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers, RichText};
+use plan_core::defaults::WallTypeDef;
 use plan_core::floors::{ordinal_floor_name, DeriveFrom, FloorPlacement};
 use plan_core::{FloorKind, PlanDefaults, Project};
 
+/// Whether Move Highest Floor's Roof Up can be ticked, and why not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoofChoice {
+    pub available: bool,
+    pub reason: &'static str,
+}
+
+impl RoofChoice {
+    /// Available only when roof planes are built on the highest floor and
+    /// neither the Auto Rebuild Roofs preference nor that roof's own switch
+    /// is on (manual p. 764).
+    pub fn of(project: &Project) -> Self {
+        let top = project
+            .floors
+            .iter()
+            .rposition(|f| f.kind == FloorKind::Normal && !f.is_cad_detail());
+        let Some(t) = top else {
+            return Self {
+                available: false,
+                reason: "There is no floor to move a roof from",
+            };
+        };
+        let set = crate::editor::roof_view::load(&project.floors[t]);
+        if set.planes.is_empty() {
+            return Self {
+                available: false,
+                reason: "No roof planes are built on the highest floor",
+            };
+        }
+        let auto = super::preferences::pages::current()
+            .architectural
+            .auto_rebuild_roofs
+            || set.settings.as_ref().is_some_and(|s| s.auto_rebuild);
+        if auto {
+            return Self {
+                available: false,
+                reason: "Not available while Auto Rebuild Roofs is on",
+            };
+        }
+        Self {
+            available: true,
+            reason: "",
+        }
+    }
+}
+
 /// Which floor dialog is open and its draft.
 pub enum FloorDialog {
-    /// Build New Floor (R-59): what to derive from the current floor, where
-    /// to put the new one, its heights, and a foundation if the plan has none.
+    /// Build New Floor or Insert New Floor (R-59, R-121): what to derive
+    /// from the current floor, where to put the new one, its heights, the
+    /// roof and elevation options, and a foundation if the plan has none.
     NewFloor {
         source: String,
         new: String,
         spec: NewFloorSpec,
+        /// Insert New Floor: the floor goes below the current one.
+        insert: bool,
+        roof: RoofChoice,
         /// The plan has no foundation floor, so one can be built too.
         can_build_foundation: bool,
         build_foundation: bool,
-        foundation: FoundationSpec,
-        fields: FieldsBox,
+        foundation: Box<FoundationForm>,
     },
     /// Floor Defaults of the active floor or of the plan (R-56).
     Defaults(Box<FloorDefaultsDialog>),
     /// Reference Display options (R-65).
     Reference(Box<ReferenceDisplayDialog>),
     BuildFoundation {
-        spec: FoundationSpec,
-        fields: FieldsBox,
+        form: Box<FoundationForm>,
+    },
+    /// Edit > Default Settings > Foundation > Edit: the same panels, and OK
+    /// changes no floor (manual p. 738).
+    FoundationDefaults {
+        form: Box<FoundationForm>,
     },
     ConfirmDelete {
         floor: String,
     },
 }
-
-/// The text buffers of the foundation dialog's length fields.
-#[derive(Default)]
-pub struct FieldsBox(Fields);
 
 /// The names Build New Floor offers: the floor it derives from and the one
 /// it creates ("1st Floor" and "2nd Floor").
@@ -68,35 +121,65 @@ impl FloorDialog {
             source,
             new,
             spec: NewFloorSpec::new(),
+            insert: false,
+            roof: RoofChoice::of(project),
             can_build_foundation: !project
                 .floors
                 .first()
                 .is_some_and(|f| f.kind == FloorKind::Foundation),
             build_foundation: false,
-            foundation: FoundationSpec::from_defaults(defaults),
-            fields: FieldsBox::default(),
+            foundation: Box::new(foundation_form(
+                FoundationSpec::from_defaults(defaults),
+                defaults,
+            )),
         }
+    }
+
+    /// Insert New Floor (manual p. 764): a floor below the floor at
+    /// `current`, derived from its walls.
+    pub fn insert_floor(project: &Project, current: usize, defaults: &PlanDefaults) -> Self {
+        let mut d = Self::new_floor(project, current, defaults);
+        if let FloorDialog::NewFloor {
+            spec,
+            insert,
+            can_build_foundation,
+            ..
+        } = &mut d
+        {
+            spec.place = FloorPlacement::Below;
+            *insert = true;
+            // The foundation goes in with Build New Floor, not here.
+            *can_build_foundation = false;
+        }
+        d
     }
 
     /// Floor Defaults of the active floor.
     pub fn defaults_for_floor(cx: &EditorContext) -> Self {
         let f = cx.floor();
-        FloorDialog::Defaults(Box::new(FloorDefaultsDialog::new(
-            FloorDefaultsTarget::ThisFloor(f.name.clone()),
-            f.ceiling_height,
-            f.settings.clone(),
-            room_type_names(&cx.defaults),
-        )))
+        FloorDialog::Defaults(Box::new(
+            FloorDefaultsDialog::new(
+                FloorDefaultsTarget::ThisFloor(f.name.clone()),
+                f.ceiling_height,
+                f.settings.clone(),
+                room_type_names(&cx.defaults),
+            )
+            .with_library(cx.project.assemblies.clone())
+            .with_moldings(crate::tools::molding::floor_molding_table(cx)),
+        ))
     }
 
     /// Floor Defaults of floors built from now on (Default Settings).
     pub fn defaults_for_plan(cx: &EditorContext) -> Self {
-        FloorDialog::Defaults(Box::new(FloorDefaultsDialog::new(
-            FloorDefaultsTarget::PlanDefaults,
-            cx.defaults.rooms.ceiling_height,
-            cx.defaults.rooms.floor.clone(),
-            room_type_names(&cx.defaults),
-        )))
+        FloorDialog::Defaults(Box::new(
+            FloorDefaultsDialog::new(
+                FloorDefaultsTarget::PlanDefaults,
+                cx.defaults.rooms.ceiling_height,
+                cx.defaults.rooms.floor.clone(),
+                room_type_names(&cx.defaults),
+            )
+            .with_library(cx.project.assemblies.clone()),
+        ))
     }
 
     /// The Reference Display dialog on the choices in force.
@@ -119,31 +202,55 @@ impl FloorDialog {
 
     /// Applies an accepted dialog to the plan.
     pub fn apply(self, cx: &mut EditorContext) {
+        let self_spec = self.new_floor_spec();
         match self {
-            FloorDialog::NewFloor { .. } => {
-                if let Some(spec) = self.new_floor_spec() {
+            FloorDialog::NewFloor { mut foundation, .. } => {
+                store_wall_types(cx, foundation.take_edited_types());
+                if let Some(spec) = self_spec {
                     rooms_edit::build_new_floor_with(cx, &spec);
                 }
             }
-            FloorDialog::BuildFoundation { spec, .. } => rooms_edit::build_foundation(cx, spec),
+            FloorDialog::BuildFoundation { mut form } => {
+                store_wall_types(cx, form.take_edited_types());
+                rooms_edit::build_foundation(cx, form.spec)
+            }
+            FloorDialog::FoundationDefaults { mut form } => {
+                store_wall_types(cx, form.take_edited_types());
+                let o = form.spec.to_options();
+                cx.defaults.foundation = o.settings;
+                cx.defaults.foundation_wall.height = form.spec.stem_height;
+                cx.mark_dirty();
+                cx.status = "Updated the Foundation Defaults".into();
+            }
             FloorDialog::ConfirmDelete { .. } => {
                 rooms_edit::delete_floor(cx);
             }
-            FloorDialog::Defaults(d) => match d.target() {
+            FloorDialog::Defaults(mut d) => match d.target() {
                 FloorDefaultsTarget::ThisFloor(_) => {
-                    rooms_edit::apply_floor_defaults(
-                        cx,
-                        d.ceiling_height(),
-                        d.settings().clone(),
-                        d.as_plan_default(),
-                    );
+                    let saved = d.take_saved();
+                    let moldings = d.changed_moldings().cloned();
+                    // The structure and the moldings are one undo step.
+                    cx.undo_group(|cx| {
+                        rooms_edit::apply_floor_defaults(
+                            cx,
+                            d.ceiling_height(),
+                            d.settings().clone(),
+                            d.as_plan_default(),
+                        );
+                        if let Some(table) = moldings {
+                            crate::tools::molding::set_floor_molding_table(cx, table);
+                        }
+                    });
+                    store_saved_assemblies(cx, saved);
                 }
                 FloorDefaultsTarget::PlanDefaults => {
+                    let saved = d.take_saved();
                     rooms_edit::set_plan_floor_defaults(
                         cx,
                         d.ceiling_height(),
                         d.settings().clone(),
                     );
+                    store_saved_assemblies(cx, saved);
                     cx.status = "Updated the defaults for new floors".into();
                 }
             },
@@ -160,11 +267,13 @@ impl FloorDialog {
                 build_foundation,
                 foundation,
                 can_build_foundation,
+                roof,
                 ..
             } => {
                 let mut spec = spec.clone();
                 spec.foundation =
-                    (*build_foundation && *can_build_foundation).then_some(*foundation);
+                    (*build_foundation && *can_build_foundation).then_some(foundation.spec);
+                spec.move_roof_up &= roof.available;
                 Some(spec)
             }
             _ => None,
@@ -173,8 +282,48 @@ impl FloorDialog {
 
     pub fn foundation(spec: FoundationSpec) -> Self {
         FloorDialog::BuildFoundation {
-            spec,
-            fields: FieldsBox::default(),
+            form: Box::new(FoundationForm::new(spec)),
+        }
+    }
+
+    /// Build Foundation on the Foundation Defaults and the plan's wall
+    /// types; a foundation already built opens on the choices it was built
+    /// with, so building again rebuilds it in place.
+    pub fn build_foundation(cx: &EditorContext) -> Self {
+        let mut spec = FoundationSpec::from_defaults(&cx.defaults);
+        if let Some(o) = cx
+            .project
+            .floors
+            .first()
+            .filter(|f| f.kind == FloorKind::Foundation)
+            .and_then(|f| f.settings.foundation_options)
+        {
+            spec.restore(&o);
+        }
+        spec.platform = cx
+            .project
+            .floors
+            .iter()
+            .find(|f| f.kind != FloorKind::Foundation)
+            .map_or(spec.platform, |f| f.settings.floor_structure_thickness);
+        FloorDialog::BuildFoundation {
+            form: Box::new(foundation_form(spec, &cx.defaults).with_wall_types(
+                cx.wall_types().to_vec(),
+                &cx.defaults.foundation_wall.wall_type,
+            )),
+        }
+    }
+
+    /// The Foundation Defaults dialog (Edit > Default Settings > Foundation).
+    pub fn foundation_defaults(cx: &EditorContext) -> Self {
+        FloorDialog::FoundationDefaults {
+            form: Box::new(
+                foundation_form(FoundationSpec::from_defaults(&cx.defaults), &cx.defaults)
+                    .with_wall_types(
+                        cx.wall_types().to_vec(),
+                        &cx.defaults.foundation_wall.wall_type,
+                    ),
+            ),
         }
     }
 
@@ -186,8 +335,10 @@ impl FloorDialog {
 
     fn title(&self) -> &'static str {
         match self {
+            FloorDialog::NewFloor { insert: true, .. } => "Insert New Floor",
             FloorDialog::NewFloor { .. } => "Build New Floor",
             FloorDialog::BuildFoundation { .. } => "Build Foundation",
+            FloorDialog::FoundationDefaults { .. } => "Foundation Defaults",
             FloorDialog::ConfirmDelete { .. } => "Delete Current Floor",
             FloorDialog::Defaults(_) => "Floor Defaults",
             FloorDialog::Reference(_) => "Reference Display",
@@ -200,21 +351,10 @@ impl FloorDialog {
                 build_foundation: true,
                 can_build_foundation: true,
                 foundation,
-                fields,
                 ..
-            } => {
-                if fields.0.any_invalid() {
-                    Some("Fix the highlighted field")
-                } else {
-                    foundation.error()
-                }
-            }
-            FloorDialog::BuildFoundation { spec, fields } => {
-                if fields.0.any_invalid() {
-                    Some("Fix the highlighted field")
-                } else {
-                    spec.error()
-                }
+            } => foundation.error(),
+            FloorDialog::BuildFoundation { form } | FloorDialog::FoundationDefaults { form } => {
+                form.error()
             }
             _ => None,
         }
@@ -239,16 +379,17 @@ impl FloorDialog {
             .pivot(Align2::CENTER_CENTER)
             .default_pos(ctx.screen_rect().center())
             .show(ctx, |ui| {
-                ui.set_min_width(380.0);
+                ui.set_min_width(420.0);
                 match self {
                     FloorDialog::NewFloor {
                         source,
                         new,
                         spec,
+                        insert,
+                        roof,
                         can_build_foundation,
                         build_foundation,
                         foundation,
-                        fields,
                     } => {
                         ui.label(RichText::new("Plan").strong());
                         ui.radio_value(
@@ -270,6 +411,28 @@ impl FloorDialog {
                             ui.checkbox(&mut spec.copy_rooms, "Copy room names and types");
                         });
                         ui.checkbox(&mut spec.copy_foundation, "Copy slab, pad and pier data");
+                        ui.add_space(4.0);
+                        ui.add_enabled(
+                            roof.available,
+                            egui::Checkbox::new(
+                                &mut spec.move_roof_up,
+                                "Move Highest Floor's Roof Up",
+                            ),
+                        )
+                        .on_disabled_hover_text(roof.reason)
+                        .on_hover_text("Roof planes on the highest floor rise with the new floor.");
+                        ui.checkbox(
+                            &mut spec.step_elevations,
+                            if *insert {
+                                "Step floor/ceiling elevations to match existing floors"
+                            } else {
+                                "Step floor/ceiling elevations to match existing floor"
+                            },
+                        )
+                        .on_hover_text(
+                            "Keep the ceiling heights of the existing floor by stepping the \
+                             new floor to match.",
+                        );
                         ui.add_space(4.0);
                         ui.label(RichText::new("Place").strong());
                         ui.horizontal(|ui| {
@@ -300,17 +463,16 @@ impl FloorDialog {
                             ui.add_space(4.0);
                             ui.checkbox(build_foundation, "Also build a foundation");
                             if *build_foundation {
-                                foundation_fields(ui, foundation, fields);
+                                foundation.show(ui);
                             }
                         }
                         ui.add_space(4.0);
                         ui.checkbox(&mut spec.attic, "Also build an attic floor");
                     }
                     FloorDialog::Defaults(_) | FloorDialog::Reference(_) => {}
-                    FloorDialog::BuildFoundation { spec, fields } => {
-                        foundation_fields(ui, spec, fields);
-                        ui.checkbox(&mut spec.garage_floor, "Build Garage Floor\u{2026}")
-                            .on_hover_text("Not stored by the model yet");
+                    FloorDialog::BuildFoundation { form }
+                    | FloorDialog::FoundationDefaults { form } => {
+                        form.show(ui);
                     }
                     FloorDialog::ConfirmDelete { floor } => {
                         ui.label(format!(
@@ -332,8 +494,23 @@ impl FloorDialog {
                     }
                 });
             });
+        // The Wall Type Definitions window an Edit button opened.
+        let editing = match self {
+            FloorDialog::BuildFoundation { form } | FloorDialog::FoundationDefaults { form } => {
+                form.child(ctx);
+                form.editing()
+            }
+            FloorDialog::NewFloor { foundation, .. } => {
+                foundation.child(ctx);
+                foundation.editing()
+            }
+            _ => false,
+        };
         if !open {
             outcome = Outcome::Cancel;
+        }
+        if editing {
+            return Outcome::Open;
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             outcome = Outcome::Cancel;
@@ -341,6 +518,28 @@ impl FloorDialog {
             outcome = Outcome::Ok;
         }
         outcome
+    }
+}
+
+/// The form of a Foundation dialog with the plan's wall types.
+fn foundation_form(spec: FoundationSpec, defaults: &PlanDefaults) -> FoundationForm {
+    FoundationForm::new(spec).with_wall_types(
+        defaults.wall_types.clone(),
+        &defaults.foundation_wall.wall_type,
+    )
+}
+
+/// Puts the wall types edited through a Foundation dialog's Edit buttons in
+/// the plan's defaults and registry.
+fn store_wall_types(cx: &mut EditorContext, edited: Vec<WallTypeDef>) {
+    for t in edited {
+        match cx.defaults.wall_types.iter_mut().find(|x| x.name == t.name) {
+            Some(slot) => *slot = t.clone(),
+            None => cx.defaults.wall_types.push(t.clone()),
+        }
+        if !cx.project.wall_types.is_empty() {
+            cx.project.register_wall_type(t);
+        }
     }
 }
 
@@ -369,10 +568,21 @@ fn apply_reference_display(cx: &mut EditorContext, d: &ReferenceDisplayDialog) {
     cx.status = "Updated the reference display".into();
 }
 
-/// The foundation type radios and the stem wall heights, shared by Build
-/// Foundation and the foundation option of Build New Floor.
-fn foundation_fields(ui: &mut egui::Ui, spec: &mut FoundationSpec, fields: &mut FieldsBox) {
-    super::foundation::build_options(ui, spec, &mut fields.0);
+/// Puts the definitions saved from a Material Layers window into the plan's
+/// library.
+fn store_saved_assemblies(
+    cx: &mut EditorContext,
+    saved: Vec<plan_core::assemblies::NamedAssembly>,
+) {
+    if saved.is_empty() {
+        return;
+    }
+    for n in saved {
+        cx.project
+            .assemblies
+            .save_named(n.kind, &n.name, n.assembly);
+    }
+    cx.mark_dirty();
 }
 
 #[cfg(test)]
@@ -593,5 +803,191 @@ mod tests {
         assert!(d.error().is_some());
         spec.kind = FoundationType::MonolithicSlab;
         assert!(FloorDialog::foundation(spec).error().is_none());
+    }
+
+    #[test]
+    fn move_roof_up_needs_roof_planes_and_no_auto_rebuild() {
+        let mut cx = cx_with_house();
+        // No roof built: not available.
+        let none = RoofChoice::of(&cx.project);
+        assert!(!none.available && none.reason.contains("No roof"));
+        // A plane on the top floor, Auto Rebuild Roofs off in the roof's own
+        // settings and in the preferences: available.
+        let plane = serde_json::json!({
+            "kind": "plane",
+            "id": 900,
+            "polygon3d": [[0.0, 100.0, 0.0], [240.0, 100.0, 0.0], [120.0, 140.0, -60.0]],
+            "pitch": 8.0,
+            "baseline": [[0.0, 0.0], [240.0, 0.0]],
+            "auto": false,
+        });
+        cx.floor_mut().roofs.push(plane);
+        cx.floor_mut().roofs.push(serde_json::json!({
+            "kind": "settings",
+            "auto_rebuild": true,
+        }));
+        let on = RoofChoice::of(&cx.project);
+        assert!(
+            !on.available && on.reason.contains("Auto Rebuild Roofs"),
+            "{on:?}"
+        );
+        cx.floor_mut().roofs.pop();
+        cx.floor_mut().roofs.push(serde_json::json!({
+            "kind": "settings",
+            "auto_rebuild": false,
+        }));
+        assert!(RoofChoice::of(&cx.project).available);
+        // The dialog only passes the option on when it is available.
+        let mut d = FloorDialog::new_floor(&cx.project, cx.floor, &cx.defaults);
+        if let FloorDialog::NewFloor { spec, .. } = &mut d {
+            spec.move_roof_up = true;
+        }
+        assert!(d.new_floor_spec().unwrap().move_roof_up);
+        let mut q = cx_with_house();
+        let mut d = FloorDialog::new_floor(&q.project, q.floor, &q.defaults);
+        if let FloorDialog::NewFloor { spec, .. } = &mut d {
+            spec.move_roof_up = true;
+        }
+        assert!(
+            !d.new_floor_spec().unwrap().move_roof_up,
+            "no planes, no move"
+        );
+        q.refresh();
+    }
+
+    #[test]
+    fn insert_new_floor_presets_below_and_names_itself() {
+        let cx = cx_with_house();
+        let d = FloorDialog::insert_floor(&cx.project, cx.floor, &cx.defaults);
+        assert_eq!(d.title(), "Insert New Floor");
+        let spec = d.new_floor_spec().unwrap();
+        assert_eq!(spec.place, FloorPlacement::Below);
+        assert!(
+            spec.foundation.is_none(),
+            "the foundation is built with Build New Floor"
+        );
+        let b = FloorDialog::new_floor(&cx.project, cx.floor, &cx.defaults);
+        assert_eq!(b.title(), "Build New Floor");
+    }
+
+    #[test]
+    fn the_foundation_defaults_dialog_changes_the_defaults_and_not_the_plan() {
+        let mut cx = cx_with_house();
+        let mut d = FloorDialog::foundation_defaults(&cx);
+        assert_eq!(d.title(), "Foundation Defaults");
+        if let FloorDialog::FoundationDefaults { form } = &mut d {
+            form.spec.settings.auto_rebuild = true;
+            form.spec.settings.foam_seal = true;
+            form.spec.min_stem_height = 18.0;
+            form.spec.stem_height = 60.0;
+        }
+        let floors = cx.project.floors.len();
+        d.apply(&mut cx);
+        assert_eq!(cx.project.floors.len(), floors, "no change to the model");
+        assert!(cx.defaults.foundation.auto_rebuild && cx.defaults.foundation.foam_seal);
+        assert_eq!(cx.defaults.foundation.min_height, 18.0);
+        assert_eq!(cx.defaults.foundation_wall.height, 60.0);
+        // Build Foundation starts from them.
+        let spec = FoundationSpec::from_defaults(&cx.defaults);
+        assert!(spec.settings.auto_rebuild);
+        assert_eq!(spec.min_stem_height, 18.0);
+    }
+
+    #[test]
+    fn build_foundation_makes_its_choices_the_defaults_and_reopens_on_them() {
+        let mut cx = cx_with_house();
+        let mut spec = FoundationSpec::from_defaults(&cx.defaults);
+        spec.stem_height = 80.0;
+        spec.settings.hang_platform = true;
+        spec.settings.rebar.use_mesh = false;
+        FloorDialog::foundation(spec).apply(&mut cx);
+        assert!(cx.defaults.foundation.hang_platform);
+        // The dialog on a plan with a foundation starts from what was built.
+        cx.defaults.foundation = plan_core::foundation::FoundationSettings::default();
+        let FloorDialog::BuildFoundation { form } = FloorDialog::build_foundation(&cx) else {
+            panic!("the Build Foundation dialog");
+        };
+        assert_eq!(form.spec.stem_height, 80.0);
+        assert!(form.spec.settings.hang_platform && !form.spec.settings.rebar.use_mesh);
+        assert_eq!(form.spec.kind, FoundationType::WallsWithFootings);
+    }
+
+    #[test]
+    fn both_foundation_panels_draw_for_every_type() {
+        let cx = cx_with_house();
+        let ctx = egui::Context::default();
+        for kind in FoundationType::ALL {
+            for panel in [
+                super::super::foundation::FoundationPanel::Foundation,
+                super::super::foundation::FoundationPanel::Options,
+            ] {
+                let mut d = FloorDialog::build_foundation(&cx);
+                if let FloorDialog::BuildFoundation { form } = &mut d {
+                    form.spec.kind = kind;
+                    form.panel = panel;
+                }
+                for _ in 0..2 {
+                    let mut out = Outcome::Cancel;
+                    let _ = ctx.run(egui::RawInput::default(), |ctx| out = d.show(ctx));
+                    assert_eq!(out, Outcome::Open, "{kind:?} {panel:?}");
+                }
+            }
+        }
+        // The Edit buttons open the Wall Type Definitions.
+        let FloorDialog::BuildFoundation { mut form } = FloorDialog::build_foundation(&cx) else {
+            panic!("the Build Foundation dialog");
+        };
+        assert!(form.open_edit());
+        assert!(form.editing());
+        let _ = ctx.run(egui::RawInput::default(), |ctx| form.child(ctx));
+    }
+
+    #[test]
+    fn deleting_floor_zero_is_refused_in_the_dialog_command_while_auto_rebuild_is_on() {
+        let mut cx = cx_with_house();
+        let mut spec = FoundationSpec::from_defaults(&cx.defaults);
+        spec.settings.auto_rebuild = true;
+        FloorDialog::foundation(spec).apply(&mut cx);
+        cx.floor = 0;
+        assert!(!rooms_edit::delete_floor(&mut cx));
+        assert!(
+            cx.status.contains("Auto Rebuild Foundation"),
+            "{}",
+            cx.status
+        );
+        assert_eq!(cx.project.floors.len(), 2);
+    }
+
+    #[test]
+    fn floor_defaults_keeps_the_moldings_and_the_fill_style_in_one_undo_step() {
+        let mut cx = cx_with_house();
+        let FloorDialog::Defaults(mut d) = FloorDialog::defaults_for_floor(&cx) else {
+            panic!("floor defaults");
+        };
+        d.moldings_mut()
+            .expect("this floor's moldings")
+            .add_new(plan_core::moldings::square_profile());
+        d.settings_mut().room_fill = Some(plan_core::extras::RoomFill {
+            color: [1, 2, 3],
+            pattern: "Hatch".into(),
+            alpha: 1.0,
+        });
+        let before = cx.undo_label().map(str::to_string);
+        FloorDialog::Defaults(d).apply(&mut cx);
+        assert!(!crate::tools::molding::floor_molding_table(&cx).is_empty());
+        assert_eq!(
+            cx.floor().settings.room_fill.as_ref().unwrap().pattern,
+            "Hatch"
+        );
+        // Rooms without a fill of their own draw with the floor's.
+        cx.refresh();
+        let room = cx.rooms[0].clone();
+        let fill = rooms_edit::fill_style(&cx, &room);
+        assert_eq!(fill.color, [1, 2, 3]);
+        // One step: undo takes both back.
+        cx.undo();
+        assert_eq!(cx.undo_label().map(str::to_string), before);
+        assert!(crate::tools::molding::floor_molding_table(&cx).is_empty());
+        assert!(cx.floor().settings.room_fill.is_none());
     }
 }

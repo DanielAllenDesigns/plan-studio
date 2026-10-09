@@ -554,8 +554,16 @@ impl MoldingEntry {
     fn shaped(&self) -> (Vec<ProfilePart>, f64, f64) {
         let (lo, hi) = self.profile.bounds();
         let (pw, ph) = (hi.x - lo.x, hi.y - lo.y);
-        let kx = if pw > MIN_EXTENT { self.width / pw } else { 1.0 };
-        let ky = if ph > MIN_EXTENT { self.height / ph } else { 1.0 };
+        let kx = if pw > MIN_EXTENT {
+            self.width / pw
+        } else {
+            1.0
+        };
+        let ky = if ph > MIN_EXTENT {
+            self.height / ph
+        } else {
+            1.0
+        };
         let (w, h) = (pw * kx, ph * ky);
         let centre = Point::new(w * 0.5, h * 0.5);
         let mut parts: Vec<ProfilePart> = self
@@ -647,7 +655,8 @@ impl ResolvedEntry {
     /// Length of a repeated element along the path, inches.
     pub fn element(&self) -> f64 {
         if self.element_length > 0.0 {
-            self.element_length.min(self.repeat_distance.max(self.element_length))
+            self.element_length
+                .min(self.repeat_distance.max(self.element_length))
         } else {
             self.repeat_distance * 0.5
         }
@@ -822,7 +831,9 @@ impl MoldingTable {
                 .collect();
             let total: f64 = heights.iter().sum();
             let first = &self.rows[g.start];
-            let base = first.vertical_position.unwrap_or_else(|| base_of(first, total));
+            let base = first
+                .vertical_position
+                .unwrap_or_else(|| base_of(first, total));
             let mut cursor = base;
             for (k, idx) in g.clone().enumerate() {
                 let row = &self.rows[idx];
@@ -968,7 +979,10 @@ pub fn cabinet_obstacles(floor: &Floor) -> Vec<Obstacle> {
     let mut out = Vec::new();
     for c in &floor.cabinets {
         // Cut Room Moldings off: room moldings run behind this cabinet.
-        if c.get("cut_room_moldings").and_then(serde_json::Value::as_bool) == Some(false) {
+        if c.get("cut_room_moldings")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+        {
             continue;
         }
         let kind = c.get("kind").and_then(|k| k.as_str()).unwrap_or("Base");
@@ -1268,7 +1282,9 @@ pub fn room_molding_lines(
         );
         for run in runs {
             let mut entry = row.clone();
-            entry.vertical_position = Some(0.0);
+            // The line's own elevation is the bottom of the stack: pin the
+            // row there (vertical positions are absolute, so `dz` stays 0).
+            entry.vertical_position = Some(datum + r.bottom);
             entry.stack = 0;
             out.push(MoldingLine {
                 polyline: run,
@@ -1325,7 +1341,7 @@ pub fn legacy_room_lines(
 }
 
 /// The room whose label anchor is `anchor` (or that contains it).
-pub fn room_at<'a>(rooms: &'a [Room], anchor: Point) -> Option<&'a Room> {
+pub fn room_at(rooms: &[Room], anchor: Point) -> Option<&Room> {
     rooms.iter().find(|r| {
         let poly = if r.inner_polygon.len() >= 3 {
             &r.inner_polygon
@@ -1548,8 +1564,18 @@ mod tests {
 
     #[test]
     fn a_stacked_profile_keeps_the_parts_relative_positions() {
-        let lower = vec![pt(10.0, 20.0), pt(12.0, 20.0), pt(12.0, 21.0), pt(10.0, 21.0)];
-        let upper = vec![pt(10.0, 21.0), pt(11.0, 21.0), pt(11.0, 23.0), pt(10.0, 23.0)];
+        let lower = vec![
+            pt(10.0, 20.0),
+            pt(12.0, 20.0),
+            pt(12.0, 21.0),
+            pt(10.0, 21.0),
+        ];
+        let upper = vec![
+            pt(10.0, 21.0),
+            pt(11.0, 21.0),
+            pt(11.0, 23.0),
+            pt(10.0, 23.0),
+        ];
         let p = ProfileDef::stacked(
             "Built-up",
             MoldingType::Crown,
@@ -1583,12 +1609,11 @@ mod tests {
     #[test]
     fn retain_aspect_ratio_links_width_and_height() {
         let mut e = MoldingEntry::new(
-            ProfileDef::from_polyline("w", MoldingType::Base, &[
-                pt(0.0, 0.0),
-                pt(2.0, 0.0),
-                pt(2.0, 4.0),
-                pt(0.0, 4.0),
-            ])
+            ProfileDef::from_polyline(
+                "w",
+                MoldingType::Base,
+                &[pt(0.0, 0.0), pt(2.0, 0.0), pt(2.0, 4.0), pt(0.0, 4.0)],
+            )
             .unwrap(),
         );
         assert_eq!((e.width, e.height), (2.0, 4.0));
@@ -1604,9 +1629,11 @@ mod tests {
 
     #[test]
     fn offsets_move_the_section_and_negative_recesses() {
-        let mut e = MoldingEntry::default();
-        e.h_offset = -0.25;
-        e.v_offset = 2.0;
+        let e = MoldingEntry {
+            h_offset: -0.25,
+            v_offset: 2.0,
+            ..Default::default()
+        };
         let parts = e.shaped_parts();
         let (lo, _) = bounds_of(parts[0].section.iter()).unwrap();
         assert!((lo.x + 0.25).abs() < 1e-9 && (lo.y - 2.0).abs() < 1e-9);
@@ -1625,7 +1652,10 @@ mod tests {
         let (parts, w, h) = e.shaped();
         assert!((w - 3.0).abs() < 1e-9 && (h - 1.0).abs() < 1e-9);
         // The long leg is still on the bottom; the point is now at x = 3.
-        assert!(parts[0].section.iter().any(|p| (p.x - 3.0).abs() < 1e-9 && p.y > 0.9));
+        assert!(parts[0]
+            .section
+            .iter()
+            .any(|p| (p.x - 3.0).abs() < 1e-9 && p.y > 0.9));
         assert!(polygon_area(&parts[0].section) > 0.0);
         e.reflect_h = false;
         e.rotation = 90.0;
@@ -1814,6 +1844,10 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].elevation, 0.0);
         assert!(lines[1].elevation > 90.0);
+        // The sweep stands at the line's elevation, not at the floor.
+        for l in &lines {
+            assert!(l.placed_parts().iter().all(|p| p.dz.abs() < 1e-9));
+        }
         assert!(lines.iter().all(|l| l.automatic));
         assert_eq!(lines[0].side, MoldingSide::Left);
         // Off for one row removes its lines.
@@ -1824,7 +1858,12 @@ mod tests {
 
     fn box_project() -> Project {
         let mut p = Project::new("t");
-        let c = [pt(0.0, 0.0), pt(240.0, 0.0), pt(240.0, 180.0), pt(0.0, 180.0)];
+        let c = [
+            pt(0.0, 0.0),
+            pt(240.0, 0.0),
+            pt(240.0, 180.0),
+            pt(0.0, 180.0),
+        ];
         for i in 0..4 {
             p.add_wall(0, c[i], c[(i + 1) % 4], 6.5, 96.0, WallKind::Exterior);
         }
@@ -1857,7 +1896,12 @@ mod tests {
         // A hand-drawn molding polyline of 100 + 50 inches, one edge off.
         let mut line = MoldingLine::with_profile(
             50,
-            vec![pt(10.0, 10.0), pt(110.0, 10.0), pt(110.0, 60.0), pt(10.0, 60.0)],
+            vec![
+                pt(10.0, 10.0),
+                pt(110.0, 10.0),
+                pt(110.0, 60.0),
+                pt(10.0, 60.0),
+            ],
             crown.clone(),
             30.0,
         );
@@ -1883,7 +1927,10 @@ mod tests {
         // Base and crown run all the way round the room; the polyline adds
         // 100 + 50 inches of crown.
         assert!((sum(INTERIOR_TRIM, &builtin_profiles()[0].name) - inner).abs() < 1.0);
-        assert!((sum(INTERIOR_TRIM, &crown.name) - inner - 150.0).abs() < 1.0, "{lines:?}");
+        assert!(
+            (sum(INTERIOR_TRIM, &crown.name) - inner - 150.0).abs() < 1.0,
+            "{lines:?}"
+        );
         // Four corner boards of two 96" boards, four quoin stacks of 96".
         assert!((sum(EXTERIOR_TRIM, "Corner Board") - 4.0 * 2.0 * 96.0).abs() < 1e-6);
         assert!((sum(EXTERIOR_TRIM, "Quoin") - 4.0 * 96.0).abs() < 1e-6);
@@ -1920,11 +1967,17 @@ mod tests {
         // A record that says Use Floor Default is the same; an own table wins.
         let mut layer = layer;
         layer.room_moldings_mut(pt(120.0, 90.0)).table.source = TableSource::UseFloorDefault;
-        assert_eq!(extended_room_lines(&floor, &layer, &rooms[0], 96.0, 0.0).len(), 1);
+        assert_eq!(
+            extended_room_lines(&floor, &layer, &rooms[0], 96.0, 0.0).len(),
+            1
+        );
         let mut own = MoldingTable::single(builtin_profiles()[0].clone());
         own.add_new(builtin_profiles()[1].clone());
         layer.room_moldings_mut(pt(120.0, 90.0)).table = own;
-        assert_eq!(extended_room_lines(&floor, &layer, &rooms[0], 96.0, 0.0).len(), 2);
+        assert_eq!(
+            extended_room_lines(&floor, &layer, &rooms[0], 96.0, 0.0).len(),
+            2
+        );
         // An empty own table: the room has no molding at all.
         layer.room_moldings_mut(pt(120.0, 90.0)).table = MoldingTable::default();
         assert!(extended_room_lines(&floor, &layer, &rooms[0], 96.0, 0.0).is_empty());
@@ -1936,15 +1989,25 @@ mod tests {
             room_type: "Den".into(),
             table: MoldingTable::single(builtin_profiles()[0].clone()),
         });
-        assert_eq!(default_table(&typed, "den").rows[0].profile.name, builtin_profiles()[0].name);
-        assert_eq!(default_table(&typed, "Bedroom").rows[0].profile.name, crown.name);
+        assert_eq!(
+            default_table(&typed, "den").rows[0].profile.name,
+            builtin_profiles()[0].name
+        );
+        assert_eq!(
+            default_table(&typed, "Bedroom").rows[0].profile.name,
+            crown.name
+        );
         assert!(default_table(&typed, "Garage").is_empty());
         assert!(default_table(&typed, "porch").is_empty());
         typed.type_moldings.push(TypeMoldings {
             room_type: "Garage".into(),
             table: MoldingTable::single(crown.clone()),
         });
-        assert_eq!(default_table(&typed, "Garage").len(), 1, "its own type table applies");
+        assert_eq!(
+            default_table(&typed, "Garage").len(),
+            1,
+            "its own type table applies"
+        );
         // A room with the older tab and no record is left to plan-3d.
         let mut floor = floor;
         floor.room_names[0].moldings.push(MoldingRef {

@@ -37,7 +37,6 @@ pub struct MaterialLayersDialog {
 }
 
 struct Form {
-    region: Id,
     structure: RegionStructure,
     cut_finish_layers: bool,
     wall: bool,
@@ -67,7 +66,6 @@ impl MaterialLayersDialog {
         Some(Self {
             frame: SpecDialog::new("Material Layers Definition", "material_layers"),
             form: Form {
-                region: id,
                 structure,
                 cut_finish_layers: r.cut_finish_layers,
                 wall: !r.is_floor(),
@@ -81,14 +79,17 @@ impl MaterialLayersDialog {
         self.frame.show(ctx, &mut self.form)
     }
 
+    #[cfg(test)]
     pub fn structure(&self) -> &RegionStructure {
         &self.form.structure
     }
 
+    #[cfg(test)]
     pub fn structure_mut(&mut self) -> &mut RegionStructure {
         &mut self.form.structure
     }
 
+    #[cfg(test)]
     pub fn set_cut_finish_layers(&mut self, on: bool) {
         self.form.cut_finish_layers = on;
     }
@@ -263,10 +264,12 @@ pub fn open(cx: &EditorContext, id: Id) {
     }
 }
 
+#[cfg(test)]
 pub fn is_open() -> bool {
     DIALOG.with(|d| d.borrow().is_some())
 }
 
+#[cfg(test)]
 pub fn close() {
     DIALOG.with(|d| *d.borrow_mut() = None);
 }

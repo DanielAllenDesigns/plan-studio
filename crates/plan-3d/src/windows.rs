@@ -5,7 +5,6 @@ use crate::builder::MeshSet;
 use crate::leaf::{Grid, Leaf};
 use crate::mesh::Material;
 use crate::opening::{ArchGeom, Ctx};
-use plan_core::opening_symbol::projection_footprint;
 use plan_core::openings::BayRoofKind;
 use plan_core::OpeningStyle;
 /// Sash thickness.
@@ -17,8 +16,6 @@ const PANEL_THICKNESS: f64 = 2.0;
 /// Seat board and roof slab thickness.
 const SEAT_THICKNESS: f64 = 1.5;
 const ROOF_THICKNESS: f64 = 2.0;
-/// Width from which a casement window has two sashes.
-const DOUBLE_CASEMENT_FROM: f64 = 48.0;
 
 fn lites(ctx: &Ctx) -> (u32, u32) {
     if ctx.opts.show_lites {
@@ -154,11 +151,25 @@ fn arched(ctx: &Ctx, set: &mut MeshSet, arch: &ArchGeom) {
 /// A casement: one sash, or two meeting at a post from 4' wide.
 fn casement(ctx: &Ctx, set: &mut MeshSet) {
     let h = ctx.hole;
-    if h.s1 - h.s0 >= DOUBLE_CASEMENT_FROM {
-        let mid = (h.s0 + h.s1) * 0.5;
+    let n = ctx.opening.casement_sashes();
+    if n >= 2 {
+        // Two or three sashes meeting at posts.
         let post = ctx.opening.extras.spec.mullion_width * 0.5;
-        flat_between(ctx, set, h.s0, mid, true, (leg(ctx, ctx.unit.left), post));
-        flat_between(ctx, set, mid, h.s1, true, (post, leg(ctx, ctx.unit.right)));
+        let step = (h.s1 - h.s0) / n as f64;
+        for k in 0..n {
+            let (a, b) = (h.s0 + step * k as f64, h.s0 + step * (k + 1) as f64);
+            let left = if k == 0 {
+                leg(ctx, ctx.unit.left)
+            } else {
+                post
+            };
+            let right = if k + 1 == n {
+                leg(ctx, ctx.unit.right)
+            } else {
+                post
+            };
+            flat_between(ctx, set, a, b, true, (left, right));
+        }
     } else {
         flat(ctx, set, true);
     }
@@ -248,20 +259,49 @@ fn panel(ctx: &Ctx, set: &mut MeshSet, leaf: &Leaf, len: f64, tt: (f64, f64), ro
     );
 }
 
-/// Bay (3 panels at 45 degrees), box (3 panels at 90 degrees) or bow (5
-/// segments on an arc), with a seat board and a small roof slab.
+/// Height of the skirt panel standing under a unit's window is from the
+/// unit's floor; the foundation under a unit on the first floor.
+fn foundation_under(ctx: &Ctx, set: &mut MeshSet, poly: &[(f64, f64)]) {
+    let bay = &ctx.opening.extras.spec.bay;
+    let first_floor = ctx.frame.point(0.0, 0.0, 0.0)[1].abs() < 1e-3;
+    if bay.foundation && bay.on_grade() && first_floor {
+        let concrete = set.material(Material::Concrete);
+        ctx.frame.prism(
+            concrete,
+            poly,
+            (-plan_core::openings::bay::FOUNDATION_DEPTH, 0.0),
+        );
+    }
+}
+
+/// A bay (three sections at the Bay Angle, 45 degrees to start with), a box
+/// (the same with 90 degree sides) or a bow (two to twenty sections on an
+/// arc): wall sections with a component window in each, floor and ceiling at
+/// the room's heights unless the unit has a raised floor or a lowered ceiling,
+/// a foundation under it on the first floor, and the roof its options ask for
+/// (manual pp. 604, 634 to 641).
 fn projecting(ctx: &Ctx, set: &mut MeshSet) {
     // Projects toward the exterior: away from the room-facing side.
     let sign = -ctx.interior.signum() * ctx.swing_sign();
     let (h0, h1) = (ctx.hole.s0, ctx.hole.s1);
-    let poly = projection_footprint(ctx.opening.style, h0, h1, sign * ctx.half(), sign);
+    let bay = &ctx.opening.extras.spec.bay;
+    let shape = plan_core::openings::bay::bay_shape(ctx.opening.style, h1 - h0, bay);
+    let poly: Vec<(f64, f64)> = shape
+        .outline
+        .iter()
+        .map(|p| (h0 + p.0, sign * ctx.half() + sign * p.1))
+        .collect();
     let n = poly.len() as f64;
     let centroid = (
         poly.iter().map(|p| p.0).sum::<f64>() / n,
         poly.iter().map(|p| p.1).sum::<f64>() / n,
     );
     let rows = lites(ctx).1;
-    for pair in poly.windows(2) {
+    let h = ctx.hole;
+    let floor_y = bay.floor_raise();
+    let ceiling_y = (ctx.wall.height - bay.ceiling_drop()).max(h.h1);
+    let sections = poly.len() - 1;
+    for (i, pair) in poly.windows(2).enumerate() {
         let (p, q) = (pair[0], pair[1]);
         let len = (q.0 - p.0).hypot(q.1 - p.1);
         if len < 1e-6 {
@@ -276,13 +316,81 @@ fn projecting(ctx: &Ctx, set: &mut MeshSet) {
         } else {
             (0.0, PANEL_THICKNESS)
         };
-        panel(ctx, set, &leaf, len, tt, rows);
+        // The component window between its trimmers; the rest is wall.
+        let span = plan_core::openings::bay::component_span(
+            &shape.sections[i],
+            i == 0,
+            i + 1 == sections,
+            bay,
+        );
+        match span {
+            Some((a, b)) => {
+                let comp = Leaf::new(leaf.st(a, 0.0), (q.0 - p.0, q.1 - p.1));
+                panel(ctx, set, &comp, b - a, tt, rows);
+                if a > 1e-6 {
+                    leaf.boxed(
+                        &ctx.frame,
+                        set.material(Material::WallExterior),
+                        (0.0, a),
+                        tt,
+                        (h.h0, h.h1),
+                    );
+                }
+                if len - b > 1e-6 {
+                    leaf.boxed(
+                        &ctx.frame,
+                        set.material(Material::WallExterior),
+                        (b, len),
+                        tt,
+                        (h.h0, h.h1),
+                    );
+                }
+            }
+            None => leaf.boxed(
+                &ctx.frame,
+                set.material(Material::WallExterior),
+                (0.0, len),
+                tt,
+                (h.h0, h.h1),
+            ),
+        }
+        // The wall under and over the window: the skirt down to the unit's
+        // floor and the header up to its ceiling.
+        if h.h0 - floor_y > 1e-6 {
+            leaf.boxed(
+                &ctx.frame,
+                set.material(Material::WallExterior),
+                (0.0, len),
+                tt,
+                (floor_y, h.h0),
+            );
+        }
+        if ceiling_y - h.h1 > 1e-6 {
+            leaf.boxed(
+                &ctx.frame,
+                set.material(Material::WallExterior),
+                (0.0, len),
+                tt,
+                (h.h1, ceiling_y),
+            );
+        }
     }
-    let h = ctx.hole;
     let trim = set.material(Material::Trim);
     ctx.frame.prism(trim, &poly, (h.h0 - SEAT_THICKNESS, h.h0));
-    // A small hip or shed roof over the unit, a flat slab, or none (RF-29,
-    // the Options tab's Bay Roof).
+    // The unit's floor and ceiling sit at the room's heights, or raised and
+    // lowered.
+    let floor = set.material(Material::Floor);
+    ctx.frame
+        .prism(floor, &poly, (floor_y - SEAT_THICKNESS, floor_y));
+    let ceiling = set.material(Material::Ceiling);
+    ctx.frame
+        .prism(ceiling, &poly, (ceiling_y - 0.5, ceiling_y));
+    foundation_under(ctx, set, &poly);
+    // A hip roof by default, with the options of the Bay Roof; a flat slab, or
+    // none (RF-29). Using the existing roof leaves it to the roof builder.
+    if !bay.builds_own_roof() {
+        return;
+    }
     let options = &ctx.opening.extras.spec.bay_roof;
     let kind = options
         .kind
@@ -290,9 +398,21 @@ fn projecting(ctx: &Ctx, set: &mut MeshSet) {
     if kind == BayRoofKind::None {
         return;
     }
-    if !crate::roof::bay_roof_into(set, &ctx.frame, &poly, h.h1, ctx.opening.style, options) {
+    let roof_poly: Vec<(f64, f64)> = plan_core::openings::bay::roof_footprint(&shape, bay)
+        .iter()
+        .map(|p| (h0 + p.0, sign * ctx.half() + sign * p.1))
+        .collect();
+    if !crate::roof::bay_roof_into(
+        set,
+        &ctx.frame,
+        &roof_poly,
+        ceiling_y,
+        ctx.opening.style,
+        options,
+    ) {
         let roof = set.material(Material::Roof);
-        ctx.frame.prism(roof, &poly, (h.h1, h.h1 + ROOF_THICKNESS));
+        ctx.frame
+            .prism(roof, &roof_poly, (ceiling_y, ceiling_y + ROOF_THICKNESS));
     }
 }
 

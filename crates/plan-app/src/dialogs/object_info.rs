@@ -14,10 +14,13 @@
 //! writes the session when OK is pressed ([`after_apply`]), so the panels and
 //! the dialog are one undo step.
 
+use super::common_pages::{self, Kind, Placement};
 use super::{row, section};
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Ui};
+use plan_core::elevation_ref::ElevationRef;
 use plan_core::materials_data::{ExtraComponent, ObjectInfo, CATEGORIES};
+use plan_core::object_pages::{LabelFacts, ObjectPages};
 use plan_docs::materials::list::{self, BaseComponent, Calc};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -45,6 +48,14 @@ pub struct InfoSession {
     selected: usize,
     /// The plan's user text macros, for the Insert Macro menus.
     macros: Vec<String>,
+    /// The kind of object, which decides the shared panels it takes.
+    kind: Option<Kind>,
+    /// The Label, Schedule, Manufacturer panels and the elevation reference
+    /// as stored, and as being edited.
+    original_pages: ObjectPages,
+    pub pages: ObjectPages,
+    /// What the Label panel's macros can report about the object.
+    facts: LabelFacts,
 }
 
 /// A session shared between the host that applies it and the frame that
@@ -61,6 +72,12 @@ impl InfoSession {
         };
         let base = list::object_components(&c, floor, &key);
         let original = cx.project.materials.info(&key).cloned().unwrap_or_default();
+        let kind = Kind::of_key(&key);
+        let pages = cx.project.props.pages_of(&key).cloned().unwrap_or_default();
+        let mut facts = common_pages::describe(&cx.project, &key)
+            .map(|d| d.facts)
+            .unwrap_or_default();
+        common_pages::with_info(&cx.project, &key, &mut facts);
         Self {
             key,
             floor,
@@ -69,7 +86,26 @@ impl InfoSession {
             base,
             selected: 0,
             macros: user_macro_names(&cx.project),
+            kind,
+            original_pages: pages.clone(),
+            pages,
+            facts,
         }
+    }
+
+    /// Does the object have a height field an Elevation Reference widget can
+    /// sit beside?
+    pub fn takes_elevation(&self) -> bool {
+        self.kind.is_some_and(Kind::takes_elevation)
+    }
+
+    /// What the object's height is measured from, as being edited.
+    pub fn elevation(&self) -> ElevationRef {
+        self.pages.elevation_or_default()
+    }
+
+    pub fn set_elevation(&mut self, r: ElevationRef) {
+        self.pages.elevation = Some(r);
     }
 
     /// A session for `o` of the active floor; `None` for the objects that
@@ -84,6 +120,16 @@ impl InfoSession {
         let mut a = self.draft.clone();
         a.prune();
         let mut b = self.original.clone();
+        b.prune();
+        a != b || self.pages_changed()
+    }
+
+    /// Has a shared panel (Label, Schedule, Manufacturer, Elevation) been
+    /// changed?
+    pub fn pages_changed(&self) -> bool {
+        let mut a = self.pages.clone();
+        a.prune();
+        let mut b = self.original_pages.clone();
         b.prune();
         a != b
     }
@@ -215,7 +261,9 @@ impl InfoSession {
                 .objects
                 .insert(self.key.clone(), d.clone());
         }
-        project.materials.objects.get(&self.key).cloned() != before
+        let info = project.materials.objects.get(&self.key).cloned() != before;
+        let pages = project.props.set_pages(&self.key, self.pages.clone());
+        info || pages
     }
 }
 
@@ -321,6 +369,104 @@ pub fn tab_names(existing: &[&str]) -> (String, String) {
         }
     };
     (pick("Components"), pick("Object Information"))
+}
+
+/// A panel the frame adds to the dialogs of a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Components,
+    Info,
+    Label,
+    Schedule,
+    Manufacturer,
+}
+
+/// One tab the frame adds after the dialog's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommonTab {
+    pub page: Page,
+    pub name: String,
+}
+
+/// The tabs the frame adds to a dialog that has the tabs `existing`: the
+/// Components and Object Information tabs, then the shared Label, Schedule
+/// and Manufacturer panels the object's kind takes. A shared panel whose
+/// name the dialog already uses is not a tab: [`appended`] says what to draw
+/// under the dialog's own tab instead.
+pub fn tabs(s: &InfoSession, existing: &[&str]) -> Vec<CommonTab> {
+    let (comp, info) = tab_names(existing);
+    let mut v = vec![
+        CommonTab {
+            page: Page::Components,
+            name: comp,
+        },
+        CommonTab {
+            page: Page::Info,
+            name: info,
+        },
+    ];
+    for (page, name) in [
+        (Page::Label, "Label"),
+        (Page::Schedule, "Schedule"),
+        (Page::Manufacturer, "Manufacturer"),
+    ] {
+        if takes(s, page) && !existing.contains(&name) {
+            v.push(CommonTab {
+                page,
+                name: name.to_string(),
+            });
+        }
+    }
+    v
+}
+
+/// Does the session's object take the shared panel `page`?
+fn takes(s: &InfoSession, page: Page) -> bool {
+    let Some(k) = s.kind else {
+        return false;
+    };
+    match page {
+        Page::Components | Page::Info => true,
+        Page::Label => k.takes_label(),
+        Page::Schedule => k.takes_schedule(),
+        Page::Manufacturer => k.takes_manufacturer(),
+    }
+}
+
+/// The shared panel to draw under the dialog's own tab called `tab`, for a
+/// dialog that has one of that name.
+pub fn appended(s: &InfoSession, tab: &str) -> Option<Page> {
+    let page = match tab {
+        "Label" => Page::Label,
+        "Schedule" => Page::Schedule,
+        _ => return None,
+    };
+    takes(s, page).then_some(page)
+}
+
+/// Draws one shared panel.
+pub fn draw_page(ui: &mut Ui, s: &mut InfoSession, page: Page, placement: Placement) {
+    match page {
+        Page::Components => components_page(ui, s),
+        Page::Info => info_page(ui, s),
+        Page::Label => {
+            let Some(kind) = s.kind else { return };
+            let mut p = s.pages.label_or_default();
+            let user = s.macros.clone();
+            common_pages::label_panel(ui, &mut p, &s.facts, kind, placement, &user);
+            s.pages.label = Some(p);
+        }
+        Page::Schedule => {
+            let mut p = s.pages.schedule_or_default();
+            common_pages::schedule_panel(ui, &mut p, placement);
+            s.pages.schedule = Some(p);
+        }
+        Page::Manufacturer => {
+            let mut p = s.pages.manufacturer_or_default();
+            common_pages::manufacturer_panel(ui, &mut p);
+            s.pages.manufacturer = Some(p);
+        }
+    }
 }
 
 fn text_with_macro(ui: &mut Ui, label: &str, value: &mut String, project_macros: &[String]) {

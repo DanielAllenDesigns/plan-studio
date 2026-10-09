@@ -3,8 +3,7 @@
 //! pp. 477, 479 to 480, 489 to 491, in our own words).
 
 use crate::units::{
-    format_length, LengthFormat, LengthUnit, CM_PER_INCH, INCHES_PER_FOOT, MM_PER_INCH,
-    M_PER_INCH,
+    format_length, LengthFormat, LengthUnit, CM_PER_INCH, INCHES_PER_FOOT, MM_PER_INCH, M_PER_INCH,
 };
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +134,9 @@ impl Default for DimLabelOptions {
 pub fn step_inches(f: &LengthFormat) -> f64 {
     let dec = 10f64.powi(-(f.decimals.min(12) as i32));
     match f.unit {
-        LengthUnit::FeetInches | LengthUnit::Inches => 1.0 / f64::from(f.fraction_denominator.max(1)),
+        LengthUnit::FeetInches | LengthUnit::Inches => {
+            1.0 / f64::from(f.fraction_denominator.max(1))
+        }
         LengthUnit::DecimalFeet => dec * INCHES_PER_FOOT,
         LengthUnit::Millimeters => dec / MM_PER_INCH,
         LengthUnit::Centimeters => dec / CM_PER_INCH,
@@ -178,7 +179,11 @@ pub fn indicators(truth: f64, shown: f64, step: f64, after: bool, tilde: bool) -
     }
     let prefix = if tilde { "~" } else { "" }.to_string();
     let suffix = if after {
-        if diff > 0.0 { "+" } else { "-" }
+        if diff > 0.0 {
+            "+"
+        } else {
+            "-"
+        }
     } else {
         ""
     }
@@ -315,7 +320,10 @@ mod tests {
         assert_eq!(angle_text(90.0, 1, false), "90.0\u{b0}");
         assert_eq!(angle_text(33.25, 2, false), "33.25\u{b0}");
         assert_eq!(angle_text(33.5, 1, true), "33\u{b0}30'");
-        assert_eq!(angle_text(10.0 + 15.0 / 60.0 + 30.0 / 3600.0, 1, true), "10\u{b0}15'30\"");
+        assert_eq!(
+            angle_text(10.0 + 15.0 / 60.0 + 30.0 / 3600.0, 1, true),
+            "10\u{b0}15'30\""
+        );
     }
 
     #[test]

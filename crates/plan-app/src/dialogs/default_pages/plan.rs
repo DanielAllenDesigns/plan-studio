@@ -50,6 +50,22 @@ pub fn general() -> PageSpec {
             )],
         )
         .section(
+            "Living Area",
+            vec![
+                F::pick(
+                    plan_core::living::LIVING_TO_KEY,
+                    "Living Area to",
+                    &["Outside Surface", "Outside of Main Layer"],
+                    "Outside Surface",
+                ),
+                F::flag(
+                    plan_core::living::SHOW_LIVING_LABEL_KEY,
+                    "Show Living Area Label",
+                    true,
+                ),
+            ],
+        )
+        .section(
             "Walls",
             vec![
                 F::flag(

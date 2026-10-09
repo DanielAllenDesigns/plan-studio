@@ -330,7 +330,7 @@ fn a_wall_type_fill_shows_in_the_plan_and_poche_goes_on_the_cut_walls_in_plan_an
 
     // The switch is per view: another saved plan view starts off.
     let views = sim.app.cx.project.plan_views.clone();
-    assert!(views.len() >= 1);
+    assert!(!views.is_empty());
     sim.undo();
     assert!(!crate::editor::render::poche_on(&sim.app.cx));
     assert_eq!(with_color(&sim.plan_shapes(), poche), 0);

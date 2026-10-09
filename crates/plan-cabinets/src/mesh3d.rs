@@ -270,7 +270,9 @@ impl<'a> Look<'a> {
         };
         let explicit = props.and_then(|p| p.percent_open);
         Look {
-            door: props.and_then(|p| p.door.as_ref()).unwrap_or(&cab.door_style),
+            door: props
+                .and_then(|p| p.door.as_ref())
+                .unwrap_or(&cab.door_style),
             drawer: props
                 .and_then(|p| p.drawer.as_ref())
                 .unwrap_or(&cab.drawer_style),
@@ -324,8 +326,8 @@ pub(crate) fn build_item(
                 );
             }
         }
-        FaceItem::Opening { .. } => shelves(b, ctx, rect, &look),
-        FaceItem::Rollout { .. } => shelves(b, ctx, rect, &look),
+        FaceItem::Opening { .. } => shelves(b, ctx, rect, &look, false),
+        FaceItem::Rollout { .. } => shelves(b, ctx, rect, &look, true),
         FaceItem::Drawer { .. } => drawer(b, ctx, rect, &look, true),
         FaceItem::FalseDrawer { .. } => drawer(b, ctx, rect, &look, false),
         FaceItem::DoubleDrawer { .. } | FaceItem::FalseDoubleDrawer { .. } => {
@@ -361,7 +363,11 @@ pub(crate) fn build_item(
                 rect,
                 &Panel {
                     thickness: look.door.thickness,
-                    profile: if blank { DoorProfile::Slab } else { look.door.profile },
+                    profile: if blank {
+                        DoorProfile::Slab
+                    } else {
+                        look.door.profile
+                    },
                     glass: !blank && look.door.glass,
                     material: plain_door,
                     rail: look.door.frame_width,
@@ -557,9 +563,21 @@ impl Builder {
             let kick = pick(cabinet.materials.toe_kick, Material::WallInterior);
             if feet == FootStyle::None || cabinet.accessories.retain_toe_kick {
                 // Along the front (and round an exposed end).
-                let x_lo = if ex_l && !opts.flat_sides { tk.depth } else { 0.0 };
-                let x_hi = if ex_r && !opts.flat_sides { w - tk.depth } else { w };
-                self.add_box([x_lo, (front - FRAME).max(0.0), 0.0], [x_hi, front, tk.height], kick);
+                let x_lo = if ex_l && !opts.flat_sides {
+                    tk.depth
+                } else {
+                    0.0
+                };
+                let x_hi = if ex_r && !opts.flat_sides {
+                    w - tk.depth
+                } else {
+                    w
+                };
+                self.add_box(
+                    [x_lo, (front - FRAME).max(0.0), 0.0],
+                    [x_hi, front, tk.height],
+                    kick,
+                );
                 if ex_l && !opts.flat_sides {
                     self.add_box(
                         [tk.depth, tk.depth, 0.0],
@@ -586,10 +604,9 @@ impl Builder {
                 self.feet(cabinet, front, tk.height);
             }
             // Closed toe / flat sides: the side panel runs to the floor.
-            for (exposed, mated, x0, x1) in [
-                (ex_l, ends.left, 0.0, st),
-                (ex_r, ends.right, w - st, w),
-            ] {
+            for (exposed, mated, x0, x1) in
+                [(ex_l, ends.left, 0.0, st), (ex_r, ends.right, w - st, w)]
+            {
                 let closed = opts.flat_sides && exposed
                     || opts.closed_toe && (exposed || (opts.closed_toe_always && mated));
                 if closed && !bay && !filler {
@@ -672,8 +689,16 @@ impl Builder {
             );
         }
         if cabinet.framed {
-            let ext_l = if x_lo == 0.0 { cabinet.stile_ext_left } else { 0.0 };
-            let ext_r = if x_hi == w { cabinet.stile_ext_right } else { 0.0 };
+            let ext_l = if x_lo == 0.0 {
+                cabinet.stile_ext_left
+            } else {
+                0.0
+            };
+            let ext_r = if x_hi == w {
+                cabinet.stile_ext_right
+            } else {
+                0.0
+            };
             self.add_box([x_lo - ext_l, cf - FRAME, z0], [x_lo + fw_l, cf, z1], wi);
             self.add_box([x_hi - fw_r, cf - FRAME, z0], [x_hi + ext_r, cf, z1], wi);
         }
@@ -908,7 +933,14 @@ fn front_panel(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), p: &Pan
         let bevel = p.bevel.clamp(0.0, 3.0).min(w / 3.0).min(h / 3.0);
         if bevel > 1e-6 {
             // The slab steps in toward its front face.
-            frame_box(b, f, (x0, x1), (z0, z1), (-thickness, -thickness * 0.45), material);
+            frame_box(
+                b,
+                f,
+                (x0, x1),
+                (z0, z1),
+                (-thickness, -thickness * 0.45),
+                material,
+            );
             frame_box(
                 b,
                 f,
@@ -995,7 +1027,7 @@ fn door(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), hinge: Hinge, 
             Hinge::Left => x0,
             Hinge::Right => x1,
         };
-        shelves(b, ctx, r, look);
+        shelves(b, ctx, r, look, false);
         with_frame(ctx, open_frame(ctx.frame, hx, hinge, look.swing))
     } else {
         with_frame(ctx, ctx.frame)
@@ -1084,18 +1116,21 @@ fn door_hardware(
         z1 - style.handle_from_top - half
     };
     let cz = cz.clamp(z0.min(z1), z1.max(z0));
-    handle(b, ctx.frame, style.handle, cx, cz, false, len, look.hardware);
+    handle(
+        b,
+        ctx.frame,
+        style.handle,
+        cx,
+        cz,
+        false,
+        len,
+        look.hardware,
+    );
 }
 
 /// A drawer front with its handle; shown open the drawer stands out of the
 /// cabinet with its box behind the front. A false drawer is the front only.
-fn drawer(
-    b: &mut Builder,
-    ctx: &FrontCtx,
-    rect: (f64, f64, f64, f64),
-    look: &Look,
-    real: bool,
-) {
+fn drawer(b: &mut Builder, ctx: &FrontCtx, rect: (f64, f64, f64, f64), look: &Look, real: bool) {
     let cab = ctx.cab;
     let style = look.drawer;
     let (rx0, rx1, rz0, rz1) = rect;
@@ -1175,7 +1210,8 @@ fn cutting_board(b: &mut Builder, ctx: &FrontCtx, rect: (f64, f64, f64, f64), lo
     );
     if open {
         // The board itself: a thick slab behind the front.
-        let (x0, x1, z0, z1) = overlay_rect(cab, rect, (ctx.z0, ctx.z1), ctx.frame.len, look.overlap);
+        let (x0, x1, z0, z1) =
+            overlay_rect(cab, rect, (ctx.z0, ctx.z1), ctx.frame.len, look.overlap);
         let length = (cab.depth - look.door.thickness - 2.0).max(6.0);
         frame_box(
             b,
@@ -1223,7 +1259,7 @@ fn drawer_box(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), look: &L
 /// ones as the item's Cabinet Shelf Specification says, roll-outs pulled out
 /// as far as the item is shown open. A roll-out item with no shelf
 /// specification holds one roll-out shelf per 13 inches (at least one).
-fn shelves(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), look: &Look) {
+fn shelves(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), look: &Look, rollout: bool) {
     let cab = ctx.cab;
     let (x0, x1, z0, z1) = r;
     let cf = ctx.carcass_y + cab.depth;
@@ -1234,14 +1270,32 @@ fn shelves(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), look: &Look
     }
     let default_spec;
     let spec = match look.props {
-        Some(p) => &p.shelves,
-        None => {
+        Some(p) if p.shelves.manual || !rollout => &p.shelves,
+        _ if rollout => {
+            // One roll-out shelf per 13 inches, each coming out 12 inches
+            // (or as far as the carcass allows).
+            let n = ((height / 13.0).round() as usize).max(1);
+            let mut spec = ShelfSpec::manual_of(n);
+            for sh in &mut spec.shelves {
+                sh.rollout = true;
+                sh.rollout_amount = 12.0_f64.min((cf - PANEL - 2.0).max(1.0));
+            }
+            spec.equalize(height);
+            default_spec = spec;
+            &default_spec
+        }
+        _ => {
             default_spec = ShelfSpec::default();
             &default_spec
         }
     };
     let wood = pick(cab.materials.carcass, Material::WallInterior);
-    for (k, s) in spec.place(height).into_iter().take(MAX_SHELVES.max(12)).enumerate() {
+    for (k, s) in spec
+        .place(height)
+        .into_iter()
+        .take(MAX_SHELVES.max(12))
+        .enumerate()
+    {
         let _ = k;
         let depth = s.depth.inches((cf - 0.5 - PANEL).max(1.0));
         let out = s.rollout.map_or(0.0, |amount| amount * look.roll);
@@ -1258,6 +1312,7 @@ fn shelves(b: &mut Builder, ctx: &FrontCtx, r: (f64, f64, f64, f64), look: &Look
 /// length. A library handle's size and angle (`hw`) replace the stock
 /// proportions: its depth is how far it stands out, and 90 or 270 degrees
 /// turn a pull across.
+#[allow(clippy::too_many_arguments)]
 fn handle(
     b: &mut Builder,
     f: Frame,
@@ -1278,12 +1333,7 @@ fn handle(
     };
     match style {
         HandleStyle::None => {}
-        HandleStyle::Knob => part(
-            b,
-            (cx - 0.5, cx + 0.5),
-            (cz - 0.5, cz + 0.5),
-            (0.0, proj),
-        ),
+        HandleStyle::Knob => part(b, (cx - 0.5, cx + 0.5), (cz - 0.5, cz + 0.5), (0.0, proj)),
         HandleStyle::Pull => {
             // A bar on two posts.
             let (a, bw) = (len / 2.0, 0.25);

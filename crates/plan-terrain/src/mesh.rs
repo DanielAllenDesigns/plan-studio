@@ -215,9 +215,10 @@ pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
         }
         if road.kind.is_outline_kind() || road.outline.len() >= 3 {
             let poly = road_polygon(road);
-            let mut ms: Vec<Mesh> = draped_region(&poly, &ground, ROAD_LIFT + road.to_top, material)
-                .into_iter()
-                .collect();
+            let mut ms: Vec<Mesh> =
+                draped_region(&poly, &ground, ROAD_LIFT + road.to_top, material)
+                    .into_iter()
+                    .collect();
             if road.curb {
                 ms.extend(polygon_curb(
                     &poly,
@@ -240,14 +241,23 @@ pub fn road_meshes(t: &Terrain, surface: &TerrainSurface) -> Vec<Mesh> {
         let Some(rows) = draped_rows(road, surface, cut_step, default_z, &|_| 0.0, lift) else {
             continue;
         };
-        let mut strip = strip_mesh(&rows, material, road.crown.max(0.0), road.thickness.max(0.0));
+        let mut strip = strip_mesh(
+            &rows,
+            material,
+            road.crown.max(0.0),
+            road.thickness.max(0.0),
+        );
         strip.object_id = id;
         meshes.push(strip);
         if road.curb {
-            let cut = |p: Point| {
-                road.cut_curb && crossings.iter().any(|poly| point_in_polygon(p, poly))
-            };
-            let mut curb = curb_mesh(&rows, road.curb_height.max(0.0), road.curb_width.max(1.0), &cut);
+            let cut =
+                |p: Point| road.cut_curb && crossings.iter().any(|poly| point_in_polygon(p, poly));
+            let mut curb = curb_mesh(
+                &rows,
+                road.curb_height.max(0.0),
+                road.curb_width.max(1.0),
+                &cut,
+            );
             curb.object_id = id;
             meshes.push(curb);
         }
@@ -274,9 +284,17 @@ fn median_meshes(t: &Terrain, road: &RoadStrip, ground: &Ground, material: Mater
     let base = road_lift_at(t, c).max(ROAD_LIFT);
     let curb_h = parent_curb.map_or(0.0, |r| r.curb_height.max(0.0));
     let lift = base + curb_h.max(MARKING_LIFT) + road.to_top;
-    let mut out: Vec<Mesh> = draped_region(&poly, ground, lift, material).into_iter().collect();
+    let mut out: Vec<Mesh> = draped_region(&poly, ground, lift, material)
+        .into_iter()
+        .collect();
     if let Some(r) = parent_curb {
-        out.extend(polygon_curb(&poly, ground, curb_h, r.curb_width.max(1.0), base));
+        out.extend(polygon_curb(
+            &poly,
+            ground,
+            curb_h,
+            r.curb_width.max(1.0),
+            base,
+        ));
     }
     out
 }
@@ -322,8 +340,14 @@ pub fn skirt_mesh(t: &Terrain, surface: &TerrainSurface) -> Option<Mesh> {
         let out = [d[1], 0.0, d[0]];
         let uv = |p: [f64; 3], z: f64| [(p[0] + p[2]) / 12.0, z / 12.0];
         let q = [
-            b.push(to_scene(Point::new(pa[0], pa[2]), bottom(pa[1])), uv(pa, bottom(pa[1]))),
-            b.push(to_scene(Point::new(pc[0], pc[2]), bottom(pc[1])), uv(pc, bottom(pc[1]))),
+            b.push(
+                to_scene(Point::new(pa[0], pa[2]), bottom(pa[1])),
+                uv(pa, bottom(pa[1])),
+            ),
+            b.push(
+                to_scene(Point::new(pc[0], pc[2]), bottom(pc[1])),
+                uv(pc, bottom(pc[1])),
+            ),
             b.push(to_scene(Point::new(pc[0], pc[2]), pc[1]), uv(pc, pc[1])),
             b.push(to_scene(Point::new(pa[0], pa[2]), pa[1]), uv(pa, pa[1])),
         ];
@@ -488,10 +512,7 @@ fn push_strip_sides(b: &mut MeshBuilder, rows: &[Row], thickness: f64) {
             .map(|r| {
                 let e = if side > 0.0 { r.left } else { r.right };
                 let uv = [0.0, r.along / 12.0];
-                [
-                    b.push([e[0], e[1] - thickness, e[2]], uv),
-                    b.push(e, uv),
-                ]
+                [b.push([e[0], e[1] - thickness, e[2]], uv), b.push(e, uv)]
             })
             .collect();
         let (l, r) = (rows[0].left, rows[0].right);
@@ -536,12 +557,7 @@ fn push_strip(b: &mut MeshBuilder, rows: &[Row], crown: f64) {
 }
 
 /// Raised curb blocks along both edges of the strip, inside the strip width.
-fn curb_mesh(
-    rows: &[Row],
-    curb_height: f64,
-    curb_width: f64,
-    cut: &dyn Fn(Point) -> bool,
-) -> Mesh {
+fn curb_mesh(rows: &[Row], curb_height: f64, curb_width: f64, cut: &dyn Fn(Point) -> bool) -> Mesh {
     let mut b = MeshBuilder::default();
     for side in [1.0, -1.0] {
         // Per row: outer bottom, outer top, inner top, inner bottom.

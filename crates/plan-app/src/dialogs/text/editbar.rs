@@ -249,6 +249,8 @@ pub struct EditBarState {
     pub list: ListKind,
     pub color: [u8; 3],
     pub font: String,
+    /// The Insert Macro menu of the plan (empty hides the button).
+    pub macros: Vec<plan_core::macros::MenuItem>,
 }
 
 /// What the bar needs to know about the text it edits.
@@ -269,6 +271,8 @@ enum Op {
     Tag(&'static str),
     List(ListKind),
     Link(String, String),
+    /// Insert Macro: type `%name%` at the cursor.
+    Macro(String),
 }
 
 /// Draws the Edit Bar and applies a click to `markup`. Returns true when
@@ -351,6 +355,13 @@ pub fn show(
                         st.link_addr.clear();
                     }
                 }
+            }
+        }
+        if !st.macros.is_empty() {
+            if let Some(m) =
+                crate::dialogs::text::macro_manager::insert_macro_button(ui, &st.macros)
+            {
+                op = Some(Op::Macro(m));
             }
         }
         ui.separator();
@@ -441,6 +452,10 @@ pub fn show(
             Op::Tag(t) => toggle_tag(markup, sel, t),
             Op::List(k) => set_list(markup, sel, k),
             Op::Link(t, a) => insert_hyperlink(markup, sel, &t, &a),
+            Op::Macro(m) => {
+                let (text, at) = crate::dialogs::text::macro_manager::insert_at(markup, sel, &m);
+                (text, (at, at))
+            }
         };
         *markup = m;
         st.sel = s;
@@ -482,9 +497,10 @@ mod tests {
 
     #[test]
     fn font_size_and_color_reach_the_runs() {
-        let (m, _) = set_font("Plan notes", (0, 4), "Avenir");
-        let (m, _) = set_size(&m, (0, 4), 9.0, 6.0);
-        let (m, _) = set_color(&m, (0, 4), [200, 0, 0]);
+        // Each button returns the selection that still covers the words.
+        let (m, sel) = set_font("Plan notes", (0, 4), "Avenir");
+        let (m, sel) = set_size(&m, sel, 9.0, 6.0);
+        let (m, _) = set_color(&m, sel, [200, 0, 0]);
         let runs = runs_from_markup(&m);
         let first = &runs[0];
         assert_eq!(first.text, "Plan");
@@ -546,6 +562,7 @@ mod tests {
             ..EditBarState::default()
         };
         let families = vec!["Avenir".to_string(), "Arial".to_string()];
+        st.macros = plan_core::macros::insert_menu(&plan_core::Project::new("x"));
         let env = BarEnv {
             base: 6.0,
             ipf: 0.25,

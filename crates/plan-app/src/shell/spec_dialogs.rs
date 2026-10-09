@@ -7,6 +7,7 @@
 //! its dialog; OK applies the draft as one undo step.
 
 use crate::dialogs::cabinet::CabinetDialog;
+use crate::dialogs::cabinet_multi::CabinetMultiDialog;
 use crate::dialogs::cad::CadDialog;
 use crate::dialogs::details::DetailsDialog;
 use crate::dialogs::dimension::{self, DimensionDialog};
@@ -35,6 +36,8 @@ use plan_core::Id;
 enum Active {
     Stair(Box<StairDialog>),
     Cabinet(Box<CabinetDialog>),
+    /// The Cabinet Specification over several selected cabinets (CB-631).
+    Cabinets(Box<CabinetMultiDialog>),
     Symbol(Box<SymbolDialog>),
     RoofPlane(Box<RoofPlaneDialog>),
     /// A dormer: its id, the plane it stands on and the dialog.
@@ -81,6 +84,13 @@ impl SpecDialogs {
     pub fn arm_main_props(&mut self, cx: &EditorContext, o: ObjectRef) {
         self.main_props = PropSession::for_object(cx, o);
         self.main_info = InfoSession::for_object(cx, o);
+    }
+
+    /// Test access to the shared panels (Components, Object Information,
+    /// Label, Schedule, Manufacturer, Elevation) of the open dialog.
+    #[cfg(test)]
+    pub fn info_session(&self) -> Option<&SharedInfo> {
+        self.info.as_ref()
     }
 
     /// The Materials List tabs armed for the hosted wall / opening dialog.
@@ -183,6 +193,39 @@ impl SpecDialogs {
         true
     }
 
+    /// The cabinets of the active floor that are all there is in the
+    /// selection, when it holds two or more cabinets and nothing else.
+    pub fn selected_cabinets(cx: &EditorContext) -> Option<Vec<Id>> {
+        let ids: Vec<Id> = cx
+            .selection
+            .items
+            .iter()
+            .map(|o| match o {
+                ObjectRef::Cabinet(id) => Some(*id),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        (ids.len() >= 2).then_some(ids)
+    }
+
+    /// Test access to the open one-cabinet Cabinet Specification.
+    #[cfg(test)]
+    pub fn cabinet_dialog_mut(&mut self) -> Option<&mut CabinetDialog> {
+        match self.active.as_mut()? {
+            Active::Cabinet(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open multi-cabinet Cabinet Specification.
+    #[cfg(test)]
+    pub fn cabinets_dialog_mut(&mut self) -> Option<&mut CabinetMultiDialog> {
+        match self.active.as_mut()? {
+            Active::Cabinets(d) => Some(d),
+            _ => None,
+        }
+    }
+
     /// The walls of the active floor that are all there is in the selection,
     /// when it holds two or more walls and nothing else.
     pub fn selected_walls(cx: &EditorContext) -> Option<Vec<Id>> {
@@ -226,8 +269,25 @@ impl SpecDialogs {
         let dialog = match o {
             ObjectRef::Stair(id) => stairs_view::find(cx.floor(), id)
                 .map(|s| Active::Stair(Box::new(StairDialog::new(s)))),
-            ObjectRef::Cabinet(id) => placed::cabinet_by_id(cx.floor(), id)
-                .map(|c| Active::Cabinet(Box::new(CabinetDialog::new(c)))),
+            ObjectRef::Cabinet(id) => match Self::selected_cabinets(cx).filter(|v| v.contains(&id))
+            {
+                // Open Object over several cabinets: one dialog, No Change
+                // where the values differ (CB-631).
+                Some(ids) => {
+                    let cabs: Vec<_> = ids
+                        .iter()
+                        .filter_map(|i| placed::cabinet_by_id(cx.floor(), *i))
+                        .collect();
+                    if cabs.len() >= 2 {
+                        Some(Active::Cabinets(Box::new(CabinetMultiDialog::new(cabs))))
+                    } else {
+                        placed::cabinet_by_id(cx.floor(), id)
+                            .map(|c| Active::Cabinet(Box::new(CabinetDialog::new(c))))
+                    }
+                }
+                None => placed::cabinet_by_id(cx.floor(), id)
+                    .map(|c| Active::Cabinet(Box::new(CabinetDialog::new(c)))),
+            },
             ObjectRef::Symbol(id) => cx.floor().symbol(id).cloned().map(|s| {
                 let paint = crate::tools::materials::symbol_material(&cx.project, s.id);
                 Active::Symbol(Box::new(
@@ -255,8 +315,10 @@ impl SpecDialogs {
             ObjectRef::Foundation(id) => {
                 let layer = foundation_view::load(cx);
                 layer.find(id).and_then(|r| {
-                    FoundationDialog::new(&layer, r, layer_names(cx))
-                        .map(|d| Active::Foundation(Box::new(d)))
+                    FoundationDialog::new(&layer, r, layer_names(cx)).map(|d| {
+                        let datums = crate::dialogs::foundation::datums_for(cx, &layer, r);
+                        Active::Foundation(Box::new(d.with_datums(datums)))
+                    })
                 })
             }
             ObjectRef::Detail(id) => {
@@ -270,11 +332,17 @@ impl SpecDialogs {
                 })
             }
             ObjectRef::Framing(id) => match framing_view::find(cx.floor(), id) {
-                Some(framing_view::Record::Manual(m) | framing_view::Record::Built(m)) => Some(
-                    Active::Framing(Box::new(FramingMemberDialog::new(&m, layer_names(cx)))),
-                ),
-                // Layout lines and markers have no specification.
-                _ => None,
+                Some(framing_view::Record::Manual(m)) => Some(Active::Framing(Box::new(
+                    FramingMemberDialog::new(&m, layer_names(cx)),
+                ))),
+                Some(framing_view::Record::Built(m)) => Some(Active::Framing(Box::new(
+                    FramingMemberDialog::new(&m, layer_names(cx)).for_built(),
+                ))),
+                // The Joist and Roof Truss Direction Lines have a Specification;
+                // markers, Bearing Lines and Truss Bases have none.
+                Some(r) => FramingMemberDialog::for_direction(&r)
+                    .map(|d| Active::Framing(Box::new(d))),
+                None => None,
             },
             ObjectRef::Device(id) => {
                 let layer = site_view::load_electrical(cx.floor());
@@ -356,6 +424,7 @@ impl SpecDialogs {
         let outcome = property_manager::with_current(self.props.as_ref(), || match &mut a {
             Active::Stair(d) => d.show(ctx),
             Active::Cabinet(d) => d.show(ctx),
+            Active::Cabinets(d) => d.show(ctx),
             Active::Symbol(d) => d.show(ctx),
             Active::RoofPlane(d) => d.show(ctx),
             Active::Dormer(_, _, d) => d.show(ctx),
@@ -402,6 +471,11 @@ fn apply(cx: &mut EditorContext, a: &Active) {
         }
         Active::Cabinet(d) => {
             placed::apply_cabinet(cx, d.draft());
+        }
+        Active::Cabinets(d) => {
+            if d.apply(cx) == 0 {
+                cx.status = "Cabinet Specification: nothing was changed".into();
+            }
         }
         Active::Symbol(d) => {
             // The Materials tab's paint joins the Specification's undo step.
@@ -461,7 +535,7 @@ fn apply(cx: &mut EditorContext, a: &Active) {
             }
         }
         Active::Framing(d) => {
-            framing_view::apply_edit(cx, d.draft().clone());
+            d.apply(cx);
         }
         Active::Device(id, d) => {
             let draft = d.draft().clone();

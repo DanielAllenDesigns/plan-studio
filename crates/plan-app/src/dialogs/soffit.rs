@@ -71,6 +71,7 @@ impl SoffitDialog {
         self.frame.show(ctx, &mut self.form)
     }
 
+    #[cfg(test)]
     pub fn draft_mut(&mut self) -> &mut Cabinet {
         &mut self.form.draft
     }
@@ -222,10 +223,12 @@ pub fn open(cx: &EditorContext, id: Id) {
     }
 }
 
+#[cfg(test)]
 pub fn is_open() -> bool {
     DIALOG.with(|d| d.borrow().is_some())
 }
 
+#[cfg(test)]
 pub fn close() {
     DIALOG.with(|d| *d.borrow_mut() = None);
 }

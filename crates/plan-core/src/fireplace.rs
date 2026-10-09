@@ -108,6 +108,10 @@ pub struct Firebox {
     pub depth: f64,
     /// Height of the bottom of the opening above the hearth top.
     pub raise: f64,
+    /// How far the firebox is moved from the center of the fireplace across
+    /// the front, inches; positive moves it to the right as seen from the
+    /// front, negative to the left (Firebox panel, Offset).
+    pub offset: f64,
 }
 
 impl Default for Firebox {
@@ -117,6 +121,7 @@ impl Default for Firebox {
             height: 30.0,
             depth: 18.0,
             raise: 0.0,
+            offset: 0.0,
         }
     }
 }
@@ -317,6 +322,19 @@ pub struct Fireplace {
     pub chimney: Chimney,
     pub materials: FireplaceMaterials,
     pub label: FireplaceLabel,
+    /// No Firebox: the fireplace is a solid block (checked for the base that
+    /// Build Foundation makes under a fireplace on Floor 1).
+    pub no_firebox: bool,
+    /// The fireplace on the floor above this block is the foundation of
+    /// (set on the fireplace bases Build Foundation makes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_of: Option<Id>,
+    /// Suppress Dimensions: leave the width and firebox width dimensions out
+    /// of the plan.
+    pub suppress_dimensions: bool,
+    /// The Rough Opening panel (as for a door): the opening the framer leaves
+    /// in the wall around a fireplace built into it.
+    pub rough: crate::openings::spec::RoughOpening,
 }
 
 impl Default for Fireplace {
@@ -359,6 +377,10 @@ impl Fireplace {
             chimney,
             materials: FireplaceMaterials::default(),
             label: FireplaceLabel::default(),
+            no_firebox: false,
+            base_of: None,
+            suppress_dimensions: false,
+            rough: crate::openings::spec::RoughOpening::default(),
         }
     }
 
@@ -388,6 +410,9 @@ impl Fireplace {
         let d = depth.max(6.0);
         if self.kind.has_firebox() {
             self.firebox.width = self.firebox.width.clamp(6.0, (w - 8.0).max(6.0));
+            // The firebox keeps a 4 in jamb on each side wherever it is moved.
+            let room = ((w - self.firebox.width) * 0.5 - 4.0).max(0.0);
+            self.firebox.offset = self.firebox.offset.clamp(-room, room);
             self.firebox.depth = self.firebox.depth.clamp(2.0, d);
             self.firebox.height = self.firebox.height.max(6.0);
             self.firebox.raise = self.firebox.raise.max(0.0);
@@ -480,30 +505,37 @@ pub fn body_poly(sym: &PlacedSymbol) -> Vec<Point> {
 /// Plan outline of the firebox opening: the recess cut into the front of
 /// the body.
 pub fn firebox_poly(fp: &Fireplace, sym: &PlacedSymbol) -> Vec<Point> {
+    if fp.no_firebox || !fp.kind.has_firebox() {
+        return Vec::new();
+    }
     let f = Frame::of(sym);
     let w = fp.firebox.width * 0.5;
     let d = fp.firebox.depth.min(sym.depth);
-    f.rect(-w, w, sym.depth - d, sym.depth)
+    let c = fp.firebox.offset;
+    f.rect(c - w, c + w, sym.depth - d, sym.depth)
 }
 
 /// Plan outline of the hearth, in front of the body.
 pub fn hearth_poly(fp: &Fireplace, sym: &PlacedSymbol) -> Vec<Point> {
-    if !fp.hearth.enabled || !fp.kind.has_firebox() {
+    if !fp.hearth.enabled || fp.hearth.projection <= 0.0 || !fp.kind.has_firebox() || fp.no_firebox
+    {
         return Vec::new();
     }
     let f = Frame::of(sym);
     let w = fp.firebox.width * 0.5 + fp.hearth.side_extension;
-    f.rect(-w, w, sym.depth, sym.depth + fp.hearth.projection)
+    let c = fp.firebox.offset;
+    f.rect(c - w, c + w, sym.depth, sym.depth + fp.hearth.projection)
 }
 
 /// Plan outline of the mantel shelf, which stands off the front of the body.
 pub fn mantel_poly(fp: &Fireplace, sym: &PlacedSymbol) -> Vec<Point> {
-    if !fp.mantel.enabled || !fp.kind.has_firebox() {
+    if !fp.mantel.enabled || !fp.kind.has_firebox() || fp.no_firebox {
         return Vec::new();
     }
     let f = Frame::of(sym);
     let w = fp.mantel_width() * 0.5;
-    f.rect(-w, w, sym.depth, sym.depth + fp.mantel.depth)
+    let c = fp.firebox.offset;
+    f.rect(c - w, c + w, sym.depth, sym.depth + fp.mantel.depth)
 }
 
 /// Plan outline of the chimney shaft: centered across the body and flush
@@ -521,13 +553,35 @@ pub fn chimney_poly(fp: &Fireplace, sym: &PlacedSymbol) -> Vec<Point> {
     f.rect(-w * 0.5, w * 0.5, 0.0, d)
 }
 
+/// The rough opening around an in-wall fireplace as a plan rectangle: the
+/// body grown by the Rough Opening panel's extra width at each side, across
+/// the front and the back. Empty when the panel adds nothing.
+pub fn rough_poly(fp: &Fireplace, sym: &PlacedSymbol) -> Vec<Point> {
+    if !fp.in_wall {
+        return Vec::new();
+    }
+    let b = fp.rough.extents(crate::model::OpeningKind::Door);
+    let (l, r) = (b.left, b.right);
+    if l <= 0.0 && r <= 0.0 {
+        return Vec::new();
+    }
+    let f = Frame::of(sym);
+    f.rect(-sym.width * 0.5 - l, sym.width * 0.5 + r, 0.0, sym.depth)
+}
+
 /// The intervals `(s0, s1)` along `wall` (from its start) that an in-wall
-/// fireplace replaces: where the wall's centerline runs through the body.
+/// fireplace replaces: where the wall's centerline runs through the body,
+/// widened by the rough opening.
 pub fn wall_cuts(fp: &Fireplace, sym: &PlacedSymbol, wall: &Wall) -> Vec<(f64, f64)> {
     if !fp.in_wall || wall.length() < 1.0 {
         return Vec::new();
     }
-    let body = body_poly(sym);
+    let rough = rough_poly(fp, sym);
+    let body = if rough.len() >= 3 {
+        rough
+    } else {
+        body_poly(sym)
+    };
     let dir = wall.direction();
     clip_line(&body, wall.start, dir)
         .into_iter()
@@ -536,6 +590,67 @@ pub fn wall_cuts(fp: &Fireplace, sym: &PlacedSymbol, wall: &Wall) -> Vec<(f64, f
             (s1 - s0 > 1.0).then_some((s0, s1))
         })
         .collect()
+}
+
+/// A dimension string the plan draws beside a fireplace: its overall width
+/// and its firebox width (Suppress Dimensions turns them off).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanDim {
+    pub from: Point,
+    pub to: Point,
+    pub text: String,
+    /// Which dimension this is.
+    pub kind: PlanDimKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanDimKind {
+    Width,
+    FireboxWidth,
+}
+
+/// The plan dimensions of a fireplace, drawn in front of it beyond its hearth
+/// and mantel: the firebox width nearer, the overall width outside it. None
+/// with Suppress Dimensions, for a chimney on its own and for a fireplace
+/// base.
+pub fn plan_dimensions(fp: &Fireplace, sym: &PlacedSymbol) -> Vec<PlanDim> {
+    if fp.suppress_dimensions || fp.kind == FireplaceKind::ChimneyOnly || fp.base_of.is_some() {
+        return Vec::new();
+    }
+    let f = Frame::of(sym);
+    let mut reach = 0.0_f64;
+    if fp.hearth.enabled && !fp.no_firebox {
+        reach = reach.max(fp.hearth.projection);
+    }
+    if fp.mantel.enabled && !fp.no_firebox {
+        reach = reach.max(fp.mantel.depth);
+    }
+    let near = sym.depth + reach + 6.0;
+    let mut out = Vec::new();
+    if fp.kind.has_firebox() && !fp.no_firebox {
+        let c = fp.firebox.offset;
+        let half = fp.firebox.width * 0.5;
+        out.push(PlanDim {
+            from: f.at(c - half, near),
+            to: f.at(c + half, near),
+            text: crate::units::fmt_ft_in(fp.firebox.width),
+            kind: PlanDimKind::FireboxWidth,
+        });
+    }
+    let far = near + 12.0;
+    out.push(PlanDim {
+        from: f.at(-sym.width * 0.5, far),
+        to: f.at(sym.width * 0.5, far),
+        text: crate::units::fmt_ft_in(sym.width),
+        kind: PlanDimKind::Width,
+    });
+    out
+}
+
+/// The plan footprint of the foundation block under a fireplace: the body
+/// (manual p. 758: the same size, no hearth).
+pub fn base_footprint(sym: &PlacedSymbol) -> Vec<Point> {
+    body_poly(sym)
 }
 
 /// The 3-2-10 rule. `roof` gives the height of the roof surface above a plan
@@ -618,6 +733,40 @@ fn grid_max(poly: &[Point], reach: f64, roof: &dyn Fn(Point) -> Option<f64>) -> 
 fn near_polygon(poly: &[Point], p: Point, reach: f64) -> bool {
     let n = poly.len();
     (0..n).any(|i| crate::geometry::dist_to_segment(p, poly[i], poly[(i + 1) % n]) <= reach)
+}
+
+// ----- copying a fireplace -----
+
+/// Key of the symbol option that carries a fireplace's record through a copy
+/// and paste (the record lives in [`Floor::fireplaces`], keyed by the id of
+/// the symbol, and a copy gets a new id).
+pub const RECORD_KEY: &str = "fireplace.record";
+
+impl Floor {
+    /// `sym` ready to be copied: a fireplace symbol with its record written
+    /// into its options, any other symbol as it is. [`Project::add_symbol`]
+    /// reads the record back for the copy.
+    pub fn symbol_for_copy(&self, sym: &PlacedSymbol) -> PlacedSymbol {
+        let mut out = sym.clone();
+        if is_fireplace_symbol(sym) {
+            if let Some(rec) = self.fireplaces.iter().find(|f| f.id == sym.id) {
+                if let Ok(json) = serde_json::to_string(rec) {
+                    out.options.insert(RECORD_KEY.to_string(), json);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Takes the carried record out of `sym.options` and returns it for the new
+/// id `id`; a copy of a generated foundation block stands alone.
+pub fn take_carried_record(sym: &mut PlacedSymbol, id: Id) -> Option<Fireplace> {
+    let json = sym.options.remove(RECORD_KEY)?;
+    let mut fp: Fireplace = serde_json::from_str(&json).ok()?;
+    fp.id = id;
+    fp.base_of = None;
+    Some(fp)
 }
 
 // ----- the records on a floor -----
@@ -917,5 +1066,19 @@ mod tests {
         let s = serde_json::to_string(&project).unwrap();
         let back: Project = serde_json::from_str(&s).unwrap();
         assert_eq!(back.floors[0].fireplaces.len(), 1);
+    }
+
+    #[test]
+    fn the_base_of_a_fireplace_has_its_footprint_at_its_place() {
+        let (p, id) = project_with_fireplace();
+        let sym = p.floors[0].symbol(id).unwrap();
+        assert_eq!(base_footprint(sym), body_poly(sym));
+        let mut turned = sym.clone();
+        turned.angle = 90.0;
+        let moved = base_footprint(&turned);
+        assert_eq!(moved.len(), 4);
+        assert!(moved
+            .iter()
+            .all(|q| q.dist(turned.position) < sym.width + sym.depth));
     }
 }

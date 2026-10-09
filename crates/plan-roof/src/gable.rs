@@ -216,7 +216,6 @@ pub fn roof_return_at(
     })
 }
 
-
 // ===================================================================
 // Gable/Roof Line objects (RF-44, RF-133..RF-136)
 // ===================================================================
@@ -488,6 +487,11 @@ fn minus_convex(subject: &[Point], clip: &[Point]) -> Vec<Vec<Point>> {
             break;
         }
         let (a, b) = (clip[k], clip[(k + 1) % m]);
+        // A zero-length edge (clipping leaves near-duplicate vertices) has
+        // no inside; skipping it keeps the whole of `rest` for the next edge.
+        if a.dist(b) < 1e-6 {
+            continue;
+        }
         let side = move |p: Point| b.sub(a).cross(p.sub(a));
         let outside = keep_nonnegative(&rest, &|p| -side(p));
         if outside.len() >= 3 && polygon_area(&outside).abs() > MIN_PIECE {
@@ -507,7 +511,8 @@ fn without_collinear(ring: &[Point]) -> Vec<Point> {
     (0..n)
         .filter(|&i| {
             let (a, b, c) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
-            b.sub(a).cross(c.sub(b)).abs() > 1e-6 * b.sub(a).length().max(1.0) * c.sub(b).length().max(1.0)
+            b.sub(a).cross(c.sub(b)).abs()
+                > 1e-6 * b.sub(a).length().max(1.0) * c.sub(b).length().max(1.0)
         })
         .map(|i| ring[i])
         .collect()
@@ -547,7 +552,12 @@ fn merge_convex(mut pieces: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
 
 /// The roof plane through `poly`'s plan outline, the first edge being the
 /// lowest level one (the eave), counter-clockwise from above.
-fn plane_over(poly: &[Point], height: &Affine, pitch: f64, source_edge: usize) -> Option<RoofPlane> {
+fn plane_over(
+    poly: &[Point],
+    height: &Affine,
+    pitch: f64,
+    source_edge: usize,
+) -> Option<RoofPlane> {
     let mut ring = geom::ccw(poly);
     ring.dedup_by(|a, b| a.dist(*b) < 1e-6);
     if ring.len() >= 2 && ring[0].dist(ring[ring.len() - 1]) < 1e-6 {
@@ -660,10 +670,26 @@ fn add_gable(
         }
         None
     };
+    // How far the roof runs unbroken from the midpoint along `n`.
+    let cover = |n: Point| {
+        let mut t = 0.0;
+        while t <= extent && surface_at(work, c.add(n.scale(t))).is_some() {
+            t += 1.0;
+        }
+        t
+    };
     let (n1, n2) = (u.perp(), u.perp().scale(-1.0));
     let n = match (reach(n1), reach(n2)) {
         (Some(a), Some(b)) => {
-            if a <= b {
+            if (a - b).abs() < 1e-9 {
+                // The line stands on the roof (on a wall face under the
+                // eave): the gable runs the way the roof is deeper.
+                if cover(n1) >= cover(n2) {
+                    n1
+                } else {
+                    n2
+                }
+            } else if a < b {
                 n1
             } else {
                 n2
@@ -1002,7 +1028,10 @@ mod tests {
             .iter()
             .flat_map(|p| p.polygon3d.iter().map(|v| v[1]))
             .fold(f64::MIN, f64::max);
-        assert!((top - (100.0 + 46.0 * 8.0 / 12.0)).abs() < 1e-6, "top {top}");
+        assert!(
+            (top - (100.0 + 46.0 * 8.0 / 12.0)).abs() < 1e-6,
+            "top {top}"
+        );
     }
 
     #[test]
@@ -1064,7 +1093,12 @@ mod tests {
     #[test]
     fn lines_that_miss_the_roof_are_skipped_and_two_lines_stack() {
         let roof = hip_roof();
-        let far = GableLine::new(Point::new(2000.0, 2000.0), Point::new(2060.0, 2000.0), 8.0, 16.0);
+        let far = GableLine::new(
+            Point::new(2000.0, 2000.0),
+            Point::new(2060.0, 2000.0),
+            8.0,
+            16.0,
+        );
         let out = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[far]);
         assert_eq!(out.skipped, vec![0]);
         assert_eq!(out.planes.len(), roof.planes.len());
@@ -1084,10 +1118,48 @@ mod tests {
     }
 
     #[test]
+    fn a_line_on_any_wall_face_runs_into_the_roof_whatever_its_direction() {
+        let roof = hip_roof();
+        // South wall face drawn west to east, north wall face east to west:
+        // both gables must run into the building, not out over the eave.
+        let south = GableLine::new(Point::new(200.0, 0.0), Point::new(260.0, 0.0), 8.0, 16.0);
+        let north = GableLine::new(
+            Point::new(260.0, 288.0),
+            Point::new(200.0, 288.0),
+            8.0,
+            16.0,
+        );
+        for (line, inward) in [(south, 1.0), (north, -1.0)] {
+            let out = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[line]);
+            assert!(out.skipped.is_empty());
+            let mut ys: Vec<f64> = Vec::new();
+            for (p, _) in out
+                .planes
+                .iter()
+                .zip(&out.origin)
+                .filter(|(_, o)| matches!(o, PlaneOrigin::Wing(0)))
+            {
+                ys.extend(p.polygon3d.iter().map(|v| -v[2]));
+            }
+            assert!(!ys.is_empty());
+            let reach = ys
+                .iter()
+                .map(|y| (y - line.a.y) * inward)
+                .fold(f64::MIN, f64::max);
+            assert!(reach > 20.0, "gable runs {reach}\" into the roof");
+        }
+    }
+
+    #[test]
     fn the_line_may_stand_outside_the_wall_like_a_porch_gable() {
         let roof = hip_roof();
         // 60" in front of the south eave line (y = -16), 120" wide.
-        let line = GableLine::new(Point::new(180.0, -60.0), Point::new(300.0, -60.0), 6.0, 12.0);
+        let line = GableLine::new(
+            Point::new(180.0, -60.0),
+            Point::new(300.0, -60.0),
+            6.0,
+            12.0,
+        );
         let out = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[line]);
         assert!(out.skipped.is_empty());
         let wing_area: f64 = out
@@ -1116,17 +1188,38 @@ mod tests {
                 thickness: 6.0,
             },
         ];
-        let ok = GableLine::new(Point::new(100.0, -40.0), Point::new(160.0, -40.0), 8.0, 16.0);
+        let ok = GableLine::new(
+            Point::new(100.0, -40.0),
+            Point::new(160.0, -40.0),
+            8.0,
+            16.0,
+        );
         assert_eq!(check_gable_line(&ok, &walls), Ok(0));
-        let tilted = GableLine::new(Point::new(100.0, -40.0), Point::new(160.0, -43.0), 8.0, 16.0);
+        let tilted = GableLine::new(
+            Point::new(100.0, -40.0),
+            Point::new(160.0, -43.0),
+            8.0,
+            16.0,
+        );
         assert_eq!(
             check_gable_line(&tilted, &walls),
             Err(GableLineProblem::NotParallel)
         );
-        let far = GableLine::new(Point::new(100.0, -200.0), Point::new(160.0, -200.0), 8.0, 16.0);
-        assert_eq!(check_gable_line(&far, &walls), Err(GableLineProblem::TooFar));
+        let far = GableLine::new(
+            Point::new(100.0, -200.0),
+            Point::new(160.0, -200.0),
+            8.0,
+            16.0,
+        );
+        assert_eq!(
+            check_gable_line(&far, &walls),
+            Err(GableLineProblem::TooFar)
+        );
         let short = GableLine::new(Point::new(0.0, -40.0), Point::new(5.0, -40.0), 8.0, 16.0);
-        assert_eq!(check_gable_line(&short, &walls), Err(GableLineProblem::TooShort));
+        assert_eq!(
+            check_gable_line(&short, &walls),
+            Err(GableLineProblem::TooShort)
+        );
         // On the Main Layer (an alcove cover): distance zero is fine.
         let flush = GableLine::new(Point::new(100.0, -3.0), Point::new(160.0, -3.0), 8.0, 16.0);
         assert_eq!(check_gable_line(&flush, &walls), Ok(0));
@@ -1151,7 +1244,11 @@ mod tests {
         // Two windows with a 24" gap share one gable; a 40" gap does not.
         let near = gable_lines_over_openings(&[span(60.0, 36.0), span(120.0, 36.0)], 8.0, 16.0);
         assert_eq!(near.len(), 1);
-        assert!((near[0].length() - 120.0).abs() < 1e-9, "{}", near[0].length());
+        assert!(
+            (near[0].length() - 120.0).abs() < 1e-9,
+            "{}",
+            near[0].length()
+        );
         let far = gable_lines_over_openings(&[span(60.0, 36.0), span(136.0, 36.0)], 8.0, 16.0);
         assert_eq!(far.len(), 2);
         // A different wall is a different gable.

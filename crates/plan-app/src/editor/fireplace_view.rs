@@ -27,7 +27,7 @@ use eframe::egui::{self, Color32, Pos2, Shape, Stroke};
 use plan_core::deck::offset_polygon;
 use plan_core::fireplace::{
     body_poly, chases_on_floor, chimney_poly, firebox_poly, hearth_poly, is_fireplace_symbol,
-    mantel_poly, Fireplace, FireplaceKind, Frame, FIREPLACE_LAYER,
+    mantel_poly, plan_dimensions, rough_poly, Fireplace, FireplaceKind, Frame, FIREPLACE_LAYER,
 };
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
 use plan_core::walls::WallClass;
@@ -139,10 +139,12 @@ fn host_wall(w: &Wall) -> bool {
 /// The placement for a fireplace of `kind` under the pointer at `p`.
 ///
 /// Near a wall (within the wall's half thickness plus a reach) the fireplace
-/// turns its back to the wall on the side of the pointer: beside the wall,
-/// its back flush with the wall face; or, for `in_wall`, with its front flush
-/// with that face and the body reaching through the wall. Elsewhere it stands
-/// free, centered on `p`, facing `free_angle`.
+/// turns its back to the wall: beside the wall, its back flush with the wall
+/// face on the side it faces; or, for `in_wall`, with its back flush with the
+/// outside of the wall and the body reaching through it (manual p. 757).
+/// It faces the side of the pointer, except that on an exterior wall it
+/// always faces the interior (DECISIONS 202 as corrected). Elsewhere it
+/// stands free, centered on `p`, facing `free_angle`.
 pub fn placement_at(
     floor: &Floor,
     p: Point,
@@ -179,23 +181,94 @@ pub fn placement_at(
         .dot(dir)
         .clamp(w * 0.5, (wall.length() - w * 0.5).max(w * 0.5));
     let foot = wall.start + dir * along;
-    let side = if (p - foot).dot(wall.normal()) >= 0.0 {
+    let mut side = if (p - foot).dot(wall.normal()) >= 0.0 {
         1.0
     } else {
         -1.0
     };
+    // On an exterior wall the fireplace always faces the room, whichever
+    // side the pointer is on (when the plan has a room to tell the sides by).
+    if wall.kind == plan_core::WallKind::Exterior {
+        if let Some(interior) = interior_side(floor, wall) {
+            side = interior;
+        }
+    }
     let n = wall.normal() * side;
     // The front faces the pointer's side: v = n, so u = v turned back 90.
     let u = Point::new(n.y, -n.x);
     let angle = u.y.atan2(u.x).to_degrees();
     let face = foot + n * (wall.thickness * 0.5);
-    let position = if in_wall { face - n * d } else { face };
+    // Built in: the back is flush with the far face, the front stands out
+    // into the room by what the body is deeper than the wall is thick.
+    let position = if in_wall {
+        foot - n * (wall.thickness * 0.5)
+    } else {
+        face
+    };
     Placement {
         position,
         angle,
         wall: Some(wall.id),
         in_wall,
     }
+}
+
+/// Which side of `wall` is the room: `1.0` for the +normal side, `-1.0` for
+/// the other; `None` when no room lies beside the wall to say.
+pub fn interior_side(floor: &Floor, wall: &Wall) -> Option<f64> {
+    let rooms = plan_core::rooms::detect_rooms(&floor.walls, 0.5);
+    let along = wall.path_length() * 0.5;
+    let mid = wall.point_along(along);
+    let reach = wall.thickness * 0.5 + 1.5;
+    let n = wall.normal_along(along);
+    let inside = |sign: f64| {
+        rooms
+            .iter()
+            .any(|r| point_in_polygon(mid + n * (sign * reach), &r.polygon))
+    };
+    match (inside(1.0), inside(-1.0)) {
+        (true, false) => Some(1.0),
+        (false, true) => Some(-1.0),
+        _ => None,
+    }
+}
+
+/// The Depth handle of a fireplace built into a wall (manual p. 757): drag it
+/// toward the outside of the wall and the fireplace slides that way, until
+/// the front of the fireplace is flush with the inside edge of the wall. The
+/// symbol after dragging from `start` to `to`; `None` for a fireplace that is
+/// not built into a wall, which resizes like any symbol.
+pub fn slide_in_wall(
+    floor: &Floor,
+    orig: &PlacedSymbol,
+    start: Point,
+    to: Point,
+) -> Option<PlacedSymbol> {
+    let in_wall = floor
+        .fireplace_symbols()
+        .iter()
+        .any(|(s, f)| s.id == orig.id && f.in_wall);
+    if !in_wall {
+        return None;
+    }
+    let frame = Frame::of(orig);
+    let middle = frame.at(0.0, orig.depth * 0.5);
+    let wall = floor
+        .walls
+        .iter()
+        .filter(|w| host_wall(w))
+        .map(|w| (dist_to_segment(middle, w.start, w.end), w))
+        .filter(|(d, _)| *d <= orig.depth * 0.5 + WALL_REACH)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, w)| w)?;
+    let dir = wall.direction();
+    let foot = wall.start + dir * (middle - wall.start).dot(dir).clamp(0.0, wall.length());
+    // The inside edge of the wall, along the fireplace's own depth axis.
+    let inside = (foot - frame.origin).dot(frame.v) + wall.thickness * 0.5;
+    let slid = (to - start).dot(frame.v).clamp(inside - orig.depth, 0.0);
+    let mut out = orig.clone();
+    out.position = frame.origin + frame.v * slid;
+    Some(out)
 }
 
 /// Places a fireplace of `kind` as one undo step and selects it.
@@ -405,9 +478,39 @@ fn x_lines(poly: &[Point]) -> [(Point, Point); 2] {
     [(poly[0], poly[2]), (poly[1], poly[3])]
 }
 
+/// A plan dimension string: the line, a tick at each end and the text above
+/// the middle.
+fn draw_dimension(
+    painter: &egui::Painter,
+    cam: &Camera,
+    a: &Point,
+    b: &Point,
+    text: &str,
+    stroke: Stroke,
+) {
+    let (pa, pb) = (sc(cam, *a), sc(cam, *b));
+    painter.line_segment([pa, pb], stroke);
+    let d = pb - pa;
+    if d.length() > 1.0 {
+        let n = egui::vec2(-d.y, d.x).normalized() * 4.0;
+        for p in [pa, pb] {
+            painter.line_segment([p - n, p + n], stroke);
+        }
+    }
+    painter.text(
+        pa + d * 0.5,
+        egui::Align2::CENTER_BOTTOM,
+        text,
+        egui::FontId::proportional(10.0),
+        stroke.color,
+    );
+}
+
 /// Draws the parts of the fireplaces of the active floor that the symbol
-/// outline lacks, the chimney chases passing through this floor, and the
-/// decking and level steps of [`deck`].
+/// outline lacks and the chimney chases passing through this floor. Called
+/// from `render::draw_plan` after the walls, so a fireplace built into a wall
+/// shows over the wall lines; the decking and level steps of [`deck`] are
+/// drawn in the pass before the walls (`roof_view::draw_roofs`).
 pub fn draw(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     let pal = &cx.palette;
     let floor = cx.floor();
@@ -431,7 +534,7 @@ pub fn draw(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 Stroke::NONE,
             ));
         }
-        if fp.kind.has_firebox() {
+        if fp.kind.has_firebox() && !fp.no_firebox {
             let fb = firebox_poly(&fp, sym);
             painter.add(Shape::convex_polygon(
                 closed(cam, &fb),
@@ -452,6 +555,17 @@ pub fn draw(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 dashed(painter, cam, &shelf, fine);
             }
         }
+        // The rough opening around a fireplace built into a wall.
+        if fp.rough.show_in_plan {
+            let rough = rough_poly(&fp, sym);
+            if rough.len() >= 3 {
+                dashed(painter, cam, &rough, fine);
+            }
+        }
+        // Its width and firebox width (Suppress Dimensions turns them off).
+        for dim in plan_dimensions(&fp, sym) {
+            draw_dimension(painter, cam, &dim.from, &dim.to, &dim.text, fine);
+        }
         if fp.chimney.enabled {
             let chimney = chimney_poly(&fp, sym);
             if fp.kind.has_firebox() {
@@ -471,7 +585,6 @@ pub fn draw(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             }
         }
     }
-    deck::draw(cx, painter, cam);
 }
 
 #[cfg(test)]
@@ -522,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn built_into_the_wall_the_front_is_flush_with_the_face() {
+    fn built_into_the_wall_the_back_is_flush_with_the_outside_face() {
         let cx = cx_with_wall();
         let pl = placement_at(
             cx.floor(),
@@ -532,12 +645,142 @@ mod tests {
             0.0,
         );
         assert!(pl.in_wall);
-        // Front at y = 3.25, the body 24 deep reaching back to y = -20.75.
-        assert!(
-            (pl.position.y - (3.25 - 24.0)).abs() < 1e-9,
-            "{:?}",
-            pl.position
+        // Facing +y: the back is flush with the face at y = -3.25 and the 24
+        // in body stands 20 3/4 in out into the room (manual p. 757).
+        assert!((pl.position.y + 3.25).abs() < 1e-9, "{:?}", pl.position);
+        assert!(pl.angle.abs() < 1e-9);
+    }
+
+    /// A closed 300 x 200 room of exterior walls, with an interior partition.
+    fn cx_with_room() -> EditorContext {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(300.0, 0.0),
+            Point::new(300.0, 200.0),
+            Point::new(0.0, 200.0),
+        ];
+        for i in 0..4 {
+            cx.project
+                .add_wall(0, c[i], c[(i + 1) % 4], 6.5, 109.125, WallKind::Exterior);
+        }
+        cx.refresh();
+        cx
+    }
+
+    #[test]
+    fn on_an_exterior_wall_the_fireplace_faces_the_interior_whichever_side_is_clicked() {
+        let cx = cx_with_room();
+        for in_wall in [false, true] {
+            // Outside the bottom wall (y < 0): still faces +y, into the room.
+            let outside = placement_at(
+                cx.floor(),
+                Point::new(150.0, -20.0),
+                FireplaceKind::Masonry,
+                in_wall,
+                0.0,
+            );
+            assert!(outside.wall.is_some());
+            assert!(outside.angle.abs() < 1e-9, "{in_wall}: {}", outside.angle);
+            // Inside the room: the same.
+            let inside = placement_at(
+                cx.floor(),
+                Point::new(150.0, 20.0),
+                FireplaceKind::Masonry,
+                in_wall,
+                0.0,
+            );
+            assert!(inside.angle.abs() < 1e-9);
+            // The top wall faces -y.
+            let top = placement_at(
+                cx.floor(),
+                Point::new(150.0, 220.0),
+                FireplaceKind::Masonry,
+                in_wall,
+                0.0,
+            );
+            assert!((top.angle.abs() - 180.0).abs() < 1e-9, "{}", top.angle);
+        }
+    }
+
+    #[test]
+    fn on_an_interior_wall_it_faces_the_edge_clicked() {
+        let mut cx = cx_with_room();
+        cx.project.add_wall(
+            0,
+            Point::new(150.0, 0.0),
+            Point::new(150.0, 200.0),
+            4.5,
+            109.125,
+            WallKind::Interior,
         );
+        cx.refresh();
+        let right = placement_at(
+            cx.floor(),
+            Point::new(160.0, 100.0),
+            FireplaceKind::Masonry,
+            true,
+            0.0,
+        );
+        let left = placement_at(
+            cx.floor(),
+            Point::new(140.0, 100.0),
+            FireplaceKind::Masonry,
+            true,
+            0.0,
+        );
+        // The front of a fireplace at angle a points along (-sin a, cos a).
+        let front_x = |a: f64| -a.to_radians().sin();
+        assert!(
+            front_x(right.angle) > 0.99,
+            "the right-hand click faces +x: {}",
+            right.angle
+        );
+        assert!(
+            front_x(left.angle) < -0.99,
+            "the left-hand click faces -x: {}",
+            left.angle
+        );
+    }
+
+    #[test]
+    fn the_depth_handle_slides_the_fireplace_out_to_the_inside_edge() {
+        let mut cx = cx_with_room();
+        let pl = placement_at(
+            cx.floor(),
+            Point::new(150.0, 20.0),
+            FireplaceKind::Masonry,
+            true,
+            0.0,
+        );
+        let id = place(&mut cx, FireplaceKind::Masonry, pl);
+        let sym = cx.floor().symbol(id).unwrap().clone();
+        let start = Point::new(150.0, sym.position.y + sym.depth);
+        // Part way out.
+        let part =
+            slide_in_wall(cx.floor(), &sym, start, Point::new(150.0, start.y - 5.0)).unwrap();
+        assert!((part.position.y - (sym.position.y - 5.0)).abs() < 1e-9);
+        // Dragged far out it stops with the front on the inside edge (y = 3.25).
+        let far = slide_in_wall(cx.floor(), &sym, start, Point::new(150.0, -500.0)).unwrap();
+        assert!(
+            (far.position.y + far.depth - 3.25).abs() < 1e-9,
+            "{}",
+            far.position.y + far.depth
+        );
+        // It never slides into the room past where it started.
+        let back = slide_in_wall(cx.floor(), &sym, start, Point::new(150.0, 500.0)).unwrap();
+        assert_eq!(back.position, sym.position);
+        // Not built in: nothing slides.
+        let free = placement_at(
+            cx.floor(),
+            Point::new(150.0, 120.0),
+            FireplaceKind::Masonry,
+            false,
+            0.0,
+        );
+        let id2 = place(&mut cx, FireplaceKind::Masonry, free);
+        let s2 = cx.floor().symbol(id2).unwrap().clone();
+        assert!(slide_in_wall(cx.floor(), &s2, Point::ZERO, Point::new(0.0, -9.0)).is_none());
     }
 
     #[test]

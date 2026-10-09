@@ -93,6 +93,96 @@ fn elevation_rect(m: &Member, start3: [f64; 3], dir3: [f64; 3], base: f64) -> (P
     (min, max)
 }
 
+/// One member of a Wall Detail as the window shows and selects it: the index
+/// of the member in the slice given to [`wall_detail_members`], what it is and
+/// where it stands in the elevation frame of [`wall_detail`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailMember {
+    pub index: usize,
+    pub kind: MemberKind,
+    pub label: String,
+    pub min: Point,
+    pub max: Point,
+}
+
+impl DetailMember {
+    /// Whether the elevation point `p` is inside the member's rectangle,
+    /// grown by `tol` inches.
+    pub fn contains(&self, p: Point, tol: f64) -> bool {
+        p.x >= self.min.x - tol
+            && p.x <= self.max.x + tol
+            && p.y >= self.min.y - tol
+            && p.y <= self.max.y + tol
+    }
+}
+
+/// The members of `wall` among `members`, in the elevation frame of
+/// [`wall_detail`], each with its index in `members` so an edit can find it
+/// again. Plies of a doubled header share a rectangle and are all listed.
+pub fn wall_detail_members(wall: &Wall, members: &[Member]) -> Vec<DetailMember> {
+    let (d, start) = (wall.direction(), wall.start);
+    let dir3 = [d.x, 0.0, -d.y];
+    let start3 = [start.x, 0.0, -start.y];
+    let base = members
+        .iter()
+        .filter(|m| m.wall_id == Some(wall.id))
+        .flat_map(|m| m.corners())
+        .map(|c| c[1])
+        .fold(f64::INFINITY, f64::min);
+    if !base.is_finite() {
+        return Vec::new();
+    }
+    members
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.wall_id == Some(wall.id))
+        .map(|(index, m)| {
+            let (min, max) = elevation_rect(m, start3, dir3, base);
+            DetailMember {
+                index,
+                kind: m.kind,
+                label: m.label.clone(),
+                min,
+                max,
+            }
+        })
+        .collect()
+}
+
+/// A member cut by a section plane drawn as Chief does (manual p. 924): the
+/// rectangle `(min, max)` with an X through it, or with a single diagonal for
+/// blocking.
+pub fn cut_symbol(min: Point, max: Point, blocking: bool) -> Vec<Stroke> {
+    let mut out = vec![Stroke::Rect { min, max }];
+    out.push(Stroke::Line(min, max));
+    if !blocking {
+        out.push(Stroke::Line(
+            Point::new(min.x, max.y),
+            Point::new(max.x, min.y),
+        ));
+    }
+    out
+}
+
+/// The S and E marks of a selected framing member (Start and End Indicators in
+/// Preferences): a letter just past each end, `size` inches tall.
+pub fn start_end_marks(start: Point, end: Point, size: f64) -> [Stroke; 2] {
+    let along = (end - start).normalized();
+    let off = size * 1.2;
+    [
+        Stroke::Text {
+            pos: start - along * off,
+            text: "S".into(),
+            height: size,
+        },
+        Stroke::Text {
+            pos: end + along * off,
+            text: "E".into(),
+            height: size,
+        },
+    ]
+}
+
 /// What a [`DetailDim`] measures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DimKind {
@@ -393,5 +483,72 @@ mod tests {
         // Rough height = header underside minus the sill top.
         assert!((height.b.y - height.a.y - (header.b.y - sill[0].b.y)).abs() < 1e-9);
         assert!(height.b.y - height.a.y < header.b.y);
+    }
+
+    // ----- Round 16: members, cut symbols, S and E -----
+
+    fn walled() -> (Wall, Vec<Member>) {
+        let w = Wall {
+            id: 7,
+            start: Point::new(0.0, 0.0),
+            end: Point::new(144.0, 0.0),
+            thickness: 6.5,
+            height: 109.125,
+            kind: WallKind::Exterior,
+            layer: "Walls, Normal".into(),
+            ..Default::default()
+        };
+        let win = Opening::default_window(2, w.id, 72.0);
+        let m = frame_wall(&w, &[&win], 0.0, &FramingDefaults::default());
+        (w, m)
+    }
+
+    #[test]
+    fn a_wall_detail_lists_the_members_of_a_wall_with_a_window() {
+        let (w, mut members) = walled();
+        // A member of another wall is not in this wall's detail.
+        let mut other = members[0].clone();
+        other.wall_id = Some(99);
+        members.push(other);
+        let list = wall_detail_members(&w, &members);
+        assert_eq!(list.len(), members.len() - 1);
+        let kinds = |k: MemberKind| list.iter().filter(|m| m.kind == k).count();
+        assert_eq!(kinds(MemberKind::Sill), 1);
+        assert_eq!(kinds(MemberKind::Header), 2);
+        assert_eq!(kinds(MemberKind::TrimmerStud), 2);
+        assert_eq!(kinds(MemberKind::KingStud), 2);
+        assert_eq!(kinds(MemberKind::TopPlate), 2);
+        assert!(kinds(MemberKind::CrippleStud) >= 4);
+        // The sill stands at 24" over the bottom of the bottom plate, a window 36 wide.
+        let sill = list.iter().find(|m| m.kind == MemberKind::Sill).unwrap();
+        assert!((sill.min.y - 22.5).abs() < 1e-9 && (sill.max.x - sill.min.x - 36.0).abs() < 1e-9);
+        assert!(sill.contains(Point::new(72.0, 23.0), 0.0));
+        assert!(!sill.contains(Point::new(72.0, 60.0), 1.0));
+        // Indexes point back into the slice that was given.
+        assert!(list.iter().all(|m| members[m.index].kind == m.kind));
+        assert!(list.iter().all(|m| members[m.index].wall_id == Some(7)));
+        // The window's rough opening width is between the trimmers.
+        let trimmers: Vec<_> = list.iter().filter(|m| m.kind == MemberKind::TrimmerStud).collect();
+        let (a, b) = (trimmers[0], trimmers[1]);
+        let gap = (a.min.x.max(b.min.x)) - (a.max.x.min(b.max.x));
+        assert!((gap - 36.0).abs() < 1e-6, "{gap}");
+    }
+
+    #[test]
+    fn a_cut_member_is_a_box_with_an_x_and_blocking_has_one_diagonal() {
+        let (lo, hi) = (Point::new(0.0, 0.0), Point::new(1.5, 9.25));
+        let x = cut_symbol(lo, hi, false);
+        assert!(matches!(x[0], Stroke::Rect { .. }));
+        assert_eq!(x.len(), 3);
+        let block = cut_symbol(lo, hi, true);
+        assert_eq!(block.len(), 2);
+        let [s, e] = start_end_marks(Point::new(0.0, 0.0), Point::new(100.0, 0.0), 2.0);
+        match (s, e) {
+            (Stroke::Text { pos: p, text: a, .. }, Stroke::Text { pos: q, text: b, .. }) => {
+                assert_eq!((a.as_str(), b.as_str()), ("S", "E"));
+                assert!(p.x < 0.0 && q.x > 100.0);
+            }
+            _ => panic!("two labels"),
+        }
     }
 }

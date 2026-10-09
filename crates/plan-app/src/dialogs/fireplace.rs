@@ -1,6 +1,6 @@
-//! Fireplace Specification (CB-87): General, Hearth, Mantel, Chimney,
-//! Materials, Label and Layer for a fireplace or chimney placed with the
-//! Fireplace tools.
+//! Fireplace Specification (CB-87, CB-501..CB-503): General, Firebox, Hearth,
+//! Mantel, Chimney, Rough Opening, Materials, Label and Layer for a
+//! fireplace or chimney placed with the Fireplace tools.
 //!
 //! The dialog edits clones of the placed symbol (size, angle, layer) and of
 //! its [`Fireplace`] record; OK hands both back and
@@ -17,14 +17,17 @@ use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Ui
 use plan_core::fireplace::{
     CapKind, ChimneyTop, Fireplace, FireplaceKind, Frame, Fuel, FIREPLACE_LAYER,
 };
+use plan_core::openings::spec::RoughMode;
 use plan_core::units::fmt_ft_in;
 use plan_core::PlacedSymbol;
 
 const TABS: &[Tab] = &[
     on("General"),
+    on("Firebox"),
     on("Hearth"),
     on("Mantel"),
     on("Chimney"),
+    on("Rough Opening"),
     on("Materials"),
     on("Label"),
     on("Layer"),
@@ -181,7 +184,7 @@ impl Form {
             return Some("The body is smaller than 12 in by 6 in".into());
         }
         let fp = &self.fp;
-        if fp.kind.has_firebox() {
+        if fp.kind.has_firebox() && !fp.no_firebox {
             if fp.firebox.width < 6.0 || fp.firebox.height < 6.0 || fp.firebox.depth < 2.0 {
                 return Some("The firebox opening is too small".into());
             }
@@ -191,6 +194,11 @@ impl Form {
             if fp.firebox.depth > d {
                 return Some("The firebox is deeper than the body".into());
             }
+            if fp.firebox.offset.abs() + fp.firebox.width * 0.5 > w * 0.5 - 4.0 + 1e-9 {
+                return Some("The firebox is moved past the jamb of the body".into());
+            }
+        }
+        if fp.kind.has_firebox() {
             if fp.chimney.enabled && (fp.chimney.width > w || fp.chimney.depth > d) {
                 return Some("The chimney is larger than the body".into());
             }
@@ -265,13 +273,25 @@ impl Form {
         }
 
         if self.fp.kind.has_firebox() {
-            section(ui, "Firebox");
-            let b = &mut self.fp.firebox;
-            f.length_row(ui, "Opening Width", "fp_fb_w", &mut b.width);
-            f.length_row(ui, "Opening Height", "fp_fb_h", &mut b.height);
-            f.length_row(ui, "Depth", "fp_fb_d", &mut b.depth);
-            f.length_row(ui, "Opening Above Hearth", "fp_fb_r", &mut b.raise);
+            section(ui, "Hearth");
+            f.length_row(
+                ui,
+                "Hearth Depth",
+                "fp_g_hearth_d",
+                &mut self.fp.hearth.projection,
+            );
+            f.length_row(
+                ui,
+                "Hearth Height",
+                "fp_g_hearth_h",
+                &mut self.fp.hearth.height,
+            );
+            ui.weak("A hearth depth of 0 leaves the hearth out.");
         }
+
+        section(ui, "Plan Display");
+        ui.checkbox(&mut self.fp.suppress_dimensions, "Suppress Dimensions")
+            .on_hover_text("Leave the width and firebox width dimensions out of the plan view.");
 
         section(ui, "Position");
         f.degrees_row(ui, "Angle", "deg_fp_angle", &mut self.sym.angle);
@@ -282,6 +302,96 @@ impl Form {
                 fmt_ft_in(self.sym.position.y)
             ));
         });
+    }
+
+    /// The Firebox panel: No Firebox, the opening's size and how far it is
+    /// moved from the center, to the left or to the right.
+    fn firebox(&mut self, ui: &mut Ui) {
+        if !self.fp.kind.has_firebox() {
+            ui.weak("A chimney has no firebox.");
+            return;
+        }
+        section(ui, "Firebox");
+        ui.checkbox(&mut self.fp.no_firebox, "No Firebox")
+            .on_hover_text(
+                "A solid block with no firebox or hearth; checked for the fireplace \
+                 foundation Build Foundation makes under a fireplace on Floor 1.",
+            );
+        ui.add_enabled_ui(!self.fp.no_firebox, |ui| {
+            let f = &mut self.fields;
+            let b = &mut self.fp.firebox;
+            section(ui, "Size");
+            f.length_row(ui, "Width", "fp_fb_w", &mut b.width);
+            f.length_row(ui, "Height", "fp_fb_h", &mut b.height);
+            f.length_row(ui, "Depth", "fp_fb_d", &mut b.depth);
+            f.length_row(ui, "Opening Above Hearth", "fp_fb_r", &mut b.raise);
+            section(ui, "Offset");
+            let mut dist = b.offset.abs();
+            let mut right = b.offset >= 0.0;
+            f.length_row(ui, "Distance", "fp_fb_off", &mut dist);
+            row(ui, "Offset to", |ui| {
+                ui.radio_value(&mut right, false, "Left");
+                ui.radio_value(&mut right, true, "Right");
+            });
+            b.offset = if right { dist } else { -dist };
+            ui.weak("A distance of 0 centers the firebox in the fireplace.");
+        });
+    }
+
+    /// The Rough Opening panel, as in the Door Specification: the opening
+    /// the framer leaves around a fireplace built into a wall.
+    fn rough_opening(&mut self, ui: &mut Ui) {
+        if !self.fp.in_wall {
+            ui.weak("The rough opening applies to a fireplace built into a wall.");
+        }
+        let in_wall = self.fp.in_wall;
+        let (w, d) = (self.sym.width, self.sym.depth);
+        let r = &mut self.fp.rough;
+        section(ui, "Rough Opening");
+        let b = r.extents(plan_core::OpeningKind::Door);
+        row(ui, "Total Width", |ui| {
+            ui.label(fmt_ft_in(w + b.left + b.right))
+        });
+        row(ui, "Total Depth", |ui| ui.label(fmt_ft_in(d)));
+        row(ui, "Calculate", |ui| {
+            for m in RoughMode::ALL {
+                ui.radio_value(&mut r.mode, m, m.name());
+            }
+        });
+        ui.add_enabled_ui(in_wall, |ui| {
+            let f = &mut self.fields;
+            match r.mode {
+                RoughMode::AdditionalSpace => {
+                    f.length_row(ui, "Additional Width", "fp_ro_addw", &mut r.add_width);
+                    f.length_row(ui, "Additional Height", "fp_ro_addh", &mut r.add_height);
+                }
+                RoughMode::ClearanceGap => {
+                    f.length_row(ui, "Side Gap", "fp_ro_gs", &mut r.gap_side);
+                    f.length_row(ui, "Top Gap", "fp_ro_gt", &mut r.gap_top);
+                    f.length_row(ui, "Bottom Gap", "fp_ro_gb", &mut r.gap_bottom);
+                }
+            }
+            for v in [
+                &mut r.add_width,
+                &mut r.add_height,
+                &mut r.gap_side,
+                &mut r.gap_top,
+                &mut r.gap_bottom,
+            ] {
+                *v = v.max(0.0);
+            }
+            section(ui, "Add for Concrete Cutout");
+            f.length_row(ui, "Each Side", "fp_ro_conc", &mut r.concrete_each_side);
+            r.concrete_each_side = r.concrete_each_side.max(0.0);
+            ui.add_enabled(
+                r.concrete_each_side > 0.0,
+                egui::Checkbox::new(&mut r.concrete_show_below, "Show In Floor Below"),
+            );
+            section(ui, "Plan Display");
+            ui.checkbox(&mut r.show_in_plan, "Show Rough Opening in Plan")
+                .on_hover_text("Dashed lines around the body at the rough opening's edges");
+        });
+        ui.weak("The wall is cut as wide as the rough opening where the fireplace stands in it.");
     }
 
     fn hearth(&mut self, ui: &mut Ui) {
@@ -505,9 +615,11 @@ impl SpecPages for Form {
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match TABS[tab].name {
             "General" => self.general(ui),
+            "Firebox" => self.firebox(ui),
             "Hearth" => self.hearth(ui),
             "Mantel" => self.mantel(ui),
             "Chimney" => self.chimney(ui),
+            "Rough Opening" => self.rough_opening(ui),
             "Materials" => self.materials(ui),
             "Label" => self.label(ui),
             "Layer" => self.layer(ui),
@@ -660,15 +772,17 @@ mod tests {
     }
 
     #[test]
-    fn the_tabs_are_chiefs_seven() {
+    fn the_tabs_follow_chiefs_panels() {
         let names: Vec<&str> = TABS.iter().map(|t| t.name).collect();
         assert_eq!(
             names,
             [
                 "General",
+                "Firebox",
                 "Hearth",
                 "Mantel",
                 "Chimney",
+                "Rough Opening",
                 "Materials",
                 "Label",
                 "Layer"
@@ -747,6 +861,43 @@ mod tests {
         assert_eq!(
             dialog(FireplaceKind::ChimneyOnly).frame.geometry_key(),
             "Chimney Specification"
+        );
+    }
+
+    #[test]
+    fn the_firebox_panel_offsets_and_removes_the_firebox() {
+        let mut d = dialog(FireplaceKind::Masonry);
+        d.fireplace_mut().firebox.offset = 10.0;
+        assert!(!d.has_error());
+        d.fireplace_mut().firebox.offset = 30.0;
+        assert!(d.error_text().unwrap().contains("jamb"));
+        d.fireplace_mut().firebox.offset = 0.0;
+        // No Firebox lifts the firebox checks.
+        d.fireplace_mut().firebox.width = 90.0;
+        assert!(d.has_error());
+        d.fireplace_mut().no_firebox = true;
+        assert!(!d.has_error());
+        for tab in 0..TABS.len() {
+            draw_tab(&mut d, tab);
+        }
+    }
+
+    #[test]
+    fn the_general_panel_edits_the_hearth_and_suppresses_dimensions() {
+        let mut d = dialog(FireplaceKind::Masonry);
+        assert!(!d.fireplace().suppress_dimensions);
+        d.fireplace_mut().suppress_dimensions = true;
+        d.fireplace_mut().hearth.projection = 0.0;
+        draw_tab(&mut d, 0);
+        let sym = d.symbol().clone();
+        assert!(
+            plan_core::fireplace::hearth_poly(d.fireplace(), &sym).is_empty(),
+            "a hearth depth of 0 leaves the hearth out"
+        );
+        d.fireplace_mut().hearth.projection = 20.0;
+        assert_eq!(
+            plan_core::fireplace::hearth_poly(d.fireplace(), &sym).len(),
+            4
         );
     }
 }

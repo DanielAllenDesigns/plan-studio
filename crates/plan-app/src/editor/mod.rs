@@ -16,6 +16,7 @@ pub mod dispatch;
 pub mod edit_commands;
 #[cfg(test)]
 mod edit_tests;
+pub mod cabinet_edit;
 pub mod fireplace_view;
 pub mod foundation_view;
 pub mod framing_view;

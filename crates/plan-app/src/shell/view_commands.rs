@@ -35,6 +35,8 @@ pub const ROTATE_LEFT: &str = "view.rotate_left";
 pub const ROTATE_RIGHT: &str = "view.rotate_right";
 /// Window > Rotate Plan View > back to north up.
 pub const ROTATE_RESET: &str = "view.rotate_reset";
+/// Tools > Rotate Plan View...: type the angle (relative to north up).
+pub const ROTATE_DIALOG: &str = "view.rotate_dialog";
 /// Window > Tile Horizontally (the views one above the other).
 pub const TILE_HORIZONTALLY: &str = "view.tile_horizontally";
 /// Window > Tile Vertically (the views side by side).
@@ -62,6 +64,7 @@ const ALL: &[&str] = &[
     ROTATE_LEFT,
     ROTATE_RIGHT,
     ROTATE_RESET,
+    ROTATE_DIALOG,
     TILE_HORIZONTALLY,
     TILE_VERTICALLY,
     TAB_WINDOWS,
@@ -432,13 +435,19 @@ impl PlanApp {
         self.cx.status = format!("Plan view rotated {deg} degrees");
     }
 
-    /// Edit > Reverse Plan: every object of every floor is mirrored left to
+    /// Tools > Reverse Plan: every object of every floor is mirrored left to
     /// right about the vertical line through the middle of the walls, as one
-    /// undo step. Text keeps reading left to right; swings, hinges and the
-    /// stair turns flip with their objects.
+    /// undo step. Objects on hidden and locked layers turn with the rest
+    /// (manual p. 179: the whole plan is flipped, nothing is left behind).
+    /// Text keeps reading left to right; swings, hinges and the stair turns
+    /// flip with their objects. Terrain is not touched.
     pub(crate) fn reverse_plan(&mut self) {
         let cx = &mut self.cx;
         let keep = cx.floor;
+        // Hidden and locked layers count: show and unlock everything while
+        // the objects are gathered and turned, then put the layers back.
+        let saved_layers = (cx.project.layers.clone(), cx.project.layer_sets.clone());
+        open_all_layers(cx);
         let mut union: Option<(Point, Point)> = None;
         let mut per_floor = Vec::new();
         for f in 0..cx.project.floors.len() {
@@ -452,6 +461,9 @@ impl PlanApp {
             }
             per_floor.push(items);
         }
+        cx.project.layers = saved_layers.0.clone();
+        cx.project.layer_sets = saved_layers.1.clone();
+        cx.refresh_layer_view();
         let Some((lo, hi)) = union else {
             cx.floor = keep;
             cx.status = "Nothing to reverse".into();
@@ -460,6 +472,7 @@ impl PlanApp {
         let mid = (lo.x + hi.x) * 0.5;
         let x = Xform::reflect(Point::new(mid, 0.0), Point::new(mid, 1.0));
         cx.begin_change("Reverse Plan");
+        open_all_layers(cx);
         let mut skipped: Vec<&'static str> = Vec::new();
         let mut changed = 0;
         for (f, items) in per_floor.iter().enumerate() {
@@ -475,6 +488,9 @@ impl PlanApp {
                 }
             }
         }
+        cx.project.layers = saved_layers.0;
+        cx.project.layer_sets = saved_layers.1;
+        cx.refresh_layer_view();
         cx.floor = keep;
         cx.selection.items.clear();
         cx.mark_dirty();
@@ -512,6 +528,7 @@ impl PlanApp {
             ROTATE_LEFT => self.rotate_view(Some(90.0)),
             ROTATE_RIGHT => self.rotate_view(Some(-90.0)),
             ROTATE_RESET => self.rotate_view(None),
+            ROTATE_DIALOG => open_rotate_dialog(self.camera.rotation.to_degrees()),
             TILE_HORIZONTALLY => self.set_tile(Tile::Horizontal),
             TILE_VERTICALLY => self.set_tile(Tile::Vertical),
             TAB_WINDOWS => self.set_tile(Tile::Tabs),
@@ -623,6 +640,137 @@ impl PlanApp {
             crate::shell::view3d_panel::show(ui, &mut self.cx, &mut self.view3d);
         });
         true
+    }
+}
+
+// ===================================================================
+// Rotate Plan View (manual p. 178)
+// ===================================================================
+
+/// Shows and unlocks every layer in the plan (and in every layer set) so an
+/// operation reaches objects that the layer settings keep out of reach.
+fn open_all_layers(cx: &mut EditorContext) {
+    for l in &mut cx.project.layers.layers {
+        l.display = true;
+        l.locked = false;
+    }
+    for set in &mut cx.project.layer_sets.sets {
+        for st in &mut set.states {
+            st.display = true;
+            st.locked = false;
+        }
+    }
+    cx.refresh_layer_view();
+}
+
+thread_local! {
+    /// The rotation the shell last reported, radians counterclockwise.
+    static REPORTED: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// A rotation to show next frame (radians), asked for by a view that was
+    /// opened or by the Rotate Plan View dialog.
+    static PENDING: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+    /// The Rotate Plan View dialog: the text being typed.
+    static DIALOG: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The shell reports the camera's rotation each frame (radians), so a saved
+/// plan view can store it.
+pub fn report_rotation(radians: f64) {
+    REPORTED.with(|r| r.set(radians));
+}
+
+/// The rotation of the plan view being shown, in degrees from -180 to 180.
+pub fn reported_rotation_deg() -> f64 {
+    plan_core::defaults::views::normalize_deg(REPORTED.with(|r| r.get()).to_degrees())
+}
+
+/// Asks the shell to show the plan rotated to `deg` (relative to north up).
+pub fn request_rotation(deg: f64) {
+    let rad = plan_core::defaults::views::normalize_deg(deg)
+        .to_radians()
+        .rem_euclid(std::f64::consts::TAU);
+    PENDING.with(|p| p.set(Some(rad)));
+    REPORTED.with(|r| r.set(rad));
+}
+
+/// The rotation the shell should adopt now, if one was asked for.
+pub fn take_pending_rotation() -> Option<f64> {
+    PENDING.with(|p| p.take())
+}
+
+/// Opens the Rotate Plan View dialog showing `current_deg` (it reads in
+/// -180 to 180 degrees: 270 shows as -90).
+pub fn open_rotate_dialog(current_deg: f64) {
+    let shown = plan_core::defaults::views::normalize_deg(current_deg);
+    DIALOG.with(|d| *d.borrow_mut() = Some(format!("{shown}")));
+}
+
+/// Is the Rotate Plan View dialog open?
+pub fn rotate_dialog_open() -> bool {
+    DIALOG.with(|d| d.borrow().is_some())
+}
+
+/// The angle a typed text means, if it is a number.
+pub fn parse_angle(text: &str) -> Option<f64> {
+    let t = text.trim().trim_end_matches(['\u{b0}', 'd']).trim();
+    t.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// Draws the Rotate Plan View dialog when it is open. OK rotates the view to
+/// the typed angle (not by it: 90 twice is still 90) and, for a saved view
+/// that remembers its rotation, keeps it with the view.
+pub fn show_rotate_dialog(ctx: &egui::Context, cx: &mut EditorContext) {
+    let Some(mut text) = DIALOG.with(|d| d.borrow_mut().take()) else {
+        return;
+    };
+    let mut open = true;
+    let mut ok = false;
+    let mut cancel = false;
+    let angle = parse_angle(&text);
+    egui::Window::new("Rotate Plan View")
+        .id(egui::Id::new("rotate_plan_view"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Rotation Angle");
+                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(80.0));
+                ui.label("degrees");
+                if r.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && angle.is_some()
+                {
+                    ok = true;
+                }
+            });
+            ui.weak("Rotates the view relative to north up; the plan itself does not turn.");
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(angle.is_some(), egui::Button::new("   OK   "))
+                    .clicked()
+                {
+                    ok = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        cancel = true;
+    }
+    if ok {
+        if let Some(a) = angle {
+            request_rotation(a);
+            cx.status = format!(
+                "Plan view rotated to {} degrees",
+                plan_core::defaults::views::normalize_deg(a)
+            );
+        }
+    } else if open && !cancel {
+        DIALOG.with(|d| *d.borrow_mut() = Some(text));
     }
 }
 

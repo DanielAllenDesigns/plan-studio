@@ -230,15 +230,28 @@ impl EditorContext {
             let mut a = EditAction::new(EditActionKind::ReverseSwing);
             a.label = "Reverse Door Swing";
             v.push(a);
+            // Open/Close Cabinet Doors/Drawers, Generate Custom Countertop,
+            // Make Cabinet Molding Polyline (CB-486, CB-490).
+            v.extend(super::cabinet_edit::edit_actions(self));
         }
+        // Calculate Materials in Room, Turn Ceiling On/Off, the room
+        // polylines, Create Schedule from Room, elevation views and Auto
+        // Room Dimensions (R-107, R-110).
+        v.extend(super::rooms_edit::edit_actions(self));
         // Reverse Layers, Break Wall, Change Line/Arc, Make Arc Tangent.
         v.extend(super::wall_edit::edit_actions(self));
         // Center on Wall Segment, Mull, Unmull.
         v.extend(super::opening_edit::edit_actions(self));
+        // Renumber Schedule, Open Row Object(s), Find Schedule(s), Move Up /
+        // Down in Schedule, Create Schedule from Room.
+        v.extend(super::schedule_view::edit_actions(self));
         // Hip / Full Gable / High Shed / Knee / Dutch Gable Wall (RF-4).
         v.extend(roof_view::wall_edit_actions(self));
         // Fireplace Specification, deck framing and steps at level changes.
         v.extend(super::fireplace_view::edit_actions(self));
+        // Build Framing for Selected / Parent Object(s), Wall and Truss Details,
+        // Move to Framing Ref, joins and breaks.
+        v.extend(super::framing_view::edit_actions(self));
         // Polyline Boolean, Trim/Extend to Boundary, Insert Point, Multiple Copy.
         v.extend(crate::tools::cad_ops::edit_actions(self));
         // Architectural blocks, 3D solid Booleans, material layers, distribution options.
@@ -324,6 +337,31 @@ impl EditorContext {
                 ));
                 v.push(custom(cmd::DEVICE_FLIP, "Flip Side", "", true));
                 v.push(custom(cmd::DEVICE_ROTATE, "Rotate", "", free));
+                // Set as Default and the outlet type switches (E-29).
+                let kind = site_view::electrical_layer(self.floor, self.floor())
+                    .device(id)
+                    .map(|d| d.kind);
+                match kind {
+                    Some(plan_electrical::DeviceKind::Outlet110) => v.push(custom(
+                        crate::tools::electrical::cmd::TO_GFCI,
+                        "Change to GFCI Outlet",
+                        "",
+                        true,
+                    )),
+                    Some(plan_electrical::DeviceKind::Gfci) => v.push(custom(
+                        crate::tools::electrical::cmd::TO_110,
+                        "Change to 110V Outlet",
+                        "",
+                        true,
+                    )),
+                    _ => {}
+                }
+                v.push(custom(
+                    crate::tools::electrical::cmd::SET_DEFAULT,
+                    "Set as Default",
+                    "",
+                    true,
+                ));
             }
             _ => {}
         }
@@ -359,6 +397,12 @@ impl EditorContext {
         if super::wall_edit::run_command(self, id) {
             return;
         }
+        if super::framing_view::run_command(self, id) {
+            return;
+        }
+        if super::rooms_edit::run_command(self, id) {
+            return;
+        }
         // Polyline Union/Subtract/Intersect, Trim/Extend to Boundary, Insert
         // Point, Multiple Copy, Drawing Group, outer-face Plan Footprint.
         if crate::tools::cad_ops::run_command(self, id) {
@@ -378,10 +422,16 @@ impl EditorContext {
         if super::fireplace_view::run_command(self, id) {
             return;
         }
+        if super::cabinet_edit::run_command(self, id) {
+            return;
+        }
         if crate::tools::text::run_command(self, id) {
             return;
         }
         if super::opening_edit::run_command(self, id) {
+            return;
+        }
+        if super::schedule_view::run_command(self, id) {
             return;
         }
         if roof_view::run_wall_command(self, id) {
@@ -398,6 +448,8 @@ impl EditorContext {
             cmd::SYMBOL_REPLACE => self.replace_symbol_from_library(),
             _ if crate::editor::placed::run_command(self, id) => {}
             _ if crate::tools::cabinet::run_preset_command(self, id) => {}
+            // Set as Default, Reset Curvature, Change to GFCI / 110V (Electrical Tools).
+            _ if crate::tools::electrical::run_command(self, id) => {}
             cmd::DEVICE_FLIP => self.edit_selected_device("Flip Side", |d, wall| {
                 site_view::flip_side(d, wall);
             }),

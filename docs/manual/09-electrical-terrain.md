@@ -18,10 +18,10 @@ floor's typed `electrical` slot, so the plan file carries them and undo restores
 from before this change kept them as one hidden record on an `Electrical, Data` layer; opening
 such a file converts it and removes the layer.)
 
-Device kinds known to the engine (`plan-electrical`, 25 kinds): 110V Outlet, Quad Outlet, 220V Outlet,
-GFCI Outlet, Floor Outlet, WP Outlet, Dedicated Outlet, Switch, 3-Way Switch, 4-Way Switch, Dimmer Switch, Ceiling Light, Recessed Can,
-Pendant Light, Wall Sconce, Ceiling Fan, Smoke Detector, CO Detector, Thermostat, Doorbell,
-Data, Phone and TV Jacks, Panel and Rope Light. Every kind has its own plan symbol (the legend lists them all).
+Device kinds known to the engine (`plan-electrical`, 28 kinds): 110V Outlet, Quad Outlet, 220V Outlet,
+GFCI Outlet, Floor Outlet, WP Outlet, Dedicated Outlet, Switch, WP Switch, 3-Way Switch, 4-Way Switch, Dimmer Switch, Ceiling Light, Recessed Can,
+Pendant Light, Wall Sconce, Exterior Wall Light, Path Light, Ceiling Fan, Smoke Detector, CO Detector, Thermostat, Doorbell,
+Data, Phone and TV Jacks, Panel and the older straight-strip Rope Light. New rope lights are paths (9.2a), not devices. Every kind has its own plan symbol (the legend lists them all).
 
 Receptacle symbols carry their flags as Chief draws them: the 110V duplex is a circle with two
 blades; the **220V** outlet has three blades and a `220V` tag; the **GFCI** outlet has the `GFCI` tag; the
@@ -29,28 +29,30 @@ blades; the **220V** outlet has three blades and a `220V` tag; the **GFCI** outl
 blade with a solid hub and a `DED` tag. A 3-way switch is the S symbol with a `3` and a 4-way switch the S
 symbol with a `4` (S3, S4). Schedules list the voltage and flags with the type (`110V, GFCI, WP`).
 
-Default heights above the floor:
+Default heights above the floor are the plan's **Electrical Defaults** (Edit > Default Settings > Electrical; double-click any
+Electrical Tools button), in four groups with a **Use Default Heights** switch:
 
-| Device | Height |
-|---|---|
-| Outlets (110V, quad, 220V, GFCI, dedicated), data and phone jacks | 12" |
-| WP (exterior) outlet | 18" |
-| Kitchen counter outlets (Auto Place Outlets) | 44" |
-| Floor outlet | 0" |
-| Switches (all kinds), doorbell, TV jack | 48" |
-| Thermostat | 52" |
-| Wall sconce | 66" |
-| Panel, CO detector | 60" |
-| Pendant light, rope light | 84" |
-| Ceiling light, recessed can, ceiling fan, smoke detector | at the ceiling |
+| Group | Applies to | Default |
+|---|---|---|
+| Outlet | every receptacle (WP too), phone, data and TV jacks | 12" |
+| Switch | switches, doorbells, thermostats | 48" |
+| Above Base Cabinet | switches and outlets placed on the wall over a base cabinet, measured up from the counter top | 8" (44" over a 36" counter) |
+| On Cabinet Side | switches and outlets placed on the side of a cabinet or soffit, measured up from its bottom, kept on the box | 32" |
+
+Everything else keeps the height saved with its symbol: wall sconce and exterior wall light 66", the panel and CO detector 60",
+path light 18", pendant and the old rope strip 84", floor outlet 0", ceiling devices at the ceiling.
+With Use Default Heights off every device takes its symbol height. A height can also be set per device
+(Electrical Service Specification) and Set as Default copies a placed device's type and height back into the defaults. Plans saved with the
+older per-kind heights read into the groups (110V Outlet becomes Outlet, Switch stays Switch, the Counter Outlet minus 36" becomes Above Base Cabinet).
+The defaults are saved in the plan and undo with the dialog's OK.
 
 Wall devices sit on the wall face (half the wall thickness off the centerline), facing into
 the room (outside the house for WP outlets). Ceiling devices are placed freely.
 
-The heights are the plan's **Electrical Defaults**: open a device, tick **Use as default height for
-<kind>** or edit the **Default Heights** list (every kind, plus the Counter Outlet) on the General tab of the
-Electrical Service Specification. The next device of that kind, the status bar's `Height:` readout and Auto
-Place Outlets use them. The defaults are saved in the plan and undo with the dialog's OK.
+**Default Library Objects** (the same page) choose which symbol each tool places: the Light tool a ceiling light,
+recessed can or pendant; the 110V tool a duplex or quad outlet; the 220V tool a 220V or dedicated outlet; the Switch tool a single-pole or
+dimmer switch; the Wall Light tool and its Exterior counterpart. The **Electrical Connection** tab sets the curvature ratio (0.2 by default:
+the first arc sags a fifth of its length), line style, arrow and label of new splines; the **Rope Light** tab holds the Rope Light Specification fields.
 
 ## 9.2 Tools
 
@@ -58,12 +60,12 @@ Place Outlets use them. The defaults are saved in the plan and undo with the dia
 
 | Variant | Hotkey | What a click does |
 |---|---|---|
-| 110V Outlet | `E, O` | Places an outlet on the nearest wall within 12", on the face nearest the cursor. The status bar shows `Height: 12"`. |
-| 220V Outlet | `Ctrl+Alt+Cmd+7` | Same, 220V symbol. |
+| 110V Outlet | `E, O` | Reads the click (9.2a): on a wall within 12", on the face nearest the cursor; over a base cabinet above the counter; on a cabinet side; weatherproof outdoors. The status bar shows the height the click would use. |
+| 220V Outlet | `Ctrl+Alt+Cmd+7` | Same, 220V symbol (it stays 220V outdoors). |
 | GFCI Outlet | `Ctrl+Alt+Shift+Cmd+Y` | Same, GFCI symbol. |
-| Light | `E, L` | Places a ceiling light where you click; it snaps to a room's center within 12". |
-| Rope Light | `Ctrl+Alt+Shift+Cmd+A` | Places a strip light. |
-| Switch | `E, S` | Places a switch on a wall at 48". |
+| Light | `E, L` | Near a wall (within 12") a wall light, inside a soffit a ceiling light on its bottom, away from walls a ceiling light that snaps to a room's center within 12", outside every room a path light. |
+| Rope Light | `Ctrl+Alt+Shift+Cmd+A` | Click and drag to draw a rope light path (9.2b). |
+| Switch | `E, S` | Places a switch on a wall at 48", over a counter or on a cabinet side by the height groups, a WP switch outdoors. |
 | 3-Way, 4-Way and Dimmer Switch | | Switch variants. |
 | Quad Outlet, Floor Outlet | | Receptacle variants. |
 | Recessed, Pendant and Wall Light | | Light variants (ceiling devices, the wall light on a wall). |
@@ -71,11 +73,44 @@ Place Outlets use them. The defaults are saved in the plan and undo with the dia
 | Thermostat, Doorbell, Data, Phone and TV Jack, Electrical Panel | | Wall devices. |
 | Auto Place Switches | | One click: a switch 6" past the latch jamb of every door of every room, a ceiling light for a room without one, and the connections. Two doors in a room make a 3-way pair. |
 | WP Outlet, Dedicated Outlet | | Wall receptacles: weatherproof GFCI (18") and a single receptacle on its own circuit. |
-| Electrical Connection | `E, C` | Click a switch (or outlet), then every light it controls (Esc ends the run). A dashed arc is drawn to each and stored. When a light is controlled by **two or more switches** they become multi-way: the first and last are 3-way (S3) and any in between 4-way (S4), and the symbols change as you wire; removing a connection or a switch turns them back. Clicking a second 3-way or 4-way switch wires the pair, and both then control the lights of either. Drag the square handle at the middle of an arc to bend it. |
+| Electrical Connection | `E, C` | Click a switch (or outlet), then every light it controls (Esc ends the run), or press on any object and drag to the next (or to open ground for a free spline). A dashed spline is drawn to each and stored (9.2c). When a light is controlled by **two or more switches** they become multi-way: the first and last are 3-way (S3) and any in between 4-way (S4), and the symbols change as you wire; removing a connection or a switch turns them back. Clicking a second 3-way or 4-way switch wires the pair, and both then control the lights of either. |
 | Auto Place Outlets | `E, A, O` | One click places outlets for every room of the floor, from the room names and types, and the exterior weatherproof outlets. One undo step. |
 
 All of them start the one Electrical tool, and the Electrical flyout does pass your choice
 through to it.
+
+### 9.2a Where a click lands
+
+The 110V, GFCI and 220V outlet tools, the Switch tool and the Light tool read the click (manual pp. 693-694):
+
+- **On a wall** within 12": a wall device on the face nearest the cursor at the Outlet or Switch height. If the other side of that face is outdoors (an exterior wall with no room beyond it, or a room with an exterior type such as a Deck), a 110V or GFCI outlet is the **WP outlet**, a switch the **WP switch** and a wall light the **exterior wall light**; a 220V outlet stays a 220V outlet.
+- **Behind a base cabinet**: the height is measured up from the counter top (Above Base Cabinet); a 110V outlet in a Kitchen or Bath room is a GFCI there. Behind a **sink base** the plain Outlet height.
+- **On the side of a cabinet or soffit** (nearer than the wall): 32" up from its bottom, kept on the box; the device remembers its cabinet.
+- **Away from walls in a room**: an outlet goes on the floor (a 110V outlet in a Garage or Slab room on the ceiling), a light on the ceiling. A switch needs a wall.
+- **Outside any room, or in an exterior room, away from walls**: a weatherproof outlet on the floor, or a path light.
+
+The other flavors (quad, floor, WP, dedicated, jacks, detectors, thermostat...) place their own kind: wall devices on the nearest wall, ceiling devices freely.
+
+### 9.2b Rope lights
+
+A rope light is a path with regularly spaced light sources, not a device. Click and drag to draw its first segment; it is then selected and edited like an
+open polyline: drag a vertex, drag the small circle at the middle of a segment to add a vertex, double-click a vertex to remove it, `Delete` removes the rope light.
+A rope light that starts under a wall cabinet hangs from the cabinet's bottom. Double-click opens the **Rope Light Specification**: General (Elevation
+Reference, Height to the top of the profile, Distance Between Lights, Center Lights, Show Lights, Light Display Size, Treat as One Object), Polyline
+(length, area, volume, lines), Strip Profile, Layer, Schedule. Rope lights set to Treat as One Object are a line of the Electrical Schedule and are listed
+in the Materials List under Electrical by length (`lf`). The runs of a tray ceiling's Rope Lights panel are available as closed rope light paths
+(`tools::electrical::tray_rope_lights`).
+
+### 9.2c Electrical Connection splines
+
+A connection is a spline: an arc of two segments through a middle vertex when first drawn, then any number of vertices (a smooth curve through them).
+With the Electrical Connection tool, or with a connection selected:
+
+- Square handles sit on the vertices; drag one to reshape (the other vertices stay), double-click the curve to add a vertex, double-click a vertex to remove it.
+- Drag an end off its object to **detach** it: the spline stays with a free end and the light it controlled is no longer switched by it. Drop an end on an object to attach it.
+- A selected switch, outlet or light has the diamond-shaped handle below its symbol: drag it to another object to draw a spline.
+- **Reset Curvature** (Edit toolbar) removes the vertices and restores the original direction with the curvature ratio of the Electrical Connection Defaults.
+- Wiring a switch to a light with a spline makes the light switched by it; two switches on one light become 3-way and three or more 3-way/4-way, unless the switch has Automatically Change Switch Type When Wiring turned off (Options tab).
 
 ### Placing and editing
 
@@ -95,8 +130,8 @@ These follow NEC 210.52:
 - Outlets stay 6" clear of door jambs.
 - Kitchens get GFCI outlets at the counter height (44") at most 4' apart.
 - Baths, laundries and garages get GFCI outlets; a bath whose walls are all shorter than 2' still gets one, on its longest wall.
-- Exterior: one WP GFCI outlet on the outside face of the longest exterior wall (the front) and one on the opposite side of the house (the back), in the widest stretch clear of doors, at 18".
-- Heights come from the Electrical Defaults (12", 44", 18").
+- Exterior: one WP GFCI outlet on the outside face of the longest exterior wall (the front) and one on the opposite side of the house (the back), in the widest stretch clear of doors, at the Outlet height.
+- Heights come from the Electrical Defaults (Outlet 12", counter 44" over a 36" counter, exterior WP at the Outlet height).
 - Outlets already in place are not duplicated.
 
 Auto Place Switches (above) places the room light and the switches.
@@ -107,7 +142,8 @@ Double-click a device with the Electrical tool.
 
 | Tab | Fields |
 |---|---|
-| General | Type (any kind of the same family, e.g. a duplex outlet becomes a GFCI), Voltage and Flags (110V / 220V, GFCI, WP, Dedicated; read-only, set by the type), Height, Use as default height for the kind, Default Heights (every kind and the Counter Outlet), Label, Circuit (a number, or blank) |
+| General | Type (any kind of the same family, e.g. a duplex outlet becomes a GFCI), Voltage and Flags (110V / 220V, GFCI, WP, Dedicated; read-only, set by the type), Height to Center / Bottom / Top, Size (Width, Height, Retain Aspect Ratio), Use as default height for its group, Default Heights (the four groups and Use Default Heights), Label, Circuit (a number, or blank) |
+| Options | Mounting (Wall, Floor, Ceiling, Cabinet Side), Recess (Distance from Wall, negative sets it into the wall; Cuts Floor, Ceiling, Wall; Cut Depth; Insert Depth), Automatically Change Switch Type When Wiring |
 | Switches | For a switch: **Connected Lights and Outlets**, check boxes that add and remove connection arcs. For other devices: **Switched By**, the switches that control it |
 | Materials | Plate or fixture finish (White, Ivory, Light Almond, Brown, Black, Stainless Steel), shown on the 3D plate or fixture |
 | Label | Show label in plan, Label text, Text height (disabled) |

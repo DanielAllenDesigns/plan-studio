@@ -24,6 +24,9 @@ pub fn bar(
     brightness: &mut f32,
     out: &mut Vec<Action>,
 ) {
+    // Windows the menu commands open (Replace Fonts, Export to REScheck).
+    crate::dialogs::find_replace::show_prompts(ui.ctx(), out);
+    crate::dialogs::text::rescheck::show_windows(ui.ctx(), out);
     ui.menu_button("File", |ui| file_menu(ui, state, out));
     ui.menu_button("Edit", |ui| edit_menu(ui, state, out));
     ui.menu_button("Build", |ui| build_menu(ui, state, out));
@@ -290,6 +293,14 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::ResetTemplate,
             out,
         );
+        ui.separator();
+        for (label, id) in [
+            ("New Plan from Template\u{2026}", crate::dialogs::template_chooser::NEW_PLAN),
+            ("New Layout from Template\u{2026}", crate::dialogs::template_chooser::NEW_LAYOUT),
+            ("Save as Template\u{2026}", crate::dialogs::template_chooser::SAVE_AS),
+        ] {
+            live(ui, label, "", false, Action::Custom(id), out);
+        }
     });
     ui.separator();
     live(
@@ -438,6 +449,22 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         );
         live(
             ui,
+            "Thermal Envelope Data\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::text::rescheck::EXPORT_THERMAL),
+            out,
+        );
+        live(
+            ui,
+            "Export to REScheck\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::text::rescheck::EXPORT_RESCHECK),
+            out,
+        );
+        live(
+            ui,
             "Picture (PNG, JPEG, BMP, TIFF)\u{2026}",
             "",
             false,
@@ -446,6 +473,26 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         );
     });
     ui.menu_button("Import", |ui| {
+        live(
+            ui,
+            "Import Settings from Plan/Layout\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::import_settings::IMPORT_SETTINGS),
+            out,
+        );
+        ui.menu_button("Legacy Settings Import", |ui| {
+            use crate::dialogs::import_settings as imp;
+            for (label, id) in [
+                ("Import Layer Sets\u{2026}", imp::LEGACY_LAYERS),
+                ("Import Default Sets\u{2026}", imp::LEGACY_DEFAULT_SETS),
+                ("Import Wall Definitions\u{2026}", imp::LEGACY_WALLS),
+                ("Import Note Types\u{2026}", imp::LEGACY_NOTES),
+            ] {
+                live(ui, label, "", false, Action::Custom(id), out);
+            }
+        });
+        ui.separator();
         live(
             ui,
             "Import Drawing (DWG/DXF)\u{2026}",
@@ -758,7 +805,7 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         "Replace Fonts\u{2026}",
         "",
         false,
-        Action::Custom(REPLACE_FONTS),
+        Action::Custom(crate::dialogs::find_replace::REPLACE_FONTS_PROMPT),
         out,
     );
     ui.separator();
@@ -1872,13 +1919,62 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::Custom(crate::dialogs::plan_views::SEED),
             out,
         );
+        live(
+            ui,
+            "Add Starter Plan Views",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_views::STARTER),
+            out,
+        );
+        ui.separator();
+        live(
+            ui,
+            "New Saved Plan View\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_views::NEW_SAVED),
+            out,
+        );
+        live(
+            ui,
+            "Save Active View As\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_views::SAVE_AS),
+            out,
+        );
     });
     live(
         ui,
         "Active Defaults\u{2026}",
         "",
         false,
-        Action::DefaultSettings,
+        Action::Custom(crate::dialogs::default_sets::ACTIVE_DEFAULTS),
+        out,
+    );
+    live(
+        ui,
+        "Default Sets\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::default_sets::DEFAULT_SETS),
+        out,
+    );
+    live(
+        ui,
+        "Rotate Plan View\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::ROTATE_DIALOG),
+        out,
+    );
+    live(
+        ui,
+        "Reverse Plan",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::REVERSE_PLAN),
         out,
     );
     ui.separator();
@@ -2020,6 +2116,29 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
                 );
             }
         });
+        ui.separator();
+        // The settings new schedules of each type start with.
+        ui.menu_button("Schedule Defaults", |ui| {
+            for k in crate::tools::schedule::FLYOUT_KINDS {
+                live(
+                    ui,
+                    crate::tools::schedule::entry_name(k),
+                    "",
+                    false,
+                    Action::Custom(crate::editor::schedule_view::defaults_command(k)),
+                    out,
+                );
+            }
+        });
+        // Create, rename and delete the plan's custom schedule categories.
+        live(
+            ui,
+            "Manage Custom Schedule Categories\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::editor::schedule_view::cmd::MANAGE_CATEGORIES),
+            out,
+        );
         ui.separator();
         live(
             ui,
@@ -2497,6 +2616,7 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         vrow(ui, "90 Degrees Left", "", vc::ROTATE_LEFT, out);
         vrow(ui, "90 Degrees Right", "", vc::ROTATE_RIGHT, out);
         vrow(ui, "Back to North Up", "", vc::ROTATE_RESET, out);
+        vrow(ui, "Rotate to an Angle\u{2026}", "", vc::ROTATE_DIALOG, out);
     });
     ui.separator();
     vrow(ui, "Swap Views", "F7", vc::SWAP_VIEWS, out);
@@ -2548,6 +2668,13 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         out,
     );
     row(ui, "Delete Layout Box", C::DeleteBox, out);
+    row(ui, "Center Object", C::CenterObject, out);
+    row(
+        ui,
+        "Point to Point Move",
+        C::Tool(crate::shell::layout_window::LayoutTool::PointToPoint),
+        out,
+    );
     row(ui, "Open Source View", C::OpenSourceView, out);
     row(ui, "Copy Layout Box to Page\u{2026}", C::CopyBoxToPage, out);
     row(ui, "Duplicate Layout Box", C::DuplicateBox, out);
@@ -2569,7 +2696,37 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
             out,
         );
     });
-    row(ui, "Update Layout Views", C::UpdateViews, out);
+    ui.menu_button("Update Layout Views", |ui| {
+        row(ui, "Update All Views", C::UpdateViews, out);
+        row(ui, "Update All Live Views", C::UpdateLiveViews, out);
+        row(ui, "Update All Plot Line Views", C::UpdatePlotLineViews, out);
+        row(ui, "Update Selected View", C::UpdateView, out);
+    });
+    row(ui, "Send All Views to Layout\u{2026}", C::SendAllViews, out);
+    ui.menu_button("Edit Layout View", |ui| {
+        row(ui, "Rescale Layout View\u{2026}", C::RescaleView, out);
+        row(
+            ui,
+            "Pan/Scale Layout Box",
+            C::Tool(crate::shell::layout_window::LayoutTool::PanScale),
+            out,
+        );
+        row(ui, "Recenter Layout Box Contents", C::RecenterBox, out);
+        row(
+            ui,
+            "Scale Layout Box Contents to Fit",
+            C::ScaleBoxToFit,
+            out,
+        );
+        row(ui, "Layout Box Layers\u{2026}", C::LayoutBoxLayers, out);
+        row(ui, "Unlink Saved Plan View", C::UnlinkSavedView, out);
+        row(
+            ui,
+            "Edit Layout Lines",
+            C::Tool(crate::shell::layout_window::LayoutTool::EditLines),
+            out,
+        );
+    });
     ui.separator();
     row(ui, "Insert Page Before", C::InsertPageBefore, out);
     row(ui, "Insert Page After", C::InsertPageAfter, out);

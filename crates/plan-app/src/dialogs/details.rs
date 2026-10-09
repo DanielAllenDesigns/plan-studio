@@ -24,10 +24,7 @@ use plan_core::walls::Side;
 use plan_core::Id;
 
 mod management;
-/// The shared Moldings / Profiles / Rails panel (`dialogs/molding.rs`; it
-/// hangs under this module until `dialogs.rs` declares it).
-#[path = "molding.rs"]
-pub mod molding;
+use super::molding;
 #[cfg(test)]
 pub use management::{components_open, management_open};
 pub use management::{
@@ -254,6 +251,9 @@ impl DetailsDialog {
     }
 
     /// The profile the Edit button of the Moldings panel asked to open, if any.
+    /// The shell host (`shell/spec_dialogs.rs`, not owned here) polls it; see
+    /// docs/integration-queue.md.
+    #[allow(dead_code)]
     pub fn take_edit_request(&mut self) -> Option<String> {
         self.form.edit_request.take()
     }
@@ -343,7 +343,9 @@ impl Form {
                 row(ui, "Start", |ui| {
                     ui.checkbox(&mut q.swap_start, "Swap Start Block")
                 });
-                row(ui, "Bottom", |ui| ui.checkbox(&mut q.set_bottom, "Set Bottom"));
+                row(ui, "Bottom", |ui| {
+                    ui.checkbox(&mut q.set_bottom, "Set Bottom")
+                });
                 if q.set_bottom {
                     fields.length_row(ui, "Bottom height", "q_base", &mut q.base);
                 }
@@ -381,9 +383,15 @@ impl Form {
                 ui.weak(floor_note);
                 row(ui, "Twisted Joints", |ui| {
                     ui.vertical(|ui| {
-                        ui.checkbox(&mut m.auto_orient, "Auto Calc Orientation at Twisted Joints");
+                        ui.checkbox(
+                            &mut m.auto_orient,
+                            "Auto Calc Orientation at Twisted Joints",
+                        );
                         ui.checkbox(&mut m.mitre_twisted, "Mitre Molding at Twisted Joints");
-                        ui.checkbox(&mut m.mitre_if_next_off, "Mitre Molding If Next Edge Turned Off");
+                        ui.checkbox(
+                            &mut m.mitre_if_next_off,
+                            "Mitre Molding If Next Edge Turned Off",
+                        );
                     })
                     .inner
                 });
@@ -401,7 +409,9 @@ impl Form {
                         }
                     });
                     let on_before = on;
-                    row(ui, "Molding on Selected Edge", |ui| ui.checkbox(&mut on, "On"));
+                    row(ui, "Molding on Selected Edge", |ui| {
+                        ui.checkbox(&mut on, "On")
+                    });
                     if on != on_before {
                         m.set_edge_on(self.edge, on);
                     }
@@ -568,7 +578,9 @@ impl Form {
         section(ui, "Moldings");
         row(ui, "Polyline", |ui| {
             ui.checkbox(&mut m.extrude_inside, "Extrude Inside Polyline")
-                .on_hover_text("A closed polyline puts the profile inside whichever way it was drawn")
+                .on_hover_text(
+                    "A closed polyline puts the profile inside whichever way it was drawn",
+                )
         });
         row(ui, "Direction", |ui| {
             if ui.button("Reverse Direction").clicked() {
@@ -649,7 +661,9 @@ impl Form {
             return;
         };
         section(ui, "Label");
-        row(ui, "Show label", |ui| ui.checkbox(&mut m.show_label, "Display"));
+        row(ui, "Show label", |ui| {
+            ui.checkbox(&mut m.show_label, "Display")
+        });
         row(ui, "Label text", |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut m.label)
@@ -950,7 +964,11 @@ mod tests {
     fn each_kind_has_its_pages() {
         let l = layer();
         let tabs = |r| DetailsDialog::new(&l, r, names()).unwrap().tab_names();
-        for r in [DetailRef::Region(4), DetailRef::Deck(7), DetailRef::Solid(8)] {
+        for r in [
+            DetailRef::Region(4),
+            DetailRef::Deck(7),
+            DetailRef::Solid(8),
+        ] {
             assert_eq!(
                 tabs(r),
                 ["General", "Materials", "Line Style", "Layer"],
@@ -1098,7 +1116,9 @@ mod tests {
         assert!(parts[1].section.iter().any(|p| p.x < -0.2));
         assert!(parts[1].dz > 0.0, "the second sits on the first");
         // A profile of no size is an error.
-        let Draft::Molding(m) = d.draft_mut() else { panic!() };
+        let Draft::Molding(m) = d.draft_mut() else {
+            panic!()
+        };
         m.table.rows[0].width = 0.0;
         assert!(d.form.error().is_some());
     }
@@ -1109,7 +1129,12 @@ mod tests {
         l.moldings[0].polyline = vec![Point::ZERO, Point::new(96.0, 0.0), Point::new(96.0, 48.0)];
         let mut d = DetailsDialog::new(&l, DetailRef::Molding(3), names()).unwrap();
         let drawn = page_texts(&mut d, "Selected Line");
-        for want in ["3D Length", "Angle in XY Plane", "Angle from XY Plane", "Select Edit Plane"] {
+        for want in [
+            "3D Length",
+            "Angle in XY Plane",
+            "Angle from XY Plane",
+            "Select Edit Plane",
+        ] {
             assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
         }
         let drawn = page_texts(&mut d, "General");
@@ -1123,7 +1148,9 @@ mod tests {
             assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
         }
         // Edge 0 rises 24 inches over its 96: 3D length and angles follow.
-        let Draft::Molding(m) = d.draft_mut() else { panic!() };
+        let Draft::Molding(m) = d.draft_mut() else {
+            panic!()
+        };
         assert!(m.set_edge_3d(0, 100.0, 0.0, 14.0));
         assert!(m.is_sloped());
         assert!((m.edge_length_3d(0) - 100.0).abs() < 1e-9);
@@ -1142,7 +1169,13 @@ mod tests {
         let l = layer();
         let mut d = DetailsDialog::new(&l, DetailRef::CornerBoard(1), names()).unwrap();
         let drawn = page_texts(&mut d, "General");
-        for want in ["Width", "Thickness", "Set Bottom", "Set Top", "Recessed To Sheathing Layer"] {
+        for want in [
+            "Width",
+            "Thickness",
+            "Set Bottom",
+            "Set Top",
+            "Recessed To Sheathing Layer",
+        ] {
             assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
         }
         let mut d = DetailsDialog::new(&l, DetailRef::Quoin(2), names()).unwrap();
@@ -1160,7 +1193,9 @@ mod tests {
             assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
         }
         // Components can be listed.
-        let Draft::Quoin(q) = d.draft_mut() else { panic!() };
+        let Draft::Quoin(q) = d.draft_mut() else {
+            panic!()
+        };
         q.components.push("Stone block".into());
         let drawn = page_texts(&mut d, "Components");
         assert!(drawn.iter().any(|t| t == "Add Component"), "{drawn:?}");

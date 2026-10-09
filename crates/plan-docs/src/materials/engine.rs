@@ -25,6 +25,8 @@ use plan_electrical::ElectricalLayer;
 use plan_framing::{FramingMember, MaterialList, Member};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod platform_lines;
+
 // ------------------------------------------------------------------ sources --
 
 /// One object's share of a row: `qty` in the row's pre-rounding unit (square
@@ -609,26 +611,9 @@ pub fn take_off_raw(
             let mut a = Acc::default();
             a.add(fi, &rk, area);
             let mut floor_line = Vec::new();
-            emit(
-                &mut floor_line,
-                "Interior Finishes",
-                "Flooring",
-                format!("Flooring - {name}"),
-                "",
-                "sq ft",
-                &a,
-                Rule::Ceil,
-            );
-            emit(
-                &mut floor_line,
-                "Interior Finishes",
-                "Ceiling drywall 1/2\" 4x8 sheet",
-                format!("Ceiling drywall 1/2\" 4x8 sheet - {name}"),
-                "4x8",
-                "sheet",
-                &a,
-                Rule::Sheets,
-            );
+            // A layered platform lists its layers (Subfloor, Flooring,
+            // Framing, Wallboard); the others keep the two rows they had.
+            platform_lines::emit_room(&mut floor_line, f, r, &name, &a);
             room_lines.extend(floor_line);
             if filter.room_wall_finish(fi, &rk) {
                 let sq_ft = room_wall_finish_sq_ft(f, r);
@@ -952,6 +937,7 @@ pub fn take_off_raw(
 
     // ---- Electrical ----
     let mut devices: BTreeMap<String, Acc> = BTreeMap::new();
+    let mut rope_lights = Acc::default();
     for &fi in &floors {
         let Some(v) = project.floors[fi].electrical.as_ref() else {
             continue;
@@ -966,6 +952,13 @@ pub fn take_off_raw(
                         .add(fi, &dk, 1.0);
                 }
             }
+            // Rope lights are listed by length (E-22).
+            for r in &layer.ropes {
+                let key = format!("rope:{fi}:{}", r.id);
+                if filter.counts(fi, &key, || Bounds::of_points(&r.points)) {
+                    rope_lights.add(fi, &key, r.length() / 12.0);
+                }
+            }
         }
     }
     for (name, acc) in &devices {
@@ -977,6 +970,18 @@ pub fn take_off_raw(
             "",
             "ea",
             acc,
+            Rule::Sum,
+        );
+    }
+    if rope_lights.total() > 0.0 {
+        emit(
+            &mut out,
+            "Electrical",
+            "Rope Light",
+            "Rope Light",
+            "",
+            "lf",
+            &rope_lights,
             Rule::Sum,
         );
     }

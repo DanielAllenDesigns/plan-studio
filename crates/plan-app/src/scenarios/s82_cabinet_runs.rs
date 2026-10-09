@@ -209,14 +209,15 @@ fn a_u_kitchen_drawn_with_gaps_gets_fillers_and_contractor_labels() {
 #[test]
 fn a_filler_follows_its_cabinet_when_the_gap_changes() {
     let mut sim = kitchen_with_fillers();
-    // Widen the 3 in gap to 4 in by moving the third cabinet: the filler
-    // follows, and the 6 in gap stays open.
+    // Close the 3 in gap between the second and third cabinets to 2 in by
+    // moving the third: the filler follows (it now sits 55 to 57), and the
+    // 6 in gap stays open.
     let c = users(&sim)
         .into_iter()
         .find(|c| c.kind == CabinetKind::Base && (c.position.x - 58.0).abs() < 1e-6)
         .unwrap();
     let mut moved = c.clone();
-    moved.position.x = 59.0;
+    moved.position.x = 57.0;
     sim.app.cx.begin_change("Move");
     assert!(placed::replace_cabinet(&mut sim.app.cx.project, 0, &moved));
     placed::rejoin_if_enabled(&mut sim.app.cx);
@@ -225,12 +226,19 @@ fn a_filler_follows_its_cabinet_when_the_gap_changes() {
         .filter(|f| f.kind == CabinetKind::BaseFiller)
         .map(|f| f.width)
         .collect();
-    assert!(w.contains(&4.0) && !w.contains(&3.0), "{w:?}");
-    // Move it out of reach: the filler goes.
-    moved.position.x = 62.0;
+    assert!(!w.contains(&3.0), "{w:?}");
+    assert!(
+        autos(&sim).iter().any(|f| f.kind == CabinetKind::BaseFiller
+            && f.width == 2.0
+            && (f.position.x - 55.0).abs() < 1e-6),
+        "a 2 in filler follows to 55"
+    );
+    assert_eq!(autos(&sim).len(), 7);
+    // Move it out of reach on both sides: its filler goes.
+    moved.position.x = 60.0;
     placed::replace_cabinet(&mut sim.app.cx.project, 0, &moved);
     placed::rejoin_if_enabled(&mut sim.app.cx);
-    assert_eq!(autos(&sim).len(), 5);
+    assert_eq!(autos(&sim).len(), 6);
 }
 
 #[test]

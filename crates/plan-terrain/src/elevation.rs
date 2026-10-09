@@ -5,9 +5,9 @@ use std::f64::consts::PI;
 use plan_core::geometry::{point_in_polygon, polygon_centroid};
 use plan_core::Point;
 
+use crate::geom::offset_polygon;
 use crate::geom::{bounds, densify, dist_to_boundary};
 use crate::grading::{build_pads, wall_cuts, Pad, WallCut};
-use crate::geom::offset_polygon;
 use crate::model::{ElevationRegion, Modifier, ModifierKind, Terrain};
 use crate::spec::{AbsoluteElevation, ObjectKey};
 
@@ -112,12 +112,10 @@ impl<'a> ElevationModel<'a> {
         model.shift = match t.absolute_elevation {
             AbsoluteElevation::Automatic => 0.0,
             AbsoluteElevation::ContourZero => t.floor_one_elevation + t.surface_offset,
-            AbsoluteElevation::ReferencePoint => t
-                .effective_reference_point()
-                .map_or(0.0, |p| {
-                    t.floor_one_elevation + t.surface_offset
-                        - model.height_upto(p, model.modifiers.len())
-                }),
+            AbsoluteElevation::ReferencePoint => t.effective_reference_point().map_or(0.0, |p| {
+                t.floor_one_elevation + t.surface_offset
+                    - model.height_upto(p, model.modifiers.len())
+            }),
         };
         model.pads = build_pads(t, &model);
         model.cuts = wall_cuts(t);

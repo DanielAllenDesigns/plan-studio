@@ -115,9 +115,10 @@ fn a_basement_foundation_has_walls_footings_a_slab_and_a_room_with_a_ceiling() {
         "{}",
         bottom(&under)
     );
-    // Footings 10" under the 108" walls.
+    // Footings 10" under the 108" stem walls (measured from the underside of
+    // the platform that bears on them, DECISIONS FF1).
     let concrete = meshes(&sim, Material::Concrete);
-    assert!((bottom(&concrete) + 108.0 + 10.0).abs() < 0.01);
+    assert!((bottom(&concrete) + 108.0 + platform + 10.0).abs() < 0.01);
     // Its Room Specification shows the type that the build added to the list.
     sim.app.cx.floor = 0;
     sim.app.cx.refresh();
@@ -126,7 +127,7 @@ fn a_basement_foundation_has_walls_footings_a_slab_and_a_room_with_a_ceiling() {
     // The dialog's default ceiling height is the clear height under the
     // first floor's platform, measured from the slab.
     assert!(
-        (init.floor_ceiling_height - (108.0 - f64::from(platform) - 4.0)).abs() < 0.01,
+        (init.floor_ceiling_height - (108.0 - 4.0)).abs() < 0.01,
         "{}",
         init.floor_ceiling_height
     );
@@ -202,7 +203,10 @@ fn grade_beams_on_piers_put_piers_at_the_corners_and_along_the_walls() {
         .walls
         .iter()
         .all(|w| w.bottom_offset == 24.0 && w.height == 18.0));
-    assert_eq!(f.elevation, -42.0);
+    // The platform bears on the grade beams, so Floor 0 is a platform taller
+    // than pier plus beam (DECISIONS FF1).
+    let platform = sim.app.cx.project.floors[1].settings.floor_structure_thickness;
+    assert_eq!(f.elevation, -(42.0 + platform));
 }
 
 #[test]
@@ -222,7 +226,8 @@ fn the_attic_floor_follows_build_roof() {
     let attic = &cx.project.floors[2];
     assert_eq!(attic.kind, FloorKind::Attic);
     assert_eq!(attic.walls.len(), 4);
-    assert_eq!(attic.room_names[0].room_type, "Attic");
+    // Rooms cannot be created on the Attic floor (manual p. 773).
+    assert!(attic.room_names.is_empty());
     // Stretch the second floor's east wall and rebuild the roof: the attic
     // walls and rooms are made again from the new outline.
     let east = cx.project.floors[1]
@@ -245,7 +250,7 @@ fn the_attic_floor_follows_build_roof() {
         attic.walls.iter().any(|w| w.start.x > W + 50.0),
         "the attic walls moved with the wall below"
     );
-    assert_eq!(attic.room_names.len(), 1);
+    assert!(attic.room_names.is_empty());
     assert!(attic.walls.iter().all(|w| w.flags.attic));
     // Without an attic floor Build Roof makes none.
     let mut plain = house();

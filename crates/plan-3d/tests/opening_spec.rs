@@ -508,9 +508,10 @@ fn a_door_and_its_sidelite_share_one_casing_loop() {
         (casing_tris(&s, door), casing_tris(&s, side))
     };
     let (d0, s0) = trim(&p);
-    // Apart: each has its own legs and head on both faces (plus the
-    // sidelite's stool and apron are absent only if it were a door).
-    assert_eq!(d0, 6 * 12);
+    // 4 in apart their casings already touch, so they mull on their own
+    // (Round 16) and share one casing: a leg at each end, a strip filling the
+    // gap and the head across both, on each face (8 boards in all).
+    assert_eq!(d0 + s0, 8 * 12, "door {d0} sidelite {s0}");
     let group = p.mull_openings(0, &[door, side]).unwrap();
     assert_eq!(p.floors[0].openings[0].mull_group, Some(group));
     let (d1, s1) = trim(&p);
@@ -530,8 +531,15 @@ fn a_door_and_its_sidelite_share_one_casing_loop() {
     // The head reaches the top of the door, not the shorter sidelite.
     let (_, head_top) = extent(&build_scene_with(&p, &casing_on()), door, Material::Trim, 1);
     assert!((head_top - (80.0 + 0.25 + 3.5)).abs() < 1e-3, "{head_top}");
-    // Unmulled again, each is on its own.
+    // Unmulled again they still touch, so the casing is still shared.
     p.unmull_openings(0, door);
+    assert_eq!(trim(&p).0, 4 * 12);
+    // Apart, each is on its own.
+    for o in &mut p.floors[0].openings {
+        if o.id == side {
+            o.center_offset = 100.0;
+        }
+    }
     assert_eq!(trim(&p).0, 6 * 12);
 }
 

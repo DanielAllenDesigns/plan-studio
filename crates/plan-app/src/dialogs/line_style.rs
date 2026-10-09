@@ -162,6 +162,7 @@ pub fn sample(ui: &mut egui::Ui, def: &LineStyleDef, size: Vec2) {
 /// the style name in use ("" is the layer's); returns the style chosen this
 /// frame (a catalog choice is returned whole so the caller can save it in
 /// the plan with `StyleBook::set_line`).
+#[allow(dead_code)] // hook for the owner named in integration-queue (brief 08)
 pub fn picker(
     ui: &mut egui::Ui,
     salt: &str,
@@ -219,6 +220,7 @@ pub fn picker(
 
 /// The Library Browser's line styles: the built-in catalog then the User
 /// Catalog.
+#[allow(dead_code)] // hook for the owner named in integration-queue (brief 08)
 pub fn library_styles(book: &plan_core::fill_styles::StyleBook) -> Vec<LineStyleDef> {
     let mut v = catalog();
     for u in &book.user_lines {
@@ -846,9 +848,7 @@ impl ManageDialog {
             });
         if self.spec.is_some() {
             self.show_spec(ctx);
-        } else if !open {
-            outcome = Outcome::Cancel;
-        } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        } else if !open || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             outcome = Outcome::Cancel;
         }
         outcome
@@ -991,6 +991,7 @@ pub fn host_frame(cx: &mut EditorContext, ctx: &egui::Context) {
 
 /// Library Browser: a line style picked there is used by the lines drawn
 /// next, until another line style or drawing tool is selected. `None` ends it.
+#[allow(dead_code)] // hook for the owner named in integration-queue (brief 08)
 pub fn set_drawing_style(cx: &EditorContext, name: Option<&str>) {
     DRAWING.with(|d| *d.borrow_mut() = name.map(str::to_string));
     SEEN.with(|s| *s.borrow_mut() = max_cad_id(cx));
@@ -1066,6 +1067,7 @@ pub fn apply_to_selection(cx: &mut EditorContext, def: Option<&LineStyleDef>) ->
 
 /// Gives layer `layer` the library style `def` (Layer Display Options' Line
 /// Style column). One undo step.
+#[allow(dead_code)] // hook for the owner named in integration-queue (brief 08)
 pub fn apply_to_layer(cx: &mut EditorContext, layer: &str, def: Option<&LineStyleDef>) {
     cx.begin_change("Layer Line Style");
     cx.project

@@ -4,21 +4,65 @@
 //!
 //! * A click on empty plan places a new schedule with its upper-left corner at
 //!   the snapped point and selects it. Placing is one undo step.
-//! * A click on an existing schedule selects it; dragging moves it.
+//! * A click on an existing schedule selects it (and the row clicked); dragging
+//!   its Move handle or its body moves it.
+//! * The other edit handles of the selected schedule (side Resize, Rotate,
+//!   Resize Column, Move Row, Move Column, Sort by Column, Wrap) work here
+//!   too; each drag is one undo step.
 //! * A double-click on a schedule opens its Schedule Specification.
 //! * Delete (or Backspace) deletes the selected schedule.
+//! * After Create Schedule from Room the next click places a schedule that
+//!   lists only the objects in that room.
 //!
 //! A schedule is `ObjectRef::Schedule`, so the selection is `cx.selection`,
 //! shared with Select Objects (which also picks, moves, deletes and opens one).
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::build_tools;
-use crate::editor::schedule_view as sv;
-use crate::editor::{Camera, EditorContext};
+use crate::editor::schedule_view::{self as sv, handles as hnd, HandleKind};
+use crate::editor::{rooms_edit, Camera, EditorContext};
 use eframe::egui::{self, Key, Stroke, StrokeKind};
 use plan_core::geometry::Point;
-use plan_core::schedules::{Schedule, ScheduleKind};
+use plan_core::schedules::{RoomRef, Schedule, ScheduleKind};
 use plan_core::Id;
+use std::cell::RefCell;
+
+thread_local! {
+    /// Create Schedule from Room has chosen the type: the next click places a
+    /// schedule of the room (and its name, for the title).
+    static FROM_ROOM: RefCell<Option<(RoomRef, String)>> = const { RefCell::new(None) };
+    /// The drag of an edit handle in progress. The Schedule tool and Select
+    /// Objects share it, so a selected schedule's handles work in both.
+    static DRAG: RefCell<Option<HandleDrag>> = const { RefCell::new(None) };
+}
+
+/// Arms the Schedule tool to place a schedule limited to `room` with the next
+/// click (Create Schedule from Room, p. 709).
+pub fn arm_from_room(room: RoomRef, name: String) {
+    FROM_ROOM.with(|r| *r.borrow_mut() = Some((room, name)));
+}
+
+/// The room the next click will make a schedule of.
+pub fn armed_room() -> Option<RoomRef> {
+    FROM_ROOM.with(|r| r.borrow().as_ref().map(|(r, _)| *r))
+}
+
+fn disarm() {
+    FROM_ROOM.with(|r| *r.borrow_mut() = None);
+}
+
+/// A drag of one of the edit handles of the selected schedule.
+struct HandleDrag {
+    id: Id,
+    kind: HandleKind,
+    floor: usize,
+    start: Point,
+    orig: Schedule,
+    layout: sv::Layout,
+    moved: bool,
+    /// Does this drag hold an open undo step?
+    stepped: bool,
+}
 
 /// The kinds the Schedule flyout lists, in order, then the General one.
 pub const FLYOUT_KINDS: [ScheduleKind; 13] = [
@@ -73,11 +117,168 @@ impl Default for ScheduleTool {
     }
 }
 
+/// The undo label of a handle drag.
+fn handle_label(k: HandleKind) -> &'static str {
+    match k {
+        HandleKind::Move => "Move Schedule",
+        HandleKind::ResizeLeft | HandleKind::ResizeRight => "Resize Schedule",
+        HandleKind::Rotate => "Rotate Schedule",
+        HandleKind::ResizeColumn(_) => "Resize Schedule Column",
+        HandleKind::MoveRow(_) => "Move Schedule Row",
+        HandleKind::MoveColumn(_) => "Move Schedule Column",
+        HandleKind::Sort(_) => "Sort Schedule",
+        HandleKind::Wrap => "Wrap Schedule",
+    }
+}
+
 impl ScheduleTool {
     fn ghost_size(&self, cx: &EditorContext) -> (f64, f64) {
         let def = Schedule::new(self.kind, Point::ZERO);
         let l = sv::layout_of(cx, &def, cx.floor);
         (l.width, l.height)
+    }
+}
+
+/// A press at `at` on an edit handle of the selected schedule starts its
+/// drag (or, for Sort by Column, sorts at once). `None` when the press is not
+/// on a handle, or the Move handle, which the table body does as well.
+pub fn handle_press(cx: &mut EditorContext, at: Point) -> Option<ToolResult> {
+    let id = sv::selected(cx)?;
+    let def = sv::find(cx, id)?;
+    let layout = sv::layout_of(cx, &def, cx.floor);
+    let tol = f64::from(hnd::HANDLE_PX) / cx.px_per_in.max(1e-6);
+    let hs = hnd::handles(&def, &layout);
+    let h = hnd::hit(&hs, at, tol)?;
+    if h.kind == HandleKind::Move {
+        return None;
+    }
+    if let HandleKind::Sort(c) = h.kind {
+        // A click: the first sorts ascending, the next reverses.
+        let field = layout.fields.get(c)?.clone();
+        let mut d = def;
+        hnd::toggle_sort(&mut d, &field);
+        let fl = cx.floor;
+        sv::replace_as(cx, fl, d, "Sort Schedule");
+        return Some(ToolResult::committed("Sort Schedule"));
+    }
+    // Row and column moves act on release (they renumber), the rest preview
+    // as they go inside one undo step.
+    let stepped = !matches!(h.kind, HandleKind::MoveRow(_) | HandleKind::MoveColumn(_));
+    if stepped {
+        cx.begin_change(handle_label(h.kind));
+    }
+    DRAG.with(|d| {
+        *d.borrow_mut() = Some(HandleDrag {
+            id,
+            kind: h.kind,
+            floor: cx.floor,
+            start: at,
+            orig: def,
+            layout,
+            moved: false,
+            stepped,
+        })
+    });
+    Some(ToolResult::consumed())
+}
+
+/// Is a handle drag in progress?
+pub fn handle_dragging() -> bool {
+    DRAG.with(|d| d.borrow().is_some())
+}
+
+/// The pointer moved to `now` with the button down: carries the handle drag
+/// along. False when no handle drag is in progress.
+pub fn handle_move(cx: &mut EditorContext, now: Point) -> bool {
+    let Some(mut h) = DRAG.with(|d| d.borrow_mut().take()) else {
+        return false;
+    };
+    if (now - h.start).length() > 1e-6 {
+        h.moved = true;
+    }
+    preview_handle(cx, &h, now);
+    DRAG.with(|d| *d.borrow_mut() = Some(h));
+    true
+}
+
+/// The button went up at `at`: ends the handle drag as one undo step.
+pub fn handle_release(cx: &mut EditorContext, at: Point) -> Option<ToolResult> {
+    let h = DRAG.with(|d| d.borrow_mut().take())?;
+    Some(finish_handle(cx, h, at))
+}
+
+/// Drops a handle drag in progress, undoing its preview.
+pub fn handle_cancel(cx: &mut EditorContext) {
+    if let Some(h) = DRAG.with(|d| d.borrow_mut().take()) {
+        if h.stepped {
+            cx.cancel_change();
+        }
+    }
+}
+
+/// Shows the schedule as the drag of `h` to `now` would leave it (no undo
+/// step of its own: the press took it).
+fn preview_handle(cx: &mut EditorContext, h: &HandleDrag, now: Point) {
+    if !h.stepped {
+        return;
+    }
+    let d = hnd::drag(h.kind, &h.orig, &h.layout, h.start, now);
+    let mut def = d.def;
+    if let Some(keep) = d.keep {
+        let l = sv::build_layout(cx, &def, h.floor);
+        let old = h.layout.frame(h.orig.position);
+        hnd::apply_keep(&mut def, &l, &old, keep);
+    }
+    let mut layer = sv::load(cx);
+    if let Some(s) = layer.find_mut(h.id) {
+        *s = def;
+    }
+    layer.store(&mut cx.project.floors[h.floor]);
+    cx.mark_dirty();
+}
+
+/// Ends the drag of a handle: one undo step, or none when nothing moved.
+fn finish_handle(cx: &mut EditorContext, h: HandleDrag, at: Point) -> ToolResult {
+    match h.kind {
+        HandleKind::MoveRow(from) => {
+            let (_, y) = h.layout.frame(h.orig.position).to_local(at);
+            let Some(to) = hnd::row_at(&h.layout, y) else {
+                return ToolResult::consumed();
+            };
+            if !h.moved || to == from {
+                return ToolResult::consumed();
+            }
+            if sv::move_row(cx, h.floor, h.id, from, to) {
+                return ToolResult::committed("Move Schedule Row");
+            }
+            ToolResult::consumed()
+        }
+        HandleKind::MoveColumn(from) => {
+            let (x, _) = h.layout.frame(h.orig.position).to_local(at);
+            let Some(to) = hnd::column_at(&h.layout, x) else {
+                return ToolResult::consumed();
+            };
+            if !h.moved || to == from {
+                return ToolResult::consumed();
+            }
+            let (Some(a), Some(b)) = (h.layout.fields.get(from), h.layout.fields.get(to)) else {
+                return ToolResult::consumed();
+            };
+            let mut d = h.orig.clone();
+            if hnd::move_column_to(&mut d, a, b) {
+                sv::replace_as(cx, h.floor, d, "Move Schedule Column");
+                return ToolResult::committed("Move Schedule Column");
+            }
+            ToolResult::consumed()
+        }
+        k => {
+            if !h.moved {
+                cx.cancel_change();
+                return ToolResult::consumed();
+            }
+            cx.mark_dirty();
+            ToolResult::committed(handle_label(k))
+        }
     }
 }
 
@@ -91,6 +292,12 @@ impl Tool for ScheduleTool {
     }
 
     fn hint(&self) -> String {
+        if armed_room().is_some() {
+            return format!(
+                "{}: click to place the schedule of the room",
+                entry_name(self.kind)
+            );
+        }
         format!(
             "{}: click to place it; double-click a schedule for its specification",
             entry_name(self.kind)
@@ -112,16 +319,21 @@ impl Tool for ScheduleTool {
         self.hover = None;
         self.moving = None;
         self.ghost = None;
+        handle_cancel(cx);
         cx.status = self.hint();
     }
 
-    fn deactivate(&mut self, _cx: &mut EditorContext) {
+    fn deactivate(&mut self, cx: &mut EditorContext) {
+        handle_cancel(cx);
         self.hover = None;
         self.moving = None;
         self.ghost = None;
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if p.down && handle_move(cx, p.world) {
+            return ToolResult::consumed();
+        }
         if let Some(m) = &mut self.moving {
             if p.down {
                 let to = Point::new(
@@ -150,8 +362,31 @@ impl Tool for ScheduleTool {
     }
 
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        // An edit handle of the selected schedule.
+        if let Some(r) = handle_press(cx, p.world) {
+            return r;
+        }
+        // Create Schedule from Room: the click places the room's schedule.
+        if let Some(room) = armed_room() {
+            if sv::pick(cx, p.world).is_none() {
+                let at = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+                disarm();
+                if let Some(i) = rooms_edit::room_index_at(cx, room.point()) {
+                    if sv::create_from_room(cx, self.kind, i, at).is_some() {
+                        return ToolResult::committed("Create Schedule from Room");
+                    }
+                }
+                cx.status = "The room is gone".into();
+                return ToolResult::consumed();
+            }
+        }
         if let Some(id) = sv::pick(cx, p.world) {
             sv::select(cx, id);
+            if let Some(row) = sv::row_at_point(cx, id, p.world) {
+                sv::select_row(cx.floor, id, row);
+            } else {
+                sv::clear_row();
+            }
             if let Some(s) = sv::find(cx, id) {
                 // The drag moves it; the undo step is taken here, before the
                 // first preview change, and dropped on release if nothing moved.
@@ -173,7 +408,10 @@ impl Tool for ScheduleTool {
         ToolResult::committed(&format!("Place {}", self.kind.title()))
     }
 
-    fn pointer_up(&mut self, cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
+    fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if let Some(r) = handle_release(cx, p.world) {
+            return r;
+        }
         let Some(m) = self.moving.take() else {
             return ToolResult::ignored();
         };
@@ -203,6 +441,11 @@ impl Tool for ScheduleTool {
     }
 
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        if k.is(Key::Escape) && armed_room().is_some() {
+            disarm();
+            cx.status = self.hint();
+            return ToolResult::consumed();
+        }
         if k.is(Key::Delete) || k.is(Key::Backspace) {
             if let Some(id) = sv::selected(cx) {
                 if sv::delete(cx, id) {

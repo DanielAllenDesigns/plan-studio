@@ -1,6 +1,11 @@
 //! Door and window Edit toolbar commands: Center on Wall Segment (DW-24),
-//! Mull and Unmull (DW-51, DW-52: a door mulls with the windows beside it),
-//! Reset Label Position (DW-63), and the standard widths a jamb handle snaps
+//! Make Mulled Unit and Explode Mulled Unit (DW-51, DW-52, DW-160: windows
+//! and doors of one wall within 24 in, side by side or stacked), Select Next
+//! Object (stacked openings and the components of a unit), Set as Default and
+//! Explode Bay/Bow Window (DW-48, DW-124), Delete Duplicate (the Caution
+//! symbol), Show Open/Closed and the Gable Over Door/Window hook, and
+//! `follow_defaults` that makes openings on Use Default follow a changed
+//! default (manual pp. 103, 104). Also Reset Label Position (DW-63), and the standard widths a jamb handle snaps
 //! to (DW-27), and Renumber Schedule (DW-61, L-26: the marks of the doors or
 //! the windows set in the order they were drawn). The buttons come from `EditorContext::extra_edit_actions` and
 //! run through `run_custom`.
@@ -8,7 +13,8 @@
 use super::selection::ObjectRef;
 use super::{EditAction, EditActionKind, EditorContext};
 use crate::dialogs::OpeningTarget;
-use plan_core::openings::{StandardWidths, MULL_DOOR_STYLES, MULL_MAX_GAP};
+use plan_core::openings::mull::UNIT_REACH;
+use plan_core::openings::StandardWidths;
 use plan_core::schedules::{Numbering, ScheduleKind};
 use plan_core::{Id, OpeningKind, OpeningStyle, Project};
 
@@ -29,6 +35,19 @@ pub const RENUMBER_WINDOWS: &str = "opening.renumber_windows";
 pub const DOORS_OPEN: &str = "opening.doors_open_3d";
 /// 3D menu: casing, jambs, sills and thresholds on / off.
 pub const CASING_3D: &str = "opening.casing_3d";
+/// Select Next Object: the next opening in the stack under the selected one.
+pub const SELECT_NEXT: &str = "opening.select_next";
+/// Set as Default: the selected opening becomes the default of its type.
+pub const SET_DEFAULT: &str = "opening.set_default";
+/// Explode Bay/Bow Window into walls, windows and a room.
+pub const EXPLODE_BAY: &str = "opening.explode_bay";
+/// Delete Duplicate from the Caution symbol's menu.
+pub const DELETE_DUPLICATE: &str = "opening.delete_duplicate";
+/// Show Open / Show Closed in 2D and 3D.
+pub const SHOW_OPEN_2D: &str = "opening.show_open_2d";
+pub const SHOW_CLOSED_2D: &str = "opening.show_closed_2d";
+pub const SHOW_OPEN_3D: &str = "opening.show_open_3d";
+pub const SHOW_CLOSED_3D: &str = "opening.show_closed_3d";
 /// Height of a new transom, inches.
 const TRANSOM_HEIGHT: f64 = 18.0;
 /// Flip Hinge is run by the shared edit commands (`edit.flip_hinge`).
@@ -66,37 +85,26 @@ pub fn standard_widths(cx: &EditorContext, kind: OpeningKind) -> StandardWidths 
         .unwrap_or_else(|| cx.defaults.opening_variants.widths.clone())
 }
 
-/// Whether `o` can be part of a mulled unit: a window, or a door with a swing
-/// or a cased opening (its sidelites are the windows beside it).
+/// Whether `o` can be part of a mulled unit: any door or window but a bay,
+/// box or bow window or a wall niche.
 fn mullable(o: &plan_core::Opening) -> bool {
-    match o.kind {
-        OpeningKind::Window => true,
-        OpeningKind::Door => MULL_DOOR_STYLES.contains(&o.style),
-    }
+    !o.style.projects() && o.style != OpeningStyle::WallNiche
 }
 
-/// The window beside `id` it would mull with: the nearest window on the same
-/// wall within [`MULL_MAX_GAP`] with nothing in between, not yet in its unit.
+/// The opening beside `id` it would be blocked with: the nearest one on the
+/// same wall within [`UNIT_REACH`] with nothing in between, not yet in its
+/// unit.
 fn mull_partner(cx: &EditorContext, id: Id) -> Option<Id> {
     let f = cx.floor();
     let me = f.openings.iter().find(|o| o.id == id)?;
     if !mullable(me) {
         return None;
     }
-    let unit_has_door = cx.project.mull_members(cx.floor, id).iter().any(|m| {
-        f.openings
-            .iter()
-            .any(|o| o.id == *m && o.kind == OpeningKind::Door)
-    });
     let unit = cx.project.mull_members(cx.floor, id);
     let (lo, hi) = cx.project.unit_span(cx.floor, id)?;
     let mut best: Option<(f64, Id)> = None;
     for o in f.openings_on(me.wall_id) {
-        // A door takes windows beside it; a window takes a window, or the
-        // door beside it when the unit has none yet.
-        let partner_ok = o.kind == OpeningKind::Window
-            || (!unit_has_door && me.kind == OpeningKind::Window && mullable(o));
-        if unit.contains(&o.id) || !partner_ok {
+        if unit.contains(&o.id) || !mullable(o) {
             continue;
         }
         let gap = if o.start_offset() >= hi - 1e-9 {
@@ -106,7 +114,7 @@ fn mull_partner(cx: &EditorContext, id: Id) -> Option<Id> {
         } else {
             continue;
         };
-        if gap <= MULL_MAX_GAP + 1e-9 && best.is_none_or(|(g, _)| gap < g) {
+        if gap <= UNIT_REACH + 1e-9 && best.is_none_or(|(g, _)| gap < g) {
             // Nothing else may sit in the gap.
             let (a, b) = if o.start_offset() >= hi - 1e-9 {
                 (hi, o.start_offset())
@@ -127,8 +135,8 @@ fn mull_partner(cx: &EditorContext, id: Id) -> Option<Id> {
     best.map(|(_, id)| id)
 }
 
-/// The openings a Mull would join: the selected windows (and a door among
-/// them), or a lone selected window or door and its nearest neighbour.
+/// The openings Make Mulled Unit would block: the selected doors and windows,
+/// or a lone selected one and its nearest neighbour.
 fn mull_set(cx: &EditorContext) -> Vec<Id> {
     let sel = selected_openings(cx);
     let f = cx.floor();
@@ -196,8 +204,60 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
         v.push(button(CENTER_SEGMENT, "Center on Wall Segment", "", room));
     }
     if !mull_set(cx).is_empty() {
-        v.push(button(MULL, "Mull", "", true));
+        v.push(button(MULL, "Make Mulled Unit", "", true));
     }
+    // Select Next Object: stacked openings and the components of a unit.
+    if let [one] = sel.as_slice() {
+        if cx.project.select_next_opening(cx.floor, *one).is_some() {
+            v.push(button(SELECT_NEXT, "Select Next Object", "", true));
+        }
+    }
+    // Set as Default, for one opening or a few of one kind.
+    v.push(button(SET_DEFAULT, "Set as Default", "", sel.len() == 1));
+    if let [one] = sel.as_slice() {
+        if find(one).is_some_and(|o| o.style.projects()) {
+            v.push(button(EXPLODE_BAY, "Explode Bay/Bow Window", "", true));
+        }
+    }
+    // Delete Duplicate, from the Caution symbol over four or more openings.
+    if cx
+        .project
+        .stacked_clusters(cx.floor)
+        .iter()
+        .any(|c| c.ids.iter().any(|i| sel.contains(i)))
+    {
+        v.push(button(DELETE_DUPLICATE, "Delete Duplicate", "", true));
+    }
+    // Show Open / Show Closed in 2D and 3D (manual p. 613).
+    let opens = sel.iter().filter_map(find).any(|o| {
+        o.kind == OpeningKind::Door
+            || matches!(
+                o.style,
+                OpeningStyle::Casement
+                    | OpeningStyle::Awning
+                    | OpeningStyle::Hopper
+                    | OpeningStyle::SlidingWindow
+                    | OpeningStyle::Window
+            )
+    });
+    if opens {
+        let any = |f: &dyn Fn(&plan_core::Opening) -> bool| sel.iter().filter_map(find).any(f);
+        let open2 = any(&|o| o.extras.show_open_in_plan);
+        let open3 = any(&|o| o.extras.spec.show_open_in_3d);
+        v.push(if open2 {
+            button(SHOW_CLOSED_2D, "Show Closed in 2D", "", true)
+        } else {
+            button(SHOW_OPEN_2D, "Show Open in 2D", "", true)
+        });
+        v.push(if open3 {
+            button(SHOW_CLOSED_3D, "Show Closed in 3D", "", true)
+        } else {
+            button(SHOW_OPEN_3D, "Show Open in 3D", "", true)
+        });
+    }
+    // Gable Over Door/Window (the roof brief draws the gable at the next
+    // roof build): the button lives here, the work in `tools::gable_line`.
+    v.extend(crate::tools::gable_line::edit_actions(cx));
     if let [one] = sel.as_slice() {
         if find(one).is_some_and(mullable) && transom_fits(cx, *one) {
             v.push(button(ADD_TRANSOM, "Add Transom", "", true));
@@ -214,7 +274,7 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
         .iter()
         .any(|o| sel.contains(&o.id) && o.mull_group.is_some())
     {
-        v.push(button(UNMULL, "Unmull", "", true));
+        v.push(button(UNMULL, "Explode Mulled Unit", "", true));
     }
     v.push(button(RENUMBER, "Renumber Schedule", "", true));
     v
@@ -234,7 +294,15 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         RENUMBER_WINDOWS => renumber(cx, &[OpeningKind::Window]),
         DOORS_OPEN => toggle_doors_open(cx),
         CASING_3D => toggle_casing(cx),
-        _ => return false,
+        SELECT_NEXT => select_next(cx),
+        SET_DEFAULT => set_as_default(cx),
+        EXPLODE_BAY => explode_bay(cx),
+        DELETE_DUPLICATE => delete_duplicate(cx),
+        SHOW_OPEN_2D => show_open(cx, true, false),
+        SHOW_CLOSED_2D => show_open(cx, false, false),
+        SHOW_OPEN_3D => show_open(cx, true, true),
+        SHOW_CLOSED_3D => show_open(cx, false, true),
+        _ => return crate::tools::gable_line::run_command(cx, id),
     }
     true
 }
@@ -282,29 +350,19 @@ pub fn renumber_marks(
     changed
 }
 
-/// Renumber Schedule (DW-61, L-26) for the doors and/or windows of the plan,
-/// using the prefix and numbering of the schedule on the floor that shows
-/// that kind's callouts (else `D` / `W`, by floor). One undo step.
+/// Renumber Schedule (DW-61, L-26) for the doors and/or windows of the plan:
+/// every schedule of those kinds closes the gaps in its numbers and keeps the
+/// order of its rows (manual p. 715, DECISIONS 44). The numbers are the
+/// schedule's own, kept in the schedule; no mark is written into the
+/// openings, so a door added afterwards simply takes the next number. One
+/// undo step.
 pub fn renumber(cx: &mut EditorContext, kinds: &[OpeningKind]) {
-    let layer = super::schedule_view::load(cx);
-    cx.begin_change("Renumber Schedule");
-    let mut changed = 0;
-    for &kind in kinds {
-        let sk = schedule_kind(kind);
-        let (prefix, numbering) = layer
-            .schedules
-            .iter()
-            .find(|s| s.kind == sk)
-            .map(|s| (s.label_prefix.clone(), s.numbering))
-            .unwrap_or_else(|| (sk.default_prefix().to_string(), Numbering::ByFloor));
-        changed += renumber_marks(&mut cx.project, kind, &prefix, numbering);
-    }
-    if changed == 0 {
-        cx.cancel_change();
-        cx.status = "The marks already follow the order they were drawn in".into();
+    let sks: Vec<ScheduleKind> = kinds.iter().map(|k| schedule_kind(*k)).collect();
+    let n = super::schedule_view::renumber_kinds(cx, &sks);
+    if n == 0 {
+        cx.status = "The schedule numbers have no gaps".into();
     } else {
-        cx.mark_dirty();
-        cx.status = format!("Renumbered {changed} marks in the order they were drawn");
+        cx.status = format!("Renumbered {n} schedule(s): the gaps are closed");
     }
 }
 
@@ -450,22 +508,25 @@ pub fn center_on_segment(cx: &mut EditorContext) {
     }
 }
 
-/// Mull the selected windows into one unit (DW-51).
+/// Make Mulled Unit (DW-51, DW-160): blocks the selected doors and windows (or
+/// a lone one and its neighbour) into one unit. Nothing moves; the unit
+/// starts from the Mulled Unit Defaults.
 pub fn mull(cx: &mut EditorContext) {
     let ids = mull_set(cx);
     if ids.len() < 2 {
-        cx.status = "Select two adjacent windows, or a door and the window beside it".into();
+        cx.status = "Select the doors and windows to block into a unit".into();
         return;
     }
     if locked(cx, &ids) {
         return;
     }
-    cx.begin_change("Mull Windows");
+    cx.begin_change("Make Mulled Unit");
     let fl = cx.floor;
-    match cx.project.mull_openings(fl, &ids) {
+    let defaults = cx.defaults.window.mulled.clone();
+    match cx.project.make_mulled_unit(fl, &ids, &defaults) {
         Ok(_) => {
             cx.mark_dirty();
-            cx.status = format!("Mulled {} openings", ids.len());
+            cx.status = format!("Blocked {} openings into a mulled unit", ids.len());
         }
         Err(e) => {
             cx.cancel_change();
@@ -497,30 +558,256 @@ pub fn reverse_side(cx: &mut EditorContext) {
     }
 }
 
-/// Split the mulled unit of the selected window (DW-51).
+/// Explode Mulled Unit (DW-51): the unit of the selected opening becomes
+/// separate windows and doors again.
 pub fn unmull(cx: &mut EditorContext) {
     let sel = selected_openings(cx);
     if locked(cx, &sel) {
         return;
     }
-    cx.begin_change("Unmull Windows");
+    cx.begin_change("Explode Mulled Unit");
     let fl = cx.floor;
     let n: usize = sel
         .iter()
-        .map(|id| cx.project.unmull_openings(fl, *id))
+        .map(|id| cx.project.explode_mulled_unit(fl, *id))
         .sum();
     if n == 0 {
         cx.cancel_change();
-        cx.status = "That window is not mulled".into();
+        cx.status = "That opening is not part of a mulled unit".into();
     } else {
         cx.mark_dirty();
-        cx.status = format!("Unmulled {n} windows");
+        cx.status = format!("Exploded the unit into {n} openings");
     }
+}
+
+/// Keeps the plan's Minimum Separation and Ignore Casing for Opening Resize in
+/// step with the Window Defaults (the model functions read them from the
+/// plan).
+pub fn sync_rules(cx: &mut EditorContext) {
+    let sep = cx.defaults.window.min_separation;
+    let ignore = cx.defaults.window.ignore_casing;
+    let d = &mut cx.project.opening_display;
+    if d.min_separation != sep || d.ignore_casing != ignore {
+        d.min_separation = sep;
+        d.ignore_casing = ignore;
+        cx.mark_dirty();
+    }
+}
+
+/// Dynamic defaults (manual p. 103): every opening that is set to use the
+/// default takes the values the defaults hold now. Returns how many changed.
+/// Run after a defaults dialog changed `opening_variants` and whenever a tool
+/// places an opening.
+pub fn follow_defaults(cx: &mut EditorContext) -> usize {
+    // Only when a default changed since the openings last followed: an undo
+    // of Set as Default is not taken back at the next placement.
+    // A mulled unit edited in a dialog goes to all its components and a
+    // recess to a wall layer takes the layer's depth, whatever the defaults do.
+    let mut n = cx.project.sync_unit_specs() + cx.project.sync_recess_depths();
+    if cx.defaults.opening_variants.needs_follow() {
+        let v = cx.defaults.opening_variants.clone();
+        n += cx.project.follow_type_defaults(&v);
+        cx.defaults.opening_variants.mark_followed();
+    }
+    if n > 0 {
+        cx.mark_dirty();
+    }
+    n
+}
+
+/// Where the diamond-shaped Depth handle of the bay, box or bow window `id`
+/// stands (manual p. 634): the middle of its front.
+pub fn bay_depth_handle(cx: &EditorContext, id: Id) -> Option<plan_core::geometry::Point> {
+    let f = cx.floor();
+    let o = f
+        .openings
+        .iter()
+        .find(|o| o.id == id && o.style.projects())?;
+    let wall = f.wall(o.wall_id)?;
+    let ext = plan_core::exterior_sign(wall, &cx.rooms);
+    let sign = plan_core::openings::bay::unit_side(o, ext);
+    let depth = o.extras.spec.bay.depth_for(o.style);
+    Some(
+        wall.point_along(o.center_offset).add(
+            wall.normal_along(o.center_offset)
+                .scale(sign * (wall.thickness * 0.5 + depth)),
+        ),
+    )
+}
+
+/// Drags the Depth handle of the unit `id` to `to`: outward increases the
+/// depth, inward decreases it. Returns whether the depth changed. The caller
+/// opens the undo step.
+pub fn drag_bay_depth(cx: &mut EditorContext, id: Id, to: plan_core::geometry::Point) -> bool {
+    let fl = cx.floor;
+    let f = cx.floor();
+    let Some(o) = f.openings.iter().find(|o| o.id == id && o.style.projects()) else {
+        return false;
+    };
+    let Some(wall) = f.wall(o.wall_id) else {
+        return false;
+    };
+    let ext = plan_core::exterior_sign(wall, &cx.rooms);
+    let sign = plan_core::openings::bay::unit_side(o, ext);
+    let n = wall.normal_along(o.center_offset).scale(sign);
+    let out = to.sub(wall.point_along(o.center_offset)).dot(n) - wall.thickness * 0.5;
+    let before = o.extras.spec.bay.depth_for(o.style);
+    cx.project.set_bay_depth(fl, id, out) && (out.clamp(6.0, 96.0) - before).abs() > 1e-9
+}
+
+/// Select Next Object (manual pp. 258, 610, 612): the next opening in the
+/// stack under the selected one, level 0 first.
+pub fn select_next(cx: &mut EditorContext) {
+    let sel = selected_openings(cx);
+    let [id] = sel.as_slice() else {
+        cx.status = "Select one door or window".into();
+        return;
+    };
+    match cx.project.select_next_opening(cx.floor, *id) {
+        Some(next) => {
+            cx.selection.set(ObjectRef::Opening(next));
+            cx.status = "Selected the next object".into();
+        }
+        None => cx.status = "There is nothing else at that place".into(),
+    }
+}
+
+/// Set as Default (manual p. 104): the selected opening becomes the default of
+/// its type, and the openings using the default follow it. One undo step (the
+/// openings; the default itself is a setting of the plan, not an edit).
+pub fn set_as_default(cx: &mut EditorContext) {
+    let sel = selected_openings(cx);
+    let [id] = sel.as_slice() else {
+        cx.status = "Select one door or window".into();
+        return;
+    };
+    let fl = cx.floor;
+    let Some(o) = cx.floor().openings.iter().find(|o| o.id == *id).cloned() else {
+        return;
+    };
+    let wall_kind = cx
+        .floor()
+        .wall(o.wall_id)
+        .map_or(plan_core::WallKind::Interior, |w| w.kind);
+    cx.begin_change("Set as Default");
+    let key = cx.defaults.opening_variants.set_as_default(&o, wall_kind);
+    let v = cx.defaults.opening_variants.clone();
+    cx.project.follow_type_defaults(&v);
+    cx.defaults.opening_variants.mark_followed();
+    // The opening itself keeps its look; from now on it follows the default.
+    if let Some(me) = cx.project.floors[fl]
+        .openings
+        .iter_mut()
+        .find(|x| x.id == *id)
+    {
+        me.extras.spec.dynamic = plan_core::openings::types::UseDefault::all(me.kind);
+    }
+    cx.mark_dirty();
+    cx.status = format!("{} defaults set from the selected object", key.name());
+}
+
+/// Explode Bay/Bow Window (manual p. 636).
+pub fn explode_bay(cx: &mut EditorContext) {
+    let sel = selected_openings(cx);
+    let [id] = sel.as_slice() else {
+        cx.status = "Select one bay, box or bow window".into();
+        return;
+    };
+    if locked(cx, &sel) {
+        return;
+    }
+    let fl = cx.floor;
+    let Some(wall) = cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.id == *id)
+        .and_then(|o| cx.floor().wall(o.wall_id))
+        .cloned()
+    else {
+        return;
+    };
+    let exterior = plan_core::exterior_sign(&wall, &cx.rooms);
+    cx.begin_change("Explode Bay/Bow Window");
+    match cx.project.explode_bay(fl, *id, exterior) {
+        Ok(r) => {
+            cx.selection.items = r.walls.iter().map(|w| ObjectRef::Wall(*w)).collect();
+            cx.mark_dirty();
+            cx.status = format!(
+                "Exploded into {} walls and {} windows",
+                r.walls.len(),
+                r.windows.len()
+            );
+        }
+        Err(e) => {
+            cx.cancel_change();
+            cx.status = e;
+        }
+    }
+}
+
+/// Delete Duplicate (manual p. 609): the newest opening of a Caution cluster.
+pub fn delete_duplicate(cx: &mut EditorContext) {
+    let sel = selected_openings(cx);
+    let fl = cx.floor;
+    let Some(id) = sel.iter().copied().find(|i| {
+        cx.project
+            .stacked_clusters(fl)
+            .iter()
+            .any(|c| c.ids.contains(i))
+    }) else {
+        cx.status = "There is no Caution at that place".into();
+        return;
+    };
+    cx.begin_change("Delete Duplicate");
+    match cx.project.delete_duplicate(fl, id) {
+        Some(gone) => {
+            cx.selection
+                .items
+                .retain(|o| *o != ObjectRef::Opening(gone));
+            cx.mark_dirty();
+        }
+        None => cx.cancel_change(),
+    }
+}
+
+/// Show Open / Show Closed (manual p. 613): in 2D the plan symbol, in 3D the
+/// leaf or sash. The components of a mulled unit all follow.
+pub fn show_open(cx: &mut EditorContext, open: bool, three_d: bool) {
+    let mut ids = selected_openings(cx);
+    let fl = cx.floor;
+    for id in ids.clone() {
+        for m in cx.project.mull_members(fl, id) {
+            if !ids.contains(&m) {
+                ids.push(m);
+            }
+        }
+    }
+    if ids.is_empty() || locked(cx, &ids) {
+        return;
+    }
+    cx.begin_change(match (open, three_d) {
+        (true, false) => "Show Open in 2D",
+        (false, false) => "Show Closed in 2D",
+        (true, true) => "Show Open in 3D",
+        (false, true) => "Show Closed in 3D",
+    });
+    for o in cx.project.floors[fl].openings.iter_mut() {
+        if ids.contains(&o.id) {
+            if three_d {
+                o.extras.spec.show_open_in_3d = open;
+            } else {
+                o.extras.show_open_in_plan = open;
+            }
+        }
+    }
+    cx.mark_dirty();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::schedule_view;
     use crate::plan_defaults;
     use plan_core::geometry::Point;
     use plan_core::WallKind;
@@ -552,42 +839,48 @@ mod tests {
     }
 
     #[test]
-    fn mull_and_unmull_are_one_undo_step_each() {
+    fn make_mulled_unit_and_explode_are_one_undo_step_each() {
         let (mut cx, [a, b]) = windows();
         // a: 82..118, b: 124..160 (6" apart).
         cx.selection.set(ObjectRef::Opening(a));
-        // A lone window offers Mull with its neighbour.
+        // A lone window offers Make Mulled Unit with its neighbour.
         let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
         assert!(
-            labels.contains(&"Mull") && !labels.contains(&"Unmull"),
+            labels.contains(&"Make Mulled Unit") && !labels.contains(&"Explode Mulled Unit"),
             "{labels:?}"
         );
         assert!(run_command(&mut cx, MULL));
+        // Nothing moves: the 6" between them stays.
         assert_eq!(span(&cx, a), (82.0, 118.0));
-        assert_eq!(span(&cx, b), (118.0, 154.0));
-        assert_eq!(cx.undo_label(), Some("Mull Windows"));
+        assert_eq!(span(&cx, b), (124.0, 160.0));
+        assert_eq!(cx.undo_label(), Some("Make Mulled Unit"));
         let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
         assert!(
-            labels.contains(&"Unmull") && !labels.contains(&"Mull"),
+            labels.contains(&"Explode Mulled Unit") && !labels.contains(&"Make Mulled Unit"),
             "{labels:?}"
         );
-        // Unmull splits them; the windows keep their places.
+        // The unit takes the Mulled Unit Defaults.
+        let o = cx.floor().openings.iter().find(|o| o.id == a).unwrap();
+        assert!(o.extras.spec.mulled.is_some());
+        // Explode splits them; the windows keep their places.
         assert!(run_command(&mut cx, UNMULL));
-        assert_eq!(cx.undo_label(), Some("Unmull Windows"));
+        assert_eq!(cx.undo_label(), Some("Explode Mulled Unit"));
         assert!(cx.floor().openings.iter().all(|o| o.mull_group.is_none()));
-        // Undo twice: back to the 6" gap.
+        // Undo twice: back to separate windows.
         cx.undo();
         cx.undo();
+        assert!(cx.floor().openings.iter().all(|o| o.mull_group.is_none()));
         assert_eq!(span(&cx, b), (124.0, 160.0));
-        // Selecting both windows mulls them too.
+        // Selecting both windows blocks them too.
         cx.selection.set(ObjectRef::Opening(a));
         cx.selection.toggle(ObjectRef::Opening(b));
         assert!(run_command(&mut cx, MULL));
-        assert_eq!(span(&cx, b), (118.0, 154.0));
+        assert_eq!(span(&cx, b), (124.0, 160.0));
+        assert!(cx.floor().openings.iter().all(|o| o.mull_group.is_some()));
     }
 
     #[test]
-    fn mull_needs_adjacent_windows() {
+    fn make_mulled_unit_needs_openings_within_24_inches() {
         let (mut cx, [a, _]) = windows();
         let w = cx.floor().openings[0].wall_id;
         let far = cx
@@ -595,24 +888,24 @@ mod tests {
             .add_opening(0, w, 260.0, OpeningKind::Window)
             .unwrap();
         cx.selection.set(ObjectRef::Opening(far));
-        // Nothing within reach: no Mull button.
-        assert!(edit_actions(&cx).iter().all(|e| e.label != "Mull"));
+        // Nothing within reach: no button.
+        assert!(edit_actions(&cx)
+            .iter()
+            .all(|e| e.label != "Make Mulled Unit"));
         cx.selection.set(ObjectRef::Opening(a));
         cx.selection.toggle(ObjectRef::Opening(far));
         assert!(run_command(&mut cx, MULL));
-        assert!(
-            cx.status.contains("in between") || cx.status.contains("too far"),
-            "{}",
-            cx.status
-        );
+        assert!(cx.status.contains("within"), "{}", cx.status);
         assert!(!cx.can_undo());
-        // A door with no window within reach is not offered Mull.
+        // A door with no opening within reach is not offered it.
         let d = cx
             .project
             .add_opening(0, w, 20.0, OpeningKind::Door)
             .unwrap();
         cx.selection.set(ObjectRef::Opening(d));
-        assert!(edit_actions(&cx).iter().all(|e| e.label != "Mull"));
+        assert!(edit_actions(&cx)
+            .iter()
+            .all(|e| e.label != "Make Mulled Unit"));
     }
 
     #[test]
@@ -639,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn a_door_mulls_with_the_sidelite_beside_it_and_not_with_a_second_door() {
+    fn a_door_blocks_with_the_sidelite_beside_it_into_a_door_unit() {
         let mut cx = EditorContext::new(plan_defaults::embedded());
         let w = cx.project.add_wall(
             0,
@@ -657,21 +950,19 @@ mod tests {
             .project
             .add_opening(0, w, 104.0, OpeningKind::Window)
             .unwrap();
-        let door2 = cx
-            .project
-            .add_opening(0, w, 200.0, OpeningKind::Door)
-            .unwrap();
         // door 42..78, sidelite 86..122: 8" apart.
         cx.selection.set(ObjectRef::Opening(door));
         let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
-        assert!(labels.contains(&"Mull"), "{labels:?}");
+        assert!(labels.contains(&"Make Mulled Unit"), "{labels:?}");
         // From the window too.
         cx.selection.set(ObjectRef::Opening(side));
-        assert!(edit_actions(&cx).iter().any(|e| e.label == "Mull"));
+        assert!(edit_actions(&cx)
+            .iter()
+            .any(|e| e.label == "Make Mulled Unit"));
         assert!(run_command(&mut cx, MULL));
         assert_eq!(span(&cx, door), (42.0, 78.0));
-        assert_eq!(span(&cx, side), (78.0, 114.0));
-        assert_eq!(cx.undo_label(), Some("Mull Windows"));
+        assert_eq!(span(&cx, side), (86.0, 122.0));
+        assert_eq!(cx.undo_label(), Some("Make Mulled Unit"));
         let group = cx
             .floor()
             .openings
@@ -689,35 +980,103 @@ mod tests {
                 .mull_group,
             group
         );
-        // One unit: sliding moves both.
+        // A door is a component, so the unit is treated as a door.
+        let spec = cx
+            .project
+            .mulled_spec(0, side)
+            .expect("the unit has a spec");
+        assert!(spec.treat_as_door);
+        // One unit: sliding moves both and they keep their 8".
         cx.selection.set(ObjectRef::Opening(door));
         assert!(cx.project.slide_opening(0, door, 100.0));
-        assert_eq!(span(&cx, side).0, span(&cx, door).1);
-        // A second door cannot join the unit.
-        cx.selection.set(ObjectRef::Opening(door));
-        cx.selection.toggle(ObjectRef::Opening(door2));
-        cx.selection.toggle(ObjectRef::Opening(side));
-        cx.status.clear();
-        cx.undo();
-        assert!(run_command(&mut cx, MULL));
-        assert!(
-            cx.status.contains("Only one door") || cx.status.contains("in between"),
-            "{}",
-            cx.status
+        assert_eq!(span(&cx, side).0 - span(&cx, door).1, 8.0);
+    }
+
+    #[test]
+    fn the_depth_handle_of_a_bay_window_stands_at_its_front_and_drags_the_depth() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let w = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(300.0, 0.0),
+            6.0,
+            109.125,
+            WallKind::Exterior,
         );
-        // A garage door is not mullable at all.
-        let g = cx
+        let id = cx
             .project
-            .add_opening(0, w, 270.0, OpeningKind::Door)
+            .add_opening(0, w, 150.0, OpeningKind::Window)
             .unwrap();
-        cx.project.floors[0]
-            .openings
-            .iter_mut()
-            .find(|o| o.id == g)
-            .unwrap()
-            .style = OpeningStyle::Garage;
-        cx.selection.set(ObjectRef::Opening(g));
-        assert!(edit_actions(&cx).iter().all(|e| e.label != "Mull"));
+        {
+            let o = &mut cx.project.floors[0].openings[0];
+            o.style = OpeningStyle::BayWindow;
+            o.width = 50.0;
+            o.extras.spec.bay = plan_core::openings::BayUnit::for_style(OpeningStyle::BayWindow);
+        }
+        cx.refresh();
+        let h = bay_depth_handle(&cx, id).unwrap();
+        assert!((h.x - 150.0).abs() < 1e-9);
+        // 3" to the face and 12" out, on the exterior side of the wall.
+        assert!((h.y.abs() - 15.0).abs() < 1e-9, "{h:?}");
+        // Dragging it outward 8" deepens the unit, inward shallows it.
+        let out = Point::new(150.0, h.y + h.y.signum() * 8.0);
+        cx.begin_change("Depth");
+        assert!(drag_bay_depth(&mut cx, id, out));
+        let d = cx.floor().openings[0]
+            .extras
+            .spec
+            .bay
+            .depth_for(OpeningStyle::BayWindow);
+        assert!((d - 20.0).abs() < 1e-9, "{d}");
+        let back = Point::new(150.0, h.y.signum() * 3.0 + h.y.signum() * 6.0);
+        assert!(drag_bay_depth(&mut cx, id, back));
+        assert_eq!(
+            cx.floor().openings[0]
+                .extras
+                .spec
+                .bay
+                .depth_for(OpeningStyle::BayWindow),
+            6.0
+        );
+        // A plain window has no handle.
+        assert!(bay_depth_handle(&cx, 999).is_none());
+    }
+
+    #[test]
+    fn set_as_default_and_the_unit_commands_are_offered_and_undone_in_one_step() {
+        let (mut cx, [a, b]) = windows();
+        cx.selection.set(ObjectRef::Opening(a));
+        let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
+        assert!(labels.contains(&"Set as Default"), "{labels:?}");
+        assert!(labels.contains(&"Show Closed in 2D"), "{labels:?}");
+        assert!(labels.contains(&"Gable Over Door/Window"), "{labels:?}");
+        // Show Closed in 2D clears the flag of the selection; one undo step.
+        assert!(run_command(&mut cx, SHOW_CLOSED_2D));
+        assert!(
+            !cx.floor()
+                .openings
+                .iter()
+                .find(|o| o.id == a)
+                .unwrap()
+                .extras
+                .show_open_in_plan
+        );
+        assert_eq!(cx.undo_label(), Some("Show Closed in 2D"));
+        let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
+        assert!(labels.contains(&"Show Open in 2D"), "{labels:?}");
+        // Show Open in 3D sets the flag of the opening.
+        cx.selection.set(ObjectRef::Opening(b));
+        assert!(run_command(&mut cx, SHOW_OPEN_3D));
+        assert!(
+            cx.floor()
+                .openings
+                .iter()
+                .find(|o| o.id == b)
+                .unwrap()
+                .extras
+                .spec
+                .show_open_in_3d
+        );
     }
 
     #[test]
@@ -854,34 +1213,47 @@ mod tests {
             .clone()
     }
 
+    /// The marks the door schedule gives the doors, by door id.
+    fn schedule_marks(cx: &EditorContext, sid: Id) -> Vec<(Id, String)> {
+        let d = schedule_view::find(cx, sid).unwrap();
+        plan_docs::schedule_kinds::rows(&cx.project, &d, 0, None)
+            .into_iter()
+            .map(|e| (e.id, e.cell("mark").to_string()))
+            .collect()
+    }
+
     #[test]
-    fn renumber_sets_the_marks_in_draw_order_as_one_undo_step() {
+    fn renumber_closes_the_gaps_of_the_schedule_as_one_undo_step() {
         let (mut cx, ids) = doors_drawn_right_to_left();
-        // The Edit toolbar of a selected door offers it.
+        let sid = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -80.0));
+        // A schedule starts with the doors in reading order: the last one
+        // drawn, at the left, is D01.
+        let m = schedule_marks(&cx, sid);
+        assert_eq!(m[0], (ids[2], "D01".to_string()));
+        // A door goes: its number stays free until Renumber Schedule.
+        cx.project.floors[0].openings.retain(|o| o.id != ids[2]);
+        let m = schedule_marks(&cx, sid);
+        assert_eq!(m, [(ids[1], "D02".to_string()), (ids[0], "D03".to_string())]);
+        // The Edit toolbar of a selected door offers the command.
         cx.selection.set(ObjectRef::Opening(ids[0]));
         let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
         assert!(labels.contains(&"Renumber Schedule"), "{labels:?}");
         assert!(run_command(&mut cx, RENUMBER));
-        // Draw order, not reading order: the first door drawn is D01.
-        assert_eq!(mark(&cx, ids[0]).as_deref(), Some("D01"));
-        assert_eq!(mark(&cx, ids[1]).as_deref(), Some("D02"));
-        assert_eq!(mark(&cx, ids[2]).as_deref(), Some("D03"));
+        let m = schedule_marks(&cx, sid);
+        assert_eq!(m, [(ids[1], "D01".to_string()), (ids[0], "D02".to_string())]);
         assert_eq!(cx.undo_label(), Some("Renumber Schedule"));
+        // No mark is written into the openings (DECISIONS 44).
+        assert_eq!(mark(&cx, ids[0]), None);
         // Nothing to change the second time: no extra undo step.
         assert!(run_command(&mut cx, RENUMBER_DOORS));
         assert_eq!(cx.undo().as_deref(), Some("Renumber Schedule"));
-        assert_eq!(mark(&cx, ids[0]), None);
-        assert!(!cx.can_undo());
+        assert_eq!(schedule_marks(&cx, sid)[0].1, "D02");
     }
 
     #[test]
     fn renumber_keeps_to_one_kind_and_skips_what_the_schedule_leaves_out() {
         let (mut cx, ids) = doors_drawn_right_to_left();
         let w = cx.floor().walls[0].id;
-        let win = cx
-            .project
-            .add_opening(0, w, 30.0, OpeningKind::Window)
-            .unwrap();
         // The middle door is left out of the schedule.
         cx.project.floors[0]
             .openings
@@ -892,14 +1264,28 @@ mod tests {
             .spec
             .schedule
             .include = false;
-        assert!(run_command(&mut cx, RENUMBER_DOORS));
-        assert_eq!(mark(&cx, ids[0]).as_deref(), Some("D01"));
-        assert_eq!(mark(&cx, ids[1]), None);
-        assert_eq!(mark(&cx, ids[2]).as_deref(), Some("D02"));
+        let door_s = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -80.0));
+        let win_s = schedule_view::add(&mut cx, ScheduleKind::Window, Point::new(0.0, -200.0));
+        let win = cx
+            .project
+            .add_opening(0, w, 30.0, OpeningKind::Window)
+            .unwrap();
+        let other = cx
+            .project
+            .add_opening(0, w, 370.0, OpeningKind::Window)
+            .unwrap();
+        // Doors: the left-out door has no number. A window goes: a gap.
+        let m = schedule_marks(&cx, door_s);
+        assert_eq!(m.len(), 2);
+        assert!(m.iter().all(|(id, _)| *id != ids[1]));
+        cx.project.floors[0].openings.retain(|o| o.id != win);
+        let before = schedule_marks(&cx, win_s);
+        assert_eq!(before, [(other, "W02".to_string())]);
         // Windows are untouched until their own command runs.
-        assert_eq!(mark(&cx, win), None);
+        assert!(run_command(&mut cx, RENUMBER_DOORS));
+        assert_eq!(schedule_marks(&cx, win_s), before);
         assert!(run_command(&mut cx, RENUMBER_WINDOWS));
-        assert_eq!(mark(&cx, win).as_deref(), Some("W01"));
+        assert_eq!(schedule_marks(&cx, win_s), [(other, "W01".to_string())]);
     }
 
     #[test]

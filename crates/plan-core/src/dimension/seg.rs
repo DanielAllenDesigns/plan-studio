@@ -170,6 +170,18 @@ pub struct DimSeg {
     /// This segment's leader line (`None` follows the Dimension Defaults).
     pub leader: Option<LeaderStyle>,
     pub leader_second_segment: Option<bool>,
+    /// Length of the second leader segment, plan inches (`None`: the
+    /// Dimension Defaults').
+    pub leader_second_length: Option<f64>,
+    /// An arrowhead at the dimension line end of the leader (`None`: the
+    /// Dimension Defaults').
+    pub leader_arrow: Option<bool>,
+    /// Kept apart from its neighbours on purpose (Take Out of Dimension
+    /// String): loading an older file does not join it again.
+    pub separate: bool,
+    /// What each end's extension line carries beyond the others' (length,
+    /// fixed proximity, elevation marker); see [`super::DimLine`].
+    pub ext: [super::ExtProps; 2],
     /// The two extension lines carry a Centerline mark.
     pub centerline: [bool; 2],
     /// The grid-rounded length shown instead of the true one.
@@ -250,12 +262,17 @@ impl Dimension {
             let step = step_inches(&lf);
             let (pre, post) = super::label::indicators(
                 len,
-                self.look.seg.shown.unwrap_or_else(|| round_to_step(len, step)),
+                self.look
+                    .seg
+                    .shown
+                    .unwrap_or_else(|| round_to_step(len, step)),
                 step,
                 opts.plus_minus_after,
                 opts.tilde_before,
             );
-            text = opts.tolerance.apply(&format!("{pre}{text}{post}"), len, &lf);
+            text = opts
+                .tolerance
+                .apply(&format!("{pre}{text}{post}"), len, &lf);
             let second = opts
                 .second
                 .include
@@ -344,6 +361,7 @@ impl Floor {
         };
         if let Some(d) = self.dimensions.iter_mut().find(|d| d.id == id) {
             d.look.seg.string = None;
+            d.look.seg.separate = true;
         }
         let rest: Vec<Id> = self
             .dimensions
@@ -647,7 +665,11 @@ mod tests {
         assert_eq!(exact.label(&fmt), "10'-0\"");
         fmt.label.tolerance.mode = super::super::TolMode::Symmetric;
         fmt.label.tolerance.plus = 0.125;
-        assert!(exact.label(&fmt).ends_with("\u{b1}0'-0 1/8\""), "{}", exact.label(&fmt));
+        assert!(
+            exact.label(&fmt).ends_with("\u{b1}0'-0 1/8\""),
+            "{}",
+            exact.label(&fmt)
+        );
     }
 
     #[test]

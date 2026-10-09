@@ -14,14 +14,24 @@ use plan_core::{Opening, OpeningKind, OpeningStyle, Project, Wall, WallKind};
 pub(crate) mod shape;
 mod treatments;
 
-/// The mulled unit an opening belongs to (DW-51, DW-52): a window beside a
-/// window, or a door beside its sidelites. The members share one frame post
-/// between them and one casing around the whole unit.
+/// The unit an opening belongs to (DW-51, DW-52, DW-158): a blocked mulled
+/// unit (Make Mulled Unit), or openings whose casings touch and so mull
+/// automatically. The members share one casing around the whole unit; flush
+/// members also share one frame post between them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Unit {
-    /// A member stands against this one on the start side / the end side.
+    /// A member stands flush against this one on the start side / the end side
+    /// (no gap): the frame post between them is shared.
     pub left: bool,
     pub right: bool,
+    /// A member stands on that side at any distance: the casing leg there is
+    /// not drawn, the unit's casing runs on past this opening.
+    pub share_left: bool,
+    pub share_right: bool,
+    /// Width of the gap to the next member on the end side, inches, filled by
+    /// the shared casing (the Minimum Separation); 0 when they are flush or
+    /// there is no member there.
+    pub gap_right: f64,
     /// Wall offsets `(start, end)` of the whole unit.
     pub span: (f64, f64),
     /// Lowest bottom and highest top of the members, wall-local height.
@@ -33,6 +43,11 @@ pub struct Unit {
     pub covered: bool,
     /// Another member stands over this one.
     pub capped: bool,
+    /// The unit cuts one hole in the wall around all of it (Mulled Unit
+    /// Specification, Single Wall Hole), and the mullion depths from the
+    /// interior and exterior faces.
+    pub single_hole: bool,
+    pub mullion: (f64, f64),
 }
 
 impl Unit {
@@ -41,42 +56,83 @@ impl Unit {
         Self {
             left: false,
             right: false,
+            share_left: false,
+            share_right: false,
+            gap_right: 0.0,
             span: (hole.s0, hole.s1),
             h: (hole.h0, hole.h1),
             door: opening.kind == OpeningKind::Door,
             covered: false,
             capped: false,
+            single_hole: false,
+            mullion: (0.0, 0.0),
         }
     }
 
     /// The unit of `opening` among the openings of its wall (`siblings`, each
-    /// with its hole). Members are those with the same mull group.
+    /// with its hole). Members are those with the same mull group and the
+    /// openings that mull to them automatically (casings touching).
     pub fn among(opening: &Opening, hole: &Hole, siblings: &[(&Opening, Hole)]) -> Self {
-        let Some(group) = opening.mull_group else {
-            return Self::alone(opening, hole);
-        };
         let mut unit = Self::alone(opening, hole);
-        for (o, h) in siblings {
-            if o.id == opening.id || o.mull_group != Some(group) {
-                continue;
+        // The members: the closure of the mull group and automatic mulling.
+        let mut members: Vec<usize> = Vec::new();
+        let mut frontier: Vec<&Opening> = vec![opening];
+        while let Some(cur) = frontier.pop() {
+            for (i, (o, _)) in siblings.iter().enumerate() {
+                if o.id == opening.id || members.contains(&i) {
+                    continue;
+                }
+                let grouped = cur.mull_group.is_some() && o.mull_group == cur.mull_group;
+                if grouped || plan_core::openings::mull::auto_mulled(cur, o) {
+                    members.push(i);
+                    frontier.push(o);
+                }
             }
+        }
+        if members.is_empty() {
+            return unit;
+        }
+        if let Some(m) = opening.extras.spec.mulled.as_ref() {
+            unit.single_hole = m.single_hole;
+            unit.mullion = (m.mullion_inside, m.mullion_outside);
+        }
+        let mut nearest_right = f64::MAX;
+        for &i in &members {
+            let (o, h) = &siblings[i];
             unit.span = (unit.span.0.min(h.s0), unit.span.1.max(h.s1));
             unit.h = (unit.h.0.min(h.h0), unit.h.1.max(h.h1));
             unit.door |= o.kind == OpeningKind::Door;
+            let overlap_s = h.s0 < hole.s1 - 1e-6 && h.s1 > hole.s0 + 1e-6;
             // Standing over a member: shares its stretch of wall, begins at
             // or above its top.
-            if h.s0 < hole.s1 - 1e-6 && h.s1 > hole.s0 + 1e-6 && hole.h0 >= h.h1 - 1e-6 {
+            if overlap_s && hole.h0 >= h.h1 - 1e-6 {
                 unit.covered = true;
             }
-            if h.s0 < hole.s1 - 1e-6 && h.s1 > hole.s0 + 1e-6 && h.h0 >= hole.h1 - 1e-6 {
+            if overlap_s && h.h0 >= hole.h1 - 1e-6 {
                 unit.capped = true;
             }
+            if overlap_s {
+                continue;
+            }
             if h.s1 <= hole.s0 + 1e-6 {
-                unit.left = true;
+                unit.share_left = true;
+                if hole.s0 - h.s1 < 0.01 {
+                    unit.left = true;
+                }
             }
             if h.s0 >= hole.s1 - 1e-6 {
-                unit.right = true;
+                unit.share_right = true;
+                let gap = h.s0 - hole.s1;
+                if gap < 0.01 {
+                    unit.right = true;
+                }
+                if gap < nearest_right {
+                    nearest_right = gap;
+                }
             }
+        }
+        if nearest_right > 0.01 && nearest_right < f64::MAX {
+            unit.gap_right = nearest_right;
         }
         unit
     }
@@ -84,7 +140,7 @@ impl Unit {
     /// Whether this opening owns the head, the sill and the apron of the unit
     /// casing: the first member from the wall start.
     pub fn draws_head(&self) -> bool {
-        !self.left
+        !self.share_left
     }
 }
 
@@ -379,6 +435,32 @@ pub fn build_opening_in_wall(
     let id = Some(opening.id);
     let paint = &opening.extras.spec.materials;
     let window = opening.kind == OpeningKind::Window;
+    // A mulled unit with a Single Wall Hole has the stretch between its
+    // components open in the wall; a mullion post stands in each gap
+    // (Mullion Depth, inside and outside).
+    if ctx.unit.single_hole && ctx.unit.gap_right > 0.01 {
+        let half = ctx.half();
+        let (inside, outside) = ctx.unit.mullion;
+        let post = set.material(Material::WindowFrame);
+        let s = (hole.s1, hole.s1 + ctx.unit.gap_right);
+        let h = ctx.unit.h;
+        let (t_in, t_out) = if ctx.interior > 0.0 {
+            (
+                (half - inside.min(half * 2.0), half),
+                (-half, -half + outside.min(half * 2.0)),
+            )
+        } else {
+            (
+                (-half, -half + inside.min(half * 2.0)),
+                (half - outside.min(half * 2.0), half),
+            )
+        };
+        for t in [t_in, t_out] {
+            if t.1 - t.0 > 1e-6 {
+                ctx.frame.cuboid(post, s, t, h);
+            }
+        }
+    }
     let mut meshes = set.finish(id);
     // The unit's own pieces take the paint of their component.
     for m in &mut meshes {

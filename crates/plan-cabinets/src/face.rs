@@ -134,10 +134,7 @@ impl ItemKind {
     /// The kinds a user can add or retype to (layouts are made by
     /// splitting, so they are left out of the New Cabinet Face Item list).
     pub fn is_leaf(self) -> bool {
-        !matches!(
-            self,
-            ItemKind::HorizontalLayout | ItemKind::VerticalLayout
-        )
+        !matches!(self, ItemKind::HorizontalLayout | ItemKind::VerticalLayout)
     }
 
     /// A new item of this kind `height` tall (0 = auto). Layouts start
@@ -259,6 +256,14 @@ impl FaceItem {
     pub fn base(&self) -> &FaceItem {
         match self {
             FaceItem::Custom { item, .. } => item.base(),
+            other => other,
+        }
+    }
+
+    /// The item without its Custom wrapper, mutably.
+    pub fn base_mut(&mut self) -> &mut FaceItem {
+        match self {
+            FaceItem::Custom { item, .. } => item.base_mut(),
             other => other,
         }
     }
@@ -389,7 +394,11 @@ impl FaceItem {
     /// True for the items that open onto shelves: Opening, Rollout and the
     /// doors.
     pub fn has_shelves(&self) -> bool {
-        self.is_door() || matches!(self.base(), FaceItem::Opening { .. } | FaceItem::Rollout { .. })
+        self.is_door()
+            || matches!(
+                self.base(),
+                FaceItem::Opening { .. } | FaceItem::Rollout { .. }
+            )
     }
 
     /// How a door item builds when its opening is `width` wide and Auto
@@ -836,9 +845,8 @@ impl FaceLayout {
         if diff.abs() < EPS {
             return Ok(());
         }
-        let loose = |i: usize, items: &[FaceItem]| {
-            !matches!(items[i].base(), FaceItem::Separation { .. })
-        };
+        let loose =
+            |i: usize, items: &[FaceItem]| !matches!(items[i].base(), FaceItem::Separation { .. });
         let lowest = (0..self.items.len()).rev().find(|&i| loose(i, &self.items));
         let mut me = self.clone();
         for (item, hh) in me.items.iter_mut().zip(&heights) {

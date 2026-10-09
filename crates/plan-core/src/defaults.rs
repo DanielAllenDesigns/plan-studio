@@ -13,6 +13,12 @@ use crate::units::{LengthFormat, LengthUnit};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub mod dynamic;
+pub mod import;
+pub mod saved;
+pub mod template;
+pub mod views;
+
 // ----- wall types -----
 
 /// One layer of a wall assembly. `thickness` is in inches.
@@ -282,6 +288,24 @@ pub struct WindowDefaults {
     pub lites_vertical: u32,
     pub egress: bool,
     pub tempered: bool,
+    /// Minimum Separation (Window Defaults, General panel, manual p. 603): how
+    /// close window and door units may stand, and the width of the casing
+    /// windows share, inches.
+    #[serde(default = "default_min_separation")]
+    pub min_separation: f64,
+    /// The Mulled Unit Defaults (Default Settings > Windows): what a unit
+    /// blocked with Make Mulled Unit starts with.
+    #[serde(default)]
+    pub mulled: crate::openings::MulledSpec,
+    /// Ignore Casing for Opening Resize (General Plan Defaults, manual p. 119):
+    /// doors and windows may run right up to an intersecting wall instead of
+    /// stopping where their casing meets it.
+    #[serde(default)]
+    pub ignore_casing: bool,
+}
+
+fn default_min_separation() -> f64 {
+    crate::openings::placement::DEFAULT_MIN_SEPARATION
 }
 
 // ----- cabinets -----
@@ -775,6 +799,28 @@ pub struct RoomTypeDef {
     pub conditioned: bool,
     /// Empty means "use the plan default".
     pub default_floor_finish: String,
+    /// Ceiling and floor structure and finish, deck framing, layer, fill,
+    /// moldings and label the type hands its rooms (R-99).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::rooms::RoomTypeSpec::is_default"
+    )]
+    pub spec: crate::rooms::RoomTypeSpec,
+}
+
+impl RoomTypeDef {
+    /// A room type named `name` with the given function, living-area and
+    /// conditioned inclusion and no other settings.
+    pub fn new(name: &str, function: &str, living: bool, conditioned: bool) -> Self {
+        Self {
+            name: name.into(),
+            function: function.into(),
+            include_in_living_area: living,
+            conditioned,
+            default_floor_finish: String::new(),
+            spec: crate::rooms::RoomTypeSpec::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -821,6 +867,9 @@ pub struct PlanDefaults {
     pub exterior_wall: WallDefaults,
     pub interior_wall: WallDefaults,
     pub foundation_wall: WallDefaults,
+    /// Foundation Defaults dialog: Auto Rebuild, platform hanging, S markers,
+    /// minimum height, piers, Garage Options and the Options panel (Round 16).
+    pub foundation: crate::foundation::FoundationSettings,
     /// Defaults of the pony, half, glass, railing, deck and fencing walls.
     pub wall_variants: WallVariantDefaults,
     pub wall_types: Vec<WallTypeDef>,
@@ -862,6 +911,18 @@ pub struct PlanDefaults {
     /// [`PageValue`] and `plan-app`'s `dialogs/default_pages`.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub pages: std::collections::BTreeMap<String, PageValue>,
+    /// The saved defaults and Default Sets new plans start with (the
+    /// template's); a plan keeps its own in [`Project::saved_defaults`].
+    #[serde(skip_serializing_if = "saved::SavedDefaults::is_empty")]
+    pub saved: saved::SavedDefaults,
+    /// Default Settings > Roofs > Tray Ceiling: what Make Tray Ceiling and
+    /// the Tray Ceiling tools start from; `None` is the built-in tray.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tray_ceiling: Option<crate::tray::TrayCeiling>,
+    /// The saved plan views the template carries (a new plan starts with
+    /// them); empty starts with the one starting view.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plan_views: Vec<crate::layer_sets::SavedPlanView>,
 }
 
 /// One stored value of a Default Settings page field.
@@ -1015,6 +1076,9 @@ impl Default for CodeDefaults {
                 lites_vertical: 1,
                 egress: true,
                 tempered: false,
+                min_separation: default_min_separation(),
+                mulled: Default::default(),
+                ignore_casing: false,
             },
             footing_width: crate::floors::WALL_FOOTING.0,
             footing_thickness: crate::floors::WALL_FOOTING.1,
@@ -1197,6 +1261,13 @@ impl Default for PlanDefaults {
 const FALLBACK_FOUNDATION_THICKNESS: f64 = 8.0;
 
 impl PlanDefaults {
+    /// The tray ceiling a new one starts from (its id is never set).
+    pub fn tray_default(&self) -> crate::tray::TrayCeiling {
+        let mut t = self.tray_ceiling.clone().unwrap_or_default();
+        t.id = 0;
+        t
+    }
+
     pub fn wall_type(&self, name: &str) -> Option<&WallTypeDef> {
         self.wall_types.iter().find(|t| t.name == name)
     }
@@ -1258,7 +1329,10 @@ impl PlanDefaults {
             smallest_fraction: self.dimensions.smallest_fraction.max(1),
             unit_indicators: self.dimensions.unit_indicators,
             length: None,
-            label: self.dimensions.setup.label_options(self.dimensions.text_above_line),
+            label: self
+                .dimensions
+                .setup
+                .label_options(self.dimensions.text_above_line),
         }
     }
 
@@ -1354,6 +1428,7 @@ impl PlanDefaults {
                 height: 48.0,
                 roof,
             },
+            foundation: crate::foundation::FoundationSettings::default(),
             wall_variants: WallVariantDefaults::default(),
             wall_types: chief_wall_types(),
             interior_door: door(30.0, 3.5, 0.75, 1.375),
@@ -1371,6 +1446,9 @@ impl PlanDefaults {
                 lites_vertical: 1,
                 egress: true,
                 tempered: true,
+                min_separation: default_min_separation(),
+                mulled: Default::default(),
+                ignore_casing: false,
             },
             cabinets: CabinetDefaults {
                 base: BaseCabinetDefaults {
@@ -1443,6 +1521,9 @@ impl PlanDefaults {
             roof_detail: RoofDetailDefaults::default(),
             code: CodeDefaults::default(),
             pages: Default::default(),
+            saved: Default::default(),
+            tray_ceiling: None,
+            plan_views: Vec::new(),
         }
     }
 }
@@ -1543,8 +1624,8 @@ fn chief_room_types() -> Vec<RoomTypeDef> {
     const EXCLUDED_UTIL: (&str, bool, bool) = ("Utility", false, false);
     const DECK: (&str, bool, bool) = ("Deck", false, false);
     let rows: &[(&str, (&str, bool, bool))] = &[
-        ("Attic", EXCLUDED_UTIL),
-        ("Balcony", DECK),
+        ("Attic", ("Attic", false, false)),
+        ("Balcony", ("Balcony", false, false)),
         ("Bath", STD),
         ("Bedroom", STD),
         ("Bedroom #2", STD),
@@ -1554,8 +1635,8 @@ fn chief_room_types() -> Vec<RoomTypeDef> {
         ("Bonus Room", STD),
         ("Breakfast", STD),
         ("Closet", STD),
-        ("Courtyard", ("Standard", false, false)),
-        ("Crawl Space", EXCLUDED_UTIL),
+        ("Courtyard", ("Court", false, false)),
+        ("Crawl Space", ("Open Below", false, false)),
         ("Deck", DECK),
         ("Den", STD),
         ("Dinette", STD),
@@ -1566,7 +1647,7 @@ fn chief_room_types() -> Vec<RoomTypeDef> {
         ("Family Room", STD),
         ("Flat Roof", EXCLUDED_UTIL),
         ("Foyer", STD),
-        ("Garage", ("Garage", false, true)),
+        ("Garage", ("Garage", false, false)),
         ("Great Room", STD),
         ("Hall", STD),
         ("Kitchen", STD),
@@ -1584,33 +1665,25 @@ fn chief_room_types() -> Vec<RoomTypeDef> {
         ("Pantry", STD),
         ("Porch", ("Porch", false, false)),
         ("Powder Room", STD),
-        ("Slab", UTIL),
+        ("Slab", ("Slab", false, false)),
         ("Storage", UTIL),
         ("Study", STD),
     ];
     let mut types: Vec<RoomTypeDef> = rows
         .iter()
-        .map(|(name, (function, living, cond))| RoomTypeDef {
-            name: (*name).into(),
-            function: (*function).into(),
-            include_in_living_area: *living,
-            conditioned: *cond,
-            default_floor_finish: String::new(),
-        })
+        .map(|(name, (function, living, cond))| RoomTypeDef::new(name, function, *living, *cond))
         .collect();
     for name in ["Unspecified", "Utility"] {
-        types.push(RoomTypeDef {
-            name: name.into(),
-            function: if name == "Utility" {
+        types.push(RoomTypeDef::new(
+            name,
+            if name == "Utility" {
                 "Utility"
             } else {
                 "Standard"
-            }
-            .into(),
-            include_in_living_area: true,
-            conditioned: true,
-            default_floor_finish: String::new(),
-        });
+            },
+            true,
+            true,
+        ));
     }
     types
 }
@@ -1629,7 +1702,32 @@ impl Project {
         for v in &mut p.plan_views {
             v.layer_set = d.layer_sets.active.clone();
         }
+        // A template that carries saved plan views starts the plan with them
+        // (a view whose layer set the template lacks shows the active set).
+        if !d.plan_views.is_empty() {
+            p.plan_views = d
+                .plan_views
+                .iter()
+                .cloned()
+                .map(|mut v| {
+                    if d.layer_sets.get(&v.layer_set).is_none() {
+                        v.layer_set = d.layer_sets.active.clone();
+                    }
+                    v
+                })
+                .collect();
+            let first = p
+                .plan_views
+                .iter()
+                .find(|v| v.name == "Working Plan View")
+                .unwrap_or(&p.plan_views[0])
+                .name
+                .clone();
+            p.activate_plan_view(&first);
+        }
         p.wall_types = d.wall_types.clone();
+        p.saved_defaults = d.saved.clone();
+        p.saved_adopt_active();
         p
     }
 }

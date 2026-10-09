@@ -12,6 +12,8 @@
 
 use crate::device::{Device, DeviceKind};
 use crate::layer::ElectricalLayer;
+use crate::options::DeviceOptions;
+use crate::rope::{RopeLightPath, RopeReference};
 use plan_3d::{Material, Mesh, Vertex};
 use plan_core::geometry::{polygon_area, project_on_segment};
 use plan_core::{Point, Project, Wall, DEFAULT_CEILING_HEIGHT};
@@ -269,6 +271,7 @@ fn plate_details(parts: &mut Parts, face: Point, n: Point, y: f64) {
 
 fn device_parts<'a>(
     d: &'a Device,
+    opts: &DeviceOptions,
     walls: &[Wall],
     elevation: f64,
     ceiling: f64,
@@ -279,28 +282,37 @@ fn device_parts<'a>(
     match d.kind {
         k if k.is_wall_mounted() => {
             let (face, n) = mount(d, walls);
+            // A recessed device sits Distance from Wall into (or out of) the face.
+            let face = face + n * opts.recess.distance_from_wall;
             let u = n.perp();
+            // The plate or fixture size: Width and Height of the dialog.
+            let (dw, dh) = k.default_size();
+            let (sw, sh) = opts.size(k);
             match k {
                 DeviceKind::Panel => {
                     let (w, h, t) = PANEL;
+                    let (w, h) = (w * sw / dw, h * sh / dh);
                     parts
                         .body()
                         .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
                 }
-                DeviceKind::WallSconce => {
+                DeviceKind::WallSconce | DeviceKind::WallLightExterior => {
                     let (w, h, t) = SCONCE;
+                    let (w, h) = (w * sw / dw, h * sh / dh);
                     parts
                         .body()
                         .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
                 }
                 DeviceKind::Thermostat => {
                     let (w, h, t) = THERMOSTAT;
+                    let (w, h) = (w * sw / dw, h * sh / dh);
                     parts
                         .body()
                         .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
                 }
-                DeviceKind::OutletWp => {
+                DeviceKind::OutletWp | DeviceKind::SwitchWp => {
                     let (w, h, t) = WP_COVER;
+                    let (w, h) = (w * sw / dw, h * sh / dh);
                     parts
                         .body()
                         .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
@@ -314,12 +326,29 @@ fn device_parts<'a>(
                 }
                 _ => {
                     let (w, h, t) = PLATE;
+                    let (w, h) = (w * sw / dw, h * sh / dh);
                     parts
                         .body()
                         .prism(&rect(face, u, n, w, t), y - h * 0.5, y + h * 0.5);
                     plate_details(&mut parts, face, n, y);
                 }
             }
+        }
+        DeviceKind::PathLight => {
+            // A short post with a lamp head.
+            let c = d.position;
+            let post = 1.0;
+            parts.soup(Material::Metal).prism(
+                &[
+                    c + Point::new(-post, -post),
+                    c + Point::new(post, -post),
+                    c + Point::new(post, post),
+                    c + Point::new(-post, post),
+                ],
+                elevation,
+                y,
+            );
+            parts.body().frustum(c, (4.0, 2.0), (y, y + 3.0));
         }
         DeviceKind::CeilingLight => {
             parts
@@ -430,12 +459,48 @@ pub fn meshes(layer: &ElectricalLayer, walls: &[Wall], floor_elevation: f64) -> 
     } else {
         DEFAULT_CEILING_HEIGHT
     };
-    layer
+    let mut out: Vec<Mesh> = layer
         .devices
         .iter()
-        .filter_map(|d| device_parts(d, walls, floor_elevation, ceiling))
+        .filter_map(|d| {
+            let opts = layer.options_of(d.id);
+            device_parts(d, &opts, walls, floor_elevation, ceiling)
+        })
         .flat_map(Parts::finish)
-        .collect()
+        .collect();
+    for r in &layer.ropes {
+        out.extend(rope_mesh(r, floor_elevation, ceiling));
+    }
+    out
+}
+
+/// A rope light as a thin strip along its path, at its height.
+fn rope_mesh(r: &RopeLightPath, floor_elevation: f64, ceiling: f64) -> Option<Mesh> {
+    let top = floor_elevation
+        + match r.spec.reference {
+            RopeReference::Floor => r.spec.height,
+            RopeReference::Ceiling => ceiling - r.spec.height,
+        };
+    let (w, h) = (
+        r.spec.profile_width.max(0.1),
+        r.spec.profile_height.max(0.1),
+    );
+    let mut soup = Soup::default();
+    for (a, b) in r.segments() {
+        let len = a.dist(b);
+        if len < 1e-6 {
+            continue;
+        }
+        let dir = b.sub(a).normalized();
+        soup.prism(&rect(a, dir.perp(), dir, w, len), top - h, top);
+    }
+    (!soup.indices.is_empty()).then(|| Mesh {
+        vertices: soup.vertices,
+        indices: soup.indices,
+        material: Material::Trim,
+        object_id: None,
+        color: None,
+    })
 }
 
 /// Every floor's electrical devices as 3D meshes, for the 3D view. Nothing is

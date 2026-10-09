@@ -37,8 +37,8 @@ Every room carries three areas:
 | Area | Measured to | Used for |
 |---|---|---|
 | Centerline area | Wall centerlines | The outline drawn on the Rooms layer, and the number in the Properties panel's room list. |
-| Interior Area | The interior wall surfaces (the inner polygon) | The plan label, the Room Specification, the Room Schedule's Area column (QA-03, fixed in Round 8) and Total Living Area. |
-| Standard Area | Outside of exterior walls, center of shared walls | The optional second readout; a hidden Standard Area column of the Room Schedule. |
+| Interior Area | The interior wall surfaces (the inner polygon), plus the space inside bay, box and bow windows | The plan label, the Room Specification and the Room Schedule's Area column (QA-03, fixed in Round 8). |
+| Standard Area | The outside surface (or the outside of the Main Layer) of exterior walls, the center of interior walls; no bay, box or bow windows; rounded to the nearest square foot in labels | The optional second readout, the Living Area (4.6) and a hidden Standard Area column of the Room Schedule. |
 
 Interior dimensions in a label are the width and length of the interior bounding
 rectangle, in the plan's dimension format, for example `12'-4" x 14'-0"`.
@@ -64,6 +64,17 @@ pod, a free-standing chimney box) is its own room, and the room around it gives 
 island: its areas (centerline, interior, standard) exclude it, the floor and ceiling
 platforms in 3D have a hole under it, and a name anchored inside the island belongs to
 the island. Clicking inside the island picks the island.
+
+**The Exterior Room (Round 16).** Each structure (a group of rooms that share a wall or a
+corner) on each floor has an Exterior Room. Click **just outside an exterior wall** with
+Select Objects, or on the structure's **Living Area label**, to select it: a highlighted
+band follows the outline and the status line says "Exterior Room". If a wall is picked
+instead, press **Tab** (Select Next Object) until the Exterior Room is selected; Shift+Tab goes
+back. Double-click it, or press `Enter`, to open the **Exterior Room Specification** (4.12).
+The band has two grips at its right: dragging the top one up or down sets the level's
+default ceiling height, the bottom one the thickness of the level's floor platform, which
+sets its default floor height (Floor 1 and a layered floor structure have no bottom grip).
+Walls at the old ceiling height and the floors above follow; one drag is one undo step.
 
 A room is remembered by a point inside it, not by an index. Renaming survives
 edits as long as the point stays inside the room; split a room with a new wall
@@ -123,9 +134,10 @@ uses the shared frame with an interior plan preview and a live cross-section.
 |---|---|
 | General | Works |
 | Structure | Works |
-| Deck | (disabled) |
-| Moldings | Works (the Base and Crown profile names are stored) |
+| Deck | Works (the Deck Specification of a Deck room) |
+| Moldings | Works (the Base, Chair Rail and Crown profile names are stored) |
 | Wall Covering | Works (session only) |
+| Layer | Works (stored: layer and Drawing Group; the plan still draws rooms on the Rooms layer) |
 | Fill Style | Works (stored) |
 | Materials | Works (finish names are stored) |
 | Label | Works (the display switches are stored) |
@@ -142,10 +154,10 @@ below, and old files load with the defaults for every field they lack. The rest 
 - **Room Name** and **Room Type** (a drop-down of the template's room types: Attic,
   Balcony, Bath, Bedroom, Closet, Dining, Entry, Garage, Kitchen, Living, Master
   Bath, Porch, Utility and so on; edit the list in 4.10). Stored.
-- **Function** (Standard, Living, Utility, Deck, Garage, Porch, Open Below ...) is
-  shown read-only; it comes from the room type. Choosing a room type sets the defaults
-  of the Structure tab from its function (R-40, R-41); every value stays editable
-  afterwards:
+- **Function** is shown read-only with its category, for example "Garage (Hybrid)"; it
+  comes from the room type and is a fixed set of properties (4.11). Choosing a room type
+  sets the defaults of the Structure tab from its function and gives the room the type's
+  own settings (4.10); every value stays editable afterwards:
   - **Garage**: the floor drops 24" (Floor Height offset -24"), on a 4" concrete slab with
     no floor finish.
   - **Deck**: no ceiling over the room; the floor is a deck platform (1 1/2" decking on 7 1/4"
@@ -153,19 +165,38 @@ below, and old files load with the defaults for every field they lack. The rest 
   - **Open Below**: no floor under the room, and the ceiling of the room under it opens
     to it. The Attic room type has no floor platform either, and a **Courtyard** has neither a floor nor a ceiling (Round 13).
   - **Flat Roof**: no ceiling, and a membrane deck (1/2" membrane on 7 1/4" joists) as its floor structure.
-  - Any other type goes back to the floor's own finish and platform.
+  - **Balcony**, **Court** and **Slab** follow 4.11. Any other type goes back to the floor's own finish and platform.
 - **Living Area**: Include in Total Living Area Calculation, Exclude, or Use Default
   (follows the room type). Stored. Garage, Deck, Porch and similar types are
   excluded by default.
 - **Conditioned Room**: Conditioned, Unconditioned or Use Default. Stored.
-- The dialog also shows the room's Interior Area, Standard Area, perimeter and
-  the plan's Total Living Area across all floors.
+- **Options**: the Roof Group number (0 is the default; rooms of another group are roofed
+  as a separate building, chapter 8).
+- **Room Information** reports the interior dimensions, Interior Area (with bay, box and bow
+  windows), Standard Area, Centerline Area, perimeter, whether the room is in the Living
+  Area now and why ("by its room type", "set for this room", "rough ceiling under 48 in"),
+  and the Living Area of its structure.
 
 ### Structure
 
-- **Floor Height** and **Ceiling Height**, each Absolute or Relative (the absolute/
-  relative toggle is session only; the offset values are stored). Both reach the 3D view (QA-02, fixed in Round 8; R-23, R-24, R-33): the 3D floor platform of a room is raised by its Floor Height offset, and its ceiling platform sits at its own Ceiling Height measured from that raised floor. A room with no named entry, or with no override, keeps the floor's ceiling height. Rooms that share the same levels share one platform; the 3D view rebuilds when you change them.
-- **Rough Ceiling Height** for dropped ceilings (stored).
+- **Absolute Elevations** (from zero, the top of Floor 1's subfloor): Floor Above (No Change
+  when rooms of different heights lie above), Ceiling and Floor (editable), Floor Below and SWT
+  Below (the top of the stem walls of the room below). **Relative Heights**: Rough Ceiling and
+  Finished Ceiling (editable), Ceiling Below and, with Floor Supplied by the Foundation Room
+  Below, Stem Wall Top to Ceiling and Floor to Stem Wall Top. The preview shows the cross
+  section: the floors above and below, the platforms and the heights, with Floor and Ceiling
+  callouts. **Floor Height** and **Ceiling Height** reach the 3D view (QA-02, fixed in Round 8; R-23, R-24, R-33): the 3D floor platform of a room is raised by its Floor Height offset, and its ceiling platform sits at its own Ceiling Height measured from that raised floor. A room with no named entry, or with no override, keeps the floor's ceiling height. Rooms that share the same levels share one platform; the 3D view rebuilds when you change them.
+- **Rough Ceiling** for dropped ceilings (stored; equal to the finished ceiling plus its finish
+  means none).
+- **Ceiling**: Ceiling Over This Room, Roof Over This Room, Flat Roof Over This Room, **Flat
+  Ceiling Over This Room** (off makes a cathedral ceiling that follows the roof above; the
+  Turn Ceiling Off/On buttons set it too), **Shelf Ceiling** (no attic walls over the interior walls
+  of the room) and **Use Soffit Surface for Ceiling**.
+- **Floor**: Floor Under This Room, **Floor Supplied by the Foundation Room Below**, **Room
+  Supplies Floor for the Room Above** (a garage on a slab), **Build Foundation Below**, **Raised
+  Floor For Bump Out**, **Retain Floor/Ceiling Framing**, Framing Group (or Slab Pour Number with
+  a monolithic slab) and **On Structure Resize** (Lock Floor Top or Bottom). These are stored; their
+  effects on framing and foundations belong to those chapters.
 - **Finish** thicknesses for floor and ceiling (stored finish names; the floor finish thickness reaches the 3D floor).
 - **Platforms**: Floor Under This Room, Ceiling Over This Room (stored and honored by the 3D platforms: off removes that platform; turning the ceiling off also makes Build Roof add a vaulted ceiling plane over the room, chapter 8.2), **Roof Over This Room** (on by default; stored with the room) and **Flat Roof Over This Room** (stored; available only while Roof Over This Room is on). With Roof Over This Room off, **Build Roof leaves the room out**: its exterior walls stop shaping the roof, a partition between it and a roofed room becomes the roof's edge, and a roofless room inside one plane gets a hole in that plane (a courtyard, an open deck; chapter 8.1). With Flat Roof Over This Room on, Build Roof puts a level roof plane at the room's ceiling instead of the pitched roof; since Round 13 that plane **overhangs** on the room's exterior edges (half the wall plus the wall's or the roof settings' overhang) and not on its partition edges (chapter 8.1). When a roofless room lies across a ridge, hip or valley, Build Roof cuts a hole piece in each plane (chapter 8.2). Auto Rebuild Roofs reruns when either changes.
 - **Floor Structure Define...** and **Ceiling Structure Define...** (R-28, R-29) edit the room's
@@ -191,7 +222,9 @@ interior area. The label options are stored on the room.
 **Label Text** (R-47) is an optional template that replaces those lines: `<name>`,
 `<type>`, `<area>`, `<std_area>`, `<cl_area>`, `<dims>`, `<ceiling>`, `<floor>` and
 `<perimeter>` are replaced by the room's values, `\n` starts a new line, and other text
-stays as typed. Empty keeps the checkboxes' lines.
+stays as typed. Chief's name-value pairs work too: `%dimensions%` (interior dimensions),
+`%internal_area%` (Interior Area, with bay, box and bow windows) and `%standard_area%`
+(Standard Area), both rounded to the nearest square foot. Empty keeps the checkboxes' lines.
 
 ### Components, Object Information, Schedule
 
@@ -212,11 +245,19 @@ Builds from the current floor (the top floor when the current one is the foundat
   foundation).
 - **Heights**: from the Floor Defaults (ceiling height and floor settings of the plan defaults,
   see below) or the same as the current floor.
-- **Also build a foundation**: shown when the plan has none; takes the Build Foundation choices
-  (stem wall with its height, monolithic slab, piers).
+- **Move Highest Floor's Roof Up**: moves the roof planes built on the highest floor up with the
+  new floor. Only available when roof planes are built there and Auto Rebuild Roofs is off.
+- **Step floor/ceiling elevations to match existing floor**: gives the rooms of the new floor the
+  floor heights (above) or ceiling heights (below) that keep the ceilings and floors of the
+  existing floor where they are. Without it, a floor built above resets the ceiling height of
+  rooms with a raised or lowered floor.
+- **Also build a foundation**: shown when the plan has none; takes the Foundation Defaults and
+  Build Foundation panels (chapter 16.5).
 
-OK creates the floor and switches to it, as one undo step. **Insert New Floor** (above) and
-**Insert New Floor Below** add an empty floor next to the current one.
+OK creates the floor and switches to it, as one undo step, and opens the Floor Defaults of the
+new floor. A plan has at most 30 living floors. **Insert New Floor Below** opens the same dialog as
+"Insert New Floor" with Place set to below the current floor, derived from its walls; **Insert New
+Floor** (above) adds an empty floor.
 
 ### Floor Defaults
 
@@ -243,12 +284,12 @@ What of the reference floor shows is decided layer by layer: the **Ref** column 
 
 ### Build Foundation
 
-Foundation Type: **Walls with Footings**, **Monolithic Slab**, **Piers**. For Walls with
-Footings, enter **Stem Wall Height** (from the Foundation Wall default, 48") and **Minimum
-Stem Wall** (12"); OK is blocked if the stem height is zero. A "Build Garage Floor..."
-check box is shown, but the model does not store it. A new foundation becomes floor
-0 and the active floor index moves up by one so you stay on the same floor.
-Foundation walls use the `Foundation-8` wall type (8" thick).
+The Foundation and Options panels, the Foundation Defaults and everything a build makes are in
+chapter 16.5. A new foundation becomes floor 0 and the active floor index moves up by one so you
+stay on the same floor; Build Foundation on a foundation that exists rebuilds it in place.
+Foundation walls use the `Foundation-8` wall type (8" thick). Floor 0 cannot be deleted while
+Auto Rebuild Foundation is on. Rooms cannot be created on the Attic floor, which warns when walls
+or objects are drawn on it.
 
 ### Delete Current Floor
 
@@ -256,9 +297,24 @@ A confirmation: "Delete 2nd Floor and everything on it? Undo brings it back."
 
 ## 4.6 Total Living Area
 
-Total Living Area is the sum of the Interior Areas of every room, across all floors,
-whose Living Area setting resolves to Included. The Room Specification shows the
-total. A standalone readout (plan information, schedules footer) is (planned).
+Each structure on each floor has a **Living Area label**, centered under it on the Room
+Labels layer ("Living Area: 1,235 sq ft") and shown with the Exterior Room. It is the sum of
+the **Standard Areas** of the rooms that count, measured to the center of interior walls and to
+the outside surface of exterior walls (or to the outside of their Main Layer: Edit > Default
+Settings > General Plan Defaults > **Living Area to**), rounded to the nearest square foot,
+without bay, box and bow windows. A structure with no counted room has no label. **Show Living
+Area Label** in General Plan Defaults hides all of them without touching room labels. The label
+is not an object you can delete.
+
+A room counts when:
+
+- its Living Area setting says Include (always) or Exclude (never); else
+- its Room Type is in the Living Area (interior rooms are, exterior and hybrid ones are not), and
+- its rough ceiling is **48 in or more**; a lower one (a crawl space, a low attic) is out. A
+  basement of 48 in or more counts.
+
+The total across all floors is the sum of the structures' rounded numbers; the status line
+shows it after a Room Specification (and per floor when there are several).
 
 ## 4.7 Tools > Space Planning > Space Planning Assistant
 
@@ -295,9 +351,10 @@ page of the layout. Chapter 18 describes all of it.
 
 - Rooms are traced from centerlines and offset inward for the interior polygon.
 - Room Specification values beyond the name, type, living-area flag, heights, finishes, conditioned
-  setting, stem wall, base and crown moldings, fill and label options, Roof Over This Room and Flat Roof Over This Room (all stored with the plan) are kept
-  for the session only: Wall Covering, the Absolute/Relative toggles and the finish
-  thicknesses.
+  setting, stem wall, base, chair rail and crown moldings, fill and label options, Roof Over This Room, Flat Roof Over This Room, Flat Ceiling Over This Room, Roof Group and the Structure and Layer switches (all stored with the plan) are kept
+  for the session only: Wall Covering and the finish thicknesses.
+- The Exterior Room is selected in plan view only; Chief also selects it in 3D views and drags 3D wall handles. The plan view's
+  grips do the same job (chapter 4.2). The Layer panel is stored but the plan draws every room on the Rooms layer.
 - Attic floors from Build Roof are (planned). Floor Material Region is in chapter 17.
 - Only the walls of a Reference Display floor are snappable (ends and crossings), and Open Below cuts only the ceiling of a room
   whose outline lies wholly inside (or exactly covers) a room below. The stem wall of a garage or of a room with a Stem Wall height is a plain concrete wall in 3D only (it is not a wall of the plan, and it does not appear in the plan view).
@@ -309,16 +366,71 @@ page of the layout. Chapter 18 describes all of it.
 Edit > Default Settings... > Floors and Rooms > **Room Types** (double-click it or press Edit) opens the
 list behind the Room Type drop-down in the Room Specification.
 
-- The table shows **Name**, **Function**, **Living Area** (Yes or No) and **Conditioned** (Yes or No) for every type
-  in the template (about 49 in Daniel's).
+- The table shows **Name**, **Function**, **Living Area** (Yes or No), **Conditioned** (Yes or No) and **In Use** for every type
+  in the template (about 49 in Daniel's). Click a row to select it; Ctrl or Cmd toggles a row, Shift
+  selects a range. **Select All** and **Clear All** select and clear the rows.
 - **Add** appends a Standard room type named "New Room Type" (made unique) and opens it for editing.
-  **Edit...** (or double-click a row) opens **Room Type - <name>**: Function (Standard, Living, Utility, Deck, Garage,
-  Porch, Open Below), Include in Living Area, Conditioned and Default Floor Finish. **Rename...** asks for a new
-  name. **Delete** removes the selected type.
+  **Edit...** (or double-click a row) opens **Room Type Defaults** for the selected row (**Multiple Room Type
+  Defaults** when several are selected). **Rename...** asks for a new name. **Copy...** makes a new type
+  from the selected one. **Delete** removes the selected rows.
+- **Room Type Defaults** has the panels of the Room Specification that a type hands its rooms: **General** (name,
+  Function, Include in Living Area, Conditioned, default floor finish; choosing a function resets the last two to
+  that function's defaults), **Structure** (Floor and Ceiling Structure and Finish, with Use Default), **Deck**
+  (planking, framing, stairs), **Moldings**, **Layer** (layer and Drawing Group), **Fill Style** and **Label**
+  (what the label shows and a macro template). Giving a room the type overwrites the room's settings with these.
+  Multiple Room Type Defaults changes only what you set (a setting left on No Change keeps each type's own):
+  function, Living Area, Conditioned, moldings, layer and fill.
 - Names must be filled in and unique ("A name is required", "That name is already used"). "Unspecified", the
   type rooms without a type use, cannot be deleted.
 - OK applies the draft; Cancel or Escape drops it. The new list becomes the defaults' room types (save them to
   your template with File > Templates > Save Current Defaults as My Template...). Renaming a type also renames
   it on the rooms of the open plan that used it, as one undo step ("Rename Room Types"), so those rooms keep
   their type.
-- Beyond the Structure defaults and the roof and platform switches of 4.4, function-driven behavior is still (planned).
+- Function-driven behavior is described in 4.11.
+
+## 4.11 Room functions
+
+A **Room Function** is a fixed set of properties; a Room Type names one and can only change its own
+settings (name, Living Area, Conditioned, platforms). There are three categories:
+
+| Category | Functions | Living and Conditioned | Ceiling and roof |
+|---|---|---|---|
+| Interior | Standard, Utility | In both | Flat ceiling, roof over |
+| Exterior | Balcony, Court, Deck | In neither | No ceiling, no roof, no foundation; doors and windows face out |
+| Hybrid | Attic, Garage, Open Below, Porch, Slab | Out of the Living Area; Open Below is conditioned | Garage, Slab and Porch keep a ceiling and roof; an Attic has no floor, ceiling or roof; Open Below has no floor |
+
+- **Floors and foundations.** Garage and Slab floors drop to Floor 0 on a concrete slab (a Slab as thick as
+  the Foundation Defaults slab); a Deck or Balcony floor is decking on joists; a stairwell or crawl space
+  is an Open Below room. **Basement and Crawl Space are not functions**: a Basement is an interior room that counts
+  in the Living Area from a rough ceiling of 48 in.
+- **Doors and windows.** Between an exterior and an interior room a window faces out and a hinged or sliding door takes
+  the exterior defaults.
+- **Electrical.** Fixtures on the wall of an exterior room are weatherproof; Auto Place Outlets skips exterior rooms,
+  Porches and Open Below rooms, places fewer in other hybrid rooms, and puts GFCI outlets over base cabinets in kitchens
+  and baths (kitchens also get standard-height outlets).
+- **Plan Check** applies the habitable-room rules to interior rooms only.
+
+## 4.12 Exterior Room Specification
+
+Select the Exterior Room (4.2) and press Open Object, or double-click it. **General** reports the floor, the rooms
+in the structure, its exterior walls, footprint and Living Area, and edits the level's default ceiling height and floor
+platform thickness (the grips' values). **Wall Covering** puts a covering, wainscot, chair rail, base and crown on the
+outside face of every exterior wall of the structure. **Materials** sets the Exterior Wall Surface material and color. OK
+is one undo step.
+
+## 4.13 The room Edit toolbar
+
+Select a room and the Edit toolbar offers:
+
+- **Calculate Materials in Room**: the Materials List of the room's contents (not its walls).
+- **Turn Ceiling Off / On**: sets Flat Ceiling Over This Room (a cathedral ceiling follows the roof).
+- **Make Room Polyline**, **Make Standard Area Polyline**: static closed CAD polylines on the current CAD layer along the
+  room's surfaces and the extent of its Standard Area. They are not linked to the room afterwards.
+- **Expand Room Polyline**: when the room has invisible walls or railings around it, temporarily selects the enlarged room
+  that ignores them; the polyline buttons then use it. Any other selection ends it.
+- **Create Schedule from Room**: asks for the schedule type, then click to place a schedule that lists only the objects in the room.
+- **Create Room Elevation Views**: the four interior elevations of the room (running it again updates them).
+- **Auto Room Dimensions**: interior dimension strings along each wall of the room (running it again replaces them).
+
+The Exterior Room offers **Make Room Polyline** (a polyline around its exterior walls) and **Make Living Area Polyline** (the
+exact extent of the Living Area). Each button is one undo step.

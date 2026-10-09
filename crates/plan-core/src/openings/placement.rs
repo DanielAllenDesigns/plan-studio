@@ -22,15 +22,60 @@
 
 use super::vertically_apart;
 use crate::geometry::Point;
-use crate::model::{Floor, Id, Opening, OpeningKind, Project, Wall};
+use crate::model::{Floor, Id, Opening, Project, Wall};
 
 /// Clear distance kept between a jamb and the face of a wall that meets the
 /// host, and between a jamb and a wall end (Chief's 2 in junction rule; verify
 /// in Chief).
 pub const JUNCTION_CLEARANCE: f64 = 2.0;
-/// Clear distance between two openings (touching windows excepted) and from
-/// the wall ends.
+/// Clear distance from the wall ends.
 pub const MARGIN: f64 = 2.0;
+/// Minimum Separation a plan starts with (Window Defaults, General panel,
+/// manual p. 603): how close two window or door units may stand, and so the
+/// width of the casing windows share. Chief's own default is unknown (verify
+/// in Chief, DECISIONS 42).
+pub const DEFAULT_MIN_SEPARATION: f64 = 2.0;
+
+/// The plan's rules for how close openings stand to each other and to the walls
+/// that meet their wall (kept in `Project::opening_display`, set by the Window
+/// Defaults and the General Plan Defaults).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rules {
+    /// Minimum Separation between any two units, inches.
+    pub min_separation: f64,
+    /// Ignore Casing for Opening Resize: no stop short of an intersecting wall.
+    pub ignore_casing: bool,
+}
+
+impl Default for Rules {
+    fn default() -> Self {
+        Rules {
+            min_separation: DEFAULT_MIN_SEPARATION,
+            ignore_casing: false,
+        }
+    }
+}
+
+impl Rules {
+    /// The rules of `project`.
+    pub fn of(project: &Project) -> Rules {
+        Rules {
+            min_separation: project.opening_display.min_separation.max(0.0),
+            ignore_casing: project.opening_display.ignore_casing,
+        }
+    }
+
+    /// How far the jambs of `o` stay from the face of a wall that meets its
+    /// own: the reach of its casing (manual p. 615), or nothing with Ignore
+    /// Casing for Opening Resize on.
+    pub fn junction_clearance(&self, o: &Opening) -> f64 {
+        if self.ignore_casing {
+            0.0
+        } else {
+            super::mull::casing_reach_of(o).max(JUNCTION_CLEARANCE)
+        }
+    }
+}
 
 /// What an alignment snap lines the opening up with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +167,12 @@ fn parallel(a: &Wall, b: &Wall) -> bool {
 /// floor that meet or cross it, with [`JUNCTION_CLEARANCE`] on each side. A
 /// wall that meets the host's end covers that end.
 pub fn junction_zones(floor: &Floor, host: &Wall) -> Vec<Zone> {
+    junction_zones_with(floor, host, JUNCTION_CLEARANCE)
+}
+
+/// [`junction_zones`] with a `clearance` of its own (the casing reach of the
+/// opening being placed).
+pub fn junction_zones_with(floor: &Floor, host: &Wall, clearance: f64) -> Vec<Zone> {
     let len = host.path_length();
     let half = host.thickness * 0.5;
     let mut out = Vec::new();
@@ -168,7 +219,7 @@ pub fn junction_zones(floor: &Floor, host: &Wall) -> Vec<Zone> {
             }
         }
         if let Some(s) = crossing.or(stem).or(through) {
-            out.push(Zone::new(s - r, s + r, JUNCTION_CLEARANCE));
+            out.push(Zone::new(s - r, s + r, clearance));
         }
     }
     out
@@ -181,47 +232,75 @@ pub fn zones(floor: &Floor, host: &Wall, o: &Opening, skip: Option<Id>) -> Vec<Z
     zones_skipping(floor, host, o, skip.as_slice())
 }
 
+/// [`zones`] under the plan's `rules`.
+pub fn zones_with(
+    floor: &Floor,
+    host: &Wall,
+    o: &Opening,
+    skip: Option<Id>,
+    rules: &Rules,
+) -> Vec<Zone> {
+    zones_skipping_with(floor, host, o, skip.as_slice(), rules)
+}
+
 /// [`zones`] leaving out several openings (a whole mulled unit being moved).
 pub fn zones_skipping(floor: &Floor, host: &Wall, o: &Opening, skip: &[Id]) -> Vec<Zone> {
-    let mut out = junction_zones(floor, host);
+    zones_skipping_with(floor, host, o, skip, &Rules::default())
+}
+
+/// [`zones_skipping`] under the plan's `rules`: neighbours keep the Minimum
+/// Separation, and the walls that meet the host keep the casing reach of `o`.
+pub fn zones_skipping_with(
+    floor: &Floor,
+    host: &Wall,
+    o: &Opening,
+    skip: &[Id],
+    rules: &Rules,
+) -> Vec<Zone> {
+    let mut out = junction_zones_with(floor, host, rules.junction_clearance(o));
     for n in floor.openings_on(host.id) {
         if skip.contains(&n.id) || vertically_apart(o, n) {
             continue;
         }
-        let gap = if o.kind == OpeningKind::Window && n.kind == OpeningKind::Window {
-            0.0
-        } else {
-            MARGIN
-        };
-        out.push(Zone::new(n.start_offset(), n.end_offset(), gap));
+        out.push(Zone::new(
+            n.start_offset(),
+            n.end_offset(),
+            rules.min_separation,
+        ));
     }
     out
 }
 
-/// The clear distance two openings keep between their jambs: none between
-/// two windows (they may touch, DW-4), [`MARGIN`] otherwise.
-pub fn clearance_between(a: &Opening, b: &Opening) -> f64 {
-    if a.kind == OpeningKind::Window && b.kind == OpeningKind::Window {
-        0.0
-    } else {
-        MARGIN
-    }
+/// The clear distance two openings keep between their jambs under the default
+/// Minimum Separation ([`DEFAULT_MIN_SEPARATION`]; DECISIONS 42).
+pub fn clearance_between(_a: &Opening, _b: &Opening) -> f64 {
+    DEFAULT_MIN_SEPARATION
 }
 
 /// Whether `a` and `b` (on the same wall) get in each other's way under the
-/// placement rules: closer than [`clearance_between`] while sharing wall
+/// placement rules: closer than the Minimum Separation while sharing wall
 /// height. A hair of slack keeps a position the rules worked out to the exact
 /// clearance from failing on rounding.
 pub fn conflict(a: &Opening, b: &Opening) -> bool {
-    super::openings_conflict(a, b, clearance_between(a, b) - 1e-6)
+    conflict_with(a, b, DEFAULT_MIN_SEPARATION)
+}
+
+/// [`conflict`] for a Minimum Separation of `separation` inches.
+pub fn conflict_with(a: &Opening, b: &Opening, separation: f64) -> bool {
+    super::openings_conflict(a, b, separation - 1e-6)
 }
 
 /// Whether `o`, standing where its `center_offset` says on `host`, keeps clear
 /// of the neighbouring openings (all but `skip`) and of the bodies of walls
 /// that meet or cross the host.
 pub fn fits_at(floor: &Floor, host: &Wall, o: &Opening, skip: &[Id]) -> bool {
+    fits_at_with(floor, host, o, skip, &Rules::default())
+}
+
+/// [`fits_at`] under the plan's `rules`.
+pub fn fits_at_with(floor: &Floor, host: &Wall, o: &Opening, skip: &[Id], rules: &Rules) -> bool {
     let (a, b) = (o.start_offset(), o.end_offset());
-    !zones_skipping(floor, host, o, skip)
+    !zones_skipping_with(floor, host, o, skip, rules)
         .iter()
         .any(|z| b > z.lo + 1e-6 && a < z.hi - 1e-6)
 }
@@ -275,6 +354,7 @@ pub fn candidates(
     zones: &[Zone],
     skip: Option<Id>,
 ) -> Vec<(f64, Align)> {
+    let rules = Rules::of(project);
     let floor = &project.floors[floor_ix];
     let len = host.path_length();
     let w = o.width;
@@ -301,7 +381,7 @@ pub fn candidates(
         out.push((z.lo - half, Align::Flush));
     }
     // A junction's clearance is the same position; name it for the status.
-    for z in junction_zones(floor, host) {
+    for z in junction_zones_with(floor, host, rules.junction_clearance(o)) {
         out.push((z.hi + half, Align::Junction));
         out.push((z.lo - half, Align::Junction));
     }
@@ -390,7 +470,7 @@ pub fn resolve(
     if len < o.width + 2.0 * MARGIN {
         return None;
     }
-    let zs = zones(floor, host, o, skip);
+    let zs = zones_with(floor, host, o, skip, &Rules::of(project));
     if zs
         .iter()
         .any(|z| raw > z.core_lo + 1e-6 && raw < z.core_hi - 1e-6)
@@ -421,7 +501,7 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::WallKind;
+    use crate::model::{OpeningKind, WallKind};
     use crate::openings::OpeningStyle;
 
     fn project_with_wall(len: f64) -> (Project, Id) {
@@ -482,14 +562,15 @@ mod tests {
         // Its body is 97.75..102.25, and the clearance adds 2" each side.
         assert!((zs[0].core_lo - 97.75).abs() < 1e-9 && (zs[0].core_hi - 102.25).abs() < 1e-9);
         assert!((zs[0].lo - 95.75).abs() < 1e-9 && (zs[0].hi - 104.25).abs() < 1e-9);
-        // A 32" door clicked beside the junction slides to 104.25 + 16.
+        // A 32" door clicked beside the junction slides until its casing (3 3/4")
+        // clears the partition's face: 102.25 + 3.75 + 16.
         let r = at(&p, w, &door(32.0), 108.0).unwrap();
-        assert_eq!(r.center, 120.25);
+        assert_eq!(r.center, 122.0);
         // Clicked on the partition's footprint, it is refused.
         assert!(at(&p, w, &door(32.0), 100.0).is_none());
         // And on the other side it stops short of the face.
         let r = at(&p, w, &door(32.0), 90.0).unwrap();
-        assert!(r.center + 16.0 <= 95.75 + 1e-9, "{}", r.center);
+        assert!(r.center + 16.0 <= 97.75 - 3.75 + 1e-9, "{}", r.center);
     }
 
     #[test]
@@ -503,27 +584,40 @@ mod tests {
             96.0,
             WallKind::Exterior,
         );
-        // The side wall's body (to 3") plus 2" clearance: a 36" door starts at 5".
+        // The side wall's body (to 3") plus the 3 3/4" casing: a 36" door
+        // starts at 6 3/4".
         let r = at(&p, w, &door(36.0), 10.0).unwrap();
-        assert_eq!(r.center, 23.0);
+        assert_eq!(r.center, 24.75);
+        // With Ignore Casing for Opening Resize it goes right up to the wall.
+        p.opening_display.ignore_casing = true;
+        let r = at(&p, w, &door(36.0), 10.0).unwrap();
+        assert_eq!(r.center, 21.0);
     }
 
     #[test]
-    fn windows_touch_but_a_door_keeps_its_clearance() {
+    fn every_pair_keeps_the_minimum_separation() {
         let (mut p, w) = project_with_wall(300.0);
         let mut first = window(36.0);
         first.center_offset = 100.0;
         first.wall_id = w;
         first.id = p.alloc_id();
         p.floors[0].openings.push(first);
-        // A window next to it snaps flush: its start at 118, center 136.
+        // A window next to it snaps flush at the separation (2 in to start
+        // with): its start at 120, center 138.
         let r = at(&p, w, &window(36.0), 140.0).unwrap();
-        assert_eq!((r.center, r.align), (136.0, Some(Align::Flush)));
-        // A door keeps 2" clear of it (a door is also not vertically apart).
+        assert_eq!((r.center, r.align), (138.0, Some(Align::Flush)));
+        // A door keeps the same distance from a window.
         let r = at(&p, w, &door(36.0), 140.0).unwrap();
         assert_eq!(r.center, 138.0);
         // On top of it, nothing is placed.
         assert!(at(&p, w, &window(36.0), 105.0).is_none());
+        // The Minimum Separation of the plan moves the stop.
+        p.opening_display.min_separation = 6.0;
+        let r = at(&p, w, &window(36.0), 140.0).unwrap();
+        assert_eq!(r.center, 142.0);
+        p.opening_display.min_separation = 0.0;
+        let r = at(&p, w, &window(36.0), 130.0).unwrap();
+        assert_eq!(r.center, 136.0, "windows may touch with no separation");
     }
 
     #[test]
@@ -652,10 +746,10 @@ mod tests {
             .find(|o| o.id == a)
             .unwrap()
             .width;
-        // The jamb may not enter the clearance of the meeting wall.
-        assert!(!p.slide_opening(0, a, 120.0 - 3.0 - 2.0 - width * 0.5 + 1.0));
-        assert!(p.slide_opening(0, a, 120.0 - 3.0 - 2.0 - width * 0.5));
-        // Two windows may touch, as in the tool.
+        // The jamb may not enter the casing reach of the meeting wall.
+        assert!(!p.slide_opening(0, a, 120.0 - 3.0 - 3.75 - width * 0.5 + 1.0));
+        assert!(p.slide_opening(0, a, 120.0 - 3.0 - 3.75 - width * 0.5));
+        // Two windows keep the Minimum Separation, as in the tool.
         let wb = p.floors[0]
             .openings
             .iter()
@@ -668,8 +762,8 @@ mod tests {
             .find(|o| o.id == a)
             .unwrap()
             .center_offset;
-        assert!(p.slide_opening(0, b, ca + width * 0.5 + wb * 0.5 + 10.0));
-        assert!(p.slide_opening(0, b, 120.0 + 3.0 + 2.0 + wb * 0.5));
+        assert!(p.slide_opening(0, b, ca + width * 0.5 + wb * 0.5 + 14.0));
+        assert!(p.slide_opening(0, b, 120.0 + 3.0 + 3.75 + wb * 0.5));
         // A door keeps its clearance from a window.
         let d = p.add_opening(0, host, 200.0, OpeningKind::Door).unwrap();
         let host_ref = p.floors[0].wall(host).unwrap();

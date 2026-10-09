@@ -609,9 +609,6 @@ fn every_new_command_is_safe_with_nothing_selected() {
         soffit::SOFFIT_SPEC,
     ] {
         cmd(&mut sim, id);
-        assert!(
-            sim.app.cx.can_undo() == false,
-            "{id} must not leave an undo step"
-        );
+        assert!(!sim.app.cx.can_undo(), "{id} must not leave an undo step");
     }
 }

@@ -75,10 +75,11 @@ fn scale_combo(ui: &mut Ui, salt: &str, current: &mut Scale) {
     egui::ComboBox::from_id_salt(salt)
         .selected_text(current.label())
         .show_ui(ui, |ui| {
-            for s in Scale::ALL {
-                ui.selectable_value(current, s, s.label());
+            let choices = Scale::choices();
+            for s in &choices {
+                ui.selectable_value(current, *s, s.label());
             }
-            if !Scale::ALL.contains(current) {
+            if !choices.contains(current) {
                 let c = *current;
                 ui.selectable_value(current, c, c.label());
             }
@@ -409,7 +410,7 @@ impl SendDialog {
                     .selected_text(shown)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut spec.scale, None, "Largest that fits");
-                        for s in Scale::ALL {
+                        for s in Scale::choices() {
                             ui.selectable_value(&mut spec.scale, Some(s), s.label());
                         }
                     });

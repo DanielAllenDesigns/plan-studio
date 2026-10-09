@@ -141,6 +141,250 @@ pub fn resolve_wall_type(
     name
 }
 
+// ===================================================================
+// Dynamic defaults and Set as Default (manual pp. 103 to 104)
+// ===================================================================
+
+/// Edit-toolbar command id: Set as Default.
+pub const SET_AS_DEFAULT: &str = "defaults.set_as_default";
+
+thread_local! {
+    /// The defaults as the last frame saw them (see [`track`]).
+    static LAST: std::cell::RefCell<Option<(u64, PlanDefaults)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Objects that use the default follow a changed default: after the plan
+/// defaults changed from `old` to the ones in `cx`, every wall, door, window
+/// and cabinet that is still on the default takes the new value (walls:
+/// `Project::follow_wall_defaults`; openings: their Use Default flags,
+/// `Project::follow_type_defaults`; cabinets: `apply_dynamic_defaults`). One
+/// undo step. Returns how many objects changed.
+pub fn follow_changed_defaults(cx: &mut crate::editor::EditorContext, old: &PlanDefaults) -> usize {
+    let mut total = 0;
+    cx.as_one_step("Default Settings", |cx| {
+        cx.begin_change("Default Settings");
+        let mut n = cx.project.follow_wall_defaults(old, &cx.defaults);
+        n += cx
+            .project
+            .follow_type_defaults(&cx.defaults.opening_variants);
+        if n == 0 {
+            cx.cancel_change();
+        } else {
+            cx.mark_dirty();
+        }
+        n += crate::tools::cabinet::apply_dynamic_defaults(cx, &old.cabinets);
+        total = n;
+    });
+    total
+}
+
+/// Watches the plan defaults once a frame: when they changed since the last
+/// frame (a defaults dialog's OK, Set as Default, a template import) the
+/// objects that use the default follow ([`follow_changed_defaults`]). The
+/// first call only remembers the defaults. Returns how many objects changed.
+pub fn track(cx: &mut crate::editor::EditorContext) -> usize {
+    let uid = cx.cache_key().0;
+    let old = LAST.with(|l| {
+        let mut slot = l.borrow_mut();
+        match slot.as_ref() {
+            Some((u, prev)) if *u == uid && *prev == cx.defaults => None,
+            // Another context (a new plan window, a test): start over.
+            Some((u, _)) if *u != uid => {
+                *slot = Some((uid, cx.defaults.clone()));
+                None
+            }
+            Some(_) => slot.replace((uid, cx.defaults.clone())).map(|(_, d)| d),
+            None => {
+                *slot = Some((uid, cx.defaults.clone()));
+                None
+            }
+        }
+    });
+    match old {
+        Some(old) => follow_changed_defaults(cx, &old),
+        None => 0,
+    }
+}
+
+/// Is there one object selected that the Edit toolbar's Set as Default reads?
+/// (Cabinets, construction lines and electrical devices have their own Set
+/// as Default buttons.)
+pub fn can_set_as_default(cx: &crate::editor::EditorContext) -> bool {
+    use crate::editor::ObjectRef;
+    match cx.selection.single() {
+        Some(ObjectRef::Wall(_) | ObjectRef::Opening(_) | ObjectRef::Dimension(_)) => true,
+        Some(ObjectRef::Cad(id) | ObjectRef::Text(id)) => cx.floor().annot_of(id).is_some(),
+        _ => false,
+    }
+}
+
+/// Set as Default (Edit toolbar): the settings of the selected object become
+/// the defaults for its kind, and the objects that use the default follow.
+/// Not available for the terrain's paths (sidewalks, streams, terrain walls,
+/// curbs) or for kinds without a defaults dialog. Returns whether a default
+/// changed; the status line says what happened.
+pub fn set_as_default(cx: &mut crate::editor::EditorContext) -> bool {
+    use crate::editor::ObjectRef;
+    let Some(sel) = cx.selection.single() else {
+        cx.status = "Select one object to set the defaults from".into();
+        return false;
+    };
+    let old = cx.defaults.clone();
+    let changed = match sel {
+        ObjectRef::Terrain | ObjectRef::TerrainObject(_) => {
+            cx.status = "Set as Default is not available for terrain paths".into();
+            return false;
+        }
+        ObjectRef::Wall(id) => {
+            let mut done = false;
+            cx.as_one_step("Set as Default", |cx| {
+                cx.begin_change("Set as Default");
+                let mut d = cx.defaults.clone();
+                let kind = cx.project.set_wall_as_default(&mut d, id);
+                cx.defaults = d;
+                if let Some(k) = kind {
+                    cx.status = format!("{} Defaults have been updated", k.label());
+                    cx.mark_dirty();
+                    done = true;
+                } else {
+                    cx.cancel_change();
+                    cx.status = "Set as Default is only available for standard walls".into();
+                }
+            });
+            done
+        }
+        ObjectRef::Opening(id) => {
+            let found = cx
+                .floor()
+                .openings
+                .iter()
+                .find(|o| o.id == id)
+                .cloned()
+                .map(|o| {
+                    let kind = cx
+                        .floor()
+                        .wall(o.wall_id)
+                        .map_or(WallKind::Interior, |w| w.kind);
+                    (o, kind)
+                });
+            match found {
+                Some((o, wk)) => {
+                    let key = cx.defaults.opening_variants.set_as_default(&o, wk);
+                    cx.status = format!("Defaults for {key:?} have been updated");
+                    true
+                }
+                None => false,
+            }
+        }
+        ObjectRef::Cabinet(_) => crate::tools::cabinet::set_as_default(cx),
+        ObjectRef::Device(id) => crate::tools::electrical::set_device_as_default(cx, id),
+        ObjectRef::Cad(id) | ObjectRef::Text(id) => set_annotation_as_default(cx, id),
+        ObjectRef::Dimension(id) => set_dimension_as_default(cx, id),
+        _ => {
+            cx.status = "Set as Default is not available for this kind of object".into();
+            false
+        }
+    };
+    if changed && cx.defaults != old {
+        follow_changed_defaults(cx, &old);
+        // The watcher would see the same change next frame; it has been
+        // handled now.
+        LAST.with(|l| *l.borrow_mut() = Some((cx.cache_key().0, cx.defaults.clone())));
+    }
+    changed
+}
+
+/// Set as Default for a construction line or a callout, marker or note: the
+/// annotation's settings become the Saved Default in use.
+fn set_annotation_as_default(cx: &mut crate::editor::EditorContext, id: plan_core::Id) -> bool {
+    use plan_core::callout::AnnotRef;
+    let Some(r) = cx.floor().annot_of(id) else {
+        // A construction line has its own command.
+        return crate::dialogs::construction_line::run_command(
+            cx,
+            crate::dialogs::construction_line::SET_AS_DEFAULT,
+        );
+    };
+    let (label, name) = match r {
+        AnnotRef::Callout(i) => {
+            let mut c = cx.floor().annots.callouts[i].clone();
+            c.items.clear();
+            c.pose = None;
+            c.pose_idx = 0;
+            cx.project.annot_defaults.callout = c;
+            ("Callout", cx.project.annot_defaults.saved_name.clone())
+        }
+        AnnotRef::Marker(i) => {
+            let mut m = cx.floor().annots.markers[i].clone();
+            m.items.clear();
+            cx.project.annot_defaults.marker = m;
+            ("Marker", cx.project.annot_defaults.saved_name.clone())
+        }
+        AnnotRef::Note(i) => {
+            let mut n = cx.floor().annots.notes[i].clone();
+            n.items.clear();
+            cx.project.annot_defaults.note = n;
+            ("Note", cx.project.annot_defaults.saved_name.clone())
+        }
+    };
+    cx.mark_dirty();
+    cx.status = format!("{label} Defaults - {name} have been updated");
+    true
+}
+
+/// Set as Default for a dimension line: the settings it sets itself (number
+/// format, arrow, extension lines, text style) become the active Dimension
+/// Defaults.
+fn set_dimension_as_default(cx: &mut crate::editor::EditorContext, id: plan_core::Id) -> bool {
+    let Some(dim) = cx.floor().dimensions.iter().find(|d| d.id == id).cloned() else {
+        return false;
+    };
+    let name = cx.defaults.active_dimension_set.clone();
+    let mut auto = cx.defaults.dimensions.clone();
+    let look = &dim.look;
+    if let Some(f) = look.fraction {
+        auto.smallest_fraction = f;
+    }
+    if let Some(v) = look.decimals {
+        auto.decimals = v;
+    }
+    if let Some(v) = look.unit_indicators {
+        auto.unit_indicators = v;
+    }
+    if let Some(v) = look.trailing_zeroes {
+        auto.trailing_zeroes = v;
+    }
+    if let Some(v) = look.arrow_size {
+        auto.arrow_size = v;
+    }
+    if let Some(v) = look.ext_gap {
+        auto.extension_gap = v;
+    }
+    if let Some(v) = look.ext_past {
+        auto.extension_past = v;
+    }
+    if let Some(v) = &dim.text_style {
+        auto.text_style = v.clone();
+    }
+    if auto == cx.defaults.dimensions {
+        cx.status = "The Dimension Defaults already match this dimension".into();
+        return false;
+    }
+    let set = plan_core::defaults::DimensionDefaultSet::new(name.clone(), auto);
+    match cx
+        .defaults
+        .dimension_sets
+        .iter_mut()
+        .find(|s| s.name == name)
+    {
+        Some(slot) => *slot = set,
+        None => cx.defaults.dimension_sets.push(set),
+    }
+    cx.defaults.set_active_dimension_set(&name);
+    cx.status = format!("The Dimension Defaults \"{name}\" have been updated");
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

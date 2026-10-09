@@ -88,6 +88,12 @@ pub struct Slab {
     pub top_elevation: f64,
     /// A footing under the outer edge (Slab with Footing).
     pub footing: Option<Footing>,
+    /// Footing Offset: how far the footing reaches out past the edges of the
+    /// slab; 0 puts the outside of the footing under the slab's edge.
+    pub footing_offset: f64,
+    /// What Top and Bottom of the Slab Specification are measured from
+    /// (Elevation Reference); the slab itself is stored floor-relative.
+    pub elevation_base: crate::elevation_ref::ElevationBase,
     pub material: String,
     /// Holes cut into this slab by its own specification.
     pub holes: Vec<Vec<Point>>,
@@ -107,6 +113,8 @@ impl Default for Slab {
             thickness: DEFAULT_SLAB_THICKNESS,
             top_elevation: 0.0,
             footing: None,
+            footing_offset: 0.0,
+            elevation_base: crate::elevation_ref::ElevationBase::FromFloor,
             material: DEFAULT_MATERIAL.to_string(),
             holes: Vec::new(),
             layer: SLAB_LAYER.to_string(),
@@ -876,6 +884,423 @@ pub fn cu_in_to_cu_yd(cu_in: f64) -> f64 {
     cu_in / CU_IN_PER_CU_YD
 }
 
+// ===================================================================
+// Foundation Defaults and Options (manual pp. 738-741)
+// ===================================================================
+
+/// Piers under a Grade Beams on Piers foundation are Round Piers or Square
+/// Pads (Foundation Defaults, Piers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PierShape {
+    #[default]
+    Round,
+    Square,
+}
+
+impl PierShape {
+    pub const ALL: [PierShape; 2] = [PierShape::Round, PierShape::Square];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PierShape::Round => "Round",
+            PierShape::Square => "Square",
+        }
+    }
+}
+
+/// Rebar of one foundation component (Options panel): bars per course, the
+/// spacing of the courses, the bar size in eighths of an inch (4 is 1/2 in)
+/// and the lap where sticks meet, in bar diameters.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Rebar {
+    pub bars: u32,
+    pub spacing: f64,
+    pub size: u32,
+    pub overlap: f64,
+}
+
+impl Default for Rebar {
+    fn default() -> Self {
+        Self {
+            bars: 2,
+            spacing: 24.0,
+            size: 4,
+            overlap: 40.0,
+        }
+    }
+}
+
+impl Rebar {
+    /// Diameter of the bar, inches.
+    pub fn diameter(&self) -> f64 {
+        f64::from(self.size.max(1)) / 8.0
+    }
+
+    /// Length of rebar for a run `run` inches long, counting the lap at each
+    /// 20-foot stick, inches.
+    pub fn run_length(&self, run: f64) -> f64 {
+        const STICK: f64 = 240.0;
+        let sticks = (run / STICK).ceil().max(1.0);
+        run + (sticks - 1.0) * self.overlap * self.diameter()
+    }
+}
+
+/// The Rebar group of the Options panel: footing, wall horizontal courses,
+/// wall vertical courses, pier and slab, and mesh for the slab instead of
+/// rebar.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RebarSet {
+    pub footing: Rebar,
+    pub wall_horizontal: Rebar,
+    pub wall_vertical: Rebar,
+    pub pier: Rebar,
+    pub slab: Rebar,
+    pub use_mesh: bool,
+}
+
+impl Default for RebarSet {
+    fn default() -> Self {
+        Self {
+            footing: Rebar {
+                bars: 2,
+                spacing: 0.0,
+                ..Rebar::default()
+            },
+            wall_horizontal: Rebar {
+                bars: 1,
+                spacing: 32.0,
+                ..Rebar::default()
+            },
+            wall_vertical: Rebar {
+                bars: 1,
+                spacing: 32.0,
+                ..Rebar::default()
+            },
+            pier: Rebar {
+                bars: 4,
+                spacing: 0.0,
+                ..Rebar::default()
+            },
+            slab: Rebar {
+                bars: 1,
+                spacing: 18.0,
+                ..Rebar::default()
+            },
+            use_mesh: true,
+        }
+    }
+}
+
+/// Default Garage Floor to Stem Wall Top, inches: the garage slab sits this
+/// far below the top of its stem walls (the platform plus 12 in puts it
+/// there, manual p. 748).
+pub const GARAGE_FLOOR_TO_STEM_TOP: f64 = 12.0;
+/// Default Lower Garage Floor of a Monolithic Slab, inches (3 1/2 in).
+pub const LOWER_GARAGE_FLOOR: f64 = 3.5;
+/// Default Minimum Garage Height, inches: the least height of the stem walls
+/// of a garage foundation (manual p. 749).
+pub const MIN_GARAGE_HEIGHT: f64 = 24.0;
+/// Default Minimum Height of foundation stem walls and grade beams, inches.
+pub const MIN_STEM_HEIGHT: f64 = 12.0;
+/// The terrain sits this far below the top of stem walls and grade beams,
+/// inches (manual p. 749).
+pub const TERRAIN_BELOW_STEM_TOP: f64 = 6.0;
+/// The terrain sits this far below the top of a monolithic slab, inches.
+pub const TERRAIN_BELOW_SLAB_TOP: f64 = 8.0;
+/// Walls whose heights differ by less than this are not a step, inches
+/// (1/16 in, manual p. 746).
+pub const STEP_TOLERANCE: f64 = 1.0 / 16.0;
+
+/// Everything in the Foundation Defaults and Build Foundation dialogs that is
+/// not already a field of [`crate::floors::FoundationOptions`] (manual pp.
+/// 739-741): Auto Rebuild, Hang 1st Floor Platform Inside Foundation Walls,
+/// S markers, Slab at Top of Stem Wall, the minimum height, the piers, the
+/// Garage Options and the Options panel.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FoundationSettings {
+    /// Rebuild the foundation whenever Floor 1 changes in a way that affects
+    /// it; floor 0 is then locked against hand editing.
+    pub auto_rebuild: bool,
+    /// Stem walls build up to the top of Floor 1's platform instead of
+    /// stopping under it (Walls with Footings only).
+    pub hang_platform: bool,
+    /// Show an "S" in the plan wherever the wall height steps.
+    pub s_markers: bool,
+    /// Walls with Footings: the slab floor is flush with the stem wall tops
+    /// and every room of Floor 1 takes its floor from the foundation.
+    pub slab_at_stem_top: bool,
+    /// Minimum height of stem walls and grade beams, inches.
+    pub min_height: f64,
+    /// A Round Pier's diameter or a Square Pad's side, inches.
+    pub pier_width: f64,
+    pub pier_shape: PierShape,
+    /// Garage Options. `garage_floor` is the Build Foundation dialog's
+    /// Garage Floor box: garage and slab rooms get their own slab and curbs.
+    pub garage_floor: bool,
+    pub garage_floor_to_stem_top: f64,
+    pub lower_garage_floor: f64,
+    pub min_garage_height: f64,
+    /// Stepped stem walls get vertical footings.
+    pub vertical_step_footings: bool,
+    /// Chamfer width and height of monolithic slab footings, inches.
+    pub chamfer_width: f64,
+    pub chamfer_height: f64,
+    pub rebar: RebarSet,
+    pub foam_seal: bool,
+    pub termite_flashing: bool,
+}
+
+impl Default for FoundationSettings {
+    fn default() -> Self {
+        Self {
+            auto_rebuild: false,
+            hang_platform: false,
+            s_markers: true,
+            slab_at_stem_top: false,
+            min_height: MIN_STEM_HEIGHT,
+            pier_width: DEFAULT_PIER_DIAMETER,
+            pier_shape: PierShape::Round,
+            garage_floor: true,
+            garage_floor_to_stem_top: GARAGE_FLOOR_TO_STEM_TOP,
+            lower_garage_floor: LOWER_GARAGE_FLOOR,
+            min_garage_height: MIN_GARAGE_HEIGHT,
+            vertical_step_footings: false,
+            chamfer_width: 4.0,
+            chamfer_height: 4.0,
+            rebar: RebarSet::default(),
+            foam_seal: false,
+            termite_flashing: false,
+        }
+    }
+}
+
+impl FoundationSettings {
+    /// How far a garage or slab room whose floor height is 0 is lowered when
+    /// a Walls with Footings or Grade Beams on Piers foundation is built: the
+    /// floor platform plus the Garage Floor to Stem Wall Top, inches (the
+    /// slab then ends up that far under the stem wall top, which is the
+    /// platform's underside).
+    pub fn garage_drop(&self, platform: f64) -> f64 {
+        platform + self.garage_floor_to_stem_top
+    }
+}
+
+/// Where the wall heights of a foundation step: a point shared by two
+/// foundation walls whose tops differ (Show "S" Markers on Step Foundation).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StepMarker {
+    /// The shared end point.
+    pub at: Point,
+    /// The lower and the higher wall top at the step, inches above the floor.
+    pub low: f64,
+    pub high: f64,
+    /// The taller wall (the marker sits along it).
+    pub tall_wall: Id,
+}
+
+/// The steps in the foundation walls of `floor`, one per point where two
+/// foundation walls meet at different top heights.
+pub fn step_markers(floor: &Floor) -> Vec<StepMarker> {
+    let walls: Vec<&crate::model::Wall> = floor
+        .walls
+        .iter()
+        .filter(|w| w.flags.foundation && !w.flags.invisible && w.length() > 1e-6)
+        .collect();
+    let top = |w: &crate::model::Wall| w.bottom_offset + w.height;
+    let mut out: Vec<StepMarker> = Vec::new();
+    for (i, a) in walls.iter().enumerate() {
+        for b in &walls[i + 1..] {
+            for pa in [a.start, a.end] {
+                for pb in [b.start, b.end] {
+                    if pa.dist(pb) > 0.5 || (top(a) - top(b)).abs() < STEP_TOLERANCE {
+                        continue;
+                    }
+                    if out.iter().any(|m| m.at.dist(pa) < 0.5) {
+                        continue;
+                    }
+                    let (tall, low, high) = if top(a) > top(b) {
+                        (a, top(b), top(a))
+                    } else {
+                        (b, top(a), top(b))
+                    };
+                    out.push(StepMarker {
+                        at: pa,
+                        low,
+                        high,
+                        tall_wall: tall.id,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Where the "S" of a step is drawn: a little way along the taller wall from
+/// the step and to its left, so it does not sit on the wall lines.
+pub fn step_marker_label_at(floor: &Floor, m: &StepMarker, offset: f64) -> Point {
+    let Some(w) = floor.walls.iter().find(|w| w.id == m.tall_wall) else {
+        return m.at;
+    };
+    let toward = if m.at.dist(w.start) <= m.at.dist(w.end) {
+        w.direction()
+    } else {
+        w.direction() * -1.0
+    };
+    m.at + toward * offset + toward.perp() * (w.thickness * 0.5 + offset)
+}
+
+/// The points of a pier run along a wall from `start` to `end`: both ends and
+/// as many between as keep every span at most `max_separation` long.
+pub fn pier_positions(start: Point, end: Point, max_separation: f64) -> Vec<Point> {
+    let len = start.dist(end);
+    let n = (len / max_separation.max(12.0)).ceil().max(1.0) as usize;
+    let mut out: Vec<Point> = (0..=n)
+        .map(|i| Point::lerp(start, end, i as f64 / n as f64))
+        .collect();
+    out.dedup_by(|a, b| a.dist(*b) < 1.0);
+    out
+}
+
+/// The width of the cutout a door leaves in a garage stem wall or curb (the
+/// Rough Opening panel's Add for Concrete Cutout; the rough opening itself
+/// when the door asks for none).
+pub fn garage_cut_width(op: &crate::model::Opening) -> f64 {
+    op.concrete_cutout_width()
+        .unwrap_or_else(|| op.rough_width())
+}
+
+/// Where the automatic terrain sits under a plan with a foundation: 6 in
+/// below the tops of the stem walls or grade beams, 8 in below the top of a
+/// monolithic slab (manual p. 749). Absolute elevation, inches; `None` when
+/// the plan has no foundation floor.
+pub fn terrain_elevation(project: &Project) -> Option<f64> {
+    let f0 = project
+        .floors
+        .first()
+        .filter(|f| f.kind == crate::floors::FloorKind::Foundation)?;
+    let first = project
+        .floors
+        .iter()
+        .find(|f| f.kind == crate::floors::FloorKind::Normal)?;
+    let platform = first.settings.floor_structure_thickness;
+    let opts = f0.settings.foundation_options;
+    let kind = opts
+        .map(|o| o.kind)
+        .or(f0.settings.foundation.map(|b| b.kind))?;
+    Some(match kind {
+        crate::floors::FoundationKind::MonolithicSlab => first.elevation - TERRAIN_BELOW_SLAB_TOP,
+        _ => {
+            let gap = opts.map_or(0.0, |o| o.top_gap(platform));
+            first.elevation - gap - TERRAIN_BELOW_STEM_TOP
+        }
+    })
+}
+
+/// One line of the foundation take-off for the Materials List (Options
+/// panel): rebar, mesh, foam seal and termite flashing. The program does not
+/// draw them in any view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TakeoffRow {
+    pub item: String,
+    pub quantity: f64,
+    pub unit: &'static str,
+}
+
+/// Rebar and the rest of the Options panel for the foundation floor of
+/// `project`, as feet of bar (and square feet of mesh), in the order footing,
+/// wall horizontal, wall vertical, pier, slab, then foam seal and termite
+/// flashing in linear feet. Empty when the foundation was not built with
+/// options.
+pub fn foundation_takeoff(project: &Project) -> Vec<TakeoffRow> {
+    let Some(floor) = project
+        .floors
+        .iter()
+        .find(|f| f.kind == crate::floors::FloorKind::Foundation)
+    else {
+        return Vec::new();
+    };
+    let Some(opts) = floor.settings.foundation_options else {
+        return Vec::new();
+    };
+    let s = opts.settings;
+    let walls: Vec<&crate::model::Wall> = floor
+        .walls
+        .iter()
+        .filter(|w| w.flags.foundation && !w.flags.invisible)
+        .collect();
+    let length: f64 = walls.iter().map(|w| w.length()).sum();
+    let mut rows = Vec::new();
+    let mut add = |item: &str, inches: f64, unit: &'static str, per: f64| {
+        if inches > 0.0 {
+            rows.push(TakeoffRow {
+                item: item.to_string(),
+                quantity: inches / per,
+                unit,
+            });
+        }
+    };
+    let footed = floor
+        .settings
+        .foundation
+        .is_some_and(|b| b.footing_width > 0.0);
+    if footed {
+        let r = s.rebar.footing;
+        let each: f64 = walls.iter().map(|w| r.run_length(w.length())).sum();
+        add("Footing rebar", each * f64::from(r.bars), "ft", 12.0);
+    }
+    let rh = s.rebar.wall_horizontal;
+    let rv = s.rebar.wall_vertical;
+    let mut horizontal = 0.0;
+    let mut vertical = 0.0;
+    for w in &walls {
+        let courses = (w.height / rh.spacing.max(1.0)).floor().max(1.0);
+        horizontal += rh.run_length(w.length()) * f64::from(rh.bars) * courses;
+        let uprights = (w.length() / rv.spacing.max(1.0)).ceil() + 1.0;
+        vertical += rv.run_length(w.height) * f64::from(rv.bars) * uprights;
+    }
+    add("Wall horizontal rebar", horizontal, "ft", 12.0);
+    add("Wall vertical rebar", vertical, "ft", 12.0);
+    let layer = FoundationLayer::load(floor);
+    let piers = layer.piers.len() + layer.pads.len();
+    if piers > 0 {
+        let r = s.rebar.pier;
+        let height = layer
+            .piers
+            .iter()
+            .map(|p| p.height)
+            .chain(layer.pads.iter().map(|p| p.thickness))
+            .fold(0.0, f64::max);
+        add(
+            "Pier rebar",
+            r.run_length(height) * f64::from(r.bars) * piers as f64,
+            "ft",
+            12.0,
+        );
+    }
+    let slab_area: f64 = layer.slabs.iter().map(|sl| sl.net_area(&[])).sum();
+    if slab_area > 0.0 {
+        if s.rebar.use_mesh {
+            add("Slab mesh", slab_area, "sq ft", 144.0);
+        } else {
+            let r = s.rebar.slab;
+            // A grid of bars at the spacing, both ways.
+            let grid = 2.0 * slab_area / r.spacing.max(1.0);
+            add("Slab rebar", grid * f64::from(r.bars), "ft", 12.0);
+        }
+    }
+    if s.foam_seal {
+        add("Foam seal", length, "ft", 12.0);
+    }
+    if s.termite_flashing {
+        add("Termite flashing", length, "ft", 12.0);
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1131,5 +1556,77 @@ mod tests {
         }
         assert!(l.is_empty());
         assert!(!l.translate(FoundationRef::Pad(3), d));
+    }
+
+    fn foundation_wall(id: Id, a: (f64, f64), b: (f64, f64), top: f64) -> crate::model::Wall {
+        let mut w = crate::model::Wall::new(
+            Point::new(a.0, a.1),
+            Point::new(b.0, b.1),
+            8.0,
+            top,
+            crate::model::WallKind::Exterior,
+        );
+        w.id = id;
+        w.flags.foundation = true;
+        w
+    }
+
+    #[test]
+    fn a_step_is_where_foundation_walls_of_different_tops_meet() {
+        let mut f = Floor::new("Foundation", -48.0);
+        f.walls = vec![
+            foundation_wall(1, (0.0, 0.0), (100.0, 0.0), 36.0),
+            foundation_wall(2, (100.0, 0.0), (200.0, 0.0), 60.0),
+            // A third wall at the same point and the same top as the first.
+            foundation_wall(3, (100.0, 0.0), (100.0, 80.0), 36.0),
+            // A wall that differs by less than 1/16 in is no step.
+            foundation_wall(4, (200.0, 0.0), (200.0, 80.0), 60.03),
+        ];
+        let marks = step_markers(&f);
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let m = marks[0];
+        assert_eq!(m.at, Point::new(100.0, 0.0));
+        assert_eq!((m.low, m.high, m.tall_wall), (36.0, 60.0, 2));
+        // The S sits beside the taller wall, off the wall lines.
+        let at = step_marker_label_at(&f, &m, 6.0);
+        assert!(at.x > 100.0 + 5.0 && at.y.abs() > 4.0, "{at:?}");
+        // A bottom that steps counts as the top it makes.
+        f.walls[0].bottom_offset = 24.0;
+        f.walls[0].height = 12.0;
+        assert_eq!(step_markers(&f).len(), 1);
+        f.walls[0].height = 24.0;
+        assert_eq!(step_markers(&f).len(), 1, "48 against 60 still steps");
+    }
+
+    #[test]
+    fn piers_are_no_further_apart_than_the_maximum_separation() {
+        let a = Point::new(0.0, 0.0);
+        let b = Point::new(100.0, 0.0);
+        assert_eq!(pier_positions(a, b, 100.0).len(), 2);
+        assert_eq!(pier_positions(a, b, 99.0).len(), 3, "two spans of 50");
+        let many = pier_positions(a, b, 12.0);
+        assert!(many.windows(2).all(|w| w[0].dist(w[1]) <= 12.0 + 1e-9));
+        // Less than a foot is a foot.
+        assert_eq!(pier_positions(a, b, 1.0).len(), 10);
+    }
+
+    #[test]
+    fn the_garage_cut_is_the_rough_opening_plus_each_side() {
+        let mut o =
+            crate::model::Opening::new(1, 60.0, crate::model::OpeningKind::Door, 108.0, 84.0, 0.0);
+        assert_eq!(garage_cut_width(&o), 108.0);
+        o.extras.spec.rough.add_width = 4.0;
+        assert_eq!(garage_cut_width(&o), 112.0);
+        o.extras.spec.rough.concrete_each_side = 3.0;
+        assert_eq!(garage_cut_width(&o), 118.0);
+    }
+
+    #[test]
+    fn rebar_laps_each_20_foot_stick() {
+        let r = Rebar::default();
+        assert_eq!(r.diameter(), 0.5);
+        assert_eq!(r.run_length(100.0), 100.0);
+        // 25 ft is two sticks: one lap of 40 bar diameters (20 in).
+        assert_eq!(r.run_length(300.0), 320.0);
     }
 }

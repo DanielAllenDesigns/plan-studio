@@ -1299,7 +1299,11 @@ mod tests {
         }
         assert!(p.floors[0].sync_dimension_anchors());
         let d = get(&p, id2);
-        assert!(d.start.dist(Point::new(100.0, 540.0)) < 1e-9, "{:?}", d.start);
+        assert!(
+            d.start.dist(Point::new(100.0, 540.0)) < 1e-9,
+            "{:?}",
+            d.start
+        );
         assert!(d.end.dist(Point::new(100.0, 600.0)) < 1e-9);
     }
 
@@ -1357,10 +1361,7 @@ mod tests {
         );
         p.floors[0].attach_dimension_hinted(
             sid,
-            [
-                hint(AnchorTarget::Stair, 9, Point::new(230.0, 50.0)),
-                None,
-            ],
+            [hint(AnchorTarget::Stair, 9, Point::new(230.0, 50.0)), None],
         );
         let a = get(&p, sid).anchors[0].unwrap();
         assert_eq!((a.target, a.wall), (AnchorTarget::Stair, 9));
@@ -1369,6 +1370,10 @@ mod tests {
         })];
         assert!(p.floors[0].sync_dimension_anchors());
         // 30 inches along the stair's direction now points north.
-        assert!(get(&p, sid).start.dist(Point::new(200.0, 80.0)) < 1e-9, "{:?}", get(&p, sid).start);
+        assert!(
+            get(&p, sid).start.dist(Point::new(200.0, 80.0)) < 1e-9,
+            "{:?}",
+            get(&p, sid).start
+        );
     }
 }

@@ -1,20 +1,44 @@
 //! Schedule Specification: the dialog behind a double-click on a placed
-//! schedule. Tabs: General (title, kind, floors, filter, the column list with
-//! show/hide, rename and up/down, sort), Labels (show callout labels,
-//! numbering, prefix), Text Style and Layer.
+//! schedule (manual pp. 719 to 728), and the Schedule Defaults dialogs, which
+//! look the same. Panels: General (title, floors, rooms, categories),
+//! Columns/Rows, Number Formatting, Attributes, Line Style, Fill Style, the
+//! three text styles and Labels. The panels are in [`panels`].
 //!
 //! The dialog edits a clone of the [`Schedule`]; OK hands it back and the
 //! host stores it as one undo step. The General page also has *Export CSV*
 //! and *Open in Window*; the dialog cannot reach the plan, so it only raises
-//! those as [`SpecActions`] for the host to carry out.
+//! those as [`SpecActions`] for the host to carry out. What the dialog needs
+//! to know about the plan (floor names, rooms, the category trees) it gets
+//! once, as a [`SpecContext`].
+//!
+//! The Schedule Defaults (`Project::schedule_setup`), the Create Schedule
+//! from Room type chooser and the other windows of the schedule commands are
+//! drawn by [`show_extras`], which the plan windows call once a frame.
 
-use super::{on, row, section, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_FAINT, PV_INK};
+mod panels;
+
+use super::{on, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_FAINT, PV_INK};
+use crate::editor::{schedule_view, Camera, EditorContext, EditorRequest};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, StrokeKind, Ui};
 use plan_core::props::PropDef;
-use plan_core::schedules::{ColumnSpec, FloorScope, Numbering, Schedule, ScheduleKind};
+use plan_core::schedules::{ColumnSpec, RoomRef, Schedule, ScheduleKind};
 use plan_core::Id;
+use plan_docs::schedule_kinds::CategoryGroup;
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 
-const TABS: &[Tab] = &[on("General"), on("Labels"), on("Text Style"), on("Layer")];
+const TABS: &[Tab] = &[
+    on("General"),
+    on("Columns/Rows"),
+    on("Number Formatting"),
+    on("Attributes"),
+    on("Line Style"),
+    on("Fill Style"),
+    on("Main Text Style"),
+    on("Title Text Style"),
+    on("Header Text Style"),
+    on("Labels"),
+];
 
 /// What the user asked for besides editing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,20 +56,98 @@ pub struct SpecActions {
     pub import_props: bool,
 }
 
+/// Which dialog this is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// The specification of a placed schedule.
+    Placed,
+    /// Schedule Defaults of one kind: no position, no output buttons.
+    Defaults,
+}
+
+/// What the dialog needs to know about the plan.
+#[derive(Clone, Debug, Default)]
+pub struct SpecContext {
+    /// Floor names, by index.
+    pub floors: Vec<String>,
+    /// Every room of every floor, with its name.
+    pub rooms: Vec<(RoomRef, String)>,
+    /// The Categories to Include tree of each kind.
+    pub trees: Vec<(ScheduleKind, Vec<CategoryGroup>)>,
+    /// The plan's custom schedule categories.
+    pub custom: Vec<String>,
+}
+
+impl SpecContext {
+    /// Reads the plan once.
+    pub fn from_cx(cx: &EditorContext) -> Self {
+        let rooms = plan_docs::schedule_kinds::room_choices(
+            &cx.project,
+            Some((cx.floor, cx.rooms.as_slice())),
+        )
+        .into_iter()
+        .map(|(f, name, p)| (RoomRef::at(f, p), name))
+        .collect();
+        Self {
+            floors: cx.project.floors.iter().map(|f| f.name.clone()).collect(),
+            rooms,
+            trees: ScheduleKind::ALL
+                .iter()
+                .map(|k| {
+                    (
+                        *k,
+                        plan_docs::schedule_kinds::category_tree(&cx.project, *k),
+                    )
+                })
+                .collect(),
+            custom: cx
+                .project
+                .schedule_setup
+                .categories
+                .iter()
+                .map(|c| c.name.clone())
+                .collect(),
+        }
+    }
+
+    pub fn tree_of(&self, kind: ScheduleKind) -> Vec<CategoryGroup> {
+        self.trees
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, t)| t.clone())
+            .unwrap_or_default()
+    }
+}
+
 pub struct ScheduleSpecDialog {
     frame: SpecDialog,
     form: Form,
 }
 
-struct Form {
+pub(self) struct Form {
+    pub(self) mode: Mode,
     /// Floor the schedule is placed on.
-    floor: usize,
-    def: Schedule,
+    pub(self) floor: usize,
+    pub(self) def: Schedule,
     /// The plan's custom property definitions, for the property columns.
     prop_defs: Vec<PropDef>,
-    text_styles: Vec<String>,
-    layers: Vec<String>,
+    pub(self) text_styles: Vec<String>,
+    pub(self) layers: Vec<String>,
     actions: SpecActions,
+    pub(self) ctx: SpecContext,
+    /// The table's size now, for the Position fields.
+    pub(self) size: (f64, f64),
+    // ----- what the panels remember -----
+    pub(self) avail_sel: BTreeSet<String>,
+    pub(self) incl_sel: BTreeSet<String>,
+    pub(self) limit_to_categories: bool,
+    pub(self) rename_to: Option<String>,
+    pub(self) rename_text: String,
+    pub(self) fmt_sel: Option<String>,
+    pub(self) new_category: String,
+    pub(self) category_error: String,
+    /// Custom categories made in this dialog, which the plan gets on OK.
+    pub(self) new_categories: Vec<String>,
 }
 
 impl ScheduleSpecDialog {
@@ -56,14 +158,50 @@ impl ScheduleSpecDialog {
         Self {
             frame: SpecDialog::new("Schedule Specification", "schedule_spec"),
             form: Form {
+                mode: Mode::Placed,
                 floor,
                 def,
                 prop_defs: Vec::new(),
                 text_styles,
                 layers,
                 actions: SpecActions::default(),
+                ctx: SpecContext::default(),
+                size: (0.0, 0.0),
+                avail_sel: BTreeSet::new(),
+                incl_sel: BTreeSet::new(),
+                limit_to_categories: true,
+                rename_to: None,
+                rename_text: String::new(),
+                fmt_sel: None,
+                new_category: String::new(),
+                category_error: String::new(),
+                new_categories: Vec::new(),
             },
         }
+    }
+
+    /// The Schedule Defaults dialog of `def.kind`.
+    pub fn for_defaults(def: Schedule, text_styles: Vec<String>, layers: Vec<String>) -> Self {
+        let kind = def.kind;
+        let mut d = Self::new(0, def, text_styles, layers);
+        d.frame = SpecDialog::new(
+            format!("{} Defaults", kind.title()),
+            ("schedule_defaults", kind as u8),
+        );
+        d.form.mode = Mode::Defaults;
+        d
+    }
+
+    /// What the plan has: floors, rooms, categories.
+    pub fn with_context(mut self, ctx: SpecContext) -> Self {
+        self.form.ctx = ctx;
+        self
+    }
+
+    /// The table's size now (plan inches), for the Position fields.
+    pub fn with_size(mut self, size: (f64, f64)) -> Self {
+        self.form.size = size;
+        self
     }
 
     /// The plan's custom property definitions (`Project.props.defs`): the
@@ -108,7 +246,12 @@ impl ScheduleSpecDialog {
     }
 }
 
-fn combo<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, value: &mut T, options: &[(T, &str)]) {
+pub(self) fn combo<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    salt: &str,
+    value: &mut T,
+    options: &[(T, &str)],
+) {
     let current = options
         .iter()
         .find(|(v, _)| v == value)
@@ -125,7 +268,7 @@ fn combo<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, value: &mut T, options: &
 impl Form {
     /// Lists a column for every custom property of the schedule's kind that
     /// the columns lack, and drops the columns of properties that are gone.
-    fn sync_prop_columns(&mut self) {
+    pub(self) fn sync_prop_columns(&mut self) {
         let kind = plan_docs::schedule_kinds::prop_kind_of(self.def.kind);
         let wanted: Vec<&PropDef> = self
             .prop_defs
@@ -146,6 +289,7 @@ impl Form {
     }
 
     /// Shows every field of the schedule's kind, keeping order and headings.
+    #[cfg(test)]
     fn show_all_columns(&mut self) {
         for c in &mut self.def.columns {
             c.visible = true;
@@ -154,6 +298,7 @@ impl Form {
 
     /// The kind's default columns, headings and order; the sort and the
     /// grouping go back too when their field is not shown any more.
+    #[cfg(test)]
     fn reset_columns(&mut self) {
         self.def.columns = self.def.kind.default_columns();
         self.def.reconcile_columns();
@@ -165,275 +310,6 @@ impl Form {
         if !shown(&self.def.group_by, &self.def) {
             self.def.group_by.clear();
         }
-    }
-
-    fn general(&mut self, ui: &mut Ui) {
-        section(ui, "General");
-        row(ui, "Title", |ui| {
-            let hint = self.def.kind.title();
-            ui.add(
-                egui::TextEdit::singleline(&mut self.def.title)
-                    .hint_text(hint)
-                    .desired_width(240.0),
-            )
-        });
-        row(ui, "Schedule type", |ui| {
-            let mut kind = self.def.kind;
-            let options: Vec<(ScheduleKind, &str)> = ScheduleKind::ALL
-                .iter()
-                .map(|k| {
-                    (
-                        *k,
-                        if *k == ScheduleKind::General {
-                            "General (custom)"
-                        } else {
-                            k.name()
-                        },
-                    )
-                })
-                .collect();
-            combo(ui, "schedule_kind", &mut kind, &options);
-            if kind != self.def.kind {
-                self.def.set_kind(kind);
-                self.sync_prop_columns();
-            }
-        });
-        row(ui, "Floors", |ui| {
-            combo(
-                ui,
-                "schedule_scope",
-                &mut self.def.floor_scope,
-                &[
-                    (FloorScope::ThisFloor, "This floor only"),
-                    (FloorScope::All, "All floors"),
-                ],
-            )
-        });
-        row(ui, "Filter", |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.def.filter)
-                    .hint_text("only rows containing...")
-                    .desired_width(240.0),
-            )
-        });
-
-        section(ui, "Columns");
-        let mut pending: Option<(usize, bool)> = None;
-        egui::Grid::new("schedule_columns")
-            .num_columns(5)
-            .striped(true)
-            .show(ui, |ui| {
-                ui.strong("Show");
-                ui.strong("Heading");
-                ui.strong("Field");
-                ui.label("");
-                ui.label("");
-                ui.end_row();
-                let n = self.def.columns.len();
-                for (i, c) in self.def.columns.iter_mut().enumerate() {
-                    ui.checkbox(&mut c.visible, "");
-                    ui.add(egui::TextEdit::singleline(&mut c.title).desired_width(130.0));
-                    ui.weak(&c.field);
-                    if ui
-                        .add_enabled(i > 0, egui::Button::new("\u{25B2}").small())
-                        .on_hover_text("Move up")
-                        .clicked()
-                    {
-                        pending = Some((i, true));
-                    }
-                    if ui
-                        .add_enabled(i + 1 < n, egui::Button::new("\u{25BC}").small())
-                        .on_hover_text("Move down")
-                        .clicked()
-                    {
-                        pending = Some((i, false));
-                    }
-                    ui.end_row();
-                }
-            });
-        if let Some((i, up)) = pending {
-            self.def.move_column(i, up);
-        }
-        ui.horizontal(|ui| {
-            if ui
-                .button("Show All")
-                .on_hover_text("Show every field of this kind of schedule")
-                .clicked()
-            {
-                self.show_all_columns();
-            }
-            if ui
-                .button("Reset Columns")
-                .on_hover_text("Back to the default columns, headings and order")
-                .clicked()
-            {
-                self.reset_columns();
-            }
-            ui.weak(format!(
-                "{} of {} fields shown; a layout schedule box of this kind follows these columns",
-                self.def.visible_columns().count(),
-                self.def.columns.len()
-            ));
-        });
-        if !self.def.columns.iter().any(|c| c.visible) {
-            ui.colored_label(super::ERROR_RED, "Show at least one column");
-        }
-
-        section(ui, "Sort");
-        row(ui, "Sort by", |ui| {
-            let current = self
-                .def
-                .columns
-                .iter()
-                .find(|c| c.field == self.def.sort.field)
-                .map_or("(order in plan)".to_string(), |c| c.title.clone());
-            egui::ComboBox::from_id_salt("schedule_sort")
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.def.sort.field, String::new(), "(order in plan)");
-                    for c in &self.def.columns {
-                        ui.selectable_value(&mut self.def.sort.field, c.field.clone(), &c.title);
-                    }
-                });
-            ui.checkbox(&mut self.def.sort.descending, "Descending");
-        });
-        row(ui, "Group by", |ui| {
-            let current = self
-                .def
-                .columns
-                .iter()
-                .find(|c| c.field == self.def.group_by)
-                .map_or("(none: one line per object)".to_string(), |c| {
-                    c.title.clone()
-                });
-            egui::ComboBox::from_id_salt("schedule_group")
-                .selected_text(current)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.def.group_by,
-                        String::new(),
-                        "(none: one line per object)",
-                    );
-                    for c in &self.def.columns {
-                        ui.selectable_value(&mut self.def.group_by, c.field.clone(), &c.title);
-                    }
-                });
-        });
-        ui.checkbox(
-            &mut self.def.totals,
-            "Totals line (count, and sums of areas)",
-        );
-
-        section(ui, "Output");
-        ui.horizontal(|ui| {
-            if ui.button("Export CSV\u{2026}").clicked() {
-                self.actions.export_csv = true;
-            }
-            if ui.button("Export Excel\u{2026}").clicked() {
-                self.actions.export_xlsx = true;
-            }
-            if ui.button("Open in Window").clicked() {
-                self.actions.open_window = true;
-            }
-            if ui.button("Send to Layout").clicked() {
-                self.actions.send_to_layout = true;
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui
-                .button("Export for Editing (XLSX)\u{2026}")
-                .on_hover_text(
-                    "A workbook with a hidden PlanStudio ID column: edit names, marks and \
-                     properties in Excel, then import it back",
-                )
-                .clicked()
-            {
-                self.actions.export_for_editing = true;
-            }
-            if ui
-                .button("Import Property Data\u{2026}")
-                .on_hover_text("Read an edited workbook or CSV back into the plan")
-                .clicked()
-            {
-                self.actions.import_props = true;
-            }
-        });
-    }
-
-    fn labels(&mut self, ui: &mut Ui) {
-        section(ui, "Labels");
-        let supported = self.def.kind.has_labels();
-        ui.add_enabled_ui(supported, |ui| {
-            ui.checkbox(
-                &mut self.def.show_labels,
-                "Show schedule number labels in the plan",
-            );
-            row(ui, "Numbering", |ui| {
-                combo(
-                    ui,
-                    "schedule_numbering",
-                    &mut self.def.numbering,
-                    &[
-                        (Numbering::ByFloor, "By floor (each floor starts at 01)"),
-                        (Numbering::Whole, "Whole plan (keeps counting)"),
-                    ],
-                )
-            });
-        });
-        row(ui, "Prefix", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.def.label_prefix).desired_width(80.0));
-            if ui.button("Default").clicked() {
-                self.def.label_prefix = self.def.kind.default_prefix().to_string();
-            }
-        });
-        ui.add_space(6.0);
-        if supported {
-            ui.weak(format!(
-                "Marks read {}01, {}02, ... in order across the floor. A door or window with its own schedule number shows that instead.",
-                self.def.label_prefix, self.def.label_prefix
-            ));
-        } else {
-            ui.weak(format!(
-                "{} objects have no callout label in the plan; the prefix only sets the Mark column.",
-                self.def.kind.name()
-            ));
-        }
-        section(ui, "Callouts by kind");
-        egui::Grid::new("schedule_prefixes").show(ui, |ui| {
-            for k in ScheduleKind::ALL.into_iter().filter(|k| k.has_labels()) {
-                ui.label(k.name());
-                ui.weak(format!("{}01", k.default_prefix()));
-                ui.end_row();
-            }
-        });
-    }
-
-    fn text_style(&mut self, ui: &mut Ui) {
-        section(ui, "Text Style");
-        row(ui, "Table text style", |ui| {
-            egui::ComboBox::from_id_salt("schedule_text_style")
-                .selected_text(self.def.text_style.clone())
-                .show_ui(ui, |ui| {
-                    for name in &self.text_styles {
-                        ui.selectable_value(&mut self.def.text_style, name.clone(), name);
-                    }
-                });
-        });
-        ui.add_space(6.0);
-        ui.weak("Callout labels use the \"Schedule Label\" style when the plan has one.");
-    }
-
-    fn layer(&mut self, ui: &mut Ui) {
-        section(ui, "Layer");
-        row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("schedule_layer")
-                .selected_text(self.def.layer.clone())
-                .show_ui(ui, |ui| {
-                    for name in &self.layers {
-                        ui.selectable_value(&mut self.def.layer, name.clone(), name);
-                    }
-                });
-        });
     }
 }
 
@@ -449,14 +325,21 @@ impl SpecPages for Form {
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match tab {
             0 => self.general(ui),
-            1 => self.labels(ui),
-            2 => self.text_style(ui),
-            _ => self.layer(ui),
+            1 => self.columns_rows(ui),
+            2 => self.number_formatting(ui),
+            3 => self.attributes(ui),
+            4 => self.line_style(ui),
+            5 => self.fill_style(ui),
+            6 => self.text_style(ui, 0),
+            7 => self.text_style(ui, 1),
+            8 => self.text_style(ui, 2),
+            _ => self.labels(ui),
         }
     }
 
     fn preview(&self, painter: &Painter, rect: Rect) {
-        // The table's skeleton: title bar, heading row and a few rows.
+        // The table's skeleton: title bar, heading row and a few rows (or
+        // the same turned over when rows and columns are swapped).
         let cols: Vec<&str> = self
             .def
             .visible_columns()
@@ -465,42 +348,87 @@ impl SpecPages for Form {
         if cols.is_empty() {
             return;
         }
-        let title_h: f32 = 22.0;
+        let title_h: f32 = if self.def.show_title { 22.0 } else { 0.0 };
         let row_h: f32 = 16.0;
+        let rows = if self.def.swap { cols.len().min(6) } else { 5 };
         let body = Rect::from_min_size(
             rect.min,
-            egui::vec2(rect.width(), (title_h + row_h * 5.0).min(rect.height())),
+            egui::vec2(
+                rect.width(),
+                (title_h + row_h * rows as f32).min(rect.height()),
+            ),
         );
-        painter.rect_stroke(body, 0.0, Stroke::new(1.5_f32, PV_INK), StrokeKind::Inside);
-        painter.text(
-            Pos2::new(body.center().x, body.min.y + title_h * 0.5),
-            Align2::CENTER_CENTER,
-            self.def.display_title(),
-            egui::FontId::proportional(11.0),
-            PV_INK,
-        );
-        painter.hline(
-            body.x_range(),
-            body.min.y + title_h,
-            Stroke::new(1.0_f32, PV_INK),
-        );
+        let ink = PV_INK;
+        if self.def.border {
+            painter.rect_stroke(body, 0.0, Stroke::new(1.5_f32, ink), StrokeKind::Inside);
+        }
+        if self.def.show_title {
+            painter.text(
+                Pos2::new(body.center().x, body.min.y + title_h * 0.5),
+                Align2::CENTER_CENTER,
+                self.def.display_title(),
+                egui::FontId::proportional(11.0),
+                ink,
+            );
+            painter.hline(
+                body.x_range(),
+                body.min.y + title_h,
+                Stroke::new(1.0_f32, ink),
+            );
+        }
+        if self.def.swap {
+            // Attribute names down the left, objects across.
+            let lw = body.width() * 0.34;
+            let n_obj = 3;
+            let cw = (body.width() - lw) / n_obj as f32;
+            for (r, name) in cols.iter().take(rows).enumerate() {
+                let y = body.min.y + title_h + row_h * (r as f32 + 0.5);
+                painter.text(
+                    Pos2::new(body.min.x + 3.0, y),
+                    Align2::LEFT_CENTER,
+                    name,
+                    egui::FontId::proportional(8.0),
+                    PV_ACCENT,
+                );
+                for c in 0..n_obj {
+                    painter.rect_filled(
+                        Rect::from_min_size(
+                            Pos2::new(body.min.x + lw + cw * c as f32 + 4.0, y - 2.0),
+                            egui::vec2((cw - 10.0).max(4.0), 4.0),
+                        ),
+                        1.0,
+                        PV_FAINT,
+                    );
+                }
+            }
+            if self.def.grid_lines {
+                painter.vline(
+                    body.min.x + lw,
+                    (body.min.y + title_h)..=body.max.y,
+                    Stroke::new(1.0_f32, PV_FAINT),
+                );
+            }
+            return;
+        }
         let cw = body.width() / cols.len() as f32;
         for (i, c) in cols.iter().enumerate() {
             let x = body.min.x + cw * i as f32;
-            if i > 0 {
+            if i > 0 && self.def.grid_lines {
                 painter.vline(
                     x,
                     (body.min.y + title_h)..=body.max.y,
                     Stroke::new(1.0_f32, PV_FAINT),
                 );
             }
-            painter.text(
-                Pos2::new(x + 3.0, body.min.y + title_h + row_h * 0.5),
-                Align2::LEFT_CENTER,
-                c,
-                egui::FontId::proportional(8.0),
-                PV_ACCENT,
-            );
+            if self.def.show_headings {
+                painter.text(
+                    Pos2::new(x + 3.0, body.min.y + title_h + row_h * 0.5),
+                    Align2::LEFT_CENTER,
+                    c,
+                    egui::FontId::proportional(8.0),
+                    PV_ACCENT,
+                );
+            }
             for r in 1..4 {
                 painter.rect_filled(
                     Rect::from_min_size(
@@ -512,11 +440,240 @@ impl SpecPages for Form {
                 );
             }
         }
-        painter.hline(
-            body.x_range(),
-            body.min.y + title_h + row_h,
-            Stroke::new(1.0_f32, PV_INK),
-        );
+        if self.def.show_headings {
+            painter.hline(
+                body.x_range(),
+                body.min.y + title_h + row_h,
+                Stroke::new(1.0_f32, ink),
+            );
+        }
+    }
+}
+
+// ===================================================================
+// Schedule Defaults, Create Schedule from Room and the other windows
+// ===================================================================
+
+#[derive(Default)]
+struct Extras {
+    /// The kinds whose Schedule Defaults dialog is asked for.
+    defaults_request: Vec<ScheduleKind>,
+    defaults: Option<ScheduleSpecDialog>,
+    /// A room (index into the active floor's rooms) waiting for the type
+    /// of the schedule made from it.
+    room_request: Option<usize>,
+    room_kind: Option<ScheduleKind>,
+}
+
+thread_local! {
+    static EXTRAS: RefCell<Extras> = RefCell::new(Extras::default());
+}
+
+/// The schedule kind a Default Settings > Schedules leaf (`door`,
+/// `room_finish`, ...) stands for.
+pub fn kind_from_slug(slug: &str) -> Option<ScheduleKind> {
+    Some(match slug {
+        "door" => ScheduleKind::Door,
+        "window" => ScheduleKind::Window,
+        "room" => ScheduleKind::Room,
+        "wall" => ScheduleKind::Wall,
+        "cabinet" => ScheduleKind::Cabinet,
+        "electrical" => ScheduleKind::Electrical,
+        "framing" => ScheduleKind::Framing,
+        "fixture" => ScheduleKind::Fixture,
+        "furniture" => ScheduleKind::Furniture,
+        "plant" => ScheduleKind::Plant,
+        "stair" => ScheduleKind::Stair,
+        "room_finish" => ScheduleKind::RoomFinish,
+        "note" => ScheduleKind::Note,
+        "general" => ScheduleKind::General,
+        _ => return None,
+    })
+}
+
+/// Asks for the Schedule Defaults dialog of `kind` (double-clicking the
+/// Schedule Tools button, or Default Settings > Schedules > the kind).
+pub fn request_defaults(kind: ScheduleKind) {
+    EXTRAS.with(|e| e.borrow_mut().defaults_request.push(kind));
+}
+
+/// Is a Schedule Defaults dialog up?
+pub fn defaults_open() -> bool {
+    EXTRAS.with(|e| e.borrow().defaults.is_some())
+}
+
+/// Create Schedule from Room: asks which type of schedule to make from room
+/// `room` (an index into the rooms of the active floor).
+pub fn ask_schedule_type(room: usize) {
+    EXTRAS.with(|e| {
+        let mut e = e.borrow_mut();
+        e.room_request = Some(room);
+        e.room_kind = Some(ScheduleKind::Door);
+    });
+}
+
+/// Is the schedule type chooser up?
+pub fn type_chooser_open() -> bool {
+    EXTRAS.with(|e| e.borrow().room_request.is_some())
+}
+
+fn names_for(cx: &EditorContext) -> (Vec<String>, Vec<String>) {
+    let styles = cx
+        .project
+        .text_styles
+        .names()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let layers = cx
+        .project
+        .layers
+        .layers
+        .iter()
+        .map(|l| l.name.clone())
+        .collect();
+    (styles, layers)
+}
+
+/// Builds the Schedule Defaults dialog of `kind` from the plan's setup.
+pub fn defaults_dialog(cx: &EditorContext, kind: ScheduleKind) -> ScheduleSpecDialog {
+    let def = cx
+        .project
+        .schedule_setup
+        .template(kind, plan_core::geometry::Point::ZERO);
+    let (styles, layers) = names_for(cx);
+    ScheduleSpecDialog::for_defaults(def, styles, layers)
+        .with_context(SpecContext::from_cx(cx))
+        .with_props(cx.project.props.defs.clone())
+}
+
+/// Draws the windows of the schedule commands: Schedule Defaults, the type
+/// chooser of Create Schedule from Room, Select Location, Manage Custom
+/// Schedule Categories and the Automatic Sorting prompt, and centres the view
+/// where Find in Plan asked. Called once a frame by the plan windows.
+pub fn show_extras(ctx: &egui::Context, cx: &mut EditorContext, cam: &mut Camera) {
+    if let Some(p) = schedule_view::take_focus() {
+        cam.center = p;
+    }
+    super::select_location::show(ctx, cx);
+    super::schedule_categories::show(ctx, cx);
+    show_sort_prompt(ctx, cx);
+
+    let mut x = EXTRAS.with(|e| std::mem::take(&mut *e.borrow_mut()));
+    // Schedule Defaults.
+    if x.defaults.is_none() {
+        if let Some(kind) = x.defaults_request.pop() {
+            x.defaults = Some(defaults_dialog(cx, kind));
+        }
+    }
+    x.defaults_request.clear();
+    if let Some(mut d) = x.defaults.take() {
+        match d.show(ctx) {
+            Outcome::Open => x.defaults = Some(d),
+            Outcome::Cancel => {}
+            Outcome::Ok => {
+                cx.begin_change("Schedule Defaults");
+                let mut def = d.draft().clone();
+                sync_new_categories(&mut cx.project, &mut def, &d.form.new_categories);
+                cx.project.schedule_setup.set_default(def);
+                cx.mark_dirty();
+            }
+        }
+    }
+    // The type of the schedule made from a room.
+    if let Some(room) = x.room_request {
+        let mut kind = x.room_kind.unwrap_or(ScheduleKind::Door);
+        let mut accept = false;
+        let mut cancel = false;
+        egui::Window::new("Create Schedule from Room")
+            .id(egui::Id::new("schedule_from_room"))
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Select a schedule type, then click OK and click in the plan to place it.",
+                );
+                for k in crate::tools::schedule::FLYOUT_KINDS {
+                    if k == ScheduleKind::Room
+                        || k == ScheduleKind::RoomFinish
+                        || k == ScheduleKind::General
+                    {
+                        continue;
+                    }
+                    ui.radio_value(&mut kind, k, k.title());
+                }
+                ui.radio_value(
+                    &mut kind,
+                    ScheduleKind::RoomFinish,
+                    ScheduleKind::RoomFinish.title(),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    accept = ui.button("OK").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        x.room_kind = Some(kind);
+        if accept {
+            if let Some(r) = cx.rooms.get(room) {
+                let name = r
+                    .name_entry(&cx.floor().room_names)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_default();
+                crate::tools::schedule::arm_from_room(RoomRef::at(cx.floor, r.centroid), name);
+                cx.requests.push(EditorRequest::SetTool(
+                    crate::tools::ToolId::ScheduleVariant(kind),
+                ));
+            }
+            x.room_request = None;
+        } else if cancel {
+            x.room_request = None;
+        }
+    }
+    EXTRAS.with(|e| {
+        let mut slot = e.borrow_mut();
+        // Requests made while this frame ran stay.
+        let late = std::mem::take(&mut slot.defaults_request);
+        *slot = x;
+        slot.defaults_request.extend(late);
+    });
+}
+
+/// Puts the custom categories a draft ticks into the plan's setup when the
+/// plan does not know them yet (the dialog's New Custom Category button).
+pub fn sync_new_categories(project: &mut plan_core::Project, def: &mut Schedule, made: &[String]) {
+    for name in made {
+        if project.schedule_setup.category(name).is_none() {
+            let _ = project.schedule_setup.add_category(name);
+        }
+    }
+    // A tick of a category the plan lost (deleted meanwhile) is dropped.
+    def.categories.retain(|k, _| {
+        k.strip_prefix("Custom/")
+            .map_or(true, |n| project.schedule_setup.category(n).is_some())
+    });
+}
+
+fn show_sort_prompt(ctx: &egui::Context, cx: &mut EditorContext) {
+    if schedule_view::pending_sort_prompt().is_none() {
+        return;
+    }
+    let mut answer: Option<bool> = None;
+    egui::Window::new("Automatic Sorting")
+        .id(egui::Id::new("schedule_sort_prompt"))
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.label("This schedule is sorted automatically. Turn Automatic Sorting off to move a row by hand?");
+            ui.horizontal(|ui| {
+                if ui.button("Turn Off Sorting").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+    if let Some(a) = answer {
+        schedule_view::answer_sort_prompt(cx, a);
     }
 }
 
@@ -600,15 +757,18 @@ mod tests {
                 assert_eq!(d.show(ctx), Outcome::Open);
             });
         }
-        for tab in 0..TABS.len() {
-            let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    d.form.page(ui, tab);
-                    let (_, painter) =
-                        ui.allocate_painter(egui::vec2(220.0, 300.0), egui::Sense::hover());
-                    d.form.preview(&painter, painter.clip_rect());
+        for swap in [false, true] {
+            d.draft_mut().swap = swap;
+            for tab in 0..TABS.len() {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        d.form.page(ui, tab);
+                        let (_, painter) =
+                            ui.allocate_painter(egui::vec2(220.0, 300.0), egui::Sense::hover());
+                        d.form.preview(&painter, painter.clip_rect());
+                    });
                 });
-            });
+            }
         }
         assert_eq!(d.take_actions(), SpecActions::default());
     }
@@ -655,5 +815,115 @@ mod tests {
         let a = d.take_actions();
         assert!(a.export_csv && a.export_xlsx);
         assert!(!d.take_actions().export_csv);
+    }
+
+    #[test]
+    fn the_column_lists_add_move_rename_and_remove() {
+        let mut d = dialog();
+        let f = &mut d.form;
+        assert!(
+            !f.def
+                .columns
+                .iter()
+                .find(|c| c.field == "area")
+                .unwrap()
+                .visible
+        );
+        f.include_column("area");
+        let last_visible = f.def.columns.iter().rposition(|c| c.visible).unwrap();
+        assert_eq!(
+            f.def.columns[last_visible].field, "area",
+            "added at the end"
+        );
+        f.move_included("area", true);
+        let vis: Vec<&str> = f.def.visible_columns().map(|c| c.field.as_str()).collect();
+        let n = vis.len();
+        assert_eq!(vis[n - 2], "area");
+        f.exclude_column("area");
+        assert!(
+            !f.def
+                .columns
+                .iter()
+                .find(|c| c.field == "area")
+                .unwrap()
+                .visible
+        );
+        // The last column cannot be removed.
+        for c in f.def.columns.clone() {
+            f.exclude_column(&c.field);
+        }
+        assert_eq!(f.def.visible_columns().count(), 1);
+        // Reset restores the default headings.
+        f.def.columns[0].title = "X".into();
+        f.reset_titles();
+        assert_eq!(f.def.columns[0].title, "Mark");
+    }
+
+    #[test]
+    fn the_category_tree_toggles_and_new_categories_are_kept() {
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        let w = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.5,
+            109.0,
+            plan_core::WallKind::Exterior,
+        );
+        cx.project
+            .add_opening(0, w, 60.0, plan_core::OpeningKind::Door)
+            .unwrap();
+        cx.mark_dirty();
+        cx.refresh();
+        let mut def = Schedule::new(ScheduleKind::Door, Point::ZERO);
+        def.id = 1;
+        let mut d =
+            ScheduleSpecDialog::new(0, def, vec![], vec![]).with_context(SpecContext::from_cx(&cx));
+        let tree = d.form.tree();
+        let door = tree.iter().find(|g| g.id == "Door").unwrap();
+        assert!(door.items.iter().any(|n| n.id == "Door/Hinged Door"));
+        d.form.materialize(&tree);
+        d.form.def.set_category("Door/Hinged Door", false);
+        let t = schedule_view::table_for(&cx, d.draft(), 0);
+        assert_eq!(t.rows.len(), 0, "the hinged door is unticked");
+        // A new custom category made here joins the plan on OK.
+        d.form.new_categories.push("Glazing".into());
+        let mut def = d.draft().clone();
+        def.set_category("Custom/Glazing", true);
+        sync_new_categories(&mut cx.project, &mut def, &d.form.new_categories);
+        assert!(cx.project.schedule_setup.category("Glazing").is_some());
+        assert!(def.categories.contains_key("Custom/Glazing"));
+        // A tick of a category that is gone is dropped.
+        def.set_category("Custom/Gone", true);
+        sync_new_categories(&mut cx.project, &mut def, &[]);
+        assert!(!def.categories.contains_key("Custom/Gone"));
+    }
+
+    #[test]
+    fn schedule_defaults_start_new_schedules_of_that_kind() {
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        let d = defaults_dialog(&cx, ScheduleKind::Window);
+        assert_eq!(d.draft().kind, ScheduleKind::Window);
+        assert_eq!(d.form.mode, Mode::Defaults);
+        let mut def = d.draft().clone();
+        def.border = false;
+        def.show_title = false;
+        def.label_prefix = "WIN-".into();
+        cx.begin_change("Schedule Defaults");
+        cx.project.schedule_setup.set_default(def);
+        cx.mark_dirty();
+        let id = schedule_view::add(&mut cx, ScheduleKind::Window, Point::ZERO);
+        let s = schedule_view::find(&cx, id).unwrap();
+        assert!(!s.border && !s.show_title);
+        assert_eq!(s.label_prefix, "WIN-");
+        // Another kind is untouched.
+        let id2 = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -100.0));
+        assert!(schedule_view::find(&cx, id2).unwrap().border);
+        // The dialog draws in both modes.
+        let ctx = egui::Context::default();
+        let mut dd = defaults_dialog(&cx, ScheduleKind::Door);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let _ = dd.show(ctx);
+        });
     }
 }

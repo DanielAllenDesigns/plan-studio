@@ -105,7 +105,11 @@ pub fn floor_marks(floors: &[Floor], setup: &PoleSetup) -> Vec<ElevationMark> {
         add(MarkKind::Ceiling, f.elevation + f.ceiling_height);
         if wants(MarkKind::OpeningSill).is_some() || wants(MarkKind::OpeningHead).is_some() {
             let mut sills: Vec<f64> = f.openings.iter().map(|o| o.sill_height).collect();
-            let mut heads: Vec<f64> = f.openings.iter().map(|o| o.sill_height + o.height).collect();
+            let mut heads: Vec<f64> = f
+                .openings
+                .iter()
+                .map(|o| o.sill_height + o.height)
+                .collect();
             for v in [&mut sills, &mut heads] {
                 v.sort_by(f64::total_cmp);
                 v.dedup_by(|a, b| (*a - *b).abs() < 0.01);
@@ -158,7 +162,11 @@ pub fn pole_marks(
     }
     // Reach: marks whose x lies within the share of the building's width
     // from the pole's side.
-    let reach = if left { setup.left_reach } else { setup.right_reach };
+    let reach = if left {
+        setup.left_reach
+    } else {
+        setup.right_reach
+    };
     if reach < 100 {
         let xs: Vec<f64> = marks.iter().map(|m| m.x).collect();
         let lo = xs.iter().copied().fold(f64::INFINITY, f64::min);
@@ -207,7 +215,11 @@ pub fn pole_strings(
     let outer_marks: Vec<&ElevationMark> = marks.iter().filter(|m| m.outer).collect();
     let first = side * setup.first_line_offset;
     let second = side * (setup.first_line_offset + setup.line_separation);
-    let inner = if setup.inner { string(&all, first) } else { Vec::new() };
+    let inner = if setup.inner {
+        string(&all, first)
+    } else {
+        Vec::new()
+    };
     // With no inner string the outer one takes its place nearest the pole.
     let outer = if setup.between_markers {
         string(&outer_marks, if setup.inner { second } else { first })
@@ -400,9 +412,11 @@ mod tests {
         for r in roof.iter_mut().skip(2) {
             r.x = 240.0;
         }
-        let mut setup = PoleSetup::default();
-        setup.primary_ridges_only = false;
-        setup.left_reach = 20;
+        let mut setup = PoleSetup {
+            primary_ridges_only: false,
+            left_reach: 20,
+            ..PoleSetup::default()
+        };
         let near = pole_marks(&p.floors, &roof, &setup, true);
         setup.left_reach = 100;
         let all = pole_marks(&p.floors, &roof, &setup, true);
@@ -416,12 +430,18 @@ mod tests {
         assert!(profile.len() >= 3, "{profile:?}");
         assert!((profile[0].1 - 108.0).abs() < 1e-6);
         let marks = section_roof_marks(&profile);
-        assert!(marks.iter().any(|m| m.kind == MarkKind::Ridge && (m.elevation - 168.0).abs() < 1e-6));
+        assert!(marks
+            .iter()
+            .any(|m| m.kind == MarkKind::Ridge && (m.elevation - 168.0).abs() < 1e-6));
         assert_eq!(marks.iter().filter(|m| m.kind == MarkKind::Eave).count(), 2);
         let slopes = roof_slope_dimensions(&profile, 12.0);
         assert_eq!(slopes.len(), 2);
         // The slope length is the roof surface: run 120, rise 60.
         let want = (120.0f64.powi(2) + 60.0f64.powi(2)).sqrt();
-        assert!((slopes[0].length() - want).abs() < 1e-6, "{}", slopes[0].length());
+        assert!(
+            (slopes[0].length() - want).abs() < 1e-6,
+            "{}",
+            slopes[0].length()
+        );
     }
 }

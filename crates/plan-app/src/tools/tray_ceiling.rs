@@ -112,7 +112,7 @@ pub fn draw_rect(cx: &mut EditorContext, a: Point, b: Point) -> Option<Id> {
     let outline = [lo, Point::new(hi.x, lo.y), hi, Point::new(lo.x, hi.y)];
     cx.begin_change("Tray Ceiling Polyline");
     let fl = cx.floor;
-    match cx.project.add_tray(fl, &outline, TrayCeiling::default()) {
+    match cx.project.add_tray(fl, &outline, cx.defaults.tray_default()) {
         Some(id) => {
             cx.mark_dirty();
             cx.refresh();
@@ -191,7 +191,7 @@ pub fn make_coffered(cx: &mut EditorContext, room: usize) -> Vec<Id> {
     let (cols, rows) = (fit(hi.x - lo.x), fit(hi.y - lo.y));
     let spec = TrayCeiling {
         depth: COFFER_DEPTH,
-        ..TrayCeiling::default()
+        ..cx.defaults.tray_default()
     };
     cx.begin_change("Make Coffered Ceiling");
     let fl = cx.floor;
@@ -217,7 +217,7 @@ pub fn convert_polyline(cx: &mut EditorContext, id: Id) -> bool {
     let fl = cx.floor;
     if cx
         .project
-        .convert_polyline_to_tray(fl, id, TrayCeiling::default())
+        .convert_polyline_to_tray(fl, id, cx.defaults.tray_default())
     {
         cx.mark_dirty();
         cx.refresh();
@@ -552,7 +552,7 @@ impl Tool for TrayCeilingTool {
                 cx.status = "Click inside a room to make a tray ceiling".into();
                 return ToolResult::consumed();
             };
-            return match make_in_room(cx, room, TrayCeiling::default()) {
+            return match make_in_room(cx, room, cx.defaults.tray_default()) {
                 Some(_) => ToolResult::committed("Make Tray Ceiling in Room"),
                 None => ToolResult::consumed(),
             };

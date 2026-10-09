@@ -395,10 +395,10 @@ pub fn layer_usage(project: &Project) -> HashMap<String, usize> {
             add(o.layer_name());
         }
         for d in &f.dimensions {
-            add(match d.kind {
+            add(d.layer_or(match d.kind {
                 DimensionKind::AutoExterior => "Dimensions, Automatic",
                 _ => "Dimensions, Manual",
-            });
+            }));
         }
         for c in &f.cad {
             add(&c.layer);
@@ -534,6 +534,9 @@ pub enum BrowserNode {
     Cameras,
     Schedules,
     CadDetails,
+    /// The Wall Details of the framed walls, named from the wall labels and
+    /// listed by floor.
+    WallDetails,
     /// The plan's saved Materials Lists and Reports.
     MaterialsLists,
     Layout,
@@ -541,12 +544,13 @@ pub enum BrowserNode {
 
 impl BrowserNode {
     /// The order the browser lists them in.
-    pub const ALL: [BrowserNode; 7] = [
+    pub const ALL: [BrowserNode; 8] = [
         BrowserNode::Floors,
         BrowserNode::PlanViews,
         BrowserNode::Cameras,
         BrowserNode::Schedules,
         BrowserNode::CadDetails,
+        BrowserNode::WallDetails,
         BrowserNode::MaterialsLists,
         BrowserNode::Layout,
     ];
@@ -558,6 +562,7 @@ impl BrowserNode {
             BrowserNode::Cameras => "Cameras",
             BrowserNode::Schedules => "Schedules",
             BrowserNode::CadDetails => "CAD Details",
+            BrowserNode::WallDetails => "Wall Details",
             BrowserNode::MaterialsLists => "Materials Lists",
             BrowserNode::Layout => "Layout",
         }
@@ -570,6 +575,7 @@ impl BrowserNode {
             BrowserNode::Cameras => "pb_cameras",
             BrowserNode::Schedules => "pb_schedules",
             BrowserNode::CadDetails => "pb_cad_details",
+            BrowserNode::WallDetails => "pb_wall_details",
             BrowserNode::MaterialsLists => "pb_materials_lists",
             BrowserNode::Layout => "pb_layout_pages",
         }
@@ -632,6 +638,10 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
     let mut details = Vec::new();
     for (fi, f) in p.floors.iter().enumerate() {
         if f.is_cad_detail() {
+            // A Wall Detail is listed in its own folder, by floor.
+            if crate::editor::framing_view::detail_wall(f).is_some() {
+                continue;
+            }
             // A detail is listed once; its parts are not browser rows.
             details.push(entry(BrowserItem::DetailFloor(fi), f.name.clone()));
             continue;
@@ -684,6 +694,12 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
                     .collect(),
                 BrowserNode::Schedules => schedules.clone(),
                 BrowserNode::CadDetails => details.clone(),
+                BrowserNode::WallDetails => crate::editor::framing_view::wall_details(p)
+                    .into_iter()
+                    .map(|(di, fi, _, label)| {
+                        entry(BrowserItem::DetailFloor(di), tag(&p.floors[fi], label))
+                    })
+                    .collect(),
                 BrowserNode::MaterialsLists => p
                     .materials
                     .lists
@@ -1074,7 +1090,8 @@ fn plan_view_rows(ui: &mut egui::Ui, cx: &mut EditorContext, rows: &[BrowserEntr
         pv::move_view(cx, from, to);
     }
     if let Some(n) = dup {
-        pv::duplicate_view(cx, &n);
+        // The New Saved Plan View dialog opens (name and Copy Layer Set).
+        pv::request_duplicate(cx, &n);
     }
     if let Some(n) = delete {
         cx.status = match pv::delete_view(cx, &n) {
@@ -1340,6 +1357,38 @@ fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec
                                                     requests.push(DockRequest::PanTo(at));
                                                 }
                                             }
+                                        }
+                                    }
+                                });
+                            }
+                            BrowserNode::WallDetails => {
+                                tree_node(ui, node.salt(), node.title(), false, |ui| {
+                                    if rows.is_empty() {
+                                        ui.weak("None");
+                                    }
+                                    for e in rows {
+                                        if let BrowserItem::DetailFloor(i) = e.item {
+                                            let on = cx.floor == i;
+                                            let r = ui
+                                                .selectable_label(on, &e.label)
+                                                .on_hover_text("Open the Wall Detail in a tab");
+                                            if r.clicked() {
+                                                crate::tools::details::open_detail(cx, i);
+                                            }
+                                            r.context_menu(|ui| {
+                                                if ui.button("Open View").clicked() {
+                                                    crate::tools::details::open_detail(cx, i);
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Send to Layout").clicked() {
+                                                    if let Err(e) =
+                                                        crate::tools::details::send_to_layout(cx, i)
+                                                    {
+                                                        cx.status = e;
+                                                    }
+                                                    ui.close_menu();
+                                                }
+                                            });
                                         }
                                     }
                                 });

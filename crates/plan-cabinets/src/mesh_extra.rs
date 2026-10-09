@@ -453,17 +453,19 @@ impl Builder {
         self.back_splash(cab, h);
 
         // Fronts: one chord of the front line per face item.
-        let fw = if cab.framed { cab.face.frame_width } else { 0.0 };
+        let fw = if cab.framed {
+            cab.face.frame_width
+        } else {
+            0.0
+        };
         let face_w = w - 2.0 * fw;
         if face_w <= 0.0 || z1 <= z0 {
             return;
         }
         if cab.framed {
             for (xa, xb) in [(0.0, fw), (w - fw, w)] {
-                let frame = Frame::along(
-                    Point::new(xa, front_at(xa)),
-                    Point::new(xb, front_at(xb)),
-                );
+                let frame =
+                    Frame::along(Point::new(xa, front_at(xa)), Point::new(xb, front_at(xb)));
                 if frame.len > 1e-6 {
                     crate::mesh3d::frame_box(
                         self,
@@ -482,10 +484,7 @@ impl Builder {
         for r in items {
             let (x, y, iw, ih) = r.rect;
             let (xa, xb) = (fw + x, fw + x + iw);
-            let frame = Frame::along(
-                Point::new(xa, front_at(xa)),
-                Point::new(xb, front_at(xb)),
-            );
+            let frame = Frame::along(Point::new(xa, front_at(xa)), Point::new(xb, front_at(xb)));
             if frame.len <= 1e-6 {
                 continue;
             }
@@ -557,7 +556,10 @@ impl Builder {
         }
         let mat = pick(cab.materials.toe_kick, Material::WallInterior);
         let acc = cab.accessories;
-        let (wo, dof) = (acc.foot_width_offset.max(0.0), acc.foot_depth_offset.max(0.0));
+        let (wo, dof) = (
+            acc.foot_width_offset.max(0.0),
+            acc.foot_depth_offset.max(0.0),
+        );
         let xs = [1.0 + wo, w - 1.0 - s - wo];
         let ys = [1.0 + dof, (front - s - dof).max(1.0)];
         // Feet stand under the exposed ends only, unless Always Present.
@@ -614,7 +616,11 @@ impl Builder {
         let d = cab.depth;
         let mat = pick(cab.materials.door, Material::WallInterior);
         let ends = cab.ends.unwrap_or_default();
-        let z0 = if cab.accessories.pilaster_to_bottom { 0.0 } else { z0 };
+        let z0 = if cab.accessories.pilaster_to_bottom {
+            0.0
+        } else {
+            z0
+        };
         // Auto pilasters: neighbours share one, centred on their line, built
         // by the cabinet on its left.
         let auto = cab.accessories.pilaster_auto;

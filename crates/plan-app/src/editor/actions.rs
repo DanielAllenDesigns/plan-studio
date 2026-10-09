@@ -87,6 +87,7 @@ impl EditorContext {
         let mut v = Vec::new();
         if self.selection.single().is_some()
             || self.selection.all_walls()
+            || self.selection.all_cabinets()
             || crate::tools::text::selected_annot(self).is_some()
         {
             v.push(EditAction::new(EditActionKind::OpenObject));
@@ -117,6 +118,7 @@ impl EditorContext {
                     .selection
                     .single()
                     .or_else(|| self.selection.all_walls().then(|| self.selection.items[0]))
+                    .or_else(|| self.selection.all_cabinets().then(|| self.selection.items[0]))
                     .or_else(|| {
                         crate::tools::text::selected_annot(self).map(|(_, id)| ObjectRef::Cad(id))
                     })

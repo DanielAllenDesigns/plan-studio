@@ -136,7 +136,7 @@ fn make_baselines_draw_a_porch_and_build_the_roof_from_them() {
             let (p, q) = b.edge(i);
             (p.y - y1).abs() < 1e-6 && (q.y - y1).abs() < 1e-6
         })
-        .expect("the north edge");
+        .unwrap_or_else(|| panic!("the north edge {y1}: {:?}", b.points));
     assert!(dlg::open_spec(&sim.app.cx, porch_id, Some(north_edge)));
     dlg::with_dialog(|d| {
         assert_eq!(d.selected_edge(), north_edge);
@@ -305,12 +305,12 @@ fn a_roof_group_roofs_the_garage_as_its_own_building() {
     assert_eq!(split.len(), 4 + 4, "two separate hip roofs");
     let east: Vec<RoofPlaneRecord> = split
         .iter()
-        .filter(|p| p.centroid().x > 330.0)
+        .filter(|p| p.centroid().x > 306.0)
         .cloned()
         .collect();
     let west: Vec<RoofPlaneRecord> = split
         .iter()
-        .filter(|p| p.centroid().x <= 330.0)
+        .filter(|p| p.centroid().x <= 306.0)
         .cloned()
         .collect();
     assert_eq!(east.len(), 4);

@@ -157,10 +157,7 @@ pub fn read_columns(text: &str, layout: &TextLayout) -> (Vec<RawPoint>, usize) {
         let fields = layout.delimiter.split(line);
         let o = match layout.order {
             ColumnOrder::Auto => {
-                let numeric = fields
-                    .iter()
-                    .filter(|f| f.parse::<f64>().is_ok())
-                    .count();
+                let numeric = fields.iter().filter(|f| f.parse::<f64>().is_ok()).count();
                 if numeric >= 4 && fields.len() == numeric {
                     ColumnOrder::NXyz
                 } else {
@@ -323,7 +320,9 @@ impl ScaleOptions {
 /// the mapped origin, the rotation about it and the relief factor.
 pub fn scale_points(points: &[RawPoint], o: &ScaleOptions) -> Vec<ElevationPoint> {
     let (kx, ky, kz) = (o.unit_x.inches(), o.unit_y.inches(), o.unit_z.inches());
-    let (ox, oy) = o.map_to_origin.map_or((0.0, 0.0), |(x, y)| (x * kx, y * ky));
+    let (ox, oy) = o
+        .map_to_origin
+        .map_or((0.0, 0.0), |(x, y)| (x * kx, y * ky));
     let (sin, cos) = o.rotate_ccw.to_radians().sin_cos();
     let relief = if o.relief_scale.is_finite() && o.relief_scale > 0.0 {
         o.relief_scale
@@ -606,7 +605,10 @@ impl GpsResult {
             s.push_str(&format!("; {} route points ignored", self.route_ignored));
         }
         if self.no_elevation > 0 {
-            s.push_str(&format!("; {} way points without elevation", self.no_elevation));
+            s.push_str(&format!(
+                "; {} way points without elevation",
+                self.no_elevation
+            ));
         }
         s
     }
@@ -670,7 +672,8 @@ pub fn import_gps(
         }
     }
     // Several points at one spot are one point.
-    out.elevation_points.dedup_by(|a, b| a.pos.dist(b.pos) < 0.01);
+    out.elevation_points
+        .dedup_by(|a, b| a.pos.dist(b.pos) < 0.01);
     if out.perimeter.len() < 3 {
         out.perimeter.clear();
     }

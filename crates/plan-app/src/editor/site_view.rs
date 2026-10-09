@@ -41,7 +41,8 @@ pub use landscape::{
 use serde_json::{json, Value};
 #[allow(unused_imports)] // the sun angle reads `plan_sun_azimuth`
 pub use site_plan::{
-    apply_gps_import, ensure_site_plan_layer, north_angle, place_north_pointer, place_scale_bar, plan_sun_azimuth,
+    apply_gps_import, ensure_site_plan_layer, north_angle, place_north_pointer, place_scale_bar,
+    plan_sun_azimuth,
 };
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -76,7 +77,11 @@ pub fn load_electrical(floor: &Floor) -> ElectricalLayer {
 /// floor without electrical data writes nothing.
 pub fn save_electrical(project: &mut Project, floor: usize, layer: &ElectricalLayer) {
     let f = &mut project.floors[floor];
-    if f.electrical.is_none() && layer.devices.is_empty() && layer.connections.is_empty() {
+    if f.electrical.is_none()
+        && layer.devices.is_empty()
+        && layer.connections.is_empty()
+        && layer.ropes.is_empty()
+    {
         return;
     }
     // Serializing plain data cannot fail; keep the old value if it ever does.
@@ -589,8 +594,18 @@ pub fn auto_building_pad(cx: &mut EditorContext) -> bool {
         cx.status = "Draw the building walls first".into();
         return false;
     }
-    let first_floor = cx.project.floors.first().map_or(0.0, |f| f.elevation);
     let mut rec = load_terrain(&cx.project).unwrap_or_default();
+    // With a foundation the terrain sits 6 in below the stem wall tops (8 in
+    // below a monolithic slab), not at the bottom of the foundation floor
+    // (manual p. 749); a retained surface elevation is left as it is.
+    let first_floor = match plan_core::foundation::terrain_elevation(&cx.project) {
+        Some(ground)
+            if rec.terrain.absolute_elevation == plan_terrain::AbsoluteElevation::Automatic =>
+        {
+            ground + rec.terrain.effective_subfloor_distance()
+        }
+        _ => cx.project.floors.first().map_or(0.0, |f| f.elevation),
+    };
     let mut pad = rec.terrain.building_pad.take().unwrap_or_default();
     let unchanged = same_polygon(&pad.footprint, &footprint)
         && pad.first_floor == Some(first_floor)
@@ -1054,7 +1069,9 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         if !st.layer.trim().is_empty() && !layers.is_visible(&st.layer) {
             return None;
         }
-        let c = st.line_color.map_or(default, |c| Color32::from_rgb(c[0], c[1], c[2]));
+        let c = st
+            .line_color
+            .map_or(default, |c| Color32::from_rgb(c[0], c[1], c[2]));
         let w = if st.line_weight > 0.0 {
             px(st.line_weight, 0.8)
         } else {
@@ -1135,8 +1152,14 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             let c = sc(cam, rp);
             let ring = egui::Stroke::new(1.6_f32, PERIMETER_COLOR);
             painter.circle_stroke(c, 8.0, ring);
-            painter.line_segment([c + egui::vec2(-12.0, 0.0), c + egui::vec2(12.0, 0.0)], ring);
-            painter.line_segment([c + egui::vec2(0.0, -12.0), c + egui::vec2(0.0, 12.0)], ring);
+            painter.line_segment(
+                [c + egui::vec2(-12.0, 0.0), c + egui::vec2(12.0, 0.0)],
+                ring,
+            );
+            painter.line_segment(
+                [c + egui::vec2(0.0, -12.0), c + egui::vec2(0.0, 12.0)],
+                ring,
+            );
         }
     }
     for r in &t.roads {
@@ -1269,12 +1292,20 @@ pub fn draw_devices(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         return;
     }
     let layer = electrical_layer(cx.floor, cx.floor());
-    if layer.devices.is_empty() {
+    if layer.devices.is_empty() && layer.ropes.is_empty() && layer.connections.is_empty() {
         return;
     }
     let color = device_color(cx);
+    for r in &layer.ropes {
+        crate::tools::electrical::draw_rope(painter, cam, r, color, 2.0);
+    }
     for d in &layer.devices {
-        draw_symbol(painter, cam, &d.symbol_world(), color, 1.2);
+        // A resized device draws its symbol at the size of its Width.
+        let strokes = match layer.options.get(&d.id) {
+            Some(o) => d.symbol_world_with(o),
+            None => d.symbol_world(),
+        };
+        draw_symbol(painter, cam, &strokes, color, 1.2);
         if !d.label.is_empty() && !d.hide_label {
             draw_label(
                 painter,
@@ -1288,22 +1319,19 @@ pub fn draw_devices(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
     // The connections have a layer of their own (hidden apart from the
     // devices); a plan without it shows them with the devices.
-    if !cx.layers().is_visible(plan_core::layers::ELECTRICAL_CONNECTION_LAYER) {
+    if !cx
+        .layers()
+        .is_visible(plan_core::layers::ELECTRICAL_CONNECTION_LAYER)
+    {
         return;
     }
     let [cr, cg, cb] = cx
         .layers()
         .get(plan_core::layers::ELECTRICAL_CONNECTION_LAYER)
         .map_or([200, 120, 0], |l| l.color);
-    let dash = egui::Stroke::new(1.0_f32, Color32::from_rgb(cr, cg, cb));
-    for c in &layer.connections {
-        if let Some(arc) = layer.connection_arc(c) {
-            let pts = arc_points(cam, &arc);
-            if pts.len() >= 2 {
-                painter.extend(Shape::dashed_line(&pts, dash, 5.0, 3.0));
-            }
-        }
-    }
+    // Splines in their line styles, with arrows (Electrical Connection Defaults).
+    let line = Color32::from_rgb(cr, cg, cb);
+    crate::tools::electrical::draw_connections(painter, cam, &layer, line);
 }
 
 /// Is `p` inside the terrain perimeter?

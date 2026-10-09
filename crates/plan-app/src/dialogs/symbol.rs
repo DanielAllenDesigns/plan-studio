@@ -590,6 +590,7 @@ impl SymbolForm {
         }
         section(ui, if in_library { "Defaults" } else { "Position" });
         f.length_row(ui, "Elevation (from floor)", "elev", &mut d.elevation);
+        super::elevation_ref::row(ui, "Elevation Reference");
         if in_library {
             f.degrees_row(
                 ui,

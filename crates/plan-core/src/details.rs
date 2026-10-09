@@ -22,8 +22,8 @@
 use crate::geometry::{dist_to_segment, point_in_polygon, polygon_area, polygon_centroid, Point};
 use crate::model::{Floor, Id, Project, Wall, WallKind};
 use crate::moldings::{
-    MoldingEntry, MoldingTable, MoldingType, ProfileDef, ResolvedEntry, RoomMoldings, EXTERIOR_TRIM,
-    INTERIOR_TRIM,
+    MoldingEntry, MoldingTable, MoldingType, ProfileDef, ResolvedEntry, RoomMoldings,
+    EXTERIOR_TRIM, INTERIOR_TRIM,
 };
 use crate::rooms::Room;
 use crate::walls::{Side, WallClass};
@@ -451,7 +451,11 @@ pub enum QuoinStyle {
 }
 
 impl QuoinStyle {
-    pub const ALL: [QuoinStyle; 3] = [QuoinStyle::Uniform, QuoinStyle::Staggered, QuoinStyle::Mirrored];
+    pub const ALL: [QuoinStyle; 3] = [
+        QuoinStyle::Uniform,
+        QuoinStyle::Staggered,
+        QuoinStyle::Mirrored,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -538,8 +542,8 @@ impl Quoin {
         let n = self.courses();
         let long_on_a = match self.quoin_style() {
             QuoinStyle::Uniform => true,
-            QuoinStyle::Staggered => i % 2 == 0,
-            QuoinStyle::Mirrored => i.min(n.saturating_sub(1 + i)) % 2 == 0,
+            QuoinStyle::Staggered => i.is_multiple_of(2),
+            QuoinStyle::Mirrored => i.min(n.saturating_sub(1 + i)).is_multiple_of(2),
         } != self.swap_start;
         if long_on_a {
             (long, short)
@@ -839,7 +843,8 @@ impl MoldingLine {
 
     /// Does the line end where it starts?
     pub fn is_closed(&self) -> bool {
-        self.polyline.len() > 2 && self.polyline[0].dist(self.polyline[self.polyline.len() - 1]) < 1e-6
+        self.polyline.len() > 2
+            && self.polyline[0].dist(self.polyline[self.polyline.len() - 1]) < 1e-6
     }
 
     /// Number of edges.
@@ -899,7 +904,10 @@ impl MoldingLine {
     /// Points that all have the same height are a flat line again.
     fn collapse_heights(&mut self) {
         if !self.heights.is_empty()
-            && self.heights.iter().all(|v| (*v - self.heights[0]).abs() < 1e-9)
+            && self
+                .heights
+                .iter()
+                .all(|v| (*v - self.heights[0]).abs() < 1e-9)
         {
             self.elevation = self.heights[0];
             self.heights.clear();
@@ -908,7 +916,11 @@ impl MoldingLine {
 
     /// Does any edge rise or fall?
     pub fn is_sloped(&self) -> bool {
-        self.has_heights() && self.heights.iter().any(|h| (*h - self.heights[0]).abs() > 1e-9)
+        self.has_heights()
+            && self
+                .heights
+                .iter()
+                .any(|h| (*h - self.heights[0]).abs() > 1e-9)
     }
 
     /// The path in 3D: plan x, plan y, bottom elevation.
@@ -2734,7 +2746,14 @@ mod tests {
             Point::new(0.0, 192.0),
         ];
         for i in 0..c.len() {
-            p.add_wall(0, c[i], c[(i + 1) % c.len()], 6.5, 108.0, WallKind::Exterior);
+            p.add_wall(
+                0,
+                c[i],
+                c[(i + 1) % c.len()],
+                6.5,
+                108.0,
+                WallKind::Exterior,
+            );
         }
         p
     }
@@ -2750,10 +2769,16 @@ mod tests {
         assert!(l.corner_boards.iter().all(|b| !b.inside));
         // Turning the option on adds the notch, once.
         l.include_inside_corners = true;
-        assert_eq!(l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p)), 1);
+        assert_eq!(
+            l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p)),
+            1
+        );
         assert_eq!(l.corner_boards.len(), 6);
         assert_eq!(l.corner_boards.iter().filter(|b| b.inside).count(), 1);
-        assert_eq!(l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p)), 0);
+        assert_eq!(
+            l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p)),
+            0
+        );
         // Quoins follow the same rule.
         let mut q = DetailsLayer::default();
         assert_eq!(q.auto_quoins(&floor, &rooms, &mut alloc_from(&mut p)), 5);
@@ -2761,8 +2786,10 @@ mod tests {
         assert_eq!(q.auto_quoins(&floor, &rooms, &mut alloc_from(&mut p)), 1);
         assert_eq!(q.quoins.iter().filter(|x| x.inside).count(), 1);
         // The option alone keeps the slot alive and round-trips.
-        let mut only = DetailsLayer::default();
-        only.include_inside_corners = true;
+        let only = DetailsLayer {
+            include_inside_corners: true,
+            ..Default::default()
+        };
         assert!(!only.is_empty());
         only.store(&mut p.floors[0]);
         assert!(DetailsLayer::load(&p.floors[0]).include_inside_corners);
@@ -2776,7 +2803,10 @@ mod tests {
         let mut l = DetailsLayer::default();
         l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p));
         l.auto_quoins(&floor, &rooms, &mut alloc_from(&mut p));
-        assert!(l.corner_boards.iter().all(|b| (b.height - 108.0).abs() < 1e-9));
+        assert!(l
+            .corner_boards
+            .iter()
+            .all(|b| (b.height - 108.0).abs() < 1e-9));
         l.corner_boards[0].set_top = true;
         l.corner_boards[0].height = 80.0;
         l.quoins[0].set_bottom = true;
@@ -2787,11 +2817,19 @@ mod tests {
         let floor = p.floors[0].clone();
         assert!(l.refresh_trim_heights(&floor, &rooms));
         assert_eq!(l.corner_boards[0].height, 80.0, "Set Top holds");
-        assert!(l.corner_boards[1..].iter().all(|b| (b.height - 120.0).abs() < 1e-9));
+        assert!(l.corner_boards[1..]
+            .iter()
+            .all(|b| (b.height - 120.0).abs() < 1e-9));
         assert_eq!(l.quoins[0].base, 12.0, "Set Bottom holds");
-        assert!((l.quoins[0].total_height - 108.0).abs() < 1e-9, "top plate - base");
+        assert!(
+            (l.quoins[0].total_height - 108.0).abs() < 1e-9,
+            "top plate - base"
+        );
         assert!((l.quoins[1].total_height - 120.0).abs() < 1e-9);
-        assert!(!l.refresh_trim_heights(&floor, &rooms), "nothing left to change");
+        assert!(
+            !l.refresh_trim_heights(&floor, &rooms),
+            "nothing left to change"
+        );
     }
 
     #[test]
@@ -2807,7 +2845,10 @@ mod tests {
         let back = b.outline();
         // Moved diagonally toward the building by the siding thickness.
         let shift = back[0] - plain[0];
-        assert!((shift.length() - SIDING_RECESS * 2.0_f64.sqrt()).abs() < 1e-6, "{shift:?}");
+        assert!(
+            (shift.length() - SIDING_RECESS * 2.0_f64.sqrt()).abs() < 1e-6,
+            "{shift:?}"
+        );
         let toward = b.axes.out_a * -1.0 + b.axes.out_b * -1.0;
         assert!(shift.dot(toward) > 0.0);
     }
@@ -2841,7 +2882,11 @@ mod tests {
         q.set_quoin_style(QuoinStyle::Mirrored);
         let n = q.courses();
         for i in 0..n {
-            assert_eq!(q.course_lengths(i), q.course_lengths(n - 1 - i), "course {i}");
+            assert_eq!(
+                q.course_lengths(i),
+                q.course_lengths(n - 1 - i),
+                "course {i}"
+            );
         }
         assert_ne!(q.course_lengths(0), q.course_lengths(1));
         // Swap Start Block flips the first course.
@@ -2919,14 +2964,18 @@ mod tests {
             Point::new(100.0, 0.0),
             Point::new(0.0, 0.0),
         ];
-        let mut m = MoldingLine::with_profile(1, cw.clone(), crate::moldings::square_profile(), 0.0);
+        let mut m =
+            MoldingLine::with_profile(1, cw.clone(), crate::moldings::square_profile(), 0.0);
         // Right side, clockwise: the path is turned round so the profile (on
         // the left of the swept path) is inside.
         let p = m.sweep_path();
         assert!(polygon_area(&p.points[..4]) > 0.0);
         m.side = MoldingSide::Left;
         let p = m.sweep_path();
-        assert!(polygon_area(&p.points[..4]) < 0.0, "left of a clockwise path is outside");
+        assert!(
+            polygon_area(&p.points[..4]) < 0.0,
+            "left of a clockwise path is outside"
+        );
         // Extrude Inside Polyline makes it inside whichever way it is drawn.
         m.extrude_inside = true;
         assert!(polygon_area(&m.sweep_path().points[..4]) > 0.0);
@@ -2969,7 +3018,11 @@ mod tests {
         )
         .unwrap();
         assert!(old.table.is_empty() && old.edges_off.is_empty() && !old.has_heights());
-        assert_eq!(old.side, MoldingSide::Left, "old lines keep projecting left");
+        assert_eq!(
+            old.side,
+            MoldingSide::Left,
+            "old lines keep projecting left"
+        );
         assert!(old.auto_orient && old.mitre_twisted && !old.automatic);
         // The Moldings panel turns the single profile into a one-row table.
         let mut e = old.clone();

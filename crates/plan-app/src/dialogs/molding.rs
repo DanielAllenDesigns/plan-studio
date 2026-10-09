@@ -60,7 +60,9 @@ impl PanelOptions {
         }
     }
 
-    /// The panel of a wall cap or a rail.
+    /// The panel of a wall cap or a rail (for the dialogs that embed the
+    /// panel later; see docs/integration-queue.md).
+    #[allow(dead_code)]
     pub fn rails() -> Self {
         PanelOptions {
             rails: true,
@@ -78,6 +80,7 @@ pub enum PanelAction {
     AddNew(ProfileDef),
     MakeCopy,
     /// Edit: the owner opens the profile (Edit Molding Profile).
+    #[allow(dead_code)]
     Edit,
     /// Replace the selected row's profile.
     Replace(ProfileDef),
@@ -137,6 +140,7 @@ impl MoldingPanel {
         self.selected
     }
 
+    #[allow(dead_code)]
     pub fn select(&mut self, i: usize) {
         self.selected = i;
     }
@@ -277,7 +281,10 @@ impl MoldingPanel {
             self.options_for(ui, entry, &mut changed);
             ev.changed |= changed;
             ui.add_space(4.0);
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(260.0), 110.0), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width().min(260.0), 110.0),
+                Sense::hover(),
+            );
             if ui.is_rect_visible(rect) {
                 preview(&ui.painter_at(rect), rect, table, self.selected);
             }
@@ -307,7 +314,11 @@ impl MoldingPanel {
                 ui.end_row();
                 for (i, r) in table.rows.iter().enumerate() {
                     let mut mark = self.marked.contains(&i);
-                    if ui.checkbox(&mut mark, "").on_hover_text("Mark for Make Stack").changed() {
+                    if ui
+                        .checkbox(&mut mark, "")
+                        .on_hover_text("Mark for Make Stack")
+                        .changed()
+                    {
                         marks.push((i, mark));
                     }
                     if ui
@@ -346,16 +357,16 @@ impl MoldingPanel {
 
     fn buttons(&mut self, ui: &mut Ui, table: &mut MoldingTable, ev: &mut PanelEvent) {
         let has = !table.is_empty();
-        let stacked = table
-            .rows
-            .get(self.selected)
-            .is_some_and(|r| r.stack != 0);
+        let stacked = table.rows.get(self.selected).is_some_and(|r| r.stack != 0);
         let mut act: Option<PanelAction> = None;
         ui.horizontal_wrapped(|ui| {
             if ui.button("Add New\u{2026}").clicked() {
                 self.picking = Some(Picking::Add);
             }
-            if ui.add_enabled(has, egui::Button::new("Make Copy")).clicked() {
+            if ui
+                .add_enabled(has, egui::Button::new("Make Copy"))
+                .clicked()
+            {
                 act = Some(PanelAction::MakeCopy);
             }
             if ui.add_enabled(has, egui::Button::new("Edit")).clicked() {
@@ -363,7 +374,10 @@ impl MoldingPanel {
                     ev.edit = Some(r.profile.name.clone());
                 }
             }
-            if ui.add_enabled(has, egui::Button::new("Replace\u{2026}")).clicked() {
+            if ui
+                .add_enabled(has, egui::Button::new("Replace\u{2026}"))
+                .clicked()
+            {
                 self.picking = Some(Picking::Replace);
             }
             if ui.add_enabled(has, egui::Button::new("Default")).clicked() {
@@ -393,7 +407,10 @@ impl MoldingPanel {
                 act = Some(PanelAction::MoveUp);
             }
             if ui
-                .add_enabled(self.selected + 1 < table.len(), egui::Button::new("Move Down"))
+                .add_enabled(
+                    self.selected + 1 < table.len(),
+                    egui::Button::new("Move Down"),
+                )
                 .clicked()
             {
                 act = Some(PanelAction::MoveDown);
@@ -520,9 +537,7 @@ impl MoldingPanel {
                 *changed |= ui
                     .checkbox(&mut e.full_wall_width, "Full Wall Width")
                     .changed();
-                *changed |= ui
-                    .checkbox(&mut e.split_profile, "Split Profile")
-                    .changed();
+                *changed |= ui.checkbox(&mut e.split_profile, "Split Profile").changed();
             });
         }
         if self.options.edge {
@@ -533,7 +548,9 @@ impl MoldingPanel {
             });
         }
         row(ui, "Texture", |ui| {
-            *changed |= ui.checkbox(&mut e.texture_up, "Texture Up Direction").changed();
+            *changed |= ui
+                .checkbox(&mut e.texture_up, "Texture Up Direction")
+                .changed();
             *changed |= ui
                 .checkbox(&mut e.count_components, "Count Components")
                 .changed();
@@ -560,7 +577,12 @@ impl MoldingPanel {
 /// color, the others faint, the wall as a gray strip at the left.
 pub fn preview(p: &egui::Painter, rect: Rect, table: &MoldingTable, selected: usize) {
     p.rect_filled(rect, 0.0, PV_BG);
-    p.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, PV_FAINT), StrokeKind::Inside);
+    p.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0_f32, PV_FAINT),
+        StrokeKind::Inside,
+    );
     let resolved = table.resolve_from(0.0);
     let mut lo = Point::new(f64::MAX, f64::MAX);
     let mut hi = Point::new(f64::MIN, f64::MIN);
@@ -603,13 +625,20 @@ pub fn preview(p: &egui::Painter, rect: Rect, table: &MoldingTable, selected: us
             if pts.len() < 3 {
                 continue;
             }
-            let fill = if on { PV_ACCENT.gamma_multiply(0.45) } else { PV_WALL };
+            let fill = if on {
+                PV_ACCENT.gamma_multiply(0.45)
+            } else {
+                PV_WALL
+            };
             p.add(egui::Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
             let mut ring = pts;
             ring.push(ring[0]);
             p.add(egui::Shape::line(
                 ring,
-                Stroke::new(if on { 1.8_f32 } else { 1.0 }, if on { PV_INK } else { PV_FAINT }),
+                Stroke::new(
+                    if on { 1.8_f32 } else { 1.0 },
+                    if on { PV_INK } else { PV_FAINT },
+                ),
             ));
         }
     }

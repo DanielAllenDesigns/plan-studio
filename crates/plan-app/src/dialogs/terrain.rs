@@ -382,8 +382,12 @@ impl Form {
                 let mut rp = self.draft.terrain.effective_reference_point();
                 if let Some(p) = rp.as_mut() {
                     let (mut x, mut y) = (p.x, p.y);
-                    let cx = self.fields.length_row(ui, "Reference Point X", "ref_x", &mut x);
-                    let cy = self.fields.length_row(ui, "Reference Point Y", "ref_y", &mut y);
+                    let cx = self
+                        .fields
+                        .length_row(ui, "Reference Point X", "ref_x", &mut x);
+                    let cy = self
+                        .fields
+                        .length_row(ui, "Reference Point Y", "ref_y", &mut y);
                     if cx || cy {
                         self.draft.terrain.reference_point = Some(Point::new(x, y));
                     }
@@ -422,7 +426,10 @@ impl Form {
         );
         ui.add_space(4.0);
         section(ui, "Skirt");
-        ui.checkbox(&mut self.draft.terrain.skirt.enabled, "Skirt around the terrain edge");
+        ui.checkbox(
+            &mut self.draft.terrain.skirt.enabled,
+            "Skirt around the terrain edge",
+        );
         if self.draft.terrain.skirt.enabled {
             self.fields.length_row(
                 ui,
@@ -501,7 +508,9 @@ impl Form {
             .draft
             .terrain
             .last_build
-            .map_or("not built yet".to_string(), |b| format!("{} in the last build", b.triangles));
+            .map_or("not built yet".to_string(), |b| {
+                format!("{} in the last build", b.triangles)
+            });
         ui.weak(format!(
             "About {} triangles ({built}). Low 1000, Medium 2000 and High 4000 suit about 20,000 sq ft.",
             self.draft.terrain.estimated_triangles()
@@ -557,7 +566,9 @@ impl Form {
             "contour_offset",
             &mut self.draft.terrain.contour_offset,
         );
-        ui.weak("Shifts which elevation gets a contour: lines fall at the offset plus whole intervals.");
+        ui.weak(
+            "Shifts which elevation gets a contour: lines fall at the offset plus whole intervals.",
+        );
         ui.weak(format!(
             "Secondary contours every {}, primary contours every {}.",
             fmt_short(self.draft.contour_interval),
@@ -596,7 +607,11 @@ impl Form {
                 .selected_text(self.draft.terrain.contour_label_units.name())
                 .show_ui(ui, |ui| {
                     for u in LabelUnits::ALL {
-                        ui.selectable_value(&mut self.draft.terrain.contour_label_units, u, u.name());
+                        ui.selectable_value(
+                            &mut self.draft.terrain.contour_label_units,
+                            u,
+                            u.name(),
+                        );
                     }
                 })
         });
@@ -627,7 +642,10 @@ impl Form {
         );
         let mut labeled = !self.draft.terrain.contour_label_major_only;
         if ui
-            .checkbox(&mut labeled, "Label secondary contours with their elevation")
+            .checkbox(
+                &mut labeled,
+                "Label secondary contours with their elevation",
+            )
             .changed()
         {
             self.draft.terrain.contour_label_major_only = !labeled;
@@ -643,7 +661,9 @@ impl Form {
             ui.weak("Draw the Terrain Perimeter first.");
             return;
         }
-        let length: f64 = (0..pts.len()).map(|i| pts[i].dist(pts[(i + 1) % pts.len()])).sum();
+        let length: f64 = (0..pts.len())
+            .map(|i| pts[i].dist(pts[(i + 1) % pts.len()]))
+            .sum();
         row(ui, "Perimeter", |ui| ui.label(fmt_short(length)));
         row(ui, "Area", |ui| {
             ui.label(format!(
@@ -661,7 +681,9 @@ impl Form {
             .map(|f| plan_core::geometry::polygon_area(&f.polygon).abs() / 144.0)
             .sum();
         if holes > 0.0 {
-            ui.weak(format!("Terrain holes take {holes:.0} sq ft out of the area."));
+            ui.weak(format!(
+                "Terrain holes take {holes:.0} sq ft out of the area."
+            ));
         }
     }
 
@@ -902,11 +924,11 @@ impl SpecPages for Form {
             "Select File" if self.mode == Mode::Import => self.import.select_file(ui),
             "Select File" => self.gps.select_file(ui),
             "Filter Data" => self.import.filter_data(ui),
-            "Scale Data" => self.import.scale_data(ui, &mut self.fields, &mut self.draft),
+            "Scale Data" => self
+                .import
+                .scale_data(ui, &mut self.fields, &mut self.draft),
             "Import As" => self.gps.import_as(ui),
-            "Transform Coordinates" => {
-                self.gps.transform(ui, &mut self.fields, &mut self.draft)
-            }
+            "Transform Coordinates" => self.gps.transform(ui, &mut self.fields, &mut self.draft),
             "Grow Plants" => self.grow.page(ui, &mut self.draft),
             _ => {}
         }
@@ -1188,13 +1210,19 @@ mod tests {
         draw_all_pages(&mut dlg);
         let msg = dlg.press_add().unwrap().unwrap();
         assert!(msg.contains("4 points read"), "{msg}");
-        assert!(msg.contains("a perimeter was made around the data"), "{msg}");
+        assert!(
+            msg.contains("a perimeter was made around the data"),
+            "{msg}"
+        );
         let t = &dlg.draft().terrain;
         assert_eq!(t.elevation_points.len(), 4);
         assert!(t.perimeter.len() >= 3);
         // YXZ: the first column is Y, so the first point is at x = 20 m, y = 10 m.
         let first = &t.elevation_points[0];
-        assert!((first.pos.x - 20.0 / 0.0254).abs() < 1e-6 && (first.pos.y - 10.0 / 0.0254).abs() < 1e-6);
+        assert!(
+            (first.pos.x - 20.0 / 0.0254).abs() < 1e-6
+                && (first.pos.y - 10.0 / 0.0254).abs() < 1e-6
+        );
         assert!(dlg.stores());
         // OK stores the new perimeter along with the points.
         rec.apply_spec(dlg.draft());
@@ -1274,8 +1302,14 @@ mod tests {
         let t = &stored.terrain;
         assert_eq!(t.absolute_elevation, AbsoluteElevation::ReferencePoint);
         assert_eq!(t.reference_point, Some(Point::new(10.0, 20.0)));
-        assert_eq!((t.surface_offset, t.skirt.enabled, t.skirt.mode), (-9.0, true, SkirtMode::FollowTerrain));
-        assert_eq!((t.smoothing_level, t.triangle_detail, t.custom_triangles), (SmoothingLevel::Medium, TriangleDetail::Custom, 800));
+        assert_eq!(
+            (t.surface_offset, t.skirt.enabled, t.skirt.mode),
+            (-9.0, true, SkirtMode::FollowTerrain)
+        );
+        assert_eq!(
+            (t.smoothing_level, t.triangle_detail, t.custom_triangles),
+            (SmoothingLevel::Medium, TriangleDetail::Custom, 800)
+        );
         assert!(t.hide_under_building && t.season == Season::Winter);
         assert_eq!(t.contour_label_units, LabelUnits::DecimalFeet);
         assert!(t.perimeter_extras.label.shown);

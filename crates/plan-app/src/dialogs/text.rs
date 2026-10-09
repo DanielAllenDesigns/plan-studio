@@ -23,6 +23,13 @@ pub mod editbar;
 pub mod manage;
 pub mod marker;
 pub mod note;
+// Round 16 (brief 27): the Insert Macro menu with Text Macro Management, and
+// the Thermal Envelope / REScheck export. They live in `dialogs/` beside the
+// other dialogs and hang off this module until `dialogs.rs` names them.
+#[path = "macro_manager.rs"]
+pub mod macro_manager;
+#[path = "rescheck.rs"]
+pub mod rescheck;
 
 use super::{
     fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT,
@@ -32,6 +39,7 @@ use crate::editor::selection::cad_by_id;
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::cad::{CadAttrs, CadItem};
+use plan_core::macros::MenuItem;
 use plan_core::text_box::{HAlign, VAlign};
 use plan_core::text_styles::{runs_from_markup, runs_plain, runs_to_markup, RichRun};
 use plan_core::{CadObject, Id};
@@ -68,6 +76,35 @@ struct TextForm {
     /// offers.
     bar: editbar::EditBarState,
     families: Vec<String>,
+    /// The Insert Macro menu of the plan.
+    macro_menu: Vec<MenuItem>,
+    /// Facts of the object the text's arrow points at, for kinds plan-core
+    /// cannot look up (kept with the live text).
+    live_facts: Vec<(String, String)>,
+    /// Print Size Calculator: the wanted printed height in paper inches and
+    /// the printed scale in paper inches per foot.
+    calc_open: bool,
+    calc_printed: f64,
+    calc_scale: f64,
+}
+
+/// The Text Style panel's three choices (Use Layer, Use Text Style, Use
+/// Custom).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StyleChoice {
+    Layer,
+    Named,
+    Custom,
+}
+
+impl StyleChoice {
+    pub fn of(style: &Option<String>) -> StyleChoice {
+        match style {
+            None => StyleChoice::Layer,
+            Some(n) if n.is_empty() => StyleChoice::Custom,
+            Some(_) => StyleChoice::Named,
+        }
+    }
 }
 
 impl TextDialog {
@@ -93,8 +130,21 @@ impl TextDialog {
                 ipf: 0.25,
                 bar: editbar::EditBarState::default(),
                 families: Vec::new(),
+                macro_menu: Vec::new(),
+                live_facts: Vec::new(),
+                calc_open: false,
+                calc_printed: 0.125,
+                calc_scale: 0.25,
             },
         }
+    }
+
+    /// The Insert Macro menu and the facts of a live text's pointed-at
+    /// object.
+    pub fn with_macros(mut self, menu: Vec<MenuItem>, facts: Vec<(String, String)>) -> Self {
+        self.form.macro_menu = menu;
+        self.form.live_facts = facts;
+        self
     }
 
     /// The extras stored with the text, and the text style names to pick from.
@@ -181,6 +231,20 @@ impl TextDialog {
             a.target = new.id;
             cx.project.set_cad_attrs(fl, a);
         }
+        // A text with macros stays live: what was typed is kept and the
+        // object shows what the macros give.
+        let typed = match &new.item {
+            CadItem::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        };
+        let rich = self.form.rich && !self.form.attrs.runs.is_empty();
+        let runs = if rich {
+            self.form.attrs.runs.clone()
+        } else {
+            vec![RichRun::plain(typed)]
+        };
+        cx.project
+            .set_live_text(fl, new.id, runs, rich, self.form.live_facts.clone());
         cx.mark_dirty();
         true
     }
@@ -209,14 +273,29 @@ pub fn open_for(cx: &EditorContext, o: ObjectRef) -> Option<TextDialog> {
         .get(&obj.layer)
         .map(|l| l.text_style.clone())
         .unwrap_or_default();
+    // A live text is edited as it was typed, macros and all.
+    let mut obj = obj.clone();
+    let mut attrs = cx
+        .floor()
+        .cad_attrs(id)
+        .unwrap_or_else(|| CadAttrs::new(id));
+    let mut facts = Vec::new();
+    if let Some(live) = cx.project.live_text(id) {
+        if let CadItem::Text { text, .. } = &mut obj.item {
+            *text = live.source();
+        }
+        attrs.runs = if live.rich {
+            live.runs.clone()
+        } else {
+            Vec::new()
+        };
+        facts = live.facts.clone();
+    }
+    let menu = macro_manager::menu_for(&cx.project);
     Some(
-        TextDialog::new(obj.clone(), layers, cx.defaults.text.font.clone())
-            .with_attrs(
-                cx.floor()
-                    .cad_attrs(id)
-                    .unwrap_or_else(|| CadAttrs::new(id)),
-                styles,
-            )
+        TextDialog::new(obj, layers, cx.defaults.text.font.clone())
+            .with_macros(menu, facts)
+            .with_attrs(attrs, styles)
             .with_sizing(
                 &cx.project.text_styles,
                 &layer_style,
@@ -288,6 +367,7 @@ impl TextForm {
                 ipf: self.ipf,
                 families: &self.families,
             };
+            self.bar.macros.clone_from(&self.macro_menu);
             let before = self.attrs.text_box.halign;
             let edited = editbar::show(
                 ui,
@@ -302,10 +382,12 @@ impl TextForm {
                 let id = ui.make_persistent_id("rich_markup");
                 if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
                     let (a, b) = self.bar.sel;
-                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                        egui::text::CCursor::new(a),
-                        egui::text::CCursor::new(b),
-                    )));
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::two(
+                            egui::text::CCursor::new(a),
+                            egui::text::CCursor::new(b),
+                        )));
                     state.store(ui.ctx(), id);
                 }
             }
@@ -342,6 +424,16 @@ impl TextForm {
         if super::spell_check::local_controls(ui, &mut self.markup, self.rich) {
             self.sync_text();
         }
+        // Insert Macro beside the field of a plain Text (Rich Text has it on
+        // its bar).
+        if !self.rich && !self.macro_menu.is_empty() {
+            let picked = ui
+                .horizontal(|ui| macro_manager::insert_macro_button(ui, &self.macro_menu))
+                .inner;
+            if let Some(m) = picked {
+                self.insert_macro(&m);
+            }
+        }
         let CadItem::Text { pos, angle, .. } = &mut self.draft.item else {
             return;
         };
@@ -352,6 +444,42 @@ impl TextForm {
         section(ui, "Position (Lower Left)");
         self.fields.length_row(ui, "X", "pos_x", &mut pos.x);
         self.fields.length_row(ui, "Y", "pos_y", &mut pos.y);
+    }
+
+    /// Types the macro `m` (with its percent signs) at the cursor of the text
+    /// field, over the selection if there is one.
+    fn insert_macro(&mut self, m: &str) {
+        let (text, at) = macro_manager::insert_at(&self.markup, self.bar.sel, m);
+        self.markup = text;
+        self.bar.sel = (at, at);
+        self.sync_text();
+    }
+
+    /// Convert to Text: the formats and the column tabs are lost.
+    fn convert_to_text(&mut self) {
+        let plain = runs_plain(&runs_from_markup(&self.markup));
+        let plain = if self.rich {
+            plain
+        } else {
+            self.markup.clone()
+        };
+        self.markup = plain.replace('\t', " ");
+        self.rich = false;
+        self.attrs.text_box.tab_width = 0.0;
+        self.attrs.text_box.line_spacing = 1.0;
+        self.attrs.text_box.para_left = 0.0;
+        self.attrs.text_box.para_right = 0.0;
+        self.attrs.text_box.para_indent = 0.0;
+        self.sync_text();
+    }
+
+    /// Convert to Rich Text: the words become one run, ready to format.
+    fn convert_to_rich(&mut self) {
+        if !self.rich {
+            self.markup = runs_to_markup(&[RichRun::plain(self.markup.clone())]);
+            self.rich = true;
+            self.sync_text();
+        }
     }
 
     /// Is `get` set on every run?
@@ -381,45 +509,213 @@ impl TextForm {
 
     fn text_style(&mut self, ui: &mut Ui) {
         section(ui, "Text Style");
-        row(ui, "Style", |ui| {
-            let shown = self
-                .attrs
-                .text_style
-                .clone()
-                .unwrap_or_else(|| "(layer's style)".to_string());
+        // Use Layer Text Style, Use Text Style or Use Custom Text Style.
+        let mut choice = StyleChoice::of(&self.attrs.text_style);
+        let was = choice;
+        ui.radio_value(&mut choice, StyleChoice::Layer, "Use Layer Text Style");
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut choice, StyleChoice::Named, "Use Text Style");
+            let shown = match &self.attrs.text_style {
+                Some(n) if !n.is_empty() => n.clone(),
+                _ => self.styles.first().cloned().unwrap_or_default(),
+            };
             egui::ComboBox::from_id_salt("text_style_pick")
                 .selected_text(shown)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.attrs.text_style, None, "(layer's style)");
                     for n in &self.styles {
-                        ui.selectable_value(
-                            &mut self.attrs.text_style,
-                            Some(n.clone()),
-                            n.as_str(),
-                        );
+                        if ui
+                            .selectable_label(
+                                self.attrs.text_style.as_deref() == Some(n.as_str()),
+                                n.as_str(),
+                            )
+                            .clicked()
+                        {
+                            self.attrs.text_style = Some(n.clone());
+                            choice = StyleChoice::Named;
+                        }
                     }
                 });
         });
+        ui.radio_value(&mut choice, StyleChoice::Custom, "Use Custom Text Style");
+        if choice != was {
+            self.attrs.text_style = match choice {
+                StyleChoice::Layer => None,
+                StyleChoice::Named => self.styles.first().cloned(),
+                StyleChoice::Custom => Some(String::new()),
+            };
+        }
+        let custom = StyleChoice::of(&self.attrs.text_style) == StyleChoice::Custom;
         row(ui, "Font", |ui| ui.label(self.font.clone()));
         section(ui, "Format");
-        for (label, get, set) in [
-            (
-                "Bold",
-                (|r: &RichRun| r.bold) as fn(&RichRun) -> bool,
-                (|r: &mut RichRun, on: bool| r.bold = on) as fn(&mut RichRun, bool),
-            ),
-            ("Italic", |r| r.italic, |r, on| r.italic = on),
-            ("Underline", |r| r.underline, |r, on| r.underline = on),
-        ] {
-            let mut on = self.all_runs(get);
-            if ui.checkbox(&mut on, label).changed() {
-                self.set_format(|r| set(r, on));
+        ui.add_enabled_ui(custom, |ui| {
+            if !self.families.is_empty() {
+                let current = self
+                    .attrs
+                    .runs
+                    .first()
+                    .and_then(|r| r.font.clone())
+                    .unwrap_or_else(|| self.font.clone());
+                row(ui, "Custom Font", |ui| {
+                    egui::ComboBox::from_id_salt("text_custom_font")
+                        .selected_text(current.clone())
+                        .show_ui(ui, |ui| {
+                            for f in self.families.clone() {
+                                if ui.selectable_label(current == f, f.as_str()).clicked() {
+                                    self.set_format(|r| r.font = Some(f.clone()));
+                                }
+                            }
+                        });
+                });
             }
+            for (label, get, set) in [
+                (
+                    "Bold",
+                    (|r: &RichRun| r.bold) as fn(&RichRun) -> bool,
+                    (|r: &mut RichRun, on: bool| r.bold = on) as fn(&mut RichRun, bool),
+                ),
+                ("Italic", |r| r.italic, |r, on| r.italic = on),
+                ("Underline", |r| r.underline, |r, on| r.underline = on),
+                ("Strikethrough", |r| r.strike, |r, on| r.strike = on),
+                ("Uppercase", |r| r.upper, |r, on| r.upper = on),
+            ] {
+                let mut on = self.all_runs(get);
+                if ui.checkbox(&mut on, label).changed() {
+                    self.set_format(|r| set(r, on));
+                }
+            }
+        });
+        if !custom {
+            ui.weak(
+                "The text style decides the format; pick Use Custom Text Style to set your own.",
+            );
         }
         // The installed face the style's font and these toggles map to.
         let (bold, italic) = (self.all_runs(|r| r.bold), self.all_runs(|r| r.italic));
         crate::fonts::face_preview(ui, &crate::fonts::spec_named(&self.font, bold, italic));
         ui.weak("Mixed formats inside one text are typed as markup on the Text tab.");
+    }
+
+    /// Paragraph Options (line spacing, margins, first-line indent), tab
+    /// columns, font sizing and the conversions between Text and Rich Text.
+    fn paragraph_sections(&mut self, ui: &mut Ui) {
+        section(ui, "Paragraph Options");
+        let tb = &mut self.attrs.text_box;
+        row(ui, "Line Spacing", |ui| {
+            let label = |v: f64| match v {
+                x if (x - 1.0).abs() < 1e-9 => "Single".to_string(),
+                x if (x - 1.5).abs() < 1e-9 => "1.5 lines".to_string(),
+                x if (x - 2.0).abs() < 1e-9 => "Double".to_string(),
+                x => format!("{x:.2} lines"),
+            };
+            egui::ComboBox::from_id_salt("text_line_spacing")
+                .selected_text(label(tb.line_spacing))
+                .show_ui(ui, |ui| {
+                    for v in [1.0, 1.5, 2.0] {
+                        ui.selectable_value(&mut tb.line_spacing, v, label(v));
+                    }
+                });
+            ui.add(
+                egui::DragValue::new(&mut tb.line_spacing)
+                    .range(0.5..=5.0)
+                    .speed(0.05)
+                    .fixed_decimals(2),
+            );
+        });
+        self.fields
+            .length_row(ui, "Left Margin", "para_left", &mut tb.para_left);
+        self.fields
+            .length_row(ui, "Right Margin", "para_right", &mut tb.para_right);
+        self.fields
+            .length_row(ui, "First Line Indent", "para_indent", &mut tb.para_indent);
+        section(ui, "Tab Columns");
+        ui.weak(
+            "A tab in the text starts a new column; pasted spreadsheet rows keep their columns.",
+        );
+        self.fields.length_row(
+            ui,
+            "Column Width (0 fits the widest cell)",
+            "tab_width",
+            &mut tb.tab_width,
+        );
+        if ui.button("Reset Column Widths").clicked() {
+            tb.tab_width = 0.0;
+        }
+        section(ui, "Font Sizing");
+        ui.checkbox(
+            &mut tb.word_sizing,
+            "Word processor sizing (the size is the em height)",
+        );
+        ui.weak("Off: CAD style sizing, the size is the height of a capital letter.");
+        section(ui, "Convert");
+        ui.horizontal(|ui| {
+            if ui.button("Convert to Text").clicked() {
+                self.convert_to_text();
+            }
+            if ui.button("Convert to Rich Text").clicked() {
+                self.convert_to_rich();
+            }
+        });
+        ui.weak("Converting to Text loses the formats and the column tabs.");
+        self.print_size_calculator(ui);
+    }
+
+    /// Print Size Calculator: the text height that prints at a wanted size
+    /// at a printed scale (manual p. 540).
+    fn print_size_calculator(&mut self, ui: &mut Ui) {
+        let open = ui
+            .button(if self.calc_open {
+                "Hide Print Size Calculator"
+            } else {
+                "Print Size Calculator"
+            })
+            .clicked();
+        if open {
+            self.calc_open = !self.calc_open;
+            // Start from this sheet's scale.
+            if self.calc_open && self.ipf > 0.0 {
+                self.calc_scale = self.ipf;
+            }
+        }
+        if !self.calc_open {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.label("Printed size (paper inches)");
+            ui.add(
+                egui::DragValue::new(&mut self.calc_printed)
+                    .range(0.01..=2.0)
+                    .speed(0.005)
+                    .fixed_decimals(3),
+            );
+        });
+        row(ui, "Printed scale", |ui| {
+            let name = plan_core::text_styles::PRINT_SCALES
+                .iter()
+                .find(|(_, v)| (v - self.calc_scale).abs() < 1e-9)
+                .map_or_else(
+                    || format!("{:.3}\" per foot", self.calc_scale),
+                    |(n, _)| (*n).to_string(),
+                );
+            egui::ComboBox::from_id_salt("print_size_scale")
+                .selected_text(name)
+                .show_ui(ui, |ui| {
+                    for (n, v) in plan_core::text_styles::PRINT_SCALES {
+                        ui.selectable_value(&mut self.calc_scale, v, n);
+                    }
+                });
+        });
+        let plan_h =
+            plan_core::text_styles::plan_height_for_printed(self.calc_printed, self.calc_scale);
+        ui.label(format!(
+            "A text {} tall in the plan prints {:.3}\" tall.",
+            fmt_short(plan_h),
+            self.calc_printed
+        ));
+        if ui.button("Use as Text Height").clicked() {
+            if let CadItem::Text { height, .. } = &mut self.draft.item {
+                *height = plan_h;
+            }
+        }
     }
 
     fn appearance(&mut self, ui: &mut Ui) {
@@ -458,6 +754,7 @@ impl TextForm {
             }
         }
         self.box_sections(ui);
+        self.paragraph_sections(ui);
     }
 
     /// Alignment, the text box (wrap width, minimum height), border and
@@ -750,6 +1047,7 @@ mod tests {
             margin: 2.0,
             border_weight: 35,
             background: Some([240, 230, 200]),
+            ..TextBox::default()
         };
         assert!(d.apply(&mut cx));
         let tb = cx.floor().cad_attrs(id).unwrap().text_box;
@@ -779,5 +1077,125 @@ mod tests {
             .floor()
             .cad_attrs(id)
             .is_none_or(|a| a.text_box.is_plain()));
+    }
+
+    fn shown(cx: &EditorContext, id: Id) -> String {
+        match &cad_by_id(cx.floor(), id).unwrap().item {
+            CadItem::Text { text, .. } => text.clone(),
+            _ => panic!("text"),
+        }
+    }
+
+    #[test]
+    fn a_live_text_opens_as_typed_and_ok_keeps_it_live() {
+        let (mut cx, id) = cx_with_text();
+        cx.project.name = "Smith".into();
+        assert!(cx.project.set_live_text(
+            0,
+            id,
+            vec![RichRun::plain("Plan %plan.name%")],
+            false,
+            Vec::new()
+        ));
+        assert_eq!(shown(&cx, id), "Plan Smith");
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        assert_eq!(d.form.markup, "Plan %plan.name%", "the macros as typed");
+        assert!(!d.apply(&mut cx), "nothing changed, no undo step");
+        // Insert Macro types at the cursor; OK keeps the text live.
+        d.form.insert_macro("%floor% ");
+        assert_eq!(d.form.markup, "%floor% Plan %plan.name%");
+        assert!(d.apply(&mut cx));
+        assert_eq!(shown(&cx, id), "1st Floor Plan Smith");
+        assert_eq!(
+            cx.project.live_text(id).unwrap().source(),
+            "%floor% Plan %plan.name%"
+        );
+        // Taking the macros out makes it plain words again.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.markup = "Just words".into();
+        d.form.sync_text();
+        assert!(d.apply(&mut cx));
+        assert!(cx.project.live_text(id).is_none());
+        assert_eq!(shown(&cx, id), "Just words");
+        // A plain text that gets a macro becomes live.
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.insert_macro("%plan.name%");
+        assert!(d.apply(&mut cx));
+        assert!(cx.project.live_text(id).is_some());
+        assert_eq!(shown(&cx, id), "SmithJust words");
+        assert_eq!(cx.undo().as_deref(), Some("Change Text"));
+        assert!(cx.project.live_text(id).is_none());
+    }
+
+    #[test]
+    fn the_text_style_panel_has_layer_style_and_custom_choices() {
+        assert_eq!(StyleChoice::of(&None), StyleChoice::Layer);
+        assert_eq!(
+            StyleChoice::of(&Some("Room Label Style".into())),
+            StyleChoice::Named
+        );
+        assert_eq!(StyleChoice::of(&Some(String::new())), StyleChoice::Custom);
+        let (mut cx, id) = cx_with_text();
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.attrs.text_style = Some(String::new());
+        // Custom enables the format controls: Uppercase and Strikethrough.
+        d.form.set_format(|r| {
+            r.upper = true;
+            r.strike = true;
+        });
+        assert!(d.apply(&mut cx));
+        let a = cx.floor().cad_attrs(id).unwrap();
+        assert_eq!(a.text_style.as_deref(), Some(""));
+        assert!(a.runs[0].upper && a.runs[0].strike);
+        let tab = TEXT_TABS
+            .iter()
+            .position(|t| t.name == "Text Style")
+            .unwrap();
+        let ctx = egui::Context::default();
+        for style in [
+            None,
+            Some("Room Label Style".to_string()),
+            Some(String::new()),
+        ] {
+            d.form.attrs.text_style = style;
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
+            });
+        }
+    }
+
+    #[test]
+    fn paragraph_options_conversions_and_the_calculator_are_in_the_appearance_tab() {
+        let (mut cx, id) = cx_with_text();
+        let mut d = open_for(&cx, ObjectRef::Cad(id)).unwrap();
+        d.form.attrs.text_box.line_spacing = 1.5;
+        d.form.attrs.text_box.para_left = 6.0;
+        d.form.attrs.text_box.para_indent = 3.0;
+        d.form.attrs.text_box.tab_width = 40.0;
+        d.form.convert_to_rich();
+        assert!(d.form.rich);
+        d.form.markup = "a\tb".into();
+        d.form.sync_text();
+        d.form.convert_to_text();
+        // Converting to Text loses the formats and the column tabs.
+        assert!(!d.form.rich);
+        assert_eq!(d.form.markup, "a b");
+        let tb = d.form.attrs.text_box;
+        assert_eq!(
+            (tb.line_spacing, tb.para_left, tb.tab_width),
+            (1.0, 0.0, 0.0)
+        );
+        // The Print Size Calculator opens from the sheet scale.
+        d.form.ipf = 0.25;
+        d.form.calc_open = true;
+        let tab = TEXT_TABS
+            .iter()
+            .position(|t| t.name == "Appearance")
+            .unwrap();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
+        });
+        assert!(d.apply(&mut cx));
     }
 }

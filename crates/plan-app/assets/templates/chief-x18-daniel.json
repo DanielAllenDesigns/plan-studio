@@ -1023,14 +1023,14 @@
     "room_types": [
       {
         "name": "Attic",
-        "function": "Utility",
+        "function": "Attic",
         "include_in_living_area": false,
         "conditioned": false,
         "default_floor_finish": ""
       },
       {
         "name": "Balcony",
-        "function": "Deck",
+        "function": "Balcony",
         "include_in_living_area": false,
         "conditioned": false,
         "default_floor_finish": ""
@@ -1100,14 +1100,14 @@
       },
       {
         "name": "Courtyard",
-        "function": "Standard",
+        "function": "Court",
         "include_in_living_area": false,
         "conditioned": false,
         "default_floor_finish": ""
       },
       {
         "name": "Crawl Space",
-        "function": "Utility",
+        "function": "Open Below",
         "include_in_living_area": false,
         "conditioned": false,
         "default_floor_finish": ""
@@ -1186,7 +1186,7 @@
         "name": "Garage",
         "function": "Garage",
         "include_in_living_area": false,
-        "conditioned": true,
+        "conditioned": false,
         "default_floor_finish": ""
       },
       {
@@ -1310,9 +1310,9 @@
       },
       {
         "name": "Slab",
-        "function": "Utility",
-        "include_in_living_area": true,
-        "conditioned": true,
+        "function": "Slab",
+        "include_in_living_area": false,
+        "conditioned": false,
         "default_floor_finish": ""
       },
       {

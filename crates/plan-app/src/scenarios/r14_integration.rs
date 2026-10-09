@@ -190,7 +190,31 @@ fn tools_rows() -> Vec<(&'static str, Action)> {
         ("Save Plan View", Action::Custom(plan_views::SAVE)),
         ("Reset Plan View", Action::Custom(plan_views::RESET)),
         ("Add Template Plan Views", Action::Custom(plan_views::SEED)),
-        ("Active Defaults\u{2026}", Action::DefaultSettings),
+        ("Add Starter Plan Views", Action::Custom(plan_views::STARTER)),
+        (
+            "New Saved Plan View\u{2026}",
+            Action::Custom(plan_views::NEW_SAVED),
+        ),
+        (
+            "Save Active View As\u{2026}",
+            Action::Custom(plan_views::SAVE_AS),
+        ),
+        (
+            "Active Defaults\u{2026}",
+            Action::Custom(crate::dialogs::default_sets::ACTIVE_DEFAULTS),
+        ),
+        (
+            "Default Sets\u{2026}",
+            Action::Custom(crate::dialogs::default_sets::DEFAULT_SETS),
+        ),
+        (
+            "Rotate Plan View\u{2026}",
+            Action::Custom(crate::shell::view_commands::ROTATE_DIALOG),
+        ),
+        (
+            "Reverse Plan",
+            Action::Custom(crate::shell::view_commands::REVERSE_PLAN),
+        ),
         ("Plan Check", Action::PlanCheck),
         (
             "Plan Check Settings\u{2026}",
@@ -247,6 +271,10 @@ fn tools_rows() -> Vec<(&'static str, Action)> {
         (
             "Renumber Window Schedule",
             Action::Custom(crate::editor::opening_edit::RENUMBER_WINDOWS),
+        ),
+        (
+            "Manage Custom Schedule Categories\u{2026}",
+            Action::Custom(crate::editor::schedule_view::cmd::MANAGE_CATEGORIES),
         ),
         (
             "Framing Takeoff\u{2026}",

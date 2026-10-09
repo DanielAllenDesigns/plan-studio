@@ -145,6 +145,12 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     section!("walls", draw_walls(cx, painter, cam));
     // Poché: the dark fill over the cut walls (View > Poché).
     section!("poche", draw_poche(cx, painter, cam));
+    // Fireplaces and chimney chases draw over the walls (CB-87), so one built
+    // into a wall shows its body over the wall lines.
+    section!(
+        "fireplaces",
+        crate::editor::fireplace_view::draw(cx, painter, cam)
+    );
     // Wall hatching and wall regions, corner trim and moldings over the walls.
     section!(
         "details over",
@@ -179,11 +185,9 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     section!(
         "dimensions",
         for d in &floor.dimensions {
-            let layer = match d.kind {
-                DimensionKind::AutoExterior => "Dimensions, Automatic",
-                _ => "Dimensions, Manual",
-            };
-            if cx.layers().is_visible(layer) {
+            let layer = d.layer_name(&cx.defaults.dimensions.setup);
+            let layer = layer.as_str();
+            if cx.layers().is_visible(layer) && d.segment_shows() {
                 let look = DimLook::of(cx, d);
                 set_text_face(face_of(dimension_style(cx, d)));
                 weighted(cx, painter, layer, || {
@@ -225,6 +229,11 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     section!(
         "schedules",
         crate::editor::schedule_view::draw_schedules(cx, painter, cam)
+    );
+    // Labels typed in the shared Label panels (Specify Label, offsets).
+    section!(
+        "object labels",
+        crate::dialogs::common_pages::draw_labels(cx, painter, cam)
     );
     section!(
         "camera symbols",
@@ -1442,6 +1451,9 @@ pub struct DimLook {
     pub filled: bool,
     /// The leader line style of a moved label.
     pub leader: plan_core::dimension::LeaderStyle,
+    /// The leader settings of the Dimension Defaults (second segment,
+    /// arrowhead).
+    pub lead: plan_core::dimension::LeaderDefaults,
 }
 
 impl DimLook {
@@ -1474,7 +1486,7 @@ impl DimLook {
         // What the dimension sets for itself wins (DIM-31, DIM-38).
         let o = &d.look;
         DimLook {
-            text_h,
+            text_h: o.number_height.filter(|h| *h > 0.0).unwrap_or(text_h),
             arrow: o.arrow_size.unwrap_or(or(set.arrow_size, 2.25) * k),
             gap: o.ext_gap.unwrap_or(set.extension_gap.max(0.0) * k),
             past: o.ext_past.unwrap_or(set.extension_past.max(0.0) * k),
@@ -1485,6 +1497,11 @@ impl DimLook {
                 .unwrap_or_else(|| plan_core::dimension::DimArrow::from_name(&set.arrow_style)),
             filled: o.arrow_filled.unwrap_or(true),
             leader: plan_core::dimension::LeaderStyle::from_name(&set.leader_style),
+            lead: plan_core::dimension::LeaderDefaults {
+                second_segment: set.setup.leader_second_segment,
+                second_length: set.setup.leader_second_length,
+                arrow: set.setup.leader_arrow,
+            },
         }
     }
 
@@ -1501,6 +1518,7 @@ impl DimLook {
             mark: plan_core::dimension::DimArrow::Tick,
             filled: true,
             leader: plan_core::dimension::LeaderStyle::SquareCorner,
+            lead: plan_core::dimension::LeaderDefaults::default(),
         }
     }
 }
@@ -1560,9 +1578,19 @@ pub fn draw_dimension_look(
             .extension_lines()
             .into_iter()
             .zip(d.hide_ext)
-            .filter(|(_, hidden)| !hidden)
-            .filter_map(|((m, e), _)| {
-                plan_core::dimension::extension_segment(m, e, look.gap, look.past, look.ext_length)
+            .enumerate()
+            .filter(|(_, (_, hidden))| !hidden)
+            .filter_map(|(k, ((m, e), _))| {
+                // An extension line with its own length settings (the
+                // Extensions/Markers panel) uses them.
+                let (gap, past, length) = match d.look.seg.ext[k].len {
+                    Some(l) => match l.reach {
+                        plan_core::dimension::ExtReach::Towards(t) => (look.gap, l.away, Some(t)),
+                        plan_core::dimension::ExtReach::Gap(g) => (g, l.away, None),
+                    },
+                    None => (look.gap, look.past, look.ext_length),
+                };
+                plan_core::dimension::extension_segment(m, e, gap, past, length)
             })
             .collect(),
     };
@@ -1627,7 +1655,7 @@ pub fn draw_dimension_look(
         view_rotation: cam.rotation,
         leader: look.leader,
     };
-    let lay = d.label_layout(fmt, anchor, dirv, run, len, &params);
+    let lay = d.label_layout_with(fmt, anchor, dirv, run, len, &params, &look.lead);
     if let Some(k) = lay.knockout {
         painter.add(Shape::convex_polygon(
             k.iter().map(|p| sc(*p)).collect(),
@@ -1640,6 +1668,11 @@ pub fn draw_dimension_look(
             lay.leader.iter().map(|p| sc(*p)).collect(),
             Stroke::new(0.7_f32, stroke.color),
         ));
+    }
+    // The leader's arrowhead sits on the dimension line end of the leader.
+    if let Some((tip, toward)) = lay.leader_arrow {
+        let dirv = dir_at(tip, toward.sub(tip).normalized());
+        draw_dimension_end(painter, sc(tip), dirv, 1.0, look, px, stroke);
     }
     if let Some((a, b)) = lay.stub {
         painter.line_segment([sc(a), sc(b)], Stroke::new(0.7_f32, stroke.color));

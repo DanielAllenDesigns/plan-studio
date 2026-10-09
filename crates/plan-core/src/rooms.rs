@@ -91,15 +91,145 @@ pub const GARAGE_FLOOR_DROP: f64 = 24.0;
 /// Thickness of the concrete slab under a garage or porch, inches.
 pub const SLAB_FLOOR_THICKNESS: f64 = 4.0;
 
+/// The three broad categories of room functions (manual p. 446).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum FunctionClass {
+    /// Most functions: living and conditioned, a flat ceiling and a roof.
+    #[default]
+    Interior,
+    /// Balcony, Court and Deck: open to the outside.
+    Exterior,
+    /// Attic, Garage, Open Below, Porch and Slab.
+    Hybrid,
+}
+
+impl FunctionClass {
+    pub fn name(self) -> &'static str {
+        match self {
+            FunctionClass::Interior => "Interior",
+            FunctionClass::Exterior => "Exterior",
+            FunctionClass::Hybrid => "Hybrid",
+        }
+    }
+}
+
+/// The room functions a Room Type can name, with their category (manual
+/// p. 446). A function is a fixed set of properties; only the Room Type's
+/// own settings (name, living and conditioned inclusion, platforms) edit.
+/// DECISIONS 300 (corrected): Basement and Crawl Space are not functions, a
+/// crawl space or stairwell uses Open Below; Balcony and Court exist.
+pub const ROOM_FUNCTIONS: [(&str, FunctionClass); 10] = [
+    ("Standard", FunctionClass::Interior),
+    ("Utility", FunctionClass::Interior),
+    ("Balcony", FunctionClass::Exterior),
+    ("Court", FunctionClass::Exterior),
+    ("Deck", FunctionClass::Exterior),
+    ("Attic", FunctionClass::Hybrid),
+    ("Garage", FunctionClass::Hybrid),
+    ("Open Below", FunctionClass::Hybrid),
+    ("Porch", FunctionClass::Hybrid),
+    ("Slab", FunctionClass::Hybrid),
+];
+
+/// The names of [`ROOM_FUNCTIONS`] in order.
+pub fn function_names() -> Vec<&'static str> {
+    ROOM_FUNCTIONS.iter().map(|(n, _)| *n).collect()
+}
+
+/// The function a room type of the older lists means: "Living" was a plain
+/// interior function, "Basement" an interior room on the foundation floor and
+/// "Crawl Space" an Open Below room (DECISIONS 300 as corrected); a Flat Roof
+/// keeps its own platform.
+pub fn canonical_function(function: &str) -> &str {
+    match function {
+        "Living" | "Basement" => "Standard",
+        "Crawl Space" => "Open Below",
+        other => other,
+    }
+}
+
+/// The category of `function` for a room type named `type_name`: the type
+/// names Attic, Courtyard and Crawl Space behave as their functions whatever
+/// function the type names (an older list names Utility for them).
+pub fn function_class(function: &str, type_name: &str) -> FunctionClass {
+    let f = effective_function(function, type_name);
+    ROOM_FUNCTIONS
+        .iter()
+        .find(|(n, _)| *n == f)
+        .map_or(FunctionClass::Interior, |(_, c)| *c)
+}
+
+/// The function a room behaves as: its type's function, except that the
+/// older type names Attic, Courtyard and Crawl Space imply theirs.
+pub fn effective_function<'a>(function: &'a str, type_name: &str) -> &'a str {
+    match type_name {
+        "Attic" => "Attic",
+        "Courtyard" => "Court",
+        "Crawl Space" => "Open Below",
+        _ => canonical_function(function),
+    }
+}
+
+/// How the Auto Place Outlets tool treats a room (manual p. 447).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutletPlacement {
+    /// Outlets all around, GFCI over base cabinets of kitchens and baths.
+    #[default]
+    Full,
+    /// Fewer outlets (hybrid rooms such as a garage or slab).
+    Fewer,
+    /// None (exterior rooms, porches, Open Below rooms).
+    None,
+}
+
+/// Electrical behaviour of a room function and type (manual p. 447).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ElectricalRules {
+    /// A light, switch or outlet on the wall of the room is a weatherproof
+    /// or outdoor type, as the Electrical Defaults say.
+    pub weatherproof: bool,
+    pub outlets: OutletPlacement,
+    /// Auto Place Outlets puts GFCI outlets over the base cabinets (kitchens
+    /// and baths).
+    pub gfci_over_base_cabinets: bool,
+    /// Standard height outlets as well (kitchens; baths have none).
+    pub standard_height_outlets: bool,
+}
+
+/// What Plan Check does with a room of a function (manual p. 447): the
+/// habitable-room rules (smoke alarm in a bedroom, minimum areas, egress)
+/// apply to interior rooms only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlanCheckRules {
+    pub habitable_rules: bool,
+}
+
 /// What a room function (or a few named room types) sets on a room's
-/// platforms (R-40, R-41): the defaults of the Structure switches and the
-/// floor height offset, which stay editable per room.
+/// platforms and behaviour (R-40, R-41, R-101): the defaults of the
+/// Structure switches and the floor height offset, which stay editable per
+/// room.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDefaults {
+    /// Interior, Exterior or Hybrid.
+    pub class: FunctionClass,
     /// A floor platform under the room (off for Open Below, Attic, Courtyard).
     pub has_floor: bool,
-    /// A ceiling platform over the room (off for Deck, Porch and Courtyard).
+    /// A ceiling platform over the room (off for Deck, Balcony, Court, Attic
+    /// and Courtyard).
     pub has_ceiling: bool,
+    /// The ceiling is flat (an exterior or Attic room has none to follow).
+    pub flat_ceiling: bool,
+    /// A roof is built over the room (off for exterior rooms and Attics).
+    pub roof_over: bool,
+    /// Included in the Living Area unless the room says otherwise.
+    pub living_area: bool,
+    /// Included in the Conditioned Area unless the room says otherwise.
+    pub conditioned: bool,
+    /// Build Foundation puts a foundation under the room (not a Deck or
+    /// Balcony).
+    pub build_foundation: bool,
+    /// Doors and windows face a room of this function as outside.
+    pub faces_outside: bool,
     /// Floor height offset from the floor datum, inches (a Garage drops it).
     pub floor_height_offset: f64,
     /// Floor finish thickness, inches; `None` keeps the floor's default.
@@ -111,8 +241,15 @@ pub struct FunctionDefaults {
 impl Default for FunctionDefaults {
     fn default() -> Self {
         Self {
+            class: FunctionClass::Interior,
             has_floor: true,
             has_ceiling: true,
+            flat_ceiling: true,
+            roof_over: true,
+            living_area: true,
+            conditioned: true,
+            build_foundation: true,
+            faces_outside: false,
             floor_height_offset: 0.0,
             floor_finish_thickness: None,
             floor_structure: Vec::new(),
@@ -121,29 +258,73 @@ impl Default for FunctionDefaults {
 }
 
 /// The platform defaults of a room with function `function` (a room type's
-/// function: Standard, Utility, Garage, Deck, Porch, Open Below, Basement,
-/// Crawl Space) and room type `type_name` (an Attic or Courtyard has no floor
-/// platform whatever its function, and a Courtyard, open to the sky, has no
-/// ceiling either; a room type named Basement or Crawl Space behaves as that
-/// function).
+/// function, see [`ROOM_FUNCTIONS`]) and room type `type_name` (an Attic or
+/// Courtyard has no floor platform whatever its function, and a Courtyard,
+/// open to the sky, has no ceiling either; the older function names Basement
+/// and Crawl Space still work). A Slab's floor platform is
+/// [`SLAB_FLOOR_THICKNESS`] thick; use [`function_defaults_with`] for the
+/// plan's own slab thickness.
 pub fn function_defaults(function: &str, type_name: &str) -> FunctionDefaults {
+    function_defaults_with(function, type_name, SLAB_FLOOR_THICKNESS)
+}
+
+/// [`function_defaults`] with the slab thickness of the Foundation Defaults
+/// (a Slab room's floor platform is that thick, manual p. 447).
+pub fn function_defaults_with(
+    function: &str,
+    type_name: &str,
+    slab_thickness: f64,
+) -> FunctionDefaults {
     use crate::extras::StructureLayer as L;
     let mut d = FunctionDefaults::default();
-    match function {
+    let f = effective_function(function, type_name);
+    d.class = function_class(function, type_name);
+    if d.class != FunctionClass::Interior {
+        // Exterior and hybrid rooms are out of the Living Area and the
+        // Conditioned Area, apart from Open Below (conditioned).
+        d.living_area = false;
+        d.conditioned = f == "Open Below";
+    }
+    match f {
         "Garage" => {
             d.floor_height_offset = -GARAGE_FLOOR_DROP;
             d.floor_finish_thickness = Some(0.0);
             d.floor_structure = vec![L::new("Concrete", SLAB_FLOOR_THICKNESS)];
         }
-        "Deck" => {
+        "Slab" => {
+            d.floor_height_offset = -GARAGE_FLOOR_DROP;
+            d.floor_finish_thickness = Some(0.0);
+            d.floor_structure = vec![L::new("Concrete", slab_thickness.max(0.5))];
+        }
+        "Deck" | "Balcony" => {
             d.has_ceiling = false;
+            d.flat_ceiling = false;
+            d.roof_over = false;
+            d.build_foundation = false;
+            d.faces_outside = true;
             d.floor_finish_thickness = Some(0.0);
             d.floor_structure = vec![L::new("Decking", 1.5), L::new("Joist", 7.25)];
         }
-        "Porch" => {
+        "Court" => {
             d.has_ceiling = false;
+            d.flat_ceiling = false;
+            d.roof_over = false;
+            d.build_foundation = false;
+            d.faces_outside = true;
             d.floor_finish_thickness = Some(0.0);
             d.floor_structure = vec![L::new("Concrete", SLAB_FLOOR_THICKNESS)];
+        }
+        "Porch" => {
+            d.floor_finish_thickness = Some(0.0);
+            d.floor_structure = vec![L::new("Concrete", SLAB_FLOOR_THICKNESS)];
+        }
+        // The roof generator ignores an Attic and it has no ceiling or floor
+        // platform of its own: the room below supplies them.
+        "Attic" => {
+            d.has_floor = false;
+            d.has_ceiling = false;
+            d.flat_ceiling = false;
+            d.roof_over = false;
         }
         "Open Below" => d.has_floor = false,
         // A roof platform: a membrane deck with no ceiling under it.
@@ -154,15 +335,14 @@ pub fn function_defaults(function: &str, type_name: &str) -> FunctionDefaults {
         }
         _ => {}
     }
-    if matches!(type_name, "Attic" | "Courtyard") {
+    // An open courtyard type has the ground for a floor.
+    if type_name == "Courtyard" {
         d.has_floor = false;
     }
-    if type_name == "Courtyard" {
-        d.has_ceiling = false;
-    }
-    // Rooms of a foundation floor (R-18): a basement has a concrete slab and
-    // takes its ceiling from the platform of the floor above; a crawl space
-    // has the ground for a floor and the floor above for a ceiling.
+    // Rooms of a foundation floor (R-18): a basement has a concrete slab on
+    // the ground and takes its ceiling from the platform of the floor above;
+    // a crawl space (Open Below) has the ground for a floor and the floor
+    // above for a ceiling. Both are told by the type's name (DECISIONS 300).
     if function == "Basement" || type_name == "Basement" {
         d.has_floor = true;
         d.has_ceiling = true;
@@ -183,18 +363,214 @@ pub fn function_defaults(function: &str, type_name: &str) -> FunctionDefaults {
     d
 }
 
+/// Electrical behaviour of a room (manual p. 447): outdoor fixtures on the
+/// walls of exterior rooms, no Auto Place Outlets in exterior rooms, Porches
+/// and Open Below rooms, fewer in other hybrid rooms, GFCI outlets over the
+/// base cabinets of kitchens and baths.
+pub fn electrical_rules(function: &str, type_name: &str) -> ElectricalRules {
+    let f = effective_function(function, type_name);
+    let class = function_class(function, type_name);
+    let t = type_name.to_lowercase();
+    let wet = t.contains("kitchen") || t.contains("bath");
+    ElectricalRules {
+        weatherproof: class == FunctionClass::Exterior,
+        outlets: match (class, f) {
+            (FunctionClass::Exterior, _) | (_, "Porch" | "Open Below") => OutletPlacement::None,
+            (FunctionClass::Hybrid, _) => OutletPlacement::Fewer,
+            _ => OutletPlacement::Full,
+        },
+        gfci_over_base_cabinets: class == FunctionClass::Interior && wet,
+        standard_height_outlets: class == FunctionClass::Interior && t.contains("kitchen"),
+    }
+}
+
+/// What Plan Check does with a room of this function.
+pub fn plan_check_rules(function: &str, type_name: &str) -> PlanCheckRules {
+    PlanCheckRules {
+        habitable_rules: function_class(function, type_name) == FunctionClass::Interior,
+    }
+}
+
+/// Does a door or window between rooms of these two functions face outside
+/// (manual p. 447)? An exterior-type room beside an interior one does: a
+/// window faces out, a hinged or sliding door takes the Exterior Defaults
+/// and shows a threshold. Open Below and the other hybrid rooms are treated
+/// as interior.
+pub fn opening_faces_outside(a: (&str, &str), b: (&str, &str)) -> bool {
+    let out = |(f, t): (&str, &str)| function_class(f, t) == FunctionClass::Exterior;
+    out(a) != out(b)
+}
+
 /// Give `name` the platform defaults `d` (R-41): the Structure switches, the
-/// floor height offset, the Floor Structure and the floor finish
-/// (`default_finish` when the function sets none). Run when a room's type
-/// changes; every value stays editable afterwards.
+/// floor height offset, the Floor Structure, the floor finish (`default_finish`
+/// when the function sets none), Roof Over This Room, Flat Ceiling Over This
+/// Room and Build Foundation Below. Run when a room's type changes; every
+/// value stays editable afterwards.
 pub fn apply_function_defaults(name: &mut RoomName, d: &FunctionDefaults, default_finish: f64) {
     name.has_floor = d.has_floor;
     name.has_ceiling = d.has_ceiling;
+    name.flat_ceiling = d.flat_ceiling;
     name.floor_height_offset = d.floor_height_offset;
+    name.options.build_foundation_below = d.build_foundation;
     let mut misc = name.misc.take().unwrap_or_default();
+    misc.roof_over = d.roof_over;
     misc.floor_structure = d.floor_structure.clone();
     misc.floor_finish_thickness = d.floor_finish_thickness.unwrap_or(default_finish);
+    // The type's own floor platform replaces a layered one made before.
+    misc.assemblies.floor_structure = crate::assemblies::AssemblySlot::Legacy;
+    misc.assemblies.floor_finish = crate::assemblies::AssemblySlot::Legacy;
     name.misc = Some(misc);
+}
+
+// ----- Room options of the Structure and Layer panels (R-103, R-115, R-145) -----
+
+/// Whether a resize of a platform keeps its top or its bottom where it is
+/// (Structure panel, On Structure Resize).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ResizeLock {
+    #[default]
+    FloorTop,
+    FloorBottom,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+/// The Room Specification fields beyond the platforms: the Structure panel's
+/// switches (R-115, R-145) and the Layer panel (R-103).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoomOptions {
+    /// Room Supplies Floor for the Room Above: this foundation-level room's
+    /// slab and curbs are the floor of the room above (a garage on a slab).
+    pub supplies_floor_above: bool,
+    /// Floor Supplied by the Foundation 'Room' Below: the floor platform is a
+    /// slab on the floor below.
+    pub floor_from_foundation: bool,
+    /// Build Foundation Below: Build Foundation puts a foundation under it.
+    #[serde(skip_serializing_if = "is_true")]
+    pub build_foundation_below: bool,
+    /// Raised Floor For Bump Out: the room's floor and the ceiling of the
+    /// room below build independently.
+    pub raised_floor_bump_out: bool,
+    /// Retain Floor/Ceiling Framing when framing is rebuilt globally.
+    pub retain_framing: bool,
+    /// Framing Group (without a monolithic slab).
+    pub framing_group: u32,
+    /// Slab Pour Number (with a monolithic slab).
+    pub pour_number: u32,
+    /// On Structure Resize: which side of the floor platform stays.
+    pub resize_lock: ResizeLock,
+    /// Shelf Ceiling: no Attic Walls over the interior walls of the room.
+    pub shelf_ceiling: bool,
+    /// Use Soffit Surface for Ceiling: roof over the room framed like a
+    /// fascia.
+    pub soffit_surface_ceiling: bool,
+    /// Layer panel: the layer the room is on ("" = Rooms).
+    pub layer: String,
+    /// Layer panel: Drawing Group ("" = the room's own group).
+    pub drawing_group: String,
+}
+
+impl Default for RoomOptions {
+    fn default() -> Self {
+        Self {
+            supplies_floor_above: false,
+            floor_from_foundation: false,
+            build_foundation_below: true,
+            raised_floor_bump_out: false,
+            retain_framing: false,
+            framing_group: 0,
+            pour_number: 0,
+            resize_lock: ResizeLock::FloorTop,
+            shelf_ceiling: false,
+            soffit_surface_ceiling: false,
+            layer: String::new(),
+            drawing_group: String::new(),
+        }
+    }
+}
+
+impl RoomOptions {
+    pub fn is_default(&self) -> bool {
+        *self == RoomOptions::default()
+    }
+
+    /// The layer the room is drawn on.
+    pub fn layer_name(&self) -> &str {
+        if self.layer.trim().is_empty() {
+            ROOM_LAYER
+        } else {
+            &self.layer
+        }
+    }
+}
+
+/// The layer rooms are drawn on unless the Layer panel names another.
+pub const ROOM_LAYER: &str = "Rooms";
+
+// ----- Room Type Defaults: the settings a type hands its rooms (R-99) -----
+
+/// The settings of a Room Type beyond its name, function and living and
+/// conditioned inclusion (manual p. 445): ceiling and floor structure and
+/// finish, deck framing and supports, layer and drawing group, fill style,
+/// moldings and the label. Assigning the type to a room copies them to it
+/// ([`apply_type_spec`]).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoomTypeSpec {
+    /// Floor and Ceiling Structure and Finish; a slot that is not set follows
+    /// the function and the floor.
+    #[serde(skip_serializing_if = "crate::assemblies::PlatformAssemblies::is_legacy")]
+    pub assemblies: crate::assemblies::PlatformAssemblies,
+    /// Planking, framing and supports of a Deck room.
+    pub deck: Option<crate::deck::DeckSpec>,
+    pub layer: String,
+    pub drawing_group: String,
+    pub fill: Option<crate::extras::RoomFill>,
+    /// Base, chair rail and crown moldings.
+    pub moldings: Vec<crate::extras::MoldingRef>,
+    /// What the label shows (the offset is per room and ignored).
+    pub label: Option<crate::extras::RoomLabelOptions>,
+}
+
+impl RoomTypeSpec {
+    pub fn is_default(&self) -> bool {
+        *self == RoomTypeSpec::default()
+    }
+}
+
+/// Gives `name` the settings of its Room Type's `spec` (overriding what the
+/// room had, manual p. 446). Platform definitions the spec sets replace the
+/// room's; a spec without a Deck Specification leaves a Deck room's alone.
+pub fn apply_type_spec(name: &mut RoomName, spec: &RoomTypeSpec) {
+    if !spec.assemblies.is_legacy() {
+        let mut misc = name.misc.take().unwrap_or_default();
+        for kind in crate::assemblies::AssemblyKind::PLATFORM {
+            if let crate::assemblies::AssemblySlot::Own(a) = spec.assemblies.slot(kind) {
+                misc.assemblies
+                    .set(kind, crate::assemblies::AssemblySlot::Own(a.clone()));
+            }
+        }
+        name.misc = Some(misc);
+    }
+    if let Some(d) = &spec.deck {
+        name.deck = Some(d.clone());
+    }
+    name.options.layer = spec.layer.clone();
+    name.options.drawing_group = spec.drawing_group.clone();
+    if spec.fill.is_some() {
+        name.fill_style = spec.fill.clone();
+    }
+    if !spec.moldings.is_empty() {
+        name.moldings = spec.moldings.clone();
+    }
+    if let Some(l) = &spec.label {
+        let offset = name.label.offset;
+        name.label = l.clone();
+        name.label.offset = offset;
+    }
 }
 
 // ----- Room Specification: slab flag, label style, moldings (round 14) -----
@@ -793,7 +1169,7 @@ fn on_boundary(p: Point, poly: &[Point]) -> bool {
 }
 
 /// Replace curved walls by their faceted chords (same id and properties).
-fn expand_curves(walls: &[Wall]) -> Vec<Wall> {
+pub(crate) fn expand_curves(walls: &[Wall]) -> Vec<Wall> {
     let mut out = Vec::with_capacity(walls.len());
     for w in walls {
         match w.curve {
@@ -818,7 +1194,7 @@ fn expand_curves(walls: &[Wall]) -> Vec<Wall> {
 /// moves left (inward) by `d[i]`; negative values move it outward. Adjacent
 /// offset edges are intersected; parallel neighbours with different offsets
 /// get a step. Returns `None` for a degenerate result.
-fn offset_polygon(poly: &[Point], d: &[f64]) -> Option<Vec<Point>> {
+pub(crate) fn offset_polygon(poly: &[Point], d: &[f64]) -> Option<Vec<Point>> {
     let n = poly.len();
     if n < 3 {
         return None;
@@ -849,7 +1225,7 @@ fn offset_polygon(poly: &[Point], d: &[f64]) -> Option<Vec<Point>> {
 
 /// Walls found by position: a broad-phase over the walls' bounding boxes
 /// (small lists are scanned instead). Candidates come back in wall order.
-struct WallsNear {
+pub(crate) struct WallsNear {
     grid: Option<BoxGrid>,
     len: usize,
     reach: f64,
@@ -860,7 +1236,7 @@ const GRID_MIN_WALLS: usize = 24;
 
 impl WallsNear {
     /// `reach` is how far from a wall's own box a query point still counts.
-    fn new(walls: &[Wall], reach: f64, indexed: bool) -> Self {
+    pub(crate) fn new(walls: &[Wall], reach: f64, indexed: bool) -> Self {
         let grid = (indexed && walls.len() >= GRID_MIN_WALLS).then(|| {
             let boxes: Vec<(Point, Point)> = walls
                 .iter()
@@ -900,7 +1276,7 @@ impl WallsNear {
 
 /// The wall that owns the polygon edge `a -> b`: nearest parallel wall to the
 /// edge midpoint (the thicker one on ties).
-fn edge_owner<'a>(
+pub(crate) fn edge_owner<'a>(
     walls: &'a [Wall],
     near: &WallsNear,
     a: Point,
@@ -1290,11 +1666,16 @@ mod tests {
         assert_eq!(g.floor_height_offset, -GARAGE_FLOOR_DROP);
         assert_eq!(g.floor_finish_thickness, Some(0.0));
         assert!(g.has_floor && g.has_ceiling);
-        for f in ["Deck", "Porch"] {
+        for f in ["Deck", "Balcony", "Court"] {
             let d = function_defaults(f, f);
             assert!(d.has_floor && !d.has_ceiling, "{f}");
+            assert!(!d.roof_over && !d.flat_ceiling, "{f}: open to the outside");
             assert!(!d.floor_structure.is_empty());
         }
+        // A porch is hybrid: it has a ceiling and a roof over it (p. 446).
+        let porch = function_defaults("Porch", "Porch");
+        assert!(porch.has_floor && porch.has_ceiling && porch.roof_over);
+        assert!(!porch.floor_structure.is_empty());
         assert!(!function_defaults("Open Below", "Open Below").has_floor);
         let roof = function_defaults("Flat Roof", "Flat Roof");
         assert!(
@@ -1305,7 +1686,11 @@ mod tests {
         assert!(!function_defaults("Utility", "Attic").has_floor);
         let court = function_defaults("Standard", "Courtyard");
         assert!(!court.has_floor && !court.has_ceiling, "open to the sky");
-        assert!(function_defaults("Utility", "Attic").has_ceiling);
+        let attic = function_defaults("Attic", "Attic");
+        assert!(
+            !attic.has_ceiling && !attic.roof_over,
+            "ignored by the roof generator"
+        );
         assert_eq!(
             function_defaults("Standard", "Bath"),
             FunctionDefaults::default()
@@ -1838,5 +2223,226 @@ mod tests {
             assert_eq!(a.index(p), b.index(p), "{p:?}");
         }
         assert_eq!(a.points, b.points);
+    }
+
+    // ----- Round 16, brief 15: room functions as property sets -----
+
+    #[test]
+    fn the_three_categories_hold_the_manuals_functions() {
+        let of = |c: FunctionClass| -> Vec<&str> {
+            ROOM_FUNCTIONS
+                .iter()
+                .filter(|(_, k)| *k == c)
+                .map(|(n, _)| *n)
+                .collect()
+        };
+        assert_eq!(of(FunctionClass::Exterior), ["Balcony", "Court", "Deck"]);
+        assert_eq!(
+            of(FunctionClass::Hybrid),
+            ["Attic", "Garage", "Open Below", "Porch", "Slab"]
+        );
+        assert_eq!(of(FunctionClass::Interior), ["Standard", "Utility"]);
+        // Basement and Crawl Space are not functions (DECISIONS 300).
+        assert!(!function_names().contains(&"Basement"));
+        assert!(!function_names().contains(&"Crawl Space"));
+        assert_eq!(canonical_function("Crawl Space"), "Open Below");
+        assert_eq!(canonical_function("Basement"), "Standard");
+        assert_eq!(
+            function_class("Utility", "Crawl Space"),
+            FunctionClass::Hybrid
+        );
+        assert_eq!(
+            function_class("Standard", "Courtyard"),
+            FunctionClass::Exterior
+        );
+    }
+
+    #[test]
+    fn living_and_conditioned_defaults_follow_the_function() {
+        for (f, _) in ROOM_FUNCTIONS {
+            let d = function_defaults(f, f);
+            let interior = d.class == FunctionClass::Interior;
+            assert_eq!(
+                d.living_area, interior,
+                "{f}: only interior rooms are living"
+            );
+            assert_eq!(
+                d.conditioned,
+                interior || f == "Open Below",
+                "{f}: interior and Open Below are conditioned"
+            );
+        }
+    }
+
+    #[test]
+    fn ceilings_and_roofs_follow_the_function() {
+        let d = |f: &str| function_defaults(f, f);
+        // Interior rooms have a flat ceiling and a roof above them.
+        assert!(d("Standard").has_ceiling && d("Standard").flat_ceiling && d("Standard").roof_over);
+        // Exterior rooms are open to the outside.
+        for f in ["Balcony", "Court", "Deck"] {
+            assert!(
+                !d(f).has_ceiling && !d(f).roof_over && !d(f).flat_ceiling,
+                "{f}"
+            );
+            assert!(!d(f).build_foundation && d(f).faces_outside, "{f}");
+        }
+        // Attics get no ceiling and are ignored by the roof generator.
+        assert!(!d("Attic").has_ceiling && !d("Attic").roof_over);
+        // Garage, Slab and Porch are exterior-like but generate a ceiling and
+        // a roof by default.
+        for f in ["Garage", "Slab", "Porch"] {
+            assert!(d(f).has_ceiling && d(f).roof_over, "{f}");
+            assert_ne!(d(f).class, FunctionClass::Exterior);
+        }
+        // Open Below has no floor platform.
+        assert!(!d("Open Below").has_floor && d("Open Below").has_ceiling);
+        // Applying the defaults sets Roof Over, Flat Ceiling and Build
+        // Foundation Below on the room.
+        let mut n = RoomName::new(Point::ZERO, "Deck", "Deck");
+        apply_function_defaults(&mut n, &d("Deck"), 0.75);
+        assert!(!n.has_ceiling && !n.flat_ceiling && !n.options.build_foundation_below);
+        assert!(!n.misc.as_ref().unwrap().roof_over);
+        apply_function_defaults(&mut n, &FunctionDefaults::default(), 0.75);
+        assert!(n.has_ceiling && n.flat_ceiling && n.options.build_foundation_below);
+        assert!(n.misc.unwrap().roof_over);
+    }
+
+    #[test]
+    fn floors_and_foundations_follow_the_function() {
+        // Garage and Slab rooms drop to Floor 0 with a concrete slab.
+        let g = function_defaults("Garage", "Garage");
+        assert_eq!(g.floor_height_offset, -GARAGE_FLOOR_DROP);
+        // A Slab's floor platform is as thick as the Foundation Defaults' slab.
+        let s = function_defaults_with("Slab", "Slab", 6.0);
+        assert_eq!(s.floor_height_offset, -GARAGE_FLOOR_DROP);
+        assert_eq!(crate::extras::structure_thickness(&s.floor_structure), 6.0);
+        let s4 = function_defaults("Slab", "Slab");
+        assert_eq!(
+            crate::extras::structure_thickness(&s4.floor_structure),
+            SLAB_FLOOR_THICKNESS
+        );
+        // A Deck makes no foundation.
+        assert!(!function_defaults("Deck", "Deck").build_foundation);
+        assert!(function_defaults("Garage", "Garage").build_foundation);
+        // A stairwell or crawl space is an Open Below room: no floor.
+        assert!(!function_defaults("Open Below", "Stairwell").has_floor);
+        assert!(!function_defaults("Standard", "Crawl Space").has_floor);
+    }
+
+    #[test]
+    fn electrical_rules_follow_the_function_and_the_type() {
+        let e = |f: &str, t: &str| electrical_rules(f, t);
+        // Fixtures on the wall of an exterior room are weatherproof.
+        assert!(e("Deck", "Deck").weatherproof && e("Court", "Courtyard").weatherproof);
+        assert!(!e("Porch", "Porch").weatherproof, "a porch is hybrid");
+        // Auto Place Outlets: none in exterior rooms, porches, Open Below.
+        for (f, t) in [
+            ("Deck", "Deck"),
+            ("Balcony", "Balcony"),
+            ("Porch", "Porch"),
+            ("Open Below", "Open Below"),
+        ] {
+            assert_eq!(e(f, t).outlets, OutletPlacement::None, "{f}");
+        }
+        // Fewer in other hybrid rooms, all around in interior ones.
+        assert_eq!(e("Garage", "Garage").outlets, OutletPlacement::Fewer);
+        assert_eq!(e("Slab", "Slab").outlets, OutletPlacement::Fewer);
+        assert_eq!(e("Standard", "Bedroom").outlets, OutletPlacement::Full);
+        // GFCI over base cabinets in kitchens and baths; kitchens also get
+        // standard-height outlets, baths do not.
+        assert!(e("Standard", "Kitchen").gfci_over_base_cabinets);
+        assert!(e("Standard", "Master Bath").gfci_over_base_cabinets);
+        assert!(!e("Standard", "Bedroom").gfci_over_base_cabinets);
+        assert!(e("Standard", "Kitchen").standard_height_outlets);
+        assert!(!e("Standard", "Bath").standard_height_outlets);
+        // Plan Check applies the habitable rules to interior rooms only.
+        assert!(plan_check_rules("Standard", "Bedroom").habitable_rules);
+        assert!(!plan_check_rules("Deck", "Deck").habitable_rules);
+        assert!(!plan_check_rules("Garage", "Garage").habitable_rules);
+    }
+
+    #[test]
+    fn a_door_or_window_between_exterior_and_interior_rooms_faces_outside() {
+        let bed = ("Standard", "Bedroom");
+        let deck = ("Deck", "Deck");
+        assert!(opening_faces_outside(bed, deck));
+        assert!(opening_faces_outside(deck, bed));
+        assert!(!opening_faces_outside(bed, bed));
+        // Open Below and the other hybrid rooms are treated as interior.
+        assert!(!opening_faces_outside(bed, ("Open Below", "Open Below")));
+        assert!(!opening_faces_outside(bed, ("Garage", "Garage")));
+        assert!(!opening_faces_outside(bed, ("Porch", "Porch")));
+    }
+
+    #[test]
+    fn a_room_type_spec_overrides_the_room_it_is_given_to() {
+        use crate::assemblies::{Assembly, AssemblyKind, AssemblySlot};
+        let mut spec = RoomTypeSpec::default();
+        assert!(spec.is_default());
+        spec.assemblies.set(
+            AssemblyKind::FloorFinish,
+            AssemblySlot::Own(Assembly::default()),
+        );
+        spec.layer = "CAD, Default".into();
+        spec.drawing_group = "Sleeping".into();
+        spec.moldings = vec![crate::extras::MoldingRef {
+            kind: crate::extras::MoldingKind::Base,
+            profile: "Base - Colonial 5 1/4".into(),
+            height: 5.25,
+        }];
+        spec.fill = Some(crate::extras::RoomFill {
+            color: [1, 2, 3],
+            pattern: "Solid".into(),
+            alpha: 0.5,
+        });
+        spec.label = Some(crate::extras::RoomLabelOptions {
+            show_dimensions: true,
+            ..Default::default()
+        });
+        assert!(!spec.is_default());
+        let mut n = RoomName::new(Point::ZERO, "Bedroom", "Bedroom");
+        n.label.offset = Point::new(5.0, 6.0);
+        n.fill_style = None;
+        apply_type_spec(&mut n, &spec);
+        assert_eq!(n.options.layer, "CAD, Default");
+        assert_eq!(n.options.layer_name(), "CAD, Default");
+        assert_eq!(n.options.drawing_group, "Sleeping");
+        assert_eq!(n.moldings.len(), 1);
+        assert!(n.fill_style.is_some());
+        assert!(n.label.show_dimensions);
+        assert_eq!(
+            n.label.offset,
+            Point::new(5.0, 6.0),
+            "the position is the room's"
+        );
+        assert!(matches!(
+            n.misc
+                .as_ref()
+                .unwrap()
+                .assemblies
+                .slot(AssemblyKind::FloorFinish),
+            AssemblySlot::Own(_)
+        ));
+        // The layer name defaults to Rooms.
+        assert_eq!(RoomOptions::default().layer_name(), ROOM_LAYER);
+    }
+
+    #[test]
+    fn room_options_stay_out_of_the_file_until_they_are_set() {
+        let mut n = RoomName::new(Point::ZERO, "Garage", "Garage");
+        let json = serde_json::to_string(&n).unwrap();
+        assert!(!json.contains("options"), "{json}");
+        n.options.supplies_floor_above = true;
+        n.options.pour_number = 3;
+        let json = serde_json::to_string(&n).unwrap();
+        let back: RoomName = serde_json::from_str(&json).unwrap();
+        assert!(back.options.supplies_floor_above && back.options.build_foundation_below);
+        assert_eq!(back.options.pour_number, 3);
+        // A room from an older file has the defaults.
+        let old: RoomName =
+            serde_json::from_str(r#"{"anchor":{"x":1.0,"y":2.0},"name":"A","room_type":"B"}"#)
+                .unwrap();
+        assert!(old.options.is_default() && old.flat_ceiling);
     }
 }

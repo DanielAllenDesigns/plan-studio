@@ -13,6 +13,28 @@ pub fn plan_height_for_printed(printed_in: f64, inches_per_foot: f64) -> f64 {
     printed_in * 12.0 / inches_per_foot
 }
 
+/// The printed scales the Print Size Calculator offers: `(name, paper inches
+/// per foot)`.
+pub const PRINT_SCALES: [(&str, f64); 10] = [
+    ("1/16\" = 1'-0\"", 0.0625),
+    ("1/8\" = 1'-0\"", 0.125),
+    ("3/16\" = 1'-0\"", 0.1875),
+    ("1/4\" = 1'-0\"", 0.25),
+    ("3/8\" = 1'-0\"", 0.375),
+    ("1/2\" = 1'-0\"", 0.5),
+    ("3/4\" = 1'-0\"", 0.75),
+    ("1\" = 1'-0\"", 1.0),
+    ("1 1/2\" = 1'-0\"", 1.5),
+    ("3\" = 1'-0\"", 3.0),
+];
+
+/// Print Size Calculator (manual p. 540): the paper height in inches that a
+/// text `plan_height` plan inches tall prints at on a sheet drawn at
+/// `inches_per_foot`; the inverse of [`plan_height_for_printed`].
+pub fn printed_height_of(plan_height: f64, inches_per_foot: f64) -> f64 {
+    plan_height * inches_per_foot / 12.0
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextStyle {
@@ -692,6 +714,7 @@ impl TextMacros {
                 .chars()
                 .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
             && !BUILT_IN_MACROS.iter().any(|(n, _)| *n == name)
+            && !crate::macros::is_reserved(name)
             && self.get(name).is_none();
         if ok {
             self.macros.push(TextMacro {
@@ -932,6 +955,81 @@ impl crate::model::Project {
 
     pub fn set_note_types(&mut self, n: &NoteTypes) {
         self.note_types = n.clone();
+    }
+
+    /// Every font family the plan's text uses: the text styles, the fonts
+    /// of rich text runs and of live (macro) texts. Sorted, each once.
+    pub fn fonts_in_use(&self) -> Vec<String> {
+        let mut out = self.text_styles.fonts_used();
+        let mut add = |f: &str| {
+            let f = f.trim();
+            if !f.is_empty() && !out.iter().any(|o| same_font_family(o, f)) {
+                out.push(f.to_string());
+            }
+        };
+        for fl in &self.floors {
+            for a in &fl.cad_attrs {
+                for r in &a.runs {
+                    if let Some(f) = &r.font {
+                        add(f);
+                    }
+                }
+            }
+        }
+        for t in &self.macro_texts.texts {
+            for r in &t.runs {
+                if let Some(f) = &r.font {
+                    add(f);
+                }
+            }
+        }
+        out.sort_by_key(|f| normalize_font_name(f));
+        out
+    }
+
+    /// Replace Fonts: every style and rich text run set in family `from` is
+    /// set in `to`; `face` is the Face list's choice (`""` Regular, `"Bold"`,
+    /// `"Italic"`, `"Bold Italic"`). Returns how many styles and runs
+    /// changed.
+    pub fn replace_font_everywhere(&mut self, from: &str, to: &str, face: &str) -> usize {
+        let to = to.trim();
+        if to.is_empty() || from.trim().is_empty() || same_font_family(from, to) {
+            return 0;
+        }
+        let (bold, italic) = (face.contains("Bold"), face.contains("Italic"));
+        let mut n = 0;
+        for s in &mut self.text_styles.styles {
+            if same_font_family(&s.font, from) {
+                s.font = to.to_string();
+                s.font_style.clear();
+                s.bold |= bold;
+                s.italic |= italic;
+                n += 1;
+            }
+        }
+        let fix = |r: &mut RichRun| -> bool {
+            if r.font.as_deref().is_some_and(|f| same_font_family(f, from)) {
+                r.font = Some(to.to_string());
+                r.bold |= bold;
+                r.italic |= italic;
+                true
+            } else {
+                false
+            }
+        };
+        for fl in &mut self.floors {
+            for a in &mut fl.cad_attrs {
+                for r in &mut a.runs {
+                    n += usize::from(fix(r));
+                }
+            }
+        }
+        for t in &mut self.macro_texts.texts {
+            for r in &mut t.runs {
+                n += usize::from(fix(r));
+            }
+        }
+        n
     }
 }
 
@@ -1191,6 +1289,18 @@ mod tests {
         assert_eq!((s.font_family(), s.font_face_style()), ("Avenir", "Heavy"));
         assert!(same_font_family("Avenir", "AVENIR book"));
         assert!(!same_font_family("Arial", "Arial Narrow"));
+    }
+
+    #[test]
+    fn the_print_size_calculator_goes_both_ways() {
+        // 1/8" on paper at 1/4" scale is 6" in the plan, and back.
+        assert_eq!(plan_height_for_printed(0.125, 0.25), 6.0);
+        assert_eq!(printed_height_of(6.0, 0.25), 0.125);
+        for (_, ipf) in PRINT_SCALES {
+            let h = plan_height_for_printed(0.1, ipf);
+            assert!((printed_height_of(h, ipf) - 0.1).abs() < 1e-12);
+        }
+        assert!(PRINT_SCALES.windows(2).all(|w| w[0].1 < w[1].1));
     }
 
     #[test]

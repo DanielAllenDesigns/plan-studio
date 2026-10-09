@@ -736,13 +736,7 @@ fn the_cached_layout_equals_a_fresh_build_after_every_kind_of_edit() {
         schedule_view::load(cx)
             .schedules
             .iter()
-            .map(|s| {
-                schedule_view::layout(
-                    schedule_view::table_for(cx, s, cx.floor),
-                    s,
-                    schedule_view::text_height(&cx.project, s),
-                )
-            })
+            .map(|s| schedule_view::build_layout(cx, s, cx.floor))
             .collect()
     };
     let cached = |cx: &EditorContext| -> Vec<schedule_view::Layout> {

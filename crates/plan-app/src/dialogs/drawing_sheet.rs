@@ -518,7 +518,7 @@ fn setup_body(
             egui::ComboBox::from_id_salt("drawing_sheet_presets")
                 .selected_text("Choose\u{2026}")
                 .show_ui(ui, |ui| {
-                    for s in Scale::ALL {
+                    for s in Scale::choices() {
                         if ui.selectable_label(false, s.label()).clicked() {
                             d.draft.scale =
                                 DrawingScale::from_inches_per_foot(s.inches_per_foot(), false);

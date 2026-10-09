@@ -173,6 +173,14 @@ fn page_edits() -> Vec<PageEdit> {
                 f.pages.units.decimals = 3;
             }),
         ),
+        (
+            Page::Agent,
+            Box::new(|f| {
+                f.pages.agent.agent_api_key = "sk-test".into();
+                f.pages.agent.agent_model = "claude-test".into();
+                f.pages.agent.agent_effort = "high".into();
+            }),
+        ),
     ]
 }
 

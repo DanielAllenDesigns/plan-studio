@@ -16,7 +16,8 @@
 //! * [`crate::elevation_ref::ElevationRef`] of the object's height field.
 
 use crate::elevation_ref::ElevationRef;
-use crate::openings::{OpeningKind, OpeningStyle, SizeFormat};
+use crate::model::OpeningKind;
+use crate::openings::{OpeningStyle, SizeFormat};
 use crate::text_styles::{expand_macros, MacroContext, TextMacros};
 use crate::units::fmt_ft_in;
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,8 @@ pub struct LabelFacts {
     pub description: String,
     pub manufacturer: String,
     pub supplier: String,
+    /// The style of a door or window (its Include Type code).
+    pub style: Option<OpeningStyle>,
 }
 
 impl LabelPage {
@@ -208,11 +211,13 @@ pub fn expand_label(
         ("manufacturer", facts.manufacturer.clone()),
         ("supplier", facts.supplier.clone()),
     ];
-    let mut out = text.to_string();
+    // The global and user macros first, so a user macro may itself use the
+    // object macros; then the object macros.
+    let mut out = expand_macros(text, ctx, user);
     for (name, value) in pairs {
         out = out.replace(&format!("%{name}%"), &value);
     }
-    expand_macros(&out, ctx, user)
+    out
 }
 
 /// The object macros the Insert Macro menu of a label offers, with help.
@@ -266,12 +271,8 @@ pub fn opening_automatic_label(
     include_type: bool,
     schedule_number: Option<&str>,
 ) -> String {
-    let size = crate::openings::size_text(
-        width,
-        height,
-        format,
-        crate::openings::SizeStyle::Shorthand,
-    );
+    let size =
+        crate::openings::size_text(width, height, format, crate::openings::SizeStyle::Shorthand);
     let mut text = size;
     if include_type && kind == OpeningKind::Window {
         let code = type_abbreviation(style);

@@ -404,7 +404,18 @@ fn assembly(
             continue;
         }
         push_rect(&mut built.items, DETAIL_FRAMING_LAYER, bx0, m.y0, bx1, m.y1);
-        push_cross(&mut built.items, DETAIL_FRAMING_LAYER, bx0, m.y0, bx1, m.y1);
+        if m.kind == plan_framing::MemberKind::Blocking {
+            // Cut blocking is a box with a single diagonal (manual p. 924).
+            built.items.push((
+                DETAIL_FRAMING_LAYER.to_string(),
+                CadItem::Line {
+                    a: Point::new(bx0, m.y0),
+                    b: Point::new(bx1, m.y1),
+                },
+            ));
+        } else {
+            push_cross(&mut built.items, DETAIL_FRAMING_LAYER, bx0, m.y0, bx1, m.y1);
+        }
         built.members += 1;
     }
     let insulated = wall.kind == WallKind::Exterior || has_insulation_layer;

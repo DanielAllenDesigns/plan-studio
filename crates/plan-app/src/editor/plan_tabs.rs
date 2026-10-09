@@ -75,6 +75,8 @@ impl PlanTabs {
         if let Some(v) = cx.project.plan_views.iter_mut().find(|v| v.name == active) {
             v.capture(floor, flag, camera);
         }
+        // The defaults in force and the rotation shown belong to the view.
+        crate::dialogs::plan_views::view_stored(cx, &active);
     }
 
     /// Opens `name` as a tab (if it is not one) and switches to it. `false`
@@ -236,6 +238,8 @@ impl EditorContext {
             self.defaults.text.font = st.font;
             self.defaults.text.height = st.height_in;
         }
+        // Show Color, the Selected Defaults and the rotation of the view.
+        crate::dialogs::plan_views::view_shown(self, &view);
         self.mark_dirty();
         Some(view)
     }

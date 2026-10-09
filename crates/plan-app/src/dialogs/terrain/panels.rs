@@ -116,7 +116,9 @@ pub fn info_panel(ui: &mut Ui, ex: &mut ObjectExtras) {
 pub fn default_category(obj: &TerrainObject) -> Option<ScheduleCategory> {
     Some(match obj {
         TerrainObject::Feature(f) if f.kind == FeatureKind::Hole => return None,
-        TerrainObject::Feature(_) | TerrainObject::Modifier(..) => ScheduleCategory::TerrainFeatures,
+        TerrainObject::Feature(_) | TerrainObject::Modifier(..) => {
+            ScheduleCategory::TerrainFeatures
+        }
         TerrainObject::Wall(_) => ScheduleCategory::TerrainPaths,
         TerrainObject::Landscape(l) => match l.kind {
             LandscapeKind::Plants | LandscapeKind::Sprinklers | LandscapeKind::SprinklerLine => {
@@ -185,7 +187,10 @@ pub fn flare_panel(ui: &mut Ui, fields: &mut Fields, r: &mut RoadStrip) {
         ("End", "flare_end", &mut r.flare_end),
     ] {
         let mut on = slot.is_some();
-        if ui.checkbox(&mut on, format!("Flare at the {label}")).changed() {
+        if ui
+            .checkbox(&mut on, format!("Flare at the {label}"))
+            .changed()
+        {
             *slot = on.then_some(DEFAULT_FLARE);
         }
         if let Some(radius) = slot.as_mut() {
@@ -202,10 +207,7 @@ pub fn curb_panel(ui: &mut Ui, fields: &mut Fields, r: &mut RoadStrip) {
     if r.curb {
         fields.length_row(ui, "Curb height", "curb_h", &mut r.curb_height);
         fields.length_row(ui, "Curb width", "curb_w", &mut r.curb_width);
-        ui.checkbox(
-            &mut r.cut_curb,
-            "Cut the curb for driveways and sidewalks",
-        );
+        ui.checkbox(&mut r.cut_curb, "Cut the curb for driveways and sidewalks");
     }
 }
 
@@ -233,10 +235,18 @@ pub fn blades_panel(ui: &mut Ui, b: &mut GrassBlades) {
             b.max_curve,
         ];
         row(ui, &format!("Minimum {label}"), |ui| {
-            ui.add(egui::DragValue::new(&mut vals[lo]).range(0.0..=max).speed(speed))
+            ui.add(
+                egui::DragValue::new(&mut vals[lo])
+                    .range(0.0..=max)
+                    .speed(speed),
+            )
         });
         row(ui, &format!("Maximum {label}"), |ui| {
-            ui.add(egui::DragValue::new(&mut vals[hi]).range(0.0..=max).speed(speed))
+            ui.add(
+                egui::DragValue::new(&mut vals[hi])
+                    .range(0.0..=max)
+                    .speed(speed),
+            )
         });
         [
             b.min_height,
@@ -271,24 +281,49 @@ pub fn appearance_panel(ui: &mut Ui, l: &mut Landscape) {
         look.colors.push([0x5A, 0x9A, 0x3A]);
     }
     row(ui, "Noise frequency", |ui| {
-        ui.add(egui::DragValue::new(&mut look.noise_frequency).range(0.0..=1.0).speed(0.01))
+        ui.add(
+            egui::DragValue::new(&mut look.noise_frequency)
+                .range(0.0..=1.0)
+                .speed(0.01),
+        )
     });
     row(ui, "Roughness", |ui| {
-        ui.add(egui::DragValue::new(&mut look.roughness).range(0.0..=1.0).speed(0.01))
+        ui.add(
+            egui::DragValue::new(&mut look.roughness)
+                .range(0.0..=1.0)
+                .speed(0.01),
+        )
     });
     ui.checkbox(&mut look.mow.enabled, "Mow");
     if look.mow.enabled {
         row(ui, "Cut height", |ui| {
-            ui.add(egui::DragValue::new(&mut look.mow.cut_height).range(0.0..=12.0).speed(0.1).suffix(" in"))
+            ui.add(
+                egui::DragValue::new(&mut look.mow.cut_height)
+                    .range(0.0..=12.0)
+                    .speed(0.1)
+                    .suffix(" in"),
+            )
         });
         row(ui, "Mow line intensity", |ui| {
-            ui.add(egui::DragValue::new(&mut look.mow.line_intensity).range(0.0..=1.0).speed(0.01))
+            ui.add(
+                egui::DragValue::new(&mut look.mow.line_intensity)
+                    .range(0.0..=1.0)
+                    .speed(0.01),
+            )
         });
         row(ui, "Mow line width", |ui| {
-            ui.add(egui::DragValue::new(&mut look.mow.line_width).range(1.0..=240.0).suffix(" in"))
+            ui.add(
+                egui::DragValue::new(&mut look.mow.line_width)
+                    .range(1.0..=240.0)
+                    .suffix(" in"),
+            )
         });
         row(ui, "Mow angle", |ui| {
-            ui.add(egui::DragValue::new(&mut look.mow.angle).range(-180.0..=180.0).suffix("\u{b0}"))
+            ui.add(
+                egui::DragValue::new(&mut look.mow.angle)
+                    .range(-180.0..=180.0)
+                    .suffix("\u{b0}"),
+            )
         });
     }
     // A live sample of the grass.
@@ -322,7 +357,10 @@ pub fn appearance_panel(ui: &mut Ui, l: &mut Landscape) {
 pub fn distributed_panel(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape, search: &mut String) {
     section(ui, "Distributed Plant");
     let mut on = l.distribution.is_some();
-    if ui.checkbox(&mut on, "Spread a plant over the bed").changed() {
+    if ui
+        .checkbox(&mut on, "Spread a plant over the bed")
+        .changed()
+    {
         l.distribution = on.then(Distribution::default);
     }
     let count = l.distributed_positions().len();
@@ -364,7 +402,8 @@ pub fn plant_image_panel(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape) {
     let mut on = l.image.is_some();
     if ui.checkbox(&mut on, "Draw the plants as images").changed() {
         l.image = on.then(|| {
-            let mut img = PlantImage::sized("", l.size.max(1.0), l.height.max(1.0), is_conifer(&l.plant));
+            let mut img =
+                PlantImage::sized("", l.size.max(1.0), l.height.max(1.0), is_conifer(&l.plant));
             img.seasons = default_seasons(is_conifer(&l.plant));
             img
         });
@@ -387,7 +426,9 @@ pub fn plant_image_panel(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape) {
             }
         })
     });
-    row(ui, "2D plant symbol", |ui| ui.text_edit_singleline(&mut img.symbol_2d));
+    row(ui, "2D plant symbol", |ui| {
+        ui.text_edit_singleline(&mut img.symbol_2d)
+    });
     let mut width = img.width;
     if fields.length_row(ui, "Width", "img_w", &mut width) && width > 0.0 {
         img.set_width(width);
@@ -411,7 +452,9 @@ pub fn plant_image_panel(ui: &mut Ui, fields: &mut Fields, l: &mut Landscape) {
     fields.length_row(ui, "Center point Y", "img_cy", &mut img.center.y);
     ui.checkbox(&mut img.reverse, "Reverse image");
     ui.checkbox(&mut img.faces_camera, "Image always faces the camera");
-    row(ui, "Copyright", |ui| ui.text_edit_singleline(&mut img.copyright));
+    row(ui, "Copyright", |ui| {
+        ui.text_edit_singleline(&mut img.copyright)
+    });
     let mut transparent = img.transparent_color.is_some();
     if ui.checkbox(&mut transparent, "Transparent color").changed() {
         img.transparent_color = transparent.then_some([255, 255, 255]);

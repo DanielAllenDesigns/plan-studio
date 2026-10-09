@@ -453,7 +453,12 @@ fn feature_meshes(f: &Feature, ground: &Ground, lower: &[&[Point]]) -> Vec<Mesh>
     }
     let zs: Vec<f64> = outline.iter().map(|p| ground.z(*p)).collect();
     let mean = zs.iter().sum::<f64>() / zs.len() as f64;
-    let top = mean + if f.height < 0.0 { f.height } else { f.height.max(LIFT) };
+    let top = mean
+        + if f.height < 0.0 {
+            f.height
+        } else {
+            f.height.max(LIFT)
+        };
     let material = named_material(&f.material, Material::Concrete);
     let mut out: Vec<Mesh> = if clipped {
         draped_region_clipped(&outline, &Ground::flat(top), 0.0, material, &hide)
@@ -480,7 +485,11 @@ fn feature_meshes(f: &Feature, ground: &Ground, lower: &[&[Point]]) -> Vec<Mesh>
                     r: *p,
                     along,
                     top,
-                    bottom: if thick { top - f.thickness } else { g.min(top - LIFT) },
+                    bottom: if thick {
+                        top - f.thickness
+                    } else {
+                        g.min(top - LIFT)
+                    },
                 }
             })
             .collect()
@@ -574,7 +583,12 @@ fn bed_meshes(l: &Landscape, ground: &Ground, season: Season) -> Vec<Mesh> {
             height: d.height,
             ..Landscape::default()
         };
-        out.extend(plant_meshes(&run, &l.distributed_positions(), ground, season));
+        out.extend(plant_meshes(
+            &run,
+            &l.distributed_positions(),
+            ground,
+            season,
+        ));
     }
     out
 }

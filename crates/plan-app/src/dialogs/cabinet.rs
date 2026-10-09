@@ -16,18 +16,20 @@
 //! `plan_cabinets::FaceLayout` addressed by a path of indices, so they test
 //! without a GUI.
 
+use super::cabinet_face::{item_spec_ui, FaceSpecContext};
 use super::{
-    dis_check, dis_combo, dis_radio, fmt_short, on, pv_text, row, section, Fields, Outcome,
-    SpecDialog, SpecPages, Tab, PV_GLASS, PV_INK, PV_WALL,
+    dis_check, dis_combo, fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog,
+    SpecPages, Tab, PV_GLASS, PV_INK, PV_WALL,
 };
 use crate::editor::placed::{cabinet_label, cabinet_layer};
 use crate::tools::library::door_styles::{self, LibraryStyle};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use plan_cabinets::{
-    plan_symbol, Backsplash, BlindSide, Cabinet, CabinetKind, CornerSpec, CornerStyle,
-    CornerTreatment, Countertop, CutoutKind, Divider, DoorProfile, DoorStyle, DrawerStyle,
-    EdgeProfile, FaceCell, FaceItem, FaceLayout, FaceSide, FillPattern, FootStyle, HandleStyle,
-    HingeStyle, MaterialChoice, Molding, Overlay, PilasterStyle, SideKind, ToeKick,
+    plan_symbol, AutoOnOff, Backsplash, BlindSide, Cabinet, CabinetKind, CabinetStyle, CornerSpec,
+    CornerStyle, CornerTreatment, Countertop, CutoutKind, Divider, DoorProfile, DoorStyle,
+    DrawerStyle, EdgeProfile, FaceCell, FaceItem, FaceLayout, FaceSide, FillPattern, FootStyle,
+    HandleStyle, HingeStyle, ItemKind, Manufacturer, MaterialChoice, Molding, Overlay,
+    PilasterStyle, PlanFill, SideKind, ToeKick,
 };
 use plan_core::geometry::Point;
 
@@ -49,6 +51,7 @@ const TABS: &[Tab] = &[
     on("Components"),
     on("Object Information"),
     on("Schedule"),
+    on("Manufacturer"),
 ];
 
 // ----- the face-item tree -----
@@ -57,89 +60,17 @@ const TABS: &[Tab] = &[
 /// each further one a cell of the `HorizontalLayout` before it.
 pub type Path = Vec<usize>;
 
-/// The kinds the Item Type list offers (a layout is made by splitting).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ItemType {
-    Separation,
-    Drawer,
-    DoorAuto,
-    DoorLeft,
-    DoorRight,
-    DoubleDoor,
-    Opening,
-    Panel,
-    Appliance,
-}
-
-impl ItemType {
-    pub const ALL: [ItemType; 9] = [
-        ItemType::Separation,
-        ItemType::Drawer,
-        ItemType::DoorAuto,
-        ItemType::DoorLeft,
-        ItemType::DoorRight,
-        ItemType::DoubleDoor,
-        ItemType::Opening,
-        ItemType::Panel,
-        ItemType::Appliance,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ItemType::Separation => "Separation",
-            ItemType::Drawer => "Drawer",
-            ItemType::DoorAuto => "Door - Auto",
-            ItemType::DoorLeft => "Door - Left",
-            ItemType::DoorRight => "Door - Right",
-            ItemType::DoubleDoor => "Double Door",
-            ItemType::Opening => "Opening",
-            ItemType::Panel => "Panel",
-            ItemType::Appliance => "Appliance",
-        }
-    }
-
-    pub fn of(item: &FaceItem) -> Option<ItemType> {
-        Some(match item {
-            FaceItem::Separation { .. } => ItemType::Separation,
-            FaceItem::Drawer { .. } => ItemType::Drawer,
-            FaceItem::DoorAuto { .. } => ItemType::DoorAuto,
-            FaceItem::DoorLeft { .. } => ItemType::DoorLeft,
-            FaceItem::DoorRight { .. } => ItemType::DoorRight,
-            FaceItem::DoubleDoor { .. } => ItemType::DoubleDoor,
-            FaceItem::Opening { .. } => ItemType::Opening,
-            FaceItem::Panel { .. } => ItemType::Panel,
-            FaceItem::Appliance { .. } => ItemType::Appliance,
-            FaceItem::HorizontalLayout { .. } => return None,
-        })
-    }
-
-    /// A new item of this type with `height` (0 = auto).
-    pub fn make(self, height: f64) -> FaceItem {
-        match self {
-            ItemType::Separation => FaceItem::Separation { height },
-            ItemType::Drawer => FaceItem::Drawer { height },
-            ItemType::DoorAuto => FaceItem::DoorAuto { height },
-            ItemType::DoorLeft => FaceItem::DoorLeft { height },
-            ItemType::DoorRight => FaceItem::DoorRight { height },
-            ItemType::DoubleDoor => FaceItem::DoubleDoor { height },
-            ItemType::Opening => FaceItem::Opening { height },
-            ItemType::Panel => FaceItem::Panel { height },
-            ItemType::Appliance => FaceItem::Appliance {
-                height,
-                name: "Appliance".to_string(),
-            },
-        }
-    }
+/// The kinds the New Cabinet Face Item and Item Type lists offer: the 16
+/// leaf types of Chief's list (a layout is made by splitting).
+pub fn leaf_kinds() -> impl Iterator<Item = ItemKind> {
+    ItemKind::ALL.into_iter().filter(|k| k.is_leaf())
 }
 
 /// The tree line for an item.
 pub fn describe(item: &FaceItem) -> String {
-    match item {
+    match item.base() {
         FaceItem::Appliance { name, .. } => format!("Appliance - {name}"),
-        FaceItem::HorizontalLayout { .. } => "Layout - Horizontal".to_string(),
-        other => ItemType::of(other)
-            .map_or("Item", ItemType::label)
-            .to_string(),
+        other => other.kind().label().to_string(),
     }
 }
 
@@ -149,6 +80,7 @@ pub fn item_at<'a>(layout: &'a FaceLayout, path: &[usize]) -> Option<&'a FaceIte
     for &i in rest {
         match item {
             FaceItem::HorizontalLayout { cells, .. } => item = &cells.get(i)?.item,
+            FaceItem::VerticalLayout { items, .. } => item = items.get(i)?,
             _ => return None,
         }
     }
@@ -161,6 +93,7 @@ pub fn item_at_mut<'a>(layout: &'a mut FaceLayout, path: &[usize]) -> Option<&'a
     for &i in rest {
         match item {
             FaceItem::HorizontalLayout { cells, .. } => item = &mut cells.get_mut(i)?.item,
+            FaceItem::VerticalLayout { items, .. } => item = items.get_mut(i)?,
             _ => return None,
         }
     }
@@ -188,6 +121,7 @@ fn container<'a>(layout: &'a mut FaceLayout, parent: &[usize]) -> Option<Cont<'a
     }
     match item_at_mut(layout, parent)? {
         FaceItem::HorizontalLayout { cells, .. } => Some(Cont::Cells(cells)),
+        FaceItem::VerticalLayout { items, .. } => Some(Cont::Items(items)),
         _ => None,
     }
 }
@@ -235,6 +169,9 @@ pub fn delete_item(layout: &mut FaceLayout, path: &[usize]) -> Option<Path> {
             let replacement = match node {
                 FaceItem::HorizontalLayout { cells, .. } if cells.len() == 1 => {
                     cells.remove(0).item.with_height(height)
+                }
+                FaceItem::VerticalLayout { items, .. } if items.len() == 1 => {
+                    items.remove(0).with_height(height)
                 }
                 _ => FaceItem::Opening { height },
             };
@@ -298,7 +235,7 @@ pub fn split_vertical(layout: &mut FaceLayout, path: &[usize]) -> Option<Path> {
         return None;
     }
     let item = layout.items.get(*idx)?.clone();
-    if matches!(item, FaceItem::Separation { .. }) {
+    if matches!(item.base(), FaceItem::Separation { .. }) {
         return None;
     }
     let half = item.height() / 2.0;
@@ -318,7 +255,7 @@ pub fn split_horizontal(layout: &mut FaceLayout, path: &[usize]) -> Option<Path>
     let (idx, parent) = path.split_last()?;
     if !parent.is_empty() {
         let cell = cell_at_mut(layout, path)?;
-        if matches!(cell.item, FaceItem::Separation { .. }) {
+        if matches!(cell.item.base(), FaceItem::Separation { .. }) {
             return None;
         }
         let half = cell.width.map(|w| w / 2.0);
@@ -334,7 +271,7 @@ pub fn split_horizontal(layout: &mut FaceLayout, path: &[usize]) -> Option<Path>
     }
     let node = layout.items.get_mut(*idx)?;
     match node {
-        FaceItem::Separation { .. } => None,
+        n if matches!(n.base(), FaceItem::Separation { .. }) => None,
         FaceItem::HorizontalLayout { cells, .. } => {
             cells.push(FaceCell {
                 item: FaceItem::Opening { height: 0.0 },
@@ -376,8 +313,8 @@ pub fn equalize(layout: &mut FaceLayout, path: &[usize]) -> bool {
         match container(layout, parent) {
             Some(Cont::Items(v)) => {
                 for it in v.iter_mut() {
-                    if !matches!(it, FaceItem::Separation { .. }) {
-                        *it = it.with_height(0.0);
+                    if !matches!(it.base(), FaceItem::Separation { .. }) {
+                        it.set_height(0.0);
                     }
                 }
             }
@@ -415,17 +352,33 @@ pub fn move_item(layout: &mut FaceLayout, path: &[usize], up: bool) -> Option<Pa
     Some(p)
 }
 
-/// Changes the selected leaf to `ty`, keeping its height.
-pub fn set_item_type(layout: &mut FaceLayout, path: &[usize], ty: ItemType) -> bool {
+/// True for the layouts (the containers of other items).
+fn is_layout(item: &FaceItem) -> bool {
+    matches!(
+        item.base(),
+        FaceItem::HorizontalLayout { .. } | FaceItem::VerticalLayout { .. }
+    )
+}
+
+/// Changes the selected leaf to `ty`, keeping its height, its settings
+/// (the Custom wrapper) and an appliance's name.
+pub fn set_item_type(layout: &mut FaceLayout, path: &[usize], ty: ItemKind) -> bool {
+    if !ty.is_leaf() {
+        return false;
+    }
     match item_at_mut(layout, path) {
-        Some(it) if !matches!(it, FaceItem::HorizontalLayout { .. }) => {
-            let name = match it {
+        Some(it) if !is_layout(it) => {
+            let name = match it.base() {
                 FaceItem::Appliance { name, .. } => Some(name.clone()),
                 _ => None,
             };
+            let props = it.props().cloned();
             let mut next = ty.make(it.height());
             if let (FaceItem::Appliance { name: n, .. }, Some(old)) = (&mut next, name) {
                 *n = old;
+            }
+            if let Some(p) = props {
+                next = next.with_props(p);
             }
             *it = next;
             true
@@ -453,13 +406,17 @@ struct CabinetForm {
     draft: Cabinet,
     fields: Fields,
     sel: Path,
-    new_type: ItemType,
+    new_type: ItemKind,
+    /// The selected manual shelf of the Cabinet Shelf Specification.
+    shelf_sel: usize,
     /// The face the Front/Sides/Back tab edits.
     side: FaceSide,
     /// The library's "Cabinet Doors" styles the Door/Drawer tab offers.
     styles: Vec<LibraryStyle>,
     /// What the last Chief scan said.
     style_note: String,
+    /// Why the last Cabinet Style change was refused.
+    convert_note: String,
 }
 
 impl CabinetDialog {
@@ -470,10 +427,12 @@ impl CabinetDialog {
                 draft: cabinet,
                 fields: Fields::default(),
                 sel: Vec::new(),
-                new_type: ItemType::Drawer,
+                new_type: ItemKind::Drawer,
+                shelf_sel: 0,
                 side: FaceSide::Front,
                 styles: door_styles::available(),
                 style_note: String::new(),
+                convert_note: String::new(),
             },
         }
     }
@@ -484,6 +443,12 @@ impl CabinetDialog {
 
     pub fn draft(&self) -> &Cabinet {
         &self.form.draft
+    }
+
+    /// Tests edit the draft the way the pages do.
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut Cabinet {
+        &mut self.form.draft
     }
 }
 
@@ -510,14 +475,65 @@ impl CabinetForm {
         let f = &mut self.fields;
         let d = &mut self.draft;
         section(ui, "Cabinet Style");
-        row(ui, "Type", |ui| {
-            dis_combo(
-                ui,
-                "cab_type",
-                d.preset
-                    .map_or_else(|| d.kind.name(), plan_cabinets::CabinetPreset::name),
-            )
-        });
+        let ordinary = d.appliance.is_none()
+            && matches!(
+                d.kind,
+                CabinetKind::Base
+                    | CabinetKind::Wall
+                    | CabinetKind::FullHeight
+                    | CabinetKind::CornerBase
+                    | CabinetKind::CornerWall
+            );
+        if ordinary {
+            // Converting between a standard cabinet and a corner, end,
+            // radius end, peninsula, angled or bow front (CB-494, CB-495).
+            let cur = d.style();
+            let mut pick = cur;
+            row(ui, "Type", |ui| {
+                egui::ComboBox::from_id_salt("cab_style")
+                    .selected_text(cur.name())
+                    .show_ui(ui, |ui| {
+                        for st in CabinetStyle::ALL {
+                            ui.selectable_value(&mut pick, st, st.name());
+                        }
+                    });
+            });
+            if pick != cur {
+                match d.convert(pick) {
+                    Ok(()) => self.convert_note.clear(),
+                    Err(e) => self.convert_note = e,
+                }
+            }
+            if let Some(sp) = d.special {
+                let mut amount = sp.resolved(d.width, d.depth);
+                if f.length_row(ui, sp.shape.amount_label(), "special_amount", &mut amount) {
+                    match d.set_special_amount(amount) {
+                        Ok(()) => self.convert_note.clear(),
+                        Err(e) => self.convert_note = e,
+                    }
+                }
+            }
+            if d.kind.is_corner() {
+                f.length_row(
+                    ui,
+                    "Bow Depth (0 = straight)",
+                    "corner_bow",
+                    &mut d.corner_bow,
+                );
+            }
+            if !self.convert_note.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(190, 40, 40), &self.convert_note);
+            }
+        } else {
+            row(ui, "Type", |ui| {
+                dis_combo(
+                    ui,
+                    "cab_type",
+                    d.preset
+                        .map_or_else(|| d.kind.name(), plan_cabinets::CabinetPreset::name),
+                )
+            });
+        }
         dis_check(ui, "Treat As Filler", d.kind.is_filler());
         section(ui, "Size/Position");
         if d.kind.is_custom() {
@@ -608,6 +624,15 @@ impl CabinetForm {
             }
         }
 
+        if d.kind == CabinetKind::CustomCountertop {
+            // The polyline, selected line, waterfall and molding panels.
+            if let Some(msg) = super::custom_countertop::custom_top_ui(ui, f, d) {
+                self.convert_note = msg.to_string();
+            }
+            if !self.convert_note.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(190, 40, 40), &self.convert_note);
+            }
+        }
         if d.kind != CabinetKind::CustomBacksplash {
             Self::countertop_section(ui, f, d);
         }
@@ -628,6 +653,11 @@ impl CabinetForm {
                     f.length_row(ui, "Height", "bs_height", &mut b.height);
                 }
                 f.length_row(ui, "Thickness", "bs_thick", &mut b.thickness);
+                ui.checkbox(
+                    &mut b.side,
+                    "Side Backsplash (against a wall or taller cabinet)",
+                );
+                ui.checkbox(&mut b.always_present, "Always Present");
             }
 
             section(ui, "Toe Kick");
@@ -638,6 +668,13 @@ impl CabinetForm {
             if let Some(t) = d.toe_kick.as_mut() {
                 f.length_row(ui, "Height", "tk_height", &mut t.height);
                 f.length_row(ui, "Depth", "tk_depth", &mut t.depth);
+                let o = &mut d.toe_options;
+                ui.checkbox(&mut o.flat_sides, "Flat Sides");
+                ui.checkbox(&mut o.flat_back, "Flat Back");
+                ui.checkbox(&mut o.closed_toe, "Closed Toe");
+                if o.closed_toe {
+                    ui.checkbox(&mut o.closed_toe_always, "Always Closed (between cabinets)");
+                }
             }
         }
     }
@@ -752,20 +789,75 @@ impl CabinetForm {
         if d.framed {
             f.length_row(ui, "Separation", "frame_width", &mut d.face.frame_width);
         }
+        if d.framed {
+            // Extended stiles reach past the ends and act as fillers.
+            f.length_row(
+                ui,
+                "Extend Left Stile",
+                "stile_ext_l",
+                &mut d.stile_ext_left,
+            );
+            f.length_row(
+                ui,
+                "Extend Right Stile",
+                "stile_ext_r",
+                &mut d.stile_ext_right,
+            );
+        }
         section(ui, "Top/Bottom/Sides");
+        let bc = &mut d.box_construction;
         row(ui, "Top", |ui| {
-            dis_radio(ui, "Auto", true);
-            dis_radio(ui, "Has Top", false);
-            dis_radio(ui, "No Top", false);
+            for (m, name) in [
+                (AutoOnOff::Auto, "Auto"),
+                (AutoOnOff::On, "Has Top"),
+                (AutoOnOff::Off, "No Top"),
+            ] {
+                ui.radio_value(&mut bc.top, m, name);
+            }
         });
         row(ui, "Bottom", |ui| {
-            dis_radio(ui, "Auto", true);
-            dis_radio(ui, "Has Bottom", false);
-            dis_radio(ui, "No Bottom", false);
+            for (m, name) in [
+                (AutoOnOff::Auto, "Auto"),
+                (AutoOnOff::On, "Has Bottom"),
+                (AutoOnOff::Off, "No Bottom"),
+            ] {
+                ui.radio_value(&mut bc.bottom, m, name);
+            }
         });
-        row(ui, "Side / Back Thickness", |ui| {
-            ui.label(fmt_short(0.75));
+        f.length_row(ui, "Side Thickness", "bc_side", &mut bc.side_thickness);
+        f.length_row(ui, "Back Thickness", "bc_back", &mut bc.back_thickness);
+        section(ui, "Box Corners");
+        row(ui, "Corner Treatment", |ui| {
+            for c in CornerTreatment::ALL {
+                ui.radio_value(&mut bc.corner, c, c.name());
+            }
         });
+        if bc.corner != CornerTreatment::None {
+            f.length_row(ui, "Corner Clip / Radius", "bc_corner", &mut bc.corner_size);
+            ui.checkbox(&mut bc.auto_corners, "Automatic Placement");
+            if !bc.auto_corners {
+                ui.horizontal(|ui| {
+                    for (i, name) in ["Back Left", "Back Right", "Front Left", "Front Right"]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        ui.checkbox(&mut bc.corners[i], name);
+                    }
+                });
+            }
+        }
+        section(ui, "General Options");
+        ui.checkbox(&mut d.cut_room_moldings, "Cut Room Moldings");
+        ui.checkbox(&mut d.suppress_fillers, "Suppress Automatic Fillers");
+        f.length_row(
+            ui,
+            "Auto Door Threshold",
+            "auto_door",
+            &mut d.auto_door_threshold,
+        );
+        // Absolute ... From Roof, To Top / To Bottom: the shared widget
+        // (stored with the cabinet's shared panels, applied in 3D).
+        super::elevation_ref::row(ui, "Elevation Reference");
         section(ui, "Door/Drawer Overlay");
         let (mut trad, mut full, mut inset) = (false, false, false);
         let mut value = match d.overlay {
@@ -839,6 +931,7 @@ impl CabinetForm {
             row(ui, "Side Type", |ui| {
                 dis_combo(ui, "cab_side_type", "Custom Face")
             });
+            self.side_properties(ui);
             self.face_editor(ui, side);
             return;
         }
@@ -894,6 +987,52 @@ impl CabinetForm {
         }
     }
 
+    /// Side Properties and Show Open options of the front (reference manual
+    /// p. 677): the left and right stile widths and reveals follow the
+    /// cabinet until a value is specified.
+    fn side_properties(&mut self, ui: &mut Ui) {
+        let f = &mut self.fields;
+        let d = &mut self.draft;
+        section(ui, "Side Properties");
+        let stile = d.face.frame_width;
+        let reveal = match d.overlay {
+            Overlay::Full { reveal } => reveal,
+            Overlay::Traditional { overlap } => overlap,
+            Overlay::Inset { clearance } => clearance,
+        };
+        opt_length_row(ui, f, "Left Stile", "st_left", &mut d.stiles.left, stile);
+        opt_length_row(ui, f, "Right Stile", "st_right", &mut d.stiles.right, stile);
+        opt_length_row(
+            ui,
+            f,
+            "Left Reveal",
+            "rv_left",
+            &mut d.stiles.left_reveal,
+            reveal,
+        );
+        opt_length_row(
+            ui,
+            f,
+            "Right Reveal",
+            "rv_right",
+            &mut d.stiles.right_reveal,
+            reveal,
+        );
+        section(ui, "Options");
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Show Open:");
+            ui.checkbox(&mut d.show_open.doors, "Doors");
+            ui.checkbox(&mut d.show_open.drawers, "Drawers");
+            ui.checkbox(&mut d.show_open.rollouts, "Rollouts");
+        });
+        f.length_row(
+            ui,
+            "Auto Door Threshold",
+            "auto_door_front",
+            &mut d.auto_door_threshold,
+        );
+    }
+
     /// The face canvas and the face-item tree of `draft.face`, which is the
     /// front's layout or (while a side is edited) that side's.
     fn face_editor(&mut self, ui: &mut Ui, side: FaceSide) {
@@ -917,7 +1056,7 @@ impl CabinetForm {
             egui::ComboBox::from_id_salt("cab_new_type")
                 .selected_text(add_ty.label())
                 .show_ui(ui, |ui| {
-                    for t in ItemType::ALL {
+                    for t in leaf_kinds() {
                         ui.selectable_value(&mut self.new_type, t, t.label());
                     }
                 });
@@ -999,33 +1138,34 @@ impl CabinetForm {
 
     fn selected_properties(&mut self, ui: &mut Ui, sel: &mut Path) {
         section(ui, "Selected Item Properties");
-        if item_at(&self.draft.face, sel).is_none() {
+        let Some(item) = item_at(&self.draft.face, sel).cloned() else {
             ui.weak("Select a face item above.");
             return;
-        }
-        let in_cell = sel.len() > 1;
-        let Some(item) = item_at(&self.draft.face, sel).cloned() else {
-            return;
         };
-        match ItemType::of(&item) {
-            Some(cur) => {
-                let mut ty = cur;
-                row(ui, "Item Type", |ui| {
-                    egui::ComboBox::from_id_salt("cab_item_type")
-                        .selected_text(ty.label())
-                        .show_ui(ui, |ui| {
-                            for t in ItemType::ALL {
-                                ui.selectable_value(&mut ty, t, t.label());
-                            }
-                        });
-                });
-                if ty != cur {
-                    set_item_type(&mut self.draft.face, sel, ty);
-                }
+        let in_cell = sel.len() > 1
+            && sel.split_last().is_some_and(|(_, p)| {
+                matches!(
+                    item_at(&self.draft.face, p),
+                    Some(FaceItem::HorizontalLayout { .. })
+                )
+            });
+        let cur = item.kind();
+        if cur.is_leaf() {
+            let mut ty = cur;
+            row(ui, "Item Type", |ui| {
+                egui::ComboBox::from_id_salt("cab_item_type")
+                    .selected_text(ty.label())
+                    .show_ui(ui, |ui| {
+                        for t in leaf_kinds() {
+                            ui.selectable_value(&mut ty, t, t.label());
+                        }
+                    });
+            });
+            if ty != cur {
+                set_item_type(&mut self.draft.face, sel, ty);
             }
-            None => {
-                row(ui, "Item Type", |ui| ui.label("Layout - Horizontal"));
-            }
+        } else {
+            row(ui, "Item Type", |ui| ui.label(cur.label()));
         }
         let mut h = item.height();
         if !in_cell
@@ -1035,7 +1175,7 @@ impl CabinetForm {
             && h >= 0.0
         {
             if let Some(it) = item_at_mut(&mut self.draft.face, sel) {
-                *it = it.with_height(h);
+                it.set_height(h);
             }
         }
         if in_cell {
@@ -1049,12 +1189,48 @@ impl CabinetForm {
                 }
             }
         }
-        if let Some(FaceItem::Appliance { name, .. }) = item_at_mut(&mut self.draft.face, sel) {
+        if let Some(FaceItem::Appliance { name, .. }) =
+            item_at_mut(&mut self.draft.face, sel).map(FaceItem::base_mut)
+        {
             row(ui, "Appliance", |ui| {
                 ui.text_edit_singleline(name);
             });
         }
-        dis_check(ui, "Lock from Auto-Resize", false);
+        if cur.is_leaf() {
+            let opening = self.opening_height_of(sel);
+            let cx = FaceSpecContext {
+                door: &self.draft.door_style,
+                drawer: &self.draft.drawer_style,
+                styles: &self.styles,
+                opening_height: opening,
+                allow_rollout: self.draft.kind != CabinetKind::Wall,
+                key: {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    (self.side as u8, sel.as_slice()).hash(&mut h);
+                    h.finish()
+                },
+            };
+            let mut shelf_sel = self.shelf_sel;
+            if let Some(it) = item_at_mut(&mut self.draft.face, sel) {
+                item_spec_ui(ui, &mut self.fields, it, &cx, &mut shelf_sel);
+            }
+            self.shelf_sel = shelf_sel;
+        }
+    }
+
+    /// Height of the opening the selected item fills, inches.
+    fn opening_height_of(&self, sel: &Path) -> f64 {
+        let (fh, fw) = (self.draft.face_height(), self.face_width());
+        let Ok(leaves) = self.draft.face.resolve(fh, fw) else {
+            return fh;
+        };
+        let paths = leaf_paths(&self.draft.face);
+        paths
+            .iter()
+            .zip(&leaves)
+            .find(|(p, _)| *p == sel)
+            .map_or(fh, |(_, r)| r.rect.3)
     }
 
     fn door_drawer(&mut self, ui: &mut Ui) {
@@ -1330,31 +1506,47 @@ impl CabinetForm {
     }
 
     fn fill_style(&mut self, ui: &mut Ui) {
-        let fill = &mut self.draft.fill;
-        section(ui, "Fill Style");
-        row(ui, "Pattern", |ui| {
-            egui::ComboBox::from_id_salt("cab_fill")
-                .selected_text(fill.pattern.name())
-                .show_ui(ui, |ui| {
-                    for p in FillPattern::ALL {
-                        ui.selectable_value(&mut fill.pattern, p, p.name());
-                    }
-                });
-        });
-        if fill.pattern != FillPattern::None {
-            row(ui, "Color", |ui| {
-                ui.color_edit_button_srgb(&mut fill.color);
-            });
-            row(ui, "Opacity", |ui| {
-                ui.add(egui::Slider::new(&mut fill.alpha, 0.1..=1.0));
-            });
-            if matches!(fill.pattern, FillPattern::Hatch | FillPattern::CrossHatch) {
-                self.fields
-                    .length_row(ui, "Line Spacing", "cab_fill_gap", &mut fill.spacing);
-                fill.spacing = fill.spacing.max(0.5);
+        section(ui, "Fill Style (Box)");
+        fill_editor(ui, &mut self.fields, "cab_fill", &mut self.draft.fill);
+        if self.draft.countertop.is_some() || self.draft.kind.is_custom() {
+            let mut own = self.draft.counter_fill.is_some();
+            section(ui, "Fill Style (Countertop)");
+            if ui
+                .checkbox(&mut own, "Separate fill for the countertop")
+                .changed()
+            {
+                self.draft.counter_fill = own.then_some(self.draft.fill);
+            }
+            if let Some(cf) = self.draft.counter_fill.as_mut() {
+                fill_editor(ui, &mut self.fields, "cab_counter_fill", cf);
             }
         }
         ui.weak("Drawn inside the cabinet's outline in the plan view only.");
+    }
+
+    /// The Manufacturer panel (catalog cabinets): contact information.
+    fn manufacturer(&mut self, ui: &mut Ui) {
+        section(ui, "Manufacturer");
+        let mut has = self.draft.manufacturer.is_some();
+        if ui.checkbox(&mut has, "Catalog cabinet").changed() {
+            self.draft.manufacturer = has.then(Manufacturer::default);
+        }
+        if let Some(m) = self.draft.manufacturer.as_mut() {
+            for (label, text) in [
+                ("Name", &mut m.name),
+                ("Contact", &mut m.contact),
+                ("Phone", &mut m.phone),
+                ("Email", &mut m.email),
+                ("Web Site", &mut m.website),
+                ("Catalog", &mut m.catalog),
+            ] {
+                row(ui, label, |ui| {
+                    ui.text_edit_singleline(text);
+                });
+            }
+        } else {
+            ui.weak("Turn this on to record where a cabinet is ordered from.");
+        }
     }
 
     /// The parts the cabinet is made of, with counts, sizes and materials.
@@ -1633,6 +1825,54 @@ fn pick_drawer_style(drawer: &mut DrawerStyle, pick: StylePick, styles: &[Librar
     }
 }
 
+/// The pattern, color, opacity and spacing of one plan fill.
+fn fill_editor(ui: &mut Ui, f: &mut Fields, salt: &str, fill: &mut PlanFill) {
+    row(ui, "Pattern", |ui| {
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(fill.pattern.name())
+            .show_ui(ui, |ui| {
+                for p in FillPattern::ALL {
+                    ui.selectable_value(&mut fill.pattern, p, p.name());
+                }
+            });
+    });
+    if fill.pattern != FillPattern::None {
+        row(ui, "Color", |ui| {
+            ui.color_edit_button_srgb(&mut fill.color);
+        });
+        row(ui, "Opacity", |ui| {
+            ui.add(egui::Slider::new(&mut fill.alpha, 0.1..=1.0));
+        });
+        if matches!(fill.pattern, FillPattern::Hatch | FillPattern::CrossHatch) {
+            f.length_row(ui, "Line Spacing", "cab_fill_gap", &mut fill.spacing);
+            fill.spacing = fill.spacing.max(0.5);
+        }
+    }
+}
+
+/// A length that follows a default until it is specified: a check, then the
+/// field. Unchecking returns it to following the default.
+fn opt_length_row(
+    ui: &mut Ui,
+    f: &mut Fields,
+    label: &str,
+    key: &'static str,
+    value: &mut Option<f64>,
+    default: f64,
+) {
+    row(ui, label, |ui| {
+        let mut own = value.is_some();
+        if ui.checkbox(&mut own, "Specify").changed() {
+            *value = own.then_some(default);
+        }
+        if let Some(v) = value.as_mut() {
+            f.length(ui, key, v);
+        } else {
+            ui.weak(fmt_short(default));
+        }
+    });
+}
+
 /// A Slab / Shaker / Raised Panel choice.
 fn profile_row(ui: &mut Ui, salt: &str, value: &mut DoorProfile) {
     row(ui, "Panel Profile", |ui| {
@@ -1650,14 +1890,28 @@ fn profile_row(ui: &mut Ui, salt: &str, value: &mut DoorProfile) {
 
 /// Paths of the leaf items in the order `FaceLayout::resolve` lists them.
 pub fn leaf_paths(layout: &FaceLayout) -> Vec<Path> {
-    let mut out = Vec::new();
-    for (i, item) in layout.items.iter().enumerate() {
+    fn walk(item: &FaceItem, path: &mut Path, out: &mut Vec<Path>) {
         match item {
             FaceItem::HorizontalLayout { cells, .. } => {
-                out.extend((0..cells.len()).map(|j| vec![i, j]));
+                for (j, c) in cells.iter().enumerate() {
+                    path.push(j);
+                    walk(&c.item, path, out);
+                    path.pop();
+                }
             }
-            _ => out.push(vec![i]),
+            FaceItem::VerticalLayout { items, .. } => {
+                for (j, c) in items.iter().enumerate() {
+                    path.push(j);
+                    walk(c, path, out);
+                    path.pop();
+                }
+            }
+            _ => out.push(path.clone()),
         }
+    }
+    let mut out = Vec::new();
+    for (i, item) in layout.items.iter().enumerate() {
+        walk(item, &mut vec![i], &mut out);
     }
     out
 }
@@ -1723,15 +1977,13 @@ fn face_canvas(ui: &mut Ui, cab: &mut Cabinet, fh: f64, fw: f64, sel: &mut Path)
                     StrokeKind::Inside,
                 );
                 if rect.height() > 12.0 && rect.width() > 36.0 {
-                    if let Some(t) = ItemType::of(&r.item) {
-                        pv_text(
-                            &painter,
-                            rect.center(),
-                            Align2::CENTER_CENTER,
-                            t.label(),
-                            9.0,
-                        );
-                    }
+                    pv_text(
+                        &painter,
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        r.item.kind().label(),
+                        9.0,
+                    );
                 }
             }
         }
@@ -1814,15 +2066,18 @@ fn tree_ui(ui: &mut Ui, item: &FaceItem, path: &mut Path, sel: &mut Path) {
     if ui.selectable_label(sel == path, text).clicked() {
         *sel = path.clone();
     }
-    if let FaceItem::HorizontalLayout { cells, .. } = item {
-        ui.indent(("cab_tree", number(path)), |ui| {
-            for (i, c) in cells.iter().enumerate() {
-                path.push(i);
-                tree_ui(ui, &c.item, path, sel);
-                path.pop();
-            }
-        });
-    }
+    let kids: Vec<&FaceItem> = match item {
+        FaceItem::HorizontalLayout { cells, .. } => cells.iter().map(|c| &c.item).collect(),
+        FaceItem::VerticalLayout { items, .. } => items.iter().collect(),
+        _ => return,
+    };
+    ui.indent(("cab_tree", number(path)), |ui| {
+        for (i, c) in kids.into_iter().enumerate() {
+            path.push(i);
+            tree_ui(ui, c, path, sel);
+            path.pop();
+        }
+    });
 }
 
 impl SpecPages for CabinetForm {
@@ -1863,6 +2118,7 @@ impl SpecPages for CabinetForm {
             Some("Layer") => self.layer(ui),
             Some("Materials") => self.materials(ui),
             Some("Label") => self.label(ui),
+            Some("Manufacturer") => self.manufacturer(ui),
             Some("Fill Style") => self.fill_style(ui),
             Some("Components") => self.components(ui),
             Some("Object Information") => self.object_information(ui),
@@ -1913,7 +2169,7 @@ impl Fit {
     }
 }
 
-fn draw_preview(p: &Painter, area: Rect, cab: &Cabinet) {
+pub(super) fn draw_preview(p: &Painter, area: Rect, cab: &Cabinet) {
     let split = area.min.y + area.height() * 0.4;
     let plan = Rect::from_min_max(area.min, Pos2::new(area.max.x, split - 4.0));
     let front = Rect::from_min_max(Pos2::new(area.min.x, split + 4.0), area.max);
@@ -2430,7 +2686,7 @@ mod tests {
     #[test]
     fn delete_removes_and_reselects() {
         let mut l = base();
-        assert_eq!(describe(item_at(&l, &[3]).unwrap()), "Door - Auto");
+        assert_eq!(describe(item_at(&l, &[3]).unwrap()), "Door - Auto Right");
         let sel = delete_item(&mut l, &[3]).unwrap();
         assert_eq!(l.items.len(), 4);
         assert_eq!(sel, vec![3]);
@@ -2538,7 +2794,7 @@ mod tests {
         assert_eq!(move_item(&mut l, &[1], false), Some(vec![2]));
         assert_eq!(describe(&l.items[2]), "Drawer");
         assert_eq!(move_item(&mut l, &[0], true), None);
-        assert!(set_item_type(&mut l, &[2], ItemType::Appliance));
+        assert!(set_item_type(&mut l, &[2], ItemKind::Appliance));
         assert_eq!(
             l.items[2],
             FaceItem::Appliance {
@@ -2550,7 +2806,7 @@ mod tests {
         if let FaceItem::Appliance { name, .. } = &mut l.items[2] {
             *name = "Dishwasher".into();
         }
-        set_item_type(&mut l, &[2], ItemType::Appliance);
+        set_item_type(&mut l, &[2], ItemKind::Appliance);
         assert_eq!(describe(&l.items[2]), "Appliance - Dishwasher");
         assert!(l.resolve(34.5, 24.0).is_ok());
     }
@@ -2566,7 +2822,7 @@ mod tests {
         assert!(dlg.form.error().is_some());
         dlg.form.draft.width = 30.0;
         assert_eq!(dlg.draft().width, 30.0);
-        assert_eq!(TABS.iter().filter(|t| t.enabled).count(), 14);
+        assert_eq!(TABS.iter().filter(|t| t.enabled).count(), 15);
 
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -2656,9 +2912,113 @@ mod tests {
         }
         // Add an opening, retype it as a panel, and keep resolving.
         let p = add_item(&mut l, &[1], FaceItem::Opening { height: 0.0 }).unwrap();
-        assert!(set_item_type(&mut l, &p, ItemType::Panel));
-        assert_eq!(describe(item_at(&l, &p).unwrap()), "Panel");
+        assert!(set_item_type(&mut l, &p, ItemKind::DoorPanel));
+        assert_eq!(describe(item_at(&l, &p).unwrap()), "Door Panel");
         assert!(l.resolve(fh, fw).is_ok());
+    }
+
+    fn nested() -> FaceLayout {
+        FaceLayout {
+            items: vec![
+                FaceItem::Separation { height: 1.5 },
+                FaceItem::VerticalLayout {
+                    height: 0.0,
+                    items: vec![
+                        FaceItem::FalseDrawer { height: 6.0 },
+                        FaceItem::HorizontalLayout {
+                            height: 0.0,
+                            cells: vec![
+                                FaceCell {
+                                    item: FaceItem::DoorLeft { height: 0.0 },
+                                    width: None,
+                                },
+                                FaceCell {
+                                    item: FaceItem::Rollout { height: 0.0 },
+                                    width: None,
+                                },
+                            ],
+                        },
+                    ],
+                },
+                FaceItem::Separation { height: 1.5 },
+            ],
+            frame_width: 1.5,
+        }
+    }
+
+    #[test]
+    fn paths_reach_into_vertical_layouts_and_leaf_paths_follow_the_solver() {
+        let l = nested();
+        assert_eq!(item_at(&l, &[1, 0]).unwrap().kind(), ItemKind::FalseDrawer);
+        assert_eq!(item_at(&l, &[1, 1, 1]).unwrap().kind(), ItemKind::Rollout);
+        assert!(item_at(&l, &[0, 0]).is_none());
+        let paths = leaf_paths(&l);
+        assert_eq!(
+            paths,
+            vec![vec![0], vec![1, 0], vec![1, 1, 0], vec![1, 1, 1], vec![2]]
+        );
+        assert_eq!(paths.len(), l.resolve(34.5, 24.0).unwrap().len());
+        // A click on the lower right of the face lands on the rollout.
+        assert_eq!(path_at(&l, 34.5, 24.0, 20.0, 5.0), Some(vec![1, 1, 1]));
+    }
+
+    #[test]
+    fn deleting_inside_a_vertical_layout_collapses_it() {
+        let mut l = nested();
+        let sel = delete_item(&mut l, &[1, 1]).unwrap();
+        assert_eq!(sel, vec![1]);
+        assert_eq!(l.items[1], FaceItem::FalseDrawer { height: 0.0 });
+        let sel = add_item(&mut l, &[0], FaceItem::Opening { height: 0.0 }).unwrap();
+        assert_eq!(sel, vec![1]);
+    }
+
+    #[test]
+    fn retyping_keeps_the_items_own_settings_and_refuses_layouts() {
+        let mut l = nested();
+        {
+            let it = item_at_mut(&mut l, &[1, 0]).unwrap();
+            it.props_mut().unwrap().percent_open = Some(40.0);
+        }
+        assert!(set_item_type(&mut l, &[1, 0], ItemKind::Drawer));
+        let it = item_at(&l, &[1, 0]).unwrap();
+        assert_eq!(it.kind(), ItemKind::Drawer);
+        assert_eq!(it.props().unwrap().percent_open, Some(40.0));
+        assert_eq!(it.height(), 6.0);
+        assert!(!set_item_type(&mut l, &[1], ItemKind::Drawer), "a layout");
+        assert!(!set_item_type(&mut l, &[1, 0], ItemKind::VerticalLayout));
+        assert_eq!(describe(item_at(&l, &[1, 0]).unwrap()), "Drawer");
+    }
+
+    #[test]
+    fn the_cabinet_style_list_converts_and_explains_a_refusal() {
+        let mut dlg = CabinetDialog::new(Cabinet::base(20.0));
+        // A 20 in wide, 24 in deep cabinet cannot be a corner cabinet.
+        let err = dlg.draft_mut().convert(CabinetStyle::Corner).unwrap_err();
+        assert!(err.contains("greater than its depth"));
+        dlg.draft_mut().width = 36.0;
+        dlg.draft_mut()
+            .convert(CabinetStyle::Special(plan_cabinets::SpecialShape::BowFront))
+            .unwrap();
+        // The General page shows the amount field for the shape.
+        let drawn = cabinet_page_texts(&mut dlg, 0);
+        assert!(drawn.iter().any(|t| t == "Bow Depth"), "{drawn:?}");
+        assert!(drawn.iter().any(|t| t == "Type"));
+    }
+
+    #[test]
+    fn side_properties_and_the_manufacturer_page_draw() {
+        let mut dlg = CabinetDialog::new(Cabinet::base(24.0));
+        let front = TABS
+            .iter()
+            .position(|t| t.name == "Front/Sides/Back")
+            .unwrap();
+        let drawn = cabinet_page_texts(&mut dlg, front);
+        assert!(drawn.iter().any(|t| t == "Left Stile"), "{drawn:?}");
+        assert!(drawn.iter().any(|t| t == "Auto Door Threshold"));
+        let maker = TABS.iter().position(|t| t.name == "Manufacturer").unwrap();
+        dlg.draft_mut().manufacturer = Some(plan_cabinets::Manufacturer::default());
+        let drawn = cabinet_page_texts(&mut dlg, maker);
+        assert!(drawn.iter().any(|t| t == "Web Site"), "{drawn:?}");
     }
 
     /// Every text a page draws.

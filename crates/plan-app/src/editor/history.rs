@@ -65,6 +65,16 @@ impl ChangeHistory {
         true
     }
 
+    /// True while an undo group is open and has not yet seen a change.
+    pub fn group_is_empty(&self) -> bool {
+        self.group.depth > 0 && self.group.before.is_none()
+    }
+
+    /// True while an undo group is open and a change has been seen in it.
+    pub fn group_has_change(&self) -> bool {
+        self.group.depth > 0 && self.group.before.is_some()
+    }
+
     /// Records `project` (the state before a change) as the step `label`.
     pub fn begin(&mut self, project: &Project, label: &str) {
         if self.group.depth > 0 {

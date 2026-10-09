@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 
 type V3d = [f64; 3];
 
+mod trim;
+pub use trim::{
+    roof_trim_lines, soffit_boxed, RafterTailRecipe, RafterTailSpec, RidgeCapEdge, RidgeCapSpec,
+    RoofTrimOptions, SoffitStyle, TrimKind, TrimLine, TrimSpec,
+};
+
 /// Eave options one roof plane sets for itself (Roof Plane Specification >
 /// Eaves); `None` follows the roof's [`RoofDetail`].
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]

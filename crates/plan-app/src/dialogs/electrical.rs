@@ -2,9 +2,15 @@
 //!
 //! * General: the kind (any kind of the same family, e.g. a duplex outlet
 //!   becomes a GFCI), its voltage and flags (110V / 220V, GFCI, WP,
-//!   Dedicated), height above the floor, label and circuit; with the plan's
-//!   defaults loaded ([`ElectricalDialog::with_defaults`]) also "Use as
-//!   default height" and the Default Heights of every kind.
+//!   Dedicated), the height above the floor (to its Center, Bottom or Top),
+//!   its Width and Height with Retain Aspect Ratio (E-33), label and circuit;
+//!   with the plan's defaults loaded ([`ElectricalDialog::with_defaults`])
+//!   also "Use as default height" and the four Default Heights with the Use
+//!   Default Heights switch.
+//! * Options (E-32): the mounting (wall, floor, ceiling or cabinet side), the
+//!   recess (Distance from Wall, negative sets the device into the wall; Cuts
+//!   Floor, Ceiling and Wall; Cut Depth; Insert Depth) and, for a switch,
+//!   Automatically Change Switch Type When Wiring.
 //! * Switches: for a switch, the lights and outlets it controls (check one to
 //!   connect it, uncheck to remove the connection arc); for anything else,
 //!   the switches that control it.
@@ -23,12 +29,13 @@ use crate::editor::{site_view, Camera};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Ui};
 use plan_core::{Id, Point, Wall};
 use plan_electrical::{
-    connect_in, disconnect, Device, DeviceKind, ElectricalDefaults, ElectricalLayer,
-    COUNTER_OUTLET_KEY, FINISHES,
+    connect_in, disconnect, Device, DeviceKind, DeviceOptions, ElectricalDefaults, ElectricalLayer,
+    HeightTo, Mount, FINISHES,
 };
 
 const TABS: &[Tab] = &[
     on("General"),
+    on("Options"),
     on("Switches"),
     on("Materials"),
     on("Label"),
@@ -52,6 +59,8 @@ pub struct DeviceDraft {
     pub finish: String,
     /// Hide the label in the plan.
     pub hide_label: bool,
+    /// Mounting, recess, size and switch options (stored beside the device).
+    pub options: DeviceOptions,
     /// The plan's default heights as edited in the dialog; `None` when the
     /// dialog was opened without them (nothing to store then).
     pub defaults: Option<ElectricalDefaults>,
@@ -77,6 +86,7 @@ impl DeviceDraft {
             controls,
             finish: d.finish.clone(),
             hide_label: d.hide_label,
+            options: layer.options_of(d.id),
             defaults: None,
         }
     }
@@ -114,6 +124,7 @@ impl DeviceDraft {
         };
         let was_switch = d.kind.is_switch();
         self.apply(d);
+        layer.set_options(self.id, self.options.clone());
         if !was_switch || !self.kind.is_switch() {
             return;
         }
@@ -148,10 +159,7 @@ struct Form {
     loads: Vec<(Id, String)>,
     fields: Fields,
     circuit_text: String,
-    /// Default height rows, one per kind: the kind and its height.
-    default_rows: Vec<(DeviceKind, f64)>,
-    counter_height: f64,
-    /// "Use as default height for this kind" is ticked.
+    /// "Use as default height" is ticked.
     make_default: bool,
 }
 
@@ -193,21 +201,14 @@ impl ElectricalDialog {
                 loads,
                 fields: Fields::default(),
                 circuit_text: d.circuit.map(|c| c.to_string()).unwrap_or_default(),
-                default_rows: Vec::new(),
-                counter_height: ElectricalDefaults::default().counter_height(),
                 make_default: false,
             },
         }
     }
 
     /// Opens the dialog with the plan's electrical defaults, so the General
-    /// tab offers "Use as default height" and the Default Heights list.
+    /// tab offers "Use as default height" and the four Default Heights.
     pub fn with_defaults(mut self, defaults: &ElectricalDefaults) -> Self {
-        self.form.default_rows = DeviceKind::all()
-            .into_iter()
-            .map(|k| (k, defaults.height(k)))
-            .collect();
-        self.form.counter_height = defaults.counter_height();
         self.form.draft.defaults = Some(defaults.clone());
         self
     }
@@ -228,15 +229,12 @@ impl ElectricalDialog {
 }
 
 impl Form {
-    /// Folds the Default Heights rows and the tick box into the draft.
+    /// Folds the "Use as default height" tick into the draft's defaults (the
+    /// Default Heights fields edit them in place).
     fn sync_defaults(&mut self) {
         let Some(defaults) = self.draft.defaults.as_mut() else {
             return;
         };
-        for (k, h) in &self.default_rows {
-            defaults.set_height(*k, *h);
-        }
-        defaults.set_counter_height(self.counter_height);
         if self.make_default {
             defaults.set_height(self.draft.kind, self.draft.height);
         }
@@ -285,22 +283,68 @@ impl Form {
                 flags.join(", ")
             })
         });
-        self.fields
-            .length_row(ui, "Height", "height", &mut self.draft.height);
+        // The height above the floor, measured to the center, bottom or top.
+        row(ui, "Height to", |ui| {
+            egui::ComboBox::from_id_salt("elec_height_to")
+                .selected_text(self.draft.options.height_to.name())
+                .show_ui(ui, |ui| {
+                    for h in HeightTo::ALL {
+                        ui.selectable_value(&mut self.draft.options.height_to, h, h.name());
+                    }
+                });
+        });
+        let kind = self.draft.kind;
+        let to = self.draft.options.height_to;
+        let mut shown = self
+            .draft
+            .options
+            .height_measured(kind, self.draft.height, to);
+        if self.fields.length_row(ui, "Height", "height", &mut shown) {
+            self.draft.height = self.draft.options.height_to_center(kind, shown, to);
+        }
+        super::elevation_ref::row(ui, "Height Reference");
+        section(ui, "Size");
+        let (mut w, mut h) = self.draft.options.size(kind);
+        if self.fields.length_row(ui, "Width", "width", &mut w) {
+            self.draft.options.set_width(kind, w);
+        }
+        if self
+            .fields
+            .length_row(ui, "Size Height", "size_height", &mut h)
+        {
+            self.draft.options.set_size_height(kind, h);
+        }
+        ui.checkbox(&mut self.draft.options.retain_aspect, "Retain Aspect Ratio");
         if self.draft.defaults.is_some() {
-            let name = format!("Use as default height for {}", self.draft.kind.name());
-            ui.checkbox(&mut self.make_default, name);
-            ui.collapsing("Default Heights", |ui| {
-                self.fields.length_row(
-                    ui,
-                    "Counter Outlet",
-                    COUNTER_OUTLET_KEY,
-                    &mut self.counter_height,
-                );
-                for (k, h) in &mut self.default_rows {
-                    self.fields.length_row(ui, k.name(), k.name(), h);
-                }
-            });
+            if let Some(g) = kind.height_group() {
+                let group = match g {
+                    plan_electrical::HeightGroup::Outlet => "Outlet",
+                    plan_electrical::HeightGroup::Switch => "Switch",
+                };
+                let name = format!("Use as default {group} height");
+                ui.checkbox(&mut self.make_default, name);
+            }
+            if let Some(d) = self.draft.defaults.as_mut() {
+                ui.collapsing("Default Heights", |ui| {
+                    ui.checkbox(&mut d.use_default_heights, "Use Default Heights");
+                    self.fields
+                        .length_row(ui, "Outlet", "def_outlet", &mut d.outlet_height);
+                    self.fields
+                        .length_row(ui, "Switch", "def_switch", &mut d.switch_height);
+                    self.fields.length_row(
+                        ui,
+                        "Above Base Cabinet",
+                        "def_above_base",
+                        &mut d.above_base_cabinet,
+                    );
+                    self.fields.length_row(
+                        ui,
+                        "On Cabinet Side",
+                        "def_cab_side",
+                        &mut d.on_cabinet_side,
+                    );
+                });
+            }
         }
         row(ui, "Label", |ui| {
             ui.text_edit_singleline(&mut self.draft.label)
@@ -311,6 +355,46 @@ impl Form {
                 self.draft.circuit = self.circuit_text.trim().parse().ok();
             }
         });
+    }
+
+    fn options_tab(&mut self, ui: &mut Ui) {
+        section(ui, "Mounting");
+        let o = &mut self.draft.options;
+        row(ui, "Mounting", |ui| {
+            egui::ComboBox::from_id_salt("elec_mount")
+                .selected_text(o.mount.name())
+                .show_ui(ui, |ui| {
+                    for m in Mount::ALL {
+                        ui.selectable_value(&mut o.mount, m, m.name());
+                    }
+                });
+        });
+        section(ui, "Recess");
+        self.fields.length_row(
+            ui,
+            "Distance from Wall",
+            "recess_distance",
+            &mut o.recess.distance_from_wall,
+        );
+        ui.weak("A negative distance sets the device into the wall.");
+        ui.checkbox(&mut o.recess.cuts_floor, "Cuts Floor");
+        ui.checkbox(&mut o.recess.cuts_ceiling, "Cuts Ceiling");
+        ui.checkbox(&mut o.recess.cuts_wall, "Cuts Wall");
+        self.fields
+            .length_row(ui, "Cut Depth", "recess_cut", &mut o.recess.cut_depth);
+        self.fields.length_row(
+            ui,
+            "Insert Depth",
+            "recess_insert",
+            &mut o.recess.insert_depth,
+        );
+        if self.draft.kind.is_switch() {
+            section(ui, "Wiring");
+            ui.checkbox(
+                &mut self.draft.options.auto_switch_type,
+                "Automatically Change Switch Type When Wiring",
+            );
+        }
     }
 
     fn switches_tab(&mut self, ui: &mut Ui) {
@@ -418,6 +502,7 @@ impl SpecPages for Form {
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match TABS[tab].name {
             "General" => self.general(ui),
+            "Options" => self.options_tab(ui),
             "Switches" => self.switches_tab(ui),
             "Materials" => self.materials(ui),
             "Label" => self.label(ui),
@@ -556,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_list_follows_the_ticked_kind_and_the_edited_rows() {
+    fn the_four_default_heights_follow_the_ticked_group_and_the_edited_fields() {
         let mut layer = ElectricalLayer::default();
         let o = layer.add(place_free(DeviceKind::Outlet110, Point::ZERO));
         let d = layer.device(o).unwrap().clone();
@@ -564,23 +649,24 @@ mod tests {
         assert!(plain.draft().defaults.is_none(), "no defaults, no section");
         let mut dlg =
             ElectricalDialog::for_device(&d, &layer).with_defaults(&ElectricalDefaults::default());
-        assert_eq!(dlg.form.default_rows.len(), DeviceKind::all().len());
-        // Tick "Use as default height" with a new height.
+        // Tick "Use as default Outlet height" with a new height.
         dlg.form.make_default = true;
         dlg.draft_mut().height = 18.0;
-        // And edit the switch row and the counter row.
-        for (k, h) in &mut dlg.form.default_rows {
-            if *k == DeviceKind::Switch {
-                *h = 40.0;
-            }
+        // The Default Heights fields edit the draft's defaults in place.
+        {
+            let defaults = dlg.draft_mut().defaults.as_mut().unwrap();
+            defaults.switch_height = 40.0;
+            defaults.above_base_cabinet = 6.0;
+            defaults.on_cabinet_side = 30.0;
+            defaults.use_default_heights = true;
         }
-        dlg.form.counter_height = 36.0;
         dlg.form.sync_defaults();
         let defaults = dlg.draft().defaults.clone().unwrap();
         assert_eq!(defaults.height(DeviceKind::Outlet110), 18.0);
+        assert_eq!(defaults.height(DeviceKind::Gfci), 18.0, "one Outlet height");
         assert_eq!(defaults.height(DeviceKind::Switch), 40.0);
-        assert_eq!(defaults.height(DeviceKind::Gfci), 12.0);
-        assert_eq!(defaults.counter_height(), 36.0);
+        assert_eq!(defaults.counter_height(), 42.0);
+        assert_eq!(defaults.on_cabinet_side, 30.0);
         let mut project = plan_core::Project::new("x");
         assert!(dlg.draft().store_defaults(&mut project));
         assert!(
@@ -588,8 +674,13 @@ mod tests {
             "unchanged the second time"
         );
         assert_eq!(ElectricalDefaults::load(&project), defaults);
-        // Unticking restores the row's value.
+        // Unticking leaves the typed field as the draft's own value.
         dlg.form.make_default = false;
+        dlg.draft_mut()
+            .defaults
+            .as_mut()
+            .unwrap()
+            .set_height(DeviceKind::Outlet110, 12.0);
         dlg.form.sync_defaults();
         assert_eq!(
             dlg.draft()
@@ -599,6 +690,58 @@ mod tests {
                 .height(DeviceKind::Outlet110),
             12.0
         );
+    }
+
+    #[test]
+    fn options_recess_size_and_switch_type_are_stored_beside_the_device() {
+        let mut layer = ElectricalLayer::default();
+        let o = layer.add(place_free(DeviceKind::Outlet110, Point::ZERO));
+        let sw = layer.add(place_free(DeviceKind::Switch, Point::new(20.0, 0.0)));
+        let d = layer.device(o).unwrap().clone();
+        let mut dlg = ElectricalDialog::for_device(&d, &layer);
+        assert!(dlg.draft().options.is_default());
+        {
+            let opts = &mut dlg.draft_mut().options;
+            opts.mount = Mount::CabinetSide;
+            opts.recess.distance_from_wall = -1.5;
+            opts.recess.cuts_wall = true;
+            opts.recess.cut_depth = 2.0;
+            opts.recess.insert_depth = 1.5;
+            // Retain Aspect Ratio: the height follows the width.
+            opts.set_width(DeviceKind::Outlet110, 5.5);
+        }
+        let draft = dlg.draft().clone();
+        draft.apply_to_layer(&mut layer, &[]);
+        let stored = layer.options_of(o);
+        assert_eq!(stored.mount, Mount::CabinetSide);
+        assert!(stored.recess.is_recessed());
+        assert_eq!(stored.size(DeviceKind::Outlet110), (5.5, 9.0));
+        // A device with default options stores nothing.
+        assert!(!layer.options.contains_key(&sw));
+        // Reopen: the dialog shows what was stored; the options survive a save.
+        let again = ElectricalDialog::for_device(layer.device(o).unwrap(), &layer);
+        assert_eq!(again.draft().options, stored);
+        let json = serde_json::to_string(&layer).unwrap();
+        let back: ElectricalLayer = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.options_of(o), stored);
+        // Switch wiring type can be switched off per device.
+        let d = layer.device(sw).unwrap().clone();
+        let mut dlg = ElectricalDialog::for_device(&d, &layer);
+        dlg.draft_mut().options.auto_switch_type = false;
+        dlg.draft().clone().apply_to_layer(&mut layer, &[]);
+        assert!(!layer.options_of(sw).auto_switch_type);
+    }
+
+    #[test]
+    fn the_height_can_be_read_to_the_bottom_or_the_top() {
+        let mut opts = DeviceOptions::default();
+        let k = DeviceKind::Outlet110;
+        assert_eq!(opts.height_measured(k, 12.0, HeightTo::Center), 12.0);
+        assert_eq!(opts.height_measured(k, 12.0, HeightTo::Bottom), 9.75);
+        assert_eq!(opts.height_measured(k, 12.0, HeightTo::Top), 14.25);
+        assert_eq!(opts.height_to_center(k, 9.75, HeightTo::Bottom), 12.0);
+        opts.set_size_height(k, 9.0);
+        assert_eq!(opts.width, Some(5.5), "the width follows the height");
     }
 
     #[test]

@@ -802,11 +802,11 @@ fn draw_dimension_ends(
 
 fn draw_dimensions(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64), ctx: &Ctx) {
     for d in &f.dimensions {
-        let layer = match d.kind {
+        let layer = d.layer_or(match d.kind {
             DimensionKind::Manual => "Dimensions, Manual",
             DimensionKind::AutoExterior => "Dimensions, Automatic",
             DimensionKind::Temporary => continue,
-        };
+        });
         if !ctx.layers.is_visible(layer) {
             continue;
         }

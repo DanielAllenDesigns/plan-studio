@@ -5,7 +5,10 @@
 //!   the Dimension Defaults dialog (Primary Format, Setup Automatic,
 //!   Extensions, Arrow, Text Style).
 //! * **Room Types**: name, function, living area, conditioned, with
-//!   Add / Edit / Rename / Delete.
+//!   Add / Edit / Copy / Rename / Delete / Select All / Clear All. Select All
+//!   and Clear All select and clear the list rows (manual p. 445); Edit opens
+//!   Room Type Defaults (`room_types.rs`) for the selected row, or Multiple
+//!   Room Type Defaults for several.
 //! * **Text Styles**: name, font, height, bold / italic / underline and color,
 //!   for the plan and for the defaults new plans start from.
 //!
@@ -14,6 +17,7 @@
 //! the editing rules (unique names, protected entries) so they are tested
 //! without a window.
 
+use super::room_types::{RoomTypeDialog, TypeContext};
 use super::{on, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, ERROR_RED, PV_INK};
 use crate::editor::EditorContext;
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers, Painter, Pos2, Rect, Stroke, Ui};
@@ -41,8 +45,22 @@ impl DefaultsList {
             .iter()
             .flat_map(|f| f.room_names.iter().map(|n| n.room_type.clone()))
             .collect();
+        let context = TypeContext {
+            library: cx.project.assemblies.clone(),
+            floor: cx.floor().settings.clone(),
+            layers: cx
+                .project
+                .layers
+                .layers
+                .iter()
+                .map(|l| l.name.clone())
+                .collect(),
+            other_names: Vec::new(),
+        };
         DefaultsList::RoomTypes(Box::new(
-            RoomTypesDialog::new(&cx.defaults).with_in_use(in_use),
+            RoomTypesDialog::new(&cx.defaults)
+                .with_in_use(in_use)
+                .with_context(context),
         ))
     }
 
@@ -69,6 +87,17 @@ impl DefaultsList {
                     }
                     DefaultsList::RoomTypes(d) => {
                         d.types.apply(cx);
+                        // Definitions saved from the layers window go to the
+                        // plan's library.
+                        let saved = d.take_saved();
+                        if !saved.is_empty() {
+                            for n in saved {
+                                cx.project
+                                    .assemblies
+                                    .save_named(n.kind, &n.name, n.assembly);
+                            }
+                            cx.mark_dirty();
+                        }
                         cx.status = "Saved the room types".into();
                     }
                     DefaultsList::TextStyles(d) => {
@@ -781,19 +810,6 @@ fn string_combo(ui: &mut Ui, salt: &str, value: &mut String, options: &[&str]) {
 
 // ----- Room Types -----
 
-/// Chief's room functions.
-pub const FUNCTIONS: [&str; 9] = [
-    "Standard",
-    "Living",
-    "Utility",
-    "Deck",
-    "Garage",
-    "Porch",
-    "Open Below",
-    "Basement",
-    "Crawl Space",
-];
-
 /// The draft of the room types: each entry remembers the name it had when
 /// the dialog opened, so renames can follow into the plan's rooms.
 #[derive(Clone, Debug, PartialEq)]
@@ -834,16 +850,8 @@ impl RoomTypeList {
         let name = unique_name("New Room Type", |n| {
             self.types.iter().any(|(_, t)| t.name == n)
         });
-        self.types.push((
-            None,
-            RoomTypeDef {
-                name,
-                function: "Standard".into(),
-                include_in_living_area: true,
-                conditioned: true,
-                default_floor_finish: String::new(),
-            },
-        ));
+        self.types
+            .push((None, RoomTypeDef::new(&name, "Standard", true, true)));
         self.types.len() - 1
     }
 
@@ -925,17 +933,23 @@ impl RoomTypeList {
 pub struct RoomTypesDialog {
     pub types: RoomTypeList,
     selected: usize,
-    /// The Edit form: a copy of the type being edited.
-    edit: Option<(usize, RoomTypeDef)>,
+    /// Room Type Defaults (one row) or Multiple Room Type Defaults (several)
+    /// open on the rows it edits.
+    edit: Option<(Vec<usize>, RoomTypeDialog)>,
     prompt: Option<(usize, String)>,
     /// The Copy prompt: the type being copied and the name for the copy.
     copy_prompt: Option<(usize, String)>,
     message: Option<String>,
     /// The types the plan's rooms use (the In Use column).
     in_use: Vec<String>,
-    /// The check box of each type (parallel to `types.types`); Delete removes
-    /// the checked types.
+    /// The selected list rows (parallel to `types.types`): Select All and
+    /// Clear All set and clear them, Edit works on them and Delete removes
+    /// them (manual p. 445).
     pub checked: Vec<bool>,
+    /// What Room Type Defaults needs from the plan.
+    context: TypeContext,
+    /// Definitions saved from the layers windows, for the plan's library.
+    saved: Vec<plan_core::assemblies::NamedAssembly>,
 }
 
 impl RoomTypesDialog {
@@ -951,6 +965,96 @@ impl RoomTypesDialog {
             message: None,
             in_use: Vec::new(),
             checked,
+            context: TypeContext::default(),
+            saved: Vec::new(),
+        }
+    }
+
+    /// What Room Type Defaults needs from the plan: the saved layer
+    /// definitions, the floor's platforms and the layers.
+    pub fn with_context(mut self, context: TypeContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// Definitions saved from the layers windows of accepted dialogs.
+    pub fn take_saved(&mut self) -> Vec<plan_core::assemblies::NamedAssembly> {
+        std::mem::take(&mut self.saved)
+    }
+
+    /// The selected rows, in list order.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        (0..self.types.types.len())
+            .filter(|&i| self.checked.get(i).copied().unwrap_or(false))
+            .collect()
+    }
+
+    /// A click on row `i`: it alone is selected; with Shift every row from
+    /// the last clicked one to it; with Ctrl or Cmd it is toggled.
+    pub fn click_row(&mut self, i: usize, shift: bool, toggle: bool) {
+        let n = self.types.types.len();
+        if i >= n {
+            return;
+        }
+        self.checked.resize(n, false);
+        if shift {
+            let (a, b) = (self.selected.min(i), self.selected.max(i));
+            for (k, c) in self.checked.iter_mut().enumerate() {
+                *c = k >= a && k <= b;
+            }
+        } else if toggle {
+            self.checked[i] = !self.checked[i];
+            self.selected = i;
+        } else {
+            self.checked.iter_mut().for_each(|c| *c = false);
+            self.checked[i] = true;
+            self.selected = i;
+        }
+        if !shift && !toggle {
+            self.selected = i;
+        }
+    }
+
+    /// Opens Room Type Defaults on the selected rows: one row edits that
+    /// type, several the Multiple Room Type Defaults. Without a selection it
+    /// edits the primary row.
+    pub fn open_edit(&mut self) {
+        let mut rows = self.selected_rows();
+        if rows.is_empty() && self.selected < self.types.types.len() {
+            rows.push(self.selected);
+        }
+        let Some(&first) = rows.first() else {
+            return;
+        };
+        let mut ctx = self.context.clone();
+        ctx.other_names = self
+            .types
+            .types
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !rows.contains(i))
+            .map(|(_, (_, t))| t.name.clone())
+            .collect();
+        let dialog = if rows.len() > 1 {
+            RoomTypeDialog::multiple(rows.len(), ctx)
+        } else {
+            RoomTypeDialog::new(self.types.types[first].1.clone(), ctx)
+        };
+        self.edit = Some((rows, dialog));
+    }
+
+    /// The edit dialog was accepted: write its result into the rows.
+    fn finish_edit(&mut self, rows: &[usize], mut dialog: RoomTypeDialog) {
+        self.saved.extend(dialog.take_saved());
+        if dialog.is_multiple() {
+            let changes = dialog.changes();
+            for &i in rows {
+                if let Some(slot) = self.types.types.get_mut(i) {
+                    changes.apply(&mut slot.1);
+                }
+            }
+        } else if let Some(slot) = rows.first().and_then(|&i| self.types.types.get_mut(i)) {
+            slot.1 = dialog.result();
         }
     }
 
@@ -965,12 +1069,12 @@ impl RoomTypesDialog {
         self.in_use.iter().any(|n| n == name)
     }
 
-    /// Select All: checks every type.
+    /// Select All: selects every row of the list.
     pub fn select_all(&mut self) {
         self.checked = vec![true; self.types.types.len()];
     }
 
-    /// Clear All: unchecks every type.
+    /// Clear All: deselects every row.
     pub fn clear_all(&mut self) {
         self.checked = vec![false; self.types.types.len()];
     }
@@ -1018,18 +1122,11 @@ impl RoomTypesDialog {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        if let Some((idx, mut t)) = self.edit.take() {
-            match edit_room_type(ctx, &mut t) {
-                Outcome::Open => self.edit = Some((idx, t)),
+        if let Some((rows, mut dialog)) = self.edit.take() {
+            match dialog.show(ctx) {
+                Outcome::Open => self.edit = Some((rows, dialog)),
                 Outcome::Cancel => {}
-                Outcome::Ok => {
-                    if let Some(slot) = self.types.types.get_mut(idx) {
-                        slot.1.function = t.function;
-                        slot.1.include_in_living_area = t.include_in_living_area;
-                        slot.1.conditioned = t.conditioned;
-                        slot.1.default_floor_finish = t.default_floor_finish;
-                    }
-                }
+                Outcome::Ok => self.finish_edit(&rows, dialog),
             }
         }
         if let Some((idx, mut text)) = self.prompt.take() {
@@ -1061,6 +1158,8 @@ impl RoomTypesDialog {
         let (checked, in_use) = (&mut self.checked, &self.in_use);
         checked.resize(types.types.len(), false);
         let mut want_edit = None;
+        let mut want_new: Option<usize> = None;
+        let mut clicked: Option<(usize, bool, bool)> = None;
         let mut want_rename = None;
         let mut want_copy = None;
         let mut want_delete = false;
@@ -1081,26 +1180,25 @@ impl RoomTypesDialog {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         egui::Grid::new("room_types_grid")
-                            .num_columns(6)
+                            .num_columns(5)
                             .striped(true)
                             .spacing([14.0, 3.0])
                             .show(ui, |ui| {
-                                for h in [
-                                    "",
-                                    "Name",
-                                    "Function",
-                                    "Living Area",
-                                    "Conditioned",
-                                    "In Use",
-                                ] {
+                                for h in
+                                    ["Name", "Function", "Living Area", "Conditioned", "In Use"]
+                                {
                                     ui.strong(h);
                                 }
                                 ui.end_row();
                                 for (i, (_, t)) in types.types.iter().enumerate() {
-                                    ui.checkbox(&mut checked[i], "");
-                                    let r = ui.selectable_label(*selected == i, &t.name);
+                                    let r = ui.selectable_label(
+                                        checked[i]
+                                            || (*selected == i && !checked.iter().any(|c| *c)),
+                                        &t.name,
+                                    );
                                     if r.clicked() {
-                                        *selected = i;
+                                        let m = ui.input(|inp| inp.modifiers);
+                                        clicked = Some((i, m.shift, m.command));
                                     }
                                     if r.double_clicked() {
                                         want_edit = Some(i);
@@ -1121,9 +1219,9 @@ impl RoomTypesDialog {
                 ui.horizontal_wrapped(|ui| {
                     let has = *selected < types.types.len();
                     if ui.button("Add").clicked() {
-                        *selected = types.add();
+                        let at = types.add();
                         checked.push(false);
-                        want_edit = Some(*selected);
+                        want_new = Some(at);
                         *message = None;
                     }
                     if ui
@@ -1168,10 +1266,20 @@ impl RoomTypesDialog {
         if want_delete {
             self.message = self.delete_checked().err();
         }
+        if let Some((i, shift, toggle)) = clicked {
+            self.click_row(i, shift, toggle);
+        }
+        if let Some(i) = want_new {
+            self.click_row(i, false, false);
+            self.open_edit();
+        }
         if let Some(i) = want_edit {
-            if let Some((_, t)) = self.types.types.get(i) {
-                self.edit = Some((i, t.clone()));
+            // A double click or Edit on a row outside the selection edits
+            // that row; on the selection, all of it.
+            if !self.checked.get(i).copied().unwrap_or(false) {
+                self.click_row(i, false, false);
             }
+            self.open_edit();
         }
         if let Some(i) = want_rename {
             if let Some((_, t)) = self.types.types.get(i) {
@@ -1196,49 +1304,6 @@ fn yes_no(b: bool) -> &'static str {
     } else {
         "No"
     }
-}
-
-fn edit_room_type(ctx: &egui::Context, t: &mut RoomTypeDef) -> Outcome {
-    let mut outcome = Outcome::Open;
-    let mut open = true;
-    egui::Window::new(format!("Room Type \u{2013} {}", t.name))
-        .id(egui::Id::new("room_type_edit"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .pivot(Align2::CENTER_CENTER)
-        .default_pos(ctx.screen_rect().center())
-        .show(ctx, |ui| {
-            ui.set_min_width(320.0);
-            row(ui, "Function", |ui| {
-                string_combo(ui, "room_type_function", &mut t.function, &FUNCTIONS);
-            });
-            ui.checkbox(&mut t.include_in_living_area, "Include in Living Area");
-            ui.checkbox(&mut t.conditioned, "Conditioned");
-            row(ui, "Default Floor Finish", |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut t.default_floor_finish).desired_width(160.0),
-                );
-            });
-            ui.add_space(6.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("   OK   ").clicked() {
-                    outcome = Outcome::Ok;
-                }
-                if ui.button("Cancel").clicked() {
-                    outcome = Outcome::Cancel;
-                }
-            });
-        });
-    if !open {
-        outcome = Outcome::Cancel;
-    }
-    if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-        outcome = Outcome::Cancel;
-    } else if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
-        outcome = Outcome::Ok;
-    }
-    outcome
 }
 
 // ----- Text Styles -----
@@ -1818,9 +1883,80 @@ mod tests {
     }
 
     #[test]
-    fn the_room_type_functions_include_basement_and_crawl_space() {
-        assert!(FUNCTIONS.contains(&"Basement") && FUNCTIONS.contains(&"Crawl Space"));
-        assert_eq!(FUNCTIONS.len(), 9);
+    fn the_room_type_functions_are_the_manuals_three_categories() {
+        use plan_core::rooms::{function_names, FunctionClass, ROOM_FUNCTIONS};
+        let names = function_names();
+        assert_eq!(names.len(), ROOM_FUNCTIONS.len());
+        // Balcony, Court and Slab exist; Basement and Crawl Space do not
+        // (DECISIONS 300 corrected).
+        for f in ["Balcony", "Court", "Slab", "Attic", "Open Below"] {
+            assert!(names.contains(&f), "{f}");
+        }
+        assert!(!names.contains(&"Basement") && !names.contains(&"Crawl Space"));
+        let count = |c| ROOM_FUNCTIONS.iter().filter(|(_, k)| *k == c).count();
+        assert_eq!(count(FunctionClass::Interior), 2);
+        assert_eq!(count(FunctionClass::Exterior), 3);
+        assert_eq!(count(FunctionClass::Hybrid), 5);
+    }
+
+    #[test]
+    fn select_all_and_clear_all_select_rows_and_edit_works_on_the_selection() {
+        let cx = EditorContext::new(defaults());
+        let mut dlg = RoomTypesDialog::new(&cx.defaults);
+        let n = dlg.types.types.len();
+        // A plain click selects one row; Ctrl toggles; Shift takes a range.
+        dlg.click_row(3, false, false);
+        assert_eq!(dlg.selected_rows(), vec![3]);
+        dlg.click_row(5, false, true);
+        assert_eq!(dlg.selected_rows(), vec![3, 5]);
+        dlg.click_row(5, false, true);
+        assert_eq!(dlg.selected_rows(), vec![3]);
+        // Shift takes the rows from the last clicked one.
+        dlg.click_row(3, false, false);
+        dlg.click_row(6, true, false);
+        assert_eq!(dlg.selected_rows(), vec![3, 4, 5, 6]);
+        dlg.click_row(9, false, false);
+        assert_eq!(dlg.selected_rows(), vec![9]);
+        // Select All and Clear All act on the rows.
+        dlg.select_all();
+        assert_eq!(dlg.selected_rows().len(), n);
+        dlg.clear_all();
+        assert!(dlg.selected_rows().is_empty());
+        // One row opens Room Type Defaults on it.
+        dlg.click_row(2, false, false);
+        dlg.open_edit();
+        let (rows, d) = dlg.edit.take().expect("an editor");
+        assert_eq!(rows, vec![2]);
+        assert!(!d.is_multiple());
+        let mut d = d;
+        d.def_mut().conditioned = !d.def_mut().conditioned;
+        let want = d.def_mut().conditioned;
+        dlg.finish_edit(&rows, d);
+        assert_eq!(dlg.types.types[2].1.conditioned, want);
+        // Several rows open Multiple Room Type Defaults, which changes only
+        // what it sets.
+        dlg.click_row(1, false, false);
+        dlg.click_row(4, false, true);
+        let before: Vec<_> = [1, 4]
+            .iter()
+            .map(|&i| dlg.types.types[i].1.clone())
+            .collect();
+        dlg.open_edit();
+        let (rows, mut d) = dlg.edit.take().expect("an editor");
+        assert_eq!(rows, vec![1, 4]);
+        assert!(d.is_multiple());
+        d.multi_mut().living = Some(false);
+        d.multi_mut().function = Some("Porch".into());
+        dlg.finish_edit(&rows, d);
+        for (k, &i) in [1usize, 4].iter().enumerate() {
+            let t = &dlg.types.types[i].1;
+            assert_eq!(t.name, before[k].name, "names are not shared");
+            assert_eq!(t.function, "Porch");
+            assert!(!t.include_in_living_area);
+            assert_eq!(t.conditioned, before[k].conditioned, "No Change keeps it");
+        }
+        // The draft is still applied by OK as before: renames follow.
+        assert!(dlg.types.renames().is_empty());
     }
 
     #[test]

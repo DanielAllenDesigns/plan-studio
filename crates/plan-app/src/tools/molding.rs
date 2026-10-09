@@ -128,7 +128,10 @@ pub fn all_profiles(project: &Project) -> Vec<ProfileDef> {
     let mut out = builtin_profiles();
     for f in &project.floors {
         for p in DetailsLayer::load(f).profiles {
-            match out.iter_mut().find(|q| q.name.eq_ignore_ascii_case(&p.name)) {
+            match out
+                .iter_mut()
+                .find(|q| q.name.eq_ignore_ascii_case(&p.name))
+            {
                 Some(q) => *q = p,
                 None => out.push(p),
             }
@@ -196,9 +199,7 @@ pub fn add_profile_from_selection(
         return Err("Select a closed polyline to add as a molding profile".into());
     }
     if polys.len() > 1 && !stacked {
-        return Err(
-            "Select one closed polyline, or use Add to Library as Stacked Molding".into(),
-        );
+        return Err("Select one closed polyline, or use Add to Library as Stacked Molding".into());
     }
     let name = match name.map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) => n.to_string(),
@@ -208,7 +209,8 @@ pub fn add_profile_from_selection(
         .into_iter()
         .map(|(_, pts)| (pts, String::new()))
         .collect();
-    let def = ProfileDef::stacked(name.clone(), kind, parts).map_err(|e: ProfileError| e.to_string())?;
+    let def =
+        ProfileDef::stacked(name.clone(), kind, parts).map_err(|e: ProfileError| e.to_string())?;
     let stored = def.clone();
     dv::edit(cx, "Add to Library", |l| l.add_profile(stored));
     set_active_profile(def);
@@ -404,7 +406,9 @@ pub fn set_include_inside(cx: &mut EditorContext, on: bool) -> bool {
     if dv::load(cx).include_inside_corners == on {
         return false;
     }
-    dv::edit(cx, "Include Inside Corners", |l| l.include_inside_corners = on);
+    dv::edit(cx, "Include Inside Corners", |l| {
+        l.include_inside_corners = on
+    });
     true
 }
 
@@ -570,7 +574,9 @@ pub fn set_floor_molding_table(cx: &mut EditorContext, table: MoldingTable) {
 /// The molding table of the room whose label anchor is `anchor`, if it has a
 /// record of its own.
 pub fn room_molding_table(cx: &EditorContext, anchor: Point) -> Option<MoldingTable> {
-    dv::load(cx).room_moldings_at(anchor).map(|r| r.table.clone())
+    dv::load(cx)
+        .room_moldings_at(anchor)
+        .map(|r| r.table.clone())
 }
 
 /// Stores the molding table of a room. The older Moldings tab of the room
@@ -643,13 +649,11 @@ pub fn make_exterior_molding_polyline(
     height: f64,
 ) -> Option<Id> {
     let (rings, _) = crate::tools::cad_ops::footprint_rings(cx)?;
-    let ring = rings
-        .into_iter()
-        .max_by(|a, b| {
-            plan_core::geometry::polygon_area(&a.pts)
-                .abs()
-                .total_cmp(&plan_core::geometry::polygon_area(&b.pts).abs())
-        })?;
+    let ring = rings.into_iter().max_by(|a, b| {
+        plan_core::geometry::polygon_area(&a.pts)
+            .abs()
+            .total_cmp(&plan_core::geometry::polygon_area(&b.pts).abs())
+    })?;
     let mut pts = ring.pts;
     if pts.len() < 3 {
         return None;
@@ -739,7 +743,10 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
         _ => false,
     });
     if has_cabinet_molding {
-        v.push(button(MAKE_CABINET_POLYLINE, "Make Cabinet Molding Polyline"));
+        v.push(button(
+            MAKE_CABINET_POLYLINE,
+            "Make Cabinet Molding Polyline",
+        ));
     }
     v
 }
@@ -769,7 +776,11 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             cx.status = if n == 0 {
                 "Select a molding polyline first".into()
             } else {
-                format!("{n} molding{} replaced with {}", if n == 1 { "" } else { "s" }, p.name)
+                format!(
+                    "{n} molding{} replaced with {}",
+                    if n == 1 { "" } else { "s" },
+                    p.name
+                )
             };
         }
         MAKE_ROOM_POLYLINE => {
@@ -801,7 +812,9 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         NEXT_EDGE => {
             let ids = selected_moldings(cx);
             if let [one] = ids.as_slice() {
-                let n = dv::load(cx).molding(*one).map_or(0, MoldingLine::edge_count);
+                let n = dv::load(cx)
+                    .molding(*one)
+                    .map_or(0, MoldingLine::edge_count);
                 if n > 0 {
                     select_edge(*one, (selected_edge_of(*one) + 1) % n);
                 }
@@ -866,11 +879,16 @@ mod tests {
         let mut cx = cx();
         let id = add_cad_polyline(
             &mut cx,
-            vec![pt(10.0, 10.0), pt(13.0, 10.0), pt(13.0, 14.0), pt(10.0, 14.0)],
+            vec![
+                pt(10.0, 10.0),
+                pt(13.0, 10.0),
+                pt(13.0, 14.0),
+                pt(10.0, 14.0),
+            ],
         );
         cx.selection.set(ObjectRef::Cad(id));
-        let name = add_profile_from_selection(&mut cx, Some("My Base"), MoldingType::Base, false)
-            .unwrap();
+        let name =
+            add_profile_from_selection(&mut cx, Some("My Base"), MoldingType::Base, false).unwrap();
         assert_eq!(name, "My Base");
         let p = find_profile(&cx.project, "my base").expect("in the library");
         assert!((p.width() - 3.0).abs() < 1e-9 && (p.height() - 4.0).abs() < 1e-9);
@@ -883,7 +901,10 @@ mod tests {
     fn open_or_many_polylines_are_refused_unless_stacked() {
         let mut cx = cx();
         let a = add_cad_polyline(&mut cx, vec![pt(0.0, 0.0), pt(2.0, 0.0), pt(2.0, 1.0)]);
-        let b = add_cad_polyline(&mut cx, vec![pt(0.0, 1.0), pt(2.0, 1.0), pt(2.0, 2.0), pt(0.0, 2.0)]);
+        let b = add_cad_polyline(
+            &mut cx,
+            vec![pt(0.0, 1.0), pt(2.0, 1.0), pt(2.0, 2.0), pt(0.0, 2.0)],
+        );
         cx.selection.set(ObjectRef::Cad(a));
         cx.selection.add(ObjectRef::Cad(b));
         assert!(add_profile_from_selection(&mut cx, None, MoldingType::Crown, false).is_err());
@@ -910,7 +931,9 @@ mod tests {
             panic!("a polyline");
         };
         assert!(*closed);
-        let lo = points.iter().fold(pt(f64::MAX, f64::MAX), |a, p| pt(a.x.min(p.x), a.y.min(p.y)));
+        let lo = points.iter().fold(pt(f64::MAX, f64::MAX), |a, p| {
+            pt(a.x.min(p.x), a.y.min(p.y))
+        });
         assert!((lo.x - 100.0).abs() < 1e-9 && (lo.y - 50.0).abs() < 1e-9);
         // And back: adding it to the library again replaces the profile.
         let n = add_profile_from_selection(&mut cx, Some("Back Again"), MoldingType::Crown, false)
@@ -967,7 +990,10 @@ mod tests {
         assert!(!set_edge(&mut cx, id, 1, false), "already off");
         assert!(set_edge(&mut cx, id, 1, true));
         assert_eq!(cx.undo().as_deref(), Some("Add Molding to Selected Edge"));
-        assert_eq!(cx.undo().as_deref(), Some("Remove Molding from Selected Edge"));
+        assert_eq!(
+            cx.undo().as_deref(),
+            Some("Remove Molding from Selected Edge")
+        );
         assert!(!set_edge(&mut cx, id, 9, false));
     }
 
@@ -1002,9 +1028,19 @@ mod tests {
         set_room_molding_table(&mut cx, pt(10.0, 10.0), t.clone());
         assert_eq!(room_molding_table(&cx, pt(10.0, 10.5)), Some(t.clone()));
         set_room_edge(&mut cx, pt(10.0, 10.0), 2, false);
-        assert_eq!(dv::load(&cx).room_moldings_at(pt(10.0, 10.0)).unwrap().off_edges, vec![2]);
+        assert_eq!(
+            dv::load(&cx)
+                .room_moldings_at(pt(10.0, 10.0))
+                .unwrap()
+                .off_edges,
+            vec![2]
+        );
         set_room_edge(&mut cx, pt(10.0, 10.0), 2, true);
-        assert!(dv::load(&cx).room_moldings_at(pt(10.0, 10.0)).unwrap().off_edges.is_empty());
+        assert!(dv::load(&cx)
+            .room_moldings_at(pt(10.0, 10.0))
+            .unwrap()
+            .off_edges
+            .is_empty());
         set_type_molding_table(&mut cx, "Den", t.clone());
         assert_eq!(type_molding_table(&cx, "den"), Some(t.clone()));
         assert!(type_molding_table(&cx, "Bath").is_none());

@@ -146,6 +146,7 @@ The layout view has a toolbar across the top, the sheet in the middle and **page
 |---|---|
 | Toolbar | Plan (back to the floor plan), Send to Layout, Box Specification, Delete Box, Page Before, Page After, Duplicate, Delete Page, the two Exchange arrows, Page Table, Update Views, Page Setup, Project Info, Undo, Redo, Fit, Print, and the zoom as a percentage. Hover for the tooltip. |
 | Third row (Round 14) | **Layout file** (a list of the plan's layout files) and **New Layout File...**, **Page Specification...**, **Sheet Sizes...**, **Align** (Left, Center, Right, Top, Middle, Bottom), **Spread H** and **Spread V**, **Copy to Page...**, **Open Source View**, **Duplicate Box**, and **Export CSV...** / **Export Excel...** for the table boxes (below). The row scrolls sideways. |
+| View row (Round 16) | **Rescale...**, **Recenter**, **Scale to Fit**, **Update View**, **Layers...**, **Unlink Saved View**, **Center Object**, the **Point to Point Move**, **Pan/Scale** and **Edit Layout Lines** tools, **Update Live Views**, **Update Plot Line Views** and **Send All Views...** (below, Editing a layout view). |
 | Tool row | A second row: the drawing **Tool** (Select, Line, Box, Polyline, Circle, Arc, Text, Text Box, Leader, Revision Cloud), then **Add Text Box**, **Add Materials List**, **Add Picture**, **Add Sheet Index**, **Layers...**, **Construction Set**, **Rotate**, and the **Print...**, **Print Image...** and **Print Model...** buttons (11.3, Other boxes and page drawings). The row scrolls sideways when the window is narrow. |
 | Page tabs | One tab per page, written `A-1  Page 1`. The template page reads `Page Template (template)` in italics. Click to open a page; double-click to rename it; the `+` tab adds a page after the last. Right-click a tab for Insert Page Before / After, Duplicate Page, Exchange With Previous / Next Page and Delete Page. |
 | Sheet | The page drawn on a dark surround. Scroll or pinch zooms at the pointer; dragging empty space pans. |
@@ -180,29 +181,72 @@ You make view boxes with Send to Layout (below) and the other kinds with the too
 
 ### Send to Layout
 
-**Send to Layout** (File menu and Layout menu, row 1 button, or `S, L`) opens a dialog:
+**Send to Layout** (File menu and Layout menu, row 1 button, or `S, L`) opens a dialog (Round 16 added the scaling, the send options and the warning):
 
-| Field | Choices |
+| Part | Choices |
 |---|---|
-| View | A plan view: **Floor plan** (any floor) and **Layer set**. Or, when a 3D view of an elevation or section camera is open, that **Camera view**. Or, when a perspective camera (Full Camera, 10.2) is the open view, that **Perspective view** (ray traced, below). |
-| Page | An existing page, or **New page** (after the last). Starts on the page you are looking at. |
-| Scale | **Largest that fits** (the largest scale that fits the drawing area, up to 1/4" = 1'-0"; a 40' x 30' plan is 1/4" on Arch D and 1/8" on Letter), or any scale in the list. |
-| Position | **First free area** of the drawing area, **Centered**, or **Click on page**: a ghost box follows the pointer and the next click on the page places it. |
+| Choose layout | Which of the plan's layout files receives the view: the open one, another, or a new layout file with a name. |
+| Source view | The view type and name: a plan view (**Floor plan** and **Layer set**; "Saved plan view" or "Floor level"), an elevation or section **Camera view**, or a **Perspective view** (ray traced). With a 3D view open, a check box sends **a picture of the 3D view as it is now**. |
+| Send position | **Send to layout page #** (an existing page, or **New page** after the last; starts on the page you are looking at), **Position** (**First free area**, **Centered**, or **Click on page**: a ghost box follows the pointer and the next click places it), **Snap to Active CAD Point** (the new box's lower left takes the nearest corner or end already on the page) and **Show Layout Page** (go to the page afterwards). |
+| Send options | **Entire Plan/View** (everything the view shows, Fill Window), **Current Screen** (only what is on screen; the application tells the layout window which part, until it does the whole view goes) and **Current Screen As Image** (an embedded 150 dpi picture, a static box that is replaced, never updated). **Link Saved Plan View (name)** makes the box follow the saved plan view in use (checked while the plan has one). |
+| Camera view options | For elevations and sections, unless sent as an image: **Live View: Always Update** (dynamic), **Live View: Update on Demand** (semi-dynamic) or **Plot Lines** (with **Color Fill**, **Use Edge Line Defaults**, **Use Pattern Line Defaults**). |
+| Scaling | **Fit to Sheet (No Scale)** (about half the drawing area; the box can be resized afterwards), **Largest scale that fits** (up to 1/4" = 1'-0"), **Scale** (the architectural scales, **1" = 30', 40', 50', 60' and 100'** for site plans, and the metric ratios) or **Other**: a typed scale such as `1:240`, `1/8" = 1'` or `1 in = 80 ft`. 1" = 100' is exactly 1:1200 on paper. **Use Layout Line Scaling** keeps pen weights as drawn on the sheet. |
+| Send all remaining | When several views were chosen (Layout > **Send All Views to Layout...** sends every floor plan and elevation camera) a check box sends the rest with the same settings; unchecked, each view gets its own dialog, starting from the last answers. |
+
+A **warning** appears at the top of the dialog (and in the status line after sending) when the box the scale makes is larger than the page's drawing area: "The view is too big for the sheet at this scale". The view is sent anyway.
+The dialog starts from the settings used last in the session, and from the plan's Drawing Sheet Setup scale when the plan has set one.
 
 **Send All Floors to Layout** (Layout menu) makes one page per floor, each titled like its plan (`FIRST FLOOR PLAN`), at the largest scale that fits. The plan view it sends honors the layer set; "All" ignores layer visibility.
 In a vector elevation or section 3D view (10.7) the panel's **Send to Layout** button sends that camera, and its **Layout PDF...** button saves the layout as a PDF.
 
+### Keeping layout views current (Round 16)
+
+A box is one of four kinds, shown on the General panel of its specification:
+
+| Kind | What it is | How it stays current |
+|---|---|---|
+| Dynamic | A plan view, or an elevation or section sent with Live View, Always Update | Redraws from the plan; nothing to update. |
+| Semi-dynamic | Live View, Update on Demand (and perspective boxes) | Keeps its picture until you update it; **updates when its page prints** (the layout itself is not changed by printing). |
+| Plot Line | An elevation or section sent as Plot Lines | Keeps its lines; only you update it. Printing does not. |
+| Static | A picture (Current Screen As Image) | Never; delete and resend. |
+
+**Layout > Update Layout Views** holds **Update All Views** (semi-dynamic and Plot Line views, then renders the perspective views), **Update All Live Views**, **Update All Plot Line Views** and **Update Selected View**; the view row of the window has the same buttons. Each is one undo step. A box whose floor, saved plan view, layer set or camera is gone shows a **caution triangle** with the reason at its top left corner (page, print and screen); **Ignore Invalid Links** on the Linked View panel hides it.
+
+### Editing a layout view (Round 16)
+
+The window's **View** row (and Layout > **Edit Layout View**) holds the edit tools of a selected view:
+
+- **Rescale Layout View...** opens **Change Scale**: No Scale, a scale of the lists (site scales too), or a typed scale, and **Use Layout Line Scaling**. With **Scale Layout Box Contents Only** on (the default) the box resizes about its center with the scale; off, the box keeps its size and the view is cropped or surrounded by space.
+- **Pan/Scale** (tool): drag on a view to pan its contents; a small window takes a typed scale (`1:48`, `1/4" = 1'`). One undo step per drag or scale.
+- **Recenter** puts the middle of the view at the middle of the box; **Scale to Fit** chooses the exact scale that fills the box (a scale on no list is fine).
+- **Update View**, **Layers...** (Layout Box Layers: the layer set of a plan view, on the Layer Set panel), **Unlink Saved View** (the box keeps the floor and layer set the saved view gave it).
+- A box with no scale reads out its factor beside the top right handle; dragging a corner handle with `Cmd` held (the Alternate edit behavior) resizes the view with the border, any other handle crops.
+- **Edit Layout Lines** (tool): on a Plot Lines view, click an edge or pattern line to select it (`Shift` adds), `Shift`-drag a marquee, drag a selected line to move it, drag on empty space inside the view to draw a new line (it keeps its place against the view), `Delete` removes the selected lines, and double-click (or Layout Box Specification) opens the **Layout Line Specification**: Line Type (Edge or Pattern), Line Weight, Line Style and Line Color, each with **Use Default** (the defaults on the view's Linked View panel). Updating the view deletes your edits and the lines you drew and generates the lines again.
+- **Center Object** moves the selected boxes and page drawings to the middle of the drawing area; **Point to Point Move** (tool) moves them by the distance between two clicks. Drawing tools snap to the corners and ends of page CAD and boxes (`Alt` turns snapping off).
+
 ### Dialog: Layout Box Specification
 
-Opened by double-click or Layout > Layout Box Specification....
+Opened by double-click or Layout > Layout Box Specification.... A box that shows a view of the plan (plan, elevation, section, camera view, CAD detail) opens the panels of Chief's dialog; other boxes (text, pictures, tables, perspective views) open the plain dialog below.
+
+| Panel | Fields |
+|---|---|
+| General | The update kind, **Left / Bottom**, **Width / Height** in paper inches, **Rotation**, **Clip content to the box**, **Recenter contents**. |
+| Linked View | The plan file, **View name**, **View type**, **Ignore Invalid Links**. Plan views: **Saved Plan View** (None or one of the plan's), or for an unsaved view the **Current floor**, **Current default set** and **Show Color**; **Poché**; **Entire plan** (Fill Window extent). Camera views: **Live View, Always Update** / **Update on Demand** / **Plot Lines**, **Color Fill**, **Edge Line Defaults** and **Pattern Line Defaults** (use, line weight, line color). |
+| Box Scale | **No Scale**, **Scale** (list), **Other** (typed), **Use Layout Line Scaling**, **Scale Layout Box Contents Only**. |
+| Layer Set | The active layer set of an unsaved plan view. |
+| Line Style | **Draw border**, the border's own color, weight and style (else the Layout Box Borders layer), **Line weight scaling**, **Material hatches (elevations)**, **Page** (moves the box to another page). |
+| Fill Style | No fill, Solid, Lines, Cross hatch or Dots, with color, transparency, spacing and angle; shown while the Layout Box Borders layer is on. |
+| Label | The label **Text** with macros (`%scale%`, `%view_name%`, `%view_type%`, `%layout_page_label%`, and with a link `%linked_view_name%`, `%linked_view_layout_page_label%`, `%referenced_view_callout_label%`), **Show the scale note**, **Position** (bottom or top, left, center, right), **Shape** (none, or one of the ten callout shapes) with its **Callout text**, and a **Link** to a camera view, a CAD detail or a layout page whose label the macros report. The label is on the **Layout Box Labels** layer. |
+
+The plain dialog (non-view boxes):
 
 | Tab | Fields |
 |---|---|
 | General | **Label** (the caption; empty for none), **Scale**, **Page** (moves the box to another page), **Left / Bottom** and **Width / Height** in paper inches, **Rotation** (0, 90, 180 or 270 degrees), **Draw border**, **Clip content to the box**. |
-| Source | A plan view: **Floor plan** and **Layer set** ("All" ignores layer visibility). A text box: the text, its **Text height** in points, **Alignment** (Left, Center, Right), **Text fit** (Wrap, Shrink to fit, As typed) and **Bold**. A camera box: the camera. A perspective box: the camera, a **Resolution** in dots per paper inch (20 to 600; 80 is the default) and a **Quality** in samples per pixel (1 to 512; 8 is the default), with a line saying how many pixels it renders and that Update Views renders it again. A Materials List box: the **Floors** (All floors or one) and **Category** (All categories or one of the eleven). Other sources show their name. |
+| Source | A text box: the text, its **Text height** in points, **Alignment** (Left, Center, Right), **Text fit** (Wrap, Shrink to fit, As typed) and **Bold**. A perspective box: the camera, a **Resolution** in dots per paper inch (20 to 600; 80 is the default) and a **Quality** in samples per pixel (1 to 512; 8 is the default), with a line saying how many pixels it renders and that Update Views renders it again. A Materials List box: the **Floors** (All floors or one) and **Category** (All categories or one of the eleven). Other sources show their name. |
 | Line Style | **Line weight scaling** (0.1 to 5 times), **Material hatches (elevations)**. Pen colors, weights and dashes come from each layer. |
 
-OK is refused with a reason for a box with no size.
+OK is refused with a reason for a box with no size or a scale that reads as nothing.
 
 ### Dialog: Page Setup
 

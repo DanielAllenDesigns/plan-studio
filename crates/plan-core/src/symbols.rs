@@ -209,7 +209,12 @@ impl Project {
     pub fn add_symbol(&mut self, floor: usize, mut symbol: PlacedSymbol) -> Id {
         let id = self.alloc_id();
         symbol.id = id;
+        // A pasted fireplace brings its specification along.
+        let record = crate::fireplace::take_carried_record(&mut symbol, id);
         self.floors[floor].symbols.push(symbol);
+        if let Some(fp) = record {
+            self.floors[floor].set_fireplace(fp);
+        }
         id
     }
 

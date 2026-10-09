@@ -150,7 +150,7 @@ pub enum OpeningKind {
 ///
 /// Deserialization goes through [`crate::openings`] so files without the
 /// newer fields load with sensible values (e.g. `Window` style for windows).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "crate::openings::OpeningDe")]
 pub struct Opening {
     pub id: Id,
@@ -282,6 +282,10 @@ pub struct RoomName {
     /// the default group.
     #[serde(default, skip_serializing_if = "is_zero_group")]
     pub roof_group: u32,
+    /// The Structure and Layer panel switches beyond the platforms (R-103,
+    /// R-115, R-145); see [`crate::rooms::RoomOptions`].
+    #[serde(default, skip_serializing_if = "crate::rooms::RoomOptions::is_default")]
+    pub options: crate::rooms::RoomOptions,
 }
 
 fn is_zero_group(g: &u32) -> bool {
@@ -317,6 +321,7 @@ impl RoomName {
             deck: None,
             flat_ceiling: true,
             roof_group: 0,
+            options: crate::rooms::RoomOptions::default(),
         }
     }
 }
@@ -431,6 +436,10 @@ pub struct Floor {
     /// [`crate::tray`]).
     #[serde(default, skip_serializing_if = "crate::tray::TrayLayer::is_empty")]
     pub trays: crate::tray::TrayLayer,
+    /// Exterior Room Specifications, one per structure with a non-blank
+    /// specification (see [`crate::living`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exterior_rooms: Vec<crate::living::ExteriorRoom>,
 }
 
 impl Floor {
@@ -469,6 +478,7 @@ impl Floor {
             construction: crate::construction::ConstructionLayer::default(),
             sheet_center: None,
             trays: crate::tray::TrayLayer::default(),
+            exterior_rooms: Vec::new(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -542,6 +552,10 @@ pub struct Project {
     /// The plan's user text macros (Text Macro Management).
     #[serde(default)]
     pub text_macros: crate::text_styles::TextMacros,
+    /// Text objects whose macros are evaluated again as the plan changes
+    /// (see [`crate::macros`]).
+    #[serde(default, skip_serializing_if = "crate::macros::MacroTexts::is_empty")]
+    pub macro_texts: crate::macros::MacroTexts,
     /// The plan's note types (Note Type Management).
     #[serde(default)]
     pub note_types: crate::text_styles::NoteTypes,
@@ -549,6 +563,10 @@ pub struct Project {
     /// Callouts and Markers); see [`crate::callout::AnnotDefaults`].
     #[serde(default)]
     pub annot_defaults: crate::callout::AnnotDefaults,
+    /// The lists of Multiple Saved Defaults, the Default Sets and the Use
+    /// Default state of objects; see [`crate::defaults::saved`].
+    #[serde(default, skip_serializing_if = "crate::defaults::saved::SavedDefaults::is_empty")]
+    pub saved_defaults: crate::defaults::saved::SavedDefaults,
     /// Material overrides of single objects (Material Painter, Adjust
     /// Materials); see [`crate::object_materials`].
     #[serde(default)]
@@ -608,6 +626,14 @@ pub struct Project {
     /// categories; see [`crate::schedules::ScheduleSetup`].
     #[serde(default, skip_serializing_if = "crate::schedules::ScheduleSetup::is_default")]
     pub schedule_setup: crate::schedules::ScheduleSetup,
+    /// Layered floor, ceiling and roof definitions: the plan-wide Floor/Ceiling
+    /// Platform Defaults, the Backsplash and the saved named definitions; see
+    /// [`crate::assemblies`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::assemblies::AssemblyLibrary::is_empty"
+    )]
+    pub assemblies: crate::assemblies::AssemblyLibrary,
 }
 
 fn default_project_name() -> String {
@@ -647,8 +673,10 @@ impl Project {
             layout: None,
             layout_files: Vec::new(),
             text_macros: crate::text_styles::TextMacros::default(),
+            macro_texts: crate::macros::MacroTexts::default(),
             note_types: crate::text_styles::NoteTypes::default(),
             annot_defaults: crate::callout::AnnotDefaults::default(),
+            saved_defaults: Default::default(),
             object_materials: Vec::new(),
             material_defaults: Vec::new(),
             opening_display: crate::openings::OpeningView3d::default(),
@@ -661,6 +689,7 @@ impl Project {
             reference_table: crate::construction::ReferenceTable::default(),
             styles: crate::fill_styles::StyleBook::default(),
             schedule_setup: crate::schedules::ScheduleSetup::default(),
+            assemblies: crate::assemblies::AssemblyLibrary::default(),
         }
     }
 
@@ -850,9 +879,17 @@ impl Project {
             ));
         }
         let mut p: Project = serde_json::from_str(s)?;
+        // A file that omits `floors` gets the default floor (serde default);
+        // one that says `"floors": []` is damaged, not an empty plan.
         if p.floors.is_empty() {
-            p.floors = default_floors();
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "a plan needs at least one floor",
+            ));
         }
+        // Layered platform definitions own the thickness fields the rest of
+        // the program reads; bring them in step (a plan with none is
+        // untouched).
+        p.sync_platform_mirrors();
         if let (Ok(loaded), Ok((typed, _))) = (
             serde_json::from_str::<serde_json::Value>(s),
             crate::foreign::to_value_finite(&p),

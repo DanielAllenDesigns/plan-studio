@@ -7,22 +7,27 @@
 //! [`render_box_lines`], which lets tests inspect exactly what a box draws.
 
 use crate::annot::{PageLeader, RevisionCloud};
+use crate::boxops::{missing_view, ContentMap};
+use crate::boxview::{CameraLink, FillRole, LabelPos, PlotOptions, ScaleMode, Tier, ViewArt};
 use crate::canvas::{
     emit, gray, rotate_prims, soft_clip, soft_clip_with, text_w, Canvas, Dash, Pen, Prim, BLACK,
 };
 use crate::clip::{Pt, Rect};
 use crate::extent::{
-    frame_for, placed_schedule_table, schedule_for, table_metrics, Frame, SceneSource,
-    LINE_SPACING, ROW_H_PT, TABLE_TEXT_PT, TABLE_TITLE_H_PT,
+    frame_for_view, placed_schedule_table, plan_target, schedule_for, table_metrics, Frame,
+    SceneSource, LINE_SPACING, ROW_H_PT, TABLE_TEXT_PT, TABLE_TITLE_H_PT,
 };
 use crate::hatch::wall_face_hatch;
 use crate::layers::{
-    LayoutLayers, LAYER_BOX_BORDERS, LAYER_REVISION_CLOUDS, LAYER_TEXT, LAYER_TITLE_BLOCK,
-    TITLE_BLOCK_BASE_PT,
+    LayoutLayers, LAYER_BOX_BORDERS, LAYER_BOX_LABELS, LAYER_REVISION_CLOUDS, LAYER_TEXT,
+    LAYER_TITLE_BLOCK, TITLE_BLOCK_BASE_PT,
 };
-use crate::overlay::{OverlayShape, PlanOverlayFn, PlanOverlayItem};
 use crate::model::{
     perspective_pixels, BoxSource, Layout, LayoutBox, LayoutPage, TextAlign, BOTTOM_STRIP_IN,
+};
+use crate::overlay::{OverlayShape, PlanOverlayFn, PlanOverlayItem};
+use crate::plotlines::{
+    art_from_drawing, effective_pen, CUT_PT, HATCH_PT, HEAVY_PT, LIGHT_PT, MEDIUM_PT,
 };
 use crate::textfit::{fit_text_box, visible_line_count, whole_line_count, TextFit, PAD_PT};
 use crate::titleblock::{MacroContext, TitleBlockStyle};
@@ -133,6 +138,9 @@ pub struct LayoutRenderContext<'a> {
     /// The page being drawn (its number): a Layout Revision Table lists this
     /// page's revisions, wherever the table sits (a page template too).
     current_page: std::cell::Cell<u32>,
+    /// The label of every page by page number, set by
+    /// [`set_sheet_index`](Self::set_sheet_index).
+    page_label_map: RefCell<HashMap<u32, String>>,
     /// The macros of the sheet being drawn, for text boxes.
     page_macros: RefCell<Option<MacroContext>>,
     picture_cache: RefCell<HashMap<String, Option<Rc<PerspectiveImage>>>>,
@@ -207,6 +215,7 @@ impl<'a> LayoutRenderContext<'a> {
             page_table_rows: RefCell::new(Vec::new()),
             revision_rows: RefCell::new(HashMap::new()),
             current_page: std::cell::Cell::new(0),
+            page_label_map: RefCell::new(HashMap::new()),
             page_macros: RefCell::new(None),
             picture_cache: RefCell::new(HashMap::new()),
         }
@@ -302,12 +311,27 @@ impl<'a> LayoutRenderContext<'a> {
             .iter()
             .map(|p| (layout.sheet_number_of(p), p.title.to_uppercase()))
             .collect();
+        *self.page_label_map.borrow_mut() = layout
+            .pages
+            .iter()
+            .map(|p| (p.number, layout.sheet_number_of(p)))
+            .collect();
         *self.page_table_rows.borrow_mut() = layout.page_table_rows();
         *self.revision_rows.borrow_mut() = layout
             .pages
             .iter()
             .map(|p| (p.number, crate::pages::revision_rows(&p.revisions)))
             .collect();
+    }
+
+    /// The label of page `number` (`A-3`), as Page Information gives it; the
+    /// plain sheet number when the layout has not been seen.
+    pub fn page_label(&self, number: u32) -> String {
+        self.page_label_map
+            .borrow()
+            .get(&number)
+            .cloned()
+            .unwrap_or_else(|| format!("A-{number}"))
     }
 
     /// Says which page is being drawn: a Layout Revision Table lists the
@@ -424,13 +448,6 @@ impl<'a> LayoutRenderContext<'a> {
 
 /// Pen weights for elevation and section lines, points (before the box's
 /// `line_weight_scale`). Heavy is 0.25 mm, Medium 0.12 mm, Light 0.06 mm.
-const HEAVY_PT: f64 = 0.7;
-const MEDIUM_PT: f64 = 0.35;
-const LIGHT_PT: f64 = 0.18;
-/// Section cut lines, points.
-const CUT_PT: f64 = 1.0;
-/// Material hatch stroke, points.
-const HATCH_PT: f64 = 0.15;
 /// Hatch colour as a fraction of the material's base colour.
 const HATCH_DARKEN: f32 = 0.6;
 
@@ -792,7 +809,12 @@ fn draw_dimension(
         Some(g) => (g.label_at, g.label_dir, None, f64::INFINITY),
         None => {
             let (a, b) = (line[0], line[1]);
-            (Point::lerp(a, b, 0.5), b.sub(a).normalized(), Some((a, b)), a.dist(b))
+            (
+                Point::lerp(a, b, 0.5),
+                b.sub(a).normalized(),
+                Some((a, b)),
+                a.dist(b),
+            )
         }
     };
     let params = plan_core::dimension::LabelParams {
@@ -1018,11 +1040,11 @@ fn draw_plan(
     }
 
     for d in &f.dimensions {
-        let layer = match d.kind {
+        let layer = d.layer_or(match d.kind {
             DimensionKind::Manual => "Dimensions, Manual",
             DimensionKind::AutoExterior => "Dimensions, Automatic",
             DimensionKind::Temporary => continue,
-        };
+        });
         if show(layer) {
             let text_pt = dimension_text_pt(cx.project, d, k);
             cv.set_font(dimension_text_style(cx.project, d).and_then(FontSpec::of_style));
@@ -1324,33 +1346,38 @@ pub(crate) fn box_prims(
     };
     let mut cv = Canvas::new();
     let (bw, bh) = (rect[2] - rect[0], rect[3] - rect[1]);
-    let k = b.scale.points_per_inch();
-    let lws = b.line_weight_scale;
-    let frame = frame_for(&b.source, cx, scenes);
+    let k = b.points_per_inch();
+    let lws = line_scale(b);
+    let frame = frame_for_view(&b.source, &b.view, cx, scenes);
 
     match frame {
         Frame::Scaled { lo, hi } => {
-            let (cw, ch) = ((hi.x - lo.x) * k, (hi.y - lo.y) * k);
-            let (ox, oy) = if cw <= bw + 1e-6 && ch <= bh + 1e-6 {
-                (rect[0] + (bw - cw) * 0.5, rect[1] + (bh - ch) * 0.5)
-            } else {
-                (rect[0], rect[3] - ch)
-            };
-            let tp = move |p: Point| (ox + (p.x - lo.x) * k, oy + (p.y - lo.y) * k);
+            let map = ContentMap::new(b, lo, hi);
+            let tp = move |p: Point| map.unturned(p);
             let opts = Options::default();
-            let ipf = b.scale.inches_per_foot();
-            match &b.source {
-                BoxSource::PlanView { floor, layer_set } => {
-                    draw_plan(&mut cv, cx, *floor, layer_set, &tp, k, lws);
+            let ipf = b.effective_ipf();
+            // A Plot Lines (or Update on Demand) view draws the picture it
+            // keeps; a Live View, Always Update draws the plan as it is.
+            let art = b
+                .view
+                .art
+                .as_ref()
+                .filter(|_| b.has_camera_options() && b.view.camera != CameraLink::Always);
+            match (&b.source, art) {
+                (BoxSource::PlanView { .. }, _) => {
+                    if let Some((floor, set)) = plan_target(&b.source, &b.view, cx.project) {
+                        draw_plan(&mut cv, cx, floor, &set, &tp, k, lws);
+                    }
                 }
-                BoxSource::Elevation { dir } => {
+                (_, Some(art)) => draw_art(&mut cv, art, &b.view.plot, &tp, lws),
+                (BoxSource::Elevation { dir }, None) => {
                     let scene = scenes.get(cx.project);
                     if b.hatch_materials {
                         draw_hatch(&mut cv, &wall_face_hatch(scene, *dir, None, ipf), &tp, lws);
                     }
                     draw_drawing(&mut cv, &elevation(scene, *dir, &opts), &tp, lws);
                 }
-                BoxSource::Section { cut } => {
+                (BoxSource::Section { cut }, None) => {
                     let scene = scenes.get(cx.project);
                     if b.hatch_materials {
                         let h = wall_face_hatch(scene, cut.plane_normal, Some(cut.offset), ipf);
@@ -1358,7 +1385,7 @@ pub(crate) fn box_prims(
                     }
                     draw_drawing(&mut cv, &section(scene, *cut, &opts), &tp, lws);
                 }
-                BoxSource::Camera { camera_id } => {
+                (BoxSource::Camera { camera_id }, None) => {
                     if let Some(d) = cx.camera_drawing_for(*camera_id) {
                         if d.has_hatch() {
                             // The camera made its hatch for 1/4"; it is made
@@ -1372,7 +1399,7 @@ pub(crate) fn box_prims(
                         }
                     }
                 }
-                BoxSource::CadDetail { name, items } => {
+                (BoxSource::CadDetail { name, items }, None) => {
                     let layers = &cx.project.layers;
                     // The extras of the detail's CAD (text boxes, text
                     // styles, rich runs) live on the detail's floor; the box
@@ -1502,6 +1529,9 @@ pub(crate) fn box_prims(
     // Turn the content, then clip it to the box and frame it.
     rotate_prims(&mut cv.prims, centre, turns);
     let mut out = Vec::with_capacity(cv.prims.len() + 8);
+    if layers.is_visible(LAYER_BOX_BORDERS) {
+        out.extend(box_fill_prims(b, real, layers));
+    }
     if b.clip {
         out.push(Prim::ClipBegin(real));
     }
@@ -1511,14 +1541,215 @@ pub(crate) fn box_prims(
     }
     if b.border && layers.is_visible(LAYER_BOX_BORDERS) {
         let mut frame = Canvas::new();
-        let pen = Pen {
+        let bd = &b.view.border;
+        let mut pen = Pen {
             color: pdf_color(layers.color(LAYER_BOX_BORDERS)),
-            ..Pen::new(layers.weight_pt(LAYER_BOX_BORDERS) * lws)
+            ..Pen::new(layers.weight_pt(LAYER_BOX_BORDERS) * b.line_weight_scale)
         };
+        if let Some(c) = bd.color {
+            pen.color = pdf_color(c);
+        }
+        if let Some(w) = bd.weight_pt {
+            pen.width = w * b.line_weight_scale;
+        }
+        if let Some(d) = bd.dash {
+            pen.dash = d.into();
+        }
         frame.rect(real[0], real[1], real[2], real[3], pen);
         out.append(&mut frame.prims);
     }
     out
+}
+
+/// The caution symbol of a box whose view has gone (manual p. 1415), at the
+/// box's top left corner: drawn on the page and on screen, but not part of
+/// the box's own lines ([`render_box_lines`]).
+pub(crate) fn caution_prims(b: &LayoutBox, cx: &LayoutRenderContext) -> Vec<Prim> {
+    if b.view.ignore_missing {
+        return Vec::new();
+    }
+    // Cameras are drawn through the application's hooks: without a hook
+    // (headless use) a camera box cannot tell a missing camera from one it was
+    // never given, and a camera the hook draws is not missing.
+    match &b.source {
+        BoxSource::Camera { camera_id } => {
+            if cx.camera_drawing.is_none() || cx.camera_drawing_for(*camera_id).is_some() {
+                return Vec::new();
+            }
+        }
+        BoxSource::Perspective { .. } => {
+            if cx.perspective_render.is_none() && cx.perspective_image.is_none() {
+                return Vec::new();
+            }
+        }
+        _ => {}
+    }
+    let Some(m) = missing_view(b, cx.project) else {
+        return Vec::new();
+    };
+    let mut cv = Canvas::new();
+    draw_caution(&mut cv, box_rect_pt(b), &m.text());
+    cv.prims
+}
+
+/// Pen weight multiplier of a box: its Line Weight Scale and, with Use Layout
+/// Line Scaling off, the view's scale against 1/4" = 1'-0" (lines then grow
+/// and shrink with the view).
+fn line_scale(b: &LayoutBox) -> f64 {
+    if b.view.layout_line_scaling || !is_scaled(&b.source) {
+        b.line_weight_scale
+    } else {
+        b.line_weight_scale * (b.effective_ipf() / 0.25).max(0.05)
+    }
+}
+
+/// A triangle with an exclamation mark in the top left corner of the box and
+/// what is wrong beside it.
+fn draw_caution(cv: &mut Canvas, rect: Rect, what: &str) {
+    let (x, y) = (rect[0] + 6.0, rect[3] - 24.0);
+    let pen = Pen::new(1.0);
+    cv.stroke(&[(x, y), (x + 20.0, y), (x + 10.0, y + 17.0)], true, pen);
+    cv.bold(x + 8.0, y + 3.0, 9.0, "!");
+    cv.text(x + 26.0, y + 4.0, 8.0, BLACK, what);
+}
+
+/// The box's Fill Style: a solid color, or the lines and dots of a pattern
+/// (spacings in paper inches), under the content.
+fn box_fill_prims(b: &LayoutBox, real: Rect, layers: &LayoutLayers) -> Vec<Prim> {
+    use plan_core::fill_styles::{fill_geometry, PatternType};
+    let Some(fs) = b.view.fill.as_ref() else {
+        return Vec::new();
+    };
+    if fs.pattern == PatternType::UseLayer {
+        return Vec::new();
+    }
+    let layer = layers.color(LAYER_BOX_BORDERS);
+    let rgb = fs.color.resolve(layer, [255, 255, 255]);
+    let alpha = 1.0 - fs.transparency.clamp(0.0, 1.0);
+    let mix = |c: u8| (255.0 + (f64::from(c) - 255.0) * alpha).round() as u8;
+    let color = PdfColor::Rgb(mix(rgb[0]), mix(rgb[1]), mix(rgb[2]));
+    let inch = |v: f64| v / 72.0;
+    let poly = [
+        Point::new(inch(real[0]), inch(real[1])),
+        Point::new(inch(real[2]), inch(real[1])),
+        Point::new(inch(real[2]), inch(real[3])),
+        Point::new(inch(real[0]), inch(real[3])),
+    ];
+    let g = fill_geometry(fs, &poly, &[], &[]);
+    let mut cv = Canvas::new();
+    if g.solid {
+        let pts: Vec<Pt> = poly.iter().map(|p| (p.x * 72.0, p.y * 72.0)).collect();
+        cv.fill(&pts, color);
+    }
+    let pen = Pen {
+        color,
+        ..Pen::new(hundredths_mm_to_pt(f64::from(fs.line_weight)).max(0.1))
+    };
+    for (a, c) in &g.lines {
+        cv.line((a.x * 72.0, a.y * 72.0), (c.x * 72.0, c.y * 72.0), pen);
+    }
+    for d in &g.dots {
+        let (x, y) = (d.x * 72.0, d.y * 72.0);
+        cv.fill(
+            &[(x - 0.5, y - 0.5), (x + 0.5, y - 0.5), (x + 0.5, y + 0.5)],
+            color,
+        );
+    }
+    cv.prims
+}
+
+/// The picture a Plot Lines (or Update on Demand) view keeps, drawn: material
+/// fills when Color Fill is on, the poche of cuts and shadows, then each line
+/// in its own pen, then the annotation texts.
+fn draw_art(
+    cv: &mut Canvas,
+    art: &ViewArt,
+    opts: &PlotOptions,
+    tp: &dyn Fn(Point) -> Pt,
+    lws: f64,
+) {
+    let rgb = |c: [u8; 3]| pdf_color(c);
+    for role in [FillRole::Material, FillRole::Cut, FillRole::Shadow] {
+        if role == FillRole::Material && !opts.color_fill {
+            continue;
+        }
+        for f in art.fills.iter().filter(|f| f.role == role) {
+            let pts: Vec<Pt> = f.polygon.iter().map(|&p| tp(p)).collect();
+            cv.fill(&pts, rgb(f.rgb));
+        }
+    }
+    for l in &art.lines {
+        let p = effective_pen(l, opts);
+        let hidden = l.tier == Tier::Hidden && l.style.is_none();
+        let pen = Pen {
+            width: (p.weight_pt * lws).max(0.05),
+            color: rgb(p.color),
+            dash: if hidden { Dash::Hidden } else { p.style.into() },
+        };
+        cv.line(tp(l.a), tp(l.b), pen);
+    }
+    for (at, text) in &art.texts {
+        let (x, y) = tp(*at);
+        if is_title_text(text) {
+            cv.bold(x, y, TITLE_PT, text);
+        } else {
+            cv.text(x, y, NOTE_PT, BLACK, text);
+        }
+    }
+}
+
+/// How a box maps its view onto paper (`None` for a source drawn at paper
+/// size): the layout line tools, hit tests and the screen use it.
+pub fn box_content_map(b: &LayoutBox, cx: &LayoutRenderContext) -> Option<ContentMap> {
+    let scenes = SceneSource::for_context(cx);
+    match frame_for_view(&b.source, &b.view, cx, &scenes) {
+        Frame::Scaled { lo, hi } => Some(ContentMap::new(b, lo, hi)),
+        Frame::Paper { .. } => None,
+    }
+}
+
+/// The picture a cross section, elevation or camera box would keep if it were
+/// updated now: its vector drawing as lines, hatch and fills. `None` for any
+/// other kind of box, or a camera with no drawing.
+pub fn make_art(b: &LayoutBox, cx: &LayoutRenderContext) -> Option<ViewArt> {
+    let scenes = SceneSource::for_context(cx);
+    make_art_with(b, cx, &scenes)
+}
+
+pub(crate) fn make_art_with(
+    b: &LayoutBox,
+    cx: &LayoutRenderContext,
+    scenes: &SceneSource,
+) -> Option<ViewArt> {
+    let ipf = b.effective_ipf();
+    let opts = Options::default();
+    match &b.source {
+        BoxSource::Elevation { dir } => {
+            let scene = scenes.get(cx.project);
+            let hatch = if b.hatch_materials {
+                wall_face_hatch(scene, *dir, None, ipf)
+            } else {
+                Vec::new()
+            };
+            Some(art_from_drawing(&elevation(scene, *dir, &opts), &hatch))
+        }
+        BoxSource::Section { cut } => {
+            let scene = scenes.get(cx.project);
+            let hatch = if b.hatch_materials {
+                wall_face_hatch(scene, cut.plane_normal, Some(cut.offset), ipf)
+            } else {
+                Vec::new()
+            };
+            Some(art_from_drawing(&section(scene, *cut, &opts), &hatch))
+        }
+        BoxSource::Camera { camera_id } => {
+            let d = cx.camera_drawing_for(*camera_id)?;
+            let mut d = (*d).clone();
+            d.rehatch(ipf);
+            Some(art_from_drawing(&d, &[]))
+        }
+        _ => None,
+    }
 }
 
 fn pdf_color(c: [u8; 3]) -> PdfColor {
@@ -1585,22 +1816,108 @@ fn is_scaled(source: &BoxSource) -> bool {
     )
 }
 
-/// Caption and scale note under a box.
-fn label_prims(b: &LayoutBox) -> Vec<Prim> {
-    let Some(label) = &b.label else {
-        return Vec::new();
+/// The text of a box's label with its macros expanded: `%scale%`,
+/// `%view_name%`, `%view_type%`, `%layout_page_label%`, and the callout
+/// macros of the page or view the label is linked to.
+pub(crate) fn expand_label(text: &str, b: &LayoutBox, cx: &LayoutRenderContext) -> String {
+    if !text.contains('%') {
+        return text.to_string();
+    }
+    let view_name = crate::send::default_label(&b.source, cx.project).unwrap_or_default();
+    let view_type = match &b.source {
+        BoxSource::PlanView { .. } if b.view.saved_view.is_some() => "Saved Plan View",
+        BoxSource::PlanView { .. } => "Floor level",
+        BoxSource::Elevation { .. } | BoxSource::Section { .. } => "Cross Section/Elevation",
+        BoxSource::Camera { .. } | BoxSource::Perspective { .. } => "Camera View",
+        BoxSource::CadDetail { .. } => "CAD Detail",
+        _ => "",
     };
+    let t = text
+        .replace("%scale%", &b.scale_note())
+        .replace("%view_name%", &view_name)
+        .replace("%view_type%", view_type)
+        .replace("%layout_page_label%", &cx.page_label(cx.current_page.get()));
+    let link = b.view.label.link.as_ref().map(|l| {
+        let mut info = cx.project.resolve_view_link(l);
+        if let Some(n) = info.page_number {
+            // The page's own label (Page Information), not the plain number.
+            info.page_label = cx.page_label(n);
+        }
+        info
+    });
+    plan_core::callout::expand_macros(
+        &t,
+        &plan_core::callout::Vars {
+            link,
+            ..plan_core::callout::Vars::default()
+        },
+    )
+}
+
+/// Caption and scale note around a box, and its callout or marker shape,
+/// on the Layout Box Labels layer.
+fn label_prims(b: &LayoutBox, cx: &LayoutRenderContext, layers: &LayoutLayers) -> Vec<Prim> {
+    use plan_core::callout::CalloutShape;
+    let lab = &b.view.label;
+    let text = b.label.as_ref().map(|t| expand_label(t, b, cx));
+    if (text.is_none() && lab.shape == CalloutShape::None) || !layers.is_visible(LAYER_BOX_LABELS) {
+        return Vec::new();
+    }
     let r = box_rect_pt(b);
+    let ink = pdf_color(layers.color(LAYER_BOX_LABELS));
     let mut cv = Canvas::new();
-    cv.bold(r[0], r[1] - 13.0, 10.0, label);
-    if is_scaled(&b.source) {
-        cv.text(
-            r[0],
-            r[1] - 23.0,
-            7.0,
-            gray(0.35),
-            &format!("SCALE: {}", b.scale.label()),
+    const SIZE: f64 = 10.0;
+    let text_wid = text.as_ref().map_or(0.0, |t| text_w(t, SIZE, true));
+    // The shape holds the callout text; the label text follows it.
+    let shape_text =
+        (lab.shape != CalloutShape::None).then(|| expand_label(&lab.callout_text, b, cx));
+    let half = shape_text.as_ref().map(|t| {
+        lab.shape
+            .auto_half_extents(text_w(t, SIZE, true), SIZE, 4.0, SIZE * 0.9)
+    });
+    let shape_wid = half.map_or(0.0, |(a, _)| a * 2.0 + 4.0);
+    let total = shape_wid + text_wid;
+    let x0 = match lab.position {
+        LabelPos::BottomLeft | LabelPos::TopLeft => r[0],
+        LabelPos::BottomCenter | LabelPos::TopCenter => (r[0] + r[2]) * 0.5 - total * 0.5,
+        LabelPos::BottomRight | LabelPos::TopRight => r[2] - total,
+    } + lab.offset_in.0 * 72.0;
+    let (y_label, y_note) = if lab.position.on_top() {
+        (r[3] + 13.0, r[3] + 3.0)
+    } else {
+        (r[1] - 13.0, r[1] - 23.0)
+    };
+    let y_label = y_label + lab.offset_in.1 * 72.0;
+    let y_note = y_note + lab.offset_in.1 * 72.0;
+    if let (Some(t), Some((a, h))) = (&shape_text, half) {
+        let (cxp, cyp) = (x0 + a, y_label + SIZE * 0.3);
+        let ring: Vec<Pt> = lab
+            .shape
+            .outline(a, h)
+            .iter()
+            .map(|p| (cxp + p.x, cyp + p.y))
+            .collect();
+        cv.stroke(
+            &ring,
+            true,
+            Pen {
+                color: ink,
+                ..Pen::new(layers.weight_pt(LAYER_BOX_LABELS))
+            },
         );
+        cv.text_centered(cxp, y_label, SIZE, ink, true, t);
+    }
+    if let Some(t) = &text {
+        cv.text_full((x0 + shape_wid, y_label), SIZE, ink, true, 0.0, t);
+    }
+    if lab.show_scale && is_scaled(&b.source) && text.is_some() {
+        let note = b.scale_note();
+        let shown = if matches!(b.view.scale_mode, ScaleMode::NoScale(_)) {
+            note
+        } else {
+            format!("SCALE: {note}")
+        };
+        cv.text(x0 + shape_wid, y_note, 7.0, gray(0.35), &shown);
     }
     cv.prims
 }
@@ -1668,14 +1985,26 @@ pub struct BoxImage {
     pub rgba: Vec<u8>,
 }
 
+/// A filled area a box draws in a color of its own (a Color Fill, a box Fill
+/// Style, a CAD fill), paper inches.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxFill {
+    pub polygon: Vec<Point>,
+    pub rgb: [u8; 3],
+}
+
 /// Everything a box draws, for an on-screen view: its strokes, texts (text
 /// boxes, table cells, placeholders) and images, turned and clipped exactly
-/// like the printed page. Fills are not included.
+/// like the printed page, the fills that have a color of their own, and the
+/// label under it (not clipped by the box).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BoxArtwork {
     pub lines: Vec<Line2>,
     pub texts: Vec<BoxText>,
     pub images: Vec<BoxImage>,
+    pub fills: Vec<BoxFill>,
+    /// The box label, its shape and its scale note.
+    pub label: Option<Box<BoxArtwork>>,
 }
 
 /// The strokes, texts and images of a box (see [`BoxArtwork`]).
@@ -1683,16 +2012,9 @@ pub fn render_box_artwork(b: &LayoutBox, cx: &LayoutRenderContext) -> BoxArtwork
     render_box_artwork_in(b, cx, &LayoutLayers::default())
 }
 
-/// [`render_box_artwork`] with the layout's own layers: a hidden layer's
-/// parts (box borders, text boxes) are left out and weights follow the layers.
-pub fn render_box_artwork_in(
-    b: &LayoutBox,
-    cx: &LayoutRenderContext,
-    layers: &LayoutLayers,
-) -> BoxArtwork {
-    let scenes = SceneSource::for_context(cx);
+fn artwork_of(prims: Vec<Prim>) -> BoxArtwork {
     let mut out = BoxArtwork::default();
-    for p in soft_clip_with(box_prims(b, cx, &scenes, layers), true) {
+    for p in soft_clip_with(prims, true) {
         match p {
             Prim::Stroke { pts, closed, pen } => {
                 let width = pen.width;
@@ -1748,10 +2070,47 @@ pub fn render_box_artwork_in(
                 height: px.1,
                 rgba,
             }),
+            Prim::Fill {
+                pts,
+                color: PdfColor::Rgb(r, g, b),
+            } => out.fills.push(BoxFill {
+                polygon: pts
+                    .iter()
+                    .map(|p| Point::new(p.0 / 72.0, p.1 / 72.0))
+                    .collect(),
+                rgb: [r, g, b],
+            }),
             Prim::Fill { .. } | Prim::ClipBegin(_) | Prim::ClipEnd => {}
         }
     }
     out
+}
+
+/// [`render_box_artwork`] with the layout's own layers: a hidden layer's
+/// parts (box borders, text boxes) are left out and weights follow the layers.
+pub fn render_box_artwork_in(
+    b: &LayoutBox,
+    cx: &LayoutRenderContext,
+    layers: &LayoutLayers,
+) -> BoxArtwork {
+    let scenes = SceneSource::for_context(cx);
+    let mut prims = box_prims(b, cx, &scenes, layers);
+    prims.extend(caution_prims(b, cx));
+    let mut out = artwork_of(prims);
+    let label = label_prims(b, cx, layers);
+    if !label.is_empty() {
+        out.label = Some(Box::new(artwork_of(label)));
+    }
+    out
+}
+
+#[cfg(test)]
+pub(crate) fn label_prims_for_test(
+    b: &LayoutBox,
+    cx: &LayoutRenderContext,
+    layers: &LayoutLayers,
+) -> Vec<Prim> {
+    label_prims(b, cx, layers)
 }
 
 #[cfg(test)]
@@ -1960,7 +2319,8 @@ fn draw_page_content(
 ) {
     for b in &page.boxes {
         cv.prims.extend(box_prims(b, cx, scenes, layers));
-        cv.prims.extend(label_prims(b));
+        cv.prims.extend(label_prims(b, cx, layers));
+        cv.prims.extend(caution_prims(b, cx));
     }
     draw_annotations(cv, page, ctx, layers);
 }
@@ -2069,9 +2429,8 @@ pub(crate) fn draw_page(
     // Page Specification can give a page its own sheet and drop its title
     // block.
     let size = layout.page_sheet_inches(page);
-    let no_title_block = page_index.map_or(page.no_title_block, |i| {
-        layout.effective_no_title_block(i)
-    });
+    let no_title_block =
+        page_index.map_or(page.no_title_block, |i| layout.effective_no_title_block(i));
     let title_block = layout.layers.is_visible(LAYER_TITLE_BLOCK) && !no_title_block;
     if title_block {
         let mut block = Canvas::new();

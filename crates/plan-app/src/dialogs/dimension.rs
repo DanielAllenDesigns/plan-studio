@@ -26,9 +26,7 @@ use super::{
 };
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
-use plan_core::dimension::{
-    DimArrow, LeaderStyle, SecondFormat, TextPos, TolMode, Tolerance,
-};
+use plan_core::dimension::{DimArrow, LeaderStyle, SecondFormat, TextPos, TolMode, Tolerance};
 use plan_core::text_styles::{runs_from_markup, runs_plain, runs_to_markup};
 use plan_core::units::LengthUnit;
 use plan_core::{AutoGroup, DimFormat, Dimension, DimensionKind, Id, PlanDefaults};
@@ -233,12 +231,12 @@ impl DimForm {
         let mut d = self.draft.clone();
         d.text_override = (self.use_override && !self.override_text.is_empty())
             .then(|| self.override_text.clone());
-        d.look.seg.runs = if self.use_rich && !runs_plain(&runs_from_markup(&self.markup)).is_empty()
-        {
-            runs_from_markup(&self.markup)
-        } else {
-            Vec::new()
-        };
+        d.look.seg.runs =
+            if self.use_rich && !runs_plain(&runs_from_markup(&self.markup)).is_empty() {
+                runs_from_markup(&self.markup)
+            } else {
+                Vec::new()
+            };
         let moved =
             d.start != self.orig.start || d.end != self.orig.end || d.offset != self.orig.offset;
         if moved && d.kind == DimensionKind::AutoExterior && self.orig.kind == d.kind {
@@ -502,7 +500,11 @@ impl DimForm {
         if follow {
             section(ui, "From the active Dimension Defaults");
             row(ui, "Second Format", |ui| {
-                ui.label(if base.second.include { "Included" } else { "Not included" })
+                ui.label(if base.second.include {
+                    "Included"
+                } else {
+                    "Not included"
+                })
             });
             row(ui, "Tolerance", |ui| ui.label(base.tolerance.mode.label()));
             row(ui, "Text Position", |ui| ui.label(base.position.label()));
@@ -555,7 +557,8 @@ impl DimForm {
         if t.mode != TolMode::None {
             self.fields.length_row(ui, "Plus", "tol_plus", &mut t.plus);
             if t.mode != TolMode::Symmetric {
-                self.fields.length_row(ui, "Minus", "tol_minus", &mut t.minus);
+                self.fields
+                    .length_row(ui, "Minus", "tol_minus", &mut t.minus);
             }
             t.plus = t.plus.abs();
             t.minus = t.minus.abs();
@@ -589,7 +592,9 @@ impl DimForm {
         section(ui, "Dimension String");
         match self.draft.string_id() {
             Some(s) => {
-                row(ui, "String", |ui| ui.label(format!("Segment of the string starting at #{s}")));
+                row(ui, "String", |ui| {
+                    ui.label(format!("Segment of the string starting at #{s}"))
+                });
                 if ui.button("Take This Segment Out of the String").clicked() {
                     self.draft.look.seg.string = None;
                 }
@@ -617,12 +622,17 @@ impl DimForm {
             self.fields.degrees_row(ui, "Angle", "deg_label_angle", a);
         }
         let mut moved = seg.label_move.is_some();
-        if ui.checkbox(&mut moved, "Move the Label Off the Line").changed() {
+        if ui
+            .checkbox(&mut moved, "Move the Label Off the Line")
+            .changed()
+        {
             seg.label_move = moved.then(|| plan_core::geometry::Point::new(0.0, 18.0));
         }
         if let Some(m) = &mut seg.label_move {
-            self.fields.length_row(ui, "Along the Line", "label_along", &mut m.x);
-            self.fields.length_row(ui, "Across the Line", "label_across", &mut m.y);
+            self.fields
+                .length_row(ui, "Along the Line", "label_along", &mut m.x);
+            self.fields
+                .length_row(ui, "Across the Line", "label_across", &mut m.y);
             let mut style = seg.leader;
             row(ui, "Leader Line", |ui| {
                 egui::ComboBox::from_id_salt("dim_leader")

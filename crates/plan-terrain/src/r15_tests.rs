@@ -144,7 +144,11 @@ fn the_skirt_hangs_from_the_edge_flat_or_following_the_terrain() {
         .iter()
         .map(|v| v[1])
         .fold(f64::INFINITY, f64::min);
-    let min_y = flat.vertices.iter().map(|v| v.position[1]).fold(f32::INFINITY, f32::min);
+    let min_y = flat
+        .vertices
+        .iter()
+        .map(|v| v.position[1])
+        .fold(f32::INFINITY, f32::min);
     assert!((f64::from(min_y) - (lowest - 36.0)).abs() < 0.01);
     t.skirt.mode = SkirtMode::FollowTerrain;
     let follow = skirt_mesh(&t, &surface).expect("a skirt");
@@ -201,7 +205,11 @@ fn smoothing_levels_map_to_passes_and_linear_skips_the_grid() {
     let grid = build_terrain(&t).triangles.len();
     t.smoothing_level = SmoothingLevel::Linear;
     let linear = build_terrain(&t);
-    assert!(linear.triangles.len() < grid / 2, "{} vs {grid}", linear.triangles.len());
+    assert!(
+        linear.triangles.len() < grid / 2,
+        "{} vs {grid}",
+        linear.triangles.len()
+    );
     // Still a surface that covers the lot and keeps the data.
     assert!((elevation_at(&linear, pt(0.0, 0.0)).unwrap() - 120.0).abs() < 1e-6);
 }
@@ -240,7 +248,13 @@ fn ramp_surface() -> TerrainSurface {
 #[test]
 fn the_contour_offset_shifts_which_elevations_get_a_line() {
     let s = ramp_surface();
-    let plain = contours_opts(&s, &ContourOptions { interval: 24.0, ..ContourOptions::default() });
+    let plain = contours_opts(
+        &s,
+        &ContourOptions {
+            interval: 24.0,
+            ..ContourOptions::default()
+        },
+    );
     assert!(plain.iter().all(|c| (c.z % 24.0).abs() < 1e-6));
     let shifted = contours_opts(
         &s,
@@ -251,8 +265,14 @@ fn the_contour_offset_shifts_which_elevations_get_a_line() {
         },
     );
     assert!(!shifted.is_empty());
-    assert!(shifted.iter().all(|c| ((c.z - 6.0) % 24.0).abs() < 1e-6), "{:?}", shifted.iter().map(|c| c.z).collect::<Vec<_>>());
-    assert!(!plain.iter().any(|c| shifted.iter().any(|d| (c.z - d.z).abs() < 1e-6)));
+    assert!(
+        shifted.iter().all(|c| ((c.z - 6.0) % 24.0).abs() < 1e-6),
+        "{:?}",
+        shifted.iter().map(|c| c.z).collect::<Vec<_>>()
+    );
+    assert!(!plain
+        .iter()
+        .any(|c| shifted.iter().any(|d| (c.z - d.z).abs() < 1e-6)));
 }
 
 #[test]
@@ -264,7 +284,13 @@ fn two_d_smoothing_rounds_the_corners_and_keeps_loops_closed() {
     assert_eq!(smooth.last(), line.last());
     // The corner is cut.
     assert!(smooth.iter().all(|p| p.dist(pt(100.0, 0.0)) > 1.0));
-    let ring = vec![pt(0.0, 0.0), pt(100.0, 0.0), pt(100.0, 100.0), pt(0.0, 100.0), pt(0.0, 0.0)];
+    let ring = vec![
+        pt(0.0, 0.0),
+        pt(100.0, 0.0),
+        pt(100.0, 100.0),
+        pt(0.0, 100.0),
+        pt(0.0, 0.0),
+    ];
     let s = smooth_line(&ring, 2);
     assert_eq!(s.first(), s.last());
     assert!(s.len() > ring.len());
@@ -290,8 +316,14 @@ fn contour_labels_take_their_units_and_red_when_negative() {
     );
     let mut t = Terrain::default();
     t.elevation_points = vec![
-        ElevationPoint { pos: pt(0.0, 0.0), z: -60.0 },
-        ElevationPoint { pos: pt(1200.0, 960.0), z: 60.0 },
+        ElevationPoint {
+            pos: pt(0.0, 0.0),
+            z: -60.0,
+        },
+        ElevationPoint {
+            pos: pt(1200.0, 960.0),
+            z: 60.0,
+        },
     ];
     t.contour_label_major_only = false;
     t.contour_label_spacing = 0.0;
@@ -303,11 +335,19 @@ fn contour_labels_take_their_units_and_red_when_negative() {
     let texts: Vec<(&str, bool, StrokeKind)> = strokes
         .iter()
         .filter_map(|s| match s {
-            Stroke::Text { text, negative, kind, .. } => Some((text.as_str(), *negative, *kind)),
+            Stroke::Text {
+                text,
+                negative,
+                kind,
+                ..
+            } => Some((text.as_str(), *negative, *kind)),
             _ => None,
         })
         .collect();
-    assert!(texts.iter().any(|(t, n, _)| t.starts_with('-') && *n), "{texts:?}");
+    assert!(
+        texts.iter().any(|(t, n, _)| t.starts_with('-') && *n),
+        "{texts:?}"
+    );
     assert!(texts.iter().all(|(t, n, _)| *n == t.starts_with('-')));
     assert!(texts.iter().all(|(t, _, _)| t.ends_with('\'')));
     assert!(texts.iter().any(|(_, _, k)| *k == StrokeKind::MajorContour));
@@ -326,11 +366,18 @@ fn clear_terrain_removes_only_what_the_build_generated() {
         triangles: 100,
         contour_levels: 9,
     });
-    t.walls.push(TerrainWall::new(WallKind::Wall, vec![pt(0.0, 0.0), pt(100.0, 0.0)], false));
+    t.walls.push(TerrainWall::new(
+        WallKind::Wall,
+        vec![pt(0.0, 0.0), pt(100.0, 0.0)],
+        false,
+    ));
     let before = (t.perimeter.clone(), t.elevation_points.len(), t.walls.len());
     assert!(clear_generated_only(&mut t));
     assert!(t.last_build.is_none());
-    assert_eq!((t.perimeter.clone(), t.elevation_points.len(), t.walls.len()), before);
+    assert_eq!(
+        (t.perimeter.clone(), t.elevation_points.len(), t.walls.len()),
+        before
+    );
     assert!(!clear_generated_only(&mut t), "nothing left to clear");
 }
 
@@ -350,7 +397,13 @@ fn a_retaining_wall_is_a_break_plus_a_wall_sized_from_both_sides() {
     let t = falling();
     let surface = build_terrain(&t);
     // Drawn north: the west (high) side is on the left already.
-    let up = retaining_wall(&t, &surface, vec![pt(600.0, 200.0), pt(600.0, 700.0)], false).unwrap();
+    let up = retaining_wall(
+        &t,
+        &surface,
+        vec![pt(600.0, 200.0), pt(600.0, 700.0)],
+        false,
+    )
+    .unwrap();
     assert!(up.high > up.low);
     assert_eq!(up.wall.points[0], pt(600.0, 200.0));
     assert!((up.wall.retain - up.drop()).abs() < 1e-9);
@@ -360,13 +413,20 @@ fn a_retaining_wall_is_a_break_plus_a_wall_sized_from_both_sides() {
     assert!(up.terrain_break.follow_ground);
     assert_eq!(up.terrain_break.points, up.wall.points);
     // Drawn south: the path is turned around so the high side stays on its left.
-    let down = retaining_wall(&t, &surface, vec![pt(600.0, 700.0), pt(600.0, 200.0)], false).unwrap();
+    let down = retaining_wall(
+        &t,
+        &surface,
+        vec![pt(600.0, 700.0), pt(600.0, 200.0)],
+        false,
+    )
+    .unwrap();
     assert_eq!(down.wall.points[0], pt(600.0, 200.0));
     assert!((down.drop() - up.drop()).abs() < 1e-6);
     // On flat ground it is a plain strip.
     let flat = Terrain::default();
     let fs = build_terrain(&flat);
-    let strip = retaining_wall(&flat, &fs, vec![pt(100.0, 100.0), pt(500.0, 100.0)], false).unwrap();
+    let strip =
+        retaining_wall(&flat, &fs, vec![pt(100.0, 100.0), pt(500.0, 100.0)], false).unwrap();
     assert_eq!(strip.wall.retain, 0.0);
     assert_eq!(strip.drop(), 0.0);
     assert!(retaining_wall(&flat, &fs, vec![pt(1.0, 1.0)], false).is_none());
@@ -376,7 +436,13 @@ fn a_retaining_wall_is_a_break_plus_a_wall_sized_from_both_sides() {
 fn a_retaining_wall_steps_the_built_ground_and_stands_between_the_sides() {
     let mut t = falling();
     let surface = build_terrain(&t);
-    let rw = retaining_wall(&t, &surface, vec![pt(600.0, 100.0), pt(600.0, 860.0)], false).unwrap();
+    let rw = retaining_wall(
+        &t,
+        &surface,
+        vec![pt(600.0, 100.0), pt(600.0, 860.0)],
+        false,
+    )
+    .unwrap();
     let drop = rw.drop();
     assert!(drop > 2.0, "{drop}");
     t.breaks.push(rw.terrain_break);
@@ -420,7 +486,10 @@ fn a_break_transition_limits_how_far_its_elevation_reaches() {
     assert!(elevation_at(&s, pt(100.0, 480.0)).unwrap().abs() < 1.0);
     t.breaks[0].transition = 0.0;
     let s = build_terrain(&t);
-    assert!(elevation_at(&s, pt(100.0, 480.0)).unwrap() > 5.0, "no limit reaches the whole lot");
+    assert!(
+        elevation_at(&s, pt(100.0, 480.0)).unwrap() > 5.0,
+        "no limit reaches the whole lot"
+    );
 }
 
 // ----- elevation data options -----
@@ -428,19 +497,28 @@ fn a_break_transition_limits_how_far_its_elevation_reaches() {
 #[test]
 fn an_open_region_holds_only_its_outline_and_can_flatten_toward_the_edge() {
     let mut t = Terrain::default();
-    t.elevation_points.push(ElevationPoint { pos: pt(600.0, 480.0), z: 0.0 });
+    t.elevation_points.push(ElevationPoint {
+        pos: pt(600.0, 480.0),
+        z: 0.0,
+    });
     t.elevation_regions.push(ElevationRegion {
         polygon: square(400.0, 280.0, 400.0),
         z: 100.0,
     });
     let centre = pt(600.0, 480.0);
     let flat = z_at(&t, pt(500.0, 400.0));
-    assert!((flat - 100.0).abs() < 1.0, "a flat interior holds the elevation: {flat}");
+    assert!(
+        (flat - 100.0).abs() < 1.0,
+        "a flat interior holds the elevation: {flat}"
+    );
     let mut ex = t.extras(ObjectKey::Region(0));
     ex.interior_open = true;
     t.set_extras(ObjectKey::Region(0), ex.clone());
     let open_centre = z_at(&t, centre);
-    assert!(open_centre < 60.0, "the interior follows the data: {open_centre}");
+    assert!(
+        open_centre < 60.0,
+        "the interior follows the data: {open_centre}"
+    );
     let edge = pt(430.0, 480.0);
     let plain = z_at(&t, edge);
     ex.tangent_to_edge = true;
@@ -470,7 +548,13 @@ fn extras_follow_their_object_and_reindex_when_one_is_removed() {
     assert_eq!(t.extras(ObjectKey::Point(1)).note, "note 2");
     assert_eq!(t.extras(ObjectKey::Point(2)), ObjectExtras::default());
     // Extras of an object that does not exist are not stored.
-    t.set_extras(ObjectKey::Point(9), ObjectExtras { note: "x".into(), ..ObjectExtras::default() });
+    t.set_extras(
+        ObjectKey::Point(9),
+        ObjectExtras {
+            note: "x".into(),
+            ..ObjectExtras::default()
+        },
+    );
     assert!(t.side_extras.len() <= 2);
     // Objects that carry their extras keep them where they are.
     t.walls.push(TerrainWall::default());
@@ -485,7 +569,11 @@ fn extras_follow_their_object_and_reindex_when_one_is_removed() {
 #[test]
 fn labels_are_custom_or_automatic_and_points_carry_a_note() {
     let mut t = falling();
-    t.walls.push(TerrainWall::new(WallKind::Wall, vec![pt(100.0, 100.0), pt(500.0, 100.0)], false));
+    t.walls.push(TerrainWall::new(
+        WallKind::Wall,
+        vec![pt(100.0, 100.0), pt(500.0, 100.0)],
+        false,
+    ));
     assert!(label_spots(&t).is_empty());
     let mut ex = t.extras(ObjectKey::Wall(0));
     ex.label.shown = true;
@@ -506,7 +594,10 @@ fn labels_are_custom_or_automatic_and_points_carry_a_note() {
     ex.marker_radius = 5.0;
     t.set_extras(ObjectKey::Point(0), ex);
     let note = label_spots(&t).into_iter().find(|s| s.note).unwrap();
-    assert_eq!(note.text, format!("TW {}", plan_core::units::fmt_ft_in_frac(120.0, 2)));
+    assert_eq!(
+        note.text,
+        format!("TW {}", plan_core::units::fmt_ft_in_frac(120.0, 2))
+    );
     assert!(note.at.x > t.elevation_points[0].pos.x);
     assert_eq!(label_strokes(&t).len(), 2);
     assert_eq!(LAYER_TERRAIN_LABELS, "Terrain Labels");
@@ -516,7 +607,12 @@ fn labels_are_custom_or_automatic_and_points_carry_a_note() {
 fn schedule_categories_follow_the_manual_and_can_be_reassigned() {
     let mut t = Terrain::default();
     let line = vec![pt(0.0, 0.0), pt(240.0, 0.0)];
-    for kind in [RoadKind::Road, RoadKind::Driveway, RoadKind::Sidewalk, RoadKind::Marking] {
+    for kind in [
+        RoadKind::Road,
+        RoadKind::Driveway,
+        RoadKind::Sidewalk,
+        RoadKind::Marking,
+    ] {
         t.roads.push(RoadStrip {
             kind,
             centerline: line.clone(),
@@ -529,39 +625,82 @@ fn schedule_categories_follow_the_manual_and_can_be_reassigned() {
         outline: square(0.0, 0.0, 60.0),
         ..RoadStrip::default()
     });
-    t.walls.push(TerrainWall::new(WallKind::Curb, line.clone(), false));
+    t.walls
+        .push(TerrainWall::new(WallKind::Curb, line.clone(), false));
     t.features.push(Feature {
         polygon: square(0.0, 0.0, 100.0),
         ..Feature::default()
     });
-    t.landscape.push(Landscape::new(LandscapeKind::GardenBed, ShapeKind::Polyline, square(0.0, 0.0, 100.0)));
-    t.landscape.push(Landscape::new(LandscapeKind::Plants, ShapeKind::Polyline, line));
-    t.elevation_points.push(ElevationPoint { pos: pt(1.0, 1.0), z: 0.0 });
+    t.landscape.push(Landscape::new(
+        LandscapeKind::GardenBed,
+        ShapeKind::Polyline,
+        square(0.0, 0.0, 100.0),
+    ));
+    t.landscape.push(Landscape::new(
+        LandscapeKind::Plants,
+        ShapeKind::Polyline,
+        line,
+    ));
+    t.elevation_points.push(ElevationPoint {
+        pos: pt(1.0, 1.0),
+        z: 0.0,
+    });
     let cat_of = |t: &Terrain, k| category_of(t, k);
     let cat = |k| cat_of(&t, k);
-    assert_eq!(cat(ObjectKey::Perimeter), Some(ScheduleCategory::TerrainPerimeter));
+    assert_eq!(
+        cat(ObjectKey::Perimeter),
+        Some(ScheduleCategory::TerrainPerimeter)
+    );
     assert_eq!(cat(ObjectKey::Road(0)), Some(ScheduleCategory::Roads));
     assert_eq!(cat(ObjectKey::Road(1)), Some(ScheduleCategory::Driveways));
-    assert_eq!(cat(ObjectKey::Road(2)), Some(ScheduleCategory::TerrainPaths));
-    assert_eq!(cat(ObjectKey::Road(3)), Some(ScheduleCategory::RoadMarkings));
+    assert_eq!(
+        cat(ObjectKey::Road(2)),
+        Some(ScheduleCategory::TerrainPaths)
+    );
+    assert_eq!(
+        cat(ObjectKey::Road(3)),
+        Some(ScheduleCategory::RoadMarkings)
+    );
     assert_eq!(cat(ObjectKey::Road(4)), Some(ScheduleCategory::Medians));
-    assert_eq!(cat(ObjectKey::Wall(0)), Some(ScheduleCategory::TerrainPaths));
-    assert_eq!(cat(ObjectKey::Feature(0)), Some(ScheduleCategory::TerrainFeatures));
-    assert_eq!(cat(ObjectKey::Landscape(0)), Some(ScheduleCategory::TerrainFeatures));
-    assert_eq!(cat(ObjectKey::Landscape(1)), None, "plants have their own schedule");
+    assert_eq!(
+        cat(ObjectKey::Wall(0)),
+        Some(ScheduleCategory::TerrainPaths)
+    );
+    assert_eq!(
+        cat(ObjectKey::Feature(0)),
+        Some(ScheduleCategory::TerrainFeatures)
+    );
+    assert_eq!(
+        cat(ObjectKey::Landscape(0)),
+        Some(ScheduleCategory::TerrainFeatures)
+    );
+    assert_eq!(
+        cat(ObjectKey::Landscape(1)),
+        None,
+        "plants have their own schedule"
+    );
     assert_eq!(cat(ObjectKey::Point(0)), None);
     // Reassign the sidewalk to Driveways on its Schedule panel.
     let mut ex = t.extras(ObjectKey::Road(2));
     ex.schedule_category = "driveways".into();
     t.set_extras(ObjectKey::Road(2), ex);
-    assert_eq!(cat_of(&t, ObjectKey::Road(2)), Some(ScheduleCategory::Driveways));
+    assert_eq!(
+        cat_of(&t, ObjectKey::Road(2)),
+        Some(ScheduleCategory::Driveways)
+    );
     let rows = terrain_schedule(&t);
     assert!(rows.windows(2).all(|w| w[0].category <= w[1].category));
-    let drives: Vec<&ScheduleRow> = rows.iter().filter(|r| r.category == ScheduleCategory::Driveways).collect();
+    let drives: Vec<&ScheduleRow> = rows
+        .iter()
+        .filter(|r| r.category == ScheduleCategory::Driveways)
+        .collect();
     assert_eq!(drives.len(), 2);
     assert!(drives[0].name.starts_with("Driveway") && drives[1].name.starts_with("Sidewalk"));
     assert!((drives[0].area - 240.0 * 48.0).abs() < 1e-6);
-    assert_eq!(ScheduleCategory::from_name(" Terrain Paths "), Some(ScheduleCategory::TerrainPaths));
+    assert_eq!(
+        ScheduleCategory::from_name(" Terrain Paths "),
+        Some(ScheduleCategory::TerrainPaths)
+    );
     assert_eq!(ScheduleCategory::from_name("nope"), None);
 }
 
@@ -571,10 +710,16 @@ const POINTS: &str = "1,100,200,5\n2,300,400,7.5\n3,500,600,9\n";
 
 #[test]
 fn the_import_assistant_reads_every_column_order() {
-    let layout = |order| TextLayout { order, ..TextLayout::default() };
+    let layout = |order| TextLayout {
+        order,
+        ..TextLayout::default()
+    };
     // Detected: four numbers are a point number and X Y Z, three are X Y Z.
     let (p, _) = read_columns(POINTS, &TextLayout::default());
-    assert_eq!((p[0].x, p[0].y, p[0].z, p[0].number.as_str()), (100.0, 200.0, 5.0, "1"));
+    assert_eq!(
+        (p[0].x, p[0].y, p[0].z, p[0].number.as_str()),
+        (100.0, 200.0, 5.0, "1")
+    );
     let (p, _) = read_columns("100 200 5", &TextLayout::default());
     assert_eq!((p[0].x, p[0].y, p[0].z), (100.0, 200.0, 5.0));
     let (p, skipped) = read_columns(POINTS, &layout(ColumnOrder::NXyz));
@@ -599,34 +744,91 @@ fn the_import_assistant_reads_every_column_order() {
     let text = "ID,X,Y,Z\n1,10,20,3\n2,oops,40,4\n";
     let (p, skipped) = read_columns(text, &layout(ColumnOrder::NXyz));
     assert_eq!((p.len(), skipped), (1, 1));
-    let (p, _) = read_columns(text, &TextLayout { order: ColumnOrder::NXyz, skip_lines: 1, ..TextLayout::default() });
+    let (p, _) = read_columns(
+        text,
+        &TextLayout {
+            order: ColumnOrder::NXyz,
+            skip_lines: 1,
+            ..TextLayout::default()
+        },
+    );
     assert_eq!(p.len(), 1);
     // A fixed delimiter.
-    let (p, _) = read_columns("10 20 3", &TextLayout { delimiter: Delimiter::Comma, ..TextLayout::default() });
+    let (p, _) = read_columns(
+        "10 20 3",
+        &TextLayout {
+            delimiter: Delimiter::Comma,
+            ..TextLayout::default()
+        },
+    );
     assert!(p.is_empty());
 }
 
 #[test]
 fn the_import_filter_limits_ranges_and_thins_evenly() {
-    let (raw, _) = read_columns(POINTS, &TextLayout { order: ColumnOrder::NXyz, ..TextLayout::default() });
+    let (raw, _) = read_columns(
+        POINTS,
+        &TextLayout {
+            order: ColumnOrder::NXyz,
+            ..TextLayout::default()
+        },
+    );
     let r = ranges_of(&raw).unwrap();
     assert_eq!((r.count, r.x, r.z), (3, (100.0, 500.0), (5.0, 9.0)));
-    let kept = filter_points(&raw, &RangeFilter { x: Some((200.0, 600.0)), ..RangeFilter::default() });
+    let kept = filter_points(
+        &raw,
+        &RangeFilter {
+            x: Some((200.0, 600.0)),
+            ..RangeFilter::default()
+        },
+    );
     assert_eq!(kept.len(), 2);
-    let kept = filter_points(&raw, &RangeFilter { z: Some((6.0, 8.0)), y: Some((0.0, 500.0)), ..RangeFilter::default() });
+    let kept = filter_points(
+        &raw,
+        &RangeFilter {
+            z: Some((6.0, 8.0)),
+            y: Some((0.0, 500.0)),
+            ..RangeFilter::default()
+        },
+    );
     assert_eq!(kept.len(), 1);
     // A 20 x 20 grid of points reduced to 25 stays spread over the area.
     let mut grid = Vec::new();
     for i in 0..20 {
         for j in 0..20 {
-            grid.push(RawPoint { x: f64::from(i) * 10.0, y: f64::from(j) * 10.0, z: 0.0, number: String::new(), description: String::new() });
+            grid.push(RawPoint {
+                x: f64::from(i) * 10.0,
+                y: f64::from(j) * 10.0,
+                z: 0.0,
+                number: String::new(),
+                description: String::new(),
+            });
         }
     }
-    let thin = filter_points(&grid, &RangeFilter { max_points: Some(25), ..RangeFilter::default() });
+    let thin = filter_points(
+        &grid,
+        &RangeFilter {
+            max_points: Some(25),
+            ..RangeFilter::default()
+        },
+    );
     assert!(thin.len() <= 25 && thin.len() >= 12, "{}", thin.len());
     let r = ranges_of(&thin).unwrap();
-    assert!(r.x.1 - r.x.0 > 120.0 && r.y.1 - r.y.0 > 120.0, "spread over the area: {r:?}");
-    assert_eq!(filter_points(&grid, &RangeFilter { max_points: Some(1000), ..RangeFilter::default() }).len(), 400);
+    assert!(
+        r.x.1 - r.x.0 > 120.0 && r.y.1 - r.y.0 > 120.0,
+        "spread over the area: {r:?}"
+    );
+    assert_eq!(
+        filter_points(
+            &grid,
+            &RangeFilter {
+                max_points: Some(1000),
+                ..RangeFilter::default()
+            }
+        )
+        .len(),
+        400
+    );
     assert!(MANY_POINTS >= 1000);
 }
 
@@ -648,26 +850,56 @@ fn the_import_scale_step_converts_units_maps_the_origin_relieves_and_rotates() {
     assert_eq!(mixed[0].pos, pt(120.0, 20.0));
     assert!((mixed[0].z - 5.0 / 0.0254).abs() < 1e-6);
     // A file point becomes the plan origin.
-    let moved = scale_points(&raw, &ScaleOptions { map_to_origin: Some((10.0, 20.0)), ..ScaleOptions::default() });
+    let moved = scale_points(
+        &raw,
+        &ScaleOptions {
+            map_to_origin: Some((10.0, 20.0)),
+            ..ScaleOptions::default()
+        },
+    );
     assert_eq!(moved[0].pos, pt(0.0, 0.0));
     // Relief scale.
-    let relief = scale_points(&raw, &ScaleOptions { relief_scale: 2.0, ..ScaleOptions::default() });
+    let relief = scale_points(
+        &raw,
+        &ScaleOptions {
+            relief_scale: 2.0,
+            ..ScaleOptions::default()
+        },
+    );
     assert_eq!(relief[0].z, 120.0);
     // Rotate north counterclockwise by 90 degrees.
     let (raw, _) = read_columns("10 0 0", &TextLayout::default());
-    let turned = scale_points(&raw, &ScaleOptions { rotate_ccw: 90.0, ..ScaleOptions::default() });
+    let turned = scale_points(
+        &raw,
+        &ScaleOptions {
+            rotate_ccw: 90.0,
+            ..ScaleOptions::default()
+        },
+    );
     assert!(turned[0].pos.x.abs() < 1e-9 && (turned[0].pos.y - 120.0).abs() < 1e-9);
     // The whole assistant.
     let job = TerrainImport {
-        layout: TextLayout { order: ColumnOrder::NYxz, ..TextLayout::default() },
-        filter: RangeFilter { z: Some((6.0, 10.0)), ..RangeFilter::default() },
+        layout: TextLayout {
+            order: ColumnOrder::NYxz,
+            ..TextLayout::default()
+        },
+        filter: RangeFilter {
+            z: Some((6.0, 10.0)),
+            ..RangeFilter::default()
+        },
         scale: ScaleOptions::uniform(ImportUnit::Inches),
     };
     let got = import_terrain_text(POINTS, &job).unwrap();
     assert_eq!(got.points.len(), 2);
     assert_eq!(got.points[0].pos, pt(400.0, 300.0));
     assert!(import_terrain_text("nothing here", &job).is_err());
-    let none = TerrainImport { filter: RangeFilter { z: Some((50.0, 60.0)), ..RangeFilter::default() }, ..job };
+    let none = TerrainImport {
+        filter: RangeFilter {
+            z: Some((50.0, 60.0)),
+            ..RangeFilter::default()
+        },
+        ..job
+    };
     assert!(import_terrain_text(POINTS, &none).is_err());
 }
 
@@ -678,8 +910,14 @@ fn an_import_creates_the_perimeter_around_the_data_when_there_is_none() {
         ..Terrain::default()
     };
     let pts = vec![
-        ElevationPoint { pos: pt(100.0, 100.0), z: 1.0 },
-        ElevationPoint { pos: pt(900.0, 700.0), z: 2.0 },
+        ElevationPoint {
+            pos: pt(100.0, 100.0),
+            z: 1.0,
+        },
+        ElevationPoint {
+            pos: pt(900.0, 700.0),
+            z: 2.0,
+        },
     ];
     assert_eq!(t.import_elevation_points(&pts, true), 2);
     assert_eq!(t.perimeter.len(), 4);
@@ -687,7 +925,13 @@ fn an_import_creates_the_perimeter_around_the_data_when_there_is_none() {
     assert!(lo.x < 100.0 && lo.y < 100.0 && hi.x > 900.0 && hi.y > 700.0);
     // An existing perimeter is left alone.
     let before = t.perimeter.clone();
-    t.import_elevation_points(&[ElevationPoint { pos: pt(5000.0, 5000.0), z: 3.0 }], true);
+    t.import_elevation_points(
+        &[ElevationPoint {
+            pos: pt(5000.0, 5000.0),
+            z: 3.0,
+        }],
+        true,
+    );
     assert_eq!(t.perimeter, before);
     assert!(perimeter_around(&[], 10.0).is_empty());
 }
@@ -724,7 +968,11 @@ fn gps_way_points_carry_elevation_track_points_do_not_and_routes_are_ignored() {
     assert!((got.elevation_points[0].z - 100.0 / 0.0254).abs() < 1e-6);
     // The first point is the origin; north is plan y.
     assert_eq!(got.elevation_points[0].pos, pt(0.0, 0.0));
-    assert!(got.elevation_points[1].pos.y > 1900.0 && got.elevation_points[1].pos.y < 2200.0, "{:?}", got.elevation_points[1].pos);
+    assert!(
+        got.elevation_points[1].pos.y > 1900.0 && got.elevation_points[1].pos.y < 2200.0,
+        "{:?}",
+        got.elevation_points[1].pos
+    );
     assert!(got.summary().contains("route points ignored"));
     // Track points as a perimeter, way points as a polyline.
     let got = import_gps(GPX, GpsImportAs::Polyline, GpsImportAs::Perimeter, &tr).unwrap();
@@ -733,7 +981,13 @@ fn gps_way_points_carry_elevation_track_points_do_not_and_routes_are_ignored() {
     assert!(got.elevation_points.is_empty());
     // Track points cannot be elevation data.
     let only_tracks = "<gpx><trk><trkseg><trkpt lat=\"1\" lon=\"1\"/></trkseg></trk></gpx>";
-    assert!(import_gps(only_tracks, GpsImportAs::Marker, GpsImportAs::ElevationData, &tr).is_err());
+    assert!(import_gps(
+        only_tracks,
+        GpsImportAs::Marker,
+        GpsImportAs::ElevationData,
+        &tr
+    )
+    .is_err());
     // The legacy single-form importer reads way points only.
     let legacy = import_points(GPX, ImportUnit::Auto).unwrap();
     assert_eq!(legacy.points.len(), 3);
@@ -741,12 +995,21 @@ fn gps_way_points_carry_elevation_track_points_do_not_and_routes_are_ignored() {
 
 #[test]
 fn gps_transform_lowers_rotates_and_maps_the_origin() {
-    let base = import_gps(GPX, GpsImportAs::ElevationData, GpsImportAs::Marker, &GpsTransform::default()).unwrap();
+    let base = import_gps(
+        GPX,
+        GpsImportAs::ElevationData,
+        GpsImportAs::Marker,
+        &GpsTransform::default(),
+    )
+    .unwrap();
     let lowered = import_gps(
         GPX,
         GpsImportAs::ElevationData,
         GpsImportAs::Marker,
-        &GpsTransform { lower_by: 100.0 / 0.0254, ..GpsTransform::default() },
+        &GpsTransform {
+            lower_by: 100.0 / 0.0254,
+            ..GpsTransform::default()
+        },
     )
     .unwrap();
     assert!(lowered.elevation_points[0].z.abs() < 1e-6);
@@ -755,7 +1018,10 @@ fn gps_transform_lowers_rotates_and_maps_the_origin() {
         GPX,
         GpsImportAs::ElevationData,
         GpsImportAs::Marker,
-        &GpsTransform { rotate_ccw: 90.0, ..GpsTransform::default() },
+        &GpsTransform {
+            rotate_ccw: 90.0,
+            ..GpsTransform::default()
+        },
     )
     .unwrap();
     let (b, r) = (base.elevation_points[1].pos, turned.elevation_points[1].pos);
@@ -764,7 +1030,10 @@ fn gps_transform_lowers_rotates_and_maps_the_origin() {
         GPX,
         GpsImportAs::ElevationData,
         GpsImportAs::Marker,
-        &GpsTransform { origin: Some((40.0005, -75.0)), ..GpsTransform::default() },
+        &GpsTransform {
+            origin: Some((40.0005, -75.0)),
+            ..GpsTransform::default()
+        },
     )
     .unwrap();
     assert!(mapped.elevation_points[1].pos.dist(pt(0.0, 0.0)) < 1e-6);
@@ -790,9 +1059,15 @@ fn a_flare_widens_the_end_of_a_road_by_a_quarter_circle() {
     assert!(flared.len() > plain.len());
     let max_y = flared.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
     let min_y = flared.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
-    assert!((max_y - 144.0).abs() < 1e-6 && (min_y + 144.0).abs() < 1e-6, "{max_y} {min_y}");
+    assert!(
+        (max_y - 144.0).abs() < 1e-6 && (min_y + 144.0).abs() < 1e-6,
+        "{max_y} {min_y}"
+    );
     // The start is untouched.
-    assert!(flared.iter().filter(|p| p.x < 100.0).all(|p| p.y.abs() <= 120.0 + 1e-6));
+    assert!(flared
+        .iter()
+        .filter(|p| p.x < 100.0)
+        .all(|p| p.y.abs() <= 120.0 + 1e-6));
     // Both ends, and the 3D strip still builds.
     road.flare_start = Some(24.0);
     let mut t = Terrain::default();
@@ -839,7 +1114,10 @@ fn polyline_roads_medians_and_cul_de_sacs_are_outline_shapes() {
     assert_eq!(cds.center, pt(900.0, 480.0));
     assert!(cds.radius >= 120.0);
     assert_eq!(road_polygon(&cds).len(), 36);
-    assert!(cul_de_sac_at(&t, pt(450.0, 100.0), 60.0).is_none(), "not near a road end");
+    assert!(
+        cul_de_sac_at(&t, pt(450.0, 100.0), 60.0).is_none(),
+        "not near a road end"
+    );
     let n = t.roads.len();
     t.roads.push(cds);
     assert_eq!(t.roads.len(), n + 1);
@@ -848,7 +1126,16 @@ fn polyline_roads_medians_and_cul_de_sacs_are_outline_shapes() {
     let strokes = plan_symbols(&t, &[]);
     let closed = strokes
         .iter()
-        .filter(|s| matches!(s, Stroke::Polyline { closed: true, kind: StrokeKind::RoadEdge, .. }))
+        .filter(|s| {
+            matches!(
+                s,
+                Stroke::Polyline {
+                    closed: true,
+                    kind: StrokeKind::RoadEdge,
+                    ..
+                }
+            )
+        })
         .count();
     assert_eq!(closed, 3);
 }
@@ -903,13 +1190,19 @@ fn terrain_to_top_and_thickness_lift_and_thicken_a_path() {
     assert!((top(&t) - flat - 4.0).abs() < 0.01);
     let thin = indices(&road_meshes(&t, &surface));
     t.roads[0].thickness = 4.0;
-    assert!(indices(&road_meshes(&t, &surface)) > thin, "side faces of the slab");
+    assert!(
+        indices(&road_meshes(&t, &surface)) > thin,
+        "side faces of the slab"
+    );
 }
 
 #[test]
 fn auto_generate_sidewalk_runs_beside_the_road_on_the_chosen_sides() {
     let mut t = Terrain::default();
-    for (a, b) in [((0.0, 400.0), (500.0, 400.0)), ((500.0, 400.0), (900.0, 700.0))] {
+    for (a, b) in [
+        ((0.0, 400.0), (500.0, 400.0)),
+        ((500.0, 400.0), (900.0, 700.0)),
+    ] {
         t.roads.push(RoadStrip {
             centerline: vec![pt(a.0, a.1), pt(b.0, b.1)],
             width: 240.0,
@@ -924,12 +1217,35 @@ fn auto_generate_sidewalk_runs_beside_the_road_on_the_chosen_sides() {
     assert_eq!(connected_roads(&t, 2), vec![2]);
     let both = auto_sidewalks(&t, 0, &AutoSidewalk::default());
     assert_eq!(both.len(), 4);
-    assert!(both.iter().all(|r| r.kind == RoadKind::Sidewalk && r.width == 48.0));
-    let one = auto_sidewalks(&t, 0, &AutoSidewalk { all_connected: false, right: false, ..AutoSidewalk::default() });
+    assert!(both
+        .iter()
+        .all(|r| r.kind == RoadKind::Sidewalk && r.width == 48.0));
+    let one = auto_sidewalks(
+        &t,
+        0,
+        &AutoSidewalk {
+            all_connected: false,
+            right: false,
+            ..AutoSidewalk::default()
+        },
+    );
     assert_eq!(one.len(), 1);
     // The sidewalk sits beside the road's edge: 120 + 24 off the centerline, 12 more with an offset.
-    assert!((one[0].centerline[0].y - (400.0 + 144.0)).abs() < 1e-6, "{:?}", one[0].centerline);
-    let off = auto_sidewalks(&t, 0, &AutoSidewalk { all_connected: false, right: false, offset: 12.0, ..AutoSidewalk::default() });
+    assert!(
+        (one[0].centerline[0].y - (400.0 + 144.0)).abs() < 1e-6,
+        "{:?}",
+        one[0].centerline
+    );
+    let off = auto_sidewalks(
+        &t,
+        0,
+        &AutoSidewalk {
+            all_connected: false,
+            right: false,
+            offset: 12.0,
+            ..AutoSidewalk::default()
+        },
+    );
     assert!((off[0].centerline[0].y - (400.0 + 156.0)).abs() < 1e-6);
     assert!(auto_sidewalks(&t, 9, &AutoSidewalk::default()).is_empty());
 }
@@ -954,7 +1270,11 @@ fn a_feature_with_a_thickness_is_a_shell_and_clips_what_a_lower_feature_cuts() {
     };
     assert!(low(&t).abs() < 1.0, "solid down to the ground");
     t.features[0].thickness = 6.0;
-    assert!((low(&t) - 18.0).abs() < 0.01, "a shell 6 in thick under the 24 in top: {}", low(&t));
+    assert!(
+        (low(&t) - 18.0).abs() < 0.01,
+        "a shell 6 in thick under the 24 in top: {}",
+        low(&t)
+    );
     t.features[0].height = -12.0;
     t.features[0].thickness = 6.0;
     assert!(low(&t) < -17.0, "sunk below the ground: {}", low(&t));
@@ -1002,7 +1322,11 @@ fn grass_blades_sanitize_and_the_look_tints_the_region() {
     };
     assert_eq!(look.average_color(), [20, 30, 40]);
     let mut t = Terrain::default();
-    t.landscape.push(Landscape::new(LandscapeKind::GrassRegion, ShapeKind::Polyline, square(100.0, 100.0, 300.0)));
+    t.landscape.push(Landscape::new(
+        LandscapeKind::GrassRegion,
+        ShapeKind::Polyline,
+        square(100.0, 100.0, 300.0),
+    ));
     let surface = build_terrain(&t);
     let plain = landscape_meshes(&t, Some(&surface));
     assert!(plain.iter().all(|m| m.color.is_none()));
@@ -1034,7 +1358,11 @@ fn a_plant_image_keeps_its_aspect_ratio_and_its_elevation_reference() {
 
 #[test]
 fn plant_images_are_billboards_tinted_by_season() {
-    let mut run = Landscape::new(LandscapeKind::Plants, ShapeKind::Polyline, vec![pt(100.0, 100.0), pt(500.0, 100.0)]);
+    let mut run = Landscape::new(
+        LandscapeKind::Plants,
+        ShapeKind::Polyline,
+        vec![pt(100.0, 100.0), pt(500.0, 100.0)],
+    );
     run.image = Some(PlantImage::sized("maple.png", 120.0, 240.0, false));
     run.size = 120.0;
     run.height = 240.0;
@@ -1045,17 +1373,38 @@ fn plant_images_are_billboards_tinted_by_season() {
     t.season = Season::Summer;
     let summer = build(&t);
     assert_eq!(summer.len(), 1, "one billboard mesh for the whole run");
-    assert_eq!(summer[0].color, Some(t.landscape[0].image.as_ref().unwrap().look(Season::Summer).tint));
+    assert_eq!(
+        summer[0].color,
+        Some(
+            t.landscape[0]
+                .image
+                .as_ref()
+                .unwrap()
+                .look(Season::Summer)
+                .tint
+        )
+    );
     t.season = Season::Autumn;
     let autumn = build(&t);
     assert_ne!(autumn[0].color, summer[0].color);
     t.season = Season::Winter;
     let winter = build(&t);
-    assert_eq!(winter[0].color, Some(t.landscape[0].image.as_ref().unwrap().look(Season::Winter).tint));
+    assert_eq!(
+        winter[0].color,
+        Some(
+            t.landscape[0]
+                .image
+                .as_ref()
+                .unwrap()
+                .look(Season::Winter)
+                .tint
+        )
+    );
     // A bare winter plant has a thinner crown.
     let width = |ms: &[Mesh]| {
         let xs: Vec<f32> = ms[0].vertices.iter().map(|v| v.position[0]).collect();
-        xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) - xs.iter().copied().fold(f32::INFINITY, f32::min)
+        xs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+            - xs.iter().copied().fold(f32::INFINITY, f32::min)
     };
     assert!(width(&winter) < width(&summer));
     // An evergreen keeps its foliage.
@@ -1066,12 +1415,20 @@ fn plant_images_are_billboards_tinted_by_season() {
 
 #[test]
 fn grow_plants_scales_plants_that_have_a_mature_size() {
-    let mut a = Landscape::new(LandscapeKind::Plants, ShapeKind::Polyline, vec![pt(0.0, 0.0), pt(100.0, 0.0)]);
+    let mut a = Landscape::new(
+        LandscapeKind::Plants,
+        ShapeKind::Polyline,
+        vec![pt(0.0, 0.0), pt(100.0, 0.0)],
+    );
     a.mature_height = 240.0;
     a.mature_width = 180.0;
     a.maturity_months = default_age_at_maturity(240.0);
     a.start_fraction = 0.25;
-    let mut b = Landscape::new(LandscapeKind::Plants, ShapeKind::Polyline, vec![pt(0.0, 0.0), pt(100.0, 0.0)]);
+    let mut b = Landscape::new(
+        LandscapeKind::Plants,
+        ShapeKind::Polyline,
+        vec![pt(0.0, 0.0), pt(100.0, 0.0)],
+    );
     b.height = 50.0;
     let mut runs = vec![a, b];
     assert_eq!(grow_plants(&mut runs, 0.0), 1);
@@ -1093,7 +1450,11 @@ fn grow_plants_scales_plants_that_have_a_mature_size() {
 
 #[test]
 fn a_garden_bed_spreads_its_plant_over_the_bed_and_draws_them() {
-    let mut bed = Landscape::new(LandscapeKind::GardenBed, ShapeKind::Polyline, square(100.0, 100.0, 360.0));
+    let mut bed = Landscape::new(
+        LandscapeKind::GardenBed,
+        ShapeKind::Polyline,
+        square(100.0, 100.0, 360.0),
+    );
     assert!(bed.distributed_positions().is_empty());
     bed.distribution = Some(Distribution {
         plant: "plants.shrub.boxwood".into(),
@@ -1104,12 +1465,21 @@ fn a_garden_bed_spreads_its_plant_over_the_bed_and_draws_them() {
     });
     let pts = bed.distributed_positions();
     assert!(pts.len() >= 40 && pts.len() <= 64, "{}", pts.len());
-    assert!(pts.iter().all(|p| p.x > 112.0 && p.x < 448.0 && p.y > 112.0 && p.y < 448.0));
+    assert!(pts
+        .iter()
+        .all(|p| p.x > 112.0 && p.x < 448.0 && p.y > 112.0 && p.y < 448.0));
     let mut staggered = bed.clone();
     staggered.distribution.as_mut().unwrap().stagger = true;
     assert!(staggered.distributed_positions().len() > 20);
     // Inside a smaller outline it fits fewer.
-    let few = distribute_in(&square(0.0, 0.0, 100.0), &Distribution { spacing: 48.0, margin: 12.0, ..Distribution::default() });
+    let few = distribute_in(
+        &square(0.0, 0.0, 100.0),
+        &Distribution {
+            spacing: 48.0,
+            margin: 12.0,
+            ..Distribution::default()
+        },
+    );
     assert!(few.len() < 8);
     assert!(distribute_in(&[], &Distribution::default()).is_empty());
     let mut t = Terrain::default();

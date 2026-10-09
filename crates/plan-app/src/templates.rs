@@ -37,7 +37,7 @@ pub const SETTINGS_KEY: &str = "templates";
 /// The decode cache, next to `settings.json`.
 pub const CACHE_FILE: &str = "template-seed.json";
 /// Bumped when the cache layout changes; an older cache is ignored.
-pub const CACHE_VERSION: u32 = 1;
+pub const CACHE_VERSION: u32 = 2;
 
 // ===================================================================
 // Settings
@@ -347,7 +347,7 @@ pub fn save_settings(s: &TemplateSettings) -> Result<(), String> {
 // ===================================================================
 
 /// What was read from the plan template.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PlanSeed {
     pub path: String,
     pub file_name: String,
@@ -364,6 +364,14 @@ pub struct PlanSeed {
     pub layers: usize,
     pub materials: usize,
     pub plan_views: usize,
+    /// The names of the layer sets, saved plan views and Rich Text defaults
+    /// (the decode reads names only; each starts as a copy of the active one).
+    #[serde(default)]
+    pub layer_set_names: Vec<String>,
+    #[serde(default)]
+    pub plan_view_names: Vec<String>,
+    #[serde(default)]
+    pub rich_text_defaults: Vec<String>,
 }
 
 /// What was read from the layout template.
@@ -465,6 +473,13 @@ pub fn pack_plan(path: &Path, mtime_ms: u64, now: u64, inv: &TemplateInventory) 
             .filter(|m| !m.name.is_empty())
             .count(),
         plan_views: inv.plan_views.len(),
+        layer_set_names: inv.layer_sets.iter().map(|e| e.name.clone()).collect(),
+        plan_view_names: inv.plan_views.iter().map(|e| e.name.clone()).collect(),
+        rich_text_defaults: inv
+            .rich_text_defaults
+            .iter()
+            .map(|e| e.name.clone())
+            .collect(),
     }
 }
 
@@ -699,7 +714,105 @@ pub fn overlay(mut d: PlanDefaults, seed: &PlanSeed) -> PlanDefaults {
         d.exterior_wall.height = h;
         d.interior_wall.height = h;
     }
+    seed_names(&mut d, seed);
     d
+}
+
+/// The name Chief gives a saved default when the template lists it as
+/// "<name> Rich Text Defaults".
+fn short_rich_name(full: &str) -> String {
+    full.strip_suffix(" Rich Text Defaults")
+        .unwrap_or(full)
+        .trim()
+        .to_string()
+}
+
+/// Lays the template's layer sets, saved plan views, Rich Text defaults and
+/// Default Sets over `d`. The decode reads names, not the values behind them:
+/// a layer set starts as a copy of the active one, a Rich Text default as the
+/// current Rich Text defaults, and a saved plan view shows the layer set of
+/// the same stem ("Plot Plan View" shows "Plot Plan Layer Set") or the
+/// active one. A Default Set is made for every name that has both a
+/// dimension set and a Rich Text default ("1/4\" Scale"), with the layer set
+/// of the same stem when there is one (DECISIONS DS13).
+fn seed_names(d: &mut PlanDefaults, seed: &PlanSeed) {
+    use plan_core::defaults::saved::{DefaultSet, KindList, SavedDefault, SavedKind, SavedValue};
+    for n in seed.layer_set_names.iter().filter(|n| !n.trim().is_empty()) {
+        if d.layer_sets.get(n).is_none() {
+            let active = d.layer_sets.active.clone();
+            d.layer_sets.copy_set(&active, n);
+        }
+    }
+    let stem_set = |d: &PlanDefaults, stem: &str| -> Option<String> {
+        [
+            format!("{stem} Layer Set"),
+            format!("{stem} Plan Layer Set"),
+        ]
+        .into_iter()
+        .find(|n| d.layer_sets.get(n).is_some())
+    };
+    for v in seed.plan_view_names.iter().filter(|n| !n.trim().is_empty()) {
+        if d.plan_views.iter().any(|x| &x.name == v) {
+            continue;
+        }
+        let stem = v
+            .trim_end_matches(" Plan View")
+            .trim_end_matches(" View")
+            .trim();
+        let set = stem_set(d, stem).unwrap_or_else(|| d.layer_sets.active.clone());
+        d.plan_views
+            .push(plan_core::SavedPlanView::new(v.clone(), set));
+    }
+    if !seed.rich_text_defaults.is_empty() {
+        let base = plan_core::callout::TextSpec::default();
+        let list = d
+            .saved
+            .lists
+            .entry(SavedKind::RichText.id().to_string())
+            .or_insert_with(|| KindList {
+                active: plan_core::callout::DEFAULT_SAVED_NAME.to_string(),
+                items: vec![SavedDefault {
+                    name: plan_core::callout::DEFAULT_SAVED_NAME.to_string(),
+                    value: SavedValue::Rich(base.clone()),
+                }],
+            });
+        for n in &seed.rich_text_defaults {
+            let name = short_rich_name(n);
+            if !name.is_empty() && !list.items.iter().any(|s| s.name == name) {
+                list.items.push(SavedDefault {
+                    name,
+                    value: SavedValue::Rich(base.clone()),
+                });
+            }
+        }
+    }
+    let dim_names: Vec<String> = seed
+        .dimension_defaults
+        .iter()
+        .map(|ds| short_set_name(&ds.name))
+        .filter(|n| !n.is_empty())
+        .collect();
+    for stem in &dim_names {
+        let has_rich = seed
+            .rich_text_defaults
+            .iter()
+            .any(|r| short_rich_name(r) == *stem);
+        if !has_rich || d.saved.set(stem).is_some() {
+            continue;
+        }
+        let mut set = DefaultSet {
+            name: stem.clone(),
+            ..DefaultSet::default()
+        };
+        set.members
+            .insert(SavedKind::ManualDimensions.id().to_string(), stem.clone());
+        set.members
+            .insert(SavedKind::RichText.id().to_string(), stem.clone());
+        if let Some(ls) = stem_set(d, stem) {
+            set.layer_set = ls;
+        }
+        d.saved.sets.push(set);
+    }
 }
 
 /// `base` with the cached plan template laid over it when seeding is on and
@@ -834,6 +947,227 @@ pub fn layout_summary_lines(l: &LayoutInfoSeed) -> Vec<String> {
     )]
 }
 
+// ===================================================================
+// Plan Studio plan templates (File > Templates)
+// ===================================================================
+
+/// The extension of a Plan Studio plan template file.
+pub const PLAN_TEMPLATE_EXT: &str = "pstemplate";
+/// Chief appends this to the names of metric templates (manual p. 111).
+pub const METRIC_SUFFIX: &str = " - Metric";
+/// The key of [`OwnTemplateSettings`] in `settings.json`.
+pub const OWN_SETTINGS_KEY: &str = "plan_templates";
+
+thread_local! {
+    static DIR_OVERRIDE: std::cell::RefCell<Option<Option<PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+    static SETTINGS_OVERRIDE: std::cell::RefCell<Option<OwnTemplateSettings>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// `~/.plan-studio/templates/plans`, where plan templates are kept.
+pub fn plan_templates_dir() -> Option<PathBuf> {
+    if let Some(o) = DIR_OVERRIDE.with(|d| d.borrow().clone()) {
+        return o;
+    }
+    crate::paths::user_file("templates").map(|d| d.join("plans"))
+}
+
+/// Points the plan template folder somewhere else (the tests), and keeps the
+/// template settings in memory so no test touches the real ones.
+#[cfg(test)]
+pub fn set_plan_templates_dir_for_tests(dir: Option<PathBuf>) {
+    DIR_OVERRIDE.with(|d| *d.borrow_mut() = dir.map(Some));
+    SETTINGS_OVERRIDE.with(|s| *s.borrow_mut() = Some(OwnTemplateSettings::default()));
+}
+
+/// A plan template in the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateEntry {
+    /// The name as listed (a metric template ends with " - Metric").
+    pub name: String,
+    pub path: PathBuf,
+    pub imperial: bool,
+}
+
+/// The file name for a template called `name` in the given units: metric
+/// templates carry " - Metric".
+pub fn template_file_name(name: &str, imperial: bool) -> String {
+    let base = name.trim().trim_end_matches(METRIC_SUFFIX).trim();
+    if imperial {
+        format!("{base}.{PLAN_TEMPLATE_EXT}")
+    } else {
+        format!("{base}{METRIC_SUFFIX}.{PLAN_TEMPLATE_EXT}")
+    }
+}
+
+/// The plan templates in `dir`, sorted by name.
+pub fn list_plan_templates_in(dir: &Path) -> Vec<TemplateEntry> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<TemplateEntry> = rd
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case(PLAN_TEMPLATE_EXT))
+        })
+        .filter_map(|p| {
+            let name = p.file_stem()?.to_string_lossy().into_owned();
+            Some(TemplateEntry {
+                imperial: !name.ends_with(METRIC_SUFFIX),
+                name,
+                path: p,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+/// The plan templates of the user's folder.
+pub fn list_plan_templates() -> Vec<TemplateEntry> {
+    plan_templates_dir().map_or_else(Vec::new, |d| list_plan_templates_in(&d))
+}
+
+/// Saves `t` in `dir` (created if missing); returns the file.
+pub fn save_plan_template_in(
+    dir: &Path,
+    t: &plan_core::defaults::template::PlanTemplate,
+) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let path = dir.join(template_file_name(&t.name, t.imperial));
+    let text = t.to_json().map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Saves `t` in the user's template folder.
+pub fn save_plan_template(
+    t: &plan_core::defaults::template::PlanTemplate,
+) -> Result<PathBuf, String> {
+    save_plan_template_in(&plan_templates_dir().ok_or(crate::paths::NO_HOME)?, t)
+}
+
+/// Reads a plan template file.
+pub fn load_plan_template(
+    path: &Path,
+) -> Result<plan_core::defaults::template::PlanTemplate, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    plan_core::defaults::template::PlanTemplate::from_json(&text).map_err(|e| e.to_string())
+}
+
+/// Which Plan Studio templates new plans start from, per unit system, and
+/// which kinds the chooser hides.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OwnTemplateSettings {
+    /// The file name of the default plan template for U.S. units.
+    #[serde(default)]
+    pub plan_us: Option<String>,
+    /// ... and for metric.
+    #[serde(default)]
+    pub plan_metric: Option<String>,
+    /// Hide Metric Templates / Hide U.S. Templates in the chooser.
+    #[serde(default)]
+    pub hide_metric: bool,
+    #[serde(default)]
+    pub hide_us: bool,
+}
+
+impl OwnTemplateSettings {
+    /// The default template for the units.
+    pub fn default_for(&self, imperial: bool) -> Option<&str> {
+        if imperial {
+            self.plan_us.as_deref()
+        } else {
+            self.plan_metric.as_deref()
+        }
+    }
+
+    /// Makes `file_name` the default for the units.
+    pub fn set_default(&mut self, imperial: bool, file_name: &str) {
+        let v = Some(file_name.to_string());
+        if imperial {
+            self.plan_us = v;
+        } else {
+            self.plan_metric = v;
+        }
+    }
+}
+
+/// The saved settings.
+pub fn own_settings() -> OwnTemplateSettings {
+    if let Some(s) = SETTINGS_OVERRIDE.with(|s| s.borrow().clone()) {
+        return s;
+    }
+    settings_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| serde_json::from_value(v.get(OWN_SETTINGS_KEY)?.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Saves the settings, keeping every other key of `settings.json`.
+pub fn save_own_settings(s: &OwnTemplateSettings) -> Result<(), String> {
+    if SETTINGS_OVERRIDE.with(|o| o.borrow().is_some()) {
+        SETTINGS_OVERRIDE.with(|o| *o.borrow_mut() = Some(s.clone()));
+        return Ok(());
+    }
+    let path = settings_path().ok_or(crate::paths::NO_HOME)?;
+    let mut v = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    v[OWN_SETTINGS_KEY] = serde_json::to_value(s).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+/// What a new plan finds when it looks for the configured template.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DefaultTemplate {
+    /// No Plan Studio template is configured: the Chief template or the
+    /// shipped defaults apply.
+    NotConfigured,
+    /// The configured template file.
+    Found(PathBuf),
+    /// A template is configured but its file is gone (the prompt offers Load
+    /// Installed or Load Custom, manual p. 49).
+    Missing(String),
+}
+
+/// The default plan template for the units, in the folder `dir`.
+pub fn default_plan_template_in(
+    dir: &Path,
+    settings: &OwnTemplateSettings,
+    imperial: bool,
+) -> DefaultTemplate {
+    match settings.default_for(imperial) {
+        None => DefaultTemplate::NotConfigured,
+        Some(file) => {
+            let p = dir.join(file);
+            if p.is_file() {
+                DefaultTemplate::Found(p)
+            } else {
+                DefaultTemplate::Missing(file.to_string())
+            }
+        }
+    }
+}
+
+/// The default plan template for the units.
+pub fn default_plan_template(imperial: bool) -> DefaultTemplate {
+    match plan_templates_dir() {
+        Some(dir) => default_plan_template_in(&dir, &own_settings(), imperial),
+        None => DefaultTemplate::NotConfigured,
+    }
+}
+
 /// Decodes `path` for display without touching the cache or the settings.
 pub fn preview(path: &Path) -> Result<Preview, String> {
     let mtime = mtime_ms(path).unwrap_or(0);
@@ -957,6 +1291,7 @@ mod tests {
             layers: 100,
             materials: 40,
             plan_views: 7,
+            ..PlanSeed::default()
         }
     }
 

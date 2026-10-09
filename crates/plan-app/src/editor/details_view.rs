@@ -357,9 +357,11 @@ pub fn follow_walls(project: &mut Project, fi: usize, before: &[Wall]) -> bool {
     let moved = layer.follow_walls(before, &floor.walls);
     // Trim that is not held by Set Top / Set Bottom follows the height of
     // its walls too.
-    let taller = before
-        .iter()
-        .any(|b| floor.wall(b.id).is_some_and(|w| (w.height - b.height).abs() > 1e-9));
+    let taller = before.iter().any(|b| {
+        floor
+            .wall(b.id)
+            .is_some_and(|w| (w.height - b.height).abs() > 1e-9)
+    });
     let resized = taller && {
         let rooms = plan_core::detect_rooms(&floor.walls, 0.5);
         layer.refresh_trim_heights(floor, &rooms)
@@ -678,10 +680,12 @@ pub fn material_look(name: &str) -> (Pattern, [u8; 3]) {
     })
 }
 
+type LookCache = (u64, HashMap<String, (Pattern, [u8; 3])>);
+
 thread_local! {
     /// [`material_look_in`]'s answers, kept until the material library changes
     /// (looking a material up copies the whole library).
-    static LOOKS: RefCell<(u64, HashMap<String, (Pattern, [u8; 3])>)> =
+    static LOOKS: RefCell<LookCache> =
         RefCell::new((u64::MAX, HashMap::new()));
 }
 

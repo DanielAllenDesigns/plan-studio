@@ -619,7 +619,8 @@ fn capture_item(cx: &EditorContext, o: ObjectRef) -> Option<ClipItem> {
     let f = cx.floor();
     Some(match o {
         ObjectRef::Cabinet(id) => ClipItem::Cabinet(Box::new(placed::cabinet_by_id(f, id)?)),
-        ObjectRef::Symbol(id) => ClipItem::Symbol(Box::new(f.symbol(id)?.clone())),
+        // A fireplace carries its specification with the copy.
+        ObjectRef::Symbol(id) => ClipItem::Symbol(Box::new(f.symbol_for_copy(f.symbol(id)?))),
         ObjectRef::Stair(id) => ClipItem::Stair(Box::new(stairs_view::find(f, id)?)),
         ObjectRef::Device(id) => {
             let layer = super::site_view::electrical_layer(cx.floor, f);

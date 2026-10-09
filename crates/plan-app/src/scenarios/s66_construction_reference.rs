@@ -607,7 +607,7 @@ fn the_offset_tool_moves_and_turns_the_second_plan_with_one_undo_step_per_drag()
 #[test]
 fn nothing_of_this_is_selectable_in_the_reference() {
     // Reference objects cannot be picked or edited (manual p. 89).
-    let mut sim = two_floor_sim();
+    let sim = two_floor_sim();
     let hit = crate::editor::selection::hit_test_cx(&sim.app.cx, Point::new(120.0, 0.0), 6.0);
     assert!(hit.is_empty(), "{hit:?}");
     let _ = ObjectRef::Cad(0);

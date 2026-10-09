@@ -386,3 +386,55 @@ The 3D view now builds openings with their trim, the way the elevations are draw
 
 To see the result, open the 3D view (chapter 10) after placing a door; the toggles are in the 3D menu next
 to Rebuild 3D.
+
+## 3.10 Defaults per type, mulling and bay windows (Round 16)
+
+**Defaults per type.** Every door and window type has its own default: Interior and Exterior for Hinged
+and Sliding doors, and one each for Doorway, Pocket, Bifold, Garage, Barn, Shower and Fixed doors and for
+each window type. The Door Defaults and Window Defaults dialogs are the Specification dialogs, and the
+Window Defaults also hold **Minimum Separation**, **Ignore Casing for Opening Resize** and the **Mulled Unit
+Defaults** on the General and Options panels. To make a default from an opening that is already the way
+you want it, select it and click **Set as Default** on the Edit toolbar.
+
+**Use Default.** A door or window you place follows its default in these groups: the Window Type (or Door
+Style), Casing, Lintel, Sash, Frame (Jamb for doors), Hardware, Treatments, Framing, Rough Opening and
+Materials. Each group has a **Use Default** check box at the top of its panel, and the Window Type list
+starts with a **Use Default** entry. When you change a default (Set as Default, or a Defaults dialog), every
+opening that still uses it takes the new value. Edit a group in an opening's own dialog and it stops
+following that default; tick the box again and it follows once more.
+
+**Window Type.** Fixed, Single and Double Hung, Single, Double and Triple Casement, Left, Right and Triple
+Sliding, Single, Double and Triple Awning, Single, Double and Triple Hopper, Louvered, Glass Louver and
+Pass-Through. Hung and sliding windows have a **Percent Open**, casement, awning and hopper windows a
+**Swing Angle**; fixed and louvered windows neither. A type with unequal components has a Component Size
+(0 makes them equal).
+
+**Automatic mulling.** Doors and windows whose casings touch mull on their own: they share one casing, as
+wide as the gap between them. The gap is never less than the Minimum Separation (2 in to start with).
+Windows mull when their sills are equal; a window mulls to a door when its bottom is at the floor. They
+stay separate objects for dimensions and the Materials List. An opening stops where its casing meets an
+intersecting wall, unless Ignore Casing for Opening Resize is on.
+
+**Make Mulled Unit.** Select doors and windows of one wall that are within 24 in of each other, side to
+side or top to bottom, and click **Make Mulled Unit**. The components must face each other with straight,
+parallel edges, and run in one direction; to build a complex unit, block each row or column first and
+then block the blocks. Nothing moves. The unit has a Mulled Unit Specification: **Treat as Door** (on when
+a door is a component), **Single Wall Hole**, **Mullion Depth** inside and outside, and its label mode (one
+label for the unit, the components' labels, or none). The settings are on the Options panel of any
+component. **Select Next Object** steps through the openings stacked at a place, level 0 first;
+**Explode Mulled Unit** separates the unit.
+
+**Window levels.** Stacked openings can be given a **Window Level** on the General panel. Level 0 draws
+in the layer colour and is picked first; the other levels draw light grey. Four or more openings in one
+place show a yellow **Caution** triangle; **Delete Duplicate** removes the newest.
+
+**Bay, box and bow windows.** These are wall-section units. The tools show no preview; they need a
+straight wall and 30 in. A bay is 4 ft 2 in wide at the wall, 1 ft deep, with sides at 45 degrees; a box
+has 90 degree sides and is 1 ft 6 in deep; a bow has five sections (two to twenty) and an 11 1/2 in depth.
+The General panel has the **Bay Angle** or **Quantity**, the **Depth**, the **Wall Type**, a **Lowered
+Ceiling** and a **Raised Floor** (a bench seat; a raised unit has no foundation). The Options panel has the
+**Roof** choices (Use Existing Roof, Extend Existing Roof Over, Rectangular Roof Over, and None, Flat, Shed
+or Hip with pitch and overhang), the width and radius **Dimensions**, and the **Components** (component
+windows, trimmers, framing between them, connected outer casing, recessed components). On the first floor
+a foundation is built under the unit. **Explode Bay/Bow Window** turns it into walls, one window in each,
+a pass-through in the main wall and, when the ceiling is lowered or the floor raised, a room of its own.

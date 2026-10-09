@@ -114,6 +114,17 @@ pub struct DeckInput<'a> {
 /// (`plan_core::deck::deck_rooms` gives it so) and `ledger_edges` index it.
 /// `next_id` hands out the ids of the members.
 pub fn build_deck_framing(input: &DeckInput, next_id: &mut dyn FnMut() -> Id) -> DeckFraming {
+    build_deck_framing_ref(input, None, next_id)
+}
+
+/// [`build_deck_framing`] with the deck joists laid out from a Framing
+/// Reference Marker (manual p. 918): the joist lines fall at the marker's
+/// position plus whole spacings, with the first one clear of the rim.
+pub fn build_deck_framing_ref(
+    input: &DeckInput,
+    reference: Option<Point>,
+    next_id: &mut dyn FnMut() -> Id,
+) -> DeckFraming {
     let mut out = DeckFraming::default();
     let spec = input.spec;
     let f = &spec.framing;
@@ -160,7 +171,19 @@ pub fn build_deck_framing(input: &DeckInput, next_id: &mut dyn FnMut() -> Id) ->
     // outer joist position, so lines start one spacing in and stop short of
     // the far edge.
     let rim = f.rim_joists;
-    let first = if rim { f.joist_spacing } else { BOARD * 0.5 };
+    let mut first = if rim { f.joist_spacing } else { BOARD * 0.5 };
+    if let Some(r) = reference {
+        // The joist lines fall on the marker's grid: shift the first line to
+        // the grid position past the rim.
+        let spacing = f.joist_spacing.max(1.0);
+        let lo = extent(outline, across).map_or(0.0, |e| e.0);
+        let min_first = if rim { BOARD } else { BOARD * 0.5 };
+        let mut g = (r.dot(across) - lo).rem_euclid(spacing);
+        while g < min_first {
+            g += spacing;
+        }
+        first = g;
+    }
     for (_, run) in joist_lines(outline, angle, first, f.joist_spacing) {
         let v = run.a.dot(across);
         if rim && v > across_hi - BOARD - 0.5 {
@@ -547,5 +570,46 @@ mod tests {
         // 11 joists, 3 rims, a ledger, a 2-ply beam and 3 posts.
         assert!(list.total_pieces() >= 20, "{}", list.total_pieces());
         assert!(list.total_board_feet() > 100.0);
+    }
+
+    // ----- Round 16: Framing Reference Marker -----
+
+    #[test]
+    fn deck_joists_fall_on_the_marker_grid() {
+        let spec = DeckSpec::default();
+        let o = rect(192.0, 96.0);
+        let run = |marker: Option<Point>| {
+            let mut id = 100;
+            let mut next = || {
+                id += 1;
+                id
+            };
+            build_deck_framing_ref(
+                &DeckInput {
+                    outline: &o,
+                    ledger_edges: &[0],
+                    spec: &spec,
+                    deck_top: 36.0,
+                },
+                marker,
+                &mut next,
+            )
+        };
+        let xs = |r: &DeckFraming| -> Vec<f64> {
+            r.members
+                .iter()
+                .filter(|m| m.label.starts_with("Deck joist"))
+                .map(|m| m.start.x)
+                .collect()
+        };
+        let plain = run(None);
+        assert!(xs(&plain).iter().all(|x| (x % 16.0).abs() < 1e-9 || (16.0 - x % 16.0) < 1e-9));
+        let anchored = run(Some(Point::new(8.0, 3.0)));
+        let ax = xs(&anchored);
+        assert!(!ax.is_empty());
+        assert!(ax.iter().all(|x| ((x - 8.0).rem_euclid(16.0)).min(16.0 - (x - 8.0).rem_euclid(16.0)) < 1e-9), "{ax:?}");
+        // The rest of the deck is unchanged.
+        assert_eq!(anchored.ledgers(), plain.ledgers());
+        assert_eq!(anchored.rims(), plain.rims());
     }
 }

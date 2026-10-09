@@ -171,6 +171,12 @@ impl Special {
     /// The front line from the left end to the right end, local frame
     /// (first point at `x = 0`, last at `x = w`).
     pub fn front(&self, w: f64, d: f64) -> Vec<Point> {
+        dedup_line(self.front_raw(w, d))
+    }
+
+    /// [`Special::front`] before repeated points are dropped (a radius as
+    /// big as the cabinet starts its arc on the point before it).
+    fn front_raw(&self, w: f64, d: f64) -> Vec<Point> {
         let a = self.resolved(w, d);
         match self.shape {
             SpecialShape::BowFront => bow_line(w, d, a),
@@ -185,11 +191,7 @@ impl Special {
             }
             SpecialShape::LeftEnd => {
                 let c = a.clamp(0.0, w.min(d));
-                vec![
-                    Point::new(0.0, d - c),
-                    Point::new(c, d),
-                    Point::new(w, d),
-                ]
+                vec![Point::new(0.0, d - c), Point::new(c, d), Point::new(w, d)]
             }
             SpecialShape::RightRadiusEnd => {
                 let r = a.clamp(0.0, w.min(d));
@@ -254,6 +256,18 @@ impl Special {
         pts.push(Point::new(x1, self.depth_at(w, d, x1)));
         pts
     }
+}
+
+/// `line` without consecutive repeated points (an open line: its ends are
+/// not compared).
+fn dedup_line(line: Vec<Point>) -> Vec<Point> {
+    let mut out: Vec<Point> = Vec::with_capacity(line.len());
+    for p in line {
+        if out.last().is_none_or(|q| q.dist(p) > 1e-9) {
+            out.push(p);
+        }
+    }
+    out
 }
 
 fn dedup(ring: Vec<Point>) -> Vec<Point> {
@@ -446,10 +460,8 @@ pub fn exposures(cabs: &[Cabinet], walls: &[Vec<Point>]) -> Vec<(Id, crate::opti
     let footprints: Vec<Vec<Point>> = cabs.iter().map(Cabinet::footprint).collect();
     let mut out = Vec::new();
     for (i, c) in cabs.iter().enumerate() {
-        let ordinary = run_class(c).is_some()
-            && !c.kind.is_corner()
-            && c.custom.is_none()
-            && !c.auto_filler;
+        let ordinary =
+            run_class(c).is_some() && !c.kind.is_corner() && c.custom.is_none() && !c.auto_filler;
         if !ordinary {
             continue;
         }
@@ -560,10 +572,7 @@ fn offset_edges(ring: &[Point], offs: &[f64]) -> Vec<Point> {
             let d = if det.abs() < 1e-9 {
                 n1.scale((o1 + o2) / 2.0)
             } else {
-                Point::new(
-                    (o1 * n2.y - o2 * n1.y) / det,
-                    (n1.x * o2 - n2.x * o1) / det,
-                )
+                Point::new((o1 * n2.y - o2 * n1.y) / det, (n1.x * o2 - n2.x * o1) / det)
             };
             let len = d.dist(Point::ZERO);
             if len > reach {
@@ -623,9 +632,11 @@ impl Cabinet {
             }
             CabinetStyle::Corner => {
                 if self.width <= self.depth + 1e-9 {
-                    return Err("Before a corner cabinet can be specified the cabinet's width \
+                    return Err(
+                        "Before a corner cabinet can be specified the cabinet's width \
                                 must be greater than its depth."
-                        .into());
+                            .into(),
+                    );
                 }
                 let kind = match self.kind {
                     CabinetKind::Base => CabinetKind::CornerBase,
@@ -638,7 +649,11 @@ impl Cabinet {
                 };
                 self.kind = kind;
                 self.special = None;
-                let arm: f64 = if kind == CabinetKind::CornerBase { 24.0 } else { 12.0 };
+                let arm: f64 = if kind == CabinetKind::CornerBase {
+                    24.0
+                } else {
+                    12.0
+                };
                 self.corner = Some(crate::cabinet::CornerSpec {
                     arm_depth: arm.min(self.depth),
                     ..crate::cabinet::CornerSpec::default()
@@ -763,7 +778,11 @@ impl Cabinet {
 
     /// The countertop outline of a special shape or a bowed corner: the
     /// footprint with each edge pushed out by the overhang it carries.
-    pub(crate) fn generic_top_ring(&self, t: &crate::cabinet::Countertop, treated: bool) -> Vec<Point> {
+    pub(crate) fn generic_top_ring(
+        &self,
+        t: &crate::cabinet::Countertop,
+        treated: bool,
+    ) -> Vec<Point> {
         let ring = geom_ccw(self.footprint_local());
         let w = self.width;
         let (d, corner) = (self.depth, self.kind.is_corner());
@@ -802,8 +821,7 @@ impl Cabinet {
         if !treated {
             return out;
         }
-        let (lo, hi) = crate::geom::bbox(&out)
-            .map_or((0.0, w), |(a, b)| (a.x, b.x));
+        let (lo, hi) = crate::geom::bbox(&out).map_or((0.0, w), |(a, b)| (a.x, b.x));
         crate::top::treat_corners(&out, t.corner, t.corner_size, |p| {
             ((p.x - lo).abs() < 1e-6 || (p.x - hi).abs() < 1e-6) && p.y > d * 0.5
         })
@@ -829,9 +847,7 @@ impl Cabinet {
 
     /// Does the box have a top panel (Box Construction, Top)?
     pub fn box_has_top(&self) -> bool {
-        self.box_construction
-            .top
-            .resolve(!self.kind.is_base_like())
+        self.box_construction.top.resolve(!self.kind.is_base_like())
     }
 
     /// Does the box have a bottom panel (Box Construction, Bottom)? With
@@ -870,7 +886,10 @@ mod tests {
         let r = (18.0_f64 * 18.0 + 16.0) / 8.0;
         let seg = r * r * ((18.0 / r).asin()) - 18.0 * (r * r - 18.0 * 18.0).sqrt();
         let a = area(SpecialShape::BowFront, 36.0, 24.0, 4.0);
-        assert!((a - (36.0 * 24.0 + seg)).abs() < 0.8, "area {a} segment {seg}");
+        assert!(
+            (a - (36.0 * 24.0 + seg)).abs() < 0.8,
+            "area {a} segment {seg}"
+        );
         // An inside bow takes the same segment away.
         let inner = area(SpecialShape::BowFront, 36.0, 24.0, -4.0);
         assert!((inner - (36.0 * 24.0 - seg)).abs() < 0.8);
@@ -902,9 +921,15 @@ mod tests {
 
     #[test]
     fn end_cabinets_need_width_no_greater_than_depth_and_clip_the_exposed_corner() {
-        assert!(Special::new(SpecialShape::RightEnd).check(12.0, 24.0).is_ok());
-        assert!(Special::new(SpecialShape::RightEnd).check(30.0, 24.0).is_err());
-        assert!(Special::new(SpecialShape::RightRadiusEnd).check(30.0, 24.0).is_err());
+        assert!(Special::new(SpecialShape::RightEnd)
+            .check(12.0, 24.0)
+            .is_ok());
+        assert!(Special::new(SpecialShape::RightEnd)
+            .check(30.0, 24.0)
+            .is_err());
+        assert!(Special::new(SpecialShape::RightRadiusEnd)
+            .check(30.0, 24.0)
+            .is_err());
         let s = Special::new(SpecialShape::RightEnd);
         let a = area(SpecialShape::RightEnd, 12.0, 24.0, 0.0);
         // The cut takes half of a 6 by 6 triangle.
@@ -977,7 +1002,11 @@ mod tests {
         let (id, spec) = want[0];
         assert_eq!(id, 1);
         assert_eq!(spec.side, BlindSide::Right);
-        assert!((spec.blind_width - 24.0).abs() < 1e-6, "{}", spec.blind_width);
+        assert!(
+            (spec.blind_width - 24.0).abs() < 1e-6,
+            "{}",
+            spec.blind_width
+        );
         // The same pair apart does nothing.
         let far = base_at(2, 48.0, 40.0, std::f64::consts::FRAC_PI_2, 36.0);
         assert!(blind_corners(&[a.clone(), far]).is_empty());

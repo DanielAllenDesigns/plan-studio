@@ -415,13 +415,7 @@ impl DetailsTool {
             self.reset(cx);
             return ToolResult::consumed();
         }
-        let ring = vec![
-            lo,
-            Point::new(lo.x, hi.y),
-            hi,
-            Point::new(hi.x, lo.y),
-            lo,
-        ];
+        let ring = vec![lo, Point::new(lo.x, hi.y), hi, Point::new(hi.x, lo.y), lo];
         let id = dv::add_molding_with(cx, ring, molding::active_profile());
         self.finish_ok(cx, DetailRef::Molding(id), false);
         ToolResult::committed(self.variant.name())
@@ -788,8 +782,8 @@ impl Tool for DetailsTool {
         }
         if let (Some(a), true) = (self.press, p.down) {
             let slop = DRAG_PX / cx.px_per_in.max(1e-6);
-            let molding_rect = self.variant == DetailsVariant::MoldingPolyline
-                && self.points.len() <= 1;
+            let molding_rect =
+                self.variant == DetailsVariant::MoldingPolyline && self.points.len() <= 1;
             if (draw == Draw::Polygon || molding_rect)
                 && (self.rect.is_some() || p.world.dist(a) > slop)
             {
@@ -972,7 +966,10 @@ impl Tool for DetailsTool {
             Some(r) => {
                 dv::select(cx, r);
                 if let DetailRef::Molding(id) = r {
-                    if let Some(i) = dv::load(cx).molding(id).and_then(|m| molding::edge_near(m, p.world)) {
+                    if let Some(i) = dv::load(cx)
+                        .molding(id)
+                        .and_then(|m| molding::edge_near(m, p.world))
+                    {
                         molding::select_edge(id, i);
                     }
                 }
@@ -1191,9 +1188,22 @@ mod tests {
         let r = dbl(&mut p, &mut cx, 96.0, 216.0);
         assert_eq!(r.commit.as_deref(), Some("Molding Polyline"));
         assert_eq!(layer(&cx).moldings[2].polyline.len(), 3);
-        // Crown by default, at the top of the wall.
-        assert!(layer(&cx).moldings[2].elevation > 90.0);
+        // The square default profile starts at the floor...
+        assert_eq!(layer(&cx).moldings[2].elevation, 0.0);
         assert_eq!(cx.undo().as_deref(), Some("Molding Polyline"));
+        // ...and a crown as the active profile hangs from the ceiling.
+        let crown = plan_core::moldings::builtin_profiles()
+            .into_iter()
+            .find(|p| p.kind == plan_core::moldings::MoldingType::Crown)
+            .unwrap();
+        molding::set_active_profile(crown);
+        click(&mut p, &mut cx, 0.0, 120.0);
+        click(&mut p, &mut cx, 96.0, 120.0);
+        click(&mut p, &mut cx, 96.0, 216.0);
+        dbl(&mut p, &mut cx, 96.0, 216.0);
+        assert!(layer(&cx).moldings[2].elevation > 80.0);
+        assert_eq!(cx.undo().as_deref(), Some("Molding Polyline"));
+        molding::reset_active_profile();
         // Enter finishes too; two points are needed.
         click(&mut p, &mut cx, 0.0, 300.0);
         assert!(p.key(&mut cx, KeyEvent::key(Key::Enter)).commit.is_none());

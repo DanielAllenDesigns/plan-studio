@@ -128,7 +128,7 @@ pub fn merge_runs(cabs: &[Cabinet], reach: f64) -> Vec<Run> {
         .filter(|c| run_class(c).is_some() && c.custom.is_none())
         .collect();
     let mut parent: Vec<usize> = (0..items.len()).collect();
-    fn find(p: &mut Vec<usize>, i: usize) -> usize {
+    fn find(p: &mut [usize], i: usize) -> usize {
         let mut r = i;
         while p[r] != r {
             r = p[r];
@@ -152,11 +152,11 @@ pub fn merge_runs(cabs: &[Cabinet], reach: f64) -> Vec<Run> {
         }
     }
     let mut groups: Vec<(usize, Vec<Id>)> = Vec::new();
-    for i in 0..items.len() {
+    for (i, item) in items.iter().enumerate() {
         let r = find(&mut parent, i);
         match groups.iter_mut().find(|g| g.0 == r) {
-            Some(g) => g.1.push(items[i].id),
-            None => groups.push((r, vec![items[i].id])),
+            Some(g) => g.1.push(item.id),
+            None => groups.push((r, vec![item.id])),
         }
     }
     groups
@@ -239,6 +239,17 @@ pub fn run_display(cabs: &[Cabinet], reach: f64, partial: bool) -> RunDisplay {
             let Some(Link::Side { gap }) = link(a, b, reach) else {
                 continue;
             };
+            // A gap an automatic filler already spans reads as the two joins
+            // beside the filler, not as a third line through it.
+            if gap > 0.5
+                && items.iter().any(|f| {
+                    f.auto_filler
+                        && matches!(link(a, f, reach), Some(Link::Side { .. }))
+                        && matches!(link(f, b, reach), Some(Link::Side { .. }))
+                })
+            {
+                continue;
+            }
             let (u, v) = axes(a);
             let (a0, b0) = (a.position.dot(u), b.position.dot(u));
             // `lo` is the one on the left along the run.

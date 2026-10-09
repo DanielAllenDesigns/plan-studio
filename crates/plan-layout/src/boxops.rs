@@ -3,9 +3,7 @@
 //! and the edit tools Pan/Scale, Recenter, Scale to Fit and Rescale Layout
 //! View (manual pp. 1405 to 1407, 1412).
 
-use crate::boxview::{
-    nominal_scale, CameraLink, PlotOptions, ScaleMode, UpdateKind, ViewArt,
-};
+use crate::boxview::{nominal_scale, CameraLink, PlotOptions, ScaleMode, UpdateKind, ViewArt};
 use crate::canvas::turn_point;
 use crate::extent::plan_target;
 use crate::model::{BoxSource, Layout, LayoutBox, LABEL_GAP_IN};
@@ -161,7 +159,12 @@ pub struct FitCheck {
 /// Checks a box of `size_in` against the drawing area of sheet number `page`
 /// (the layout's when the page does not exist yet), leaving room for the
 /// caption when `labelled`.
-pub fn fit_check(layout: &Layout, page: Option<u32>, size_in: (f64, f64), labelled: bool) -> FitCheck {
+pub fn fit_check(
+    layout: &Layout,
+    page: Option<u32>,
+    size_in: (f64, f64),
+    labelled: bool,
+) -> FitCheck {
     let (lo, hi) = page
         .and_then(|n| layout.page(n))
         .map_or_else(|| layout.drawing_area(), |p| layout.page_drawing_area(p));
@@ -496,22 +499,28 @@ impl Missing {
 /// Is the view the box was sent from still in the plan?
 pub fn missing_view(b: &LayoutBox, project: &Project) -> Option<Missing> {
     match &b.source {
-        BoxSource::PlanView { floor, layer_set } => {
+        BoxSource::PlanView { floor, .. } => {
             if let Some(name) = &b.view.saved_view {
                 if project.plan_view(name).is_none() {
                     return Some(Missing::View(format!("saved plan view {name}")));
                 }
             }
-            let Some((fl, set)) = plan_target(&b.source, &b.view, project) else {
+            if plan_target(&b.source, &b.view, project).is_none() {
                 return Some(Missing::View(format!("floor {}", floor + 1)));
-            };
-            let _ = fl;
-            if set != "All" && !set.is_empty() && project.layer_sets.get(&set).is_none() {
-                return Some(Missing::LayerSet(if set.is_empty() {
-                    layer_set.clone()
-                } else {
-                    set
-                }));
+            }
+            // A box's own layer set is a label as much as a link (plans
+            // are sent with the name of the layer display they were drawn
+            // with); only the layer set of a linked saved plan view can be
+            // missing.
+            if let Some(sv) = b
+                .view
+                .saved_view
+                .as_deref()
+                .and_then(|n| project.plan_view(n))
+            {
+                if !sv.layer_set.is_empty() && project.layer_sets.get(&sv.layer_set).is_none() {
+                    return Some(Missing::LayerSet(sv.layer_set.clone()));
+                }
             }
             None
         }
@@ -577,7 +586,9 @@ impl SendOptions {
         let v = &mut b.view;
         v.layout_line_scaling = self.layout_line_scaling;
         match self.extent {
-            SendExtent::EntireView => v.fill_window = matches!(b.source, BoxSource::PlanView { .. }),
+            SendExtent::EntireView => {
+                v.fill_window = matches!(b.source, BoxSource::PlanView { .. })
+            }
             SendExtent::CurrentScreen(e) => v.extent = Some(e),
             SendExtent::AsImage => {}
         }
@@ -597,6 +608,18 @@ impl SendOptions {
 /// Snap to Active CAD Point: the corner, end or vertex already on page
 /// `page` nearest to `at` within `reach` paper inches, else `at`.
 pub fn snap_point(layout: &Layout, page: u32, at: Point, reach: f64) -> Point {
+    snap_point_except(layout, page, at, reach, None)
+}
+
+/// [`snap_point`] leaving out the corners of box `skip` (the box being
+/// placed must not snap to itself).
+pub fn snap_point_except(
+    layout: &Layout,
+    page: u32,
+    at: Point,
+    reach: f64,
+    skip: Option<plan_core::Id>,
+) -> Point {
     let Some(p) = layout.page(page) else {
         return at;
     };
@@ -607,7 +630,7 @@ pub fn snap_point(layout: &Layout, page: u32, at: Point, reach: f64) -> Point {
             best = Some((d, q));
         }
     };
-    for b in &p.boxes {
+    for b in p.boxes.iter().filter(|b| Some(b.id) != skip) {
         let [x0, y0, x1, y1] = b.bounds_in();
         for q in [
             Point::new(x0, y0),
@@ -642,6 +665,14 @@ fn cad_points(item: &plan_core::CadItem) -> Vec<Point> {
             vec![a, b]
         }
     }
+}
+
+/// The floor and layer set a saved plan view gives its layout boxes (the floor
+/// is `None` for a view that shows whichever floor is current): what Unlink
+/// Saved Plan View leaves a box showing.
+pub fn saved_view_target(project: &Project, name: &str) -> Option<(Option<usize>, String)> {
+    let v = project.plan_view(name)?;
+    Some((v.floor, v.layer_set.clone()))
 }
 
 /// Removes the picture a semi-dynamic or Plot Lines view keeps, so it draws

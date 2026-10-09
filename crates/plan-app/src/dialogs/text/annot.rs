@@ -109,6 +109,8 @@ impl Env {
                 format!("Pages / {} {}", pg.label(), pg.title),
             );
         }
+        // The Insert Macro buttons of the dialogs that open now.
+        super::macro_manager::set_current_menu(super::macro_manager::menu_for(p));
         Env {
             layers: cx.layers().layers.iter().map(|l| l.name.clone()).collect(),
             styles: p
@@ -372,47 +374,13 @@ pub enum Macros {
     Note,
 }
 
-/// The Insert button of a text field: special characters and text macros
-/// (Global, Object Specific). Appends the choice to `text`.
+/// The Insert Macro button of a text field: the Global (Project Information,
+/// File, Room, Time Date, Special Characters), User Defined, Referenced
+/// Object and Callout, Marker and Note macros, appended to `text`. `set`
+/// only says which kind of annotation asks.
 pub fn insert_menu(ui: &mut Ui, id: &str, text: &mut String, set: Macros) -> bool {
-    let mut changed = false;
-    ui.menu_button("Insert", |ui| {
-        ui.menu_button("Special Characters", |ui| {
-            for (name, ch) in SPECIAL {
-                if ui.button(format!("{name}  {ch}")).clicked() {
-                    text.push_str(ch);
-                    changed = true;
-                    ui.close_menu();
-                }
-            }
-        });
-        ui.menu_button("Global", |ui| {
-            for (name, _) in plan_core::text_styles::BUILT_IN_MACROS {
-                if ui.button(format!("%{name}%")).clicked() {
-                    text.push_str(&format!("%{name}%"));
-                    changed = true;
-                    ui.close_menu();
-                }
-            }
-        });
-        ui.menu_button("Object Specific", |ui| {
-            let list: &[&str] = match set {
-                Macros::Callout => OBJECT_MACROS,
-                Macros::Marker => &["%height%"],
-                Macros::Note => &["%simple_schedule_number%", "%note_text%"],
-            };
-            for m in list {
-                if ui.button(*m).clicked() {
-                    text.push_str(m);
-                    changed = true;
-                    ui.close_menu();
-                }
-            }
-        });
-    })
-    .response
-    .on_hover_text(format!("Insert a special character or text macro ({id})"));
-    changed
+    let _ = (id, set);
+    super::macro_manager::insert_macro_into(ui, text)
 }
 
 /// A "By Layer" checkbox and a colour button: `None` follows the layer.
@@ -513,7 +481,10 @@ pub fn line_style_page(ui: &mut Ui, look: &mut LineLook, layer: &mut String, lay
     });
 }
 
-/// The Text Style panel: a saved text style (or the layer's) and the height.
+/// The Text Style panel: Use Layer Text Style, Use Text Style (a saved style)
+/// or Use Custom Text Style, and the height. A custom style is stored as an
+/// empty style name (it falls back to the layer's font and follows the
+/// character height set here).
 pub fn text_style_page(
     ui: &mut Ui,
     style: &mut Option<String>,
@@ -521,20 +492,39 @@ pub fn text_style_page(
     styles: &[String],
     fields: &mut Fields,
 ) {
+    use super::StyleChoice;
     crate::dialogs::section(ui, "Text Style");
-    row(ui, "Text Style", |ui| {
-        let shown = style
-            .clone()
-            .unwrap_or_else(|| "Use Layer Text Style".to_string());
+    let mut choice = StyleChoice::of(style);
+    let was = choice;
+    ui.radio_value(&mut choice, StyleChoice::Layer, "Use Layer Text Style");
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut choice, StyleChoice::Named, "Use Text Style");
+        let shown = match style {
+            Some(n) if !n.is_empty() => n.clone(),
+            _ => styles.first().cloned().unwrap_or_default(),
+        };
         egui::ComboBox::from_id_salt(("annot_text_style", ui.id()))
             .selected_text(shown)
             .show_ui(ui, |ui| {
-                ui.selectable_value(style, None, "Use Layer Text Style");
                 for n in styles {
-                    ui.selectable_value(style, Some(n.clone()), n.as_str());
+                    if ui
+                        .selectable_label(style.as_deref() == Some(n.as_str()), n.as_str())
+                        .clicked()
+                    {
+                        *style = Some(n.clone());
+                        choice = StyleChoice::Named;
+                    }
                 }
             });
     });
+    ui.radio_value(&mut choice, StyleChoice::Custom, "Use Custom Text Style");
+    if choice != was {
+        *style = match choice {
+            StyleChoice::Layer => None,
+            StyleChoice::Named => styles.first().cloned(),
+            StyleChoice::Custom => Some(String::new()),
+        };
+    }
     fields.length_row(ui, "Character Height", "annot_text_height", height);
     ui.weak("Plan inches; a Printed Size style prints at its own size on paper.");
 }

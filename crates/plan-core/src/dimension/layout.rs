@@ -26,6 +26,27 @@ pub struct LabelParams<'a> {
     pub leader: LeaderStyle,
 }
 
+/// The leader settings the Dimension Defaults give (General panel: Include
+/// Second Segment, Second Segment Length, Include Arrow); a segment's own
+/// settings win.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LeaderDefaults {
+    pub second_segment: bool,
+    /// Plan inches.
+    pub second_length: f64,
+    pub arrow: bool,
+}
+
+impl Default for LeaderDefaults {
+    fn default() -> Self {
+        Self {
+            second_segment: false,
+            second_length: 12.0,
+            arrow: false,
+        }
+    }
+}
+
 /// One line of the label.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LabelLine {
@@ -48,6 +69,9 @@ pub struct LabelLayout {
     pub knockout: Option<[Point; 4]>,
     /// The leader line from the label to the dimension line (polyline).
     pub leader: Vec<Point>,
+    /// The leader's arrowhead: its tip (on the dimension line) and the point
+    /// the head points back toward.
+    pub leader_arrow: Option<(Point, Point)>,
     /// A short stub joining a label that stands beside the end of the line.
     pub stub: Option<(Point, Point)>,
     /// The label stands outside the extension lines (it did not fit).
@@ -82,6 +106,22 @@ impl Dimension {
         run: Option<(Point, Point)>,
         line_len: f64,
         p: &LabelParams,
+    ) -> LabelLayout {
+        self.label_layout_with(fmt, anchor, dir, run, line_len, p, &LeaderDefaults::default())
+    }
+
+    /// [`Dimension::label_layout`] with the leader defaults of the
+    /// Dimension Defaults (second segment, its length, the arrowhead).
+    #[allow(clippy::too_many_arguments)]
+    pub fn label_layout_with(
+        &self,
+        fmt: &DimFormat,
+        anchor: Point,
+        dir: Point,
+        run: Option<(Point, Point)>,
+        line_len: f64,
+        p: &LabelParams,
+        lead: &LeaderDefaults,
     ) -> LabelLayout {
         let parts = self.label_parts(fmt);
         let texts = parts.lines();
@@ -120,13 +160,18 @@ impl Dimension {
             if wide + h * 0.5 > line_len && seg.label_move.is_none() {
                 let end = if b.sub(a).dot(along) >= 0.0 { b } else { a };
                 let dir_out = if end == b { b.sub(a) } else { a.sub(b) }.normalized();
-                let out = if dir_out.dot(along) >= 0.0 { along } else { along.scale(-1.0) };
+                let out = if dir_out.dot(along) >= 0.0 {
+                    along
+                } else {
+                    along.scale(-1.0)
+                };
                 stub = Some((end, end.add(out.scale(h * 0.4))));
                 center = end.add(out.scale(h * 0.4 + wide * 0.5 + gap));
                 outside = true;
             }
         }
         let mut leader = Vec::new();
+        let mut leader_arrow = None;
         if let Some(m) = seg.label_move {
             let moved = along.scale(m.x).add(up.scale(m.y));
             center = center.add(moved);
@@ -136,19 +181,38 @@ impl Dimension {
                 let at = anchor;
                 let corner = at.add(up.scale(m.y));
                 let end = center.sub(edge(m.x));
+                let two = seg.leader_second_segment.unwrap_or(lead.second_segment);
+                let second = seg.leader_second_length.unwrap_or(lead.second_length).max(0.0);
+                let side = if m.x >= 0.0 { 1.0 } else { -1.0 };
                 leader = match style {
-                    LeaderStyle::Diagonal | LeaderStyle::None => vec![at, center],
+                    LeaderStyle::None => Vec::new(),
                     LeaderStyle::SquareCorner => vec![at, corner, end],
+                    LeaderStyle::Diagonal if two => {
+                        // The bend stands `second` short of the label.
+                        vec![at, end.sub(along.scale(side * second)), end]
+                    }
+                    LeaderStyle::Diagonal => vec![at, end],
                     LeaderStyle::RoundCorner => {
-                        let r = (m.x.abs().min(m.y.abs()) * 0.5).min(h);
-                        let back = up.scale(-m.y.signum() * r);
-                        let side = along.scale(m.x.signum() * r);
-                        vec![at, corner.add(back), corner.add(side), end]
+                        // A quarter-round bend between the rise and the run.
+                        let r = (m.x.abs().min(m.y.abs()) * 0.5).min(h * 2.0).max(1e-6);
+                        let from = corner.sub(up.scale(m.y.signum() * r));
+                        let to = corner.add(along.scale(side * r));
+                        let mut v = vec![at, from];
+                        for k in 1..=6 {
+                            let t = f64::from(k) / 6.0;
+                            let a = Point::lerp(from, corner, t);
+                            let b = Point::lerp(corner, to, t);
+                            v.push(Point::lerp(a, b, t));
+                        }
+                        v.push(end);
+                        if two {
+                            v.push(end.add(along.scale(side * second.min(h * 4.0))));
+                        }
+                        v
                     }
                 };
-                if seg.leader_second_segment.unwrap_or(false) {
-                    // A second stretch: the leader runs on past the label.
-                    leader.push(end.add(along.scale(m.x.signum() * h)));
+                if lead_arrow(seg.leader_arrow, lead.arrow) && leader.len() >= 2 {
+                    leader_arrow = Some((leader[0], leader[1]));
                 }
             }
         }
@@ -162,27 +226,30 @@ impl Dimension {
                 width: *w,
             })
             .collect();
-        let knockout = (opts.position == TextPos::Centered
-            && !outside
-            && seg.label_move.is_none())
-        .then(|| {
-            let (hx, hy) = (along.scale(wide * 0.5 + gap), up.scale(h * 0.5 + gap * 0.5));
-            [
-                center.sub(hx).sub(hy),
-                center.add(hx).sub(hy),
-                center.add(hx).add(hy),
-                center.sub(hx).add(hy),
-            ]
-        });
+        let knockout = (opts.position == TextPos::Centered && !outside && seg.label_move.is_none())
+            .then(|| {
+                let (hx, hy) = (along.scale(wide * 0.5 + gap), up.scale(h * 0.5 + gap * 0.5));
+                [
+                    center.sub(hx).sub(hy),
+                    center.add(hx).sub(hy),
+                    center.add(hx).add(hy),
+                    center.sub(hx).add(hy),
+                ]
+            });
         LabelLayout {
             lines,
             angle,
             knockout,
             leader,
+            leader_arrow,
             stub,
             outside,
         }
     }
+}
+
+fn lead_arrow(own: Option<bool>, default: bool) -> bool {
+    own.unwrap_or(default)
 }
 
 #[cfg(test)]
@@ -212,7 +279,10 @@ mod tests {
     #[test]
     fn text_stays_upright_and_vertical_reads_bottom_to_top() {
         assert!(upright(0.0, 0.0).abs() < 1e-9);
-        assert!((upright(PI, 0.0)).abs() < 1e-9, "a leftward line reads left to right");
+        assert!(
+            (upright(PI, 0.0)).abs() < 1e-9,
+            "a leftward line reads left to right"
+        );
         assert!((upright(-FRAC_PI_2, 0.0) - FRAC_PI_2).abs() < 1e-9);
         assert!((upright(FRAC_PI_2, 0.0) - FRAC_PI_2).abs() < 1e-9);
         // A view turned a quarter turn reads the same way on screen.
@@ -226,18 +296,42 @@ mod tests {
         let fmt = DimFormat::default();
         let d = dim(120.0);
         let anchor = Point::new(60.0, 0.0);
-        let l = d.label_layout(&fmt, anchor, Point::new(1.0, 0.0), Some((Point::ZERO, Point::new(120.0, 0.0))), 120.0, &params(&w));
+        let l = d.label_layout(
+            &fmt,
+            anchor,
+            Point::new(1.0, 0.0),
+            Some((Point::ZERO, Point::new(120.0, 0.0))),
+            120.0,
+            &params(&w),
+        );
         assert_eq!(l.lines.len(), 1);
         assert!(l.lines[0].center.y > 0.0, "above by default");
         assert!(l.knockout.is_none());
         let mut f2 = fmt;
         f2.label.position = TextPos::Centered;
-        let l = d.label_layout(&f2, anchor, Point::new(1.0, 0.0), Some((Point::ZERO, Point::new(120.0, 0.0))), 120.0, &params(&w));
+        let l = d.label_layout(
+            &f2,
+            anchor,
+            Point::new(1.0, 0.0),
+            Some((Point::ZERO, Point::new(120.0, 0.0))),
+            120.0,
+            &params(&w),
+        );
         assert!(l.lines[0].center.y.abs() < 1e-9);
-        assert!(l.knockout.is_some(), "the line breaks behind a centered number");
+        assert!(
+            l.knockout.is_some(),
+            "the line breaks behind a centered number"
+        );
         f2.label.position = TextPos::Below;
         f2.label.second.include = true;
-        let l = d.label_layout(&f2, anchor, Point::new(1.0, 0.0), Some((Point::ZERO, Point::new(120.0, 0.0))), 120.0, &params(&w));
+        let l = d.label_layout(
+            &f2,
+            anchor,
+            Point::new(1.0, 0.0),
+            Some((Point::ZERO, Point::new(120.0, 0.0))),
+            120.0,
+            &params(&w),
+        );
         assert_eq!(l.lines.len(), 2);
         assert!(l.lines[0].center.y < 0.0 && l.lines[1].center.y > 0.0);
     }
@@ -247,7 +341,14 @@ mod tests {
         let w = |s: &str| s.chars().count() as f64 * 2.0;
         let fmt = DimFormat::default();
         let d = dim(10.0);
-        let l = d.label_layout(&fmt, Point::new(5.0, 0.0), Point::new(1.0, 0.0), Some((Point::ZERO, Point::new(10.0, 0.0))), 10.0, &params(&w));
+        let l = d.label_layout(
+            &fmt,
+            Point::new(5.0, 0.0),
+            Point::new(1.0, 0.0),
+            Some((Point::ZERO, Point::new(10.0, 0.0))),
+            10.0,
+            &params(&w),
+        );
         assert!(l.outside);
         assert!(l.stub.is_some());
         assert!(l.lines[0].center.x > 10.0);
@@ -260,11 +361,25 @@ mod tests {
         let mut d = dim(120.0);
         d.look.seg.label_move = Some(Point::new(30.0, 20.0));
         let a = Point::new(60.0, 0.0);
-        let l = d.label_layout(&fmt, a, Point::new(1.0, 0.0), Some((Point::ZERO, Point::new(120.0, 0.0))), 120.0, &params(&w));
+        let l = d.label_layout(
+            &fmt,
+            a,
+            Point::new(1.0, 0.0),
+            Some((Point::ZERO, Point::new(120.0, 0.0))),
+            120.0,
+            &params(&w),
+        );
         assert_eq!(l.leader.len(), 3, "square corner: line, corner, label");
         assert!(l.lines[0].center.x > 85.0);
         d.look.seg.leader = Some(LeaderStyle::None);
-        let l = d.label_layout(&fmt, a, Point::new(1.0, 0.0), Some((Point::ZERO, Point::new(120.0, 0.0))), 120.0, &params(&w));
+        let l = d.label_layout(
+            &fmt,
+            a,
+            Point::new(1.0, 0.0),
+            Some((Point::ZERO, Point::new(120.0, 0.0))),
+            120.0,
+            &params(&w),
+        );
         assert!(l.leader.is_empty());
         d.look.seg.label_angle = Some(90.0);
         let l = d.label_layout(&fmt, a, Point::new(1.0, 0.0), None, 120.0, &params(&w));
@@ -272,11 +387,58 @@ mod tests {
     }
 
     #[test]
+    fn leaders_can_be_a_line_or_an_arc_with_two_segments_and_an_arrow() {
+        let w = |s: &str| s.chars().count() as f64 * 2.0;
+        let fmt = DimFormat::default();
+        let mut d = dim(120.0);
+        d.look.seg.label_move = Some(Point::new(40.0, 20.0));
+        let a = Point::new(60.0, 0.0);
+        let run = Some((Point::ZERO, Point::new(120.0, 0.0)));
+        let lay = |d: &Dimension, lead: &LeaderDefaults| {
+            d.label_layout_with(&fmt, a, Point::new(1.0, 0.0), run, 120.0, &params(&w), lead)
+        };
+        // A diagonal line is one segment; a second segment bends it.
+        d.look.seg.leader = Some(LeaderStyle::Diagonal);
+        let l = lay(&d, &LeaderDefaults::default());
+        assert_eq!(l.leader.len(), 2);
+        assert!(l.leader_arrow.is_none());
+        let two = LeaderDefaults {
+            second_segment: true,
+            second_length: 10.0,
+            arrow: true,
+        };
+        let l = lay(&d, &two);
+        assert_eq!(l.leader.len(), 3, "line, bend, label");
+        assert!((l.leader[1].dist(l.leader[2]) - 10.0).abs() < 1e-9);
+        let (tip, toward) = l.leader_arrow.expect("the defaults ask for an arrow");
+        assert_eq!(tip, a);
+        assert_eq!(toward, l.leader[1]);
+        // The segment's own settings win over the defaults.
+        d.look.seg.leader_second_segment = Some(false);
+        d.look.seg.leader_arrow = Some(false);
+        let l = lay(&d, &two);
+        assert_eq!(l.leader.len(), 2);
+        assert!(l.leader_arrow.is_none());
+        // A round corner is an arc: many points, ending at the label.
+        d.look.seg.leader = Some(LeaderStyle::RoundCorner);
+        let l = lay(&d, &LeaderDefaults::default());
+        assert!(l.leader.len() > 5, "{}", l.leader.len());
+        assert_eq!(l.leader[0], a);
+    }
+
+    #[test]
     fn a_blank_label_lays_out_nothing() {
         let w = |s: &str| s.len() as f64;
         let mut d = dim(120.0);
         d.look.seg.blank = true;
-        let l = d.label_layout(&DimFormat::default(), Point::ZERO, Point::new(1.0, 0.0), None, 120.0, &params(&w));
+        let l = d.label_layout(
+            &DimFormat::default(),
+            Point::ZERO,
+            Point::new(1.0, 0.0),
+            None,
+            120.0,
+            &params(&w),
+        );
         assert!(l.lines.is_empty());
     }
 }

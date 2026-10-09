@@ -596,7 +596,8 @@ fn identical_trusses_share_a_label_the_truss_detail_draws_each_once_and_the_sche
     assert_eq!(rows.len(), 2);
     assert_eq!((rows[0].label.as_str(), rows[0].quantity), ("TR-1", 3));
     // Deleting the trusses removes the Truss Detail with them.
-    framing_view::delete_records(sim.cx(), &framing_view::selected(&sim.app.cx));
+    let selected = framing_view::selected(&sim.app.cx);
+    framing_view::delete_records(sim.cx(), &selected);
     let ids: Vec<Id> = framing_view::manual_members(sim.app.cx.floor())
         .iter()
         .map(|m| m.id)

@@ -75,7 +75,12 @@ struct Form {
 // edits the same fields directly.
 #[allow(dead_code)]
 impl ConstructionLineDialog {
-    pub fn new(target: Target, draft: ConstructionLine, layer: String, text_styles: Vec<String>) -> Self {
+    pub fn new(
+        target: Target,
+        draft: ConstructionLine,
+        layer: String,
+        text_styles: Vec<String>,
+    ) -> Self {
         let title = match target {
             Target::Line { .. } => "Construction Line Specification",
             Target::Defaults => "Construction Line Defaults",
@@ -185,7 +190,13 @@ impl SpecPages for Form {
     }
 
     fn preview(&self, p: &Painter, rect: Rect) {
-        pv_text(p, rect.min + egui::vec2(0.0, 6.0), Align2::LEFT_CENTER, "Plan view", 11.0);
+        pv_text(
+            p,
+            rect.min + egui::vec2(0.0, 6.0),
+            Align2::LEFT_CENTER,
+            "Plan view",
+            11.0,
+        );
         let area = Rect::from_min_max(
             rect.min + egui::vec2(0.0, 18.0),
             rect.max - egui::vec2(0.0, 8.0),
@@ -221,10 +232,20 @@ impl SpecPages for Form {
             } else {
                 Color32::TRANSPARENT
             };
-            p.add(Shape::convex_polygon(pts, fill, Stroke::new(1.2_f32, PV_ACCENT)));
+            p.add(Shape::convex_polygon(
+                pts,
+                fill,
+                Stroke::new(1.2_f32, PV_ACCENT),
+            ));
             pv_text(p, at, Align2::CENTER_CENTER, top.clone(), 11.0);
             if !below.is_empty() {
-                pv_text(p, at + egui::vec2(0.0, 7.0), Align2::CENTER_CENTER, below.clone(), 8.0);
+                pv_text(
+                    p,
+                    at + egui::vec2(0.0, 7.0),
+                    Align2::CENTER_CENTER,
+                    below.clone(),
+                    8.0,
+                );
             }
         };
         if call.plan.at_start() {
@@ -238,7 +259,13 @@ impl SpecPages for Form {
         } else {
             "Finite in plan"
         };
-        pv_text(p, Pos2::new(c.x, area.max.y - 6.0), Align2::CENTER_CENTER, note, 10.0);
+        pv_text(
+            p,
+            Pos2::new(c.x, area.max.y - 6.0),
+            Align2::CENTER_CENTER,
+            note,
+            10.0,
+        );
         let _ = PV_FAINT;
     }
 }
@@ -246,14 +273,22 @@ impl SpecPages for Form {
 impl Form {
     fn line_panel(&mut self, ui: &mut Ui) {
         section(ui, "Infinite Line");
-        ui.checkbox(&mut self.draft.infinite_plan, "Draw Infinite Line in Plan View");
+        ui.checkbox(
+            &mut self.draft.infinite_plan,
+            "Draw Infinite Line in Plan View",
+        );
         ui.checkbox(
             &mut self.draft.infinite_elevation,
             "Draw Infinite Line in Elevation View",
         );
-        ui.weak("Infinite construction lines do not affect the extents of any view they display in.");
+        ui.weak(
+            "Infinite construction lines do not affect the extents of any view they display in.",
+        );
         section(ui, "Options");
-        ui.checkbox(&mut self.draft.all_floors, "Display on All Floors in Plan View");
+        ui.checkbox(
+            &mut self.draft.all_floors,
+            "Display on All Floors in Plan View",
+        );
         ui.checkbox(&mut self.draft.in_ordering, "Include in Automatic Ordering");
         ui.horizontal(|ui| {
             row(ui, "", |ui| {
@@ -284,7 +319,13 @@ impl Form {
             });
         }
         section(ui, "Label");
-        text_row(ui, "Label", "construction_label", &mut c.label, &mut c.label_auto);
+        text_row(
+            ui,
+            "Label",
+            "construction_label",
+            &mut c.label,
+            &mut c.label_auto,
+        );
         text_row(
             ui,
             "Text Below Line",
@@ -348,7 +389,11 @@ impl Form {
         row(ui, "Line Style", |ui| {
             let mut by_layer = self.draft.line_style.is_none();
             if ui.checkbox(&mut by_layer, "By Layer").changed() {
-                self.draft.line_style = if by_layer { None } else { Some(LineStyle::Solid) };
+                self.draft.line_style = if by_layer {
+                    None
+                } else {
+                    Some(LineStyle::Solid)
+                };
             }
             if let Some(s) = &mut self.draft.line_style {
                 style_combo(ui, "cl_style", s);
@@ -393,7 +438,10 @@ thread_local! {
 
 fn text_row(ui: &mut Ui, label: &str, id: &str, text: &mut String, auto: &mut bool) {
     row(ui, label, |ui| {
-        ui.add_enabled(!*auto, egui::TextEdit::singleline(text).desired_width(150.0));
+        ui.add_enabled(
+            !*auto,
+            egui::TextEdit::singleline(text).desired_width(150.0),
+        );
         ui.add_enabled_ui(!*auto, |ui| {
             insert_menu(ui, id, text, Macros::Callout);
         });
@@ -426,7 +474,12 @@ fn style_combo(ui: &mut Ui, salt: &str, style: &mut LineStyle) {
 fn weight_drag(ui: &mut Ui, weight: &mut u32) {
     let mut mm = f64::from(*weight) / 100.0;
     if ui
-        .add(egui::DragValue::new(&mut mm).range(0.05..=5.0).speed(0.01).suffix(" mm"))
+        .add(
+            egui::DragValue::new(&mut mm)
+                .range(0.05..=5.0)
+                .speed(0.01)
+                .suffix(" mm"),
+        )
         .changed()
     {
         *weight = (mm * 100.0).round() as u32;
@@ -734,8 +787,17 @@ mod tests {
     fn set_as_default_and_the_defaults_dialog_feed_new_lines() {
         let mut cx = cx();
         let id = line(&mut cx);
-        cx.project.floors[0].construction.get_mut(id).unwrap().in_ordering = false;
-        cx.project.floors[0].construction.get_mut(id).unwrap().callouts.plan = CalloutEnds::End;
+        cx.project.floors[0]
+            .construction
+            .get_mut(id)
+            .unwrap()
+            .in_ordering = false;
+        cx.project.floors[0]
+            .construction
+            .get_mut(id)
+            .unwrap()
+            .callouts
+            .plan = CalloutEnds::End;
         assert!(run_command(&mut cx, SET_AS_DEFAULT));
         assert_eq!(cx.undo_label(), Some("Set as Default"));
         let next = cx

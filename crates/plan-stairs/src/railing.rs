@@ -458,15 +458,7 @@ fn newel_meshes(
     } else {
         foot
     };
-    post_prism(
-        at,
-        (bottom, shaft_top),
-        nw.size,
-        nw.profile,
-        lat,
-        id,
-        out,
-    );
+    post_prism(at, (bottom, shaft_top), nw.size, nw.profile, lat, id, out);
     if nw.cap {
         let cap = nw.size + 2.0 * CAP_OVERHANG;
         out.extend(bar(
@@ -598,7 +590,15 @@ pub(crate) fn run_meshes(
                 RailStyle::Balusters { size, .. } => {
                     for &p in &geom.balusters {
                         if !skip.balusters {
-                            post_prism(p, (lo, hi), size, params.baluster_profile, lat, id, &mut out);
+                            post_prism(
+                                p,
+                                (lo, hi),
+                                size,
+                                params.baluster_profile,
+                                lat,
+                                id,
+                                &mut out,
+                            );
                         }
                     }
                 }
@@ -642,7 +642,13 @@ pub fn railing_meshes(
     floor_elev: f64,
     params: &RailingParams,
 ) -> Vec<Mesh> {
-    run_meshes(&[(start, end)], floor_elev, params, None, PostSkip::default())
+    run_meshes(
+        &[(start, end)],
+        floor_elev,
+        params,
+        None,
+        PostSkip::default(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -960,7 +966,10 @@ pub fn landing_guards(stair: &Stair) -> Vec<LandingGuard> {
                 (s, k)
             }
         };
-        if !matches!(kind, SideKind::Railing | SideKind::HalfWall | SideKind::Wall) {
+        if !matches!(
+            kind,
+            SideKind::Railing | SideKind::HalfWall | SideKind::Wall
+        ) {
             continue;
         }
         // The run goes the way a counter-clockwise outline does.
@@ -1235,7 +1244,10 @@ fn ramp_arc_geometry(
     }
     let n = ((sweep.to_degrees() / 7.5).ceil() as usize).max(1);
     for i in 0..n {
-        let (a0, a1) = (sweep * i as f64 / n as f64, sweep * (i + 1) as f64 / n as f64);
+        let (a0, a1) = (
+            sweep * i as f64 / n as f64,
+            sweep * (i + 1) as f64 / n as f64,
+        );
         g.rails
             .push((plan(a0), rail_top(a0), plan(a1), rail_top(a1)));
     }
@@ -1256,8 +1268,7 @@ fn ramp_arc_geometry(
         let count = ((sweep * rho) / pitch).floor().max(1.0) as u32;
         for k in 0..count {
             let a = sweep * (f64::from(k) + 0.5) / f64::from(count);
-            g.balusters
-                .push((plan(a), surface(a), rail_top(a) - below));
+            g.balusters.push((plan(a), surface(a), rail_top(a) - below));
         }
     }
 }
@@ -1289,17 +1300,19 @@ pub fn stair_posts(stair: &Stair) -> StairPosts {
     let mut out = StairPosts::default();
     let layout = Layout::build(stair);
     let p = &stair.params;
-    for (side, kind) in [(RailSide::Left, p.left_side), (RailSide::Right, p.right_side)] {
+    for (side, kind) in [
+        (RailSide::Left, p.left_side),
+        (RailSide::Right, p.right_side),
+    ] {
         let railing = p.railing_for(side);
         if layout.is_landing {
             let Some(slab) = layout.slabs.first() else {
                 continue;
             };
             let elevation = stair.bottom_elevation() + slab.top;
-            for guard in landing_guards(stair)
-                .into_iter()
-                .filter(|g| g.side == side && matches!(g.kind, SideKind::Railing | SideKind::HalfWall))
-            {
+            for guard in landing_guards(stair).into_iter().filter(|g| {
+                g.side == side && matches!(g.kind, SideKind::Railing | SideKind::HalfWall)
+            }) {
                 let mut params = railing;
                 if guard.kind == SideKind::HalfWall {
                     params.half_wall = Some(params.half_wall.unwrap_or(GUARD_HEIGHT * 0.5));

@@ -2397,6 +2397,10 @@ impl View3dState {
             cx.status = "Open an elevation or section camera to send it to layout".into();
             return;
         };
+        // The open 3D view is offered too, so it can be sent as a picture.
+        if let Some(view) = self.snapshot_source() {
+            crate::shell::layout_window::offer_snapshot_3d(view);
+        }
         crate::shell::layout_window::send_camera(cx, id);
     }
 

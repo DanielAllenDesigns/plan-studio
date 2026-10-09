@@ -136,37 +136,43 @@ pub fn stories(project: &Project) -> usize {
 
 /// Which windows of the active floor are in sleeping rooms, and which
 /// exterior doors are candidates for the required egress door.
+fn room_type_of(cx: &EditorContext, r: &plan_core::Room) -> String {
+    rooms_edit::name_entry(cx, r)
+        .map(|n| {
+            if n.room_type.trim().is_empty() {
+                n.name.clone()
+            } else {
+                n.room_type.clone()
+            }
+        })
+        .unwrap_or_else(|| r.label.clone())
+}
+
+/// Does a window `offset` inches along `wall` look into a bedroom or another
+/// sleeping room (on either side of the wall)?
+pub fn sleeping_room_at(cx: &EditorContext, wall: &plan_core::Wall, offset: f64) -> bool {
+    let c = wall.point_at(offset.clamp(0.0, wall.length()));
+    let n = wall.normal().scale(3.0);
+    [c.add(n), c.sub(n)].iter().any(|p| {
+        cx.rooms
+            .iter()
+            .find(|r| r.contains(*p))
+            .is_some_and(|r| CodeMinimums::is_sleeping(&room_type_of(cx, r)))
+    })
+}
+
 fn opening_facts(cx: &EditorContext) -> (HashSet<Id>, HashSet<Id>) {
     let floor = cx.floor();
     let mut sleeping = HashSet::new();
     let mut egress = HashSet::new();
-    let room_type = |r: &plan_core::Room| -> String {
-        rooms_edit::name_entry(cx, r)
-            .map(|n| {
-                if n.room_type.trim().is_empty() {
-                    n.name.clone()
-                } else {
-                    n.room_type.clone()
-                }
-            })
-            .unwrap_or_else(|| r.label.clone())
-    };
     let grade = floor.elevation <= 0.0 && floor.kind == FloorKind::Normal;
     for op in &floor.openings {
         let Some(w) = floor.wall(op.wall_id) else {
             continue;
         };
-        let c = w.point_at(op.center_offset.clamp(0.0, w.length()));
-        let n = w.normal().scale(3.0);
         match op.kind {
             OpeningKind::Window => {
-                let in_sleeping = [c.add(n), c.sub(n)].iter().any(|p| {
-                    cx.rooms
-                        .iter()
-                        .find(|r| r.contains(*p))
-                        .is_some_and(|r| CodeMinimums::is_sleeping(&room_type(r)))
-                });
-                if in_sleeping {
+                if sleeping_room_at(cx, w, op.center_offset) {
                     sleeping.insert(op.id);
                 }
             }

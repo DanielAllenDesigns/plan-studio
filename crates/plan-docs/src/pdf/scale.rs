@@ -150,6 +150,16 @@ pub enum Scale {
     OneAndHalfInch,
     /// 3" = 1'-0"
     ThreeInch,
+    /// 1" = 30'-0" (site plans; listed by [`Scale::SITE`])
+    OneInchEq30Ft,
+    /// 1" = 40'-0"
+    OneInchEq40Ft,
+    /// 1" = 50'-0"
+    OneInchEq50Ft,
+    /// 1" = 60'-0"
+    OneInchEq60Ft,
+    /// 1" = 100'-0"
+    OneInchEq100Ft,
     /// Metric ratio 1:n (`Ratio(0)` is treated as 1:1).
     Ratio(u32),
 }
@@ -181,9 +191,48 @@ impl Scale {
         Scale::OneInchEq20Ft,
     ];
 
+    /// The site-plan scales below 1" = 20' that Send to Layout and a layout
+    /// box offer too (kept out of [`Scale::ALL`], which sheets step through).
+    pub const SITE: [Scale; 5] = [
+        Scale::OneInchEq30Ft,
+        Scale::OneInchEq40Ft,
+        Scale::OneInchEq50Ft,
+        Scale::OneInchEq60Ft,
+        Scale::OneInchEq100Ft,
+    ];
+
+    /// The metric ratios the scale lists offer, largest drawing first.
+    pub const METRIC: [Scale; 10] = [
+        Scale::Ratio(10),
+        Scale::Ratio(20),
+        Scale::Ratio(25),
+        Scale::Ratio(50),
+        Scale::Ratio(75),
+        Scale::Ratio(100),
+        Scale::Ratio(200),
+        Scale::Ratio(250),
+        Scale::Ratio(500),
+        Scale::Ratio(1000),
+    ];
+
+    /// Every scale a drop-down offers: [`Scale::ALL`], then [`Scale::SITE`],
+    /// then [`Scale::METRIC`].
+    pub fn choices() -> Vec<Scale> {
+        Scale::ALL
+            .into_iter()
+            .chain(Scale::SITE)
+            .chain(Scale::METRIC)
+            .collect()
+    }
+
     /// Paper inches per plan foot.
     pub fn inches_per_foot(self) -> f64 {
         match self {
+            Scale::OneInchEq30Ft => 1.0 / 30.0,
+            Scale::OneInchEq40Ft => 1.0 / 40.0,
+            Scale::OneInchEq50Ft => 1.0 / 50.0,
+            Scale::OneInchEq60Ft => 1.0 / 60.0,
+            Scale::OneInchEq100Ft => 1.0 / 100.0,
             Scale::HalfInch => 0.5,
             Scale::QuarterInch => 0.25,
             Scale::ThreeSixteenths => 0.1875,
@@ -219,6 +268,11 @@ impl Scale {
             Scale::OneInch => "1\" = 1'-0\"",
             Scale::OneAndHalfInch => "1-1/2\" = 1'-0\"",
             Scale::ThreeInch => "3\" = 1'-0\"",
+            Scale::OneInchEq30Ft => "1\" = 30'-0\"",
+            Scale::OneInchEq40Ft => "1\" = 40'-0\"",
+            Scale::OneInchEq50Ft => "1\" = 50'-0\"",
+            Scale::OneInchEq60Ft => "1\" = 60'-0\"",
+            Scale::OneInchEq100Ft => "1\" = 100'-0\"",
             Scale::Ratio(n) => ratio_label(n.max(1)),
         }
     }
@@ -273,6 +327,7 @@ impl Scale {
     pub fn from_inches_per_foot(ipf: f64) -> Scale {
         if let Some(s) = Scale::ALL
             .into_iter()
+            .chain(Scale::SITE)
             .find(|s| (s.inches_per_foot() - ipf).abs() < 1e-9)
         {
             return s;
@@ -297,6 +352,7 @@ impl Scale {
         let ipf = paper_in / plan_ft;
         Scale::ALL
             .into_iter()
+            .chain(Scale::SITE)
             .find(|s| (s.inches_per_foot() - ipf).abs() < 1e-9)
     }
 }
@@ -381,6 +437,26 @@ mod tests {
         assert_eq!(Scale::Ratio(50).larger(), Some(Scale::Ratio(25)));
         assert_eq!(Scale::Ratio(1).larger(), None);
         assert_eq!(Scale::Ratio(1000).smaller(), None);
+    }
+
+    #[test]
+    fn site_and_metric_scales_are_listed_and_round_trip() {
+        let all = Scale::choices();
+        assert_eq!(all.len(), 10 + 5 + 10);
+        for s in Scale::SITE {
+            assert_eq!(Scale::from_label(s.label()), Some(s), "{}", s.label());
+            assert_eq!(Scale::from_inches_per_foot(s.inches_per_foot()), s);
+        }
+        assert_eq!(Scale::OneInchEq30Ft.label(), "1\" = 30'-0\"");
+        assert_eq!(Scale::from_label("1\" = 100'"), Some(Scale::OneInchEq100Ft));
+        assert!(Scale::METRIC.contains(&Scale::Ratio(1000)));
+        // The ones below 1" = 20' draw smaller than it, and keep their order.
+        for w in Scale::SITE.windows(2) {
+            assert!(w[0].inches_per_foot() > w[1].inches_per_foot());
+        }
+        assert!(Scale::OneInchEq30Ft.inches_per_foot() < Scale::OneInchEq20Ft.inches_per_foot());
+        // Sheets still stop where they did.
+        assert_eq!(Scale::OneInchEq20Ft.smaller_any(), None);
     }
 
     #[test]

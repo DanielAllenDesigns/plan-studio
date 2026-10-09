@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cabinet::{Cabinet, CabinetKind, HandleStyle, SideKind};
-use crate::face::FaceItem;
+use crate::face::{DoorPlan, FaceItem};
 
 /// Spacing of the adjustable shelves behind a door or in an opening, inches.
 pub const SHELF_SPACING: f64 = 13.0;
@@ -218,6 +218,52 @@ pub struct Accessories {
     pub feet: FootStyle,
     /// Side of a square foot, inches.
     pub foot_size: f64,
+    /// Left and right pilasters are Auto: a pilaster that neighbouring
+    /// cabinets share is built once, centred on their line.
+    pub pilaster_auto: bool,
+    /// Front pilasters reach the bottom of the toe kick (Extend to Bottom).
+    pub pilaster_to_bottom: bool,
+    /// Foot offset from the sides and from the front and back, inches.
+    pub foot_width_offset: f64,
+    pub foot_depth_offset: f64,
+    /// Feet under the cabinet wherever it stands (Always Present).
+    pub feet_always: bool,
+    /// Stretch the feet from each corner to the middle of each edge.
+    pub feet_stretch: bool,
+    /// Keep a toe kick between the feet.
+    pub retain_toe_kick: bool,
+    /// Style of the panels on the sides and back (Panels).
+    pub panel_style: PanelStyle,
+    pub panel_thickness: f64,
+    /// One panel over the whole side (Full Size Panel).
+    pub panel_full_size: bool,
+    /// Side panels reach the outer faces of the front and back (Full
+    /// Overlay).
+    pub panel_full_overlay: bool,
+    /// Side panels reach the bottom of the toe kick.
+    pub panel_to_bottom: bool,
+}
+
+/// The style of a side or back panel (Accessories, Panels).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PanelStyle {
+    /// The panel style of the cabinet defaults (a flat slab).
+    #[default]
+    UseDefault,
+    Slab,
+    Framed,
+}
+
+impl PanelStyle {
+    pub const ALL: [PanelStyle; 3] = [PanelStyle::UseDefault, PanelStyle::Slab, PanelStyle::Framed];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PanelStyle::UseDefault => "Use Default",
+            PanelStyle::Slab => "Slab",
+            PanelStyle::Framed => "Framed",
+        }
+    }
 }
 
 impl Default for Accessories {
@@ -229,6 +275,18 @@ impl Default for Accessories {
             pilaster_width: 2.5,
             feet: FootStyle::None,
             foot_size: 3.0,
+            pilaster_auto: false,
+            pilaster_to_bottom: false,
+            foot_width_offset: 0.0,
+            foot_depth_offset: 0.0,
+            feet_always: false,
+            feet_stretch: false,
+            retain_toe_kick: false,
+            panel_style: PanelStyle::UseDefault,
+            panel_thickness: 0.75,
+            panel_full_size: false,
+            panel_full_overlay: false,
+            panel_to_bottom: false,
         }
     }
 }
@@ -357,7 +415,11 @@ pub fn components(c: &Cabinet) -> Vec<Component> {
         let plain = |s| c.side_kind(s) == SideKind::Plain;
         let sides = usize::from(plain(crate::cabinet::FaceSide::Left))
             + usize::from(plain(crate::cabinet::FaceSide::Right));
-        add("Box side", sides, dims(c.depth, box_h, panel), carcass);
+        let (st, bt) = (
+            c.box_construction.side_thickness,
+            c.box_construction.back_thickness,
+        );
+        add("Box side", sides, dims(c.depth, box_h, st), carcass);
         let finished = 2 - sides;
         add(
             "Finished end panel",
@@ -365,54 +427,74 @@ pub fn components(c: &Cabinet) -> Vec<Component> {
             dims(c.depth, box_h, panel),
             m.door.name(),
         );
-        add(
-            "Box bottom",
-            1,
-            dims((c.width - 2.0 * panel).max(0.0), c.depth, panel),
-            carcass,
-        );
-        if !c.kind.is_base_like() {
+        if c.box_has_bottom() {
+            add(
+                "Box bottom",
+                1,
+                dims((c.width - 2.0 * st).max(0.0), c.depth, panel),
+                carcass,
+            );
+        }
+        if c.box_has_top() {
             add(
                 "Box top",
                 1,
-                dims((c.width - 2.0 * panel).max(0.0), c.depth, panel),
+                dims((c.width - 2.0 * st).max(0.0), c.depth, panel),
                 carcass,
             );
         }
         if plain(crate::cabinet::FaceSide::Back) {
-            add("Back", 1, dims(c.width, box_h, panel), carcass);
+            add("Back", 1, dims(c.width, box_h, bt), carcass);
         }
     }
     if let Ok(leaves) = c.face.resolve(c.face_height(), c.face_width()) {
         let (mut doors, mut drawers, mut panels, mut separations, mut apps, mut shelves) =
             (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        let (mut false_fronts, mut boards, mut rollouts, mut blanks) =
+            (0usize, 0usize, 0usize, 0usize);
         let mut door_sizes: Vec<(f64, f64)> = Vec::new();
         let mut drawer_sizes: Vec<(f64, f64)> = Vec::new();
         for leaf in &leaves {
             let (_, _, w, h) = leaf.rect;
-            match &leaf.item {
-                FaceItem::DoorAuto { .. }
-                | FaceItem::DoorLeft { .. }
-                | FaceItem::DoorRight { .. } => {
+            let item = &leaf.item;
+            match item.door_plan(w, c.auto_door_threshold) {
+                DoorPlan::Single { .. } => {
                     doors += 1;
                     door_sizes.push((w, h));
-                    shelves += shelf_count(h);
                 }
-                FaceItem::DoubleDoor { .. } => {
+                DoorPlan::Pair => {
                     doors += 2;
                     door_sizes.push((w / 2.0, h));
                     door_sizes.push((w / 2.0, h));
-                    shelves += shelf_count(h);
                 }
+                DoorPlan::None => {}
+            }
+            let shelf_n = |floor: usize| {
+                leaf.props
+                    .as_ref()
+                    .map_or_else(|| shelf_count(h).max(floor), |p| p.shelves.count(h))
+            };
+            match item {
                 FaceItem::Drawer { .. } => {
                     drawers += 1;
                     drawer_sizes.push((w, h));
                 }
+                FaceItem::DoubleDrawer { .. } => {
+                    drawers += 2;
+                    drawer_sizes.push((w / 2.0, h));
+                    drawer_sizes.push((w / 2.0, h));
+                }
+                FaceItem::FalseDrawer { .. } => false_fronts += 1,
+                FaceItem::FalseDoubleDrawer { .. } => false_fronts += 2,
+                FaceItem::CuttingBoard { .. } => boards += 1,
+                FaceItem::Blank { .. } => blanks += 1,
+                FaceItem::Rollout { .. } => rollouts += shelf_n(1),
                 FaceItem::Panel { .. } => panels += 1,
                 FaceItem::Separation { .. } => separations += 1,
                 FaceItem::Appliance { .. } => apps += 1,
-                FaceItem::Opening { .. } => shelves += shelf_count(h),
-                FaceItem::HorizontalLayout { .. } => {}
+                FaceItem::Opening { .. } => shelves += shelf_n(0),
+                _ if item.is_door() => shelves += shelf_n(0),
+                _ => {}
             }
         }
         let first =
@@ -434,6 +516,15 @@ pub fn components(c: &Cabinet) -> Vec<Component> {
             first(&drawer_sizes, c.drawer_style.thickness),
             m.drawer.name(),
         );
+        add(
+            "False drawer front",
+            false_fronts,
+            String::new(),
+            m.drawer.name(),
+        );
+        add("Cutting board", boards, String::new(), m.door.name());
+        add("Roll-out shelf", rollouts, String::new(), carcass);
+        add("Blank area", blanks, String::new(), m.door.name());
         add("Panel", panels, String::new(), m.door.name());
         add("Face frame rail", separations, String::new(), m.door.name());
         add("Appliance", apps, String::new(), "Metal");
@@ -455,7 +546,7 @@ pub fn components(c: &Cabinet) -> Vec<Component> {
         let drawer_pulls = if c.drawer_style.handle == HandleStyle::None {
             0
         } else {
-            drawers
+            drawers + false_fronts
         };
         add(
             &format!("Door handle ({})", style.handle.name()),

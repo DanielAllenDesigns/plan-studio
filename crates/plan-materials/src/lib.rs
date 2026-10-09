@@ -34,7 +34,8 @@ pub use package::{
 };
 pub use painter::{build_material, nearest_by_color, scene_material, PaintMode, PaintScope};
 pub use pattern::{
-    clip_strokes_to_polygon, pattern_strokes, pattern_strokes_turned, Pattern, MAX_STROKES,
+    clip_strokes_to_polygon, pattern_of_fill, pattern_strokes, pattern_strokes_turned, Pattern,
+    MAX_STROKES,
 };
 pub use sun::{default_room_light, LightKind, LightSource, SunSettings};
 pub use takeoff::{summarize, to_csv, MaterialQuantity, Region, SurfaceArea, SURFACE_COLUMNS};

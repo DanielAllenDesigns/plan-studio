@@ -543,8 +543,9 @@ fn classes_of(project: &Project) -> std::collections::HashMap<Id, &'static str> 
 /// metalness, transparency and glow are registered for the viewport and the
 /// ray tracer ([`plan_3d::surface`]). Returns how many meshes changed.
 pub fn apply_overrides(project: &Project, scene: &mut Scene) -> usize {
+    let rooms = apply_room_surfaces(project, scene);
     if project.object_materials.is_empty() && project.material_defaults.is_empty() {
-        return 0;
+        return rooms;
     }
     let lib = library_with_blends(project);
     let classes = if project.material_defaults.is_empty() {
@@ -566,6 +567,36 @@ pub fn apply_overrides(project: &Project, scene: &mut Scene) -> usize {
             if changed {
                 n += 1;
             }
+        }
+    }
+    n
+}
+
+/// Paints the surface plates of the rooms that name a material themselves
+/// (what the Material Painter's Room mode writes into the room's floor, ceiling
+/// and wall covering) with that library material, by the role of the surface
+/// rather than a keyword in its name. Returns how many meshes changed.
+fn apply_room_surfaces(project: &Project, scene: &mut Scene) -> usize {
+    let named = plan_3d::room_surface_names(project);
+    if named.is_empty() {
+        return 0;
+    }
+    let lib = library_with_blends(project);
+    let mut n = 0;
+    for mesh in &mut scene.meshes {
+        let Some(id) = mesh.object_id else { continue };
+        let Some((_, _, name)) = named.iter().find(|(i, _, _)| *i == id) else {
+            continue;
+        };
+        let Some(def) = lib.find(name) else { continue };
+        let m = scene_material(def);
+        let changed = m != mesh.material || mesh.color != Some(def.color);
+        mesh.material = m;
+        mesh.color = Some(def.color);
+        register_surface(id, m, def);
+        register_maps(id, m, def);
+        if changed {
+            n += 1;
         }
     }
     n

@@ -681,3 +681,26 @@ A property is a schedule column. Flag it **Show in schedules** and it is the las
 After an export, the plan checks the workbook every two seconds; when it is saved again in Excel a small bar over the status bar offers **Workbook changed - import?** (Import... or Dismiss). The offer ends when another plan is opened.
 
 Not built yet: copy, paste and duplicate do not carry property values; values of deleted objects stay in the file until a purge; walls, stairs and framing have no built-in editable columns, only custom properties; the framing schedule's grouped lines cannot take properties; an `.xlsx` saved by Excel has been read here only through Excel-style XML tests (verify with a real Excel file).
+
+## 11.12 Page Information, labels and page tables
+
+**Layout > Page Information...** (also **Edit Page Information...** in a page's right-click menu in the Project Browser) replaces the old Page Specification. Pick the **Selected Page** at the top; each page keeps its own entries until you press OK, and OK is one undo step named "Page Information".
+
+| Field | What it does |
+|---|---|
+| Label | The page's sheet number. Type a fixed label (`Cover`) or a pattern with `#`: `A-#`, `A0.#`, `E1.#`. A `#` becomes the next free number among the pages with the same pattern, in page order, so three `A1.#` pages read A1.1, A1.2, A1.3. Two pages may share a fixed label. Empty keeps `A-n`. |
+| Title, Description, Comments | Shown in the Layout Page Table and available to macros. |
+| Include in Layout Table | Lists the page in a Layout Page Table. It is cleared for page templates. |
+| Use as Page Template | The page becomes a template: its border, title block and drawings show on the pages assigned to it. |
+| Assign Page Template | The template this page uses; **Page Zero** is the default. A template that pages use cannot be deleted or switched off. |
+| Page Revisions | A table of the page's revisions: Label, Date, Revised By, Description, Include in Revision Table (New, Edit, Delete, Move Up, Move Down). |
+
+Dragging a page in the Project Browser, or Move Page in the Layout menu, renumbers every `#` label. **Copy Drawings to Page** copies a page's border and drawings (CAD, leaders, revision clouds) onto another page, which is how a cover template is built from the standard one.
+
+**Page macros** work in any layout text and in title-block fields: `%layout.label%`, `%layout.title%`, `%layout.description%`, `%layout.comments%`, `%page%` (the page number), `%page.print%` (the printed number: pages with nothing on them and templates are not counted), `%numpages%` and `%lastpage%`. Put them once on the template page; each page shows its own values on screen, in print preview and in the PDF, also when only a range is printed.
+
+**Layout > Add Layout Revision...** adds one revision (Label, Date, Revised By, Description) to the pages you tick. **Layout Revision Table** and **Layout Page Table** are placed by a click on the page: the revision table lists the revisions of the page it sits on (on a template, those of each page that uses it); the page table lists Label, Title and Description of every page that is included. Both update when pages move, rename or gain revisions. The title block's REVISIONS table uses the page's own revisions; a page with none keeps the old behaviour (Project Information rows plus revision clouds).
+
+**General Layout Defaults...** sets Use Snap Grid and the **Grid Snap Unit** (default 1/16 in); the arrow keys nudge a selected layout object by the same unit. Both are kept with the layout file.
+
+Not built yet: program-wide sheet sizes (Print round), Chief's per-page border text fields.

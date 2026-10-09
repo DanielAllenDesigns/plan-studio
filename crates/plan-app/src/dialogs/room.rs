@@ -85,6 +85,22 @@ struct RoomForm {
     define: Option<Define>,
 }
 
+thread_local! {
+    static ROOM_TYPES_REQUEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The "Room Types..." button of the Room Specification was pressed: the shell
+/// opens the Room Types list of Default Settings (R-18).
+pub fn take_room_types_request() -> bool {
+    ROOM_TYPES_REQUEST.with(std::cell::Cell::take)
+}
+
+/// Presses the "Room Types..." button without a UI (tests).
+#[cfg(test)]
+pub fn press_room_types_for_test() {
+    ROOM_TYPES_REQUEST.with(|r| r.set(true));
+}
+
 /// Which structure the Define editor shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Define {
@@ -246,6 +262,13 @@ impl RoomForm {
             if let Some(t) = picked {
                 self.set_room_type(&t);
             }
+            if ui
+                .button("Room Types...")
+                .on_hover_text("Edit the list of room types in Default Settings")
+                .clicked()
+            {
+                ROOM_TYPES_REQUEST.with(|r| r.set(true));
+            }
         });
         row(ui, "Function", |ui| {
             let f = self.type_def().map_or("Standard", |t| t.function.as_str());
@@ -280,6 +303,14 @@ impl RoomForm {
         ui.radio_value(&mut self.extras.conditioned, Some(true), "Conditioned");
         ui.radio_value(&mut self.extras.conditioned, Some(false), "Unconditioned");
         ui.radio_value(&mut self.extras.conditioned, None, default_text);
+
+        section(ui, "Options");
+        row(ui, "Roof Group", |ui| {
+            ui.add(egui::DragValue::new(&mut self.name.roof_group).range(0..=99))
+                .on_hover_text(
+                    "0 is the default group. Rooms of another group are roofed as a separate building",
+                );
+        });
     }
 
     fn structure(&mut self, ui: &mut Ui) {

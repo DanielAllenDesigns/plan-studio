@@ -244,7 +244,8 @@ fn the_electrical_schedule_has_hidden_voltage_and_flags_columns() {
     let t = plan_docs::schedule_kinds::table(&sim.app.cx.project, &def, 0, None);
     let col = |name: &str| t.columns.iter().position(|c| c == name).unwrap();
     assert_eq!(t.rows[0][col("Voltage")], "220V");
-    assert_eq!(t.rows[0][col("Flags")], "220V");
+    // A 220 V receptacle is always on a circuit of its own (`is_dedicated`).
+    assert_eq!(t.rows[0][col("Flags")], "220V, Dedicated");
     assert_eq!(t.rows[0][col("Mark")], "E-01");
 }
 

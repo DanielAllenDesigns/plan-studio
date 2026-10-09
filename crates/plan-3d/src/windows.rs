@@ -6,6 +6,7 @@ use crate::leaf::{Grid, Leaf};
 use crate::mesh::Material;
 use crate::opening::{ArchGeom, Ctx};
 use plan_core::opening_symbol::projection_footprint;
+use plan_core::openings::BayRoofKind;
 use plan_core::OpeningStyle;
 /// Sash thickness.
 pub(crate) const SASH_THICKNESS: f64 = 1.75;
@@ -280,8 +281,16 @@ fn projecting(ctx: &Ctx, set: &mut MeshSet) {
     let h = ctx.hole;
     let trim = set.material(Material::Trim);
     ctx.frame.prism(trim, &poly, (h.h0 - SEAT_THICKNESS, h.h0));
-    // A small hip or shed roof over the unit (RF-29).
-    if !crate::roof::bay_roof_into(set, &ctx.frame, &poly, h.h1, ctx.opening.style) {
+    // A small hip or shed roof over the unit, a flat slab, or none (RF-29,
+    // the Options tab's Bay Roof).
+    let options = &ctx.opening.extras.spec.bay_roof;
+    let kind = options
+        .kind
+        .resolved(ctx.opening.style == OpeningStyle::BoxWindow);
+    if kind == BayRoofKind::None {
+        return;
+    }
+    if !crate::roof::bay_roof_into(set, &ctx.frame, &poly, h.h1, ctx.opening.style, options) {
         let roof = set.material(Material::Roof);
         ctx.frame.prism(roof, &poly, (h.h1, h.h1 + ROOF_THICKNESS));
     }

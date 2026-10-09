@@ -137,7 +137,9 @@ pub fn model_solids(cx: &EditorContext) -> Vec<SolidDxf> {
                 layer: m.material.name().to_string(),
                 triangles: m
                     .indices
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|t| [at(t[0]), at(t[1]), at(t[2])])
                     .collect(),
             }

@@ -429,13 +429,7 @@ fn arrow_head(style: ArrowStyle, size: f64, b: Point, dir: Point, seg: f64) -> O
 
 /// The arrow of a curved stair or ramp along the walking line from angle
 /// `start` to `end`, with its circle and UP label.
-fn curve_arrow(
-    stair: &Stair,
-    layout: &Layout,
-    c: &Curve,
-    circle_at: f64,
-    end: f64,
-) -> Vec<Stroke> {
+fn curve_arrow(stair: &Stair, layout: &Layout, c: &Curve, circle_at: f64, end: f64) -> Vec<Stroke> {
     let to_plan = |p: Uv| layout.frame.uv(p);
     let opts = &stair.params.plan;
     let walk = c.walk();
@@ -552,7 +546,16 @@ fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>)
 
     // The walkline: an arc at the walking radius.
     if p.walkline.show {
-        let pts = curve_arc(c, if c.left { c.walk_off } else { c.width - c.walk_off }, 0.0, end);
+        let pts = curve_arc(
+            c,
+            if c.left {
+                c.walk_off
+            } else {
+                c.width - c.walk_off
+            },
+            0.0,
+            end,
+        );
         out.push(poly(pts, false));
     }
 
@@ -599,7 +602,10 @@ fn ramp_arc_symbol(stair: &Stair, layout: &Layout, arc: &RampArc) -> Vec<Stroke>
     if p.handrail {
         for lat in [HANDRAIL_PLAN_INSET, c.width - HANDRAIL_PLAN_INSET] {
             out.push(Stroke::Polyline(
-                curve_arc(c, lat, 0.0, sweep).into_iter().map(to_plan).collect(),
+                curve_arc(c, lat, 0.0, sweep)
+                    .into_iter()
+                    .map(to_plan)
+                    .collect(),
                 false,
             ));
         }

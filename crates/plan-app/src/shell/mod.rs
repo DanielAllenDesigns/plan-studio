@@ -1,5 +1,6 @@
 //! The application shell: docked panels, the library browser and hotkeys.
 
+pub mod agent_panel;
 pub mod docks;
 pub mod hotkeys;
 pub mod layout_window;

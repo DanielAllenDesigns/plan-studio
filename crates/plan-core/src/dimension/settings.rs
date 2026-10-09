@@ -127,6 +127,9 @@ pub struct DimSetup {
     /// indicators and fixed label angle (`position` is filled in from
     /// `text_position` when the format is built).
     pub label: DimLabelOptions,
+    /// The last fixed label angle typed (degrees), kept while the label
+    /// angle is automatic.
+    pub label_angle_value: f64,
     /// A second leader line segment, with its length.
     pub leader_second_segment: bool,
     pub leader_second_length: f64,
@@ -141,6 +144,9 @@ pub struct DimSetup {
     /// Layouts: the distance from the marked object a dragged dimension line
     /// snaps to.
     pub snap_line_separation: f64,
+    /// Layouts: how far a manual dimension reaches for objects to locate
+    /// (24 inches in a plan, 1 inch on a layout page).
+    pub layout_reach: f64,
     // --- Setup Automatic: exterior ---
     pub offset_from: OffsetFrom,
     /// How far Auto Exterior reaches for walls set back from the exterior
@@ -204,6 +210,7 @@ impl Default for DimSetup {
         Self {
             text_position: None,
             label: DimLabelOptions::default(),
+            label_angle_value: 0.0,
             leader_second_segment: false,
             leader_second_length: 12.0,
             leader_arrow: false,
@@ -213,6 +220,7 @@ impl Default for DimSetup {
             extend_extensions_3d: true,
             label_faces_camera: false,
             snap_line_separation: 1.0,
+            layout_reach: 1.0,
             offset_from: OffsetFrom::DimensionLayer,
             exterior_reach: 48.0,
             exterior_min_area: 0.0,
@@ -706,6 +714,9 @@ impl crate::defaults::DimensionDefaults {
                 t.group.openings = OpeningLocate::Centers;
                 t.marks.insert("cabinets.centers".into(), true);
                 t.marks.insert("fixtures.centers".into(), true);
+                // A centerline dimension locates centers, not sides.
+                t.marks.insert("cabinets.sides".into(), false);
+                t.marks.insert("fixtures.sides".into(), false);
             }
             LocateTool::Interior | LocateTool::AutoRoom => {
                 t.display_wall_widths = false;
@@ -733,6 +744,46 @@ impl crate::defaults::DimensionDefaults {
             self.elevation_locate = Some(panel.group);
         }
         self.locates.store(tool, panel);
+    }
+}
+
+/// The kind of view a dimension is drawn in: Dimension Defaults keep what to
+/// locate and how far to reach for each (manual pp. 478 to 489).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DimView {
+    Plan,
+    Elevation,
+    Section,
+    Layout,
+}
+
+impl DimView {
+    pub const ALL: [DimView; 4] = [
+        DimView::Plan,
+        DimView::Elevation,
+        DimView::Section,
+        DimView::Layout,
+    ];
+}
+
+impl crate::defaults::DimensionDefaults {
+    /// The Locate panel a manual dimension in `view` reads: Manual in a plan
+    /// and on a layout page, Elevations in an elevation or a section.
+    pub fn locate_for_view(&self, view: DimView) -> ToolLocate {
+        match view {
+            DimView::Plan | DimView::Layout => self.tool_locate(LocateTool::Manual),
+            DimView::Elevation | DimView::Section => self.tool_locate(LocateTool::Elevations),
+        }
+    }
+
+    /// How far a manual dimension reaches for objects in `view`, plan
+    /// inches (the layout figure is paper inches).
+    pub fn reach_for_view(&self, view: DimView) -> f64 {
+        match view {
+            DimView::Layout => self.setup.layout_reach.max(0.0),
+            _ if self.reach > 0.0 => self.reach,
+            _ => 24.0,
+        }
     }
 }
 
@@ -784,6 +835,7 @@ mod tests {
         assert_eq!(c.group.walls, WallLocate::Centers);
         assert_eq!(c.group.openings, OpeningLocate::Centers);
         assert!(c.cabinet_centers());
+        assert!(!c.mark("cabinets.sides") && !c.mark("fixtures.sides"));
         let i = d.tool_locate(LocateTool::Interior);
         assert!(!i.display_wall_widths);
         // Editing a panel stores it; Manual writes the typed fields.
@@ -805,6 +857,39 @@ mod tests {
         d.set_tool_locate(LocateTool::Manual, m);
         assert_eq!(d.locate_walls, WallLocate::Centers);
         assert_eq!(d.opening_locate(), OpeningLocate::None);
+    }
+
+    #[test]
+    fn each_view_reads_its_own_locate_panel_and_reach() {
+        let mut d = PlanDefaults::default().dimensions;
+        d.locate_walls = WallLocate::Surfaces;
+        assert_eq!(
+            d.locate_for_view(DimView::Plan).group.walls,
+            WallLocate::Surfaces
+        );
+        assert_eq!(
+            d.locate_for_view(DimView::Layout).group.walls,
+            WallLocate::Surfaces
+        );
+        // Elevations and sections follow the elevation group until edited.
+        let mut e = d.tool_locate(LocateTool::Elevations);
+        e.group.walls = WallLocate::Centers;
+        d.set_tool_locate(LocateTool::Elevations, e);
+        assert_eq!(
+            d.locate_for_view(DimView::Section).group.walls,
+            WallLocate::Centers
+        );
+        assert_eq!(
+            d.locate_for_view(DimView::Elevation).group.walls,
+            WallLocate::Centers
+        );
+        assert_eq!(d.reach_for_view(DimView::Plan), 24.0);
+        assert_eq!(d.reach_for_view(DimView::Layout), 1.0);
+        d.reach = 36.0;
+        d.setup.layout_reach = 2.0;
+        assert_eq!(d.reach_for_view(DimView::Plan), 36.0);
+        assert_eq!(d.reach_for_view(DimView::Layout), 2.0);
+        assert_eq!(DimView::ALL.len(), 4);
     }
 
     #[test]

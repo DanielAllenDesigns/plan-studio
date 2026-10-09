@@ -594,3 +594,72 @@ fn point_in_polygon(pt: Point, poly: &[Point]) -> bool {
     }
     inside
 }
+
+/// The material pattern a Fill Style stands for, so a plan fill and the
+/// hatch of a section or elevation agree: lines and cross hatch keep their
+/// spacing and angle, Brick, Grid and Herringbone their cell size, Concrete
+/// and Sand become the stipple and earth patterns. `None` for Solid, Use
+/// Layer, Library patterns and the system patterns without a material
+/// counterpart (Dots, U's).
+pub fn pattern_of_fill(style: &plan_core::fill_styles::FillStyle) -> Option<Pattern> {
+    use plan_core::fill_styles::{PatternType, SystemPattern};
+    let PatternType::System(sp) = &style.pattern else {
+        return None;
+    };
+    Some(match sp {
+        SystemPattern::Lines => Pattern::Lines {
+            angle_deg: style.angle_deg,
+            spacing: style.width,
+        },
+        SystemPattern::CrossHatch => Pattern::CrossHatch {
+            angle_deg: style.angle_deg,
+            spacing: style.width,
+        },
+        SystemPattern::Brick | SystemPattern::GridOffset => Pattern::Brick {
+            length: style.width,
+            height: style.height,
+        },
+        SystemPattern::Grid | SystemPattern::GridStep => Pattern::Tile {
+            w: style.width,
+            h: style.height,
+        },
+        SystemPattern::Herringbone => Pattern::Herringbone {
+            length: style.width,
+            width: style.height,
+        },
+        SystemPattern::Concrete => Pattern::Concrete,
+        SystemPattern::Sand => Pattern::Earth,
+        SystemPattern::Solid | SystemPattern::Us | SystemPattern::Dots => return None,
+    })
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+    use plan_core::fill_styles::{FillStyle, SystemPattern};
+
+    #[test]
+    fn a_fill_style_maps_to_the_material_pattern_with_its_size() {
+        assert_eq!(
+            pattern_of_fill(&FillStyle::hatch(30.0, 9.0, [0; 3])),
+            Some(Pattern::Lines {
+                angle_deg: 30.0,
+                spacing: 9.0
+            })
+        );
+        assert_eq!(
+            pattern_of_fill(&FillStyle::system(SystemPattern::Brick, 8.0, 2.25)),
+            Some(Pattern::brick())
+        );
+        assert_eq!(
+            pattern_of_fill(&FillStyle::system(SystemPattern::Concrete, 6.0, 6.0)),
+            Some(Pattern::Concrete)
+        );
+        assert!(pattern_of_fill(&FillStyle::solid([0; 3])).is_none());
+        assert!(pattern_of_fill(&FillStyle::library("x")).is_none());
+        // The mapped pattern makes strokes over a rectangle.
+        let p = pattern_of_fill(&FillStyle::hatch(0.0, 12.0, [0; 3])).unwrap();
+        let rect = (Point::new(0.0, 0.0), Point::new(48.0, 48.0));
+        assert!(!pattern_strokes(&p, rect, 0.25).is_empty());
+    }
+}

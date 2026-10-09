@@ -5,7 +5,8 @@
 //! 1. **Chief's own texture**, read at run time from Daniel's install when it
 //!    is there (`~/Documents/Chief Architect Premier X18 Data/Textures`, then
 //!    `/Library/Application Support/Chief Architect Premier X18/Referenced
-//!    Files`; the `PLAN_STUDIO_TEXTURES` environment variable adds a folder in
+//!    Files`; the folder chosen in Preferences > Folders ([`set_texture_folder`])
+//!    and the `PLAN_STUDIO_TEXTURES` environment variable add a folder in
 //!    front). The files are licensed Chief content: they are never copied into
 //!    this repository and never written anywhere. A file named like
 //!    `Brick(36).jpg` carries its tile size in inches in the parentheses.
@@ -344,9 +345,22 @@ pub fn procedural(m: Material) -> Option<TextureImage> {
 
 // ---- Chief's install --------------------------------------------------------
 
+static USER_TEXTURE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Sets (or clears) the textures folder the user chose in Preferences >
+/// Folders; [`default_texture_dirs`] lists it first.
+pub fn set_texture_folder(dir: Option<PathBuf>) {
+    if let Ok(mut slot) = USER_TEXTURE_DIR.lock() {
+        *slot = dir;
+    }
+}
+
 /// The folders searched for Chief texture files, most specific first.
 pub fn default_texture_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    if let Some(user) = USER_TEXTURE_DIR.lock().ok().and_then(|s| s.clone()) {
+        dirs.push(user);
+    }
     if let Some(extra) = std::env::var_os("PLAN_STUDIO_TEXTURES") {
         dirs.push(PathBuf::from(extra));
     }
@@ -357,6 +371,8 @@ pub fn default_texture_dirs() -> Vec<PathBuf> {
         "/Library/Application Support/Chief Architect Premier X18/Referenced Files",
     ));
     dirs.retain(|d| d.is_dir());
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
     dirs
 }
 

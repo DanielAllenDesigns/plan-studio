@@ -57,7 +57,13 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
 
 /// Sobel gradient magnitude of the lightness of `rgba`, 0..~1.4.
 pub fn edge_strength(rgba: &[u8], w: usize, h: usize) -> Vec<f32> {
-    let l: Vec<f32> = rgba.as_chunks::<4>().0.iter().take(w * h).map(|p| luma(p)).collect();
+    let l: Vec<f32> = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .take(w * h)
+        .map(|p| luma(p))
+        .collect();
     let at = |x: isize, y: isize| -> f32 {
         let (x, y) = (x.clamp(0, w as isize - 1), y.clamp(0, h as isize - 1));
         l[y as usize * w + x as usize]

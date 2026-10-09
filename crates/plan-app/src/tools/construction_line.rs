@@ -214,6 +214,7 @@ enum Drag {
         pivot: Point,
         angle0: f64,
         pointer0: f64,
+        moved: bool,
     },
 }
 
@@ -246,15 +247,7 @@ pub fn marquee(cx: &EditorContext, row: usize) -> Option<[Point; 4]> {
         lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
         hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
     }
-    Some(
-        [
-            lo,
-            Point::new(hi.x, lo.y),
-            hi,
-            Point::new(lo.x, hi.y),
-        ]
-        .map(|p| r.to_world(p)),
-    )
+    Some([lo, Point::new(hi.x, lo.y), hi, Point::new(lo.x, hi.y)].map(|p| r.to_world(p)))
 }
 
 /// The Move handle (the marquee's center) and the Rotate handle (past the
@@ -286,8 +279,8 @@ impl ReferenceOffsetTool {
     /// Starts editing row `row` of the table.
     pub fn edit_row(&mut self, cx: &mut EditorContext, row: usize) {
         self.row = Some(row);
-        cx.status = "Edit Reference Document Offset: drag to move, drag the round handle to rotate"
-            .into();
+        cx.status =
+            "Edit Reference Document Offset: drag to move, drag the round handle to rotate".into();
     }
 
     /// The row being edited.
@@ -399,6 +392,7 @@ impl Tool for ReferenceOffsetTool {
                 pivot,
                 angle0: cx.project.reference_table.rows[row].angle_deg,
                 pointer0: angle_of(pivot, p.world),
+                moved: false,
             })
         } else if p.world.dist(mv) <= tol || point_in_polygon(p.world, &m) {
             Some(Drag::Move {
@@ -435,7 +429,14 @@ impl Tool for ReferenceOffsetTool {
                 pivot,
                 angle0,
                 pointer0,
+                ..
             } => {
+                self.drag = Some(Drag::Rotate {
+                    pivot,
+                    angle0,
+                    pointer0,
+                    moved: true,
+                });
                 let mut angle = angle0 + (angle_of(pivot, p.world) - pointer0);
                 if p.modifiers.shift {
                     angle = (angle / 5.0).round() * 5.0;
@@ -455,7 +456,7 @@ impl Tool for ReferenceOffsetTool {
         };
         let changed = match drag {
             Drag::Move { moved, .. } => moved,
-            Drag::Rotate { .. } => true,
+            Drag::Rotate { moved, .. } => moved,
         };
         if changed {
             ToolResult::committed("Edit Reference Document Offset")
@@ -554,7 +555,10 @@ mod tests {
         t.activate(&mut cx);
         down(&mut t, &mut cx, 10.0, 10.0);
         up(&mut t, &mut cx, 10.0, 10.0);
-        assert!(cx.floor().construction.is_empty(), "one point is not a line");
+        assert!(
+            cx.floor().construction.is_empty(),
+            "one point is not a line"
+        );
         up(&mut t, &mut cx, 10.4, 10.0);
         assert!(cx.floor().construction.is_empty());
         // Esc drops the first point.
@@ -577,7 +581,11 @@ mod tests {
         // Both are short stubs; the crossing is far past their ends.
         let near = cx.snap_at(Point::new(498.0, 101.5), None, false, &[]);
         assert_eq!(near.kind, crate::editor::snap::SnapKind::Intersection);
-        assert!(near.point.dist(Point::new(500.0, 100.0)) < 1e-6, "{:?}", near.point);
+        assert!(
+            near.point.dist(Point::new(500.0, 100.0)) < 1e-6,
+            "{:?}",
+            near.point
+        );
     }
 
     #[test]
@@ -625,11 +633,13 @@ mod tests {
         let mut cx = cx();
         with_other_plan(&mut cx, "/nonexistent/ref-a.psplan");
         let m = marquee(&cx, 0).unwrap();
-        assert!(m[0].dist(Point::new(-3.0, -3.0)) < 1e-6, "{:?}", m[0]);
+        // The free end of the first wall starts at x = 0; the corner at (200, 0) is
+        // 3 inches either side of the centerlines.
+        assert!(m[0].dist(Point::new(0.0, -3.0)) < 1e-6, "{:?}", m[0]);
         assert!(m[2].dist(Point::new(203.0, 100.0)) < 1e-6, "{:?}", m[2]);
         cx.project.reference_table.rows[0].offset = [10.0, 20.0, 0.0];
         let m = marquee(&cx, 0).unwrap();
-        assert!(m[0].dist(Point::new(7.0, 17.0)) < 1e-6);
+        assert!(m[0].dist(Point::new(10.0, 17.0)) < 1e-6);
         let (mv, rot) = handles(&m, 30.0);
         assert!(mv.dist(Point::lerp(m[0], m[2], 0.5)) < 1e-6);
         assert!(rot.y > m[3].y, "the Rotate handle sits past the top edge");
@@ -650,7 +660,10 @@ mod tests {
         mv(&mut t, &mut cx, 160.0, 90.0);
         up(&mut t, &mut cx, 160.0, 90.0);
         let o = cx.project.reference_table.rows[0].offset;
-        assert!((o[0] - 60.0).abs() < 1e-9 && (o[1] - 40.0).abs() < 1e-9, "{o:?}");
+        assert!(
+            (o[0] - 60.0).abs() < 1e-9 && (o[1] - 40.0).abs() < 1e-9,
+            "{o:?}"
+        );
         assert_eq!(cx.undo_label(), Some("Edit Reference Document Offset"));
         cx.undo();
         assert_eq!(cx.project.reference_table.rows[0].offset, [0.0; 3]);
@@ -672,7 +685,11 @@ mod tests {
         mv(&mut t, &mut cx, turned.x, turned.y);
         up(&mut t, &mut cx, turned.x, turned.y);
         let row = &cx.project.reference_table.rows[0];
-        assert!((row.angle_deg.rem_euclid(360.0) - 90.0).abs() < 1e-6, "{}", row.angle_deg);
+        assert!(
+            (row.angle_deg.rem_euclid(360.0) - 90.0).abs() < 1e-6,
+            "{}",
+            row.angle_deg
+        );
         // The center of the marquee did not move.
         let after = marquee(&cx, 0).unwrap();
         assert!(Point::lerp(after[0], after[2], 0.5).dist(center) < 1e-6);

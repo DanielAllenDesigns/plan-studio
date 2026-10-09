@@ -28,7 +28,7 @@ fn three_pages(sim: &mut Sim) -> LayoutView {
     v.edit(&mut sim.app.cx.project, "Draw", |l| {
         l.pages[0].add_text(
             Point::new(1.0, 0.8),
-            "SHEET %layout.label% (%page.print% OF %numpages%) %layout.title%",
+            "SHEET %layout.label% PAGE %page.print% OF %numpages% %layout.title%",
             0.2,
         );
         for p in l.pages.iter_mut().skip(1) {
@@ -192,9 +192,12 @@ fn revisions_tables_and_dragging_a_page() {
     // The revision table shows page three's own rows.
     assert!(t.contains("Moved the stair") && t.contains("Added a skylight"));
     // The macros on the template page are evaluated per page.
-    assert!(t.contains("SHEET A0.1 (1 OF 3) Cover Sheet"), "page one");
-    assert!(t.contains("SHEET A1.1 (2 OF 3) Floor Plans"), "page two");
-    assert!(t.contains("SHEET A1.2 (3 OF 3) Elevations"), "page three");
+    assert!(t.contains("SHEET A0.1 PAGE 1 OF 3 Cover Sheet"), "page one");
+    assert!(t.contains("SHEET A1.1 PAGE 2 OF 3 Floor Plans"), "page two");
+    assert!(
+        t.contains("SHEET A1.2 PAGE 3 OF 3 Elevations"),
+        "page three"
+    );
     assert!(!t.contains("%layout.label%"));
 
     // Dragging Elevations (index 3) to the front renumbers every # label.
@@ -227,7 +230,7 @@ fn revisions_tables_and_dragging_a_page() {
     assert_eq!(v.layout().unwrap().pages[1].title, "Elevations");
     // After the drag the PDF shows the new order.
     let t = pdf_text(&sim, &v);
-    assert!(t.contains("SHEET A1.1 (1 OF 3) Elevations"));
+    assert!(t.contains("SHEET A1.1 PAGE 1 OF 3 Elevations"));
 }
 
 #[test]

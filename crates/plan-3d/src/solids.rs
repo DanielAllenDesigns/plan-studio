@@ -51,7 +51,12 @@ pub fn solid_ext_mesh(floor: &Floor, s: &Solid3d, floor_elev: f64) -> Option<Mes
     match ext {
         Some(e) if e.changes_mesh() => {
             let tris = plan_core::solids::solid_tris(s, Some(e));
-            tris_mesh(&tris, floor_elev, material_of(&s.material, Material::Concrete), s.id)
+            tris_mesh(
+                &tris,
+                floor_elev,
+                material_of(&s.material, Material::Concrete),
+                s.id,
+            )
         }
         _ => solid_mesh(s, floor_elev),
     }

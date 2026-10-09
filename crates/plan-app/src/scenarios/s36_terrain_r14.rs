@@ -224,7 +224,10 @@ fn stepped_retaining_walls_drop_in_courses_in_the_3d_scene() {
         &[(-200.0, 450.0), (700.0, 450.0)],
     );
     let w = rec(&sim).terrain.walls[0].clone();
-    assert!(w.stepped, "retaining walls start stepped");
+    assert!(!w.stepped, "terrain walls follow the ground until stepping is chosen");
+    site_view::edit_terrain(&mut sim.app.cx, "Terrain Wall Specification", |r| {
+        r.terrain.walls[0].stepped = true;
+    });
     build(&mut sim);
     let tops = |sim: &Sim| {
         let sc = scene(sim);

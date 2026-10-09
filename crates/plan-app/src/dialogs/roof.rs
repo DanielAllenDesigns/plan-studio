@@ -23,14 +23,9 @@ const MIN_PITCH: f64 = 0.5;
 const MAX_PITCH: f64 = 24.0;
 
 fn pitch_row(ui: &mut Ui, label: &str, pitch: &mut f64) {
+    // Rise per 12, or degrees with Pitch in Degrees on (RF-72).
     row(ui, label, |ui| {
-        ui.add(
-            egui::DragValue::new(pitch)
-                .range(MIN_PITCH..=MAX_PITCH)
-                .speed(0.1)
-                .max_decimals(2)
-                .suffix(" : 12"),
-        );
+        super::roof_baseline::pitch_drag(ui, pitch);
     });
 }
 
@@ -209,10 +204,17 @@ impl SpecPages for BuildPages {
     }
 
     fn error(&self) -> Option<String> {
+        let sw = &self.s.switches;
         if self.fields.any_invalid() {
             Some("Enter a valid length".into())
-        } else if self.s.pitch < MIN_PITCH || self.s.pitch > MAX_PITCH {
+        } else if sw.pitch_in_degrees && (self.s.pitch < MIN_PITCH || self.s.pitch > 12.0 * 89f64.to_radians().tan()) {
+            Some("Pitch must be between 1 and 89 degrees".into())
+        } else if !sw.pitch_in_degrees && (self.s.pitch < MIN_PITCH || self.s.pitch > MAX_PITCH) {
             Some("Pitch must be between 0.5 and 24 in 12".into())
+        } else if sw.segment_angle < plan_roof::SEGMENT_ANGLE_RANGE.0 - 1e-9
+            || sw.segment_angle > plan_roof::SEGMENT_ANGLE_RANGE.1 + 1e-9
+        {
+            Some("Segment Angle at Curved Wall must be between 6 and 90 degrees".into())
         } else {
             detail_error(&self.s.detail)
         }
@@ -242,6 +244,7 @@ impl SpecPages for BuildPages {
                 ui.checkbox(&mut self.s.build_planes, "Build Roof Planes");
                 ui.checkbox(&mut self.s.auto_rebuild, "Auto Rebuild Roofs")
                     .on_hover_text("Rebuild the automatic planes when the walls change");
+                self.build_switches(ui);
                 ui.checkbox(&mut self.s.ignore_top_floor, "Ignore Top Floor")
                     .on_hover_text("Build the roof over the floor below the top one");
                 ui.checkbox(
@@ -257,8 +260,27 @@ impl SpecPages for BuildPages {
                     );
                 section(ui, "Defaults for walls without their own roof settings");
                 pitch_row(ui, "Pitch", &mut self.s.pitch);
+                if ui
+                    .checkbox(&mut self.s.switches.pitch_in_degrees, "Pitch in Degrees")
+                    .on_hover_text("Dialogs and roof plane labels show degrees (-89 to 89)")
+                    .changed()
+                {
+                    plan_roof::set_pitch_display_degrees(self.s.switches.pitch_in_degrees);
+                }
                 self.fields
                     .length_row(ui, "Overhang", "overhang", &mut self.s.overhang);
+                self.fields.degrees_row(
+                    ui,
+                    "Segment Angle at Curved Wall",
+                    "deg_segment_angle",
+                    &mut self.s.switches.segment_angle,
+                );
+                self.fields.length_row(
+                    ui,
+                    "Minimum Alcove Size",
+                    "min_alcove",
+                    &mut self.s.switches.min_alcove,
+                );
                 self.fields.length_row(
                     ui,
                     "Raise Roof Off Plate",
@@ -281,6 +303,11 @@ impl SpecPages for BuildPages {
                 dis_check(ui, "Rafters", true);
                 dis_check(ui, "Trusses", false);
                 ui.weak("Roof framing is a placeholder until plan-framing exists.");
+                section(ui, "3D Display");
+                ui.checkbox(&mut self.s.switches.show_all_ridges, "Show All Ridges")
+                    .on_hover_text(
+                        "Draw a line along each hip over a curved wall in plan and vector views",
+                    );
             }
             2 => {
                 section(ui, "Roofing");
@@ -350,6 +377,39 @@ impl SpecPages for BuildPages {
             FontId::proportional(13.0),
             PV_INK,
         );
+    }
+}
+
+impl BuildPages {
+    /// Make Roof Baseline Polylines, the two Retain switches and Use Existing
+    /// Roof Baselines (RF-70, RF-71): the Build group of the Roof panel.
+    fn build_switches(&mut self, ui: &mut Ui) {
+        let planes = self.s.build_planes;
+        let sw = &mut self.s.switches;
+        // Make Roof Baseline Polylines is not available with Build Roof Planes.
+        ui.add_enabled_ui(!planes, |ui| {
+            ui.checkbox(&mut sw.make_baselines, "Make Roof Baseline Polylines")
+                .on_hover_text(
+                    "Delete the roof and make baseline polylines along the outside of the exterior walls",
+                );
+        });
+        if planes {
+            sw.make_baselines = false;
+        }
+        // The retain boxes work with Build Roof Planes or with Make Roof
+        // Baseline Polylines.
+        ui.add_enabled_ui(planes || sw.make_baselines, |ui| {
+            ui.checkbox(&mut sw.retain_manual, "Retain Manually Drawn Roof Planes")
+                .on_hover_text("A rebuild keeps the planes drawn by hand");
+            ui.checkbox(&mut sw.retain_edited, "Retain Edited Automatic Roof Planes")
+                .on_hover_text(
+                    "A rebuild keeps automatic planes that were moved or re-pitched; a new plane coplanar with one is dropped",
+                );
+        });
+        ui.add_enabled_ui(planes, |ui| {
+            ui.checkbox(&mut sw.use_existing_baselines, "Use Existing Roof Baselines")
+                .on_hover_text("Build the planes from the roof baseline polylines instead of the walls");
+        });
     }
 }
 
@@ -645,6 +705,7 @@ impl SpecPages for PlanePages {
                 {
                     self.draft.set_baseline_height(h);
                 }
+                super::roof_baseline::curved_section(ui, &mut self.draft, &mut self.fields);
                 row(ui, "Overhang", |ui| {
                     ui.add_enabled(false, egui::Label::new(fmt_short(self.draft.overhang)));
                 });

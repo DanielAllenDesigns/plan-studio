@@ -22,6 +22,7 @@ pub mod import;
 mod leaf;
 pub mod material_region;
 mod mesh;
+pub mod molding;
 mod opening;
 mod railing;
 mod roof;
@@ -29,6 +30,7 @@ mod slab;
 pub mod solids;
 pub mod split_level;
 pub mod surface;
+pub mod tray;
 pub mod triangulate;
 mod wall;
 pub mod wall_kinds;
@@ -49,7 +51,9 @@ pub use roof::{
     ceiling_plane_meshes, ceiling_plane_meshes_joined, dormer_eave_meshes, dormer_meshes,
     gable_face_meshes, roof_meshes, roof_plane_meshes, skylight_meshes, CEILING_FRAMING_MATERIAL,
 };
-pub use slab::{room_ceiling_top, slab_from_polygon};
+pub use slab::{
+    room_ceiling_top, room_surface_id, room_surface_names, slab_from_polygon, RoomSurface,
+};
 
 use plan_core::foundation::PlatformKind;
 use plan_core::geometry::point_in_polygon;
@@ -178,6 +182,9 @@ pub fn build_scene_covered(
     scene.meshes.extend(deck::deck_meshes(project));
     scene.meshes.extend(fireplace::fireplace_meshes(project));
     scene.meshes.extend(split_level::riser_meshes(project));
+    // Tray and coffered ceilings and cathedral ceilings (R-111, R-146).
+    scene.meshes.extend(tray::tray_meshes(project));
+    scene.meshes.extend(tray::cathedral_meshes(project));
     scene
 }
 
@@ -352,6 +359,11 @@ fn add_floor(
         if deck::draws_boards(floor, room) {
             levels.has_floor = false;
         }
+        // A cathedral room (Flat Ceiling Over This Room off) has the ceiling
+        // planes of its roof instead of a flat plate (R-146).
+        if tray::is_cathedral(floor, room) {
+            levels.has_ceiling = false;
+        }
         match groups.iter_mut().find(|(l, _)| *l == levels) {
             Some((_, rs)) => rs.push(room.clone()),
             None => groups.push((levels, vec![room.clone()])),
@@ -376,6 +388,8 @@ fn add_floor(
     let mut ceiling_holes = foundation::platform_holes(floor, PlatformKind::Ceiling);
     ceiling_holes.extend(open_above.iter().cloned());
     ceiling_holes.extend(chase.1.iter().cloned());
+    // A recessed tray ceiling opens the platform over its inner ceiling.
+    ceiling_holes.extend(tray::recess_holes(floor));
     for (levels, group) in &groups {
         let finished_floor = floor.elevation + levels.floor_offset + levels.floor_finish;
         let ceiling = floor.elevation + levels.floor_offset + levels.ceiling_height;

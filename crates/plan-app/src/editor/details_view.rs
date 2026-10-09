@@ -40,6 +40,7 @@ use plan_core::details::{
 use plan_core::geometry::{
     dist_to_segment, point_in_polygon, polygon_area, project_on_segment, Point,
 };
+use plan_core::moldings::ProfileDef;
 use plan_core::walls::Side;
 use plan_core::{Id, Layer, LayerSet, LineStyle, Project, Wall, WallClass};
 use plan_materials::{
@@ -175,6 +176,26 @@ pub fn add_molding(cx: &mut EditorContext, polyline: Vec<Point>, profile: Moldin
     edit(cx, label, |l| {
         l.moldings
             .push(MoldingLine::new(id, polyline, profile, ceiling));
+    });
+    id
+}
+
+/// Adds a molding polyline with a library profile (the Molding Line and
+/// Molding Polyline tools); returns its id. The molding starts at the height
+/// its profile type belongs at (a crown at the ceiling, a base on the floor,
+/// anything else on the floor).
+pub fn add_molding_with(cx: &mut EditorContext, polyline: Vec<Point>, profile: ProfileDef) -> Id {
+    let id = cx.project.alloc_id();
+    let ceiling = cx.floor().ceiling_height;
+    let label = if polyline.len() > 2 {
+        "Molding Polyline"
+    } else {
+        "Molding Line"
+    };
+    let bottom = profile.kind.default_bottom(ceiling, profile.height());
+    edit(cx, label, |l| {
+        l.moldings
+            .push(MoldingLine::with_profile(id, polyline, profile, bottom));
     });
     id
 }
@@ -333,7 +354,17 @@ pub fn follow_walls(project: &mut Project, fi: usize, before: &[Wall]) -> bool {
     if layer.corner_boards.is_empty() && layer.quoins.is_empty() {
         return false;
     }
-    if !layer.follow_walls(before, &floor.walls) {
+    let moved = layer.follow_walls(before, &floor.walls);
+    // Trim that is not held by Set Top / Set Bottom follows the height of
+    // its walls too.
+    let taller = before
+        .iter()
+        .any(|b| floor.wall(b.id).is_some_and(|w| (w.height - b.height).abs() > 1e-9));
+    let resized = taller && {
+        let rooms = plan_core::detect_rooms(&floor.walls, 0.5);
+        layer.refresh_trim_heights(floor, &rooms)
+    };
+    if !moved && !resized {
         return false;
     }
     save(project, fi, &layer);
@@ -394,6 +425,13 @@ fn forget(cx: &mut EditorContext, ids: &[Id]) {
     cx.selection
         .items
         .retain(|o| !matches!(o, ObjectRef::Detail(i) if ids.contains(i)));
+    // The layer tables and spec extras of regions and solids that went.
+    let fl = cx.floor;
+    let layer = DetailsLayer::load(&cx.project.floors[fl]);
+    let floor = &mut cx.project.floors[fl];
+    floor.drop_region_orphans();
+    floor.solid_layer.drop_orphans(&layer);
+    floor.prune_blocks(|m| !matches!(m, plan_core::ObjectRef::Detail(i) if ids.contains(&i)));
 }
 
 // ===================================================================
@@ -1142,7 +1180,7 @@ fn draw_corner_board(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, 
 fn draw_quoin(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, q: &Quoin) {
     let ink = ink_of(cx, &q.style, &q.layer, [150, 110, 70]);
     let (la, lb) = q.course_lengths(0);
-    let top = q.axes.l_polygon(q.corner, la, lb, q.depth);
+    let top = q.axes.l_polygon(q.built_corner(), la, lb, q.depth);
     fill_polygon(painter, cam, &top, ink.gamma_multiply(0.3));
     stroke_line(
         painter,
@@ -1153,19 +1191,20 @@ fn draw_quoin(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, q: &Quo
         dash_of(&q.style, LineStyle::Solid),
     );
     // The next course (long and short swap) as ticks past the top block.
-    if q.alternating && q.courses() > 1 {
+    if q.quoin_style() != details::QuoinStyle::Uniform && q.courses() > 1 {
         let (a1, b1) = q.course_lengths(1);
         let (a, b) = (q.axes.dir_a, q.axes.dir_b);
         let (na, nb) = (q.axes.out_a * q.depth, q.axes.out_b * q.depth);
         let tick = Stroke::new(1.0_f32, ink);
         for (len, len0, dir, off) in [(a1, la, a, na), (b1, lb, b, nb)] {
             if len > len0 {
-                let from = q.corner + dir * len0;
+                let corner = q.built_corner();
+                let from = corner + dir * len0;
                 painter.line_segment([sc(cam, from), sc(cam, from + off)], tick);
                 painter.line_segment(
                     [
-                        sc(cam, q.corner + dir * len + off),
-                        sc(cam, q.corner + dir * len),
+                        sc(cam, corner + dir * len + off),
+                        sc(cam, corner + dir * len),
                     ],
                     tick,
                 );
@@ -1174,34 +1213,91 @@ fn draw_quoin(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, q: &Quo
     }
 }
 
+/// How far a molding projects from its path, inches (the widest part of its
+/// profiles with their offsets).
+fn reach_of(m: &MoldingLine) -> f64 {
+    m.placed_parts()
+        .iter()
+        .flat_map(|p| p.section.iter().map(|q| q.x))
+        .fold(0.0_f64, f64::max)
+        .max(0.0)
+}
+
+/// The side the profile lies on: `+1` is left of the drawing direction.
+fn side_sign(m: &MoldingLine) -> f64 {
+    if m.extrude_inside && m.is_closed() {
+        let n = m.polyline.len();
+        if polygon_area(&m.polyline[..n - 1]) >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        }
+    } else if m.side == details::MoldingSide::Right {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
+/// A molding in plan: the path (the back of the molding) and the front line
+/// the projection adds, edge by edge. An edge the molding is not on is a
+/// thin dotted line, the selected edge of a selected molding is drawn in the
+/// selection color.
 fn draw_molding(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, m: &MoldingLine) {
     if m.polyline.len() < 2 {
         return;
     }
     let ink = ink_of(cx, &m.style, &m.layer, [160, 90, 50]);
-    stroke_line(
-        painter,
-        cam,
-        &m.polyline,
-        false,
-        Stroke::new(width_of(&m.style, 1.6), ink),
-        dash_of(&m.style, LineStyle::Solid),
-    );
-    // The projection side, dashed.
-    let mut edge: Vec<Point> = Vec::new();
-    for s in m.polyline.windows(2) {
-        let n = (s[1] - s[0]).normalized().perp() * m.width;
-        edge.push(s[0] + n);
-        edge.push(s[1] + n);
-    }
-    for pair in edge.chunks(2) {
+    let reach = reach_of(m) * side_sign(m);
+    let selected_edge = cx
+        .selection
+        .items
+        .contains(&ObjectRef::Detail(m.id))
+        .then(|| crate::tools::molding::selected_edge_of(m.id));
+    for (i, s) in m.polyline.windows(2).enumerate() {
+        if !m.edge_on(i) {
+            stroke_line(
+                painter,
+                cam,
+                s,
+                false,
+                Stroke::new(0.8_f32, ink.gamma_multiply(0.5)),
+                LineStyle::Dotted,
+            );
+            continue;
+        }
+        let color = if selected_edge == Some(i) {
+            cx.palette.selection
+        } else {
+            ink
+        };
         stroke_line(
             painter,
             cam,
-            pair,
+            s,
+            false,
+            Stroke::new(width_of(&m.style, 1.6), color),
+            dash_of(&m.style, LineStyle::Solid),
+        );
+        let n = (s[1] - s[0]).normalized().perp() * reach;
+        stroke_line(
+            painter,
+            cam,
+            &[s[0] + n, s[1] + n],
             false,
             Stroke::new(0.9_f32, ink.gamma_multiply(0.8)),
             LineStyle::Dashed,
+        );
+    }
+    if m.show_label {
+        let text = crate::tools::molding::label_of(m);
+        let mid = Point::lerp(m.polyline[0], m.polyline[m.polyline.len() - 1], 0.5);
+        painter.text(
+            sc(cam, mid),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::FontId::proportional(11.0),
+            ink,
         );
     }
 }

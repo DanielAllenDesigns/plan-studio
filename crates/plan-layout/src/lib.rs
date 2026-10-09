@@ -21,6 +21,8 @@
 
 mod annot;
 mod arrange;
+mod boxops;
+mod boxview;
 mod cadattrs;
 mod canvas;
 mod clip;

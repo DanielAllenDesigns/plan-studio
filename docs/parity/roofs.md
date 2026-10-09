@@ -249,6 +249,8 @@ RF-47. Ceiling planes show in 3D as the underside of the roof and are included i
 Materials List ceiling area. They appear in plan as dashed outlines when the layer
 is on. (verify in Chief)
 
+> Round 16 (tray ceilings): ceiling plane height sampling (`plan_roof::ceiling_height_at`, `cathedral_height_at`, `room_ceiling_height_at`), cathedral planes by the room's Flat Ceiling Over This Room switch with shelf rooms cut out (`cathedral_ceiling_planes`, `subtract_polygon`), and the ceiling planes of a tray (`tray_ceiling_planes`, used by Explode Tray Ceiling) are in `plan-roof/src/ceiling.rs` with unit tests; rows RF-45 to RF-47 keep their statuses.
+
 ## 7. Dormers and skylight features
 
 RF-48. **Auto Dormer** (Ctrl+Opt+Shift+Cmd+Z): click a roof plane; Chief builds
@@ -408,7 +410,7 @@ Rows added by the Chief X18 Reference Manual audit, part 4 (pages 762 to 1098; `
 | RF-97 | Displaying roofs (manual p. 837): Projected vs actual size: perimeter and area both reported; edge length entered as projected or at pitch. | Partial | Surface Area read-out on the plane dialog; no projected/actual choice; manual audit part 4; verify in Chief. |
 | RF-98 | Displaying roofs (manual p. 838): Ceiling plane and skylight labels have a blank automatic label and no slope indicator. | Missing | not supported; manual audit part 4; verify in Chief. |
 | RF-99 | Displaying roofs (manual p. 838): Section views show roof surface, sheathing and ceiling layers; framing on if its layer is on; flat ceiling not generated over rooms with Flat Ceiling Over This Room. | Partial | section scene shows plane thickness; per-layer display not confirmed; manual audit part 4; verify in Chief. |
-| RF-100 | Displaying roofs (manual p. 838): Poche fill on clipped roof edges in sections. | Missing | no poche on roof planes (see part 1 poche rows); manual audit part 4; verify in Chief. |
+| RF-100 | Displaying roofs (manual p. 838): Poche fill on clipped roof edges in sections. | Partial | Section cut regions of roof planes (and floor / ceiling platforms) are gray poché regions already; `plan_elevation::poche_hatch_lines` hatches them from a Fill Style and `without_poche` drops them with the view's switch (`PocheSettings`, default on in sections); tests a_fill_style_hatches_the_cut_faces_only, the_poche_switch_off_drops_the_cut_fill_but_not_the_faces; the camera and layout callers are queued (integration-queue brief 08 item 3). |
 | RF-101 | Displaying roofs (manual p. 839): Roof Planes, Ceiling Planes, Roof Holes, Skylights and roof trim items appear in schedules (skylights and holes under Windows, trim under Roof Trim). | Missing | no roof schedule category (grep finds none); manual audit part 4; verify in Chief. |
 | RF-102 | Editing planes (manual p. 839): Select Next Object picks the Baseline, editing it apart from the plane (handles at ends and midpoint). | Missing | no baseline object; manual audit part 4; verify in Chief. |
 | RF-103 | Editing planes (manual p. 840): Raise or lower a plane: lock the pitch and change a height; or Transform/Replicate. | Partial | Baseline Height field; pivot locks missing; Transform skips roof planes (DECISIONS 16); manual audit part 4; verify in Chief. |

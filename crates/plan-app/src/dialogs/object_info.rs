@@ -35,6 +35,7 @@ pub fn object_key(cx: &EditorContext, o: ObjectRef) -> Option<String> {
 #[derive(Debug)]
 pub struct InfoSession {
     pub key: String,
+    #[allow(dead_code)]
     pub floor: usize,
     original: ObjectInfo,
     pub draft: ObjectInfo,

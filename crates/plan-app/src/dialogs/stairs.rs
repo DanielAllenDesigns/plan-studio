@@ -31,7 +31,7 @@ use eframe::egui::{self, Align2, Painter, Pos2, Rect, Shape, Stroke, Ui};
 use plan_core::geometry::Point;
 use plan_core::Id;
 use plan_stairs::{
-    solve, ArrowStyle, Bullnose, BreakStyle, DisplayRule, EdgeRail, PostProfile, RadiusRef,
+    solve, ArrowStyle, BreakStyle, Bullnose, DisplayRule, EdgeRail, PostProfile, RadiusRef,
     RailStyle, RailingParams, SideKind, StairParams, StairShape, Starter, StringerStyle, Turn,
     ViewMode,
 };
@@ -458,7 +458,8 @@ impl StairForm {
             let p = &mut self.draft.stair.params;
             let mut curved = p.ramp_curve.is_some();
             if ui.checkbox(&mut curved, "Curved ramp").changed() {
-                p.ramp_curve = curved.then(|| (view::DEFAULT_CURVE_RADIUS - p.width / 2.0).max(0.0));
+                p.ramp_curve =
+                    curved.then(|| (view::DEFAULT_CURVE_RADIUS - p.width / 2.0).max(0.0));
             }
             if let Some(r) = &mut p.ramp_curve {
                 self.fields.length_row(ui, "Inside Radius", "ramp_inner", r);
@@ -569,7 +570,14 @@ impl StairForm {
                     });
             });
             ui.weak("A bullnose rounds the chosen end of the bottom tread into a half-round the depth of the tread; it wins over the flare on that end.");
-            combo(ui, "Starter Treads", "stair_starter", &mut p.starter, &Starter::ALL, Starter::name);
+            combo(
+                ui,
+                "Starter Treads",
+                "stair_starter",
+                &mut p.starter,
+                &Starter::ALL,
+                Starter::name,
+            );
             ui.weak("Starter treads are rounded and reach past the open sides; the second is concentric with the first. The Starter Tread edit mode has a handle for them.");
         }
         if straight {
@@ -595,7 +603,11 @@ impl StairForm {
                 ui.add(egui::Slider::new(&mut fl.soften, 0.0..=1.0));
             });
             row(ui, "Flare Starts At", |ui| {
-                let mut pct = if fl.start > 1e-9 { fl.start * 100.0 } else { 100.0 };
+                let mut pct = if fl.start > 1e-9 {
+                    fl.start * 100.0
+                } else {
+                    100.0
+                };
                 if ui
                     .add(
                         egui::DragValue::new(&mut pct)
@@ -608,8 +620,12 @@ impl StairForm {
                     fl.start = if pct >= 99.0 { 0.0 } else { pct / 100.0 };
                 }
             });
-            self.fields
-                .length_row(ui, "Curve Bottom Treads", "curve_bottom", &mut fl.curve_bottom);
+            self.fields.length_row(
+                ui,
+                "Curve Bottom Treads",
+                "curve_bottom",
+                &mut fl.curve_bottom,
+            );
             self.fields
                 .length_row(ui, "Curve All Treads", "curve_all", &mut fl.curve_all);
             fl.curve_bottom = fl.curve_bottom.clamp(0.0, p.tread_depth.max(0.0));
@@ -633,7 +649,10 @@ impl StairForm {
         p.runner.width = p.runner.width.max(0.0);
         ui.checkbox(&mut p.runner.tucked, "Runner tucked under the nosing");
         section(ui, "Walkline");
-        ui.checkbox(&mut p.walkline.on, "Use walkline (tread depth is measured along it)");
+        ui.checkbox(
+            &mut p.walkline.on,
+            "Use walkline (tread depth is measured along it)",
+        );
         self.fields.length_row(
             ui,
             "Distance From Edge",
@@ -794,7 +813,14 @@ impl StairForm {
         }
         let r = scoped_railing(&mut self.draft.stair.params, scope);
         section(ui, "Newels");
-        combo(ui, "Newel Type", "newel_type", &mut r.newel.profile, &PostProfile::ALL, PostProfile::name);
+        combo(
+            ui,
+            "Newel Type",
+            "newel_type",
+            &mut r.newel.profile,
+            &PostProfile::ALL,
+            PostProfile::name,
+        );
         self.fields
             .length_row(ui, "Newel Size", "newel_size", &mut r.newel.size);
         self.fields
@@ -992,7 +1018,14 @@ impl StairForm {
         section(ui, "Landing Edges");
         for (i, rail) in rails.iter_mut().enumerate().take(n) {
             let label = format!("Edge {}", i + 1);
-            combo(ui, &label, &format!("edge_rail_{i}"), rail, &EdgeRail::ALL, EdgeRail::name);
+            combo(
+                ui,
+                &label,
+                &format!("edge_rail_{i}"),
+                rail,
+                &EdgeRail::ALL,
+                EdgeRail::name,
+            );
         }
         // Back to the shorter list when nothing is forced.
         if rails.iter().all(|e| *e == EdgeRail::Automatic) {
@@ -1078,8 +1111,12 @@ impl StairForm {
                 &BreakStyle::ALL,
                 BreakStyle::name,
             );
-            self.fields
-                .degrees_row(ui, "Break Angle", "break_angle", &mut p.plan.break_angle);
+            self.fields.degrees_row(
+                ui,
+                "Break Angle",
+                "deg_break_angle",
+                &mut p.plan.break_angle,
+            );
             self.fields
                 .length_row(ui, "Break Size", "break_size", &mut p.plan.break_size);
             self.fields
@@ -1240,7 +1277,10 @@ fn library_row(ui: &mut Ui, label: &str, salt: &str, current: &mut String, kind:
         egui::ComboBox::from_id_salt(salt)
             .selected_text(shown)
             .show_ui(ui, |ui| {
-                if ui.selectable_label(current.is_empty(), "Built-in").clicked() {
+                if ui
+                    .selectable_label(current.is_empty(), "Built-in")
+                    .clicked()
+                {
                     current.clear();
                 }
                 for (id, name) in &items {
@@ -1517,14 +1557,16 @@ mod tests {
             [
                 "General",
                 "Style",
-                "Newels/Balusters",
+                "Stringers",
                 "Rails",
+                "Newels/Balusters",
+                "Rail Style",
                 "Line Style",
                 "Fill Style",
                 "Materials",
+                "Label",
                 "Components",
-                "Schedule",
-                "Label"
+                "Schedule"
             ]
         );
         let mut landing = o;
@@ -1536,10 +1578,13 @@ mod tests {
             [
                 "General",
                 "Rails",
+                "Newels/Balusters",
+                "Rail Style",
                 "Line Style",
                 "Fill Style",
                 "Materials",
-                "Label"
+                "Label",
+                "Components"
             ]
         );
     }

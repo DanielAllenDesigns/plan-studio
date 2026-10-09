@@ -272,6 +272,20 @@ pub struct RoomName {
     /// grade (CB-86); see [`crate::deck`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deck: Option<crate::deck::DeckSpec>,
+    /// Flat Ceiling Over This Room (Structure panel): on is a flat ceiling
+    /// at the room's ceiling height; off is a cathedral ceiling that follows
+    /// the underside of the roof above (R-146; tray ceilings need it on).
+    #[serde(default = "default_true")]
+    pub flat_ceiling: bool,
+    /// Roof Group (General panel; R-114): rooms of a non-default group are
+    /// roofed as a separate building, apart from the rest of the plan. 0 is
+    /// the default group.
+    #[serde(default, skip_serializing_if = "is_zero_group")]
+    pub roof_group: u32,
+}
+
+fn is_zero_group(g: &u32) -> bool {
+    *g == 0
 }
 
 fn default_true() -> bool {
@@ -301,6 +315,8 @@ impl RoomName {
             monolithic_slab: None,
             label_style: crate::rooms::RoomLabelStyle::default(),
             deck: None,
+            flat_ceiling: true,
+            roof_group: 0,
         }
     }
 }
@@ -411,6 +427,10 @@ pub struct Floor {
     /// the sheet only, never an object (manual p. 1432).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheet_center: Option<Point>,
+    /// Tray and coffered ceilings, keyed by the id of their CAD polyline (see
+    /// [`crate::tray`]).
+    #[serde(default, skip_serializing_if = "crate::tray::TrayLayer::is_empty")]
+    pub trays: crate::tray::TrayLayer,
 }
 
 impl Floor {
@@ -448,6 +468,7 @@ impl Floor {
             region_layers: Vec::new(),
             construction: crate::construction::ConstructionLayer::default(),
             sheet_center: None,
+            trays: crate::tray::TrayLayer::default(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -579,6 +600,14 @@ pub struct Project {
         skip_serializing_if = "crate::construction::ReferenceTable::is_default"
     )]
     pub reference_table: crate::construction::ReferenceTable,
+    /// Library line styles, fill styles, custom patterns, the User Catalog
+    /// entries and the Poché switch; see [`crate::fill_styles`].
+    #[serde(default, skip_serializing_if = "crate::fill_styles::StyleBook::is_default")]
+    pub styles: crate::fill_styles::StyleBook,
+    /// Schedule Defaults per kind of schedule and the custom schedule
+    /// categories; see [`crate::schedules::ScheduleSetup`].
+    #[serde(default, skip_serializing_if = "crate::schedules::ScheduleSetup::is_default")]
+    pub schedule_setup: crate::schedules::ScheduleSetup,
 }
 
 fn default_project_name() -> String {
@@ -630,6 +659,8 @@ impl Project {
             print_setup: crate::drawing_sheet::PrintSetup::default(),
             construction: crate::construction::ConstructionSettings::default(),
             reference_table: crate::construction::ReferenceTable::default(),
+            styles: crate::fill_styles::StyleBook::default(),
+            schedule_setup: crate::schedules::ScheduleSetup::default(),
         }
     }
 
@@ -811,6 +842,13 @@ impl Project {
     /// the file (QA-22) and the keys this build has no field for are kept for
     /// the next save (QA-20).
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
+        // serde reads a struct from a JSON array too (`[]` would become an
+        // empty plan); a plan file is an object.
+        if !s.trim_start().starts_with('{') {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "a plan file is a JSON object",
+            ));
+        }
         let mut p: Project = serde_json::from_str(s)?;
         if p.floors.is_empty() {
             p.floors = default_floors();
@@ -824,6 +862,28 @@ impl Project {
             p.next_id = p.next_id.max(used + 1);
         }
         Ok(p)
+    }
+
+    /// After an undo: `self` is the restored plan and `undone` the plan it
+    /// replaces. Ids a tool took just before it recorded the undo step belong
+    /// to objects only `undone` holds; they are given back, so undo restores
+    /// `next_id` too (QA-27). Never lowers `next_id` to an id still in use.
+    pub fn give_back_ids(&mut self, undone: &Project) {
+        let (Ok((mine, _)), Ok((theirs, _))) = (
+            crate::foreign::to_value_finite(self),
+            crate::foreign::to_value_finite(undone),
+        ) else {
+            return;
+        };
+        let mine_ids = crate::foreign::ids(&mine);
+        let low = crate::foreign::ids(&theirs)
+            .into_iter()
+            .filter(|i| !mine_ids.contains(i) && *i < self.next_id)
+            .min();
+        if let Some(low) = low {
+            let floor = crate::foreign::max_id(&mine) + 1;
+            self.next_id = low.max(floor).min(self.next_id);
+        }
     }
 
     /// Number of foreign keys (from a newer build) kept for the next save.

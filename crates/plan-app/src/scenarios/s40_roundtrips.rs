@@ -13,7 +13,7 @@
 //!    be read back, and every undo unwind returns to the plan it began from.
 //!
 //! Defects found are written to `docs/qa-findings.md` (QA-20 onward); the
-//! minimal tests that show them are `#[ignore = "QA-nn"]`.
+//! minimal tests that show them are named in each finding and now pass.
 
 use super::{draw_shell, Sim};
 use crate::editor::{selection, ObjectRef};
@@ -1145,7 +1145,6 @@ fn a_damaged_file_is_refused_with_a_message_and_the_open_plan_stays() {
     with_no_floors["floors"] = serde_json::json!([]);
     let cases: Vec<(&str, String)> = vec![
         ("empty", String::new()),
-        ("braces", "{}".into()),
         ("array", "[]".into()),
         ("garbage", "not a plan \u{0} \u{fffd}".into()),
         ("truncated", good[..good.len() / 2].to_string()),
@@ -1164,6 +1163,17 @@ fn a_damaged_file_is_refused_with_a_message_and_the_open_plan_stays() {
         );
         assert!(digest(&other) == before, "{name}: the open plan changed");
     }
+    // `{}` is a plan with every slot at its default (QA-21), not a damaged file.
+    let path = dir.join("braces.psplan");
+    std::fs::write(&path, "{}").unwrap();
+    let mut other = Sim::new();
+    other.app.open_path(path);
+    assert!(
+        other.app.cx.status.starts_with("Opened"),
+        "braces: {}",
+        other.app.cx.status
+    );
+    assert_eq!(other.app.cx.project.floors.len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1349,42 +1359,17 @@ fn guarded(
     out
 }
 
-/// The write-up (`docs/qa-findings.md`) a problem belongs to, when it is a
-/// finding already; each has a minimal `#[ignore = "QA-nn"]` test below.
-fn known_defect(problem: &str) -> Option<&'static str> {
-    let has = |s: &str| problem.contains(s);
-    if has("changed nothing but left") {
-        return Some("QA-26");
-    }
-    if has("undo does not restore the plan (1 differences, e.g. /next_id") {
-        return Some("QA-27");
-    }
-    if (has("Rebuild All") || has("RebuildAll")) && has("without an undo step") {
-        return Some("QA-25");
-    }
-    if has("pushed") && (has("edit.delete") || has("edit.reverse_swing")) {
-        return Some("QA-24");
-    }
-    None
-}
-
-/// Fails on every problem that is not a known finding; prints the known ones.
+/// The text a failing sweep prints: every problem is a failure (QA-24 to
+/// QA-27 are fixed, nothing is filtered any more).
 fn report(problems: &[String]) -> String {
-    let (known, new): (Vec<&String>, Vec<&String>) =
-        problems.iter().partition(|p| known_defect(p).is_some());
-    if !known.is_empty() {
-        let mut ids: Vec<&str> = known.iter().filter_map(|p| known_defect(p)).collect();
-        ids.sort();
-        ids.dedup();
-        eprintln!("{} known problems ({})", known.len(), ids.join(", "));
-    }
-    if new.is_empty() {
+    if problems.is_empty() {
         String::new()
     } else {
         format!(
-            "{} new problems:\n{}",
-            new.len(),
-            new.iter()
+            "{} problems:\n{}",
+            problems.len(),
+            problems
+                .iter()
                 .map(|p| p.as_str())
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -2156,10 +2141,23 @@ fn electrical_with_a_foreign_device() -> (Vec<u64>, Vec<u64>) {
         .push(serde_json::json!({"id": 880005, "kind": "FutureDevice"}));
     let json = digest(&sim);
     restore(&mut sim, &json);
-    assert!(edit_with(
-        &mut sim,
-        ToolId::ElectricalVariant(ElecVariant::Gfci)
-    ));
+    // Any device kind that finds a free spot will do.
+    let placed = [
+        ElecVariant::Gfci,
+        ElecVariant::Switch,
+        ElecVariant::RecessedLight,
+        ElecVariant::DataJack,
+        ElecVariant::Outlet110,
+        ElecVariant::Light,
+    ]
+    .into_iter()
+    .any(|v| edit_with(&mut sim, ToolId::ElectricalVariant(v)));
+    assert!(
+        placed,
+        "no device was placed next to the foreign one; status {:?}, devices {:?}",
+        sim.app.cx.status,
+        device_ids(&sim.app.cx.project.floors[0])
+    );
     (readable, device_ids(&sim.app.cx.project.floors[0]))
 }
 
@@ -2356,6 +2354,11 @@ fn two_thousand_random_gestures_never_panic_and_every_unwind_returns_to_the_star
     let mut done = 0;
     while done < OPS {
         settle(&mut sim);
+        // The history keeps 100 steps; the batches before this one left their
+        // steps in it (they are redone after the unwind check), so without
+        // this the depth would stop growing after a dozen batches and every
+        // later gesture would look like it left no undo step.
+        sim.app.cx.forget_history();
         let base = digest(&sim);
         let base_depth = depth(&sim);
         let mut log: Vec<String> = Vec::new();

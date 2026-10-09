@@ -42,7 +42,7 @@
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::handles::{self, hit_handle, Handle, HandleKind};
 use crate::editor::placed::{
-    self, add_cabinet, cabinet_by_id, hit_cabinet, load_cabinets, placed_handles, replace_cabinet,
+    self, add_cabinet, cabinet_by_id, hit_cabinet, placed_handles, remove_cabinet, replace_cabinet,
     same_angle, PlacedRef,
 };
 use crate::editor::tempdim::{self, TempDims};
@@ -50,8 +50,9 @@ use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, EditorReq
 use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Key, Pos2};
 use plan_cabinets::{
-    fit_between, push_run, run_bounds, wall_polygon, Backsplash, BlindSide, Cabinet, CabinetKind,
-    CabinetPreset, CornerSpec, CornerTreatment, EdgeProfile, FaceLayout, HandleStyle,
+    auto_fillers, fit_between, push_run, run_bounds, wall_polygon, width_for_space, Backsplash,
+    BlindSide, Cabinet, CabinetKind, CabinetPreset, CornerSpec, CornerTreatment, EdgeProfile,
+    FaceLayout, FillerOptions, HandleStyle, AUTO_FILLER_REACH,
 };
 use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
 use plan_core::{Floor, Id};
@@ -61,10 +62,9 @@ use std::f64::consts::FRAC_PI_2;
 pub const WALL_REACH: f64 = 12.0;
 /// A corner cabinet snaps into a wall corner this close to the click, in.
 pub const CORNER_REACH: f64 = 30.0;
-/// Click-drag and resize steps, inches (CB-3, CB-8).
+/// Click-drag and resize steps when the General Cabinet Defaults ask for the
+/// 3 in default increment, inches (CB-3, CB-8); see [`width_step`].
 pub const WIDTH_STEP: f64 = 3.0;
-/// Smallest cabinet width, inches.
-const MIN_WIDTH: f64 = 3.0;
 /// Pixels the pointer must travel before a press becomes a drag.
 const DRAG_THRESHOLD_PX: f32 = 3.0;
 /// Depth resize steps, inches (CB-8).
@@ -74,13 +74,17 @@ const MIN_DEPTH: f64 = 3.0;
 /// A cabinet dragged into a gap whose width is within this of its own takes
 /// the gap's width (CB-5, fit to gap), inches.
 pub const FIT_TOLERANCE: f64 = 2.0;
-/// Back-to-back and perpendicular snapping reach, inches.
-const ISLAND_REACH: f64 = 6.0;
+/// Back-to-back and perpendicular snapping reach, inches (3 in, manual p. 650).
+const ISLAND_REACH: f64 = AUTO_FILLER_REACH;
+/// A cabinet's back or front within this of its neighbour's lines up with it
+/// (3 in, manual p. 650).
+const ALIGN_REACH: f64 = AUTO_FILLER_REACH;
 /// A blind cabinet hides its end this close to a perpendicular wall, in.
 const BLIND_REACH: f64 = 30.0;
 /// A resized edge dragged this close to a wall or the next cabinet snaps to
-/// it (the cabinet fills the gap), inches.
-pub const EDGE_SNAP: f64 = 4.0;
+/// it (the cabinet fills the gap), inches. 3 in as in the manual (p. 650);
+/// it was 4 in before round 16 (DECISIONS 53).
+pub const EDGE_SNAP: f64 = AUTO_FILLER_REACH;
 
 /// The Cabinet flyout, in order; Tab cycles through it. Custom Counter Hole
 /// is a tool-only kind that cuts a hole instead of placing a cabinet.
@@ -310,6 +314,215 @@ pub fn default_cabinet(cx: &EditorContext, kind: CabinetKind) -> Cabinet {
     }
 }
 
+// ----- General Cabinet Defaults, automatic fillers, runs (round 16, brief 23) -----
+
+/// The floor's cabinets as the tools see them: without the fillers the
+/// program makes itself (they are rebuilt after every edit, see
+/// [`sync_auto_fillers`], and never block, bump or push).
+fn load_cabinets(floor: &Floor) -> Vec<Cabinet> {
+    placed::load_cabinets(floor)
+        .into_iter()
+        .filter(|c| !c.auto_filler)
+        .collect()
+}
+
+/// The General Cabinet Defaults of the plan, brought into their allowed range.
+pub fn general(cx: &EditorContext) -> plan_core::defaults::GeneralCabinetDefaults {
+    cx.defaults.cabinets.general.clamped()
+}
+
+/// The step width handles and click-drag move in: the Snap Grid unit with
+/// Use Grid Snaps, else the Resize Increment (Cabinet Resizing).
+pub fn width_step(cx: &EditorContext) -> f64 {
+    let g = general(cx);
+    if g.resize_by_grid {
+        cx.snap_unit()
+            .max(plan_core::defaults::GeneralCabinetDefaults::SMALLEST)
+    } else {
+        g.resize_increment
+    }
+}
+
+/// The smallest cabinet that is placed or resized to (Minimum Cabinet Width).
+pub fn min_width(cx: &EditorContext) -> f64 {
+    general(cx).min_cabinet_width
+}
+
+/// The fillers asked for by the General Cabinet Defaults.
+pub fn filler_options(cx: &EditorContext) -> FillerOptions {
+    let g = general(cx);
+    FillerOptions {
+        enabled: g.create_automatic_fillers,
+        angled: g.create_automatic_fillers_angled,
+        reach: AUTO_FILLER_REACH,
+    }
+}
+
+/// Adds the layer the module lines are drawn on after the cabinet layers
+/// when the plan lacks it. Returns whether a layer was added.
+pub fn ensure_module_lines_layer(layers: &mut plan_core::layers::LayerSet) -> bool {
+    let name = plan_cabinets::MODULE_LINES_LAYER;
+    if layers.get(name).is_some() {
+        return false;
+    }
+    let color = layers.get("Cabinets, Base").map_or([0, 0, 0], |l| l.color);
+    layers.add(plan_core::layers::Layer::new(name, color, 9))
+}
+
+/// `cabs` with every generated countertop taken apart: the cabinets that gave
+/// up their slabs have them back, and the generated tops are left out.
+fn without_generated_tops(cabs: &[Cabinet]) -> Vec<Cabinet> {
+    let mut logical = cabs.to_vec();
+    let tops: Vec<Cabinet> = logical
+        .iter()
+        .filter(|c| !c.joined.is_empty())
+        .cloned()
+        .collect();
+    for t in &tops {
+        plan_cabinets::release_joined_top(t, &mut logical);
+    }
+    logical.retain(|c| c.joined.is_empty());
+    logical
+}
+
+/// Brings the automatic fillers up to date with the cabinets: the fillers
+/// that Create Automatic Fillers asks for between cabinets and walls within
+/// 3 in (see [`plan_cabinets::auto_fillers`]) are made, moved, resized or
+/// removed to match. A filler that is still right keeps its id and is not
+/// written. Part of the undo step the caller has begun; returns how many
+/// fillers were added, replaced or removed.
+pub fn sync_auto_fillers(cx: &mut EditorContext) -> usize {
+    let fl = cx.floor;
+    let stored = placed::load_cabinets(cx.floor());
+    if !stored.iter().any(|c| c.kind != CabinetKind::CounterHole) {
+        return 0;
+    }
+    // The cabinets as they are without any generated countertop on them (a
+    // joined cabinet gave up its slab): fillers copy the cabinets' own tops.
+    let logical = without_generated_tops(&stored)
+        .into_iter()
+        .filter(|c| !c.auto_filler)
+        .collect::<Vec<_>>();
+    let want = auto_fillers(&logical, &wall_polys(cx), &filler_options(cx));
+    let have: Vec<&Cabinet> = stored.iter().filter(|c| c.auto_filler).collect();
+    let mut claimed: Vec<Id> = Vec::new();
+    let mut changes = 0;
+    let mut pending: Vec<Cabinet> = Vec::new();
+    for w in want {
+        // The same filler already stands: nothing to write.
+        let same = have.iter().find(|h| {
+            !claimed.contains(&h.id) && {
+                let mut x = w.clone();
+                x.id = h.id;
+                x == ***h
+            }
+        });
+        if let Some(h) = same {
+            claimed.push(h.id);
+            continue;
+        }
+        pending.push(w);
+    }
+    for mut w in pending {
+        // A filler that moved a little keeps its id.
+        let near = have.iter().find(|h| {
+            !claimed.contains(&h.id)
+                && h.kind == w.kind
+                && h.to_plan(Point::ZERO).dist(w.to_plan(Point::ZERO)) < 6.0
+        });
+        match near {
+            Some(h) => {
+                claimed.push(h.id);
+                w.id = h.id;
+                if replace_cabinet(&mut cx.project, fl, &w) {
+                    changes += 1;
+                }
+            }
+            None => {
+                if add_cabinet(&mut cx.project, fl, w).is_some() {
+                    changes += 1;
+                }
+            }
+        }
+    }
+    for h in have.iter().filter(|h| !claimed.contains(&h.id)) {
+        if remove_cabinet(&mut cx.project, fl, h.id) {
+            changes += 1;
+        }
+    }
+    if ensure_module_lines_layer(&mut cx.project.layers) {
+        changes += 1;
+    }
+    if changes > 0 {
+        let project = &cx.project;
+        cx.selection.items.retain(|o| o.exists_in(project, fl));
+        cx.mark_dirty();
+    }
+    changes
+}
+
+/// The free stretch around `cab` along its width axis when walls or cabinets
+/// bound it on both sides: `(left, right)` offsets from its position.
+fn bounded_space(cx: &EditorContext, cab: &Cabinet) -> Option<(f64, f64)> {
+    let others = load_cabinets(cx.floor());
+    match run_bounds(cab, &others, &wall_polys(cx)) {
+        Some((Some(l), Some(r))) => Some((l, r)),
+        _ => None,
+    }
+}
+
+/// A cabinet too wide for the space it is placed in (walls and cabinets on
+/// both sides) takes the largest multiple of the Resize Increment that fits
+/// (a 24 in cabinet in a 20 in space with a 3 in increment becomes 18 in),
+/// never below the Minimum Cabinet Width (manual p. 651). False when the
+/// space is narrower than the Minimum Cabinet Width: no cabinet is placed.
+fn fit_narrow_space(cx: &EditorContext, cab: &mut Cabinet) -> bool {
+    if !fills_gaps(cab.kind) {
+        return true;
+    }
+    let Some((l, r)) = bounded_space(cx, cab) else {
+        return true;
+    };
+    let space = r - l;
+    if space >= cab.width - 1e-9 {
+        return true;
+    }
+    match width_for_space(cab.width, space, width_step(cx), min_width(cx)) {
+        Some(w) => {
+            let u = Point::new(cab.angle.cos(), cab.angle.sin());
+            cab.position = cab.position + u * l;
+            cab.width = w;
+            true
+        }
+        None => false,
+    }
+}
+
+/// A wall cabinet over an appliance takes its bottom from the appliance top
+/// (CB-635): the appliance bay of a base or tall cabinet, or a free-standing
+/// library appliance, whose top reaches above the wall cabinet's default
+/// bottom. The height shrinks to stay under the ceiling. True when it moved.
+fn stack_on_appliance(cx: &EditorContext, cab: &mut Cabinet) -> bool {
+    if cab.kind != CabinetKind::Wall {
+        return false;
+    }
+    let mut tops = plan_cabinets::cabinet_appliance_tops(&load_cabinets(cx.floor()));
+    for s in &cx.floor().symbols {
+        if placed::appliance_of_catalog(&s.catalog_id).is_some() {
+            tops.push((s.footprint().to_vec(), s.elevation + s.height));
+        }
+    }
+    let Some(bottom) = plan_cabinets::bottom_over_appliance(cab, &tops) else {
+        return false;
+    };
+    cab.elevation = bottom;
+    let room = cx.floor().ceiling_height - bottom;
+    if room >= 12.0 && cab.height > room {
+        cab.height = room;
+    }
+    true
+}
+
 // ----- wall placement and bumping -----
 
 struct WallHit {
@@ -423,7 +636,7 @@ pub fn bump(others: &[Cabinet], cab: &mut Cabinet, exclude: Id) {
     }
     if let Some(o) = bumped_into {
         let dt = o.position.dot(v) - cab.position.dot(v);
-        if dt.abs() <= 6.0 && dt.abs() > 1e-9 {
+        if dt.abs() <= ALIGN_REACH && dt.abs() > 1e-9 {
             cab.position = cab.position + v * dt;
         }
         return;
@@ -708,6 +921,8 @@ struct Press {
     angle: f64,
     cab: Cabinet,
     dragged: bool,
+    /// The space it lands in is wide enough for a cabinet.
+    room: bool,
 }
 
 /// A handle drag of a selected cabinet.
@@ -832,30 +1047,46 @@ impl CabinetTool {
 
     /// A fresh cabinet of the active variant placed for a click at `p`.
     fn placed_at(&self, cx: &EditorContext, p: &PointerEvent) -> Cabinet {
+        self.placed_with_room(cx, p).0
+    }
+
+    /// [`CabinetTool::placed_at`], and whether the space it lands in is wide
+    /// enough for a cabinet at all (nothing narrower than the Minimum Cabinet
+    /// Width is placed).
+    fn placed_with_room(&self, cx: &EditorContext, p: &PointerEvent) -> (Cabinet, bool) {
         let kind = self.kind();
         let mut cab = self.new_cabinet(cx);
         let alt = p.modifiers.alt;
         if kind.is_filler() {
             settle_filler(cx, &mut cab, p.world, p.snapped, WALL_REACH, true, alt, 0);
-            return cab;
+            return (cab, true);
         }
         if kind.is_corner() {
             if let Some((corner, u)) = corner_at(cx, p.world) {
                 cab.angle = u.angle();
                 cab.position = corner;
-                return cab;
+                return (cab, true);
             }
         }
-        settle(cx, &mut cab, p.world, p.snapped, WALL_REACH, true, alt, 0);
+        let mut room = true;
+        if fills_gaps(kind) && !alt {
+            // Flush to the wall; then into the space between its neighbours:
+            // Chief's "fill between" (a gap within the tolerance of its width
+            // is taken as it is), else a smaller cabinet, a multiple of the
+            // resize increment (manual p. 651); then bumped against them.
+            place_flush(cx, &mut cab, p.world, p.snapped, WALL_REACH, true, alt);
+            if !fit_gap(cx, &mut cab) {
+                room = fit_narrow_space(cx, &mut cab);
+            }
+            bump(&load_cabinets(cx.floor()), &mut cab, 0);
+        } else {
+            settle(cx, &mut cab, p.world, p.snapped, WALL_REACH, true, alt, 0);
+        }
         if kind.is_blind() {
             orient_blind(cx, &mut cab);
         }
-        // Chief's "fill between": a new cabinet placed into a gap within the
-        // tolerance of its width takes the gap (Alt places it as it is).
-        if !alt && fills_gaps(kind) {
-            fit_gap(cx, &mut cab);
-        }
-        cab
+        stack_on_appliance(cx, &mut cab);
+        (cab, room)
     }
 
     fn selected_cabinet(cx: &EditorContext) -> Option<Id> {
@@ -1200,7 +1431,7 @@ fn fit_gap_among(cx: &EditorContext, others: &[Cabinet], c: &mut Cabinet) -> boo
         return false;
     }
     plan_cabinets::fit_to_gap(c, others, &wall_polys(cx), fit_tolerance())
-        .is_some_and(|w| w >= MIN_WIDTH)
+        .is_some_and(|w| w >= min_width(cx))
 }
 
 /// The result of dragging a handle: the edited cabinet and, in Push mode,
@@ -1251,6 +1482,7 @@ pub fn apply_edit_mode(
     let mut pushed: Vec<Cabinet> = Vec::new();
     let mut c = orig.clone();
     let alt = p.modifiers.alt;
+    let (step, min_w) = (width_step(cx), min_width(cx));
     let u = Point::new(orig.angle.cos(), orig.angle.sin());
     let local_center = Point::new(orig.width * 0.5, orig.depth * 0.5);
     match op {
@@ -1318,9 +1550,9 @@ pub fn apply_edit_mode(
         }
         HandleKind::ResizeEnd => {
             let s = p.world.sub(orig.position).dot(u);
-            let mut w = snap_to(s, WIDTH_STEP, alt).max(MIN_WIDTH);
+            let mut w = snap_to(s, step, alt).max(min_w);
             if let (false, Some(r)) = (alt, edge_bounds(cx, orig, others).1) {
-                if (s - r).abs() <= EDGE_SNAP && r >= MIN_WIDTH {
+                if (s - r).abs() <= EDGE_SNAP && r >= min_w {
                     w = r;
                 }
             }
@@ -1328,9 +1560,9 @@ pub fn apply_edit_mode(
         }
         HandleKind::ResizeStart => {
             let s = p.world.sub(orig.position).dot(u);
-            let mut w = snap_to(orig.width - s, WIDTH_STEP, alt).max(MIN_WIDTH);
+            let mut w = snap_to(orig.width - s, step, alt).max(min_w);
             if let (false, Some(l)) = (alt, edge_bounds(cx, orig, others).0) {
-                if (s - l).abs() <= EDGE_SNAP && orig.width - l >= MIN_WIDTH {
+                if (s - l).abs() <= EDGE_SNAP && orig.width - l >= min_w {
                     w = orig.width - l;
                 }
             }
@@ -1359,16 +1591,16 @@ pub fn apply_edit_mode(
                 edge_bounds(cx, orig, others)
             };
             if drag_right {
-                let mut w = snap_to(sx, WIDTH_STEP, alt).max(MIN_WIDTH);
-                if let Some(r) = wall_r.filter(|r| (sx - r).abs() <= EDGE_SNAP && *r >= MIN_WIDTH) {
+                let mut w = snap_to(sx, step, alt).max(min_w);
+                if let Some(r) = wall_r.filter(|r| (sx - r).abs() <= EDGE_SNAP && *r >= min_w) {
                     w = r;
                 }
                 c.width = w;
             }
             if drag_left {
-                let mut w = snap_to(orig.width - sx, WIDTH_STEP, alt).max(MIN_WIDTH);
+                let mut w = snap_to(orig.width - sx, step, alt).max(min_w);
                 if let Some(l) =
-                    wall_l.filter(|l| (sx - l).abs() <= EDGE_SNAP && orig.width - l >= MIN_WIDTH)
+                    wall_l.filter(|l| (sx - l).abs() <= EDGE_SNAP && orig.width - l >= min_w)
                 {
                     w = orig.width - l;
                 }
@@ -1540,7 +1772,8 @@ impl Tool for CabinetTool {
                 if draggable && (pr.dragged || (p.screen - pr.screen).length() >= DRAG_THRESHOLD_PX)
                 {
                     pr.dragged = true;
-                    let width = (du.abs() / WIDTH_STEP).round().max(1.0) * WIDTH_STEP;
+                    let step = width_step(cx);
+                    let width = ((du.abs() / step).round().max(1.0) * step).max(min_width(cx));
                     let sign = if du >= 0.0 { 1.0 } else { -1.0 };
                     let center = pr.start + u * (sign * width * 0.5);
                     let mut cab = self_new_cabinet(preset, cx, kind);
@@ -1558,6 +1791,7 @@ impl Tool for CabinetTool {
                     );
                     cx.readout = Some(format!("Width: {}", cx.fmt_dim(width)));
                     pr.cab = cab.clone();
+                    pr.room = true;
                     self.ghost = Some(cab);
                 }
                 return ToolResult::consumed();
@@ -1614,13 +1848,14 @@ impl Tool for CabinetTool {
             }
         }
         // Otherwise a placement: committed on release (a click or a drag).
-        let cab = self.placed_at(cx, &p);
+        let (cab, room) = self.placed_with_room(cx, &p);
         self.press = Some(Press {
             start: p.world,
             screen: p.screen,
             angle: cab.angle,
             cab: cab.clone(),
             dragged: false,
+            room,
         });
         self.ghost = Some(cab);
         ToolResult::consumed()
@@ -1643,6 +1878,14 @@ impl Tool for CabinetTool {
             return ToolResult::ignored();
         };
         cx.readout = None;
+        if !pr.room {
+            self.ghost = None;
+            cx.status = format!(
+                "No cabinet placed: the space is narrower than the Minimum Cabinet Width ({})",
+                cx.fmt_dim(min_width(cx))
+            );
+            return ToolResult::consumed();
+        }
         let label = format!("Place {}", self.kind.name());
         cx.begin_change(&label);
         let fl = cx.floor;
@@ -1796,6 +2039,17 @@ impl Tool for CabinetTool {
             a.label = "Reverse Door Swing";
             v.push(a);
         }
+        // Set as Default copies one standard cabinet into the defaults of its
+        // kind (not for special shapes).
+        if let Some(c) = Self::selected_cabinet(cx).and_then(|id| cabinet_by_id(cx.floor(), id)) {
+            if defaults_name(c.kind).is_some() && c.preset.is_none() && c.custom.is_none() {
+                v.push(EditAction::new(EditActionKind::Custom {
+                    id: SET_AS_DEFAULT_COMMAND,
+                    label: "Set as Default",
+                    icon: "",
+                }));
+            }
+        }
         v
     }
 }
@@ -1860,6 +2114,228 @@ impl CabinetTool {
             painter.circle_filled(q, 3.0, cx.palette.ghost_stroke);
         }
     }
+}
+
+// ----- Set as Default and dynamic defaults (CB-475) -----
+
+/// Command id of the Edit-toolbar Set as Default button.
+pub const SET_AS_DEFAULT_COMMAND: &str = "cabinet.set_as_default";
+
+/// The name a cabinet kind has in Default Settings, for the kinds that have
+/// a defaults dialog.
+fn defaults_name(kind: CabinetKind) -> Option<&'static str> {
+    Some(match kind {
+        CabinetKind::Base => "Base Cabinet",
+        CabinetKind::Wall => "Wall Cabinet",
+        CabinetKind::FullHeight => "Full Height Cabinet",
+        CabinetKind::Soffit => "Soffit",
+        CabinetKind::Shelf => "Shelf",
+        CabinetKind::Partition => "Partition",
+        _ => return None,
+    })
+}
+
+/// Set as Default: the attributes of the selected cabinet become the defaults
+/// of its kind (manual p. 644; not for special shapes: only standard base,
+/// wall and full height cabinets, soffits, shelves and partitions). Nothing
+/// is written to the plan, so there is no undo step. True when the defaults
+/// changed.
+pub fn set_as_default(cx: &mut EditorContext) -> bool {
+    let Some(id) = CabinetTool::selected_cabinet(cx) else {
+        cx.status = "Select one cabinet to set the defaults from".into();
+        return false;
+    };
+    let all = placed::load_cabinets(cx.floor());
+    let logical = without_generated_tops(&all);
+    let Some(c) = logical.into_iter().find(|c| c.id == id) else {
+        return false;
+    };
+    let Some(name) = defaults_name(c.kind).filter(|_| c.preset.is_none() && c.custom.is_none())
+    else {
+        cx.status = "Set as Default is only available for standard cabinets".into();
+        return false;
+    };
+    let d = &mut cx.defaults.cabinets;
+    let boxed = |d: &mut plan_core::defaults::BoxDefaults| {
+        d.width = c.width;
+        d.depth = c.depth;
+        d.height = c.height;
+        d.elevation = c.elevation;
+    };
+    match c.kind {
+        CabinetKind::Base => {
+            d.base.width = c.width;
+            d.base.depth = c.depth;
+            d.base.height = c.height;
+            if let Some(t) = c.countertop {
+                d.base.countertop_thickness = t.thickness;
+                d.base.countertop_overhang = t.overhang_front;
+                d.countertop = plan_core::defaults::CountertopDefaults {
+                    overhang_sides: t.overhang_sides,
+                    overhang_back: t.overhang_back,
+                    edge: t.edge.name().into(),
+                    edge_size: t.edge_size,
+                    corner: t.corner.name().into(),
+                    corner_size: t.corner_size,
+                };
+            }
+            if let Some(k) = c.toe_kick {
+                d.base.toe_kick_height = k.height;
+                d.base.toe_kick_depth = k.depth;
+            }
+            d.base.door_style = c.door_style.name.clone();
+            d.base.drawer_style = c.drawer_style.name.clone();
+            d.base.handle = c.door_style.handle.name().into();
+            d.backsplash = match c.backsplash {
+                Some(b) => plan_core::defaults::BacksplashDefaults {
+                    enabled: true,
+                    height: b.height,
+                    thickness: b.thickness,
+                    full_height: b.full_height,
+                },
+                None => plan_core::defaults::BacksplashDefaults {
+                    enabled: false,
+                    ..d.backsplash.clone()
+                },
+            };
+        }
+        CabinetKind::Wall => {
+            d.wall.width = c.width;
+            d.wall.depth = c.depth;
+            d.wall.height = c.height;
+            d.wall.elevation = c.elevation;
+        }
+        CabinetKind::FullHeight => {
+            d.full_height.width = c.width;
+            d.full_height.depth = c.depth;
+            d.full_height.height = c.height;
+        }
+        CabinetKind::Soffit => boxed(&mut d.soffit),
+        CabinetKind::Shelf => boxed(&mut d.shelf),
+        CabinetKind::Partition => boxed(&mut d.partition),
+        _ => {}
+    }
+    cx.mark_dirty();
+    cx.status = format!("{name} Defaults have been updated");
+    true
+}
+
+/// Dynamic cabinet defaults (manual p. 644): after the Cabinet Defaults
+/// changed from `old` to the plan's current ones, every standard base cabinet
+/// that still has an old default value (countertop thickness and overhangs,
+/// toe kick height and depth, backsplash height and thickness) takes the new
+/// one. A cabinet that was set to some other value keeps it. The cabinets that
+/// gave up their slab to a generated countertop follow through the sources the
+/// top remembers. One undo step; returns how many cabinets changed.
+pub fn apply_dynamic_defaults(
+    cx: &mut EditorContext,
+    old: &plan_core::defaults::CabinetDefaults,
+) -> usize {
+    let new = cx.defaults.cabinets.clone();
+    if &new == old {
+        return 0;
+    }
+    cx.begin_change("Cabinet Defaults");
+    let mut changed = 0;
+    for fi in 0..cx.project.floors.len() {
+        for mut c in placed::load_cabinets(&cx.project.floors[fi]) {
+            if c.preset.is_some() || (c.custom.is_some() && c.joined.is_empty()) {
+                continue;
+            }
+            let mut touched = false;
+            if c.kind == CabinetKind::Base {
+                if let Some(t) = c.countertop.as_mut() {
+                    let before = t.thickness;
+                    touched |= follow_top(t, old, &new);
+                    c.height += t.thickness - before;
+                }
+                if let Some(k) = c.toe_kick.as_mut() {
+                    touched |= follow(
+                        &mut k.height,
+                        old.base.toe_kick_height,
+                        new.base.toe_kick_height,
+                    );
+                    touched |= follow(
+                        &mut k.depth,
+                        old.base.toe_kick_depth,
+                        new.base.toe_kick_depth,
+                    );
+                }
+                if let Some(b) = c.backsplash.as_mut() {
+                    touched |= follow_backsplash(b, old, &new);
+                }
+            }
+            // The slabs a generated top took from base cabinets.
+            for j in &mut c.joined {
+                touched |= follow_top(&mut j.countertop, old, &new);
+                if let Some(b) = j.backsplash.as_mut() {
+                    touched |= follow_backsplash(b, old, &new);
+                }
+            }
+            if touched && replace_cabinet(&mut cx.project, fi, &c) {
+                changed += 1;
+            }
+        }
+    }
+    if changed == 0 {
+        cx.cancel_change();
+        return 0;
+    }
+    placed::rejoin_if_enabled(cx);
+    cx.mark_dirty();
+    changed
+}
+
+/// `value` takes `now` when it still has the old default `was`.
+fn follow(value: &mut f64, was: f64, now: f64) -> bool {
+    if (*value - was).abs() < 1e-6 && (was - now).abs() >= 1e-6 {
+        *value = now;
+        true
+    } else {
+        false
+    }
+}
+
+fn follow_top(
+    t: &mut plan_cabinets::Countertop,
+    old: &plan_core::defaults::CabinetDefaults,
+    new: &plan_core::defaults::CabinetDefaults,
+) -> bool {
+    let mut touched = follow(
+        &mut t.thickness,
+        old.base.countertop_thickness,
+        new.base.countertop_thickness,
+    );
+    touched |= follow(
+        &mut t.overhang_front,
+        old.base.countertop_overhang,
+        new.base.countertop_overhang,
+    );
+    touched |= follow(
+        &mut t.overhang_sides,
+        old.countertop.overhang_sides,
+        new.countertop.overhang_sides,
+    );
+    touched |= follow(
+        &mut t.overhang_back,
+        old.countertop.overhang_back,
+        new.countertop.overhang_back,
+    );
+    touched
+}
+
+fn follow_backsplash(
+    b: &mut Backsplash,
+    old: &plan_core::defaults::CabinetDefaults,
+    new: &plan_core::defaults::CabinetDefaults,
+) -> bool {
+    let mut touched = follow(&mut b.height, old.backsplash.height, new.backsplash.height);
+    touched |= follow(
+        &mut b.thickness,
+        old.backsplash.thickness,
+        new.backsplash.thickness,
+    );
+    touched
 }
 
 /// Is every record of the floor's cabinet list readable? (A foreign record is

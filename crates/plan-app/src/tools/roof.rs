@@ -427,11 +427,23 @@ impl RoofTool {
             }
         }
         let attic = s.build_attic_floor;
+        let make = s.switches.make_baselines;
         match rebuild(&mut cx.project, fi, s, false) {
             Ok(rep) => {
                 // "Build attic floor": the roof and the attic floor are one step.
                 let attic = attic && cx.project.build_attic_floor().is_some();
                 cx.mark_dirty();
+                if make {
+                    // Make Roof Baseline Polylines (RF-70): polylines, not planes.
+                    let n: usize = (0..=fi)
+                        .map(|g| crate::tools::roof_baseline::baselines(&cx.project.floors[g]).len())
+                        .sum();
+                    cx.status = format!(
+                        "Made {n} roof baseline polyline{}",
+                        if n == 1 { "" } else { "s" }
+                    );
+                    return Some("Build Roof".into());
+                }
                 cx.status = format!(
                     "Built {} roof plane{} over {}{}{}",
                     rep.planes,
@@ -865,6 +877,13 @@ impl RoofTool {
         };
         self.join_first = None;
         let fi = cx.floor;
+        // A curved plane asks which of its radius and its angle at the ridge
+        // to keep before it is joined (Join Curved Roof Plane, RF-61).
+        if crate::tools::roof_baseline::join_asks(cx, a) {
+            crate::dialogs::roof_baseline::open_join_curved(cx, fi, a, edge, b);
+            cx.status = "Join Curved Roof Plane: choose what to keep".into();
+            return false;
+        }
         cx.begin_change("Join Roof Planes");
         match roof_view::join_planes_record(&mut cx.project, fi, a, edge, b) {
             Ok(()) => {

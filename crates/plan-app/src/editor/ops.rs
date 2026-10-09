@@ -299,10 +299,6 @@ pub fn split_walls_at_point(
         .collect()
 }
 
-fn overlaps(a: &Opening, b: &Opening) -> bool {
-    plan_core::openings::openings_conflict(a, b, OPENING_MARGIN)
-}
-
 /// Moves an opening to `center` on `wall_id` (its host or another wall),
 /// clamped to the jamb margin. Returns false (and changes nothing) when it
 /// would overlap another opening or the wall is too short.
@@ -326,8 +322,11 @@ pub fn place_opening_at(
     }
     o.wall_id = wall_id;
     o.center_offset = center.clamp(half + OPENING_MARGIN, len - half - OPENING_MARGIN);
-    if f.openings_on(wall_id)
-        .any(|other| other.id != opening_id && overlaps(&o, other))
+    // The shared placement rules: neighbour clearance (windows may touch)
+    // and the bodies of the walls that meet the host.
+    if !f
+        .wall(wall_id)
+        .is_some_and(|host| plan_core::openings::placement::fits_at(f, host, &o, &[opening_id]))
     {
         return false;
     }

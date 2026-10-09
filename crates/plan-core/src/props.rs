@@ -27,8 +27,10 @@
 //! all, so those keys carry the floor index; a room is found by the rounded
 //! position of its centre.
 
+use crate::elevation_ref::ElevationRef;
 use crate::geometry::Point;
 use crate::model::Id;
+use crate::object_pages::ObjectPages;
 use crate::units::{fmt_ft_in, parse_ft_in};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -327,11 +329,56 @@ pub struct PropTable {
     pub defs: Vec<PropDef>,
     /// Values by [`PropKey`] string.
     pub values: BTreeMap<String, PropMap>,
+    /// The shared panels (Label, Schedule, Manufacturer, Elevation
+    /// Reference) of each object, by the same key strings (and
+    /// `foundation:<id>` for slabs). Only non-default panels are stored.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub pages: BTreeMap<String, ObjectPages>,
 }
 
 impl PropTable {
     pub fn is_empty(&self) -> bool {
-        self.defs.is_empty() && self.values.is_empty()
+        self.defs.is_empty() && self.values.is_empty() && self.pages.is_empty()
+    }
+
+    /// The shared panels of the object under `key`.
+    pub fn pages_of(&self, key: &str) -> Option<&ObjectPages> {
+        self.pages.get(key)
+    }
+
+    /// Stores the panels of `key` (defaults pruned; none left removes the
+    /// entry). Returns whether anything changed.
+    pub fn set_pages(&mut self, key: &str, mut pages: ObjectPages) -> bool {
+        pages.prune();
+        let before = self.pages.get(key).cloned();
+        if pages.is_empty() {
+            self.pages.remove(key);
+        } else {
+            self.pages.insert(key.to_string(), pages);
+        }
+        self.pages.get(key).cloned() != before
+    }
+
+    /// The elevation reference stored for `key`, if it is not the legacy one.
+    pub fn elevation_of(&self, key: &str) -> Option<ElevationRef> {
+        self.pages
+            .get(key)
+            .and_then(|p| p.elevation)
+            .filter(|e| !e.is_legacy())
+    }
+
+    /// Is any object's height measured from something other than the floor?
+    pub fn has_elevation_refs(&self) -> bool {
+        self.pages.values().any(|p| p.elevation.is_some())
+    }
+
+    /// Is the object under `key` left out of its schedules (Include in
+    /// Schedule unchecked on the Schedule panel)?
+    pub fn schedule_excluded(&self, key: &str) -> bool {
+        self.pages
+            .get(key)
+            .and_then(|p| p.schedule.as_ref())
+            .is_some_and(|s| !s.include)
     }
 
     /// The definitions of `kind`, in the order they were made.
@@ -503,6 +550,7 @@ impl PropTable {
     pub fn purge(&mut self, alive: impl Fn(&PropKey) -> bool) -> usize {
         let before = self.values.len();
         self.values.retain(|k, _| alive(&PropKey(k.clone())));
+        self.pages.retain(|k, _| alive(&PropKey(k.clone())));
         before - self.values.len()
     }
 }

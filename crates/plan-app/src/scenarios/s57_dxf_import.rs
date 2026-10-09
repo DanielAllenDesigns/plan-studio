@@ -349,6 +349,7 @@ fn one_layer_for_everything_keeps_the_looks_on_the_objects() {
 #[test]
 fn layers_marked_to_walls_make_walls_of_the_chosen_type() {
     let mut sim = sim();
+    let shell_walls = sim.app.cx.floor().walls.len();
     // A wall type the plan has.
     let ty = sim
         .app
@@ -369,15 +370,19 @@ fn layers_marked_to_walls_make_walls_of_the_chosen_type() {
     });
     imp::next(&mut sim.app.cx);
     let f = sim.app.cx.floor();
-    assert_eq!(f.walls.len(), 4, "four walls of the room");
-    for w in &f.walls {
+    assert_eq!(
+        f.walls.len(),
+        shell_walls + 4,
+        "four walls of the room besides the shell"
+    );
+    for w in f.walls.iter().skip(shell_walls) {
         assert_eq!(w.wall_type.as_deref(), Some(ty.name.as_str()));
         assert!((w.thickness - ty.thickness()).abs() < 1e-6);
         assert_eq!(w.kind, ty.kind);
     }
     assert_eq!(sim.app.cx.undo_label(), Some("Import Drawing"));
     sim.undo();
-    assert!(sim.app.cx.floor().walls.is_empty());
+    assert_eq!(sim.app.cx.floor().walls.len(), shell_walls);
     assert!(sim.app.cx.floor().cad.is_empty());
 }
 
@@ -604,7 +609,8 @@ fn the_import_drawing_menu_command_is_wired() {
 
 #[test]
 fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
-    let mut sim = sim();
+    imp::close();
+    let mut sim = Sim::new();
     let corners = [
         Point::new(0.0, 0.0),
         Point::new(240.0, 0.0),
@@ -801,7 +807,7 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
         }
         match (
             want("Notes", &|i| matches!(i, CadItem::Text { .. })),
-            got(&|i| matches!(i, CadItem::Text { .. })),
+            got(&|i| matches!(i, CadItem::Text { text, .. } if text == "Kitchen")),
         ) {
             (
                 CadItem::Text { pos, height, .. },
@@ -811,7 +817,10 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
                     ..
                 },
             ) => {
-                assert!(pos.dist(gp) < tol && (height - gh).abs() < tol);
+                assert!(
+                    pos.dist(gp) < tol && (height - gh).abs() < tol,
+                    "{units:?} text {pos:?} {height} vs {gp:?} {gh}"
+                );
             }
             _ => unreachable!(),
         }

@@ -262,6 +262,10 @@ pub struct LayoutBox {
     /// Text boxes: wrap at the box width, shrink to fit, or leave as typed.
     #[serde(default)]
     pub text_fit: TextFit,
+    /// The view the box shows: Box Scale, linked view, Plot Lines, label
+    /// shape, border and fill (see [`crate::BoxView`]).
+    #[serde(default)]
+    pub view: crate::boxview::BoxView,
 }
 
 /// Resolution of a perspective box that has no DPI of its own: a 6" x 4.5"
@@ -310,6 +314,7 @@ impl LayoutBox {
             dpi: 0,
             samples: 0,
             text_fit: TextFit::Wrap,
+            view: crate::boxview::BoxView::default(),
         }
     }
 

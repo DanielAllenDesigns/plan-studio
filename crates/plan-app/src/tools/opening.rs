@@ -145,6 +145,17 @@ impl OpeningTool {
         if self.swings() {
             (o.swing_flipped, o.hinge_at_end) = door_defaults_for_pointer(wall, pointer, center);
         }
+        // A window into a bedroom starts from the egress window of the code
+        // defaults: never smaller or higher than it.
+        if self.kind == OpeningKind::Window
+            && !o.style.projects()
+            && crate::editor::code::sleeping_room_at(cx, wall, center)
+        {
+            let egress = &cx.defaults.code.bedroom_window;
+            o.width = o.width.max(egress.width);
+            o.height = o.height.max(egress.height);
+            o.sill_height = o.sill_height.min(egress.sill_height);
+        }
         o.wall_id = wall.id;
         (target_key, o)
     }

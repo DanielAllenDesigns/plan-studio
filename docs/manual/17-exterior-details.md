@@ -14,8 +14,8 @@ the plan the first time it is needed; turning the layer off hides the objects.
 | Object | What it is | Layer | Defaults |
 |---|---|---|---|
 | **Corner board** | Two boards on the outer faces of an exterior corner and the square where they meet | `Corner Trim` | 3 1/2" wide, 3/4" thick, bottom 0, 96" high (the corner's wall height when auto placed), Painted White Trim |
-| **Quoin** | The same "L", stacked in courses of long and short blocks | `Corner Trim` | Long block 16", block height 8", depth 1 1/2", alternating, stack 96", Stone Veneer - Fieldstone |
-| **Molding** (line or polyline) | A profile swept along a line | `Moldings` | Crown profile at its stock size, bottom height 0, Painted White Trim |
+| **Quoin** | The same "L", stacked in courses of long and short blocks | `Corner Trim` | Width 16", Quoin Height 8", Thickness 1 1/2", no gap, Staggered, stack 96", Stone Veneer - Fieldstone |
+| **Molding** (line or polyline) | One or more profiles swept along a 3D line (chapter 17.7) | `Moldings` | The active library profile (the square profile until you pick another), bottom height 0 (a crown starts at the ceiling), Painted White Trim |
 | **Floor material region** | A polygon of floor finish | `Material Regions` | 1/4" thick, Ceramic Tile 12x12 |
 | **Wall material region** | A rectangle on one face of a wall | `Material Regions` | 1/4" thick, bottom 0, top the wall height |
 | **Wall hatching** | A hatch pattern drawn on a wall in the plan | `Material Regions` | Scale 1, angle 45 degrees |
@@ -35,8 +35,9 @@ Straight Wall flyout, Floor Material Region on the Floor flyout, Polygon Shaped 
 | Auto Place Corner Boards | Trim | One click puts boards on every convex exterior corner of the floor. |
 | Quoins | Trim | Click an exterior corner. |
 | Auto Place Quoins | Trim | One click quoins every convex exterior corner. |
-| Molding Line | Trim | Click two points, or press and drag. |
-| Molding Polyline | Trim | A click per corner; a double-click or `Enter` finishes. |
+| Molding Line | Trim | Click two points, or press and drag. Its start and end heights are set in the Selected Line panel (17.7). |
+| Molding Polyline | Trim | A click per corner; a double-click or `Enter` finishes; press and drag draws a closed rectangle, clockwise, so the profile lies inside. |
+| Replace Moldings | Trim | Click a molding: it takes the active library profile. |
 | Floor Material Region | Floor | A polygon (below). |
 | Wall Material Region | Straight Wall | Click a wall, or press on it and drag along it for part of its length; a dialog sets the heights and the face. |
 | Wall Hatching | Straight Wall | Click a wall; a dialog picks the pattern. |
@@ -85,9 +86,10 @@ Each object has its own Specification dialog on the shared frame (Corner Board, 
 
 General, by object:
 
-- **Corner Board**: Width, Thickness, Bottom height, Height, and the lumber in cubic feet.
-- **Quoin**: Long block, Block height, Depth, Bottom height, Stack height, **Alternate long and short blocks**, and the number of courses.
-- **Molding**: **Profile** (Crown, Base, Chair, Casing; changing it resets the stock size), Height, Projection, Bottom height, and the molding's length. It projects to the left of the drawing direction. The **Cross section** block turns a preset into a **custom profile** (Edit as custom profile) and lists its points as Projection and Height from the bottom edge at the wall, with a + to add a point after one and a button to remove one; Reset to the box goes back.
+- **Corner Board**: Width, Thickness, **Set Bottom** (Bottom height) and **Set Top** (Top height), **Recessed To Sheathing Layer**, and the lumber in cubic feet. With Set Top and Set Bottom off the board runs from the floor to the top plate of its walls and follows them when Select Objects moves or resizes them (17.3).
+  Its tabs are General, Line Style, Materials, Components and Layer.
+- **Quoin**: Width, Thickness, **Quoin Height**, **Quoin Gap**, **Style** (Uniform, Staggered or Mirrored), **Swap Start Block**, Set Bottom and Set Top, Recessed To Sheathing Layer, and the number of courses and blocks. Same tabs as the corner board.
+- **Molding**: see 17.7. Its tabs are General, Moldings, Selected Line, Line Style, Fill Style (not built yet, shown dimmed), Materials, Label, Components and Layer.
 - **Material Region**: on a floor, **Cut finish layers** (the region sits flush with the floor instead of on it); on a wall, which face it is on (picked by the side you clicked), **From** and **To** along the wall, and **Bottom** and **Top** heights; both: **Thickness**.
 - **Wall Hatching**: **Pattern** (Lines, Cross Hatch, Brick, Block, Shingle, Lap Siding, Board and Batten, Tile, Herringbone, Insulation, Concrete, Earth, Grass), **Scale** (0.1 to 10) and **Angle**.
 - **Deck**: **Top height**, **Board thickness** and **Railing around the edge**.
@@ -105,8 +107,43 @@ OK is refused with a reason for a size of zero or less.
 ## 17.6 Differences from Chief
 
 - No mini elevation window for a Wall Material Region: you drag along the wall and set the heights in the dialog.
-- A preset molding profile is a plain box until you edit it as a custom profile; the profile editor edits points in numbers, not on a drawing.
+- Profiles are drawn as closed polylines with the CAD tools and added to the library from the Edit toolbar or the Library > Moldings menu. Chief opens a CAD detail window for Edit Molding Profile; here the profile is placed beside the plan as a polyline and you add it to the library again under the same name.
+- A 3D molding that repeats a symbol along a path repeats the profile's own shape (a block of the profile section, Repeat Distance apart, mitred at corners); a library symbol's mesh is not placed along the path.
+- The Molding Specification has no Selected Arc panel: an arc is a polyline of short edges, edited like any other.
 - Wall material regions are not drawn on curved walls.
 - Pyramid is an extra solid beyond Chief's list; **3D Solid Feature** (chapter 6.7) places a library item as a solid rather than drawing a primitive.
 - Trim follows a wall only when Select Objects moves it (17.3).
 - A **wall cap** (the Wall Cap tab of the Wall Specification, chapter 2.6: Flat Cap, Overhanging Cap or Thick Coping on the top of a wall, usually a half wall) is part of the wall, not a molding object; it is built in 3D on straight walls.
+
+## 17.7 Moldings
+
+Every object that has a Moldings panel (molding polylines now; rooms, the Floor Defaults, cabinets, tray ceilings, wall caps and soffits through the same widget) edits one **Moldings table**. The data and rules are in `plan_core::moldings`, the panel in `dialogs/molding.rs`, the sweep in `plan_3d::molding`.
+
+**Profiles.** A profile is a closed polyline drawn at actual size, the back of the molding being its left edge. Draw it with the CAD Polyline tool, select it and choose **Edit toolbar > Add to Library as Molding Profile** (Library > Moldings > Add Closed Polyline as Molding Profile).
+Several closed polylines selected together become one **stacked molding** (Add to Library as Stacked Molding) that keeps how they sit against each other, each part with its own material. The profile goes into the plan's own library and becomes the active profile.
+**Place Molding Profile** puts a profile back in the plan as a closed polyline; **Edit Molding Profile** does the same beside the walls so you can reshape it and add it again under the same name. The library holds the nine room profiles of the Room Specification, a
+square profile (the default of the Molding Polyline tool), and casing, wall cap, rail and strip profiles.
+
+**The panel.** The table lists Profile, Width, Height, Repeat, Horizontal Offset, Vertical Offset and Stack. The buttons are **Add New** (pick a library profile), **Make Copy**, **Edit**, **Replace**, **Default** (back to the profile's size and type), **Delete**, **Make Stack** (tick the rows to stack),
+**Explode Stack**, **Move Up** and **Move Down**. The Selected Profile Options hold Width and Height with **Retain Aspect Ratio**, **Repeat Distance** (a 3D molding: the profile's shape repeated along the path, half the repeat distance long unless you give a Symbol Length), the offsets (a negative
+Horizontal Offset recesses the profile behind the back line, as for an under-cabinet light rail), **Auto Offset** (a stacked profile sits on the one before it), **Vertical Position**, **Type** (base, chair rail, crown, casing, wall cap, edge profile, rail, strip profile, eave, gable), **Profile Rotation**,
+**Reflect** Horizontal and Vertical, **Full Wall Width** and **Split Profile** (rails and wall caps), **On Selected Edge** (Automatic, On, Off), Texture Up Direction and Count Components, and a preview. Rooms and floors add **Use Floor Default**, **These moldings** and **No Change**.
+A stack of types hangs together from where its type belongs: a base on the floor, a chair rail 32" up, a crown from the ceiling.
+
+**Molding polylines.** A molding polyline is a profile table swept along a polyline whose points can each have their own height (a 3D line). The profile lies on the **right** of the drawing direction, so a clockwise path has it inside; **Reverse Direction** swaps it and **Extrude Inside Polyline**
+puts it inside a closed path whichever way it was drawn. Old molding lines keep projecting to the left. **Remove Molding from Selected Edge** and **Add Molding to Selected Edge** switch single edges off and on (select the edge by double-clicking near it, by the Selected Line panel, or with Select Next Edge); an edge
+that is off is drawn dotted in the plan and has no molding in 3D. Joints are mitred in the plane that bisects the two edges, also for edges that rise and fall; at a twisted joint the two sections are averaged (**Auto Calc Orientation at Twisted Joints**), or cut square when **Mitre Molding at
+Twisted Joints** is off, and **Mitre Molding If Next Edge Turned Off** cuts an end on the mitre plane of the edge that is off.
+
+The **Molding Specification** has, besides the panels above, **General** (Height from Z=0, the three joint switches, the selected edge and whether the molding is on it, Automatically Generated) and **Selected Line** (3D Length, Angle in XY Plane, Angle from XY Plane, Start and End height of the edge, and
+**Select Edit Plane**: move the edge along itself, across it or up, the edges next to it following). The plan shows the path and, dashed, the front line the profile's projection away from it; Show Label writes the label (the profile name, or your own text) on the molding.
+
+**Room moldings.** A room's moldings come from its own table, else from its room type's table, else from the Floor Defaults table; porches, decks, garages, stairwells, Open Below rooms and courtyards get nothing from the Floor Defaults. They run along the interior surfaces and stop at openings,
+behind cabinets (unless the cabinet's Cut Room Moldings is off), along walls that are not drawn or that are set to suppress room moldings, and on edges switched off for the room. **Make Room Molding Polyline** (Edit toolbar or Library > Moldings, with the pointer in the room) turns the room's moldings into editable
+polylines and the room stops making them; **Make Exterior Room Molding Polyline** runs a closed polyline round the outer faces of the exterior walls at the ceiling height; **Make Cabinet Molding Polyline** does the same for the crown and light rail of the selected cabinets.
+The older Moldings tab of the Room Specification keeps working; the new tables are stored by `tools::molding::set_room_molding_table` / `set_floor_molding_table` / `set_type_molding_table` for the dialogs of the room, Floor Defaults and Room Type Defaults.
+
+**Replace.** The Replace Moldings tool (Trim flyout) and Library > Moldings > Replace Moldings From Library give the molding polylines the active profile, keeping their offsets and switches. Both are one undo step.
+
+**Reporting.** The Materials List take-off (`plan_core::moldings::trim_takeoff`) lists the 3D linear length of every molding, grouped by profile and material, under **Interior Trim**, and the corner boards (two boards per corner), the quoins (stack height and block count) and eave and gable moldings
+under **Exterior Trim**. Vertical casings show in the plan; every other molding is a 3D object.

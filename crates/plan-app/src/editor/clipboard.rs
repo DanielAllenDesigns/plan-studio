@@ -488,8 +488,7 @@ impl Clipboard {
         for d in &self.dimensions {
             let mut copy = d.clone();
             copy.anchors = [None, None];
-            copy.start = copy.start + offset;
-            copy.end = copy.end + offset;
+            copy.translate(offset);
             let id = cx.project.add_dimension(fl, copy);
             pasted_dims.push((id, d.anchors));
             map.insert(ObjectRef::Dimension(d.id), ObjectRef::Dimension(id));
@@ -549,6 +548,17 @@ impl Clipboard {
         // DIM-38: a dimension pasted with every object it was tied to stays
         // tied to the copies (it follows them); if any of those was not
         // copied it pastes free.
+        // Strings stay strings among the copies; curved dimensions follow the
+        // copies of their walls.
+        let pairs: Vec<(Id, Id)> = self
+            .dimensions
+            .iter()
+            .filter_map(|d| match map.get(&ObjectRef::Dimension(d.id)) {
+                Some(ObjectRef::Dimension(n)) => Some((d.id, *n)),
+                _ => None,
+            })
+            .collect();
+        cx.project.floors[fl].repair_pasted_dimensions(&pairs, &|w| wall_map.get(&w).copied());
         for (id, old) in pasted_dims {
             let anchors = retie_anchors(&old, &map, offset);
             if let Some(d) = cx.project.floors[fl]
@@ -688,10 +698,20 @@ fn retie_anchors(
             AnchorTarget::Opening => ObjectRef::Opening(a.wall),
             AnchorTarget::Cabinet => ObjectRef::Cabinet(a.wall),
             AnchorTarget::Symbol => ObjectRef::Symbol(a.wall),
+            AnchorTarget::Cad => ObjectRef::Cad(a.wall),
+            AnchorTarget::Stair => ObjectRef::Stair(a.wall),
+            AnchorTarget::Device => ObjectRef::Device(a.wall),
         };
         let now = match map.get(&was) {
-            Some(ObjectRef::Wall(id) | ObjectRef::Opening(id) | ObjectRef::Cabinet(id))
-            | Some(ObjectRef::Symbol(id)) => *id,
+            Some(
+                ObjectRef::Wall(id)
+                | ObjectRef::Opening(id)
+                | ObjectRef::Cabinet(id)
+                | ObjectRef::Symbol(id)
+                | ObjectRef::Cad(id)
+                | ObjectRef::Stair(id)
+                | ObjectRef::Device(id),
+            ) => *id,
             _ => return [None, None],
         };
         let mut copy = *a;

@@ -38,7 +38,7 @@
 //! automatic dimension into a manual one (DIM-33), and a point dragged onto
 //! another object is tied there.
 
-use super::cad::{add_cad_items, set_typing, OptionStrip, StripButton};
+use super::cad::{set_typing, OptionStrip, StripButton};
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::placed;
 use crate::editor::selection::hit_opening;
@@ -46,6 +46,7 @@ use crate::editor::{ops, render, Camera, EditorContext, EditorRequest, ObjectRef
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
 use plan_core::dim_assoc::{AnchorTarget, DimHint};
+use plan_core::dimension::{CurveKind, DimCurve, LocateTool, OffsetFrom, ToolLocate};
 use plan_core::geometry::{
     dist_to_segment, point_in_polygon, project_on_segment, segment_intersection, Point,
 };
@@ -80,6 +81,11 @@ pub enum DimMode {
     Baseline,
     Centerline,
     Angular,
+    /// Click a curved wall, then place the line: its radius (Radius
+    /// Dimension).
+    Radius,
+    /// Click a curved wall, then place the line: the length along its arc.
+    ArcLength,
     TapeMeasure,
     AutoExterior,
     AutoInterior,
@@ -95,7 +101,7 @@ pub enum DimMode {
 }
 
 impl DimMode {
-    pub const ALL: [DimMode; 16] = [
+    pub const ALL: [DimMode; 18] = [
         DimMode::Manual,
         DimMode::EndToEnd,
         DimMode::Interior,
@@ -104,6 +110,8 @@ impl DimMode {
         DimMode::Baseline,
         DimMode::Centerline,
         DimMode::Angular,
+        DimMode::Radius,
+        DimMode::ArcLength,
         DimMode::TapeMeasure,
         DimMode::AutoExterior,
         DimMode::AutoInterior,
@@ -125,6 +133,8 @@ impl DimMode {
             DimMode::Baseline => "Baseline Dimension",
             DimMode::Centerline => "Centerline Dimension",
             DimMode::Angular => "Angular Dimension",
+            DimMode::Radius => "Radius Dimension",
+            DimMode::ArcLength => "Arc Length Dimension",
             DimMode::TapeMeasure => "Tape Measure",
             DimMode::AutoExterior => "Auto Exterior Dimensions",
             DimMode::AutoInterior => "Auto Interior Dimensions",
@@ -152,6 +162,8 @@ impl DimMode {
             DimMode::Baseline => "Baseline",
             DimMode::Centerline => "Centerline",
             DimMode::Angular => "Angular",
+            DimMode::Radius => "Radius",
+            DimMode::ArcLength => "Arc Length",
             DimMode::TapeMeasure => "Tape",
             DimMode::AutoExterior => "Auto Exterior",
             DimMode::AutoInterior => "Auto Interior",
@@ -187,7 +199,13 @@ impl DimMode {
                 "Centerline Dimension: click two centers, then click to place the dimension line"
             }
             DimMode::Angular => {
-                "Angular Dimension: click the vertex and two arm points, then the arc radius"
+                "Angular Dimension: click two walls (or the vertex and two arm points), then the arc radius"
+            }
+            DimMode::Radius => {
+                "Radius Dimension: click a curved wall, then click to place the line"
+            }
+            DimMode::ArcLength => {
+                "Arc Length Dimension: click a curved wall, then click to place the line"
             }
             DimMode::TapeMeasure => {
                 "Tape Measure: click two points to read the distance; Esc clears"
@@ -222,6 +240,8 @@ impl DimMode {
             DimMode::Running => "Running Dimension",
             DimMode::Baseline => "Baseline Dimension",
             DimMode::Angular => "Angular Dimension",
+            DimMode::Radius => "Radius Dimension",
+            DimMode::ArcLength => "Arc Length Dimension",
             DimMode::TapeMeasure => "Tape Measure",
             DimMode::AutoExterior => "Auto Exterior Dimensions",
             DimMode::AutoInterior => "Auto Interior Dimensions",
@@ -644,29 +664,95 @@ fn nearest_on_outline(p: Point, poly: &[Point]) -> Option<Point> {
         .min_by(|a, b| a.dist(p).total_cmp(&b.dist(p)))
 }
 
-/// The object a dimension point locates for a cabinet or fixture (Locate
-/// Objects > Cabinets / Fixtures): the nearest side of its footprint.
-fn locate_placed(cx: &EditorContext, p: &PointerEvent) -> Option<Located> {
+/// The corners of a footprint and its middle.
+fn outline_marks(poly: &[Point]) -> (Vec<Point>, Option<Point>) {
+    if poly.is_empty() {
+        return (Vec::new(), None);
+    }
+    let n = poly.len() as f64;
+    let c = Point::new(
+        poly.iter().map(|p| p.x).sum::<f64>() / n,
+        poly.iter().map(|p| p.y).sum::<f64>() / n,
+    );
+    (poly.to_vec(), Some(c))
+}
+
+/// The nearest of the marks a Locate panel switches on for an object's
+/// footprint: its sides, corners and center. `sides`, `corners` and
+/// `centers` say which are on.
+fn nearest_mark(
+    p: Point,
+    poly: &[Point],
+    sides: bool,
+    corners: bool,
+    centers: bool,
+) -> Option<(Point, &'static str)> {
+    let (corner_pts, mid) = outline_marks(poly);
+    let mut best: Option<(f64, Point, &'static str)> = None;
+    let mut take = |q: Point, what: &'static str| {
+        let d = q.dist(p);
+        if best.is_none_or(|(b, _, _)| d < b) {
+            best = Some((d, q, what));
+        }
+    };
+    if sides {
+        if let Some(q) = nearest_on_outline(p, poly) {
+            take(q, "side");
+        }
+    }
+    if corners {
+        for c in corner_pts {
+            take(c, "corner");
+        }
+    }
+    if centers {
+        if let Some(c) = mid {
+            take(c, "center");
+        }
+    }
+    best.map(|(_, q, w)| (q, w))
+}
+
+/// The object a dimension point locates for a cabinet or fixture (the
+/// Locate panel's Cabinets and Fixtures marks): the nearest side, corner or
+/// center of its footprint.
+fn locate_placed(cx: &EditorContext, p: &PointerEvent, tl: &ToolLocate) -> Option<Located> {
     let tol = cx.pick_tol() * 0.5;
-    let set = &cx.defaults.dimensions;
-    if set.locate_fixtures == ObjectLocate::Sides {
+    if tl.group.fixtures == ObjectLocate::Sides {
         if let Some(id) = placed::hit_symbol(cx, p.world, tol) {
             let s = cx.floor().symbols.iter().find(|s| s.id == id)?;
             if s.distribution.is_none() {
+                let (sides, centers) = (tl.mark("fixtures.sides"), tl.mark("fixtures.centers"));
+                let (q, w) = nearest_mark(p.world, &s.footprint(), sides, sides, centers)?;
                 return Some(Located {
-                    point: nearest_on_outline(p.world, &s.footprint())?,
-                    what: "Fixture side",
+                    point: q,
+                    what: match w {
+                        "center" => "Fixture center",
+                        "corner" => "Fixture corner",
+                        _ => "Fixture side",
+                    },
                     obj: Some(ObjectRef::Symbol(id)),
                 });
             }
         }
     }
-    if set.locate_cabinets == ObjectLocate::Sides {
+    if tl.group.cabinets == ObjectLocate::Sides {
         if let Some(id) = placed::hit_cabinet(cx, p.world, tol, |_| true) {
             let c = placed::cabinet_by_id(cx.floor(), id)?;
+            let (q, w) = nearest_mark(
+                p.world,
+                &c.footprint(),
+                tl.mark("cabinets.sides"),
+                tl.mark("cabinets.corners"),
+                tl.mark("cabinets.centers"),
+            )?;
             return Some(Located {
-                point: nearest_on_outline(p.world, &c.footprint())?,
-                what: "Cabinet side",
+                point: q,
+                what: match w {
+                    "center" => "Cabinet center",
+                    "corner" => "Cabinet corner",
+                    _ => "Cabinet side",
+                },
                 obj: Some(ObjectRef::Cabinet(id)),
             });
         }
@@ -678,6 +764,23 @@ fn locate_placed(cx: &EditorContext, p: &PointerEvent) -> Option<Located> {
 /// the Locate Objects settings of the active dimension defaults. `centers`
 /// forces centers (Centerline Dimension).
 fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Point>) -> Located {
+    let tool = if centers {
+        LocateTool::Centerline
+    } else {
+        LocateTool::Manual
+    };
+    locate_with(cx, p, centers, origin, tool)
+}
+
+/// [`locate`] under the Locate panel of `tool` (Dimension Defaults: one
+/// panel per dimension tool, DIM-54).
+fn locate_with(
+    cx: &EditorContext,
+    p: &PointerEvent,
+    centers: bool,
+    origin: Option<Point>,
+    tool: LocateTool,
+) -> Located {
     if p.modifiers.alt {
         return Located {
             point: p.world,
@@ -687,16 +790,16 @@ fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Po
     }
     let tol = cx.pick_tol();
     let floor = cx.floor();
-    let set = &cx.defaults.dimensions;
+    let tl = cx.defaults.dimensions.tool_locate(tool);
     let walls_mode = if centers {
         WallLocate::Centers
     } else {
-        set.locate_walls
+        tl.group.walls
     };
     let openings_mode = if centers {
         OpeningLocate::Centers
     } else {
-        set.opening_locate()
+        tl.group.openings
     };
     if openings_mode != OpeningLocate::None {
         if let Some(oid) = hit_opening(floor, p.world, tol * 0.5) {
@@ -734,12 +837,10 @@ fn locate(cx: &EditorContext, p: &PointerEvent, centers: bool, origin: Option<Po
             }
         }
     }
-    if !centers {
-        if let Some(l) = locate_placed(cx, p) {
-            return l;
-        }
+    if let Some(l) = locate_placed(cx, p, &tl) {
+        return l;
     }
-    if let Some(w) = wall_near(cx, p.world) {
+    if let Some(w) = wall_near(cx, p.world).filter(|_| !tl.walls_none) {
         let n = w.normal();
         let perp = p.world.sub(w.start).dot(n);
         let (lo, hi) = wall_span(cx, w, walls_mode);
@@ -913,6 +1014,8 @@ struct DimDrag {
 struct ValueEdit {
     id: Id,
     buf: String,
+    /// Editing the label's text (with rich text tags) instead of the value.
+    rich: bool,
 }
 
 /// A manual dimension string that further clicks continue (DIM-2, DIM-11):
@@ -928,6 +1031,8 @@ struct StringState {
     off: Point,
     /// What the last point is tied to.
     anchor: Option<plan_core::dim_assoc::DimAnchor>,
+    /// The first segment of the string: the string's id.
+    head: Id,
 }
 
 pub struct DimensionTool {
@@ -949,6 +1054,9 @@ pub struct DimensionTool {
     strip: OptionStrip,
     /// The manual string being continued.
     string: Option<StringState>,
+    /// Radius and Arc Length: the curved wall clicked and the distance of
+    /// the measured surface to the left of its centerline.
+    arc: Option<(Id, f64)>,
 }
 
 impl Default for DimensionTool {
@@ -968,6 +1076,7 @@ impl Default for DimensionTool {
             edit: None,
             strip: OptionStrip::default(),
             string: None,
+            arc: None,
         }
     }
 }
@@ -1012,6 +1121,7 @@ impl DimensionTool {
         self.grab = None;
         self.edit = None;
         self.string = None;
+        self.arc = None;
     }
 
     fn in_progress(&self) -> bool {
@@ -1019,6 +1129,22 @@ impl DimensionTool {
             || self.span.is_some()
             || self.interior.is_some()
             || self.baseline.is_some()
+            || self.arc.is_some()
+    }
+
+    /// The Locate panel the mode reads (Dimension Defaults: Locate Manual,
+    /// End to End, Centerline, Interior, Auto Exterior, Auto Room, Auto
+    /// Elevation, Elevations).
+    fn locate_tool(&self) -> LocateTool {
+        match self.mode {
+            DimMode::EndToEnd | DimMode::PointToPoint => LocateTool::EndToEnd,
+            DimMode::Centerline => LocateTool::Centerline,
+            DimMode::Interior => LocateTool::Interior,
+            DimMode::AutoExterior => LocateTool::AutoExterior,
+            DimMode::AutoInterior => LocateTool::AutoRoom,
+            DimMode::AutoElevation | DimMode::AutoStoryPole => LocateTool::AutoElevation,
+            _ => LocateTool::Manual,
+        }
     }
 
     fn separation(cx: &EditorContext) -> f64 {
@@ -1073,6 +1199,10 @@ impl DimensionTool {
                 }
                 running_dimensions(&pts, place, &cx.dim_format())
             }
+            DimMode::Radius | DimMode::ArcLength => {
+                self.arc_dimension(cx, place).into_iter().collect()
+            }
+            DimMode::Angular => self.angular_dimension(cx, place).into_iter().collect(),
             DimMode::Baseline if !self.pts.is_empty() => {
                 let origin = self.pts[0].point;
                 let sep = Self::separation(cx);
@@ -1122,7 +1252,12 @@ impl DimensionTool {
             }
             let ends = [d.start, d.end];
             let horizontal = (d.start.y - d.end.y).abs() < 1e-6;
+            let curved = d.curve().is_some();
             last = cx.project.add_dimension(fl, d);
+            if curved {
+                // A curved dimension follows its walls through its curve.
+                continue;
+            }
             // An end on an object stays tied to it (it follows the object):
             // the one it was located on when the tool knows it.
             let hint = |p: Point| {
@@ -1175,14 +1310,41 @@ impl DimensionTool {
         let fl = cx.floor;
         let style = cx.defaults.dimensions.text_style.clone();
         let n = dims.len();
+        let mut ids = Vec::with_capacity(n);
         for mut d in dims {
             if d.text_style.is_none() && !style.is_empty() {
                 d.text_style = Some(style.clone());
             }
             let id = cx.project.add_dimension(fl, d);
             cx.project.floors[fl].attach_dimension(id);
+            ids.push(id);
         }
+        // Each row of an automatic run is one dimension string.
+        cx.project.floors[fl].join_chains(&ids);
         n
+    }
+
+    /// The first line offset measured from the located surface, from the
+    /// distance Setup Automatic gives and what it is measured from (Offset
+    /// from Wall: the wall center, the dimension layer or the surface).
+    fn first_offset(cx: &EditorContext, walls: &[Wall], given: f64) -> f64 {
+        let n = walls.len().max(1) as f64;
+        match cx.defaults.dimensions.setup.offset_from {
+            OffsetFrom::DimensionLayer => given,
+            OffsetFrom::Center => {
+                let half = walls.iter().map(|w| w.thickness * 0.5).sum::<f64>() / n;
+                (given - half).max(0.0)
+            }
+            OffsetFrom::Surface => {
+                // Between the surface and the main layer's outer face.
+                let gap = walls
+                    .iter()
+                    .map(|w| (w.thickness * 0.5 - main_span(cx, w).1).max(0.0))
+                    .sum::<f64>()
+                    / n;
+                (given - gap).max(0.0)
+            }
+        }
     }
 
     fn auto_exterior(&mut self, cx: &mut EditorContext) -> ToolResult {
@@ -1203,14 +1365,21 @@ impl DimensionTool {
             .collect();
         let dims = {
             let set = &cx.defaults.dimensions;
-            let strings = set.exterior_strings();
+            let tl = set.tool_locate(LocateTool::AutoExterior);
+            // Setup Automatic: which strings, and where the first line
+            // stands from (Offset from Wall).
+            let strings = plan_core::dimension::exterior_strings_for(
+                &set.exterior_strings(),
+                &set.setup,
+            );
             let main = |w: &Wall| main_span(cx, w);
+            let first_offset = Self::first_offset(cx, &walls, set.auto_exterior_offset);
             let setup = ExteriorSetup {
                 strings: &strings,
-                first_offset: set.auto_exterior_offset,
+                first_offset,
                 spacing: set.string_spacing(),
-                walls: set.locate_walls,
-                openings: set.opening_locate(),
+                walls: tl.group.walls,
+                openings: tl.group.openings,
                 main_span: &main,
             };
             auto_exterior_set(&walls, &openings, &setup)
@@ -1326,7 +1495,12 @@ impl DimensionTool {
         if len < 12.0 {
             return Vec::new();
         }
-        let mode = cx.defaults.dimensions.opening_locate();
+        let mode = cx
+            .defaults
+            .dimensions
+            .tool_locate(LocateTool::AutoRoom)
+            .group
+            .openings;
         if mode == OpeningLocate::None {
             return Vec::new();
         }
@@ -1390,10 +1564,19 @@ impl DimensionTool {
     fn auto_interior(&mut self, cx: &mut EditorContext) -> ToolResult {
         cx.refresh();
         let sep = Self::separation(cx);
+        let setup = cx.defaults.dimensions.setup.clone();
+        // Setup Automatic, room: the smallest room, the lines inside or
+        // outside the room, and whether the clear spans are made at all.
+        let min_area = if setup.room_min_area > 0.0 {
+            setup.room_min_area
+        } else {
+            MIN_ROOM_SQ_FT
+        };
+        let side = if setup.room_inside { 1.0 } else { -1.0 };
         let mut dims = Vec::new();
         let rooms = cx.rooms.clone();
         for room in &rooms {
-            if room.interior_area_sq_in / 144.0 < MIN_ROOM_SQ_FT || room.inner_polygon.len() < 3 {
+            if room.interior_area_sq_in / 144.0 < min_area || room.inner_polygon.len() < 3 {
                 continue;
             }
             let c = room.centroid;
@@ -1403,11 +1586,13 @@ impl DimensionTool {
             let segs = Self::interior_segments(cx, Some(&room.inner_polygon));
             let rays = rays_from(&segs, c);
             let mut spans = Vec::new();
-            if let Some((l, r)) = rays.left.zip(rays.right) {
-                spans.push(Dimension::new(0, DimensionKind::AutoExterior, l, r, sep));
-            }
-            if let Some((d, u)) = rays.down.zip(rays.up) {
-                spans.push(Dimension::new(0, DimensionKind::AutoExterior, d, u, -sep));
+            if setup.room_overall {
+                if let Some((l, r)) = rays.left.zip(rays.right) {
+                    spans.push(Dimension::new(0, DimensionKind::AutoExterior, l, r, sep * side));
+                }
+                if let Some((d, u)) = rays.down.zip(rays.up) {
+                    spans.push(Dimension::new(0, DimensionKind::AutoExterior, d, u, -sep * side));
+                }
             }
             for d in &mut spans {
                 d.auto_group = AutoGroup::Interior;
@@ -1415,8 +1600,28 @@ impl DimensionTool {
             dims.extend(spans);
             // The openings of each wall of the room.
             for (a, b) in polygon_edges(&room.inner_polygon) {
-                dims.extend(Self::edge_openings(cx, &room.inner_polygon, a, b, sep));
+                dims.extend(Self::edge_openings(
+                    cx,
+                    &room.inner_polygon,
+                    a,
+                    b,
+                    sep * side,
+                ));
             }
+        }
+        if !setup.room_allow_duplicates {
+            // Two rooms sharing a wall would make the same dimension twice.
+            let key = |d: &Dimension| {
+                let r = |p: Point| ((p.x * 2.0).round() as i64, (p.y * 2.0).round() as i64);
+                let (a, b) = (r(d.start), r(d.end));
+                if a <= b {
+                    (a, b)
+                } else {
+                    (b, a)
+                }
+            };
+            let mut seen = std::collections::HashSet::new();
+            dims.retain(|d| seen.insert(key(d)));
         }
         if dims.is_empty() {
             cx.status = "No rooms to dimension".into();
@@ -1467,7 +1672,32 @@ impl DimensionTool {
     /// elevation view to put them on). A new run on the same line replaces
     /// the last one.
     fn auto_levels(&mut self, cx: &mut EditorContext, at: Option<Point>, pole: bool) -> ToolResult {
-        let levels = plan_core::dimension::story_levels(&cx.project.floors);
+        if pole {
+            return self.auto_pole(cx, at);
+        }
+        let mut levels = plan_core::dimension::story_levels(&cx.project.floors);
+        // The roof: its highest ridge and lowest eave are levels too.
+        let roofs = plan_core::dimension::roof_marks(&Self::roof_polygons(cx));
+        let ridge = roofs
+            .iter()
+            .filter(|r| r.kind == plan_core::dimension::MarkKind::Ridge)
+            .map(|r| r.elevation)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let eave = roofs
+            .iter()
+            .filter(|r| r.kind == plan_core::dimension::MarkKind::Eave)
+            .map(|r| r.elevation)
+            .fold(f64::INFINITY, f64::min);
+        for (name, e) in [("Eave", eave), ("Ridge", ridge)] {
+            if e.is_finite() {
+                levels.push(plan_core::dimension::Level {
+                    name: name.into(),
+                    elevation: e,
+                });
+            }
+        }
+        levels.sort_by(|a, b| a.elevation.total_cmp(&b.elevation));
+        levels.dedup_by(|b, a| (a.elevation - b.elevation).abs() < 1e-6);
         if levels.len() < 2 {
             cx.status = "There are no floor levels to dimension".into();
             return ToolResult::consumed();
@@ -1475,11 +1705,45 @@ impl DimensionTool {
         let datum = plan_core::dimension::elevation_datum(&cx.project.floors);
         let x = Self::pole_x(cx, at);
         let sep = Self::separation(cx);
-        let dims = if pole {
-            plan_core::dimension::story_pole_dimensions(&levels, x, sep)
-        } else {
-            plan_core::dimension::elevation_dimensions(&levels, datum, x, sep)
-        };
+        // Setup Automatic, elevation: the sides the strings stand on, and an
+        // overall dimension outside them.
+        let setup = cx.defaults.dimensions.setup.clone();
+        if !setup.elevation_left && !setup.elevation_right {
+            cx.status =
+                "Switch on Dimension on Left or Right in the Auto Elevation setup".into();
+            return ToolResult::consumed();
+        }
+        let base = plan_core::dimension::elevation_dimensions(&levels, datum, x, sep);
+        let rows = base.len() as f64;
+        let mut dims = Vec::new();
+        if setup.elevation_left {
+            dims.extend(base.iter().cloned());
+        }
+        if setup.elevation_right {
+            dims.extend(base.iter().cloned().map(|mut d| {
+                d.offset = -d.offset;
+                d
+            }));
+        }
+        let lowest = levels.first().map_or(datum, |l| l.elevation);
+        let highest = levels.last().map_or(datum, |l| l.elevation);
+        if setup.elevation_overall && lowest < datum - 0.5 && highest - lowest > 0.5 {
+            // Levels below the datum: one dimension over the whole height.
+            for side in [setup.elevation_left, setup.elevation_right]
+                .iter()
+                .zip([1.0, -1.0])
+                .filter(|(on, _)| **on)
+                .map(|(_, s)| s)
+            {
+                dims.push(Dimension::new(
+                    0,
+                    DimensionKind::AutoExterior,
+                    Point::new(x, lowest),
+                    Point::new(x, highest),
+                    side * sep * (rows + 1.0),
+                ));
+            }
+        }
         if dims.is_empty() {
             cx.status = "There are no level heights to dimension".into();
             return ToolResult::consumed();
@@ -1528,37 +1792,212 @@ impl DimensionTool {
         ToolResult::committed(label)
     }
 
+    /// The roof planes of every floor as `[x, elevation, -y]` polygons.
+    fn roof_polygons(cx: &EditorContext) -> Vec<Vec<[f64; 3]>> {
+        cx.project
+            .floors
+            .iter()
+            .flat_map(|f| crate::editor::roof_view::load(f).planes)
+            .map(|p| p.polygon3d)
+            .collect()
+    }
+
+    /// Auto Story Pole Dimensions (Auto Story Pole Dimension Defaults): the
+    /// elevation marks the Locate Elevations panel lists (floors, plates,
+    /// ceilings, roof eaves and ridges) on a vertical line at the click, an
+    /// inner string between all of them and an outer string between the ones
+    /// on it, to the left and/or right of the line, each mark named beside
+    /// the line. The plan has no elevation view, so the Y axis of the strings
+    /// is the height. A new run on the same line replaces the last one.
+    fn auto_pole(&mut self, cx: &mut EditorContext, at: Option<Point>) -> ToolResult {
+        let ps = cx.defaults.dimensions.setup.pole.clone();
+        if !ps.left && !ps.right {
+            cx.status = "Switch on Dimension on Left or Right in the Auto Story Pole defaults".into();
+            return ToolResult::consumed();
+        }
+        let datum = plan_core::dimension::elevation_datum(&cx.project.floors);
+        let x = Self::pole_x(cx, at);
+        let roofs = plan_core::dimension::roof_marks(&Self::roof_polygons(cx));
+        let mut groups: Vec<Vec<Dimension>> = Vec::new();
+        let mut labels: Vec<(String, f64, bool)> = Vec::new();
+        for (on, left) in [(ps.left, true), (ps.right, false)] {
+            if !on {
+                continue;
+            }
+            let marks = plan_core::dimension::pole_marks(&cx.project.floors, &roofs, &ps, left);
+            if marks.len() < 2 {
+                continue;
+            }
+            let (inner, outer) = plan_core::dimension::pole_strings(&marks, &ps, x, left);
+            groups.extend([inner, outer].into_iter().filter(|g| !g.is_empty()));
+            for m in &marks {
+                let text = format!(
+                    "{}  {}",
+                    m.name,
+                    Self::level_text(cx, m.elevation - datum)
+                );
+                labels.push((text, m.elevation, left));
+            }
+        }
+        if groups.is_empty() {
+            cx.status = "There are no elevation marks to dimension".into();
+            return ToolResult::consumed();
+        }
+        if !self.lock_check(cx, AUTO_LAYER) {
+            return ToolResult::consumed();
+        }
+        let label = self.mode.label();
+        let text_h = cx.defaults.text.height.max(3.0);
+        let char_w = text_h * plan_core::cad::TEXT_WIDTH_FACTOR;
+        let widest = labels
+            .iter()
+            .map(|(t, _, _)| t.chars().count() as f64 * char_w)
+            .fold(0.0, f64::max);
+        cx.begin_change(label);
+        let fl = cx.floor;
+        cx.project.floors[fl].dimensions.retain(|d| {
+            !(d.auto_group == AutoGroup::Levels
+                && (d.start.x - x).abs() < 1e-6
+                && (d.end.x - x).abs() < 1e-6)
+        });
+        cx.project.floors[fl].cad.retain(|c| {
+            !(c.layer == AUTO_LAYER
+                && matches!(&c.item, CadItem::Text { pos, .. }
+                    if pos.x >= x - 7.0 - widest && pos.x <= x + 7.0))
+        });
+        let mut n = 0;
+        for g in groups {
+            let mut ids = Vec::new();
+            for mut d in g {
+                d.auto_group = AutoGroup::Levels;
+                ids.push(cx.project.add_dimension(fl, d));
+                n += 1;
+            }
+            // One string per row of the pole.
+            cx.project.floors[fl].join_string(&ids);
+        }
+        let mut texts = Vec::new();
+        for (text, elevation, left) in labels {
+            let w = text.chars().count() as f64 * char_w;
+            let px = if left { x + 6.0 } else { x - 6.0 - w };
+            texts.push(cx.project.add_cad(
+                fl,
+                AUTO_LAYER,
+                CadItem::Text {
+                    pos: Point::new(px, elevation - text_h * 0.5),
+                    text,
+                    height: text_h,
+                    angle: 0.0,
+                },
+            ));
+        }
+        super::cad::group_cad(cx, &texts);
+        cx.mark_dirty();
+        cx.status = format!("Added {n} story pole dimensions");
+        ToolResult::committed(label)
+    }
+
     // ----- angular and tape measure -----
 
-    fn angular_preview(&self, cx: &EditorContext, place: Point) -> Option<(Vec<CadItem>, f64)> {
-        if self.pts.len() < 3 {
+    /// The two walls the first two angular clicks were on, when they are two
+    /// different walls that are not parallel (Angular Dimension on walls).
+    fn angular_walls(&self, cx: &EditorContext) -> Option<(Wall, Wall)> {
+        if self.pts.len() < 2 {
             return None;
         }
-        let v = self.pts[0].point;
-        let r = v.dist(place).max(6.0);
-        angular_items(
-            v,
-            self.pts[1].point,
-            self.pts[2].point,
-            r,
-            cx.defaults.text.height,
-        )
+        let (Some(ObjectRef::Wall(a)), Some(ObjectRef::Wall(b))) =
+            (self.pts[0].obj, self.pts[1].obj)
+        else {
+            return None;
+        };
+        if a == b {
+            return None;
+        }
+        let (wa, wb) = (cx.floor().wall(a)?.clone(), cx.floor().wall(b)?.clone());
+        (wa.direction().cross(wb.direction()).abs() > 1e-3).then_some((wa, wb))
+    }
+
+    /// The angular dimension the clicks so far make with the arc through
+    /// `place`: between two walls (it follows them), or at a vertex between
+    /// two arm points (DIM-18).
+    fn angular_dimension(&self, cx: &EditorContext, place: Point) -> Option<Dimension> {
+        let curve = if let Some((wa, wb)) = self.angular_walls(cx) {
+            let (p1, p2) = (self.pts[0].point, self.pts[1].point);
+            let c0 = DimCurve::between_walls(&wa, &wb, p1, p2, 1.0)?;
+            DimCurve {
+                radius: place.dist(c0.center).max(6.0),
+                ..c0
+            }
+        } else if self.pts.len() >= 3 {
+            let v = self.pts[0].point;
+            DimCurve::from_points(
+                v,
+                self.pts[1].point,
+                self.pts[2].point,
+                place.dist(v).max(6.0),
+            )?
+        } else {
+            return None;
+        };
+        Some(Dimension::curved(DimensionKind::Manual, curve, 0.0))
+    }
+
+    /// Whether the angular clicks are complete up to the arc radius.
+    fn angular_ready(&self, cx: &EditorContext) -> bool {
+        self.pts.len() >= 3 || self.angular_walls(cx).is_some()
     }
 
     fn commit_angular(&mut self, cx: &mut EditorContext, place: Point) -> ToolResult {
-        let Some((items, deg)) = self.angular_preview(cx, place) else {
+        let Some(d) = self.angular_dimension(cx, place) else {
             return ToolResult::consumed();
         };
+        let deg = d.measure();
         self.reset();
-        // CAD items: they go on the active layer of the dimension tools.
-        let layer = cx.project.layers.tool_layer("dimensions");
-        match add_cad_items(cx, &layer, items, "Angular Dimension") {
-            Some(_) => {
-                cx.status = format!("Angle: {deg:.1}\u{b0}");
-                ToolResult::committed("Angular Dimension")
-            }
-            None => ToolResult::consumed(),
+        let res = self.commit(cx, vec![d]);
+        if res.commit.is_some() {
+            cx.status = format!("Angle: {deg:.1}\u{b0}");
         }
+        res
+    }
+
+    // ----- radius and arc length -----
+
+    /// The curved wall under `p`, and the surface the click is nearer to:
+    /// its signed distance to the left of the centerline.
+    fn curved_wall_at(cx: &EditorContext, p: Point) -> Option<(Id, f64)> {
+        let tol = cx.pick_tol();
+        let mode = cx.defaults.dimensions.tool_locate(LocateTool::Manual).group.walls;
+        cx.floor()
+            .walls
+            .iter()
+            .filter(|w| w.is_curved() && cx.layers().is_visible(&w.layer) && !no_locate(cx, w))
+            .filter_map(|w| {
+                let (_, t) = w.locate(p);
+                (t.abs() <= w.thickness * 0.5 + tol).then_some((w, t))
+            })
+            .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+            .map(|(w, t)| {
+                let (lo, hi) = wall_span(cx, w, mode);
+                let lateral = if (t - lo).abs() <= (t - hi).abs() { lo } else { hi };
+                (w.id, lateral)
+            })
+    }
+
+    /// The radius or arc length dimension of the clicked curved wall with
+    /// its line through `place`.
+    fn arc_dimension(&self, cx: &EditorContext, place: Point) -> Option<Dimension> {
+        let (wid, lateral) = self.arc?;
+        let w = cx.floor().wall(wid)?;
+        let kind = if self.mode == DimMode::Radius {
+            CurveKind::Radius
+        } else {
+            CurveKind::ArcLength
+        };
+        let c = DimCurve::of_wall(w, kind, lateral)?;
+        // The line stands this far beyond the measured arc (inside when
+        // negative, for an arc length).
+        let off = place.dist(c.center) - c.radius;
+        Some(Dimension::curved(DimensionKind::Manual, c, off))
     }
 
     fn tape_readout(&self, cx: &EditorContext, to: Point) -> Option<String> {
@@ -1583,6 +2022,13 @@ impl DimensionTool {
     }
 
     fn handle_pos(d: &Dimension, h: DimHandle) -> Point {
+        if let Some(g) = d.curve_geom(0.0, 0.0) {
+            return match h {
+                DimHandle::Offset => g.label_at,
+                DimHandle::Start => g.line.first().copied().unwrap_or(d.start),
+                DimHandle::End => g.line.last().copied().unwrap_or(d.end),
+            };
+        }
         match h {
             DimHandle::Offset => {
                 let (a, b) = d.line_points();
@@ -1594,6 +2040,9 @@ impl DimensionTool {
     }
 
     fn label_pos(d: &Dimension) -> Point {
+        if let Some(g) = d.curve_geom(0.0, 0.0) {
+            return g.label_at;
+        }
         let (a, b) = d.line_points();
         Point::lerp(a, b, 0.5)
     }
@@ -1609,9 +2058,14 @@ impl DimensionTool {
             if !cx.layers().is_visible(layer) {
                 return None;
             }
+            let on_text = Self::label_pos(d).dist(p) <= 22.0 / cx.px_per_in.max(1e-6);
+            if let Some(g) = d.curve_geom(0.0, 0.0) {
+                let on_line = g.line.windows(2).any(|w| dist_to_segment(p, w[0], w[1]) <= tol);
+                let on_ext = g.extensions.iter().any(|(s, e)| dist_to_segment(p, *s, *e) <= tol);
+                return (on_line || on_text || on_ext).then_some(d.id);
+            }
             let (a, b) = d.line_points();
             let on_line = dist_to_segment(p, a, b) <= tol;
-            let on_text = Self::label_pos(d).dist(p) <= 22.0 / cx.px_per_in.max(1e-6);
             let on_ext = d
                 .extension_lines()
                 .iter()
@@ -1626,8 +2080,15 @@ impl DimensionTool {
             return false;
         };
         let tol = cx.pick_tol();
-        let hit = [DimHandle::Start, DimHandle::End, DimHandle::Offset]
-            .into_iter()
+        // A curved dimension has one handle: the one that moves its line.
+        let handles: &[DimHandle] = if d.curve().is_some() {
+            &[DimHandle::Offset]
+        } else {
+            &[DimHandle::Start, DimHandle::End, DimHandle::Offset]
+        };
+        let hit = handles
+            .iter()
+            .copied()
             .find(|h| Self::handle_pos(&d, *h).dist(p.world) <= tol);
         let Some(handle) = hit else { return false };
         self.grab = Some(DimGrab {
@@ -1667,6 +2128,8 @@ impl DimensionTool {
             }
         };
         let fl = cx.floor;
+        let mut offset_to: Option<Point> = None;
+        let drag_id = drag.id;
         if let Some(d) = cx.project.floors[fl]
             .dimensions
             .iter_mut()
@@ -1674,17 +2137,16 @@ impl DimensionTool {
         {
             match drag.handle {
                 DimHandle::Offset => {
-                    let dir = d.end.sub(d.start).normalized();
-                    let mut off = p.world.sub(d.start).dot(dir.perp());
-                    if !p.modifiers.alt {
-                        off = (off / unit).round() * unit;
-                    }
-                    d.offset = off;
+                    offset_to = Some(p.world);
                 }
                 DimHandle::Start => d.start = new_pt.unwrap_or(d.start),
                 DimHandle::End => d.end = new_pt.unwrap_or(d.end),
             }
             drag.changed = true;
+        }
+        if let Some(pt) = offset_to {
+            let snap = (!p.modifiers.alt).then_some(unit);
+            cx.project.floors[fl].drag_dimension_line(drag_id, pt, snap);
         }
         cx.mark_dirty();
     }
@@ -1714,7 +2176,19 @@ impl DimensionTool {
         match dragged {
             Some((DimHandle::Start, h)) => hints[0] = h,
             Some((DimHandle::End, h)) => hints[1] = h,
-            Some((DimHandle::Offset, _)) => return,
+            Some((DimHandle::Offset, _)) => {
+                // The whole string moved its line: all of it is hand-made now.
+                for m in cx.project.floors[fl].string_members(id) {
+                    if let Some(x) = cx.project.floors[fl]
+                        .dimensions
+                        .iter_mut()
+                        .find(|x| x.id == m)
+                    {
+                        x.convert_to_manual();
+                    }
+                }
+                return;
+            }
             None => {}
         }
         cx.project.floors[fl].attach_dimension_hinted(id, hints);
@@ -1724,17 +2198,73 @@ impl DimensionTool {
         let Some(d) = cx.floor().dimensions.iter().find(|d| d.id == id) else {
             return;
         };
-        let len = d.length();
+        let len = d.measure();
         self.edit = Some(ValueEdit {
             id,
             buf: format!("{len:.3}")
                 .trim_end_matches('0')
                 .trim_end_matches('.')
                 .to_string(),
+            rich: false,
         });
         set_typing(cx, true);
         cx.status =
             "Type the new dimension; the object at the nearer end moves. Enter applies".into();
+    }
+
+    /// Edits the label's text in place: the text is written with the Rich
+    /// Text tags (`<b>`, `<i>`, `<u>`, `<size=1.5>`, `<color=#RRGGBB>`), which
+    /// become the label's runs on Enter. An empty text puts the measured
+    /// number back.
+    fn begin_label_edit(&mut self, cx: &mut EditorContext, id: Id) {
+        let fmt = cx.dim_format();
+        let Some(d) = cx.floor().dimensions.iter().find(|d| d.id == id) else {
+            return;
+        };
+        let buf = if d.look.seg.runs.is_empty() {
+            d.text_override
+                .clone()
+                .unwrap_or_else(|| d.label_parts(&fmt).primary)
+        } else {
+            plan_core::text_styles::runs_to_markup(&d.look.seg.runs)
+        };
+        self.edit = Some(ValueEdit {
+            id,
+            buf,
+            rich: true,
+        });
+        set_typing(cx, true);
+        cx.status = "Edit the label (<b>bold</b>, <i>italic</i>, <size=1.5>); Enter applies, Esc cancels".into();
+    }
+
+    /// Stores an edited label (one undo step).
+    fn apply_label(&mut self, cx: &mut EditorContext, id: Id, markup: &str) -> Result<(), String> {
+        if !cx.check_unlocked(ObjectRef::Dimension(id)) {
+            return Err("That dimension is on a locked layer".into());
+        }
+        let runs = plan_core::text_styles::runs_from_markup(markup);
+        let plain = plan_core::text_styles::runs_plain(&runs);
+        let fl = cx.floor;
+        cx.begin_change("Edit Dimension Label");
+        if let Some(d) = cx.project.floors[fl]
+            .dimensions
+            .iter_mut()
+            .find(|x| x.id == id)
+        {
+            // Plain text with no formatting is the text override; anything
+            // formatted is kept as runs.
+            let formatted = runs.iter().any(|r| {
+                r.bold || r.italic || r.underline || r.strike || r.upper || r.color.is_some()
+                    || r.font.is_some() || (r.scale - 1.0).abs() > 1e-9 || r.link.is_some()
+            });
+            d.look.seg.runs = if formatted && !plain.is_empty() { runs } else { Vec::new() };
+            d.text_override = (!formatted && !plain.is_empty()).then_some(plain);
+            if d.kind == DimensionKind::AutoExterior {
+                d.convert_to_manual();
+            }
+        }
+        cx.mark_dirty();
+        Ok(())
     }
 
     fn end_edit(&mut self, cx: &mut EditorContext) {
@@ -1747,6 +2277,9 @@ impl DimensionTool {
         let Some(d) = cx.floor().dimensions.iter().find(|d| d.id == id).cloned() else {
             return Err("That dimension is gone".into());
         };
+        if let Some(c) = d.curve().copied() {
+            return self.apply_curve_value(cx, id, c, new_len);
+        }
         if new_len < MIN_LENGTH {
             return Err("A dimension must be at least 1/2\"".into());
         }
@@ -1842,6 +2375,108 @@ impl DimensionTool {
         Ok(())
     }
 
+    /// A typed radius, arc length or angle (DIM-32, DIM-67): a radius or arc
+    /// length bends its curved wall to it (the chord stays); an angle turns
+    /// the second wall about the corner, the end farther from it moving.
+    fn apply_curve_value(
+        &mut self,
+        cx: &mut EditorContext,
+        id: Id,
+        c: DimCurve,
+        value: f64,
+    ) -> Result<(), String> {
+        if value <= 0.0 {
+            return Err("The value must be more than zero".into());
+        }
+        if !cx.check_unlocked(ObjectRef::Dimension(id)) {
+            return Err("That dimension is on a locked layer".into());
+        }
+        let Some(wid) = c.walls[0] else {
+            return Err("This dimension is not tied to a wall".into());
+        };
+        let fl = cx.floor;
+        let Some(w) = cx.floor().wall(wid).cloned() else {
+            return Err("The wall is gone".into());
+        };
+        if !cx.check_unlocked(ObjectRef::Wall(wid)) {
+            return Err("That wall is on a locked layer".into());
+        }
+        match c.kind {
+            CurveKind::Angle => {
+                let Some(wb) = c.walls[1].and_then(|i| cx.floor().wall(i).cloned()) else {
+                    return Err("This angle is not tied to two walls".into());
+                };
+                if !cx.check_unlocked(ObjectRef::Wall(wb.id)) {
+                    return Err("That wall is on a locked layer".into());
+                }
+                let signed = c.sweep.signum() * value.to_radians();
+                let turn = signed - c.sweep;
+                // The end of the second wall in the arm's direction moves.
+                let end = if c.toward_end[1] { WallEnd::End } else { WallEnd::Start };
+                let far = if end == WallEnd::End { wb.end } else { wb.start };
+                let v = far.sub(c.center);
+                let (s, co) = turn.sin_cos();
+                let to = c.center.add(Point::new(v.x * co - v.y * s, v.x * s + v.y * co));
+                cx.begin_change("Edit Dimension Value");
+                ops::move_wall_end_joined(&mut cx.project, fl, wb.id, end, to);
+            }
+            CurveKind::Radius | CurveKind::ArcLength => {
+                let Some(curve) = w.curve else {
+                    return Err("The wall is not curved".into());
+                };
+                let chord = w.start.dist(w.end);
+                let (_, r_cl) = w.arc_center_radius().ok_or("The wall is not curved")?;
+                // The measured surface lies this far from the centerline arc.
+                let shift = c.radius - r_cl;
+                let sign = curve.bulge.signum();
+                let major = curve.bulge.abs() > chord * 0.5;
+                let bulge = if c.kind == CurveKind::Radius {
+                    let r = value - shift;
+                    if r < chord * 0.5 {
+                        return Err("That radius is too small for the wall's chord".into());
+                    }
+                    let h = (r * r - chord * chord * 0.25).sqrt();
+                    sign * if major { r + h } else { r - h }
+                } else {
+                    // Solve for the sweep whose surface arc has the length.
+                    let f = |th: f64| (chord / (2.0 * (th * 0.5).sin()) + shift) * th - value;
+                    let (mut lo, mut hi) = (1e-4, std::f64::consts::TAU - 1e-4);
+                    if f(lo) > 0.0 || f(hi) < 0.0 {
+                        return Err("That length is not possible on this wall".into());
+                    }
+                    for _ in 0..80 {
+                        let mid = (lo + hi) * 0.5;
+                        if f(mid) < 0.0 {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    let th = (lo + hi) * 0.5;
+                    let r = chord / (2.0 * (th * 0.5).sin());
+                    sign * r * (1.0 - (th * 0.5).cos())
+                };
+                cx.begin_change("Edit Dimension Value");
+                if let Some(wm) = cx.project.floors[fl].wall_mut(wid) {
+                    wm.curve = Some(plan_core::walls::WallCurve { bulge });
+                }
+            }
+        }
+        // An automatic dimension edited by hand becomes manual; the curve
+        // follows the wall from here.
+        if let Some(d) = cx.project.floors[fl]
+            .dimensions
+            .iter_mut()
+            .find(|x| x.id == id)
+        {
+            d.convert_to_manual();
+            d.text_override = None;
+        }
+        cx.project.floors[fl].sync_dimension_curves();
+        cx.mark_dirty();
+        Ok(())
+    }
+
     fn edit_key(&mut self, cx: &mut EditorContext, k: &KeyEvent) -> ToolResult {
         if k.is(egui::Key::Escape) {
             self.end_edit(cx);
@@ -1853,7 +2488,29 @@ impl DimensionTool {
                 return ToolResult::ignored();
             };
             set_typing(cx, false);
-            let Some(v) = parse_ft_in(&ed.buf) else {
+            if ed.rich {
+                return match self.apply_label(cx, ed.id, &ed.buf) {
+                    Ok(()) => {
+                        cx.status.clear();
+                        ToolResult::committed("Edit Dimension Label")
+                    }
+                    Err(e) => {
+                        cx.status = e;
+                        ToolResult::consumed()
+                    }
+                };
+            }
+            let angle = cx
+                .floor()
+                .dimensions
+                .iter()
+                .any(|d| d.id == ed.id && d.curve().is_some_and(|c| c.kind == CurveKind::Angle));
+            let parsed = if angle {
+                ed.buf.trim().trim_end_matches('\u{b0}').trim().parse::<f64>().ok()
+            } else {
+                parse_ft_in(&ed.buf)
+            };
+            let Some(v) = parsed else {
                 cx.status = format!("\"{}\" is not a length", ed.buf);
                 self.edit = Some(ed);
                 set_typing(cx, true);
@@ -1874,9 +2531,13 @@ impl DimensionTool {
             if k.is(egui::Key::Backspace) {
                 ed.buf.pop();
             } else if let Some(s) = &k.text {
-                ed.buf.extend(s.chars().filter(|c| {
-                    c.is_ascii_digit() || matches!(c, '.' | '-' | '/' | ' ' | '\'' | '"')
-                }));
+                if ed.rich {
+                    ed.buf.extend(s.chars().filter(|c| !c.is_control()));
+                } else {
+                    ed.buf.extend(s.chars().filter(|c| {
+                        c.is_ascii_digit() || matches!(c, '.' | '-' | '/' | ' ' | '\'' | '"')
+                    }));
+                }
             }
         }
         ToolResult::consumed()
@@ -2066,9 +2727,24 @@ impl DimensionTool {
                 self.baseline = Some((axis, n + 1));
                 res
             }
+            DimMode::Radius | DimMode::ArcLength => {
+                if self.arc.is_some() {
+                    let dims = self.build(cx, p.snapped);
+                    self.reset();
+                    return self.commit(cx, dims);
+                }
+                match Self::curved_wall_at(cx, p.world) {
+                    Some(t) => {
+                        cx.selection.clear();
+                        self.arc = Some(t);
+                    }
+                    None => cx.status = "Click a curved wall".into(),
+                }
+                ToolResult::consumed()
+            }
             DimMode::Angular => {
                 let loc = self.locate_for(cx, p);
-                if self.pts.len() >= 3 {
+                if self.angular_ready(cx) {
                     return self.commit_angular(cx, p.snapped);
                 }
                 if self.pts.is_empty() {
@@ -2119,6 +2795,7 @@ impl DimensionTool {
             dir,
             off: dir.perp().scale(d.offset),
             anchor: d.anchors[1],
+            head: d.string_id().unwrap_or(d.id),
         });
         cx.status = "Click the next point to add it to the string; double-click or Esc ends".into();
     }
@@ -2172,6 +2849,11 @@ impl DimensionTool {
                         anchor: nd.anchors[1],
                         ..st
                     });
+                    // The segments of a continued dimension are one string.
+                    let mut members = cx.project.floors[cx.floor].string_members(st.head);
+                    members.push(id);
+                    members.dedup();
+                    cx.project.floors[cx.floor].join_string(&members);
                 }
             }
         }
@@ -2382,11 +3064,12 @@ impl DimensionTool {
                 obj: None,
             };
         }
-        locate(
+        locate_with(
             cx,
             p,
             self.mode == DimMode::Centerline,
             self.pts.last().map(|l| l.point),
+            self.locate_tool(),
         )
     }
 
@@ -2414,9 +3097,12 @@ impl DimensionTool {
                     .first()
                     .map(|d| format!("Length: {}", cx.fmt_dim(d.length())))
             }
-            DimMode::Angular if self.pts.len() == 3 => self
-                .angular_preview(cx, to)
-                .map(|(_, deg)| format!("Angle: {deg:.1}\u{b0}")),
+            DimMode::Angular if self.angular_ready(cx) => self
+                .angular_dimension(cx, to)
+                .map(|d| format!("Angle: {:.1}\u{b0}", d.measure())),
+            DimMode::Radius | DimMode::ArcLength if self.arc.is_some() => self
+                .arc_dimension(cx, to)
+                .map(|d| format!("{}: {}", self.mode.short(), cx.fmt_dim(d.measure()))),
             _ => None,
         };
     }
@@ -2575,6 +3261,18 @@ impl Tool for DimensionTool {
             self.reset();
             return self.commit(cx, dims);
         }
+        // A double-click on the selected dimension's text edits the label
+        // in place (the first click began a value edit).
+        if let Some(d) = self.selected(cx) {
+            let on_text = Self::label_pos(&d).dist(p.world) <= 22.0 / cx.px_per_in.max(1e-6);
+            if on_text && self.edit.as_ref().is_none_or(|e| !e.rich) {
+                self.end_edit(cx);
+                if cx.check_unlocked(ObjectRef::Dimension(d.id)) {
+                    self.begin_label_edit(cx, d.id);
+                }
+                return ToolResult::consumed();
+            }
+        }
         if !self.in_progress() {
             if let Some(id) = Self::dim_under(cx, p.world) {
                 cx.selection.set(ObjectRef::Dimension(id));
@@ -2619,6 +3317,15 @@ impl Tool for DimensionTool {
                         .clamp(12.0, 60.0);
                     let dir = self.pts[1].point.sub(v).normalized();
                     return self.commit_angular(cx, v.add(dir.scale(default_r)));
+                }
+                DimMode::Angular if self.angular_walls(cx).is_some() => {
+                    if let Some(d) = self.angular_dimension(cx, self.cursor) {
+                        let c = d.curve().copied();
+                        if let Some(c) = c {
+                            let r = (c.radius.min(60.0)).max(12.0);
+                            return self.commit_angular(cx, c.center.add(Point::new(r, 0.0)));
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -2672,12 +3379,8 @@ impl Tool for DimensionTool {
             let look = render::DimLook::of(cx, &d);
             render::draw_dimension_look(painter, cam, &d, &fmt, ghost, pal, &look);
         }
-        if self.mode == DimMode::Angular {
-            if let Some((items, _)) = self.angular_preview(cx, hover) {
-                for it in &items {
-                    render::draw_cad(painter, cam, it, ghost, pal);
-                }
-            } else if let Some(v) = self.pts.first() {
+        if self.mode == DimMode::Angular && !self.angular_ready(cx) {
+            if let Some(v) = self.pts.first() {
                 painter.line_segment(
                     [cam.world_to_screen(v.point), cam.world_to_screen(hover)],
                     ghost,
@@ -2756,6 +3459,9 @@ pub const CMD_ALIGN: &str = "dim.align";
 pub const CMD_DISTRIBUTE: &str = "dim.distribute";
 pub const CMD_EXT_ADD: &str = "dim.ext_add";
 pub const CMD_EXT_DELETE: &str = "dim.ext_delete";
+pub const CMD_JOIN: &str = "dim.join";
+pub const CMD_SELECT_STRING: &str = "dim.select_string";
+pub const CMD_LEAVE: &str = "dim.leave";
 
 /// The selected dimensions, in selection order.
 fn selected_dimensions(cx: &EditorContext) -> Vec<Id> {
@@ -2781,6 +3487,11 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
     let any_auto = cx.floor().dimensions.iter().any(|d| {
         ids.contains(&d.id) && (d.kind != DimensionKind::Manual || d.auto_group != AutoGroup::None)
     });
+    let in_string = cx
+        .floor()
+        .dimensions
+        .iter()
+        .any(|d| ids.contains(&d.id) && d.string_id().is_some());
     let button = |id: &'static str, label: &'static str, enabled: bool| EditAction {
         kind: EditActionKind::Custom {
             id,
@@ -2798,6 +3509,9 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
         button(CMD_DISTRIBUTE, "Distribute Dimensions", ids.len() >= 3),
         button(CMD_EXT_ADD, "Add Extension Line", true),
         button(CMD_EXT_DELETE, "Delete Extension Line", true),
+        button(CMD_JOIN, "Join Into One Dimension String", ids.len() >= 2),
+        button(CMD_SELECT_STRING, "Select Dimension String", in_string),
+        button(CMD_LEAVE, "Take Out of Dimension String", in_string),
     ]
 }
 
@@ -2815,11 +3529,29 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             .push(EditorRequest::SetTool(ToolId::DimensionVariant(mode)));
         return true;
     }
+    if id == CMD_SELECT_STRING {
+        let fl = cx.floor;
+        let mut all = Vec::new();
+        for d in selected_dimensions(cx) {
+            for m in cx.project.floors[fl].string_members(d) {
+                if !all.contains(&m) {
+                    all.push(m);
+                }
+            }
+        }
+        cx.selection.clear();
+        for m in all {
+            cx.selection.add(ObjectRef::Dimension(m));
+        }
+        return true;
+    }
     let label = match id {
         CMD_REVERSE => "Reverse Dimension",
         CMD_TO_MANUAL => "Convert to Manual Dimension",
         CMD_ALIGN => "Align Dimensions",
         CMD_DISTRIBUTE => "Distribute Dimensions",
+        CMD_JOIN => "Join Dimension String",
+        CMD_LEAVE => "Take Out of Dimension String",
         _ => return false,
     };
     let ids = selected_dimensions(cx);
@@ -2834,20 +3566,32 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
     }
     cx.begin_change(label);
     let fl = cx.floor;
-    let dims = &mut cx.project.floors[fl].dimensions;
     let changed = match id {
         CMD_REVERSE => {
-            for d in dims.iter_mut().filter(|d| ids.contains(&d.id)) {
+            for d in cx.project.floors[fl]
+                .dimensions
+                .iter_mut()
+                .filter(|d| ids.contains(&d.id))
+            {
                 d.reverse();
             }
             ids.len()
         }
-        CMD_TO_MANUAL => dims
+        CMD_TO_MANUAL => cx.project.floors[fl]
+            .dimensions
             .iter_mut()
             .filter(|d| ids.contains(&d.id))
             .map(|d| usize::from(d.convert_to_manual()))
             .sum(),
+        CMD_JOIN => usize::from(cx.project.floors[fl].join_string(&ids).is_some()) * ids.len(),
+        CMD_LEAVE => {
+            for i in &ids {
+                cx.project.floors[fl].leave_string(*i);
+            }
+            ids.len()
+        }
         _ => {
+            let dims = &mut cx.project.floors[fl].dimensions;
             // Selection order: the first selected is the reference.
             let mut picked: Vec<Dimension> = ids
                 .iter()
@@ -3146,32 +3890,125 @@ mod tests {
         assert!((deg - 90.0).abs() < 1e-9);
         assert!(matches!(items[0], CadItem::Arc { .. }));
         assert!(matches!(&items[3], CadItem::Text { text, .. } if text == "90.0\u{b0}"));
+        // Three clicks and the arc make one dimension with a curve: it is
+        // an object (DIM-18), not loose CAD lines.
         let mut cx = new_cx();
         let mut t = tool(DimMode::Angular);
         for (x, y) in [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (45.0, 0.0)] {
             click(&mut t, &mut cx, x, y);
         }
-        assert_eq!(cx.floor().cad.len(), 4);
-        assert_eq!(cx.floor().groups.len(), 1);
-        assert_eq!(cx.floor().cad[0].layer, MANUAL_LAYER);
-        // The active layer of the dimension tools wins.
+        assert!(cx.floor().cad.is_empty());
+        assert_eq!(cx.floor().dimensions.len(), 1);
+        let d = &cx.floor().dimensions[0];
+        let c = d.curve().expect("an angular dimension has a curve");
+        assert_eq!(c.kind, CurveKind::Angle);
+        assert!((c.radius - 45.0).abs() < 1e-9);
+        assert!((d.measure() - 90.0).abs() < 1e-6);
+        assert_eq!(d.label(&cx.dim_format()), "90.0\u{b0}");
+        assert_eq!(cx.undo().as_deref(), Some("Angular Dimension"));
+        assert!(cx.floor().dimensions.is_empty());
+    }
+
+    #[test]
+    fn angular_dimension_between_two_walls_follows_them_and_takes_a_typed_angle() {
         let mut cx = new_cx();
-        cx.project
-            .layers
-            .add(plan_core::Layer::new("Dimensions, Notes", [0, 0, 0], 18));
-        assert!(cx
-            .project
-            .layers
-            .set_tool_layer("dimensions", "Dimensions, Notes"));
+        let a = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Interior,
+        );
+        let b = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 240.0),
+            6.0,
+            96.0,
+            WallKind::Interior,
+        );
         let mut t = tool(DimMode::Angular);
-        for (x, y) in [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (45.0, 0.0)] {
-            click(&mut t, &mut cx, x, y);
-        }
-        assert!(cx
-            .floor()
-            .cad
-            .iter()
-            .all(|c| c.layer == "Dimensions, Notes"));
+        click(&mut t, &mut cx, 120.0, 0.0);
+        click(&mut t, &mut cx, 0.0, 120.0);
+        assert!(cx.floor().dimensions.is_empty(), "the arc is not placed yet");
+        let r = click(&mut t, &mut cx, 50.0, 50.0);
+        assert_eq!(r.commit.as_deref(), Some("Angular Dimension"));
+        let id = cx.floor().dimensions[0].id;
+        let c = *cx.floor().dimensions[0].curve().unwrap();
+        assert_eq!(c.walls, [Some(a), Some(b)]);
+        assert!((c.radius - 50.0f64.hypot(50.0)).abs() < 1e-6);
+        assert!((cx.floor().dimensions[0].measure() - 90.0).abs() < 1e-6);
+        // Turn the second wall: the dimension follows.
+        cx.project.floors[0].wall_mut(b).unwrap().end = Point::new(170.0, 170.0);
+        cx.mark_dirty();
+        cx.refresh();
+        assert!((cx.floor().dimensions[0].measure() - 45.0).abs() < 1e-6);
+        // A typed angle turns the second wall about the corner.
+        cx.selection.set(ObjectRef::Dimension(id));
+        t.apply_value(&mut cx, id, 60.0).unwrap();
+        let d = cx.floor().dimensions[0].clone();
+        assert!((d.measure() - 60.0).abs() < 1e-6, "{}", d.measure());
+        assert_eq!(cx.undo().as_deref(), Some("Edit Dimension Value"));
+        assert!((cx.floor().dimensions[0].measure() - 45.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn radius_and_arc_length_dimensions_of_a_curved_wall() {
+        let mut cx = new_cx();
+        let id = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        cx.project.floors[0].wall_mut(id).unwrap().curve =
+            Some(plan_core::walls::WallCurve { bulge: 60.0 });
+        let w = cx.floor().wall(id).unwrap().clone();
+        let apex = w.point_along(w.path_length() * 0.5);
+        let out = apex.add(w.normal_along(w.path_length() * 0.5).scale(30.0));
+        // A quarter of the way along, away from the first line.
+        let quarter = w.point_along(w.path_length() * 0.25);
+        // Radius.
+        let mut t = tool(DimMode::Radius);
+        click(&mut t, &mut cx, apex.x, apex.y + 0.0);
+        assert!(cx.floor().dimensions.is_empty(), "the line is not placed yet");
+        let r = click(&mut t, &mut cx, out.x, out.y);
+        assert_eq!(r.commit.as_deref(), Some("Radius Dimension"));
+        let rad = cx.floor().dimensions[0].clone();
+        assert_eq!(rad.curve().unwrap().kind, CurveKind::Radius);
+        let (_, r_cl) = w.arc_center_radius().unwrap();
+        assert!((rad.measure() - r_cl).abs() <= 3.0 + 1e-6, "{} vs {r_cl}", rad.measure());
+        assert!(rad.label(&cx.dim_format()).starts_with("R "));
+        // Arc length.
+        let mut t = tool(DimMode::ArcLength);
+        click(&mut t, &mut cx, quarter.x, quarter.y);
+        click(&mut t, &mut cx, out.x, out.y);
+        let arc = cx.floor().dimensions[1].clone();
+        assert_eq!(arc.curve().unwrap().kind, CurveKind::ArcLength);
+        assert!((arc.measure() - w.path_length()).abs() <= 3.0 * 2.0, "{}", arc.measure());
+        // A straight wall is refused.
+        let mut cx2 = new_cx();
+        two_walls(&mut cx2);
+        let mut t = tool(DimMode::ArcLength);
+        click(&mut t, &mut cx2, 50.0, 0.0);
+        assert!(cx2.status.contains("curved"));
+        // Typing a radius bends the wall to it; the dimension follows.
+        let rid = rad.id;
+        let want = rad.measure() * 1.5;
+        t.apply_value(&mut cx, rid, want).unwrap();
+        let d = cx.floor().dimensions.iter().find(|d| d.id == rid).unwrap().clone();
+        assert!((d.measure() - want).abs() < 1e-6, "{} vs {want}", d.measure());
+        let w2 = cx.floor().wall(id).unwrap();
+        assert!(w2.curve.unwrap().bulge.abs() < 60.0, "a larger radius is a flatter arc");
+        // Typing an arc length does the same.
+        let aid = arc.id;
+        let want = arc.measure() * 1.1;
+        t.apply_value(&mut cx, aid, want).unwrap();
+        let d = cx.floor().dimensions.iter().find(|d| d.id == aid).unwrap().clone();
+        assert!((d.measure() - want).abs() < 1e-3, "{} vs {want}", d.measure());
     }
 
     #[test]
@@ -3377,7 +4214,10 @@ mod tests {
                 ("Align Dimensions", false),
                 ("Distribute Dimensions", false),
                 ("Add Extension Line", true),
-                ("Delete Extension Line", true)
+                ("Delete Extension Line", true),
+                ("Join Into One Dimension String", false),
+                ("Select Dimension String", false),
+                ("Take Out of Dimension String", false)
             ]
         );
         assert!(t
@@ -3689,47 +4529,55 @@ mod tests {
     }
 
     #[test]
-    fn story_pole_dimensions_stack_heights_and_name_the_levels() {
+    fn story_pole_dimensions_use_the_pole_setup_and_name_the_marks() {
         let mut cx = new_cx();
-        let second = cx.project.build_new_floor(false);
+        cx.project.build_new_floor(false);
         cx.floor = 0;
         let mut t = tool(DimMode::AutoStoryPole);
         click(&mut t, &mut cx, 400.0, 0.0);
-        let dims: Vec<&Dimension> = cx.floor().dimensions.iter().collect();
-        // 1st floor ceiling, platform, 2nd floor ceiling, plus the overall.
-        assert_eq!(dims.len(), 4);
+        let dims: Vec<Dimension> = cx.floor().dimensions.clone();
+        // Subfloor, ceiling, subfloor, ceiling: three inner segments, and
+        // the outer string between the two subfloors.
+        assert_eq!(dims.len(), 4, "{dims:?}");
         assert!(dims.iter().all(|d| d.start.x == 400.0 && d.end.x == 400.0));
-        let ceiling = cx.project.floors[0].ceiling_height;
-        assert!(dims.iter().any(|d| (d.length() - ceiling).abs() < 1e-6));
-        assert!(dims
-            .iter()
-            .any(|d| (d.length() - plan_core::floors::FLOOR_PLATFORM_THICKNESS).abs() < 1e-6));
-        let names: Vec<&str> = cx
+        let inner = dims.iter().filter(|d| d.offset == 24.0).count();
+        let outer = dims.iter().filter(|d| d.offset == 36.0).count();
+        assert_eq!((inner, outer), (3, 1));
+        // Each row is one string.
+        let first = dims.iter().find(|d| d.offset == 24.0).unwrap();
+        assert_eq!(cx.floor().string_members(first.id).len(), 3);
+        let names: Vec<String> = cx
             .floor()
             .cad
             .iter()
             .filter_map(|c| match &c.item {
-                CadItem::Text { text, .. } if c.layer == AUTO_LAYER => Some(text.as_str()),
+                CadItem::Text { text, .. } if c.layer == AUTO_LAYER => Some(text.clone()),
                 _ => None,
             })
             .collect();
         assert_eq!(names.len(), 4);
-        assert!(names
-            .iter()
-            .any(|n| n.starts_with("1st Floor Floor") || n.contains("Floor")));
-        let _ = second;
+        assert!(names.iter().any(|n| n.contains("Top of Subfloor")), "{names:?}");
+        assert!(names.iter().any(|n| n.contains("Ceiling")), "{names:?}");
         // Running it again on the same line replaces, not stacks.
         click(&mut t, &mut cx, 400.0, 20.0);
         assert_eq!(cx.floor().dimensions.len(), 4);
         assert_eq!(
-            cx.floor()
-                .cad
-                .iter()
-                .filter(|c| c.layer == AUTO_LAYER)
-                .count(),
+            cx.floor().cad.iter().filter(|c| c.layer == AUTO_LAYER).count(),
             4
         );
         assert_eq!(cx.undo().as_deref(), Some("Auto Story Pole Dimensions"));
+        // The right side too, when the defaults ask for it.
+        cx.defaults.dimensions.setup.pole.right = true;
+        click(&mut t, &mut cx, 400.0, 20.0);
+        let n = cx.floor().dimensions.len();
+        assert_eq!(n, 8);
+        assert!(cx.floor().dimensions.iter().any(|d| d.offset < 0.0));
+        // Neither side: nothing to do.
+        cx.defaults.dimensions.setup.pole.right = false;
+        cx.defaults.dimensions.setup.pole.left = false;
+        click(&mut t, &mut cx, 400.0, 20.0);
+        assert_eq!(cx.floor().dimensions.len(), n);
+        assert!(cx.status.contains("Dimension on Left"));
     }
 
     #[test]

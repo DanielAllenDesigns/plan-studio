@@ -937,6 +937,8 @@ pub fn apply_room_spec(
         n.rough_ceiling = draft.rough_ceiling;
         n.monolithic_slab = draft.monolithic_slab;
         n.label_style = draft.label_style.clone();
+        // Roof Group (R-114): which building the room's roof belongs to.
+        n.roof_group = draft.roof_group;
         // The Deck tab (CB-86).
         n.deck = draft.deck.clone();
         extras.store_into(n);
@@ -1344,8 +1346,9 @@ impl FoundationSpec {
             min_stem_height: 12.0,
             garage_floor: true,
             footing: true,
-            footing_width: o.footing_width,
-            footing_depth: o.footing_depth,
+            // The footing starts at the code-legal size of the plan's defaults.
+            footing_width: d.code.footing_width,
+            footing_depth: d.code.footing_thickness,
             slab_thickness: o.slab_thickness,
             slab_stem_height: o.edge_height,
             beam_height: plan_core::floors::GRADE_BEAM_HEIGHT,

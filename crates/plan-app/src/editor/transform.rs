@@ -79,6 +79,13 @@ pub fn object_points(cx: &EditorContext, o: ObjectRef) -> Vec<Point> {
             .find(id)
             .and_then(|r| details_view::vertices(cx, r))
             .unwrap_or_default(),
+        ObjectRef::Solid(id) => super::solids_view::outline_points(f, id),
+        ObjectRef::Block(id) => f
+            .blocks
+            .flat_members(id)
+            .into_iter()
+            .flat_map(|m| object_points(cx, ObjectRef::from_group_ref(m)))
+            .collect(),
         ObjectRef::Schedule(id) => super::schedule_view::extents(cx)
             .into_iter()
             .filter(|(i, _, _)| *i == id)
@@ -185,8 +192,7 @@ pub fn translate_objects(cx: &mut EditorContext, items: &[ObjectRef], d: Point) 
                     .iter_mut()
                     .find(|x| x.id == id)
                 {
-                    dim.start = dim.start + d;
-                    dim.end = dim.end + d;
+                    dim.translate(d);
                 }
             }
             ObjectRef::Cad(id) | ObjectRef::Text(id) => {
@@ -333,6 +339,24 @@ pub fn apply_xform(cx: &mut EditorContext, items: &[ObjectRef], x: &Xform) -> Re
             | ObjectRef::Text(_)
             | ObjectRef::Symbol(_)
             | ObjectRef::Camera(_) => {}
+            // A compound 3D solid turns, mirrors and scales as one mesh.
+            ObjectRef::Solid(id) => {
+                if let Some(c) = cx.project.floors[fl].solid_layer.compound_mut(id) {
+                    c.xform(x);
+                    rep.changed += 1;
+                }
+            }
+            // A 3D solid primitive carries its position, turn and size.
+            ObjectRef::Detail(id) => {
+                let mut layer = details_view::load(cx);
+                if let Some(s) = layer.solids.iter_mut().find(|s| s.id == id) {
+                    plan_core::solids::xform_solid(s, x);
+                    details_view::save(&mut cx.project, fl, &layer);
+                    rep.changed += 1;
+                } else {
+                    rep.skip(*o);
+                }
+            }
             other => rep.skip(other),
         }
     }

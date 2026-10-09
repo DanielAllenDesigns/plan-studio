@@ -153,6 +153,15 @@ impl EditorContext {
             // delete_ids drops them from the selection itself.
             n += details_view::delete_ids(self, &details);
         }
+        let compounds = self.selected_ids(|o| match o {
+            ObjectRef::Solid(i) => Some(i),
+            _ => None,
+        });
+        if !compounds.is_empty() {
+            self.begin_change("Delete 3D Solid");
+            // delete_ids drops them from the selection itself.
+            n += super::solids_view::delete_ids(self, &compounds);
+        }
         let schedules = self.selected_ids(|o| match o {
             ObjectRef::Schedule(i) => Some(i),
             _ => None,
@@ -232,6 +241,8 @@ impl EditorContext {
         v.extend(super::fireplace_view::edit_actions(self));
         // Polyline Boolean, Trim/Extend to Boundary, Insert Point, Multiple Copy.
         v.extend(crate::tools::cad_ops::edit_actions(self));
+        // Architectural blocks, 3D solid Booleans, material layers, distribution options.
+        v.extend(crate::tools::arch_block::edit_actions(self));
         // Callout links, Note Schedules, Convert Text to Note, hyperlinks.
         v.extend(crate::tools::text::edit_actions(self));
         // Selected 3D solids become a User Catalog symbol.
@@ -351,6 +362,10 @@ impl EditorContext {
         // Polyline Union/Subtract/Intersect, Trim/Extend to Boundary, Insert
         // Point, Multiple Copy, Drawing Group, outer-face Plan Footprint.
         if crate::tools::cad_ops::run_command(self, id) {
+            return;
+        }
+        // Architectural blocks, 3D solid Booleans, material layers, distribution options, soffits.
+        if crate::tools::arch_block::run_command(self, id) {
             return;
         }
         // Match Properties and Object Painter Modes.
@@ -571,6 +586,14 @@ impl EditorContext {
             })
             .collect();
         details_view::translate_ids(self, &details, d);
+        let compounds: Vec<Id> = items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::Solid(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        super::solids_view::translate_ids(self, &compounds, d);
         let schedules: Vec<Id> = items
             .iter()
             .filter_map(|o| match o {

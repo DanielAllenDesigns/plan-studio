@@ -68,6 +68,8 @@ pub enum Dock {
     Library,
     Project,
     LayerDisplay,
+    /// The Plan Agent ("Ask to make changes"); see `shell::agent_panel`.
+    Agent,
 }
 
 impl Dock {
@@ -76,6 +78,7 @@ impl Dock {
             Dock::Library => "Library Browser",
             Dock::Project => "Project Browser",
             Dock::LayerDisplay => "Active Layer Display Options",
+            Dock::Agent => "Plan Agent",
         }
     }
 }
@@ -1162,6 +1165,16 @@ pub fn roof() -> Flyout {
                 "\u{2303}\u{2325}\u{21E7}\u{2318}U",
                 M::Ceiling,
             ),
+            item(
+                "roof_plane",
+                "Tray Ceiling Polyline",
+                Action::SetTool(ToolId::TrayCeiling),
+            ),
+            item(
+                "roof_plane",
+                "Roof Baseline Polyline",
+                Action::SetTool(ToolId::RoofBaseline),
+            ),
             roof_k(
                 "gable_line",
                 "Gable/Roof Line",
@@ -1243,6 +1256,7 @@ pub fn trim() -> Flyout {
             det("quoins", DetailsVariant::AutoQuoins),
             det("corner_boards", DetailsVariant::MoldingLine),
             det("corner_boards", DetailsVariant::MoldingPolyline),
+            det("corner_boards", DetailsVariant::ReplaceMoldings),
         ],
     )
 }
@@ -1414,6 +1428,8 @@ pub fn dimensions() -> Flyout {
             dim("dim_manual", D::Running, Some("\u{2303}\u{2325}\u{2318}C")),
             dim("dim_manual", D::Baseline, Some("\u{2303}\u{2325}\u{2318}D")),
             dim("dim_angular", D::Angular, Some("\u{2303}\u{2325}\u{2318}F")),
+            dim("dim_angular", D::Radius, None),
+            dim("dim_angular", D::ArcLength, None),
             dim(
                 "dim_manual",
                 D::Centerline,

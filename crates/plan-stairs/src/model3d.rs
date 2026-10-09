@@ -111,7 +111,12 @@ pub fn tagged_meshes_skipping(stair: &Stair, skip: PostSkip) -> Vec<(StairPart, 
                     );
                 } else if flared {
                     let mut ring = layout.across(p, i, s0, layout.bulge(p, i, j - 1));
-                    ring.extend(layout.across(p, i, s1, layout.bulge(p, i, j)).into_iter().rev());
+                    ring.extend(
+                        layout
+                            .across(p, i, s1, layout.bulge(p, i, j))
+                            .into_iter()
+                            .rev(),
+                    );
                     ctx.slab(StairPart::Tread, Material::Floor, &ring, (lo, top));
                 } else {
                     let profile = ctx.flight_rect(f, s0, s1, lo);
@@ -138,7 +143,12 @@ pub fn tagged_meshes_skipping(stair: &Stair, skip: PostSkip) -> Vec<(StairPart, 
                                 .into_iter()
                                 .rev(),
                         );
-                        ctx.slab(StairPart::Riser, Material::WallInterior, &ring, (y0, y0 + h));
+                        ctx.slab(
+                            StairPart::Riser,
+                            Material::WallInterior,
+                            &ring,
+                            (y0, y0 + h),
+                        );
                     } else {
                         let profile = ctx.flight_rect(f, s0, s0 + p.riser_thickness, y0);
                         ctx.push(
@@ -219,15 +229,9 @@ pub fn tagged_meshes_skipping(stair: &Stair, skip: PostSkip) -> Vec<(StairPart, 
                         .map(|m| (StairPart::Handrail, m)),
                 ),
                 SideKind::Wall | SideKind::HalfWall => out.extend(
-                    stair_half_wall_skipping(
-                        stair,
-                        side,
-                        &railing,
-                        kind == SideKind::Wall,
-                        skip,
-                    )
-                    .into_iter()
-                    .map(|m| (StairPart::Stringer, m)),
+                    stair_half_wall_skipping(stair, side, &railing, kind == SideKind::Wall, skip)
+                        .into_iter()
+                        .map(|m| (StairPart::Stringer, m)),
                 ),
             }
         }
@@ -361,10 +365,7 @@ impl Ctx<'_> {
             StringerStyle::None => {}
             StringerStyle::Closed => {
                 let (dx, dy) = (sin * depth, -cos * depth);
-                let (a, b) = (
-                    (0.0, f.base + h),
-                    (s_end, f.base + h + s_end * slope),
-                );
+                let (a, b) = ((0.0, f.base + h), (s_end, f.base + h + s_end * slope));
                 let pts = [a, b, (b.0 + dx, b.1 + dy), (a.0 + dx, a.1 + dy)];
                 for &lat in &lats {
                     self.side_board(
@@ -547,7 +548,11 @@ impl Ctx<'_> {
         let slope = f.rise / f.len.max(1e-9);
         let o = &p.handrail_options;
         let ext_b = if first { o.extend_bottom.max(0.0) } else { 0.0 };
-        let ext_t = if last { o.extend_top.max(0.0) } else { crate::RAMP_LANDING };
+        let ext_t = if last {
+            o.extend_top.max(0.0)
+        } else {
+            crate::RAMP_LANDING
+        };
         let y_at = |s: f64| f.base + HANDRAIL_HEIGHT + (slope * s).min(f.rise);
         let pts = [
             (-ext_b, y_at(-ext_b.min(0.0))),
@@ -660,7 +665,12 @@ impl Ctx<'_> {
     /// A nosing along the edge of the top landing, over the top riser.
     fn top_nosing(&mut self, f: &Flight, h: f64, p: &StairParams) {
         let top = f.base + f64::from(f.risers) * h;
-        let profile = self.flight_rect(f, f.len - p.nosing, f.len + p.riser_thickness, top - p.tread_thickness);
+        let profile = self.flight_rect(
+            f,
+            f.len - p.nosing,
+            f.len + p.riser_thickness,
+            top - p.tread_thickness,
+        );
         self.push(
             StairPart::Tread,
             Material::Floor,

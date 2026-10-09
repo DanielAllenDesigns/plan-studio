@@ -79,6 +79,10 @@ pub struct WallStructure {
     pub through_at_start: bool,
     /// Through Wall At End.
     pub through_at_end: bool,
+    /// "Bearing Wall" of the Framing section: the wall carries the floor or
+    /// roof above. Stored with the wall; the framing builder does not read
+    /// it yet (docs/integration-queue.md).
+    pub bearing_wall: bool,
 }
 
 impl Default for WallStructure {
@@ -91,6 +95,7 @@ impl Default for WallStructure {
             floor_platform: FloorPlatform::Automatic,
             through_at_start: false,
             through_at_end: false,
+            bearing_wall: false,
         }
     }
 }

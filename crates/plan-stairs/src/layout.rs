@@ -204,7 +204,11 @@ impl RampArc {
     pub(crate) fn height_at(&self, a: f64) -> f64 {
         for &(a0, a1, base, rise) in &self.segs {
             if a <= a1 + 1e-9 {
-                let t = if a1 > a0 { ((a - a0) / (a1 - a0)).clamp(0.0, 1.0) } else { 0.0 };
+                let t = if a1 > a0 {
+                    ((a - a0) / (a1 - a0)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 return base + rise * t;
             }
         }
@@ -414,7 +418,11 @@ fn curved_ramp(frame: Frame, p: &crate::StairParams, slope: f64, inner: f64) -> 
     let runs = ramp_runs(rise);
     let run_rise = rise / f64::from(runs);
     let mut curve = Curve {
-        center: if left { (0.0, -inner) } else { (0.0, w + inner) },
+        center: if left {
+            (0.0, -inner)
+        } else {
+            (0.0, w + inner)
+        },
         inner,
         width: w,
         walk_off: w / 2.0,
@@ -717,12 +725,7 @@ impl Layout {
             (true, true) => (
                 (u1, -gap),
                 (-1.0, 0.0),
-                [
-                    (u1, -w - gap),
-                    (u1 + ld, -w - gap),
-                    (u1 + ld, w),
-                    (u1, w),
-                ],
+                [(u1, -w - gap), (u1 + ld, -w - gap), (u1 + ld, w), (u1, w)],
                 if gap > 1e-9 {
                     vec![
                         (0.0, w),
@@ -884,8 +887,7 @@ impl Layout {
         // Radius of the quarter circle the points are cut at, so the chord
         // of one wedge is `contraction` wide.
         let cut = if contraction > 1e-9 {
-            (contraction / (2.0 * (std::f64::consts::FRAC_PI_2 / n / 2.0).sin()))
-                .min(w * 0.45)
+            (contraction / (2.0 * (std::f64::consts::FRAC_PI_2 / n / 2.0).sin())).min(w * 0.45)
         } else {
             0.0
         };

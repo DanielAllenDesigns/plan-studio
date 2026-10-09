@@ -1,5 +1,6 @@
 //! Source extents: how big a box's content is, in source or paper units.
 
+use crate::boxview::BoxView;
 use crate::model::{BoxSource, ScheduleKind};
 use crate::render::LayoutRenderContext;
 use plan_3d::{build_scene_with, Scene, SceneOptions};
@@ -399,5 +400,140 @@ pub(crate) fn size_of(frame: Frame, scale: Scale) -> (f64, f64) {
             ((hi.x - lo.x) * k, (hi.y - lo.y) * k)
         }
         Frame::Paper { w_in, h_in } => (w_in, h_in),
+    }
+}
+
+// ------------------------------------------------------------ box views --
+
+/// The floor and layer set a plan box shows: its own, or those of the saved
+/// plan view it is linked to (Link Saved Plan View). A saved view that shows
+/// "whichever floor is current" leaves the box's floor alone. `None` for a
+/// box that is not a plan view or whose floor is gone.
+pub(crate) fn plan_target(
+    source: &BoxSource,
+    view: &BoxView,
+    project: &Project,
+) -> Option<(usize, String)> {
+    let BoxSource::PlanView { floor, layer_set } = source else {
+        return None;
+    };
+    let (mut fl, mut set) = (*floor, layer_set.clone());
+    if let Some(sv) = view
+        .saved_view
+        .as_deref()
+        .and_then(|name| project.plan_view(name))
+    {
+        if let Some(f) = sv.floor {
+            fl = f;
+        }
+        if !sv.layer_set.is_empty() {
+            set = sv.layer_set.clone();
+        }
+    }
+    (fl < project.floors.len()).then_some((fl, set))
+}
+
+/// Everything a floor shows, for Entire Plan/View (Fill Window): the walls
+/// and dimensions, and the CAD on layers that are shown.
+pub(crate) fn fill_window_bounds(project: &Project, f: &Floor) -> Option<(Point, Point)> {
+    let base = plan_bounds(f);
+    let cad = f
+        .cad
+        .iter()
+        .filter(|o| project.layers.is_visible(&o.layer))
+        .map(|o| o.bounds());
+    let mut acc = base;
+    for (a, b) in cad {
+        acc = Some(match acc {
+            None => (a, b),
+            Some((lo, hi)) => (
+                Point::new(lo.x.min(a.x), lo.y.min(a.y)),
+                Point::new(hi.x.max(b.x), hi.y.max(b.y)),
+            ),
+        });
+    }
+    acc
+}
+
+/// [`frame_for`] with what the box remembers about its view: the Current
+/// Screen extent, the saved plan view it follows, Fill Window, and the
+/// picture a semi-dynamic or Plot Lines view keeps.
+pub(crate) fn frame_for_view(
+    source: &BoxSource,
+    view: &BoxView,
+    cx: &LayoutRenderContext,
+    scenes: &SceneSource,
+) -> Frame {
+    let scaled_kind = matches!(
+        source,
+        BoxSource::PlanView { .. }
+            | BoxSource::Elevation { .. }
+            | BoxSource::Section { .. }
+            | BoxSource::Camera { .. }
+            | BoxSource::CadDetail { .. }
+    );
+    if !scaled_kind {
+        return frame_for(source, cx, scenes);
+    }
+    if let Some(e) = view.extent {
+        return Frame::Scaled {
+            lo: Point::new(e[0].min(e[2]), e[1].min(e[3])),
+            hi: Point::new(e[0].max(e[2]), e[1].max(e[3])),
+        };
+    }
+    if let Some(art) = &view.art {
+        if !matches!(source, BoxSource::PlanView { .. } | BoxSource::CadDetail { .. })
+            && !art.lines.is_empty()
+        {
+            return pad(art.bounds.0, art.bounds.1, VIEW_MARGIN_IN);
+        }
+    }
+    if let BoxSource::PlanView { .. } = source {
+        let Some((floor, _)) = plan_target(source, view, cx.project) else {
+            return pad(Point::ZERO, Point::new(120.0, 120.0), 0.0);
+        };
+        let f = &cx.project.floors[floor];
+        let bounds = if view.fill_window {
+            fill_window_bounds(cx.project, f)
+        } else {
+            plan_bounds(f)
+        };
+        return match bounds {
+            Some((lo, hi)) => pad(lo, hi, PLAN_MARGIN_IN),
+            None => pad(Point::ZERO, Point::new(120.0, 120.0), 0.0),
+        };
+    }
+    frame_for(source, cx, scenes)
+}
+
+/// Paper size `(width, height)` in inches that `source` needs at `ipf`
+/// paper inches per foot, seen the way `view` says.
+pub fn view_size_in(
+    source: &BoxSource,
+    view: &BoxView,
+    ipf: f64,
+    cx: &LayoutRenderContext,
+) -> (f64, f64) {
+    let scenes = SceneSource::for_context(cx);
+    match frame_for_view(source, view, cx, &scenes) {
+        Frame::Scaled { lo, hi } => {
+            let k = ipf / 12.0;
+            ((hi.x - lo.x) * k, (hi.y - lo.y) * k)
+        }
+        Frame::Paper { w_in, h_in } => (w_in, h_in),
+    }
+}
+
+/// The size of the part of the view a box shows, in inches of the building
+/// (`None` for a source that is drawn at paper size).
+pub fn view_frame_in(
+    source: &BoxSource,
+    view: &BoxView,
+    cx: &LayoutRenderContext,
+) -> Option<(f64, f64)> {
+    let scenes = SceneSource::for_context(cx);
+    match frame_for_view(source, view, cx, &scenes) {
+        Frame::Scaled { lo, hi } => Some((hi.x - lo.x, hi.y - lo.y)),
+        Frame::Paper { .. } => None,
     }
 }

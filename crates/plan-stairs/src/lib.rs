@@ -25,18 +25,18 @@ pub use deck::{deck_edge_railing, Deck};
 pub use landing::polygon_slab;
 pub use model3d::{meshes, tagged_meshes, tagged_meshes_skipping, StairPart};
 pub use options::{
-    ArrowStyle, BreakStyle, DisplayRule, EdgeRail, Flare, HandrailOptions, PlanOptions, PostProfile,
-    RadiusRef, Runner, Starter, StringerOptions, TopLanding, ViewMode, Walkline,
+    ArrowStyle, BreakStyle, DisplayRule, EdgeRail, Flare, HandrailOptions, PlanOptions,
+    PostProfile, RadiusRef, Runner, Starter, StringerOptions, TopLanding, ViewMode, Walkline,
 };
 pub use plan::{plan_symbol, Stroke};
-pub use sections::{complete_break, disconnect, MIN_BREAK_LANDING};
 pub use railing::{
-    landing_edges, landing_guards, plan_symbol_railing, railing_meshes, railing_segments, stair_half_wall,
-    stair_half_wall_skipping, stair_posts, stair_railing, stair_railing_geometry,
-    stair_railing_skipping, NewelParams, PostPlacement, PostSkip, RailSide, RailStyle,
-    LandingGuard, RailingGeometry, RailingParams, StairPosts, StairRailingGeometry, GUARD_HEIGHT,
+    landing_edges, landing_guards, plan_symbol_railing, railing_meshes, railing_segments,
+    stair_half_wall, stair_half_wall_skipping, stair_posts, stair_railing, stair_railing_geometry,
+    stair_railing_skipping, LandingGuard, NewelParams, PostPlacement, PostSkip, RailSide,
+    RailStyle, RailingGeometry, RailingParams, StairPosts, StairRailingGeometry, GUARD_HEIGHT,
     MAX_BALUSTER_CLEAR, STAIR_RAIL_HEIGHT,
 };
+pub use sections::{complete_break, disconnect, MIN_BREAK_LANDING};
 
 /// Maximum riser height, IRC R311.7.5.1.
 pub const MAX_RISER: f64 = 7.75;

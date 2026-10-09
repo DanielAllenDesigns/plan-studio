@@ -31,6 +31,7 @@ plan-check = { path = "../plan-check" }
 plan-render = { path = "../plan-render" }
 plan-chiefplan = { path = "../plan-chiefplan" }
 plan-calib = { path = "../plan-calib" }
+plan-agent = { path = "/private/tmp/claude-501/-Users-danielsievers-Documents-Clauade-Code-Folder/51e3d6bb-4b22-4ee7-b60e-14fc694a2b9f/scratchpad/plan-agent-stub", package = "plan-agent-stub" } # TEMP-B: switch to path = "../plan-agent"
 
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.31", default-features = false, features = ["svg"] }

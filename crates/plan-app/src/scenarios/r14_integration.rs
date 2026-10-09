@@ -145,9 +145,14 @@ fn tools_menu_labels() -> Vec<String> {
         rest = &rest[i + 5..];
         let Some(q) = rest.find('"') else { break };
         // The label is the first literal after `ui,`; skip rows whose label
-        // is an expression (the generated plan view and schedule rows).
+        // is an expression or a loop variable (the generated plan view and
+        // schedule rows, the Calculators).
         let before = &rest[..q];
-        if before.contains(')') || before.contains('&') || before.contains("::") {
+        if before.trim() != "ui,"
+            || before.contains(')')
+            || before.contains('&')
+            || before.contains("::")
+        {
             continue;
         }
         let lit = &rest[q + 1..];

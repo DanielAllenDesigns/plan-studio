@@ -25,7 +25,9 @@
 //!   polyline.
 
 use crate::arch_block::BlockLayer;
-use crate::details::{DetailRef, DetailsLayer, MaterialRegion, RegionKind, DEFAULT_REGION_MATERIAL};
+use crate::details::{
+    DetailRef, DetailsLayer, MaterialRegion, RegionKind, DEFAULT_REGION_MATERIAL,
+};
 use crate::geometry::{polygon_area, Point};
 use crate::groups::ObjectRef;
 use crate::model::{Floor, Id, Project};
@@ -137,7 +139,13 @@ impl RegionStructure {
     pub fn insert_above(&mut self, i: usize) -> usize {
         let i = i.min(self.layers.len());
         let proto = self.layers.get(i).cloned().unwrap_or_default();
-        self.layers.insert(i, MaterialLayer { role: LayerRole::Standard, ..proto });
+        self.layers.insert(
+            i,
+            MaterialLayer {
+                role: LayerRole::Standard,
+                ..proto
+            },
+        );
         i
     }
 
@@ -149,7 +157,13 @@ impl RegionStructure {
         }
         let i = i.min(self.layers.len() - 1);
         let proto = self.layers[i].clone();
-        self.layers.insert(i + 1, MaterialLayer { role: LayerRole::Standard, ..proto });
+        self.layers.insert(
+            i + 1,
+            MaterialLayer {
+                role: LayerRole::Standard,
+                ..proto
+            },
+        );
         i + 1
     }
 
@@ -251,7 +265,10 @@ pub fn wall_region_rects(floor: &Floor, r: &MaterialRegion) -> Vec<[f64; 4]> {
     let holes: Vec<[f64; 4]> = floor
         .openings_on(wid)
         .filter_map(|o| {
-            let (a, b) = (o.center_offset - o.width * 0.5, o.center_offset + o.width * 0.5);
+            let (a, b) = (
+                o.center_offset - o.width * 0.5,
+                o.center_offset + o.width * 0.5,
+            );
             let (c, d) = (o.sill_height, o.sill_height + o.height);
             let h = [a.max(u0), b.min(u1), c.max(v0), d.min(v1)];
             (h[1] - h[0] > 1e-9 && h[3] - h[2] > 1e-9).then_some(h)
@@ -335,7 +352,8 @@ impl Floor {
     /// Does region `id` have a structure of its own (so the single plate is
     /// not drawn)?
     pub fn has_region_structure(&self, id: Id) -> bool {
-        self.region_structure(id).is_some_and(|s| !s.layers.is_empty())
+        self.region_structure(id)
+            .is_some_and(|s| !s.layers.is_empty())
     }
 
     /// Stores `s` and brings the region's `material` (the exposed layer) and
@@ -388,11 +406,7 @@ impl Floor {
 /// Convert Polyline: the closed CAD polyline `cad_id` becomes a floor
 /// Material Region with id `new_id` (p. 1086). The polyline goes. Fails for
 /// anything but a closed polyline of three or more points.
-pub fn convert_polyline_to_region(
-    floor: &mut Floor,
-    cad_id: Id,
-    new_id: Id,
-) -> Result<Id, String> {
+pub fn convert_polyline_to_region(floor: &mut Floor, cad_id: Id, new_id: Id) -> Result<Id, String> {
     let item = floor
         .cad
         .iter()
@@ -410,9 +424,7 @@ pub fn convert_polyline_to_region(
     floor.cad_attrs.retain(|a| a.target != cad_id);
     let mut details = DetailsLayer::load(floor);
     details.regions.push(MaterialRegion::floor(new_id, pts));
-    floor
-        .set_details(&details)
-        .map_err(|e| e.to_string())?;
+    floor.set_details(&details).map_err(|e| e.to_string())?;
     Ok(new_id)
 }
 
@@ -455,7 +467,12 @@ pub fn r15_takeoff(project: &Project, fi: usize) -> Vec<TakeoffRow> {
             }
             out.push(TakeoffRow {
                 floor: fi,
-                category: if floor_region { "Flooring" } else { "Interior Finishes" }.into(),
+                category: if floor_region {
+                    "Flooring"
+                } else {
+                    "Interior Finishes"
+                }
+                .into(),
                 item: format!(
                     "{} region layer {}",
                     if floor_region { "Floor" } else { "Wall" },
@@ -538,7 +555,11 @@ pub fn soffit_surface(
     let sides = 2.0 * d * (height - t2).max(0.0);
     let bottom = d * (width - t2).max(0.0);
     let top = if attached_to_wall { 0.0 } else { bottom };
-    let back = if attached_to_wall { 0.0 } else { (width - t2).max(0.0) * (height - t2).max(0.0) };
+    let back = if attached_to_wall {
+        0.0
+    } else {
+        (width - t2).max(0.0) * (height - t2).max(0.0)
+    };
     front + sides + bottom + top + back
 }
 
@@ -575,7 +596,14 @@ mod tests {
 
     fn project_with_wall() -> (Project, Id) {
         let mut p = Project::new("r");
-        let wid = p.add_wall(0, Point::new(0.0, 0.0), Point::new(200.0, 0.0), 6.5, 96.0, WallKind::Exterior);
+        let wid = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(200.0, 0.0),
+            6.5,
+            96.0,
+            WallKind::Exterior,
+        );
         (p, wid)
     }
 
@@ -583,12 +611,18 @@ mod tests {
     fn the_table_edits_like_chiefs() {
         let mut s = RegionStructure::new(
             1,
-            vec![MaterialLayer::new("Tile", 0.5), MaterialLayer::new("Mortar", 0.75)],
+            vec![
+                MaterialLayer::new("Tile", 0.5),
+                MaterialLayer::new("Mortar", 0.75),
+            ],
         );
         assert!((s.total_thickness() - 1.25).abs() < 1e-9);
         let i = s.insert_above(1);
         assert_eq!((i, s.layers.len()), (1, 3));
-        assert_eq!(s.layers[1].material, "Mortar", "a new layer starts as a copy of the row");
+        assert_eq!(
+            s.layers[1].material, "Mortar",
+            "a new layer starts as a copy of the row"
+        );
         let i = s.insert_below(2);
         assert_eq!(i, 3);
         assert_eq!(s.move_up(0), 0);
@@ -609,12 +643,19 @@ mod tests {
 
     #[test]
     fn bands_cut_into_or_sit_on_the_surface() {
-        let layers = vec![MaterialLayer::new("Tile", 0.5), MaterialLayer::new("Mortar", 0.25)];
+        let layers = vec![
+            MaterialLayer::new("Tile", 0.5),
+            MaterialLayer::new("Mortar", 0.25),
+        ];
         let cut = layer_bands(&layers, true);
         assert_eq!((cut[0].lo, cut[0].hi), (-0.5, 0.0));
         assert_eq!((cut[1].lo, cut[1].hi), (-0.75, -0.5));
         let on = layer_bands(&layers, false);
-        assert_eq!((on[0].lo, on[0].hi), (0.25, 0.75), "the exposed layer is outermost");
+        assert_eq!(
+            (on[0].lo, on[0].hi),
+            (0.25, 0.75),
+            "the exposed layer is outermost"
+        );
         assert_eq!((on[1].lo, on[1].hi), (0.0, 0.25));
     }
 
@@ -634,7 +675,10 @@ mod tests {
         assert!((net_area(&p.floors[0], &r) - area).abs() < 1e-9);
         // No opening under the region: the plain rectangle.
         let r2 = MaterialRegion::wall(rid, wid, Side::Left, 0.0, 50.0, 0.0, 96.0);
-        assert_eq!(wall_region_rects(&p.floors[0], &r2), vec![[0.0, 50.0, 0.0, 96.0]]);
+        assert_eq!(
+            wall_region_rects(&p.floors[0], &r2),
+            vec![[0.0, 50.0, 0.0, 96.0]]
+        );
     }
 
     #[test]
@@ -642,7 +686,8 @@ mod tests {
         let (mut p, _) = project_with_wall();
         let rid = p.alloc_id();
         let mut d = DetailsLayer::default();
-        d.regions.push(MaterialRegion::floor(rid, square(0.0, 0.0, 120.0)));
+        d.regions
+            .push(MaterialRegion::floor(rid, square(0.0, 0.0, 120.0)));
         p.floors[0].set_details(&d).unwrap();
         let s = RegionStructure::new(
             rid,

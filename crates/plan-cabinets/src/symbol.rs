@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use crate::cabinet::{Cabinet, CabinetKind, CornerStyle};
-use crate::face::FaceItem;
+use crate::face::{DoorPlan, FaceItem};
 use crate::geom;
 use crate::top::{CustomTop, CutoutKind, EdgeProfile};
 
@@ -62,6 +62,9 @@ pub fn plan_symbol(cabinet: &Cabinet) -> Vec<Stroke> {
         }
     }
 
+    if cabinet.special.is_some() {
+        special_strokes(cabinet, &mut out);
+    } else {
     match cabinet.kind {
         CabinetKind::Base
         | CabinetKind::FullHeight
@@ -99,6 +102,7 @@ pub fn plan_symbol(cabinet: &Cabinet) -> Vec<Stroke> {
         | CabinetKind::CounterHole
         | CabinetKind::SoffitPolygon => {}
     }
+    }
 
     for cut in &cabinet.cutouts {
         out.push(Stroke::Polyline(
@@ -126,9 +130,39 @@ pub fn plan_symbol(cabinet: &Cabinet) -> Vec<Stroke> {
     out
 }
 
+/// The front line of a special shape pulled in by the front inset, or for a
+/// wall cabinet the inner outline and the diagonals across it.
+fn special_strokes(cabinet: &Cabinet, out: &mut Vec<Stroke>) {
+    let Some(sp) = &cabinet.special else { return };
+    let (w, d) = (cabinet.width, cabinet.depth);
+    let q = |pt: Point| cabinet.to_plan(pt);
+    if cabinet.kind.is_wall_like() {
+        let inner = geom::offset_ring(&cabinet.footprint_local(), -INSET);
+        if inner.len() >= 3 {
+            out.push(Stroke::Polyline(inner.into_iter().map(q).collect(), true));
+        }
+        let deep = sp.max_depth(w, d);
+        out.push(Stroke::Line(q(Point::ZERO), q(Point::new(w, deep))));
+        out.push(Stroke::Line(q(Point::new(w, 0.0)), q(Point::new(0.0, deep))));
+        return;
+    }
+    let front = sp.front(w, d);
+    let n = front.len();
+    let line: Vec<Point> = (0..n)
+        .map(|i| {
+            let a = front[i.saturating_sub(1)];
+            let b = front[(i + 1).min(n - 1)];
+            let t = b.sub(a).normalized();
+            let outward = Point::new(-t.y, t.x);
+            q(front[i].sub(outward.scale(INSET)))
+        })
+        .collect();
+    out.push(Stroke::Polyline(line, false));
+}
+
 /// Where the label goes: the centre of a rectangle, otherwise the centroid.
 fn label_point(local: &[Point], cabinet: &Cabinet) -> Point {
-    if cabinet.kind.is_corner() || cabinet.kind.is_custom() {
+    if cabinet.kind.is_corner() || cabinet.kind.is_custom() || cabinet.special.is_some() {
         polygon_centroid(local)
     } else {
         Point::new(cabinet.width / 2.0, cabinet.depth / 2.0)
@@ -186,6 +220,8 @@ fn corner_strokes(cabinet: &Cabinet, out: &mut Vec<Stroke>) {
 fn edge_line(cabinet: &Cabinet, custom: &CustomTop, out: &mut Vec<Stroke>) {
     if matches!(custom.edge, EdgeProfile::Square | EdgeProfile::Waterfall)
         || custom.edge_size <= 0.0
+        || !cabinet.top_spec.display_molding_edges
+        || !cabinet.top_has_any_molding()
     {
         return;
     }
@@ -245,7 +281,7 @@ fn fixture_strokes(cabinet: &Cabinet, kind: CutoutKind, hole: &[Point], out: &mu
 
 /// Door swing arcs and pulled-out drawers (Chief's Opening Indicators).
 fn opening_indicators(cabinet: &Cabinet, out: &mut Vec<Stroke>) {
-    let (w, d) = (cabinet.width, cabinet.depth);
+    let d = cabinet.depth;
     let fw = if cabinet.framed {
         cabinet.face.frame_width
     } else {
@@ -278,17 +314,22 @@ fn opening_indicators(cabinet: &Cabinet, out: &mut Vec<Stroke>) {
             true
         }
     };
-    let swing = |x0: f64, x1: f64, left: bool, out: &mut Vec<Stroke>| {
+    // A door swung `deg` degrees about its hinge (0 draws nothing).
+    let swing = |x0: f64, x1: f64, left: bool, deg: f64, out: &mut Vec<Stroke>| {
         let r = x1 - x0;
-        if r <= 0.0 || !fresh(x0, x1, u8::from(left)) {
+        let th = deg.clamp(0.0, 180.0).to_radians();
+        if r <= 0.0 || th < 1e-3 || !fresh(x0, x1, u8::from(left)) {
             return;
         }
-        let (hx, start, end) = if left {
-            (x0, 0.0, FRAC_PI_2)
+        let (hx, start, end, tip) = if left {
+            (x0, 0.0, th, th)
         } else {
-            (x1, FRAC_PI_2, PI)
+            (x1, PI - th, PI, PI - th)
         };
-        out.push(Stroke::Line(q(hx, d), q(hx, d + r)));
+        out.push(Stroke::Line(
+            q(hx, d),
+            q(hx + r * tip.cos(), d + r * tip.sin()),
+        ));
         out.push(Stroke::Arc {
             center: q(hx, d),
             radius: r,
@@ -296,24 +337,38 @@ fn opening_indicators(cabinet: &Cabinet, out: &mut Vec<Stroke>) {
             end: cabinet.angle + end,
         });
     };
+    let drawer_out = |x0: f64, x1: f64, pct: f64, out: &mut Vec<Stroke>| {
+        let o = DRAWER_OUT.min(d / 2.0) * pct.clamp(0.0, 100.0) / 100.0;
+        if o <= 1e-6 {
+            return;
+        }
+        out.push(Stroke::Polyline(
+            vec![q(x0, d), q(x1, d), q(x1, d + o), q(x0, d + o)],
+            true,
+        ));
+    };
     for item in items {
         let (x, _, iw, _) = item.rect;
         let (x0, x1) = (x_off + x, x_off + x + iw);
-        match item.item {
-            FaceItem::DoorLeft { .. } => swing(x0, x1, true, out),
-            FaceItem::DoorRight { .. } => swing(x0, x1, false, out),
-            FaceItem::DoorAuto { .. } => swing(x0, x1, (x0 + x1) / 2.0 < w / 2.0 - 1e-9, out),
-            FaceItem::DoubleDoor { .. } => {
+        let deg = item.props.as_ref().and_then(|p| p.swing_angle).unwrap_or(90.0);
+        let pct = item.props.as_ref().and_then(|p| p.percent_open).unwrap_or(100.0);
+        match item.item.door_plan(iw, cabinet.auto_door_threshold) {
+            DoorPlan::Single { left } => swing(x0, x1, left, deg, out),
+            DoorPlan::Pair => {
                 let mid = (x0 + x1) / 2.0;
-                swing(x0, mid, true, out);
-                swing(mid, x1, false, out);
+                swing(x0, mid, true, deg, out);
+                swing(mid, x1, false, deg, out);
             }
-            FaceItem::Drawer { .. } if fresh(x0, x1, 2) => {
-                let o = DRAWER_OUT.min(d / 2.0);
-                out.push(Stroke::Polyline(
-                    vec![q(x0, d), q(x1, d), q(x1, d + o), q(x0, d + o)],
-                    true,
-                ));
+            DoorPlan::None => {}
+        }
+        match item.item {
+            FaceItem::Drawer { .. } | FaceItem::CuttingBoard { .. } if fresh(x0, x1, 2) => {
+                drawer_out(x0, x1, pct, out);
+            }
+            FaceItem::DoubleDrawer { .. } if fresh(x0, x1, 3) => {
+                let mid = (x0 + x1) / 2.0;
+                drawer_out(x0, mid, pct, out);
+                drawer_out(mid, x1, pct, out);
             }
             _ => {}
         }
@@ -406,12 +461,13 @@ mod tests {
             panic!("outline first");
         };
         assert_eq!(pts.len(), 5);
-        assert_eq!(label_of(&diag), "BDC36");
+        assert_eq!(label_of(&diag), "DCB36");
     }
 
     #[test]
     fn indicators_draw_door_swings_and_open_drawers() {
-        let mut c = Cabinet::base(36.0);
+        // 24" or narrower: an Auto door is one door.
+        let mut c = Cabinet::base(24.0);
         let off = plan_symbol(&c).len();
         c.indicators = true;
         let on = plan_symbol(&c);
@@ -423,10 +479,14 @@ mod tests {
         else {
             panic!("a swing arc");
         };
-        // The door fills the 33" between the stiles; a quarter turn.
-        assert!((radius - 33.0).abs() < 1e-9, "{radius}");
+        // The door fills the 21" between the stiles; a quarter turn.
+        assert!((radius - 21.0).abs() < 1e-9, "{radius}");
         assert!((end - start - FRAC_PI_2).abs() < 1e-9);
-        // A double door gets two arcs that hinge on opposite ends.
+        // A wider Auto door is a pair; a double door has two arcs that hinge
+        // on opposite ends.
+        let mut wide = Cabinet::base(36.0);
+        wide.indicators = true;
+        assert_eq!(arcs(&plan_symbol(&wide)).len(), 2);
         c.face = crate::face::FaceLayout::sink_base();
         let sink = plan_symbol(&c);
         assert_eq!(arcs(&sink).len(), 2);
@@ -481,7 +541,8 @@ mod tests {
         let plain = plan_symbol(&ct).len();
         ct.custom.as_mut().unwrap().edge = EdgeProfile::Beveled;
         assert_eq!(plan_symbol(&ct).len(), plain + 1);
-        assert_eq!(label_of(&plan_symbol(&ct)), "CT");
+        // A custom countertop has a blank automatic label (manual p. 655).
+        assert_eq!(label_of(&plan_symbol(&ct)), "");
         let bs = Cabinet::custom_backsplash(&[Point::ZERO, Point::new(48.0, 0.0)], 4.0, 0.5, 36.0)
             .unwrap();
         let Stroke::Polyline(strip, true) = &plan_symbol(&bs)[0] else {

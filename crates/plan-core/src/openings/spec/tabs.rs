@@ -550,6 +550,75 @@ impl CurvedCasing {
     }
 }
 
+// ----- roof over a bay, box or bow window -----
+
+/// The roof over a projecting window (Options tab, Bay Roof; RF-29, DW-48).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BayRoofKind {
+    /// What the style gets by default: a hip over a bay or bow, a shed over a
+    /// box window.
+    #[default]
+    Default,
+    /// No roof over the unit.
+    None,
+    /// A flat slab.
+    Flat,
+    /// One sloping plane that falls away from the wall.
+    Shed,
+    /// A hip roof whose back edge rises to the wall.
+    Hip,
+}
+
+impl BayRoofKind {
+    pub const ALL: [BayRoofKind; 5] = [
+        BayRoofKind::Default,
+        BayRoofKind::None,
+        BayRoofKind::Flat,
+        BayRoofKind::Shed,
+        BayRoofKind::Hip,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BayRoofKind::Default => "Default for Style",
+            BayRoofKind::None => "None",
+            BayRoofKind::Flat => "Flat",
+            BayRoofKind::Shed => "Shed",
+            BayRoofKind::Hip => "Hip",
+        }
+    }
+
+    /// The kind that is built: `Default` resolves by the unit's style
+    /// (`box_window`: a box window gets a shed roof).
+    pub fn resolved(self, box_window: bool) -> BayRoofKind {
+        match self {
+            BayRoofKind::Default if box_window => BayRoofKind::Shed,
+            BayRoofKind::Default => BayRoofKind::Hip,
+            other => other,
+        }
+    }
+}
+
+/// Roof options of a bay, box or bow window: kind, pitch (rise per 12) and how
+/// far the roof reaches past the unit's panels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BayRoof {
+    pub kind: BayRoofKind,
+    pub pitch: f64,
+    pub overhang: f64,
+}
+
+impl Default for BayRoof {
+    fn default() -> Self {
+        BayRoof {
+            kind: BayRoofKind::Default,
+            pitch: 6.0,
+            overhang: 0.0,
+        }
+    }
+}
+
 // ----- helpers on the opening -----
 
 impl crate::model::Project {

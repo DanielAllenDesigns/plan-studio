@@ -13,6 +13,7 @@ use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, Vec2};
 use plan_core::geometry::Point;
 use plan_core::WallKind;
 
+pub mod arch_block;
 pub mod cabinet;
 pub mod cad;
 pub mod cad_ops;
@@ -20,6 +21,7 @@ pub mod camera;
 pub mod construction_line;
 pub mod details;
 pub mod dimension;
+pub mod distribution;
 pub mod electrical;
 pub mod fireplace;
 pub mod foundation;
@@ -28,15 +30,20 @@ pub mod images;
 pub mod library;
 pub mod materials;
 pub mod materials_list_polyline;
+pub mod molding;
 pub mod opening;
 pub mod painters;
 pub mod pan;
+pub mod regions;
 pub mod roof;
+pub mod roof_baseline;
 pub mod schedule;
 pub mod select;
+pub mod solids;
 pub mod stairs;
 pub mod terrain;
 pub mod text;
+pub mod tray_ceiling;
 pub mod underlay;
 pub mod wall;
 
@@ -121,6 +128,10 @@ pub enum ToolId {
     ConstructionLine,
     /// Tools > Floor/Reference Display > Edit Reference Document Offset.
     ReferenceOffset,
+    /// Build > Roof > Tray Ceiling Polyline.
+    TrayCeiling,
+    /// Build > Roof > Roof Baseline Polyline.
+    RoofBaseline,
 }
 
 impl ToolId {
@@ -364,6 +375,8 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(materials_list_polyline::MaterialsListPolylineTool::default()),
         Box::new(construction_line::ConstructionLineTool::default()),
         Box::new(construction_line::ReferenceOffsetTool::default()),
+        Box::new(tray_ceiling::TrayCeilingTool::default()),
+        Box::new(roof_baseline::RoofBaselineTool::default()),
     ]
 }
 
@@ -401,7 +414,15 @@ impl ToolSet {
         // edit buttons whichever tool is active.
         crate::dialogs::construction_line::host_frame(cx, ctx);
         crate::dialogs::construction_order::host_frame(cx, ctx);
+        // The Tray Ceiling Specification opens from the Edit toolbar.
+        crate::dialogs::tray_ceiling::host_frame(cx, ctx);
+        // The Roof Baseline Specification and Join Curved Roof Plane dialogs.
+        crate::dialogs::roof_baseline::host_frame(cx, ctx);
         crate::dialogs::reference_display::host_frame(cx, ctx);
+        // Line Style Management, the Fill Style dialogs and the Pattern window.
+        crate::dialogs::line_style::host_frame(cx, ctx);
+        crate::dialogs::fill_style::host_frame(cx, ctx);
+        crate::dialogs::pattern_editor::host_frame(cx, ctx);
         self.tools[self.active].frame(cx, ctx);
     }
 
@@ -485,6 +506,8 @@ mod tests {
             ToolId::MaterialsPolyline,
             ToolId::ConstructionLine,
             ToolId::ReferenceOffset,
+            ToolId::TrayCeiling,
+            ToolId::RoofBaseline,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");
         }

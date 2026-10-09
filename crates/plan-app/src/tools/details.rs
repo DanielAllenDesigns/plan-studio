@@ -36,14 +36,21 @@ mod components;
 
 pub use cad_detail::{
     auto_detail, delete_detail, duplicate_detail, eligible_cameras, new_detail, open_detail,
-    rename_detail, run_command, scale_label, send_to_layout, sync_names, AutoDetailOptions,
-    AUTO_DETAIL, COMPONENTS, DETAIL_FROM_VIEW, MANAGEMENT,
+    rename_detail, scale_label, send_to_layout, sync_names, AutoDetailOptions, AUTO_DETAIL,
+    COMPONENTS, DETAIL_FROM_VIEW, MANAGEMENT,
 };
+
+/// Runs a command id of the Trim, molding and CAD detail commands; false when
+/// it is none of them.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    super::molding::run_command(cx, id) || cad_detail::run_command(cx, id)
+}
 #[cfg(test)]
 pub use cad_detail::build as build_auto_detail;
 pub use components::{arm, catalogue, find as find_component, place as place_component};
 pub use components::{Category as ComponentCategory, Component};
 
+use super::molding;
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::details::{DetailsDialog, Draft};
 use crate::dialogs::Outcome;
@@ -52,7 +59,7 @@ use crate::editor::foundation_view as fv;
 use crate::editor::{Camera, EditorContext};
 use eframe::egui::{self, Key, Stroke};
 use plan_core::details::{
-    centroid, circle_points, DetailRef, DetailsLayer, ExteriorCorner, MoldingProfile, SolidKind,
+    centroid, circle_points, DetailRef, DetailsLayer, ExteriorCorner, SolidKind,
 };
 use plan_core::foundation::{outline_area, rect_outline, FoundationRef};
 use plan_core::geometry::{project_on_segment, Point};
@@ -75,6 +82,9 @@ pub enum DetailsVariant {
     AutoQuoins,
     MoldingLine,
     MoldingPolyline,
+    /// Build > Trim > Replace Moldings: a click on a molding gives it the
+    /// active library profile.
+    ReplaceMoldings,
     FloorMaterialRegion,
     WallMaterialRegion,
     WallHatching,
@@ -106,18 +116,21 @@ enum Draw {
     Wall,
     /// A wall, then the dialog.
     Hatch,
+    /// A click on a molding replaces its profile.
+    Replace,
     /// One click places the armed detail component.
     Component,
 }
 
 impl DetailsVariant {
-    pub const ALL: [DetailsVariant; 18] = [
+    pub const ALL: [DetailsVariant; 19] = [
         DetailsVariant::CornerBoards,
         DetailsVariant::AutoCornerBoards,
         DetailsVariant::Quoins,
         DetailsVariant::AutoQuoins,
         DetailsVariant::MoldingLine,
         DetailsVariant::MoldingPolyline,
+        DetailsVariant::ReplaceMoldings,
         DetailsVariant::FloorMaterialRegion,
         DetailsVariant::WallMaterialRegion,
         DetailsVariant::WallHatching,
@@ -141,6 +154,7 @@ impl DetailsVariant {
             DetailsVariant::AutoQuoins => "Auto Place Quoins",
             DetailsVariant::MoldingLine => "Molding Line",
             DetailsVariant::MoldingPolyline => "Molding Polyline",
+            DetailsVariant::ReplaceMoldings => "Replace Moldings",
             DetailsVariant::FloorMaterialRegion => "Floor Material Region",
             DetailsVariant::WallMaterialRegion => "Wall Material Region",
             DetailsVariant::WallHatching => "Wall Hatching",
@@ -162,6 +176,7 @@ impl DetailsVariant {
             DetailsVariant::CornerBoards | DetailsVariant::Quoins => Draw::Corner,
             DetailsVariant::MoldingLine => Draw::Line,
             DetailsVariant::MoldingPolyline => Draw::Polyline,
+            DetailsVariant::ReplaceMoldings => Draw::Replace,
             DetailsVariant::Cone | DetailsVariant::Cylinder | DetailsVariant::Sphere => {
                 Draw::Radius
             }
@@ -384,7 +399,30 @@ impl DetailsTool {
             return ToolResult::consumed();
         }
         let pts = std::mem::take(&mut self.points);
-        let id = dv::add_molding(cx, pts, MoldingProfile::Crown);
+        let id = dv::add_molding_with(cx, pts, molding::active_profile());
+        self.finish_ok(cx, DetailRef::Molding(id), false);
+        ToolResult::committed(self.variant.name())
+    }
+
+    /// A drag with Molding Polyline: a closed rectangle drawn clockwise, so
+    /// the profile lies inside it.
+    fn finish_molding_rect(&mut self, cx: &mut EditorContext, a: Point, b: Point) -> ToolResult {
+        let (lo, hi) = (
+            Point::new(a.x.min(b.x), a.y.min(b.y)),
+            Point::new(a.x.max(b.x), a.y.max(b.y)),
+        );
+        if hi.x - lo.x < MIN_RADIUS || hi.y - lo.y < MIN_RADIUS {
+            self.reset(cx);
+            return ToolResult::consumed();
+        }
+        let ring = vec![
+            lo,
+            Point::new(lo.x, hi.y),
+            hi,
+            Point::new(hi.x, lo.y),
+            lo,
+        ];
+        let id = dv::add_molding_with(cx, ring, molding::active_profile());
         self.finish_ok(cx, DetailRef::Molding(id), false);
         ToolResult::committed(self.variant.name())
     }
@@ -485,6 +523,22 @@ impl DetailsTool {
             ToolResult::committed(self.variant.name())
         } else {
             ToolResult::consumed()
+        }
+    }
+
+    /// Replace Moldings: the molding under the click takes the active
+    /// profile.
+    fn replace_molding(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        match molding::replace_at(cx, p.world) {
+            Some(id) => {
+                dv::select(cx, DetailRef::Molding(id));
+                cx.status.clear();
+                ToolResult::committed(self.variant.name())
+            }
+            None => {
+                cx.status = "Click on a molding".into();
+                ToolResult::consumed()
+            }
         }
     }
 
@@ -607,7 +661,7 @@ impl DetailsTool {
                     );
                 }
             }
-            Draw::Auto | Draw::Corner => {}
+            Draw::Auto | Draw::Corner | Draw::Replace => {}
         }
     }
 }
@@ -627,7 +681,14 @@ impl Tool for DetailsTool {
             Draw::Auto => format!("{}: click to place on every exterior corner", v.name()),
             Draw::Corner => format!("{}: click an exterior corner", v.name()),
             Draw::Line => format!("{}: click the start and the end", v.name()),
-            Draw::Polyline => format!("{}: click the corners, double-click finishes", v.name()),
+            Draw::Polyline => format!(
+                "{}: click the corners, double-click finishes; drag for a closed rectangle",
+                v.name()
+            ),
+            Draw::Replace => format!(
+                "{}: click a molding to give it the active library profile",
+                v.name()
+            ),
             Draw::Polygon => format!(
                 "{}: click the corners, double-click closes; drag for a rectangle",
                 v.name()
@@ -709,7 +770,7 @@ impl Tool for DetailsTool {
         }
         let draw = self.variant.draw();
         self.hover = Some(match draw {
-            Draw::Corner | Draw::Wall | Draw::Hatch | Draw::Auto => p.world,
+            Draw::Corner | Draw::Wall | Draw::Hatch | Draw::Auto | Draw::Replace => p.world,
             Draw::Component => cx.snap_at(p.world, None, p.modifiers.alt, &[]).point,
             _ if self.points.is_empty() => p.snapped,
             _ => self.snapped(cx, &p),
@@ -727,7 +788,11 @@ impl Tool for DetailsTool {
         }
         if let (Some(a), true) = (self.press, p.down) {
             let slop = DRAG_PX / cx.px_per_in.max(1e-6);
-            if draw == Draw::Polygon && (self.rect.is_some() || p.world.dist(a) > slop) {
+            let molding_rect = self.variant == DetailsVariant::MoldingPolyline
+                && self.points.len() <= 1;
+            if (draw == Draw::Polygon || molding_rect)
+                && (self.rect.is_some() || p.world.dist(a) > slop)
+            {
                 let corner = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
                 self.rect = Some((a, corner));
             }
@@ -770,6 +835,7 @@ impl Tool for DetailsTool {
         }
         match draw {
             Draw::Component => self.place_armed(cx, &p),
+            Draw::Replace => self.replace_molding(cx, &p),
             Draw::Auto => self.auto_place(cx),
             Draw::Corner => self.place_on_corner(cx, &p),
             Draw::Hatch => self.hatch_wall(cx, &p),
@@ -864,6 +930,9 @@ impl Tool for DetailsTool {
         if let Some((a, _)) = self.rect.take() {
             let corner = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
             self.points.clear();
+            if self.variant == DetailsVariant::MoldingPolyline {
+                return self.finish_molding_rect(cx, a, corner);
+            }
             return self.create_polygon(cx, rect_outline(a, corner), true);
         }
         // A drag from the first click ends a line or a radius.
@@ -902,6 +971,11 @@ impl Tool for DetailsTool {
         match dv::pick(cx, p.world, cx.pick_tol()) {
             Some(r) => {
                 dv::select(cx, r);
+                if let DetailRef::Molding(id) = r {
+                    if let Some(i) = dv::load(cx).molding(id).and_then(|m| molding::edge_near(m, p.world)) {
+                        molding::select_edge(id, i);
+                    }
+                }
                 self.open_spec(cx, r);
                 ToolResult::consumed()
             }

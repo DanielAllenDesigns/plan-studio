@@ -750,6 +750,25 @@ pub fn set_walls_retained(cx: &mut EditorContext, ids: &[Id], retained: bool) ->
     n
 }
 
+/// Retain Wall Framing on the walls `ids` with no undo step of its own: the
+/// Wall Specification calls it inside its own step. Returns how many walls
+/// changed.
+pub fn retain_walls_in(project: &mut Project, ids: &[Id], retained: bool) -> usize {
+    let mut st = settings(project);
+    let n = ids
+        .iter()
+        .filter(|id| st.build.retain_walls.contains(id) != retained)
+        .count();
+    if n == 0 {
+        return 0;
+    }
+    for id in ids {
+        st.build.set_wall_retained(*id, retained);
+    }
+    store_settings(project, &st);
+    n
+}
+
 /// Whether Build Framing leaves wall `id`'s framing alone.
 pub fn wall_retained(project: &Project, id: Id) -> bool {
     settings(project).build.retain_walls.contains(&id)

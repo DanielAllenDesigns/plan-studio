@@ -206,11 +206,10 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 return Vec::new();
             };
             let (a, b) = d.line_points();
-            vec![h(
-                HandleKind::PerpendicularMove,
-                Point::lerp(a, b, 0.5),
-                CursorIcon::Move,
-            )]
+            let at = d
+                .curve_geom(0.0, 0.0)
+                .map_or_else(|| Point::lerp(a, b, 0.5), |g| g.label_at);
+            vec![h(HandleKind::PerpendicularMove, at, CursorIcon::Move)]
         }
         ObjectRef::Cad(id) | ObjectRef::Text(id) => {
             let Some(c) = cad_by_id(floor, id) else {
@@ -389,7 +388,31 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 .map(|(i, p)| h(HandleKind::Reshape(i), p, CursorIcon::Crosshair))
                 .collect()
         }
-        ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::Schedule(_) => Vec::new(),
+        // The terrain itself selected: the corners of its perimeter, which
+        // reshape the perimeter like `TerrainObject(Perimeter)`.
+        ObjectRef::Terrain => {
+            let Some(view) = site_view::terrain_view(&cx.project) else {
+                return Vec::new();
+            };
+            let hit = site_view::TerrainHit::Perimeter;
+            let pts = site_view::hit_points(&view.record.terrain, hit);
+            if pts.len() > MAX_TERRAIN_HANDLES {
+                return Vec::new();
+            }
+            pts.into_iter()
+                .enumerate()
+                .map(|(i, p)| Handle {
+                    kind: HandleKind::Reshape(i),
+                    pos: p,
+                    cursor: CursorIcon::Crosshair,
+                    target: ObjectRef::TerrainObject(hit),
+                })
+                .collect()
+        }
+        ObjectRef::Room(_)
+        | ObjectRef::Schedule(_)
+        | ObjectRef::Block(_)
+        | ObjectRef::Solid(_) => Vec::new(),
     }
 }
 

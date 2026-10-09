@@ -761,13 +761,14 @@ mod tests {
             TerrainObject::Wall(w)
         ));
         assert_eq!(t.walls[0].height, 60.0);
-        // A mismatch changes nothing; holes and perimeter have no dialog.
+        // A mismatch changes nothing; the perimeter has no object dialog.
         let b = object_at(&t, TerrainHit::Break(0)).unwrap();
         assert!(!replace_object(&mut t, TerrainHit::Wall(0), b));
         assert!(object_at(&t, TerrainHit::Perimeter).is_none());
         assert!(object_at(&t, TerrainHit::Wall(9)).is_none());
+        // A hole opens the Terrain Feature dialog with its general page only.
         t.features[0].kind = plan_terrain::FeatureKind::Hole;
-        assert!(object_at(&t, TerrainHit::Feature(0)).is_none());
+        assert!(object_at(&t, TerrainHit::Feature(0)).is_some());
         assert!(TerrainObject::Break(TerrainBreak::default())
             .title()
             .contains("Break"));

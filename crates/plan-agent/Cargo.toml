@@ -1,0 +1,12 @@
+[package]
+name = "plan-agent"
+description = "Plan Studio: the Ask-to-make-changes agent (Anthropic Messages API client, plan tools, session loop)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+plan-core = { path = "../plan-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }

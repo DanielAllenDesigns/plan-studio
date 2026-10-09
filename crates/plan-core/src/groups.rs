@@ -253,8 +253,7 @@ impl Project {
             pasted_dims.push((id, d.anchors));
             d.id = id;
             d.anchors = [None, None];
-            d.start = d.start + offset;
-            d.end = d.end + offset;
+            d.translate(offset);
             self.floors[floor].dimensions.push(d);
             out.push(ObjectRef::Dimension(id));
         }
@@ -299,6 +298,22 @@ impl Project {
                 d.anchors = anchors;
             }
         }
+        // Strings stay strings among the copies; curved dimensions follow the
+        // copies of their walls.
+        let pairs: Vec<(Id, Id)> = clip
+            .dimensions
+            .iter()
+            .filter_map(|d| match map.get(&ObjectRef::Dimension(d.id)) {
+                Some(ObjectRef::Dimension(n)) => Some((d.id, *n)),
+                _ => None,
+            })
+            .collect();
+        self.floors[floor].repair_pasted_dimensions(&pairs, &|w| {
+            match map.get(&ObjectRef::Wall(w)) {
+                Some(ObjectRef::Wall(n)) => Some(*n),
+                _ => None,
+            }
+        });
         for g in &clip.groups {
             let members: Vec<ObjectRef> = g.iter().filter_map(|m| map.get(m).copied()).collect();
             if members.len() >= 2 {

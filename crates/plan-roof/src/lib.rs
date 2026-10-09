@@ -13,26 +13,44 @@
 //! See the crate README for the algorithm (a weighted straight skeleton) and
 //! its limits.
 
+mod baseline;
 mod ceiling;
+mod curved;
 mod dormer;
 mod edges;
 mod footprint;
 mod gable;
 mod geom;
+mod group;
 mod halfhip;
 mod hole;
 mod join;
+mod retain;
 mod skeleton;
 mod spec;
 mod staged;
+mod switches;
 
-pub use ceiling::{ceiling_planes_for_vaulted_room, CeilingPlane};
+pub use baseline::{
+    baseline_from_footprint, build_baseline_roof, directive_text, outside_outline,
+    perimeter_and_area, BaselineEdge, BaselineOption, RoofBaseline,
+};
+pub use ceiling::{
+    cathedral_ceiling_planes, cathedral_height_at, ceiling_height_at,
+    ceiling_planes_for_vaulted_room, room_ceiling_height_at, subtract_polygon,
+    tray_ceiling_planes, CeilingPlane, Shelf,
+};
+pub use curved::{
+    curve_height, curved_facets, plane_run, section_points, CurvedSpec, JoinLock,
+    DEFAULT_FACET_ANGLE,
+};
 pub use dormer::{
     auto_dormer, explode_dormer, Dormer, DormerKind, DormerSpec, DormerWall, ExplodedDormer,
     WindowOpening,
 };
 pub use edges::{classify_edges, EdgeRole, PlaneEdge};
-pub use footprint::footprint_from_walls;
+pub use footprint::{flatten_curved_walls, footprint_from_walls};
+pub use group::{assign_roof_groups, has_groups, GroupedRoom, RoofAssignment};
 pub use gable::{
     apply_gable_line, roof_return, roof_return_at, ReturnKind, ReturnSpec, RoofReturn,
 };
@@ -42,12 +60,18 @@ pub use hole::{
     SkylightSpec,
 };
 pub use join::join_planes;
+pub use retain::{drop_replaced, replaces as retained_plane_replaces};
 pub use spec::{
     build_roof_at_plate, build_roof_at_plate_with_faces, build_roof_with_faces,
     build_roof_with_specs, flat_roof_plane, flat_roof_plane_with_overhang, plate_baseline,
     EdgeRoofSpec,
 };
 pub use staged::DEFAULT_BREAK_FRACTION;
+pub use switches::{
+    clamp_segment_angle, degrees_to_pitch, pitch_display_degrees, pitch_text, pitch_to_degrees,
+    set_pitch_display_degrees, BuildSwitches, DEFAULT_MIN_ALCOVE, DEFAULT_SEGMENT_ANGLE,
+    PITCH_DEGREES_RANGE, SEGMENT_ANGLE_RANGE,
+};
 
 use plan_core::geometry::polygon_area;
 use plan_core::Point;

@@ -12,6 +12,7 @@ use crate::eave::{eave_detail_meshes, EavePlane};
 use crate::frame::Frame;
 use crate::mesh::{Material, Mesh};
 use crate::triangulate::ear_clip_with_holes;
+use plan_core::openings::{BayRoof, BayRoofKind};
 use plan_core::{OpeningStyle, Point};
 use plan_roof::{
     CeilingPlane, Dormer, DormerWall, Roof, RoofHole, RoofPlane, RoofPolygonWithHoles, Skylight,
@@ -260,11 +261,6 @@ fn add_polygon_with_holes(set: &mut MeshSet, poly: &RoofPolygonWithHoles, thickn
     }
 }
 
-/// Pitch of the roof over a bay, box or bow window, rise per 12.
-pub const BAY_ROOF_PITCH: f64 = 6.0;
-/// How far the roof over a projecting window reaches past its panels, inches
-/// (none: the unit projects exactly `PROJECTION` from the wall).
-pub const BAY_ROOF_OVERHANG: f64 = 0.0;
 /// Thickness of that roof, inches.
 pub const BAY_ROOF_THICKNESS: f64 = 2.0;
 
@@ -273,18 +269,23 @@ pub const BAY_ROOF_THICKNESS: f64 = 2.0;
 /// wall face, see `plan_core::opening_symbol::projection_footprint`), `head`
 /// the height of the roof's eave above the floor of `frame`. A bay or bow
 /// gets a hip roof whose back edge rises to the wall, a box window a shed roof
-/// that slopes away from the wall. Returns `false` (and adds nothing) when the
-/// outline has no area; the caller then draws its flat slab.
+/// that slopes away from the wall (`options` picks the kind, pitch and
+/// overhang). Returns `false` (and adds nothing) when the outline has no area
+/// or the kind is not a sloping one; the caller then draws its flat slab or
+/// nothing.
 pub fn bay_roof_into(
     set: &mut MeshSet,
     frame: &Frame,
     outline: &[(f64, f64)],
     head: f64,
     style: OpeningStyle,
+    options: &BayRoof,
 ) -> bool {
-    if outline.len() < 3 {
+    let kind = options.kind.resolved(style == OpeningStyle::BoxWindow);
+    if outline.len() < 3 || !matches!(kind, BayRoofKind::Hip | BayRoofKind::Shed) {
         return false;
     }
+    let (pitch, overhang) = (options.pitch.max(0.0), options.overhang.max(0.0));
     let plan = |(s, t): (f64, f64)| {
         let v = frame.point(s, t, head);
         Point::new(f64::from(v[0]), -f64::from(v[2]))
@@ -299,8 +300,8 @@ pub fn bay_roof_into(
     let n = ring.len();
     let closing = n - 1;
     let hip = plan_roof::EdgeRoofSpec {
-        pitch: BAY_ROOF_PITCH,
-        overhang: BAY_ROOF_OVERHANG,
+        pitch,
+        overhang,
         ..plan_roof::EdgeRoofSpec::default()
     };
     let mut specs = vec![hip; n];
@@ -310,13 +311,13 @@ pub fn bay_roof_into(
         overhang: 0.0,
         ..hip
     };
-    if style == OpeningStyle::BoxWindow {
-        // A shed roof: the sides are gable ends, only the front slopes.
+    if kind == BayRoofKind::Shed {
+        // A shed roof: the two edges beside the wall are gable ends, only the
+        // front slopes.
         for (i, spec) in specs.iter_mut().enumerate() {
-            let gable_side = i != closing && i != (closing + n / 2) % n;
-            if gable_side {
+            if i == 0 || i + 2 == n {
                 spec.full_gable_wall = true;
-                spec.overhang = BAY_ROOF_OVERHANG;
+                spec.overhang = overhang;
             }
         }
     }

@@ -36,8 +36,8 @@ use plan_core::{
 use plan_roof::{
     apply_gable_line, auto_dormer, build_roof_at_plate_with_faces, build_roof_with_faces,
     ceiling_planes_for_vaulted_room, flat_roof_plane_with_overhang, footprint_from_walls,
-    join_planes, roof_plane_with_holes, roof_return_at, CeilingPlane, Dormer, DormerSpec,
-    EdgeRoofSpec, ReturnKind, ReturnSpec, Roof, RoofHole, RoofPlane, SkylightSpec,
+    join_planes, plate_baseline, roof_plane_with_holes, roof_return_at, CeilingPlane, Dormer,
+    DormerSpec, EdgeRoofSpec, ReturnKind, ReturnSpec, Roof, RoofHole, RoofPlane, SkylightSpec,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -592,6 +592,9 @@ pub struct RoofPlaneRecord {
     /// `joined`, `overhangs` per outline edge), kept as read so editing the
     /// plane does not lose it.
     pub chief_edges: Option<Value>,
+    /// Curved Roof (RF-61): the plane's section across the slope is an arc;
+    /// `None` is an ordinary flat plane.
+    pub curved: Option<plan_roof::CurvedSpec>,
 }
 
 impl RoofPlaneRecord {
@@ -614,6 +617,7 @@ impl RoofPlaneRecord {
             edge: EdgeOverride::default(),
             structure: None,
             chief_edges: None,
+            curved: None,
         }
     }
 
@@ -771,6 +775,11 @@ impl RoofPlaneRecord {
         if let (Value::Object(m), Some(edges)) = (&mut v, &self.chief_edges) {
             m.insert("chief_edges".into(), edges.clone());
         }
+        if let (Value::Object(m), Some(c)) = (&mut v, self.curved) {
+            if let Ok(e) = serde_json::to_value(c) {
+                m.insert("curved".into(), e);
+            }
+        }
         v
     }
 
@@ -807,6 +816,7 @@ impl RoofPlaneRecord {
         r.eave = field!(v, "eave", plan_3d::EaveOverrides).unwrap_or_default();
         r.structure = field!(v, "structure", RoofStructure);
         r.chief_edges = v.get("chief_edges").filter(|e| e.is_array()).cloned();
+        r.curved = field!(v, "curved", plan_roof::CurvedSpec);
         Some(r)
     }
 
@@ -867,13 +877,11 @@ pub fn oriented_rect(c: Point, width: f64, length: f64, across: Point, up: Point
     ]
 }
 
-/// `8:12`, or `8.5:12` for fractional pitches.
+/// `8:12`, or `8.5:12` for fractional pitches; `33.7°` with Pitch in
+/// Degrees.
 pub fn pitch_label(pitch: f64) -> String {
-    if (pitch - pitch.round()).abs() < 0.05 {
-        format!("{}:12", pitch.round() as i64)
-    } else {
-        format!("{pitch:.1}:12")
-    }
+    // Degrees with Pitch in Degrees on (RF-72), else `x:12`.
+    plan_roof::pitch_text(pitch)
 }
 
 fn newell_area(poly: &[[f64; 3]]) -> f64 {
@@ -910,6 +918,9 @@ pub struct RoofSettings {
     pub signature: u64,
     /// Per-edge overrides set in the Roof Plane Specification.
     pub edge_specs: Vec<EdgeSpec>,
+    /// Build Roof's retain / baseline / pitch-in-degrees / curved-wall
+    /// switches (RF-66..RF-72).
+    pub switches: plan_roof::BuildSwitches,
     /// Roof detail: eave cut, fascia, soffit, rafter tails, attic walls and
     /// the baseline rule (Default Settings > Roof Defaults), kept with the
     /// roof so the 3D view needs no defaults.
@@ -932,6 +943,7 @@ impl RoofSettings {
             material: ROOF_MATERIALS[0].to_string(),
             signature: 0,
             edge_specs: Vec::new(),
+            switches: plan_roof::BuildSwitches::default(),
             detail: d.roof_detail.clone(),
         }
     }
@@ -951,6 +963,7 @@ impl RoofSettings {
             material: ROOF_MATERIALS[0].to_string(),
             signature: 0,
             edge_specs: Vec::new(),
+            switches: plan_roof::BuildSwitches::default(),
             detail: RoofDetailDefaults::default(),
         }
     }
@@ -970,6 +983,7 @@ impl RoofSettings {
             "material": self.material,
             "signature": self.signature,
             "edge_specs": self.edge_specs.iter().map(EdgeSpec::to_json).collect::<Vec<_>>(),
+            "switches": self.switches,
             "detail": self.detail,
         })
     }
@@ -992,6 +1006,7 @@ impl RoofSettings {
             edge_specs: field!(v, "edge_specs", Vec<Value>)
                 .map(|e| e.iter().filter_map(EdgeSpec::from_json).collect())
                 .unwrap_or_default(),
+            switches: field!(v, "switches", plan_roof::BuildSwitches).unwrap_or_default(),
             // A roof stored before the detail existed keeps its baseline.
             detail: field!(v, "detail", RoofDetailDefaults).unwrap_or_else(|| RoofDetailDefaults {
                 baseline_at_plate: false,
@@ -1298,6 +1313,8 @@ pub fn load(floor: &Floor) -> RoofSet {
         }
     }
     if let Some(s) = &set.settings {
+        // Dialogs and labels show degrees with Pitch in Degrees (RF-72).
+        plan_roof::set_pitch_display_degrees(s.switches.pitch_in_degrees);
         for r in &mut set.planes {
             if let Some(edge) = r.source {
                 r.edge = s.override_of(edge).unwrap_or_default();
@@ -1456,6 +1473,16 @@ pub fn wall_signature(floor: &Floor) -> u64 {
         }
         fnv(&mut h, &w.id.to_le_bytes());
         fnv(&mut h, format!("{:?}", w.roof).as_bytes());
+        // A curved wall is roofed in sections (RF-66).
+        if let Some(c) = w.curve {
+            fnv(&mut h, &c.bulge.to_bits().to_le_bytes());
+        }
+    }
+    // A Roof Group splits the roof into buildings (R-114).
+    for n in floor.room_names.iter().filter(|n| n.roof_group != 0) {
+        fnv(&mut h, &n.anchor.x.to_bits().to_le_bytes());
+        fnv(&mut h, &n.anchor.y.to_bits().to_le_bytes());
+        fnv(&mut h, &n.roof_group.to_le_bytes());
     }
     // Roof Over This Room and Flat Roof Over This Room change the roof too.
     for n in &floor.room_names {
@@ -2149,6 +2176,13 @@ impl RegionRoof {
     }
 }
 
+/// Curved walls replaced by the straight sections an automatic roof is built
+/// over: the Segment Angle at Curved Wall and the Minimum Alcove Size of the
+/// Build Roof switches (RF-66, RF-67).
+fn curved_sections(walls: Vec<Wall>, s: &RoofSettings) -> Vec<Wall> {
+    plan_roof::flatten_curved_walls(&walls, s.switches.segment_angle, s.switches.min_alcove)
+}
+
 /// The exterior walls that make planes: all but the knee walls (RF-23).
 fn roofing_walls(floor: &Floor) -> Vec<Wall> {
     floor
@@ -2190,8 +2224,11 @@ fn room_level(floor: &Floor, room: &Room) -> Option<f64> {
         .reduce(f64::min)
 }
 
-/// Rooms grouped by plate height, tallest first. Rooms with no exterior wall
-/// join the tallest group.
+/// Rooms grouped into the sets that are roofed together, tallest roof first.
+/// Rooms in the default Roof Group (0) are grouped by plate height (DECISIONS
+/// 118); rooms of any other Roof Group form one building each, whatever their
+/// plate heights (R-114, `plan_roof::assign_roof_groups`). Rooms with no
+/// exterior wall join the tallest group.
 fn level_groups(floor: &Floor, rooms: &[&Room]) -> Vec<(f64, Vec<Room>)> {
     let tallest = floor
         .walls
@@ -2199,26 +2236,18 @@ fn level_groups(floor: &Floor, rooms: &[&Room]) -> Vec<(f64, Vec<Room>)> {
         .filter(|w| w.kind == WallKind::Exterior && !w.is_deck_edge && !w.flags.half_wall)
         .map(|w| w.height)
         .fold(0.0, f64::max);
-    let mut levels: Vec<f64> = Vec::new();
-    let mut of: Vec<f64> = Vec::new();
-    for r in rooms {
-        let l = room_level(floor, r).unwrap_or(tallest);
-        of.push(l);
-        if !levels.iter().any(|x| (x - l).abs() < LEVEL_TOL) {
-            levels.push(l);
-        }
-    }
-    levels.sort_by(|a, b| b.total_cmp(a));
-    levels
+    let grouped: Vec<plan_roof::GroupedRoom> = rooms
+        .iter()
+        .map(|r| plan_roof::GroupedRoom {
+            group: r.name_entry(&floor.room_names).map_or(0, |n| n.roof_group),
+            level: room_level(floor, r),
+        })
+        .collect();
+    plan_roof::assign_roof_groups(&grouped, tallest, LEVEL_TOL)
         .into_iter()
-        .map(|l| {
-            let group: Vec<Room> = rooms
-                .iter()
-                .zip(&of)
-                .filter(|(_, o)| (**o - l).abs() < LEVEL_TOL)
-                .map(|(r, _)| (*r).clone())
-                .collect();
-            (l, group)
+        .map(|a| {
+            let group: Vec<Room> = a.rooms.iter().map(|&i| rooms[i].clone()).collect();
+            (a.level, group)
         })
         .collect()
 }
@@ -2516,13 +2545,150 @@ fn make_wing_planes(
             continue;
         }
         let uppers = uppers_of(g);
-        let walls = roofing_walls(&project.floors[g]);
+        let walls = curved_sections(roofing_walls(&project.floors[g]), s);
         let mut all = RegionRoof::default();
         for r in &regions {
             let butts = |a: Point, b: Point| edge_butts(project, r, &regions, &uppers, a, b);
             all.add(region_roof(project, g, &walls, &r.fp, r.top, s, &butts)?);
         }
         out.push((g, all));
+    }
+    Ok(out)
+}
+
+/// One roof's footprint with the directives of its walls, for Make Roof
+/// Baseline Polylines (RF-62): what a baseline polyline is made from.
+pub(crate) struct BaselineSource {
+    /// The floor the walls stand on (and the polyline goes on).
+    pub floor: usize,
+    /// Counter-clockwise outline along the wall centerlines.
+    pub fp: Vec<Point>,
+    /// The roof directive of each edge.
+    pub specs: Vec<EdgeRoofSpec>,
+    /// Half the thickness of the wall along each edge, inches.
+    pub half: Vec<f64>,
+    /// Eave elevation above the floor datum of `floor`, inches.
+    pub height: f64,
+}
+
+/// The footprint, directives and eave height of one roof region.
+fn region_source(
+    project: &Project,
+    fi: usize,
+    walls: &[Wall],
+    fp: &[Point],
+    top: f64,
+    s: &RoofSettings,
+    butts: &dyn Fn(Point, Point) -> bool,
+) -> BaselineSource {
+    let floor = &project.floors[fi];
+    let plate = floor.elevation + top + s.raise_off_plate;
+    let below = |a: Point, b: Point| wall_below_drop(project, fi, plate, a, b);
+    let ctx = EdgeCtx {
+        butts,
+        below: &below,
+    };
+    let plans = edge_plans(walls, fp, s, top + s.raise_off_plate, &ctx);
+    let specs: Vec<EdgeRoofSpec> = plans.iter().map(|e| e.spec).collect();
+    let eave = if s.detail.baseline_at_plate {
+        plate_baseline(&specs, plate, s.detail.thickness)
+    } else {
+        plate
+    };
+    let n = fp.len();
+    let half = (0..n)
+        .map(|i| {
+            walls_on_edge(walls, fp[i], fp[(i + 1) % n])
+                .iter()
+                .map(|&k| &walls[k])
+                .max_by(|x, y| x.length().total_cmp(&y.length()))
+                .map_or(0.0, |w| w.thickness * 0.5)
+        })
+        .collect();
+    BaselineSource {
+        floor: fi,
+        fp: fp.to_vec(),
+        specs,
+        half,
+        height: eave - floor.elevation,
+    }
+}
+
+/// The roofs the walls would get from Build Roof, as sources for baseline
+/// polylines: the build floor's (one per wing region) and the wings on the
+/// floors below. Mirrors [`make_auto_planes`] and [`make_wing_planes`].
+pub(crate) fn baseline_sources(
+    project: &Project,
+    fi: usize,
+    s: &RoofSettings,
+) -> Result<Vec<BaselineSource>, String> {
+    let floor = &project.floors[fi];
+    let rooms = detect_rooms(&floor.walls, TOL);
+    let pitched = rooms.is_empty()
+        || rooms
+            .iter()
+            .any(|r| room_roof(floor, r) == RoomRoof::Pitched);
+    let mut out = Vec::new();
+    if pitched {
+        match floor_levels(floor, &rooms) {
+            Some(groups) => {
+                let regions = level_regions(project, fi, &groups);
+                let uppers = upper_footprints(project, fi, fi);
+                let walls = curved_sections(roofing_walls(floor), s);
+                for r in &regions {
+                    let butts = |a: Point, b: Point| edge_butts(project, r, &regions, &uppers, a, b);
+                    out.push(region_source(project, fi, &walls, &r.fp, r.top, s, &butts));
+                }
+            }
+            None => {
+                let walls = curved_sections(exterior_walls(floor), s);
+                let fp = footprint_from_walls(&walls, TOL)
+                    .ok_or_else(|| "The exterior walls do not enclose an area".to_string())?;
+                let top = walls.iter().map(|w| w.height).fold(0.0, f64::max);
+                out.push(region_source(project, fi, &walls, &fp, top, s, &|_, _| false));
+            }
+        }
+    }
+    for g in 0..fi {
+        let regions = wing_regions(project, fi, g);
+        if regions.is_empty() {
+            continue;
+        }
+        let uppers = upper_footprints(project, g, fi);
+        let walls = curved_sections(roofing_walls(&project.floors[g]), s);
+        for r in &regions {
+            let butts = |a: Point, b: Point| edge_butts(project, r, &regions, &uppers, a, b);
+            out.push(region_source(project, g, &walls, &r.fp, r.top, s, &butts));
+        }
+    }
+    if out.is_empty() {
+        return Err("The exterior walls do not enclose an area".to_string());
+    }
+    Ok(out)
+}
+
+/// The wings of the floors below `fi` built from their Roof Baseline
+/// Polylines (the baselines version of [`make_wing_planes`]).
+fn baseline_wings(
+    project: &Project,
+    fi: usize,
+    s: &RoofSettings,
+) -> Result<Vec<(usize, RegionRoof)>, String> {
+    let mut out = Vec::new();
+    for g in 0..fi {
+        let (planes, approximate, faces) =
+            crate::tools::roof_baseline::planes_on_floor(project, g, s)?;
+        if planes.is_empty() && faces.is_empty() {
+            continue;
+        }
+        out.push((
+            g,
+            RegionRoof {
+                planes,
+                approximate,
+                faces,
+            },
+        ));
     }
     Ok(out)
 }
@@ -2547,6 +2713,11 @@ pub fn project_signature(project: &Project, fi: usize) -> u64 {
             fnv(h, format!("{:?}{:?}", w.kind, w.roof).as_bytes());
         }
         for n in &f.room_names {
+            if n.roof_group != 0 {
+                fnv(h, &n.anchor.x.to_bits().to_le_bytes());
+                fnv(h, &n.anchor.y.to_bits().to_le_bytes());
+                fnv(h, &n.roof_group.to_le_bytes());
+            }
             if let Some(m) = n.misc.as_ref().filter(|m| !m.roof_over || m.flat_roof) {
                 fnv(h, &n.anchor.x.to_bits().to_le_bytes());
                 fnv(h, &n.anchor.y.to_bits().to_le_bytes());
@@ -2564,7 +2735,7 @@ pub fn project_signature(project: &Project, fi: usize) -> u64 {
         .collect();
     heights.sort_unstable();
     heights.dedup();
-    if heights.len() > 1 {
+    if heights.len() > 1 || top.room_names.iter().any(|n| n.roof_group != 0) {
         all_walls(&mut h, top);
     }
     for g in 0..fi {
@@ -2583,6 +2754,17 @@ fn make_auto_planes(
     fi: usize,
     s: &RoofSettings,
 ) -> Result<AutoRoof, String> {
+    // Use Existing Roof Baselines (RF-71): the planes come from the Roof
+    // Baseline Polylines instead of the walls.
+    if s.switches.use_existing_baselines {
+        let (planes, approximate, faces) =
+            crate::tools::roof_baseline::baseline_planes(project, fi, s)?;
+        return Ok(AutoRoof {
+            planes,
+            approximate,
+            faces,
+        });
+    }
     let floor = &project.floors[fi];
     let rooms = detect_rooms(&floor.walls, TOL);
     // A floor whose every room is flat or roofless has no pitched roof.
@@ -2603,7 +2785,7 @@ fn make_auto_planes(
                 for r in &regions {
                     let butts =
                         |a: Point, b: Point| edge_butts(project, r, &regions, &uppers, a, b);
-                    let walls = roofing_walls(floor);
+                    let walls = curved_sections(roofing_walls(floor), s);
                     let one = region_roof(project, fi, &walls, &r.fp, r.top, s, &butts)?;
                     all.add(one);
                 }
@@ -2613,7 +2795,7 @@ fn make_auto_planes(
                 all
             }
             None => {
-                let walls = exterior_walls(floor);
+                let walls = curved_sections(exterior_walls(floor), s);
                 let fp = footprint_from_walls(&walls, TOL)
                     .ok_or_else(|| "The exterior walls do not enclose an area".to_string())?;
                 let top = walls.iter().map(|w| w.height).fold(0.0, f64::max);
@@ -2791,10 +2973,18 @@ pub fn rebuild(
 ) -> Result<BuildReport, String> {
     let mut set = load(&project.floors[fi]);
     let old_auto: Vec<RoofPlaneRecord> = set.planes.iter().filter(|p| p.auto).cloned().collect();
-    set.planes.retain(|p| !p.auto);
+    // Retain Manually Drawn / Edited Automatic Roof Planes (RF-68, RF-71).
+    set.planes
+        .retain(|p| crate::tools::roof_baseline::retained(p, &settings.switches));
+    // Make Roof Baseline Polylines is a one-shot: it replaces the roof with
+    // polylines and is not kept (Auto Rebuild must not remake them).
+    let make_baselines = std::mem::take(&mut settings.switches.make_baselines);
     let mut approximate = false;
     let mut built = 0;
-    if settings.build_planes {
+    if make_baselines {
+        set.faces.clear();
+        crate::tools::roof_baseline::make_from_walls(project, fi, &settings)?;
+    } else if settings.build_planes {
         match make_auto_planes(project, fi, &settings) {
             Ok(AutoRoof {
                 mut planes,
@@ -2802,6 +2992,8 @@ pub fn rebuild(
                 faces,
             }) => {
                 set.faces = faces;
+                // A new plane where a retained one stands is dropped.
+                planes = crate::tools::roof_baseline::drop_replaced_records(&set.planes, planes);
                 let moved = carry_over(&old_auto, &mut planes);
                 // Dormers follow their (rebuilt) plane.
                 for d in &mut set.dormers {
@@ -2837,11 +3029,14 @@ pub fn rebuild(
     settings.signature = project_signature(project, fi);
     set.settings = Some(settings.clone());
     store(project, fi, &mut set);
-    // The wings on the floors below (RF-9).
-    let wings = if settings.build_planes {
-        make_wing_planes(project, fi, &settings)?
-    } else {
+    // The wings on the floors below (RF-9); from the Roof Baseline Polylines of
+    // those floors when the roof is built from baselines.
+    let wings = if make_baselines || !settings.build_planes {
         Vec::new()
+    } else if settings.switches.use_existing_baselines {
+        baseline_wings(project, fi, &settings)?
+    } else {
+        make_wing_planes(project, fi, &settings)?
     };
     for g in 0..fi {
         let new = wings.iter().find(|(f, _)| *f == g).map(|(_, w)| w);
@@ -2875,7 +3070,8 @@ fn rebuild_wing_floor(
         return (0, 0, false);
     }
     let old_auto: Vec<RoofPlaneRecord> = set.planes.iter().filter(|p| p.auto).cloned().collect();
-    set.planes.retain(|p| !p.auto);
+    set.planes
+        .retain(|p| crate::tools::roof_baseline::retained(p, &settings.switches));
     set.ceilings.retain(|c| !c.auto);
     set.faces.clear();
     // A lower floor takes its roof from the build floor's settings.
@@ -2887,6 +3083,7 @@ fn rebuild_wing_floor(
         for r in &mut planes {
             r.id = project.alloc_id();
         }
+        planes = crate::tools::roof_baseline::drop_replaced_records(&set.planes, planes);
         let moved = carry_over(&old_auto, &mut planes);
         for d in &mut set.dormers {
             if let Some((_, to)) = moved.iter().find(|(old, _)| *old == d.main) {
@@ -3183,6 +3380,12 @@ pub fn apply_edits(old: &mut RoofPlaneRecord, new: &RoofPlaneRecord) {
     old.gutters = new.gutters;
     old.eave = new.eave;
     old.structure = new.structure;
+    // Curved Roof (RF-61); the curve follows the plane's (new) pitch.
+    let curved = new.curved.map(|c| c.retarget(old.pitch));
+    if curved != old.curved {
+        old.curved = curved;
+        old.auto = false;
+    }
     // The dialog removes holes and edits skylight constructions.
     old.holes = new.holes.clone();
 }
@@ -3728,6 +3931,20 @@ pub fn join_planes_record(
     edge: usize,
     b: Id,
 ) -> Result<(), String> {
+    join_planes_record_locked(project, fi, a, edge, b, plan_roof::JoinLock::Radius)
+}
+
+/// [`join_planes_record`] with the choice of the Join Curved Roof Plane
+/// dialog: a curved plane keeps its radius (the default) or its angle at the
+/// ridge when its ridge edge moves to meet the other plane (RF-61).
+pub fn join_planes_record_locked(
+    project: &mut Project,
+    fi: usize,
+    a: Id,
+    edge: usize,
+    b: Id,
+    lock: plan_roof::JoinLock,
+) -> Result<(), String> {
     if a == b {
         return Err("Pick a different plane to join to".into());
     }
@@ -3736,9 +3953,22 @@ pub fn join_planes_record(
     let pb = set.plane(b).ok_or("The second roof plane is gone")?;
     let joined = join_planes(&pa.to_roof_plane(0), edge, &pb.to_roof_plane(0))
         .ok_or("These planes cannot be joined along that edge (parallel planes?)")?;
+    // A curved plane spans a new run now: the curve follows (RF-61).
+    let curved = match pa.curved.filter(|c| !c.is_straight()) {
+        Some(c) => {
+            let old_run = plan_roof::plane_run(&pa.to_roof_plane(0));
+            let run = plan_roof::plane_run(&joined);
+            Some(
+                c.after_join(old_run, run, run * pa.pitch / 12.0, lock)
+                    .ok_or("The radius is too short for the joined edge: lock the angle at the ridge")?,
+            )
+        }
+        None => pa.curved,
+    };
     let rec = set.plane_mut(a).ok_or("The first roof plane is gone")?;
     rec.polygon3d = joined.polygon3d;
     rec.baseline = joined.baseline;
+    rec.curved = curved;
     rec.auto = false;
     let kept: Vec<HoleRecord> = rec
         .holes
@@ -3950,11 +4180,16 @@ fn draw_plane_outline(
     heights: &[f64],
     others: &[Vec<(Point, Point)>],
     color: Color32,
+    hidden: &[(Point, Point)],
 ) {
     let n = poly.len();
     let min_h = heights.iter().copied().fold(f64::INFINITY, f64::min);
     for i in 0..n {
         let j = (i + 1) % n;
+        // Show All Ridges off hides the hips over a curved wall (RF-82).
+        if hidden.iter().any(|e| same_edge(*e, (poly[i], poly[j]))) {
+            continue;
+        }
         let eave = (heights[i] - min_h).abs() < 0.5 && (heights[j] - min_h).abs() < 0.5;
         let shared = others
             .iter()
@@ -4020,10 +4255,21 @@ pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     // Fireplaces, chimney chases, decking and level changes (CB-86, CB-87,
     // R-86) draw here, in the pass after the placed objects; they need no roof.
     super::fireplace_view::draw(cx, painter, cam);
+    // Roof Baseline Polylines and their directive letters (RF-62).
+    crate::tools::roof_baseline::draw_baselines(cx, painter, cam);
     let set = load(cx.floor());
     if set.planes.is_empty() && set.ceilings.is_empty() {
         return;
     }
+    // Show All Ridges off: the hips between the sections of a curved wall's
+    // roof are left out (RF-82).
+    let hidden = match &set.settings {
+        Some(s) if !s.switches.show_all_ridges => crate::tools::roof_baseline::facet_hips(
+            &set.planes,
+            s.switches.segment_angle_clamped(),
+        ),
+        _ => Vec::new(),
+    };
     let edges: Vec<Vec<(Point, Point)>> = set
         .planes
         .iter()
@@ -4042,7 +4288,7 @@ pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             .filter(|(o, _)| *o != k)
             .map(|(_, e)| e.clone())
             .collect();
-        draw_plane_outline(painter, cam, &poly, &heights, &others, color);
+        draw_plane_outline(painter, cam, &poly, &heights, &others, color, &hidden);
         for h in &r.holes {
             let pts: Vec<Pos2> = h.outline.iter().map(|p| cam.world_to_screen(*p)).collect();
             if h.is_skylight() {
@@ -4103,7 +4349,7 @@ pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 .filter(|(o, _)| *o != k)
                 .map(|(_, e)| e.clone())
                 .collect();
-            draw_plane_outline(painter, cam, &pl.plan_polygon(), &heights, &others, color);
+            draw_plane_outline(painter, cam, &pl.plan_polygon(), &heights, &others, color, &[]);
         }
         let w = &g.front_wall;
         painter.line_segment(
@@ -4173,6 +4419,16 @@ fn floor_roof_meshes_in(
                 Some(e) => plane.polygon3d = e.plane.polygon3d.clone(),
                 None => continue,
             }
+        }
+        // A curved plane (RF-61) is drawn as the flat facets of its arc;
+        // holes do not cut a curved plane.
+        if let Some(curve) = r.curved.filter(|c| !c.is_straight()) {
+            let own = r.eave.thickness.unwrap_or(thickness);
+            for facet in plan_roof::curved_facets(&plane, &curve) {
+                let poly = roof_plane_with_holes(&facet, &[]);
+                out.extend(tagged(plan_3d::roof_plane_meshes(&poly, own), r.id));
+            }
+            continue;
         }
         let mut holes = r.roof_holes();
         holes.extend(

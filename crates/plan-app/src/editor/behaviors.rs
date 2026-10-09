@@ -595,7 +595,7 @@ mod tests {
         cx.defaults.editing.behavior.alternate_lock_axis = false;
         cx.undo();
         // The temporary dimensions of the first drag would take the press.
-        cx.temp.cancel();
+        cx.temp.clear();
         drag(
             &mut cx,
             Point::new(150.0, 100.0),

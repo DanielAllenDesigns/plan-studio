@@ -714,16 +714,9 @@ fn plan_3d_arch_applies(kind: OpeningKind, style: OpeningStyle) -> bool {
 }
 
 fn overlap(a: &Opening, b: &Opening) -> bool {
-    // A window standing over a door (a transom) shares no height with it.
-    // Two windows may touch (DW-4): the clear distance is zero between them.
-    // (A hair of slack: a position the placement rules worked out to the
-    // exact clearance must not fail on rounding.)
-    let margin = if a.kind == OpeningKind::Window && b.kind == OpeningKind::Window {
-        -1e-6
-    } else {
-        OPENING_MARGIN - 1e-6
-    };
-    plan_core::openings::openings_conflict(a, b, margin)
+    // The shared placement rules: a window standing over a door shares no
+    // height with it, and two windows may touch (DW-4).
+    plan_core::openings::placement::conflict(a, b)
 }
 
 impl OpeningForm {
@@ -1031,6 +1024,45 @@ impl OpeningForm {
         });
     }
 
+    /// Options tab, Bay Roof: the roof over a bay, box or bow window.
+    fn bay_roof(&mut self, ui: &mut Ui) {
+        section(ui, "Bay Roof");
+        let box_window = self.draft.style == OpeningStyle::BoxWindow;
+        let roof = &mut self.draft.extras.spec.bay_roof;
+        row(ui, "Roof", |ui| {
+            egui::ComboBox::from_id_salt("bay_roof_kind")
+                .selected_text(roof.kind.name())
+                .show_ui(ui, |ui| {
+                    for k in plan_core::openings::BayRoofKind::ALL {
+                        ui.selectable_value(&mut roof.kind, k, k.name());
+                    }
+                });
+        });
+        let sloped = matches!(
+            roof.kind.resolved(box_window),
+            plan_core::openings::BayRoofKind::Hip | plan_core::openings::BayRoofKind::Shed
+        );
+        ui.add_enabled_ui(sloped, |ui| {
+            row(ui, "Pitch (rise per 12)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut roof.pitch)
+                        .range(0.0..=24.0)
+                        .speed(0.1),
+                )
+            });
+        });
+        let mut overhang = roof.overhang;
+        let changed = ui
+            .add_enabled_ui(sloped, |ui| {
+                self.fields
+                    .length_row(ui, "Overhang", "bay_roof_overhang", &mut overhang)
+            })
+            .inner;
+        if changed {
+            self.draft.extras.spec.bay_roof.overhang = overhang.max(0.0);
+        }
+    }
+
     fn window_options(&mut self, ui: &mut Ui) {
         match self.draft.style {
             OpeningStyle::Casement => self.swing_controls(ui, true),
@@ -1059,6 +1091,7 @@ impl OpeningForm {
                     fmt_short(PROJECTION)
                 ));
                 ui.checkbox(&mut self.draft.swing_flipped, "Project to the other side");
+                self.bay_roof(ui);
             }
             OpeningStyle::PassThrough => {
                 section(ui, "Pass-Through");

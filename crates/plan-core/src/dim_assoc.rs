@@ -385,9 +385,13 @@ fn cad_anchor(c: &CadObject, p: Point, anywhere: bool) -> Option<DimAnchor> {
                 }
             }
         }
-        CadItem::Polyline { points, .. } => {
+        CadItem::Polyline { points, closed } => {
             let i = points.iter().position(|q| near(*q))?;
-            DimAttach::Vertex(i as u32)
+            if i + 1 == points.len() && i > 0 && !*closed {
+                DimAttach::End
+            } else {
+                DimAttach::Vertex(i as u32)
+            }
         }
         CadItem::Circle { center, radius } | CadItem::Arc { center, radius, .. } => {
             let on = near(*center) || (p.dist(*center) - radius).abs() <= ATTACH_TOL;

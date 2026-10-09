@@ -32,9 +32,10 @@ of a `plan_cabinets::Cabinet`, so the plan file stays readable and the engine
   1 1/2" countertop with a 1" overhang, and a 4" x 3" toe kick); Wall cabinet 24" x 12" x 30"
   with its bottom at 54"; Full Height 24" x 24" x 84". Door style Lincoln Door,
   drawer style Lincoln Flat Panel Drawer, Knob handles.
-- Automatic labels follow the industry style: `B24` (base 24"), `B36-SB` (sink base),
-  `W3030` (wall cabinet, width then height), `FH2484` (full height), with `SO`, `SH`,
-  `PT` for soffit, shelf, partition.
+- Automatic labels follow Chief's four-part format, Key + Code + Size + Door Swing (Label, below): `B24` (base 24"),
+  `3DB24` (a bank of three drawers), `SB24R` (sink base with a right door), `W3030` (wall cabinet, width then
+  height), `U242484` (full height), `BF3` (a filler), `OTC362490` (tall oven), with `SO` for a soffit. Shelves,
+  partitions and the fillers the program makes have no automatic label.
 - Countertop merging is Generate Countertop (`G`, 6.2). One engine helper has no editor command yet: `run_along_wall` (a row of cabinets along a wall).
 
 ## 6.2 Tools
@@ -94,6 +95,11 @@ and sits in the bay (a range bay takes an oven and the other way round).
 | `G` | **Generate Countertop**: joins the countertops of touching base cabinets into custom countertops (below). |
 | `Esc` | Returns to Select Objects. |
 
+**Narrow spaces.** A cabinet clicked into a space that has a wall or cabinet on both sides and is narrower than the cabinet takes the
+largest multiple of the Resize Increment that fits (a 24" cabinet in a 20" space with a 3" increment becomes 18"), never below the Minimum
+Cabinet Width; in a space narrower than the minimum nothing is placed and the status line says so. A **wall cabinet** placed over a
+free-standing appliance (or a cabinet's appliance bay) that reaches above its usual bottom hangs from the appliance top.
+
 **Placement sizing.** A cabinet clicked into a gap (between a wall and a cabinet, or between two cabinets) whose width is within the
 tolerance of the cabinet's own takes the gap's width and position, so a 36" default base clicked into a 34" gap becomes 34" and
 sits against its neighbors. The tolerance is 2" and is changed in Preferences > Architectural (*Gap within ... of the cabinet's width*);
@@ -111,8 +117,8 @@ A placed cabinet is selected. Its handles:
   A cabinet dragged into a gap (between a wall and a cabinet, or two cabinets) whose width is within 2"
   of its own **fits to the gap**: it takes the gap's width and position exactly. `Alt`, or
   Preferences > Architectural, turns that off.
-- **Bumping and pushing**: in **Bump** (the default) a dragged cabinet stops butted against the cabinets it meets. In **Push** it pushes the cabinets of its run along ahead of it (they stay butted, and come back if you drag back); if a wall or another run is in the way it bumps instead. **Pass Through** ignores other cabinets. One undo step undoes the move and every push. The setting is for the session; the Select tool always bumps.
-- **Resize** at both ends: changes the width in 3" steps; the cabinet grows from the dragged side. An edge dragged within 4" of a wall or the next cabinet snaps to it, so the cabinet fills the gap (`Alt` turns the snap off).
+- **Bumping and pushing**: in **Bump** (the default) a dragged cabinet stops butted against the cabinets it meets. In **Push** it pushes the cabinets of its run along ahead of it (they stay butted, and come back if you drag back); if a wall or another run is in the way it bumps instead. **Pass Through** ignores other cabinets. One undo step undoes the move and every push. The setting is for the session (Edit > Neighbors cycles it too) and the Select tool follows it when you drag a cabinet.
+- **Resize** at both ends: changes the width by the **Resize Increment** (3" unless Default Settings > Cabinets > General Cabinet changes it, or asks for the Snap Grid); the cabinet grows from the dragged side. An edge dragged within 3" of a wall or the next cabinet snaps to it, so the cabinet fills the gap (`Alt` turns the snap off).
 - **Depth** handles on the middle of the front and back edges: change the depth in 1" steps
   (3" at least); the opposite edge stays put, so the back can stay on the wall.
 - **Corner** handles: change width and depth together, the opposite corner staying put.
@@ -123,8 +129,27 @@ The height is set in the Cabinet Specification. Free-form tops (custom counterto
 have no resize handles.
 
 Double-click or press `Enter` opens the Cabinet Specification. The Edit toolbar offers
-Open Object, Delete Objects, Copy Selected Objects, Paste in Place and **Reverse Door
-Swing**. Select a cabinet with Select Objects too; the Cabinet tool can also pick cabinets.
+Open Object, Delete Objects, Copy Selected Objects, Paste in Place, **Reverse Door
+Swing** and **Set as Default** (copies one standard cabinet into the defaults of its kind). Select a cabinet with Select Objects too; the Cabinet tool can also pick cabinets.
+
+#### Automatic fillers, merging and module lines
+
+Cabinets of one family (base, wall or full height) and one height that stand side by side with up to 3" between them, or between a
+cabinet side and a wall, get a **filler** of exactly that width (to 1/16"), with the same toe kick, countertop, backsplash and moldings.
+The countertop runs on over the filler to the wall. A filler also goes in the angle where two runs meet at a front corner within 3".
+These fillers are made again after every edit (one undo step with it); you cannot pick them, they carry no label, and the Cabinet
+Schedule leaves them out. A manually placed filler (below) is a cabinet like any other. Extended stiles on a framed cabinet count
+towards the gap and put `XL`, `XR` or `XLR` in the label.
+
+Merged cabinets (side by side within 3", or meeting at a front corner, or at a back corner facing away at 87 degrees or less) draw
+**module lines** where they meet, dashed, on the layer **Cabinets, Module Lines**; turn the layer off and they read as one block.
+
+Default Settings > Cabinets > **General Cabinet** (this dialog opens from there only) sets: the Minimum Cabinet Width (not under 1/16"),
+Minimum Shelf Spacing, Auto Door Threshold; Create Automatic Fillers (also for angled connections; changing it rebuilds the fillers in
+one undo step) and Create Automatic Blind Corner Cabinets; **Cabinet Resizing** by the Snap Grid or by a Resize Increment (not under
+1/16"); and the **Plan Display Options**: Show Partial Module Lines (a short grey tick instead of a dashed line), Show Closed
+Doors/Drawers and Panels, Show Pilasters, Display Molding Edges in Plan Views. Changing a Cabinet Default moves the existing cabinets
+that still have the old value (countertop thickness and overhangs, toe kick, backsplash).
 
 #### Fillers, corner and blind cabinets
 
@@ -248,6 +273,19 @@ Door, Slab Door, Shaker Door and Raised Panel Door; the drawer styles are Lincol
 **Layer** shows the layer (Cabinets, Base; Cabinets, Wall ...), which follows the kind. **Materials** gives each part (Box, Door Fronts, Drawer Fronts, Countertop, Backsplash, Toe Kick, Molding) a material from Default, Wood, Painted, Stone, Concrete,
 Metal or Glass; Default keeps the part's usual stand-in. **Label** shows the automatic label (`B24`); *Specify label* lets you type your own, with the macros `<L>` the automatic label, `<T>` the type letters (`B`, `W`, `FH`, `VB`), `<W>` `<D>` `<H>` width, depth and height (whole inches or trimmed decimals), `<WxD>` `<WxH>` `<WxDxH>` sizes joined with x, `<N>` the cabinet's name (`Base Cabinet`, `Vanity Cabinet`), `<S>` the door style, `<F>` the finish, `<HW>` the hardware and `<A>` the appliance a bay holds. A label without macros stays literal.
 
+#### Automatic cabinet labels
+
+The automatic label has four parts. The **Key** is `B` base, `W` wall, `U` full height. The **Code** says more about the box: `SB` sink
+base, `RB` range base, `OB` oven base, `3DB` a bank of three drawers, `FHB` a base with one full-height door, `2D` after a wall key
+for drawers (`W2D3030`), `DC`, `LC`, `LS`, `LSD` and `BC` in front of the key for diagonal, left, lazy susan, lazy susan diagonal and
+blind corners (`DCB36`, `BCW2436R`), `P` after the key for a peninsula (doors on the back), `F` for a filler (`BF3`, `WF330`,
+`UF32484`), `XL`, `XR`, `XLR` for extended stiles, and `OTC` and `RTC` for the tall oven and tall refrigerator cabinets. The **Size**
+is the width, then the depth and height when they are not standard (base 24" deep and 34 1/2" high under the top; wall 12" deep):
+base and full height read width, depth, height; a wall cabinet reads width, height (always), then depth. The **Door Swing**, `L` or
+`R`, is added only when every door swings the same way (an Auto door gives none). Library types keep their own letters (`VB30`,
+`PN2484`). *Suppress Label* hides one cabinet's label; the layer *Cabinets, Labels* hides them all. Shelves, partitions and custom
+countertops have a blank automatic label; type one in *Specify label* if you want it.
+
 ### 6.3a Cabinet Defaults
 
 **Edit > Default Settings > Cabinets > Cabinet Defaults** (Active Defaults tree, 1.7) sets what every new cabinet starts with. The
@@ -263,6 +301,9 @@ window has ten tabs; OK saves them to the plan's defaults and Cancel drops the e
 | Backsplash | Whether new base cabinets get one, full height or a height, thickness |
 | Library Types | The sizes of the Vanity, Pantry, Tall Oven and Refrigerator cabinets |
 | Fillers and Corners | Filler width, corner base and corner wall legs, blind width and hidden width |
+
+A separate dialog, **Default Settings > Cabinets > General Cabinet**, holds the automatic behaviors, the resize step and the plan
+display options (6.2, Automatic fillers).
 
 ## 6.4 The Library Browser
 

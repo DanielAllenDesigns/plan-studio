@@ -16,8 +16,8 @@ const NUM_W: f32 = 44.0;
 enum Disp {
     Group(String),
     Line(usize),
-    /// An object of an expanded line: the parent's index and the row.
-    Child(usize, Box<ListLine>),
+    /// An object of an expanded line.
+    Child(Box<ListLine>),
     Subtotal(String, Option<f64>),
     Total(Option<f64>),
 }
@@ -255,7 +255,7 @@ fn build_display(cx: &EditorContext, st: &State, lines: &[ListLine]) -> Vec<Disp
                 out.push(Disp::Line(i));
                 if st.expanded.contains(&i) && st.spec.kind == ListKind::Live {
                     for k in list::expand(&cx.project, lines, i) {
-                        out.push(Disp::Child(i, Box::new(k)));
+                        out.push(Disp::Child(Box::new(k)));
                     }
                 }
             }
@@ -492,7 +492,7 @@ fn draw_grid(
                                 }
                                 let (text, bold, depth) = match d {
                                     Disp::Line(i) => (list::cell(&lines[*i], c.col), false, 0),
-                                    Disp::Child(_, k) => (list::cell(k, c.col), false, 1),
+                                    Disp::Child(k) => (list::cell(k, c.col), false, 1),
                                     Disp::Group(g) => (
                                         if c.col == cols[0].col {
                                             g.clone()

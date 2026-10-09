@@ -46,7 +46,7 @@ use eframe::egui::{self, Align2, FontId, Pos2, Shape, Stroke, Vec2};
 use plan_core::geometry::Point;
 use plan_core::walls::MIN_WALL_THICKNESS;
 use plan_core::{
-    detect_rooms, FenceStyle, Id, Layer, PlanDefaults, Side, Wall, WallClass, WallCurve, WallKind,
+    detect_rooms, FenceStyle, Id, Layer, PlanDefaults, Wall, WallClass, WallCurve, WallKind,
 };
 
 /// Pixels the pointer must travel between press and release for a drag-draw.

@@ -12,6 +12,7 @@ use crate::dialogs::print::{PrintDialog, PrintSource};
 use crate::dialogs::watermark as wm;
 use crate::shell::layout_window::{self as lw, LayoutView};
 use crate::toolbar::{Action, ViewFlag};
+use eframe::egui;
 use plan_core::drawing_sheet::{DrawingScale, SheetDims, ViewSheet, ViewType};
 use plan_core::watermark::{plan_key, WatermarkLayout};
 use plan_docs::{MasterList, Scale, SheetSize};

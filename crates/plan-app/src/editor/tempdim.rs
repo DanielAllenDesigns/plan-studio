@@ -140,6 +140,15 @@ pub enum TempDimKind {
     CadWidth,
     /// CAD box: its height.
     CadHeight,
+    /// CAD box: the gap from its right side to the nearest parallel wall face
+    /// or CAD box side (typing slides the box, S-58).
+    CadToRight,
+    /// CAD box: the gap from its left side.
+    CadToLeft,
+    /// CAD box: the gap from its top side.
+    CadAbove,
+    /// CAD box: the gap from its bottom side.
+    CadBelow,
     /// CAD circle or arc: its radius (the center stays).
     CadRadius,
     /// CAD circle: its diameter.
@@ -434,9 +443,130 @@ fn cad_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>) {
                     Point::new(0.0, 1.0),
                     -14.0,
                 );
+                box_offsets(floor, id, lo, hi, out);
             }
         }
         _ => {}
+    }
+}
+
+/// A face that a CAD box's side can face across a gap: a wall face or the
+/// side of another CAD box. `vertical` faces stand at `x = at`, horizontal
+/// ones at `y = at`; `from..to` is the stretch along the face.
+struct Face {
+    vertical: bool,
+    at: f64,
+    from: f64,
+    to: f64,
+}
+
+fn faces_near(floor: &Floor, skip: u64) -> Vec<Face> {
+    let mut v = Vec::new();
+    for w in floor.walls.iter().filter(|w| !w.flags.no_locate) {
+        let (a, b) = (w.start, w.end);
+        let h = w.thickness * 0.5;
+        if (a.y - b.y).abs() < 1e-6 {
+            let (from, to) = (a.x.min(b.x), a.x.max(b.x));
+            for off in [-h, h] {
+                v.push(Face { vertical: false, at: a.y + off, from, to });
+            }
+        } else if (a.x - b.x).abs() < 1e-6 {
+            let (from, to) = (a.y.min(b.y), a.y.max(b.y));
+            for off in [-h, h] {
+                v.push(Face { vertical: true, at: a.x + off, from, to });
+            }
+        }
+    }
+    for c in floor.cad.iter().filter(|c| c.id != skip) {
+        if let CadItem::Polyline { points, closed: true } = &c.item {
+            if let Some((lo, hi)) = box_bounds(points) {
+                v.push(Face { vertical: true, at: lo.x, from: lo.y, to: hi.y });
+                v.push(Face { vertical: true, at: hi.x, from: lo.y, to: hi.y });
+                v.push(Face { vertical: false, at: lo.y, from: lo.x, to: hi.x });
+                v.push(Face { vertical: false, at: hi.y, from: lo.x, to: hi.x });
+            }
+        }
+    }
+    v
+}
+
+/// The offsets from a CAD box to the nearest parallel objects on each side
+/// (S-58): the gap to the nearest wall face or CAD box side that faces the
+/// side and overlaps it. Typing a gap slides the box.
+fn box_offsets(floor: &Floor, id: u64, lo: Point, hi: Point, out: &mut Vec<TempDim>) {
+    let faces = faces_near(floor, id);
+    let target = ObjectRef::Cad(id);
+    let overlap = |f: &Face, a: f64, b: f64| f.from < b - 1e-6 && f.to > a + 1e-6;
+    let mid = Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+    let mut push = |kind, a: Point, b: Point, value: f64, axis: Point, px: f32| {
+        out.push(TempDim {
+            kind,
+            a,
+            b,
+            value,
+            axis,
+            target,
+            offset_in: 0.0,
+            offset_px: px,
+            locked: None,
+        });
+    };
+    // Right: the nearest vertical face at or beyond the right side.
+    let right = faces
+        .iter()
+        .filter(|f| f.vertical && f.at >= hi.x + 1e-6 && overlap(f, lo.y, hi.y))
+        .min_by(|a, b| a.at.total_cmp(&b.at));
+    if let Some(f) = right {
+        push(
+            TempDimKind::CadToRight,
+            Point::new(hi.x, mid.y),
+            Point::new(f.at, mid.y),
+            f.at - hi.x,
+            Point::new(-1.0, 0.0),
+            14.0,
+        );
+    }
+    let left = faces
+        .iter()
+        .filter(|f| f.vertical && f.at <= lo.x - 1e-6 && overlap(f, lo.y, hi.y))
+        .max_by(|a, b| a.at.total_cmp(&b.at));
+    if let Some(f) = left {
+        push(
+            TempDimKind::CadToLeft,
+            Point::new(f.at, mid.y),
+            Point::new(lo.x, mid.y),
+            lo.x - f.at,
+            Point::new(1.0, 0.0),
+            14.0,
+        );
+    }
+    let above = faces
+        .iter()
+        .filter(|f| !f.vertical && f.at >= hi.y + 1e-6 && overlap(f, lo.x, hi.x))
+        .min_by(|a, b| a.at.total_cmp(&b.at));
+    if let Some(f) = above {
+        push(
+            TempDimKind::CadAbove,
+            Point::new(mid.x, hi.y),
+            Point::new(mid.x, f.at),
+            f.at - hi.y,
+            Point::new(0.0, -1.0),
+            14.0,
+        );
+    }
+    let below = faces
+        .iter()
+        .filter(|f| !f.vertical && f.at <= lo.y - 1e-6 && overlap(f, lo.x, hi.x))
+        .max_by(|a, b| a.at.total_cmp(&b.at));
+    if let Some(f) = below {
+        push(
+            TempDimKind::CadBelow,
+            Point::new(mid.x, f.at),
+            Point::new(mid.x, lo.y),
+            lo.y - f.at,
+            Point::new(0.0, 1.0),
+            14.0,
+        );
     }
 }
 
@@ -1064,6 +1194,27 @@ pub fn apply(cx: &mut EditorContext, dim: &TempDim, value: f64) -> Result<&'stat
                 cx.cancel_change();
                 Err("The plan's cabinets could not be read".into())
             }
+        }
+        (
+            TempDimKind::CadToRight
+            | TempDimKind::CadToLeft
+            | TempDimKind::CadAbove
+            | TempDimKind::CadBelow,
+            ObjectRef::Cad(id),
+        ) => {
+            // Typing a gap slides the box along the axis that grows it.
+            if value < 0.0 {
+                return Err("A gap cannot be negative".into());
+            }
+            if !cx.check_unlocked(ObjectRef::Cad(id)) {
+                return Err("That object is on a locked layer".into());
+            }
+            cx.begin_change("Move Box");
+            if let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) {
+                ops::translate_cad(&mut c.item, dim.axis * change);
+            }
+            cx.mark_dirty();
+            Ok("Move Box")
         }
         (
             TempDimKind::CadLength

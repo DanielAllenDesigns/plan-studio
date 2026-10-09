@@ -453,6 +453,7 @@ struct Takeoff {
     windows: BTreeMap<(i64, i64), Acc>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit(
     out: &mut Vec<Raw>,
     category: &str,
@@ -1067,6 +1068,31 @@ pub fn take_off_raw(
     for ((category, name, material), acc) in &t.layers {
         if category == "Interior Finishes" && acc.total() > 0.0 {
             out.push(layer_raw(category, name, material, acc));
+        }
+    }
+    // ---- Layered material regions, 3D solids, compound solids and blocks ----
+    // (`plan_core::material_region::r15_takeoff`). A by-position filter has
+    // no box for these rows, so they count for All and Selection only.
+    for &fi in &floors {
+        if !matches!(filter, Filter::All | Filter::Selection(_)) {
+            continue;
+        }
+        for row in plan_core::material_region::r15_takeoff(project, fi) {
+            if !filter.counts(fi, &row.key, || Bounds::of_points(&[])) {
+                continue;
+            }
+            let mut a = Acc::default();
+            a.add(fi, &row.key, row.qty);
+            emit(
+                &mut out,
+                &row.category,
+                &row.item,
+                row.item.clone(),
+                "",
+                row.unit,
+                &a,
+                Rule::Sum,
+            );
         }
     }
     out.extend(room_lines);

@@ -91,7 +91,11 @@ pub enum SideMode {
 }
 
 impl SideMode {
-    pub const ALL: [SideMode; 3] = [SideMode::OneSided, SideMode::AlternateSides, SideMode::RandomSides];
+    pub const ALL: [SideMode; 3] = [
+        SideMode::OneSided,
+        SideMode::AlternateSides,
+        SideMode::RandomSides,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -281,11 +285,21 @@ fn region_centres(
         RegionStyle::EvenlyScattered => (spacing * 0.866_025_403_8, true),
         _ => (spacing, false),
     };
-    let (c0, c1) = ((lo.x / spacing).floor() as i64 - 1, (hi.x / spacing).ceil() as i64 + 1);
-    let (r0, r1) = ((lo.y / row_step).floor() as i64 - 1, (hi.y / row_step).ceil() as i64 + 1);
+    let (c0, c1) = (
+        (lo.x / spacing).floor() as i64 - 1,
+        (hi.x / spacing).ceil() as i64 + 1,
+    );
+    let (r0, r1) = (
+        (lo.y / row_step).floor() as i64 - 1,
+        (hi.y / row_step).ceil() as i64 + 1,
+    );
     for r in r0..=r1 {
         for c in c0..=c1 {
-            let shift = if stagger && r.rem_euclid(2) == 1 { spacing * 0.5 } else { 0.0 };
+            let shift = if stagger && r.rem_euclid(2) == 1 {
+                spacing * 0.5
+            } else {
+                0.0
+            };
             let l = Point::new(c as f64 * spacing + shift, r as f64 * row_step);
             let p = origin + turn(l, frame);
             if point_in_polygon(p, poly) && far_enough(poly, p, margin) {
@@ -475,9 +489,8 @@ impl Project {
                 n += 1;
             }
         }
-        f.groups.retain(|g| {
-            !g.members.contains(&crate::groups::ObjectRef::Symbol(id))
-        });
+        f.groups
+            .retain(|g| !g.members.contains(&crate::groups::ObjectRef::Symbol(id)));
         Some(n)
     }
 
@@ -513,7 +526,13 @@ mod tests {
     }
 
     fn region(side: f64, spacing: f64) -> Distribution {
-        let mut d = Distribution::new(DistKind::Region, false, square(side), "plant", [12.0, 12.0, 24.0]);
+        let mut d = Distribution::new(
+            DistKind::Region,
+            false,
+            square(side),
+            "plant",
+            [12.0, 12.0, 24.0],
+        );
         d.spacing = spacing;
         d
     }
@@ -604,7 +623,9 @@ mod tests {
         );
         assert_ne!(a[0].center, b[0].center);
         assert!(a.iter().all(|k| (k.center.x / 20.0).fract().abs() < 1e-9));
-        assert!(c.iter().all(|k| ((k.center.x - 50.0) / 20.0).fract().abs() < 1e-9));
+        assert!(c
+            .iter()
+            .all(|k| ((k.center.x - 50.0) / 20.0).fract().abs() < 1e-9));
     }
 
     #[test]
@@ -619,7 +640,11 @@ mod tests {
         );
         assert!(abs.iter().all(|c| (c.angle - 30.0).abs() < 1e-9));
         let mut bent = path(100.0, 25.0);
-        bent.points = vec![Point::new(0.0, 0.0), Point::new(50.0, 0.0), Point::new(50.0, 50.0)];
+        bent.points = vec![
+            Point::new(0.0, 0.0),
+            Point::new(50.0, 0.0),
+            Point::new(50.0, 50.0),
+        ];
         let rel = copies_with(
             &bent,
             &DistOptions {
@@ -629,7 +654,10 @@ mod tests {
             },
         );
         assert!(rel.iter().any(|c| (c.angle - 10.0).abs() < 1e-6));
-        assert!(rel.iter().any(|c| (c.angle - 100.0).abs() < 1e-6), "past the corner it follows the second edge");
+        assert!(
+            rel.iter().any(|c| (c.angle - 100.0).abs() < 1e-6),
+            "past the corner it follows the second edge"
+        );
         let random = copies_with(
             &d,
             &DistOptions {
@@ -640,9 +668,13 @@ mod tests {
                 ..DistOptions::default()
             },
         );
-        assert!(random.windows(2).any(|w| (w[0].angle - w[1].angle).abs() > 1e-6));
+        assert!(random
+            .windows(2)
+            .any(|w| (w[0].angle - w[1].angle).abs() > 1e-6));
         assert!(random.iter().all(|c| (0.5..=1.5).contains(&c.scale)));
-        assert!(random.windows(2).any(|w| (w[0].scale - w[1].scale).abs() > 1e-9));
+        assert!(random
+            .windows(2)
+            .any(|w| (w[0].scale - w[1].scale).abs() > 1e-9));
         // Same seed, same result.
         let again = copies_with(
             &d,

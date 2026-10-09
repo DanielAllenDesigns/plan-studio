@@ -23,8 +23,8 @@
 
 use super::{row, section, Fields, Outcome};
 use crate::editor::{EditorContext, EditorRequest};
-use crate::tools::ToolId;
 use crate::toolbar::ViewFlag;
+use crate::tools::ToolId;
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers, RichText};
 use plan_core::construction::{ReferenceRow, ReferenceSource, ReferenceTable, RowFloor, TableLine};
 use plan_core::{Project, Wall};
@@ -104,9 +104,7 @@ fn settings_of_row(row: &ReferenceRow) -> ReferenceSettings {
         floor: match row.floor {
             RowFloor::Above => ReferenceFloor::Above,
             RowFloor::Fixed(i) => ReferenceFloor::Floor(i),
-            RowFloor::Below | RowFloor::Automatic | RowFloor::MatchCurrent => {
-                ReferenceFloor::Below
-            }
+            RowFloor::Below | RowFloor::Automatic | RowFloor::MatchCurrent => ReferenceFloor::Below,
         },
         layer_set: row.layer_set.clone(),
         color: row.color,
@@ -454,7 +452,8 @@ impl ReferenceDisplayDialog {
                 ui.checkbox(&mut self.show, "Show Reference Floor(s)");
                 self.table_ui(ui);
                 self.selected_row_ui(ui);
-                ui.checkbox(&mut self.table.xor, "XOR drawing").on_hover_text(
+                ui.checkbox(&mut self.table.xor, "XOR drawing")
+                    .on_hover_text(
                     "Lines of the reference laid over lines of the current floor change color; \
                      identical lines are not drawn",
                 );
@@ -611,7 +610,10 @@ impl ReferenceDisplayDialog {
                 if let ReferenceSource::File(_) = &r.source {
                     ui.selectable_label(true, r.source.label());
                 }
-                if ui.selectable_label(false, "Choose Existing Plan\u{2026}").clicked() {
+                if ui
+                    .selectable_label(false, "Choose Existing Plan\u{2026}")
+                    .clicked()
+                {
                     choose = true;
                 }
             });
@@ -683,7 +685,13 @@ impl ReferenceDisplayDialog {
         match source {
             ReferenceSource::ThisPlan => self.layer_sets.clone(),
             ReferenceSource::File(p) => crate::editor::ref_overlay::other_plan(p)
-                .map(|plan| plan.layer_sets.names().into_iter().map(String::from).collect())
+                .map(|plan| {
+                    plan.layer_sets
+                        .names()
+                        .into_iter()
+                        .map(String::from)
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
     }
@@ -702,9 +710,12 @@ impl ReferenceDisplayDialog {
             ui.color_edit_button_srgb(&mut r.color);
         });
         if !r.source.is_this_plan() {
-            self.fields.length_row(ui, "X Offset", "ref_x", &mut r.offset[0]);
-            self.fields.length_row(ui, "Y Offset", "ref_y", &mut r.offset[1]);
-            self.fields.length_row(ui, "Z Offset", "ref_z", &mut r.offset[2]);
+            self.fields
+                .length_row(ui, "X Offset", "ref_x", &mut r.offset[0]);
+            self.fields
+                .length_row(ui, "Y Offset", "ref_y", &mut r.offset[1]);
+            self.fields
+                .length_row(ui, "Z Offset", "ref_z", &mut r.offset[2]);
             self.fields
                 .degrees_row(ui, "Angle", "deg_ref_angle", &mut r.angle_deg);
         }

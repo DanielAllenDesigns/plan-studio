@@ -15,10 +15,10 @@ mod shape;
 mod tabs;
 pub use shape::{clip_segment_convex, inset_convex, section, CornerCut, ShapeKind, WindowShape};
 pub use tabs::{
-    BlindStyle, CurtainStyle, CurvedCasing, DoorSwing, EnergyValues, FramedOpening, HeaderMaterial,
-    InteriorShutterStyle, MillworkStyle, OpeningFraming, OpeningInfo, OpeningMaterials, PartPaint,
-    RoughBox, RoughMode, RoughOpening, Treatments, DOOR_ENERGY_TYPES, DOOR_PARTS,
-    WINDOW_ENERGY_TYPES, WINDOW_PARTS,
+    BayRoof, BayRoofKind, BlindStyle, CurtainStyle, CurvedCasing, DoorSwing, EnergyValues,
+    FramedOpening, HeaderMaterial, InteriorShutterStyle, MillworkStyle, OpeningFraming,
+    OpeningInfo, OpeningMaterials, PartPaint, RoughBox, RoughMode, RoughOpening, Treatments,
+    DOOR_ENERGY_TYPES, DOOR_PARTS, WINDOW_ENERGY_TYPES, WINDOW_PARTS,
 };
 
 // ----- lites -----
@@ -697,6 +697,8 @@ pub struct OpeningSpec {
     pub shape: WindowShape,
     /// Treatments tab of a window (DW-123).
     pub treatments: Treatments,
+    /// Options tab, Bay Roof: the roof over a bay, box or bow window.
+    pub bay_roof: BayRoof,
 }
 
 impl Default for OpeningSpec {
@@ -743,6 +745,7 @@ impl Default for OpeningSpec {
             info: OpeningInfo::default(),
             shape: WindowShape::default(),
             treatments: Treatments::default(),
+            bay_roof: BayRoof::default(),
         }
     }
 }

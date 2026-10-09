@@ -122,7 +122,7 @@ fn a_retaining_wall_is_a_break_and_a_wall_in_one_undo_step() {
     sim.click(240.0, -100.0);
     sim.key(KeyEvent::key(Key::Enter));
     let wall = &rec(&sim).terrain.walls[0];
-    assert_eq!(wall.points[0], Point::new(240.0, -100.0));
+    assert!(wall.points[0].dist(Point::new(240.0, -100.0)) < 1e-6, "{:?}", wall.points[0]);
 }
 
 #[test]
@@ -150,7 +150,9 @@ fn terrain_walls_are_five_feet_follow_the_ground_and_stepping_is_an_option() {
     assert_eq!((w.height, w.retain), (60.0, 0.0));
     assert!(!w.stepped);
     // Stepping is switched on in the wall's specification.
-    spec(&mut sim, |r| r.terrain.walls[0].stepped = true);
+    site_view::edit_terrain(&mut sim.app.cx, "Terrain Wall Specification", |r| {
+        r.terrain.walls[0].stepped = true;
+    });
     assert!(rec(&sim).terrain.walls[0].stepped);
 }
 
@@ -214,7 +216,7 @@ fn the_skirt_and_the_surface_detail_settings_reach_the_scene_and_the_build() {
     let stats = rec(&sim).terrain.last_build.expect("a build report");
     assert_eq!(stats.triangles as usize, medium);
     // Hide Terrain Intersected by Building leaves a gap under the house.
-    spec(&mut sim, |r| {
+    site_view::edit_terrain(&mut sim.app.cx, "Terrain Specification", |r| {
         r.terrain.triangle_detail = TriangleDetail::Grid;
         r.terrain.flatten_pad = false;
         r.terrain.building_pad = Some(plan_terrain::BuildingPad {
@@ -367,7 +369,7 @@ fn polyline_roads_medians_cul_de_sacs_and_sidewalks_are_placed_and_undone() {
     assert_eq!(cds.kind, RoadKind::CulDeSac);
     assert_eq!(cds.center, Point::new(600.0, 300.0), "on the end of the road");
     sim.tool(ToolId::TerrainVariant(V::PolylineDriveway));
-    for (x, y) in [(300.0, 200.0), (380.0, 200.0), (380.0, 100.0), (300.0, 100.0)] {
+    for (x, y) in [(0.0, 200.0), (80.0, 200.0), (80.0, 100.0), (0.0, 100.0)] {
         sim.click(x, y);
     }
     sim.key(KeyEvent::key(Key::Enter));
@@ -385,7 +387,7 @@ fn polyline_roads_medians_cul_de_sacs_and_sidewalks_are_placed_and_undone() {
     assert!(t.roads[before..].iter().all(|r| r.kind == RoadKind::Sidewalk));
     // Hit-testing finds an outline road inside its shape.
     assert_eq!(
-        site_view::hit_terrain(&t, Point::new(340.0, 150.0), 6.0),
+        site_view::hit_terrain(&t, Point::new(40.0, 150.0), 6.0),
         Some(TerrainHit::Road(t.roads.iter().position(|r| r.kind == RoadKind::Driveway).unwrap()))
     );
     // Build and look at the scene: meshes for every road object.

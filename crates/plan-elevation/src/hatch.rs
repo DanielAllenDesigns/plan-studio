@@ -174,6 +174,44 @@ pub(crate) fn hatch_lines(regions: &[Region], scale_in_per_ft: f64) -> Vec<Line2
         .collect()
 }
 
+/// Hatch lines for the section's cut faces from a Fill Style (the wall layer
+/// fill styles, manual p. 226): every [`RegionKind::Cut`] region is tiled
+/// with `style` as Light [`EdgeKind::Hatch`] lines. A solid style gives no
+/// lines (the renderer paints the cut regions solid); Use Layer gives none.
+pub fn poche_hatch_lines(
+    regions: &[Region],
+    style: &plan_core::fill_styles::FillStyle,
+    patterns: &[plan_core::patterns::CustomPattern],
+) -> Vec<Line2> {
+    let mut out = Vec::new();
+    for r in regions.iter().filter(|r| r.kind == RegionKind::Cut) {
+        if r.polygon.len() < 3 {
+            continue;
+        }
+        let g = plan_core::fill_styles::fill_geometry(style, &r.polygon, &[], patterns);
+        out.extend(g.lines.into_iter().map(|(a, b)| Line2 {
+            a,
+            b,
+            weight: LineWeight::Light,
+            kind: EdgeKind::Hatch,
+        }));
+        if out.len() >= MAX_POCHE_LINES {
+            out.truncate(MAX_POCHE_LINES);
+            break;
+        }
+    }
+    out
+}
+
+/// Upper bound on poché hatch lines per drawing.
+pub const MAX_POCHE_LINES: usize = 40_000;
+
+/// The view's Poché switch off: the section's cut faces are left as outlines
+/// (their heavy cut lines stay), so no solid poché fill is painted.
+pub fn without_poche(d: &mut crate::drawing::Drawing) {
+    d.regions.retain(|r| r.kind != RegionKind::Cut);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +234,61 @@ mod tests {
         for m in [Material::WallInterior, Material::Trim, Material::Metal] {
             assert!(pattern_for(m).is_none());
         }
+    }
+
+    fn cut_square() -> Region {
+        Region {
+            polygon: vec![
+                Point::new(0.0, 0.0),
+                Point::new(48.0, 0.0),
+                Point::new(48.0, 48.0),
+                Point::new(0.0, 48.0),
+            ],
+            material: Material::WallInterior,
+            object_id: Some(1),
+            kind: RegionKind::Cut,
+        }
+    }
+
+    #[test]
+    fn a_fill_style_hatches_the_cut_faces_only() {
+        use plan_core::fill_styles::FillStyle;
+        let face = Region {
+            kind: RegionKind::Face,
+            ..cut_square()
+        };
+        let regions = vec![cut_square(), face];
+        let style = FillStyle::hatch(45.0, 12.0, [0; 3]);
+        let lines = poche_hatch_lines(&regions, &style, &[]);
+        assert_eq!(lines.len(), 5, "lines 12 apart across a 48 square");
+        assert!(lines.iter().all(|l| l.kind == EdgeKind::Hatch));
+        for l in &lines {
+            for p in [l.a, l.b] {
+                assert!(
+                    (-1e-6..=48.0 + 1e-6).contains(&p.x) && (-1e-6..=48.0 + 1e-6).contains(&p.y)
+                );
+            }
+        }
+        // Solid and Use Layer give no hatch lines.
+        assert!(poche_hatch_lines(&regions, &FillStyle::solid([0; 3]), &[]).is_empty());
+        assert!(poche_hatch_lines(&regions, &FillStyle::use_layer(), &[]).is_empty());
+    }
+
+    #[test]
+    fn the_poche_switch_off_drops_the_cut_fill_but_not_the_faces() {
+        let mut d = crate::drawing::Drawing {
+            regions: vec![
+                cut_square(),
+                Region {
+                    kind: RegionKind::Face,
+                    ..cut_square()
+                },
+            ],
+            ..crate::drawing::Drawing::default()
+        };
+        assert_eq!(d.cut_regions().count(), 1);
+        without_poche(&mut d);
+        assert_eq!(d.cut_regions().count(), 0);
+        assert_eq!(d.regions.len(), 1);
     }
 }

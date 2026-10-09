@@ -184,6 +184,29 @@ fn max_id_into(v: &Value, best: &mut u64) {
     }
 }
 
+/// Every `id` (an integer under a key named `id`) anywhere in `v`.
+pub fn ids(v: &Value) -> std::collections::BTreeSet<u64> {
+    fn walk(v: &Value, out: &mut std::collections::BTreeSet<u64>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    if k == "id" {
+                        if let Some(n) = x.as_u64().filter(|n| *n < ID_LIMIT) {
+                            out.insert(n);
+                        }
+                    }
+                    walk(x, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    walk(v, &mut out);
+    out
+}
+
 // ----- numbers -----
 
 /// `f64` that reads `null` (what a NaN was written as) as 0.
@@ -759,16 +782,28 @@ mod tests {
     fn a_layer_keeps_the_records_it_cannot_read() {
         let v = json!({"a": [1, "x", 3], "b": ["p", 7]});
         let l: Lists = read_layer(&v);
-        assert_eq!(l, Lists { a: vec![1, 3], b: vec!["p".into()] });
+        assert_eq!(
+            l,
+            Lists {
+                a: vec![1, 3],
+                b: vec!["p".into()]
+            }
+        );
         let (_, bad) = split_unreadable::<Lists>(&v);
-        assert_eq!(bad, vec![("a".to_string(), json!("x")), ("b".to_string(), json!(7))]);
+        assert_eq!(
+            bad,
+            vec![("a".to_string(), json!("x")), ("b".to_string(), json!(7))]
+        );
         // Storing the edited layer puts them back.
         let mut new = json!({"a": [1, 3, 9], "b": ["p"]});
         assert!(keep_unreadable::<Lists>(Some(&v), &mut new));
         assert_eq!(new, json!({"a": [1, 3, 9, "x"], "b": ["p", 7]}));
         // A readable slot has nothing to add back.
         let mut same = json!({"a": [1]});
-        assert!(!keep_unreadable::<Lists>(Some(&json!({"a": [1]})), &mut same));
+        assert!(!keep_unreadable::<Lists>(
+            Some(&json!({"a": [1]})),
+            &mut same
+        ));
     }
 
     #[test]

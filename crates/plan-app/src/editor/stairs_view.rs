@@ -30,6 +30,7 @@ mod down;
 mod modes;
 mod posts;
 
+#[allow(unused_imports)]
 pub use down::{build_down, build_to_deck, terrain_drop, DECK_PICK_TOL, DEFAULT_DROP};
 pub use modes::{
     complete_break, disconnect, edit_mode, has_arc, set_edit_mode, straight_family, EditMode,
@@ -894,7 +895,11 @@ pub fn connect(project: &mut Project, fl: usize, id: Id) -> usize {
         let h = find(&project.floors[fl], landing.id()).map_or(0.0, |l| l.landing_height());
         // The stair keeps its top where it was (the next floor, for a stair
         // drawn from the floor), so joining twice changes nothing.
-        let top = if stair.top_height() > h { stair.top_height() } else { story };
+        let top = if stair.top_height() > h {
+            stair.top_height()
+        } else {
+            story
+        };
         let rest = top - h;
         if rest > plan_stairs::MIN_RISER {
             update(project, fl, stair.id(), |s| {

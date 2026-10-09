@@ -165,7 +165,8 @@ impl ChangeHistory {
     pub fn undo(&mut self, project: &mut Project) -> Option<String> {
         self.merge_open = false;
         while self.history.can_undo() {
-            let prev = self.history.undo(project)?;
+            let mut prev = self.history.undo(project)?;
+            prev.give_back_ids(project);
             *project = prev;
             let label = self.past.pop().flatten();
             self.future.push(label.clone());
@@ -202,6 +203,34 @@ impl ChangeHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_gives_back_an_id_taken_before_the_step_was_recorded() {
+        use plan_core::geometry::Point;
+        use plan_core::{Wall, WallKind};
+        let mut h = ChangeHistory::new();
+        let mut p = Project::new("a");
+        let next = p.next_id();
+        // A tool that takes its id first and opens the undo step second.
+        let id = p.alloc_id();
+        h.begin(&p, "Add");
+        p.floors[0].walls.push(Wall {
+            id,
+            ..Wall::new(
+                Point::new(0.0, 0.0),
+                Point::new(100.0, 0.0),
+                6.0,
+                96.0,
+                WallKind::Exterior,
+            )
+        });
+        h.undo(&mut p);
+        assert!(p.floors[0].walls.is_empty());
+        assert_eq!(p.next_id(), next, "undo must hand the id back");
+        // Ids still in use are never handed back.
+        let again = p.alloc_id();
+        assert_eq!(again, next);
+    }
 
     #[test]
     fn labels_follow_undo_and_redo() {

@@ -387,6 +387,13 @@ impl SymbolDialog {
         f(&mut self.form.draft);
     }
 
+    /// Picks a material on the Materials tab the way the combo would (tests).
+    #[cfg(test)]
+    pub fn choose_material(&mut self, material: Option<String>) {
+        self.form.material = material;
+        self.form.material_changed = true;
+    }
+
     /// The library item Open Object edits (`None` for a placed copy).
     pub fn library_item_id(&self) -> Option<&str> {
         self.form.library.as_ref().map(|l| l.item_id.as_str())
@@ -587,7 +594,7 @@ impl SymbolForm {
             f.degrees_row(
                 ui,
                 "Rotation (3D model)",
-                "model_rot",
+                "deg_model_rot",
                 &mut self.model_rotation,
             );
         } else {

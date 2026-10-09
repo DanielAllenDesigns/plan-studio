@@ -437,7 +437,8 @@ fn generate_between_platforms_builds_invisible_walls_that_follow_the_upper_wall(
     // Not drawn in 3D, not in the Wall schedule.
     assert_eq!(triangles(&sim, g[0].id), 0);
     let rows = plan_docs::schedule_kinds::entries(&sim.app.cx.project, ScheduleKind::Wall, None);
-    assert_eq!(rows.len(), 1);
+    assert!(rows.iter().all(|r| r.id != g[0].id), "{} rows", rows.len());
+    assert_eq!(rows.len(), 2, "the lower and the upper wall only");
     // Undo takes the dialog's whole result back, the generated wall with it.
     sim.undo();
     assert!(generated(&sim).is_empty());

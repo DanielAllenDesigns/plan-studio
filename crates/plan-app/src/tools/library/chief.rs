@@ -271,16 +271,43 @@ pub fn unregister_catalog(path: &Path) -> Result<bool, String> {
 pub fn discover(folder: Option<&Path>) -> ChiefLibrary {
     let base = discover_install(folder);
     let extra = imported_entries();
-    if extra.is_empty() {
+    let custom_user = user_library_override();
+    if extra.is_empty() && custom_user.is_none() {
         return base;
     }
     let mut entries = base.catalogs().to_vec();
+    if let Some(user) = custom_user {
+        // Preferences > Folders > User Library: that folder's catalog
+        // stands in for the one in Chief's data folder.
+        entries.retain(|e| e.kind != CatalogKind::User || e.name != "User Library");
+        entries.push(user);
+    }
     let fresh: Vec<RegistryEntry> = extra
         .into_iter()
         .filter(|e| !entries.iter().any(|x| x.path == e.path))
         .collect();
     entries.extend(fresh);
     ChiefLibrary::from_entries(entries)
+}
+
+/// The `User_Library.calib` of the folder chosen in Preferences > Folders >
+/// User Library, when one is chosen and holds that file.
+fn user_library_override() -> Option<RegistryEntry> {
+    use crate::dialogs::preferences::pages::{self, FolderKind};
+    let dir = pages::current()
+        .folders
+        .get(FolderKind::UserLibrary)?
+        .to_string();
+    let user = Path::new(&dir).join("User_Library.calib");
+    user.is_file().then(|| RegistryEntry {
+        uuid: ChiefCatalog::peek_id(&user)
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        name: "User Library".into(),
+        kind: CatalogKind::User,
+        path: Some(user),
+    })
 }
 
 /// The install's own catalogs (no imported ones).
@@ -630,6 +657,30 @@ pub(crate) fn reset_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_user_library_folder_of_the_preferences_names_the_user_catalog() {
+        use crate::dialogs::preferences::pages::{self, FolderKind};
+        let dir = std::env::temp_dir().join(format!("plan-studio-userlib-{}", std::process::id()));
+        let root = dir.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let file = dir.join("User_Library.calib");
+        std::fs::write(&file, b"not a real catalog").unwrap();
+        pages::update(|p| {
+            p.folders
+                .set(FolderKind::UserLibrary, &dir.display().to_string())
+        });
+        let lib = discover(Some(&root));
+        let user: Vec<_> = lib
+            .catalogs()
+            .iter()
+            .filter(|e| e.kind == CatalogKind::User && e.name == "User Library")
+            .collect();
+        assert_eq!(user.len(), 1);
+        assert_eq!(user[0].path.as_deref(), Some(file.as_path()));
+        pages::set(pages::PagePrefs::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn ids_round_trip() {

@@ -173,7 +173,12 @@ impl SpecDialogs {
             cx.wall_height(plan_core::WallKind::Exterior),
             cx.wall_height(plan_core::WallKind::Interior),
         ];
-        let dialog = WallDialog::multi(walls, heights, cx.wall_types().to_vec());
+        let retained: Vec<bool> = walls
+            .iter()
+            .map(|w| framing_view::wall_retained(&cx.project, w.id))
+            .collect();
+        let mut dialog = WallDialog::multi(walls, heights, cx.wall_types().to_vec());
+        dialog.set_framing_retained(&retained);
         self.active = Some(Active::Walls(Box::new(dialog)));
         true
     }
@@ -204,6 +209,17 @@ impl SpecDialogs {
                 return true;
             }
         }
+        // A fireplace symbol opens the Fireplace Specification: the Fireplace
+        // tool hosts that dialog and goes back to Select Objects when it closes.
+        if let ObjectRef::Symbol(id) = o {
+            if crate::editor::fireplace_view::is_fireplace(cx.floor(), id) {
+                crate::editor::fireplace_view::request_open(id);
+                cx.requests.push(crate::editor::EditorRequest::SetTool(
+                    crate::tools::ToolId::Fireplace,
+                ));
+                return true;
+            }
+        }
         let layer_names = |cx: &EditorContext| -> Vec<String> {
             cx.layers().layers.iter().map(|l| l.name.clone()).collect()
         };
@@ -212,11 +228,12 @@ impl SpecDialogs {
                 .map(|s| Active::Stair(Box::new(StairDialog::new(s)))),
             ObjectRef::Cabinet(id) => placed::cabinet_by_id(cx.floor(), id)
                 .map(|c| Active::Cabinet(Box::new(CabinetDialog::new(c)))),
-            ObjectRef::Symbol(id) => cx
-                .floor()
-                .symbol(id)
-                .cloned()
-                .map(|s| Active::Symbol(Box::new(SymbolDialog::new(s, layer_names(cx))))),
+            ObjectRef::Symbol(id) => cx.floor().symbol(id).cloned().map(|s| {
+                let paint = crate::tools::materials::symbol_material(&cx.project, s.id);
+                Active::Symbol(Box::new(
+                    SymbolDialog::new(s, layer_names(cx)).with_material(paint),
+                ))
+            }),
             ObjectRef::RoofPlane(id) => {
                 let set = roof_view::load(cx.floor());
                 match (set.plane(id), set.dormer(id)) {
@@ -261,9 +278,11 @@ impl SpecDialogs {
             },
             ObjectRef::Device(id) => {
                 let layer = site_view::load_electrical(cx.floor());
-                layer
-                    .device(id)
-                    .map(|d| Active::Device(id, Box::new(ElectricalDialog::for_device(d, &layer))))
+                layer.device(id).map(|d| {
+                    let dialog = ElectricalDialog::for_device(d, &layer)
+                        .with_defaults(&plan_electrical::ElectricalDefaults::load(&cx.project));
+                    Active::Device(id, Box::new(dialog))
+                })
             }
             ObjectRef::Terrain => {
                 let rec = site_view::load_terrain(&cx.project).unwrap_or_default();
@@ -302,6 +321,14 @@ impl SpecDialogs {
                 // The Schedule Specification window is hosted by build_tools.
                 crate::dialogs::build_tools::open_schedule_spec(cx.floor, id);
                 return schedule_view::exists(cx.floor(), id);
+            }
+            ObjectRef::Block(id) => {
+                crate::dialogs::arch_block::open(cx, id);
+                return cx.floor().blocks.get(id).is_some();
+            }
+            ObjectRef::Solid(id) => {
+                crate::dialogs::solids::open_compound(cx, id);
+                return cx.floor().solid_layer.compound(id).is_some();
             }
             ObjectRef::Wall(_) | ObjectRef::Opening(_) => None,
         };
@@ -356,7 +383,8 @@ impl SpecDialogs {
                 // The dialog and its Properties and Materials List tabs are
                 // one undo step.
                 let depth = property_manager::before_apply(cx);
-                apply(cx, &a);
+                // One step, and none when OK changed nothing (QA-26).
+                cx.undo_group(|cx| apply(cx, &a));
                 property_manager::after_apply(cx, self.props.as_ref(), depth);
                 object_info::after_apply(cx, self.info.as_ref(), depth);
                 self.props = None;
@@ -376,7 +404,19 @@ fn apply(cx: &mut EditorContext, a: &Active) {
             placed::apply_cabinet(cx, d.draft());
         }
         Active::Symbol(d) => {
-            placed::apply_symbol(cx, d.draft());
+            // The Materials tab's paint joins the Specification's undo step.
+            if placed::apply_symbol(cx, d.draft()) {
+                if let Some(choice) = d.material_choice() {
+                    let id = d.draft().id;
+                    if crate::tools::materials::apply_symbol_material(
+                        &mut cx.project,
+                        id,
+                        choice.as_deref(),
+                    ) {
+                        cx.mark_dirty();
+                    }
+                }
+            }
         }
         Active::RoofPlane(d) => {
             let fl = cx.floor;
@@ -432,6 +472,10 @@ fn apply(cx: &mut EditorContext, a: &Active) {
                 // The Switches tab: connected lights and 3-way pairs.
                 draft.apply_to_layer(layer, &floor.walls);
             });
+            // "Use as default height" and the Default Heights list (same undo step).
+            if draft.store_defaults(&mut cx.project) {
+                cx.mark_dirty();
+            }
         }
         Active::Terrain(d) => {
             let draft = d.draft().clone();
@@ -465,7 +509,11 @@ fn apply(cx: &mut EditorContext, a: &Active) {
         Active::Walls(d) => {
             cx.begin_change("Wall Specification");
             let fl = cx.floor;
-            if d.apply_multi(&mut cx.project, fl) == 0 {
+            let mut changed = d.apply_multi(&mut cx.project, fl);
+            if let (Some(v), Some(ids)) = (d.retain_framing_change(), d.multi_ids()) {
+                changed += framing_view::retain_walls_in(&mut cx.project, ids, v);
+            }
+            if changed == 0 {
                 cx.cancel_change();
                 cx.status = "Wall Specification: nothing was changed".into();
             } else {
@@ -712,5 +760,97 @@ mod tests {
             (6.0, 108.0, 7.0, plan_core::LineStyle::Solid)
         );
         assert_eq!(cx.undo_label(), Some("Ceiling Plane Specification"));
+    }
+
+    #[test]
+    fn the_electrical_dialog_stores_default_heights_in_the_same_undo_step() {
+        use plan_electrical::{place_free, DeviceKind, ElectricalDefaults};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let mut layer = site_view::load_electrical(cx.floor());
+        let id = layer.add(place_free(DeviceKind::Switch, Point::new(40.0, 40.0)));
+        site_view::save_electrical(&mut cx.project, 0, &layer);
+        let before = cx.undo_label().map(str::to_string);
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::Device(id)));
+        let Some(Active::Device(_, d)) = dialogs.active.as_mut() else {
+            panic!("the Electrical Service Specification did not open");
+        };
+        // Opened with the plan's defaults, so the tab can offer them.
+        let defaults = d.draft().defaults.clone().expect("opened with defaults");
+        assert_eq!(defaults, ElectricalDefaults::load(&cx.project));
+        let mut edited = defaults;
+        edited.set_height(DeviceKind::Switch, 52.0);
+        d.draft_mut().defaults = Some(edited);
+        d.draft_mut().label = "Hall".into();
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        assert_eq!(cx.undo_label(), Some("Electrical Service Specification"));
+        assert_eq!(
+            ElectricalDefaults::load(&cx.project).height(DeviceKind::Switch),
+            52.0
+        );
+        let stored = site_view::load_electrical(cx.floor());
+        assert_eq!(stored.device(id).unwrap().label, "Hall");
+        // One undo step takes back the device edit and the default together.
+        cx.undo();
+        assert_eq!(
+            ElectricalDefaults::load(&cx.project).height(DeviceKind::Switch),
+            DeviceKind::Switch.default_height()
+        );
+        assert_ne!(
+            site_view::load_electrical(cx.floor())
+                .device(id)
+                .unwrap()
+                .label,
+            "Hall"
+        );
+        assert_eq!(cx.undo_label().map(str::to_string), before);
+    }
+
+    #[test]
+    fn the_symbol_dialog_paints_the_symbol_in_the_same_undo_step() {
+        use plan_core::PlacedSymbol;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = cx.project.add_symbol(
+            0,
+            PlacedSymbol::new("nope", Point::new(10.0, 10.0), 20.0, 20.0, 20.0),
+        );
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::Symbol(id)));
+        let Some(Active::Symbol(d)) = dialogs.active.as_mut() else {
+            panic!("the Symbol Specification did not open");
+        };
+        assert_eq!(d.material_choice(), None, "nothing chosen yet");
+        d.choose_material(Some("Drywall".into()));
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        assert_eq!(cx.undo_label(), Some("Symbol Specification"));
+        assert_eq!(
+            crate::tools::materials::symbol_material(&cx.project, id).as_deref(),
+            Some("Drywall")
+        );
+        // Reopening shows the paint; putting the look back clears it.
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::Symbol(id)));
+        let Some(Active::Symbol(d)) = dialogs.active.as_mut() else {
+            panic!("the Symbol Specification did not open");
+        };
+        d.choose_material(None);
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        assert_eq!(
+            crate::tools::materials::symbol_material(&cx.project, id),
+            None
+        );
+        cx.undo();
+        assert_eq!(
+            crate::tools::materials::symbol_material(&cx.project, id).as_deref(),
+            Some("Drywall")
+        );
+        cx.undo();
+        assert_eq!(
+            crate::tools::materials::symbol_material(&cx.project, id),
+            None
+        );
     }
 }

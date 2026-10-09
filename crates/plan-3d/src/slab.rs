@@ -440,6 +440,69 @@ fn surface_material(name: &str, plain: Material) -> Option<Material> {
     (m != plain).then_some(m)
 }
 
+/// Which surface of a room a plate is (R-36): the role a Room-mode paint
+/// names, whatever the name is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomSurface {
+    Floor,
+    Ceiling,
+    Walls,
+}
+
+/// The object id of a room's surface plate. It is not a plan object: the high
+/// bit is set, and the rest hashes the floor, the room and the role, so the
+/// app can find the plates a room named itself and paint them with the exact
+/// library material ([`room_surface_names`]).
+pub fn room_surface_id(floor: &plan_core::Floor, room: &plan_core::Room, role: RoomSurface) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    eat(&floor.elevation.to_bits().to_le_bytes());
+    eat(floor.name.as_bytes());
+    eat(room.label.as_bytes());
+    eat(&((room.centroid.x * 8.0).round() as i64).to_le_bytes());
+    eat(&((room.centroid.y * 8.0).round() as i64).to_le_bytes());
+    eat(&[role as u8]);
+    h | (1 << 63)
+}
+
+/// The material name `room` itself gives to `role` (not the floor's default),
+/// if any.
+fn own_name(floor: &plan_core::Floor, room: &plan_core::Room, role: RoomSurface) -> Option<String> {
+    let n = room.name_entry(&floor.room_names)?;
+    let name = match role {
+        RoomSurface::Floor => n.floor_finish.as_deref(),
+        RoomSurface::Ceiling => n.ceiling_finish.as_deref(),
+        RoomSurface::Walls => n.misc.as_ref().map(|m| m.wall_covering.as_str()),
+    }?;
+    (!name.trim().is_empty()).then(|| name.to_string())
+}
+
+/// Every room surface plate of `project` whose material the room names itself
+/// (what the Material Painter's Room mode writes): its object id and the
+/// library name. The plates carry that id, so the app recolors them with the
+/// exact material, texture and class instead of the keyword guess.
+pub fn room_surface_names(project: &plan_core::Project) -> Vec<(u64, RoomSurface, String)> {
+    let mut out = Vec::new();
+    for floor in &project.floors {
+        if floor.room_names.is_empty() {
+            continue;
+        }
+        for room in plan_core::detect_rooms(&floor.walls, super::ROOM_TOLERANCE) {
+            for role in [RoomSurface::Floor, RoomSurface::Ceiling, RoomSurface::Walls] {
+                if let Some(name) = own_name(floor, &room, role) {
+                    out.push((room_surface_id(floor, &room, role), role, name));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Thin plates of the surface materials a room names for its floor, ceiling
 /// and walls (R-36), lying on the platform tops, the ceiling underside and the
 /// interior wall faces. A surface without a name of its own takes the floor's
@@ -475,35 +538,64 @@ fn room_surfaces(
     let mut out = Vec::new();
     let y_top = floor.elevation + levels.floor_offset + levels.floor_finish;
     let y_ceiling = floor.elevation + levels.floor_offset + levels.ceiling_height;
+    // A surface the room names itself always gets its plate, tagged with its
+    // role's id: a library name the keyword table does not know ("Walnut")
+    // still shows once the app paints the plate with the exact material.
+    let role_material = |role: RoomSurface, name: &str, plain: Material| -> Option<Material> {
+        surface_material(name, plain).or_else(|| own_name(floor, room, role).map(|_| plain))
+    };
+    let tag = |role: RoomSurface, meshes: Vec<Mesh>| -> Vec<Mesh> {
+        if own_name(floor, room, role).is_none() {
+            return meshes;
+        }
+        let id = room_surface_id(floor, room, role);
+        meshes
+            .into_iter()
+            .map(|mut m| {
+                m.object_id = Some(id);
+                m
+            })
+            .collect()
+    };
     if levels.has_floor {
-        if let Some(mat) = surface_material(&floor_name, Material::Floor) {
+        if let Some(mat) = role_material(RoomSurface::Floor, &floor_name, Material::Floor) {
             let mut cut = crate::foundation::platform_holes(floor, PlatformKind::Floor);
             cut.extend(room.holes.iter().cloned());
-            out.extend(crate::foundation::build_platform(
-                mat,
-                std::slice::from_ref(room),
-                &cut,
-                y_top,
-                y_top + PLATE,
-                None,
+            out.extend(tag(
+                RoomSurface::Floor,
+                crate::foundation::build_platform(
+                    mat,
+                    std::slice::from_ref(room),
+                    &cut,
+                    y_top,
+                    y_top + PLATE,
+                    None,
+                )
+                .into_iter()
+                .collect(),
             ));
         }
     }
     if levels.has_ceiling {
-        if let Some(mat) = surface_material(&ceiling_name, Material::Ceiling) {
+        if let Some(mat) = role_material(RoomSurface::Ceiling, &ceiling_name, Material::Ceiling) {
             let mut cut = crate::foundation::platform_holes(floor, PlatformKind::Ceiling);
             cut.extend(room.holes.iter().cloned());
-            out.extend(crate::foundation::build_platform(
-                mat,
-                std::slice::from_ref(room),
-                &cut,
-                y_ceiling - PLATE,
-                y_ceiling,
-                None,
+            out.extend(tag(
+                RoomSurface::Ceiling,
+                crate::foundation::build_platform(
+                    mat,
+                    std::slice::from_ref(room),
+                    &cut,
+                    y_ceiling - PLATE,
+                    y_ceiling,
+                    None,
+                )
+                .into_iter()
+                .collect(),
             ));
         }
     }
-    if let Some(mat) = surface_material(&wall_name, Material::WallInterior) {
+    if let Some(mat) = role_material(RoomSurface::Walls, &wall_name, Material::WallInterior) {
         let poly = if room.inner_polygon.len() >= 3 {
             &room.inner_polygon
         } else {
@@ -556,7 +648,7 @@ fn room_surfaces(
             panel(cursor, len, y_top, y_ceiling);
         }
         if !mesh.is_empty() {
-            out.push(mesh.finish(None));
+            out.extend(tag(RoomSurface::Walls, vec![mesh.finish(None)]));
         }
     }
     out
@@ -702,6 +794,41 @@ mod tests {
         assert_eq!(
             slab_from_polygon(&tilted[..2], 4.0, Material::Roof).triangle_count(),
             0
+        );
+    }
+
+    #[test]
+    fn a_surface_the_room_names_gets_a_tagged_plate_whatever_the_name() {
+        let mut floor = plan_core::Floor::new("1st", 0.0);
+        let room = box_room(&mut floor);
+        let levels = room_levels(&floor, &room);
+        // Nothing named: no plate.
+        let plain = room_surfaces(&floor, &room, &levels);
+        assert!(plain.iter().all(|m| m.object_id.is_none()));
+        // "Walnut" is no keyword of the table, but the room names it itself.
+        let mut n = plan_core::RoomName::new(Point::new(60.0, 48.0), "Den", "Den");
+        n.floor_finish = Some("Walnut".into());
+        floor.room_names = vec![n];
+        let tagged: Vec<_> = room_surfaces(&floor, &room, &levels)
+            .into_iter()
+            .filter(|m| m.object_id.is_some())
+            .collect();
+        assert_eq!(tagged.len(), 1);
+        let id = room_surface_id(&floor, &room, RoomSurface::Floor);
+        assert_eq!(tagged[0].object_id, Some(id));
+        assert_ne!(
+            id,
+            room_surface_id(&floor, &room, RoomSurface::Ceiling),
+            "each role has its own id"
+        );
+        assert!(id >> 63 == 1, "never a plan object id");
+        let mut p = plan_core::Project::new("t");
+        p.floors[0] = floor;
+        let names = room_surface_names(&p);
+        assert_eq!(names.len(), 1);
+        assert_eq!(
+            (names[0].0, names[0].1, names[0].2.as_str()),
+            (id, RoomSurface::Floor, "Walnut")
         );
     }
 }

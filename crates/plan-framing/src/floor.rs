@@ -327,6 +327,161 @@ pub fn frame_floor_holes(
     out
 }
 
+/// Framing for a tray ceiling (manual p. 458, "Build Framing for Selected
+/// Object"): the side walls of the step and the ceiling joists of the
+/// ceilings it makes.
+///
+/// * Vertical sides: a wall along each edge of the hole, just outside it - a
+///   bottom plate at the lower ceiling, a top plate under the upper one and
+///   studs between them at `d.stud_spacing` (the last stud at the corner) -
+///   as [`MemberKind::BottomPlate`], [`MemberKind::TopPlate`] and
+///   [`MemberKind::Stud`].
+/// * Sloped sides: one [`MemberKind::Rafter`] per `rec.rafter_spacing` along
+///   each edge, running up the slope from the outer ceiling to the hole.
+/// * Ceiling joists ([`MemberKind::CeilingJoist`], `d.ceiling_joist_size` at
+///   `rec.rafter_spacing`): over the outer ceiling (the ring around the hole)
+///   when it hangs below the surface the tray sits in, and over the inner
+///   ceiling when a Recess into Ceiling raises it.
+///
+/// Heights in `geom` are above the floor datum; `floor_elevation` is added.
+/// A tray with a Caution or with Retain Framing set makes no members.
+pub fn frame_tray_ceiling(
+    geom: &plan_core::tray::TrayGeom,
+    rec: &plan_core::tray::TrayCeiling,
+    floor_elevation: f64,
+    d: &FramingDefaults,
+) -> Vec<Member> {
+    if !geom.ok() || rec.retain_framing || geom.inner.len() < 3 {
+        return Vec::new();
+    }
+    let up: Vec3 = [0.0, 1.0, 0.0];
+    let to3 = |p: Point, y: f64| -> Vec3 { [p.x, y, -p.y] };
+    let dir3 = |v: Point| -> Vec3 { [v.x, 0.0, -v.y] };
+    let (low, high) = (
+        floor_elevation + geom.low(),
+        floor_elevation + geom.high(),
+    );
+    let lumber = d.stud_size;
+    let t = lumber.thickness;
+    let inner = plan_core::tray::ccw(&geom.inner);
+    let n = inner.len();
+    let mut out = Vec::new();
+
+    for i in 0..n {
+        let (a, b) = (inner[i], inner[(i + 1) % n]);
+        let len = a.dist(b);
+        if len < 1.0 {
+            continue;
+        }
+        let dir = (b - a).normalized();
+        // Outward from a counter-clockwise hole is to the right of the edge.
+        let outward = -dir.perp();
+        let step = |dist: f64| a + dir * dist + outward * (lumber.depth / 2.0);
+        if geom.run > 1e-6 {
+            // A rafter up the slope: its low end on the outer ceiling's edge
+            // `run` out from the hole, its high end at the hole.
+            let spacing = rec.rafter_spacing.max(t);
+            let slope = (geom.run * geom.run + (geom.h_inner - geom.h_outer).powi(2)).sqrt();
+            let mut at: f64 = 0.0;
+            loop {
+                let along = at.min(len);
+                let foot = a + dir * along + outward * geom.run;
+                let top = a + dir * along;
+                let (y0, y1) = (
+                    floor_elevation + geom.h_outer,
+                    floor_elevation + geom.h_inner,
+                );
+                let axis: Vec3 = [
+                    (top.x - foot.x) / slope,
+                    (y1 - y0) / slope,
+                    -(top.y - foot.y) / slope,
+                ];
+                let tf = Transform3 {
+                    origin: to3(foot, y0),
+                    axis_x: axis,
+                    axis_y: dir3(dir),
+                };
+                out.push(Member::new(MemberKind::Rafter, d.ceiling_joist_size, slope, tf, None));
+                if along >= len {
+                    break;
+                }
+                at += spacing;
+            }
+            continue;
+        }
+        // Plates lie flat along the edge: depth across the wall, thickness up.
+        let flat = |kind: MemberKind, y: f64| {
+            let tf = Transform3 {
+                origin: to3(step(0.0), y),
+                axis_x: dir3(dir),
+                axis_y: dir3(outward),
+            };
+            Member::new(kind, lumber, len, tf, None)
+        };
+        out.push(flat(MemberKind::BottomPlate, low + t / 2.0));
+        out.push(flat(MemberKind::TopPlate, high - t / 2.0));
+        let stud_len = (high - low - 2.0 * t).max(0.0);
+        if stud_len < 0.5 {
+            continue;
+        }
+        let spacing = d.stud_spacing.max(t);
+        let mut at: f64 = 0.0;
+        loop {
+            // Studs are centred on `at`; the first and last sit flush.
+            let centre = at.clamp(t / 2.0, (len - t / 2.0).max(t / 2.0));
+            let tf = Transform3 {
+                origin: to3(step(centre), low + t),
+                axis_x: up,
+                axis_y: dir3(outward),
+            };
+            out.push(Member::new(MemberKind::Stud, lumber, stud_len, tf, None));
+            if at >= len {
+                break;
+            }
+            at += spacing;
+        }
+    }
+
+    // Ceiling joists for the ceilings the tray makes.
+    let joist_defaults = FramingDefaults {
+        ceiling_joist_spacing: rec.rafter_spacing.max(t),
+        ..d.clone()
+    };
+    let joists = |poly: &[Point], holes: &[Vec<Point>], level: f64| -> Vec<Member> {
+        let room = Room {
+            polygon: poly.to_vec(),
+            ..Room::default()
+        };
+        let as_floor = FramingDefaults {
+            joist_size: joist_defaults.ceiling_joist_size,
+            joist_spacing: joist_defaults.ceiling_joist_spacing,
+            rim_joist: false,
+            blocking: false,
+            ..joist_defaults.clone()
+        };
+        let elevation = level + SUBFLOOR + joist_defaults.ceiling_joist_size.depth;
+        frame_floor_holes(&room, elevation, &as_floor, joist_defaults.ceiling_direction, holes)
+            .into_iter()
+            .map(|mut m| {
+                m.kind = MemberKind::CeilingJoist;
+                m
+            })
+            .collect()
+    };
+    if geom.h_outer < geom.base - 1e-6 {
+        let edge = if geom.run > 1e-6 {
+            plan_core::tray::outset_outline(&geom.inner, geom.run)
+        } else {
+            geom.inner.clone()
+        };
+        out.extend(joists(&geom.outer, &[edge], floor_elevation + geom.h_outer));
+    }
+    if geom.h_inner > geom.base + 1e-6 {
+        out.extend(joists(&geom.inner, &[], floor_elevation + geom.h_inner));
+    }
+    out
+}
+
 fn bounds(poly: &[Point]) -> (Point, Point) {
     poly.iter().fold(
         (
@@ -633,5 +788,101 @@ mod tests {
             JoistDirection::AlongX,
         );
         assert!(m.len() < of(&floor, MemberKind::Joist).len());
+    }
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::*;
+    use plan_core::tray::{resolve, RoomCeiling, TrayCeiling};
+    use plan_core::Project;
+
+    fn rect(x1: f64, y1: f64) -> Vec<Point> {
+        vec![
+            Point::new(0.0, 0.0),
+            Point::new(x1, 0.0),
+            Point::new(x1, y1),
+            Point::new(0.0, y1),
+        ]
+    }
+
+    fn geom(spec: TrayCeiling) -> (plan_core::tray::TrayGeom, TrayCeiling) {
+        let mut p = Project::new("t");
+        let id = p.make_tray_in_room(0, &rect(240.0, 180.0), spec).unwrap();
+        let room = RoomCeiling {
+            outline: rect(240.0, 180.0),
+            height: 96.0,
+            flat: true,
+        };
+        let g = resolve(&p.floors[0], &[room]).remove(0);
+        (g, p.floors[0].tray(id).unwrap().clone())
+    }
+
+    fn count(m: &[Member], k: MemberKind) -> usize {
+        m.iter().filter(|x| x.kind == k).count()
+    }
+
+    #[test]
+    fn a_vertical_step_gets_plates_and_studs_on_every_edge() {
+        let (g, rec) = geom(TrayCeiling::default());
+        let m = frame_tray_ceiling(&g, &rec, 0.0, &FramingDefaults::default());
+        // Four edges: a bottom and a top plate on each.
+        assert_eq!(count(&m, MemberKind::BottomPlate), 4);
+        assert_eq!(count(&m, MemberKind::TopPlate), 4);
+        let studs: Vec<&Member> = m.iter().filter(|x| x.kind == MemberKind::Stud).collect();
+        // 192" edges: 0, 16 ... 192 -> 13 studs; 132" edges: 0 ... 128 and the
+        // corner -> 10 studs.
+        assert_eq!(studs.len(), 2 * 13 + 2 * 10);
+        // Stud length is the 8" step less the two plates.
+        assert!(studs.iter().all(|s| (s.length - (8.0 - 3.0)).abs() < 1e-9));
+        // Plates run the edge, between the dropped (88") and upper (96") ceiling.
+        let bottom = m.iter().find(|x| x.kind == MemberKind::BottomPlate).unwrap();
+        assert!((bottom.transform.origin[1] - (88.0 + 0.75)).abs() < 1e-9);
+        // The dropped ring is joisted below the surface it hangs from.
+        assert!(count(&m, MemberKind::CeilingJoist) > 0);
+        assert_eq!(count(&m, MemberKind::Rafter), 0);
+    }
+
+    #[test]
+    fn a_sloped_step_gets_rafters_not_walls() {
+        let (g, rec) = geom(TrayCeiling {
+            pitch: Some(12.0),
+            ..Default::default()
+        });
+        let m = frame_tray_ceiling(&g, &rec, 0.0, &FramingDefaults::default());
+        assert_eq!(count(&m, MemberKind::Stud), 0);
+        assert_eq!(count(&m, MemberKind::TopPlate), 0);
+        let rafters = count(&m, MemberKind::Rafter);
+        // 16" spacing along 192" and 132" edges, a rafter at each end.
+        assert_eq!(rafters, 2 * 13 + 2 * 10);
+        let r = m.iter().find(|x| x.kind == MemberKind::Rafter).unwrap();
+        // 8" run and 8" rise: an 11.3" slope.
+        assert!((r.length - 128f64.sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_recessed_tray_joists_the_raised_ceiling_and_retain_framing_stops_it() {
+        let (g, rec) = geom(TrayCeiling {
+            recess: true,
+            ..Default::default()
+        });
+        let m = frame_tray_ceiling(&g, &rec, 0.0, &FramingDefaults::default());
+        let joists: Vec<&Member> = m
+            .iter()
+            .filter(|x| x.kind == MemberKind::CeilingJoist)
+            .collect();
+        assert!(!joists.is_empty());
+        // Over the 192" x 132" hole: joists span the short way.
+        assert!(joists.iter().all(|j| j.length <= 192.0 + 1e-6));
+        let mut kept = rec.clone();
+        kept.retain_framing = true;
+        assert!(frame_tray_ceiling(&g, &kept, 0.0, &FramingDefaults::default()).is_empty());
+    }
+
+    #[test]
+    fn a_tray_with_a_caution_is_not_framed() {
+        let (mut g, rec) = geom(TrayCeiling::default());
+        g.caution = Some(plan_core::tray::Caution::RoomNotFlat);
+        assert!(frame_tray_ceiling(&g, &rec, 0.0, &FramingDefaults::default()).is_empty());
     }
 }

@@ -4,9 +4,7 @@
 //! All lengths are inches; grade is elevation 0 and `elevation` is the top of
 //! the boards. Scene space is X right, Y up, Z = -plan y (see `plan-3d`).
 
-use crate::railing::{
-    bar, railing_segments, run_meshes, PostSkip, RailingGeometry, RailingParams,
-};
+use crate::railing::{bar, railing_segments, run_meshes, PostSkip, RailingGeometry, RailingParams};
 use crate::Stroke;
 use plan_3d::{Material, Mesh};
 use plan_core::Point;

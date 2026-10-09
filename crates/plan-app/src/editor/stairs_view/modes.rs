@@ -224,7 +224,13 @@ pub(super) fn label(kind: StairHandleKind) -> Option<&'static str> {
 
 /// The stair after dragging a mode or arc handle `kind` from `start` to `to`;
 /// `orig` is the stair as it was when the drag began.
-pub(super) fn drag(o: &mut StairObj, orig: &StairObj, kind: StairHandleKind, start: Point, to: Point) {
+pub(super) fn drag(
+    o: &mut StairObj,
+    orig: &StairObj,
+    kind: StairHandleKind,
+    start: Point,
+    to: Point,
+) {
     let (along, right) = (orig.along(), orig.right());
     let at = to - orig.stair.origin;
     let w = orig.stair.params.width;
@@ -286,7 +292,12 @@ pub const MAX_FLARE: f64 = 36.0;
 
 /// Replaces stair `o` by `pieces` (bottom to top; the first keeps its id) as
 /// one undo step named `what`, and joins them.
-fn replace_with_sections(cx: &mut EditorContext, o: &StairObj, pieces: Vec<Stair>, what: &str) -> String {
+fn replace_with_sections(
+    cx: &mut EditorContext,
+    o: &StairObj,
+    pieces: Vec<Stair>,
+    what: &str,
+) -> String {
     cx.begin_change(what);
     let fl = cx.floor;
     let n = pieces.len();
@@ -352,5 +363,10 @@ pub fn disconnect(cx: &mut EditorContext, id: Id) -> Result<String, String> {
     }
     let pieces = plan_stairs::disconnect(&o.stair)
         .ok_or("Disconnect Subsection needs an L-shaped or U-shaped stair")?;
-    Ok(replace_with_sections(cx, &o, pieces, "Disconnect Subsection"))
+    Ok(replace_with_sections(
+        cx,
+        &o,
+        pieces,
+        "Disconnect Subsection",
+    ))
 }

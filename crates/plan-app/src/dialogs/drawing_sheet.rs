@@ -759,15 +759,20 @@ fn paint_printable_border(
         .map(|(x, y)| cam.world_to_screen(g.world(x, y)));
     painter.add(egui::Shape::closed_line(
         corners.to_vec(),
-        Stroke::new(1.0, BLUE),
+        Stroke::new(1.0_f32, BLUE),
     ));
 }
 
 fn paint_handles(painter: &egui::Painter, cam: &Camera, g: &super::watermark::SheetGeometry) {
     for p in handle_points(cam, g) {
         let r = egui::Rect::from_center_size(p, egui::vec2(8.0, 8.0));
-        painter.rect_filled(r, 1.0, Color32::WHITE);
-        painter.rect_stroke(r, 1.0, Stroke::new(1.0, BLUE), egui::StrokeKind::Middle);
+        painter.rect_filled(r, 1.0_f32, Color32::WHITE);
+        painter.rect_stroke(
+            r,
+            1.0_f32,
+            Stroke::new(1.0_f32, BLUE),
+            egui::StrokeKind::Middle,
+        );
     }
 }
 

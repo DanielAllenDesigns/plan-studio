@@ -76,6 +76,16 @@ fn other_plan_file(name: &str) -> String {
         96.0,
         WallKind::Exterior,
     );
+    // The same wall on a second floor, so "Match Current" finds a level.
+    other.floors.push(Floor::new("2nd Floor", 108.0));
+    other.add_wall(
+        1,
+        Point::new(0.0, 0.0),
+        Point::new(200.0, 0.0),
+        6.0,
+        96.0,
+        WallKind::Exterior,
+    );
     plan_core::io::save_project(&other, &path).unwrap();
     path.to_string_lossy().into_owned()
 }
@@ -113,7 +123,11 @@ fn the_tool_draws_lines_on_their_layer_and_a_wall_corner_snaps_to_where_two_cros
         .cx
         .snap_at(Point::new(297.0, 103.0), None, false, &[]);
     assert_eq!(snap.kind, SnapKind::Intersection);
-    assert!(near(snap.point, Point::new(300.0, 100.0)), "{:?}", snap.point);
+    assert!(
+        near(snap.point, Point::new(300.0, 100.0)),
+        "{:?}",
+        snap.point
+    );
 
     // A wall started there starts exactly on the crossing.
     sim.tool(ToolId::Wall {
@@ -122,7 +136,10 @@ fn the_tool_draws_lines_on_their_layer_and_a_wall_corner_snaps_to_where_two_cros
     sim.drag((297.0, 103.0), (500.0, 103.0));
     let w = sim.app.cx.floor().walls.last().expect("the wall");
     assert!(near(w.start, Point::new(300.0, 100.0)), "{:?}", w.start);
-    assert!((w.end.y - 100.0).abs() < 1e-6, "the end snaps onto the horizontal line");
+    assert!(
+        (w.end.y - 100.0).abs() < 1e-6,
+        "the end snaps onto the horizontal line"
+    );
 }
 
 #[test]
@@ -138,8 +155,16 @@ fn a_dimension_measures_to_a_construction_line() {
     sim.key(KeyEvent::key(Key::Enter));
     let dims = &sim.app.cx.floor().dimensions;
     assert_eq!(dims.len(), 1);
-    assert!(near(dims[0].end, Point::new(650.0, 100.0)), "{:?}", dims[0].end);
-    assert!((dims[0].length() - 550.0).abs() < 1e-6, "{}", dims[0].length());
+    assert!(
+        near(dims[0].end, Point::new(650.0, 100.0)),
+        "{:?}",
+        dims[0].end
+    );
+    assert!(
+        (dims[0].length() - 550.0).abs() < 1e-6,
+        "{}",
+        dims[0].length()
+    );
 }
 
 #[test]
@@ -172,7 +197,10 @@ fn infinite_lines_draw_across_the_view_with_callouts_at_its_edges() {
         .iter()
         .fold((f32::MAX, f32::MIN), |(l, h), x| (l.min(*x), h.max(*x)));
     let _ = cam;
-    assert!(lo < 20.0 && hi > 1380.0, "spans the 1400 px view: {lo}..{hi}");
+    assert!(
+        lo < 20.0 && hi > 1380.0,
+        "spans the 1400 px view: {lo}..{hi}"
+    );
     // Two callout outlines, and the automatic order label "A" (a flat line
     // is lettered) inside each.
     let texts: Vec<String> = shapes
@@ -182,17 +210,18 @@ fn infinite_lines_draw_across_the_view_with_callouts_at_its_edges() {
             _ => None,
         })
         .collect();
-    assert_eq!(texts.iter().filter(|t| t.as_str() == "A").count(), 2, "{texts:?}");
+    assert_eq!(
+        texts.iter().filter(|t| t.as_str() == "A").count(),
+        2,
+        "{texts:?}"
+    );
 }
 
 #[test]
 fn a_finite_line_draws_only_its_length_and_the_layer_hides_it() {
     let mut sim = sim();
     let id = draw(&mut sim, (0.0, 100.0), (300.0, 100.0));
-    sim.app
-        .cx
-        .project
-        .floors[0]
+    sim.app.cx.project.floors[0]
         .construction
         .get_mut(id)
         .unwrap()
@@ -200,10 +229,17 @@ fn a_finite_line_draws_only_its_length_and_the_layer_hides_it() {
     let segs = ref_overlay::construction_snap_segments(&sim.app.cx);
     assert!(segs.is_empty(), "a finite line on this floor is a CAD line");
     // Past its end nothing snaps to it (the CAD line ends there).
-    let far = sim.app.cx.snap_at(Point::new(800.0, 101.0), None, false, &[]);
+    let far = sim
+        .app
+        .cx
+        .snap_at(Point::new(800.0, 101.0), None, false, &[]);
     assert_ne!(far.kind, SnapKind::OnObject);
     // Turn the layer off: not drawn, not snapped.
-    sim.app.cx.project.layers.set_display("Construction Lines", false);
+    sim.app
+        .cx
+        .project
+        .layers
+        .set_display("Construction Lines", false);
     sim.app.cx.refresh();
     assert!(ref_overlay::visible_construction(&sim.app.cx).is_empty());
 }
@@ -218,10 +254,7 @@ fn lines_on_all_floors_show_upstairs_and_snap_there() {
         .push(Floor::new("2nd Floor", 108.0));
     let all = draw(&mut sim, (0.0, 100.0), (40.0, 100.0));
     let here = draw(&mut sim, (0.0, 400.0), (40.0, 400.0));
-    sim.app
-        .cx
-        .project
-        .floors[0]
+    sim.app.cx.project.floors[0]
         .construction
         .get_mut(all)
         .unwrap()
@@ -234,7 +267,10 @@ fn lines_on_all_floors_show_upstairs_and_snap_there() {
         .collect();
     assert_eq!(shown, vec![all]);
     assert!(!shown.contains(&here));
-    let snap = sim.app.cx.snap_at(Point::new(700.0, 101.0), None, false, &[]);
+    let snap = sim
+        .app
+        .cx
+        .snap_at(Point::new(700.0, 101.0), None, false, &[]);
     assert_eq!(snap.kind, SnapKind::OnObject);
     assert!((snap.point.y - 100.0).abs() < 1e-6);
 }
@@ -282,7 +318,10 @@ fn the_specification_the_defaults_and_the_conversions_work_from_the_edit_buttons
         .iter()
         .map(|a| a.label)
         .collect();
-    assert!(labels.contains(&"Construction Line Specification"), "{labels:?}");
+    assert!(
+        labels.contains(&"Construction Line Specification"),
+        "{labels:?}"
+    );
     assert!(labels.contains(&"Set as Default"));
     assert!(labels.contains(&"Convert to Polyline"));
     // Open Object.
@@ -342,7 +381,10 @@ fn a_row_from_a_second_plan_file_draws_through_its_offset_and_angle() {
     assert!(first.row.source.is_this_plan());
     assert!(near(first.walls[0].end, Point::new(240.0, 0.0)));
     let second = &layers[1];
-    assert_eq!(second.row.floor, plan_core::construction::RowFloor::MatchCurrent);
+    assert_eq!(
+        second.row.floor,
+        plan_core::construction::RowFloor::MatchCurrent
+    );
     // The other plan's 200 inch wall, turned 90 degrees and moved by (50, 20).
     // Floor 1 of this plan has no counterpart in a one-floor file.
     assert!(second.walls.is_empty() || near(second.walls[0].end, Point::new(50.0, 220.0)));
@@ -364,7 +406,11 @@ fn a_row_from_a_second_plan_file_draws_through_its_offset_and_angle() {
         .cx
         .snap_at(Point::new(52.0, 222.0), None, false, &[]);
     assert_eq!(snap.kind, SnapKind::Endpoint);
-    assert!(near(snap.point, Point::new(50.0, 220.0)), "{:?}", snap.point);
+    assert!(
+        near(snap.point, Point::new(50.0, 220.0)),
+        "{:?}",
+        snap.point
+    );
 
     // Undo takes the second row away again.
     sim.app.cx.floor = 1;
@@ -384,7 +430,11 @@ fn rows_reorder_and_the_current_line_moves_with_them() {
         d.select(2);
         d.move_up();
         d.move_up();
-        assert_eq!(d.table().current_at, 1, "one row in front of the Current line");
+        assert_eq!(
+            d.table().current_at,
+            1,
+            "one row in front of the Current line"
+        );
     })
     .unwrap();
     assert!(rd::accept_dialog(&mut sim.app.cx));
@@ -436,7 +486,10 @@ fn a_wall_over_its_reference_counterpart_gets_light_blue_edges() {
             _ => false,
         })
     };
-    assert!(has_blue(&leaves(&mut sim)), "the aligned wall's outline is light blue");
+    assert!(
+        has_blue(&leaves(&mut sim)),
+        "the aligned wall's outline is light blue"
+    );
     // A hair off: the highlight goes.
     sim.app.cx.project.floors[1].wall_mut(id).unwrap().start = Point::new(240.0, 1.0);
     sim.app.cx.refresh();
@@ -457,20 +510,33 @@ fn swap_goes_to_the_reference_floor_and_back_without_an_undo_step() {
     assert_eq!(s.floor, rd::ReferenceFloor::Floor(1));
     sim.action(Action::Custom(rd::SWAP));
     assert_eq!(sim.app.cx.floor, 1, "and back");
-    assert_eq!(sim.app.cx.undo_depth(), depth, "swapping is not an undo step");
+    assert_eq!(
+        sim.app.cx.undo_depth(),
+        depth,
+        "swapping is not an undo step"
+    );
 }
 
 #[test]
 fn swap_is_refused_with_several_rows_or_another_plan() {
     let mut sim = two_floor_sim();
-    sim.app.cx.project.reference_table.rows = vec![ReferenceRow::default(), ReferenceRow::default()];
+    sim.app.cx.project.reference_table.rows =
+        vec![ReferenceRow::default(), ReferenceRow::default()];
     sim.action(Action::Custom(rd::SWAP));
     assert_eq!(sim.app.cx.floor, 1);
-    assert!(sim.app.cx.status.contains("several"), "{}", sim.app.cx.status);
+    assert!(
+        sim.app.cx.status.contains("several"),
+        "{}",
+        sim.app.cx.status
+    );
     sim.app.cx.project.reference_table.rows = vec![ReferenceRow::for_file("/nonexistent/x.psplan")];
     sim.action(Action::Custom(rd::SWAP));
     assert_eq!(sim.app.cx.floor, 1);
-    assert!(sim.app.cx.status.contains("another plan"), "{}", sim.app.cx.status);
+    assert!(
+        sim.app.cx.status.contains("another plan"),
+        "{}",
+        sim.app.cx.status
+    );
 }
 
 #[test]
@@ -512,7 +578,10 @@ fn the_offset_tool_moves_and_turns_the_second_plan_with_one_undo_step_per_drag()
     sim.drag((c.x, c.y), (c.x + 30.0, c.y + 12.0));
     let row = &sim.app.cx.project.reference_table.rows[0];
     assert!((row.offset[0] - 30.0).abs() < 1e-6 && (row.offset[1] - 12.0).abs() < 1e-6);
-    assert_eq!(sim.app.cx.undo_label(), Some("Edit Reference Document Offset"));
+    assert_eq!(
+        sim.app.cx.undo_label(),
+        Some("Edit Reference Document Offset")
+    );
     // Rotate with the round handle a quarter turn.
     let m = crate::tools::construction_line::marquee(&sim.app.cx, 0).unwrap();
     let (center, rot) = crate::tools::construction_line::handles(&m, 3.0 * sim.app.cx.snap_tol());
@@ -520,7 +589,11 @@ fn the_offset_tool_moves_and_turns_the_second_plan_with_one_undo_step_per_drag()
     let to = center.add(Point::new(-v.y, v.x));
     sim.drag((rot.x, rot.y), (to.x, to.y));
     let row = &sim.app.cx.project.reference_table.rows[0];
-    assert!((row.angle_deg.rem_euclid(360.0) - 90.0).abs() < 1e-6, "{}", row.angle_deg);
+    assert!(
+        (row.angle_deg.rem_euclid(360.0) - 90.0).abs() < 1e-6,
+        "{}",
+        row.angle_deg
+    );
     // Two drags, two undo steps.
     sim.undo();
     assert!(sim.app.cx.project.reference_table.rows[0].angle_deg.abs() < 1e-9);

@@ -635,54 +635,96 @@ fn draw_dimension(
     };
     let look = &d.look;
     let own_ext = look.ext_gap.is_some() || look.ext_past.is_some() || look.ext_length.is_some();
-    // Extension lines switched off per point stay off on paper.
-    for ((m, e), hidden) in d.extension_lines().into_iter().zip(d.hide_ext) {
-        if hidden {
-            continue;
-        }
-        let seg = if own_ext {
-            plan_core::dimension::extension_segment(
-                m,
-                e,
-                look.ext_gap.unwrap_or(0.0),
-                look.ext_past.unwrap_or(0.0),
-                look.ext_length,
-            )
-        } else {
-            Some((m, e))
-        };
-        if let Some((a, b)) = seg {
-            let (pa, pb) = (tp(a), tp(b));
+    let geom = d.curve_geom(look.ext_gap.unwrap_or(0.0), look.ext_past.unwrap_or(0.0));
+    if let Some(g) = &geom {
+        for (a, b) in &g.extensions {
+            let (pa, pb) = (tp(*a), tp(*b));
             doc.line(pa.0, pa.1, pb.0, pb.1, pen * 0.6);
         }
+    } else {
+        // Extension lines switched off per point stay off on paper.
+        for ((m, e), hidden) in d.extension_lines().into_iter().zip(d.hide_ext) {
+            if hidden {
+                continue;
+            }
+            let seg = if own_ext {
+                plan_core::dimension::extension_segment(
+                    m,
+                    e,
+                    look.ext_gap.unwrap_or(0.0),
+                    look.ext_past.unwrap_or(0.0),
+                    look.ext_length,
+                )
+            } else {
+                Some((m, e))
+            };
+            if let Some((a, b)) = seg {
+                let (pa, pb) = (tp(a), tp(b));
+                doc.line(pa.0, pa.1, pb.0, pb.1, pen * 0.6);
+            }
+        }
     }
-    let (a, b) = d.line_points();
-    let (pa, pb) = (tp(a), tp(b));
-    doc.line(pa.0, pa.1, pb.0, pb.1, pen);
+    let line: Vec<Point> = match &geom {
+        Some(g) => g.line.clone(),
+        None => {
+            let (a, b) = d.line_points();
+            vec![a, b]
+        }
+    };
+    let pts: Vec<(f64, f64)> = line.iter().map(|p| tp(*p)).collect();
+    for w in pts.windows(2) {
+        doc.line(w[0].0, w[0].1, w[1].0, w[1].1, pen);
+    }
+    let (Some(&pa), Some(&pb)) = (pts.first(), pts.last()) else {
+        return;
+    };
     draw_dimension_ends(doc, pa, pb, look, k, TICK, pen);
-    let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
-    if dx.hypot(dy) < 1e-6 {
+    if geom.is_none() && (pb.0 - pa.0).hypot(pb.1 - pa.1) < 1e-6 {
         return;
     }
-    // Read left to right or bottom to top: angle in (-90, 90].
-    let mut ang = dy.atan2(dx).to_degrees();
-    if ang > 90.0 + 1e-9 {
-        ang -= 180.0;
-    } else if ang <= -90.0 + 1e-9 {
-        ang += 180.0;
+    let width = |t: &str| PdfDoc::text_width(t, text_pt) / k.max(1e-9);
+    let (anchor, dirv, run, len) = match &geom {
+        Some(g) => (g.label_at, g.label_dir, None, f64::INFINITY),
+        None => {
+            let (a, b) = (line[0], line[1]);
+            (
+                Point::lerp(a, b, 0.5),
+                b.sub(a).normalized(),
+                Some((a, b)),
+                a.dist(b),
+            )
+        }
+    };
+    let params = plan_core::dimension::LabelParams {
+        text_h: text_pt / k.max(1e-9),
+        width: &width,
+        view_rotation: 0.0,
+        leader: plan_core::dimension::LeaderStyle::SquareCorner,
+    };
+    let lay = d.label_layout(fmt, anchor, dirv, run, len, &params);
+    if lay.leader.len() >= 2 {
+        let lp: Vec<(f64, f64)> = lay.leader.iter().map(|p| tp(*p)).collect();
+        for w in lp.windows(2) {
+            doc.line(w[0].0, w[0].1, w[1].0, w[1].1, pen * 0.6);
+        }
     }
-    let label = d.label(fmt);
-    let w = PdfDoc::text_width(&label, text_pt);
-    let (sin, cos) = ang.to_radians().sin_cos();
-    let mid = ((pa.0 + pb.0) * 0.5, (pa.1 + pb.1) * 0.5);
-    // Centre along the line, then lift the baseline off it.
-    let lift = text_pt * 0.3;
-    let x = mid.0 - cos * w * 0.5 - sin * lift;
-    let y = mid.1 - sin * w * 0.5 + cos * lift;
-    if ang.abs() < 1e-6 {
-        doc.text(x, y, text_pt, &label);
-    } else {
-        doc.text_rotated(x, y, text_pt, ang, &label);
+    if let Some((a, b)) = lay.stub {
+        let (pa, pb) = (tp(a), tp(b));
+        doc.line(pa.0, pa.1, pb.0, pb.1, pen * 0.6);
+    }
+    let (sin, cos) = lay.angle.sin_cos();
+    for line in &lay.lines {
+        let c = tp(line.center);
+        let w = line.width * k;
+        // The baseline starts half the text back from the middle and a third
+        // of the character height below it.
+        let x = c.0 - cos * w * 0.5 + sin * text_pt * 0.35;
+        let y = c.1 - sin * w * 0.5 - cos * text_pt * 0.35;
+        if lay.angle.abs() < 1e-6 {
+            doc.text(x, y, text_pt, &line.text);
+        } else {
+            doc.text_rotated(x, y, text_pt, lay.angle.to_degrees(), &line.text);
+        }
     }
 }
 

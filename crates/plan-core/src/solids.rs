@@ -251,9 +251,7 @@ impl SolidExt {
     /// Does the 3D shape differ from [`SolidKind`]'s plain mesh (tilted,
     /// truncated pyramid, custom surface quality)?
     pub fn changes_mesh(&self) -> bool {
-        self.tilted()
-            || self.pyramid.is_some_and(|p| p.truncated)
-            || !self.quality.automatic
+        self.tilted() || self.pyramid.is_some_and(|p| p.truncated) || !self.quality.automatic
     }
 }
 
@@ -411,7 +409,9 @@ impl SolidLayer {
 
     /// The ext of `id`, or the default one.
     pub fn ext_or_default(&self, id: Id) -> SolidExt {
-        self.ext_of(id).cloned().unwrap_or_else(|| SolidExt::new(id))
+        self.ext_of(id)
+            .cloned()
+            .unwrap_or_else(|| SolidExt::new(id))
     }
 
     /// Stores `e`; a default ext removes the record.
@@ -496,7 +496,9 @@ pub fn triangulate(pts: &[Point]) -> Vec<[usize; 3]> {
         ring.reverse();
     }
     let inside = |p: Point, a: Point, b: Point, c: Point| {
-        (b - a).cross(p - a) >= -1e-9 && (c - b).cross(p - b) >= -1e-9 && (a - c).cross(p - c) >= -1e-9
+        (b - a).cross(p - a) >= -1e-9
+            && (c - b).cross(p - b) >= -1e-9
+            && (a - c).cross(p - c) >= -1e-9
     };
     let mut out = Vec::with_capacity(n - 2);
     while ring.len() > 3 {
@@ -613,12 +615,21 @@ fn sphere_tris(r: f64, cz: f64, segs: usize) -> Vec<Tri> {
     let ring = |i: usize, j: usize| -> V3 {
         let phi = -PI / 2.0 + PI * i as f64 / bands as f64;
         let th = TAU * (j % segs) as f64 / segs as f64;
-        [r * phi.cos() * th.cos(), r * phi.cos() * th.sin(), cz + r * phi.sin()]
+        [
+            r * phi.cos() * th.cos(),
+            r * phi.cos() * th.sin(),
+            cz + r * phi.sin(),
+        ]
     };
     let mut out = Vec::new();
     for i in 0..bands {
         for j in 0..segs {
-            let (p00, p01, p10, p11) = (ring(i, j), ring(i, j + 1), ring(i + 1, j), ring(i + 1, j + 1));
+            let (p00, p01, p10, p11) = (
+                ring(i, j),
+                ring(i, j + 1),
+                ring(i + 1, j),
+                ring(i + 1, j + 1),
+            );
             for t in [[p00, p01, p11], [p00, p11, p10]] {
                 if tri_area(&t) > 1e-9 {
                     out.push(t);
@@ -764,10 +775,15 @@ fn key(p: Point) -> (i64, i64) {
 /// only one such triangle owns, chained into loops. A box gives its
 /// rectangle, a sphere its great circle, a subtraction its holes.
 pub fn top_outline(tris: &[Tri]) -> Vec<Vec<Point>> {
+    /// A plan point snapped to a grid, and a directed edge between two.
+    type GridKey = (i64, i64);
+    type EdgeKey = (GridKey, GridKey);
+    /// Where an edge leads and the two plan points it joins.
+    type Hop = (GridKey, (Point, Point));
     use std::collections::HashMap;
     // Directed edges of up-facing triangles, projected; an edge that also
     // appears reversed is interior and cancels.
-    let mut edges: HashMap<((i64, i64), (i64, i64)), (Point, Point)> = HashMap::new();
+    let mut edges: HashMap<EdgeKey, (Point, Point)> = HashMap::new();
     let up: Vec<[Point; 3]> = tris
         .iter()
         .filter(|t| tri_normal(t)[2] > 1e-6)
@@ -834,16 +850,14 @@ pub fn top_outline(tris: &[Tri]) -> Vec<Vec<Point>> {
             cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
             let mut prev = a;
             for (_, v) in cuts.into_iter().chain(std::iter::once((1.0, b))) {
-                if key(prev) != key(v) {
-                    if edges.remove(&(key(v), key(prev))).is_none() {
-                        edges.insert((key(prev), key(v)), (prev, v));
-                    }
+                if key(prev) != key(v) && edges.remove(&(key(v), key(prev))).is_none() {
+                    edges.insert((key(prev), key(v)), (prev, v));
                 }
                 prev = v;
             }
         }
     }
-    let mut next: HashMap<(i64, i64), Vec<((i64, i64), (Point, Point))>> = HashMap::new();
+    let mut next: HashMap<GridKey, Vec<Hop>> = HashMap::new();
     for ((ka, kb), pts) in &edges {
         next.entry(*ka).or_default().push((*kb, *pts));
     }
@@ -893,7 +907,8 @@ pub fn simplify_collinear(ring: Vec<Point>) -> Vec<Point> {
     let keep: Vec<Point> = (0..n)
         .filter(|&i| {
             let (a, b, c) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
-            (b - a).cross(c - b).abs() > 1e-6 * (b - a).length().max(1e-9) * (c - b).length().max(1e-9)
+            (b - a).cross(c - b).abs()
+                > 1e-6 * (b - a).length().max(1e-9) * (c - b).length().max(1e-9)
         })
         .map(|i| ring[i])
         .collect();
@@ -949,10 +964,7 @@ impl Poly {
         }
         Some(Poly {
             v: t.to_vec(),
-            plane: Plane {
-                n,
-                w: dot(n, t[0]),
-            },
+            plane: Plane { n, w: dot(n, t[0]) },
         })
     }
 
@@ -1259,9 +1271,7 @@ impl Floor {
         match r {
             ObjectRef::Detail(id) => {
                 let layer = DetailsLayer::load(self);
-                let s = layer
-                    .solid(id)
-                    .ok_or(BoolError::NotSolid("That object"))?;
+                let s = layer.solid(id).ok_or(BoolError::NotSolid("That object"))?;
                 if matches!(s.kind, SolidKind::Face { .. }) {
                     return Err(BoolError::Faces);
                 }
@@ -1365,11 +1375,19 @@ pub fn extrude_face(s: &Solid3d, ext: Option<&SolidExt>, d: V3) -> Vec<Tri> {
     if ring.len() < 3 {
         return Vec::new();
     }
-    let z0 = s.elevation + if matches!(s.kind, SolidKind::Face { .. }) { 0.0 } else { s.height() };
+    let z0 = s.elevation
+        + if matches!(s.kind, SolidKind::Face { .. }) {
+            0.0
+        } else {
+            s.height()
+        };
     // Sweep the ring along d: a prism with slanted sides.
     let ring = ccw(&ring);
     let n = ring.len();
-    let moved: Vec<V3> = ring.iter().map(|p| [p.x + d[0], p.y + d[1], z0 + d[2]]).collect();
+    let moved: Vec<V3> = ring
+        .iter()
+        .map(|p| [p.x + d[0], p.y + d[1], z0 + d[2]])
+        .collect();
     let from: Vec<V3> = ring.iter().map(|p| [p.x, p.y, z0]).collect();
     let mut out = Vec::new();
     // Caps (the lower cap faces down when d points up).
@@ -1377,7 +1395,10 @@ pub fn extrude_face(s: &Solid3d, ext: Option<&SolidExt>, d: V3) -> Vec<Tri> {
     let mut cap_a = Vec::new();
     cap(&mut cap_a, &ring, z0, !up);
     out.extend(cap_a);
-    let ring_b: Vec<Point> = ring.iter().map(|p| Point::new(p.x + d[0], p.y + d[1])).collect();
+    let ring_b: Vec<Point> = ring
+        .iter()
+        .map(|p| Point::new(p.x + d[0], p.y + d[1]))
+        .collect();
     let mut cap_b = Vec::new();
     cap(&mut cap_b, &ring_b, z0 + d[2], up);
     out.extend(cap_b);
@@ -1472,7 +1493,14 @@ mod tests {
     #[test]
     fn primitives_are_closed_and_outward_facing() {
         let cases = [
-            (SolidKind::Box { w: 10.0, d: 20.0, h: 30.0 }, 6000.0),
+            (
+                SolidKind::Box {
+                    w: 10.0,
+                    d: 20.0,
+                    h: 30.0,
+                },
+                6000.0,
+            ),
             (SolidKind::Cylinder { r: 6.0, h: 10.0 }, 0.0),
             (SolidKind::Sphere { r: 5.0 }, 0.0),
             (SolidKind::Cone { r: 6.0, h: 9.0 }, 0.0),
@@ -1511,7 +1539,11 @@ mod tests {
             } else {
                 // Within a few percent of the true volume of the round shape.
                 let truth = s.volume();
-                assert!((v - truth).abs() / truth < 0.08, "{}: {v} vs {truth}", s.kind.name());
+                assert!(
+                    (v - truth).abs() / truth < 0.08,
+                    "{}: {v} vs {truth}",
+                    s.kind.name()
+                );
             }
         }
     }
@@ -1536,7 +1568,11 @@ mod tests {
     fn subtract_a_cylinder_leaves_a_hole_in_the_plan_outline() {
         let slab = Solid3d {
             id: 1,
-            kind: SolidKind::Box { w: 40.0, d: 40.0, h: 6.0 },
+            kind: SolidKind::Box {
+                w: 40.0,
+                d: 40.0,
+                h: 6.0,
+            },
             ..Solid3d::default()
         };
         let hole = Solid3d {
@@ -1584,7 +1620,12 @@ mod tests {
         assert_eq!(back.floors[0].solid_layer.compounds.len(), 1);
         // Faces are refused.
         let mut f2 = back.floors[0].clone();
-        let r = boolean_floor(&mut f2, BoolOp::Union, &[ObjectRef::Cad(1), ObjectRef::Solid(new_id)], 99);
+        let r = boolean_floor(
+            &mut f2,
+            BoolOp::Union,
+            &[ObjectRef::Cad(1), ObjectRef::Solid(new_id)],
+            99,
+        );
         assert!(matches!(r, Err(BoolError::NotSolid(_))));
     }
 
@@ -1594,7 +1635,17 @@ mod tests {
         let flat = solid_tris(&s, None);
         let mut e = SolidExt::new(1);
         e.rot_x = 90.0;
-        let tilted = solid_tris(&Solid3d { kind: SolidKind::Box { w: 10.0, d: 10.0, h: 30.0 }, ..s.clone() }, Some(&e));
+        let tilted = solid_tris(
+            &Solid3d {
+                kind: SolidKind::Box {
+                    w: 10.0,
+                    d: 10.0,
+                    h: 30.0,
+                },
+                ..s.clone()
+            },
+            Some(&e),
+        );
         let (lo, hi) = bounds3(&tilted).unwrap();
         // A 10 x 10 x 30 box turned a quarter about X lies along Y.
         assert!((hi[1] - lo[1] - 30.0).abs() < 1e-6 && (hi[2] - lo[2] - 10.0).abs() < 1e-6);
@@ -1615,8 +1666,28 @@ mod tests {
         let cut = volume(&solid_tris(&py, Some(&ex)));
         assert!(cut < full && cut > 0.0);
         // Side length 10, height 12: a full pyramid is 400.
-        assert!((solid_tris(&pyramid_solid(5, Point::ZERO, 12.0, &spec), Some(&SolidExt { pyramid: Some(PyramidSpec { truncated: false, ..spec }), ..SolidExt::new(5) })).len() as i32) > 0);
-        assert!(SurfaceQuality { automatic: false, max_deflection: 0.01 }.segments(30.0) > ROUND_SEGMENTS);
+        assert!(
+            (solid_tris(
+                &pyramid_solid(5, Point::ZERO, 12.0, &spec),
+                Some(&SolidExt {
+                    pyramid: Some(PyramidSpec {
+                        truncated: false,
+                        ..spec
+                    }),
+                    ..SolidExt::new(5)
+                })
+            )
+            .len() as i32)
+                > 0
+        );
+        assert!(
+            SurfaceQuality {
+                automatic: false,
+                max_deflection: 0.01
+            }
+            .segments(30.0)
+                > ROUND_SEGMENTS
+        );
         assert_eq!(SurfaceQuality::default().segments(30.0), ROUND_SEGMENTS);
     }
 
@@ -1635,21 +1706,33 @@ mod tests {
         let (lo, hi) = crate::details::bounds(&o);
         assert!((hi.x - lo.x - 12.0).abs() < 1e-9 && (hi.y - lo.y - 12.0).abs() < 1e-9);
         assert!((sq.side_radius() - 6.0).abs() < 1e-9);
-        let hex = PyramidSpec { sides: 6, def: PyramidDef::RadiusToSide, size: 10.0, ..sq };
+        let hex = PyramidSpec {
+            sides: 6,
+            def: PyramidDef::RadiusToSide,
+            size: 10.0,
+            ..sq
+        };
         assert!((hex.side_length() - 2.0 * 10.0 * (PI / 6.0).tan()).abs() < 1e-9);
         assert_eq!(PyramidSpec { sides: 3, ..sq }.outline().len(), 3);
     }
 
     #[test]
     fn polyline_conversion_and_extrusion() {
-        let sq = [Point::new(0.0, 0.0), Point::new(20.0, 0.0), Point::new(20.0, 10.0), Point::new(0.0, 10.0)];
+        let sq = [
+            Point::new(0.0, 0.0),
+            Point::new(20.0, 0.0),
+            Point::new(20.0, 10.0),
+            Point::new(0.0, 10.0),
+        ];
         let s = polyline_to_solid(3, &sq, 8.0).unwrap();
         assert!((s.volume() - 1600.0).abs() < 1e-9);
         assert!((s.position.x - 10.0).abs() < 1e-9);
         assert!(polyline_to_solid(3, &sq[..2], 8.0).is_none());
         let face = Solid3d {
             id: 4,
-            kind: SolidKind::Face { polygon: sq.to_vec() },
+            kind: SolidKind::Face {
+                polygon: sq.to_vec(),
+            },
             ..Solid3d::default()
         };
         let t = extrude_face(&face, None, [0.0, 0.0, 6.0]);

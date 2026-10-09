@@ -48,7 +48,7 @@ fn an_l_stair_disconnects_into_a_flight_a_landing_and_a_flight() {
             .iter()
             .map(|p| solve(&p.params).risers)
             .sum();
-        assert_eq!(risers, sol.risers - 0, "{turn:?}");
+        assert_eq!(risers, sol.risers, "{turn:?}");
         for p in [&parts[0], &parts[2]] {
             assert!(close(solve(&p.params).riser_height, sol.riser_height));
         }

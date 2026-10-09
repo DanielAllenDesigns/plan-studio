@@ -744,45 +744,88 @@ fn draw_dimension(
     };
     let look = &d.look;
     let own_ext = look.ext_gap.is_some() || look.ext_past.is_some() || look.ext_length.is_some();
-    for ((m, e), hidden) in d.extension_lines().into_iter().zip(d.hide_ext) {
-        if hidden {
-            continue;
+    let geom = d.curve_geom(look.ext_gap.unwrap_or(0.0), look.ext_past.unwrap_or(0.0));
+    if let Some(g) = &geom {
+        for (a, b) in &g.extensions {
+            cv.line(tp(*a), tp(*b), pen.scaled(0.6).solid());
         }
-        let seg = if own_ext {
-            plan_core::dimension::extension_segment(
-                m,
-                e,
-                look.ext_gap.unwrap_or(0.0),
-                look.ext_past.unwrap_or(0.0),
-                look.ext_length,
-            )
-        } else {
-            Some((m, e))
-        };
-        if let Some((a, b)) = seg {
-            cv.line(tp(a), tp(b), pen.scaled(0.6).solid());
+    } else {
+        for ((m, e), hidden) in d.extension_lines().into_iter().zip(d.hide_ext) {
+            if hidden {
+                continue;
+            }
+            let seg = if own_ext {
+                plan_core::dimension::extension_segment(
+                    m,
+                    e,
+                    look.ext_gap.unwrap_or(0.0),
+                    look.ext_past.unwrap_or(0.0),
+                    look.ext_length,
+                )
+            } else {
+                Some((m, e))
+            };
+            if let Some((a, b)) = seg {
+                cv.line(tp(a), tp(b), pen.scaled(0.6).solid());
+            }
         }
     }
-    let (a, b) = d.line_points();
-    let (pa, pb) = (tp(a), tp(b));
-    cv.line(pa, pb, pen);
+    let line: Vec<Point> = match &geom {
+        Some(g) => g.line.clone(),
+        None => {
+            let (a, b) = d.line_points();
+            vec![a, b]
+        }
+    };
+    let pts: Vec<Pt> = line.iter().map(|p| tp(*p)).collect();
+    for w in pts.windows(2) {
+        cv.line(w[0], w[1], pen);
+    }
+    let (Some(&pa), Some(&pb)) = (pts.first(), pts.last()) else {
+        return;
+    };
     draw_dimension_ends(cv, pa, pb, look, k, TICK, pen);
-    let label = d.label(&DimFormat::default());
-    let mid = ((pa.0 + pb.0) * 0.5, (pa.1 + pb.1) * 0.5);
-    if (pb.0 - pa.0).abs() >= (pb.1 - pa.1).abs() {
-        cv.text_centered(mid.0, mid.1 + 2.0, text_pt, pen.color, false, &label);
-    } else {
-        // Vertical dimensions read bottom to top, centred beside the line
-        // (the glyphs rise to the left of the baseline).
-        let w = cv.text_width(&label, text_pt, false);
-        cv.text_full(
-            (mid.0 + 2.0 + text_pt * 0.75, mid.1 - w * 0.5),
-            text_pt,
-            pen.color,
-            false,
-            std::f64::consts::FRAC_PI_2,
-            &label,
+    // The label, laid out in plan inches (paper points divided by `k`).
+    let fmt = DimFormat::default();
+    let width = |t: &str| cv.text_width(t, text_pt, false) / k.max(1e-9);
+    let (anchor, dirv, run, len) = match &geom {
+        Some(g) => (g.label_at, g.label_dir, None, f64::INFINITY),
+        None => {
+            let (a, b) = (line[0], line[1]);
+            (Point::lerp(a, b, 0.5), b.sub(a).normalized(), Some((a, b)), a.dist(b))
+        }
+    };
+    let params = plan_core::dimension::LabelParams {
+        text_h: text_pt / k.max(1e-9),
+        width: &width,
+        view_rotation: 0.0,
+        leader: plan_core::dimension::LeaderStyle::SquareCorner,
+    };
+    let lay = d.label_layout(&fmt, anchor, dirv, run, len, &params);
+    if lay.leader.len() >= 2 {
+        let lp: Vec<Pt> = lay.leader.iter().map(|p| tp(*p)).collect();
+        for w in lp.windows(2) {
+            cv.line(w[0], w[1], pen.scaled(0.6).solid());
+        }
+    }
+    if let Some((a, b)) = lay.stub {
+        cv.line(tp(a), tp(b), pen.scaled(0.6).solid());
+    }
+    let (sin, cos) = lay.angle.sin_cos();
+    for line in &lay.lines {
+        let c = tp(line.center);
+        let w = line.width * k;
+        // The baseline starts half the text back from the middle and a third
+        // of the character height below it.
+        let origin = (
+            c.0 - cos * w * 0.5 + sin * text_pt * 0.35,
+            c.1 - sin * w * 0.5 - cos * text_pt * 0.35,
         );
+        if lay.angle.abs() < 1e-9 {
+            cv.text_full(origin, text_pt, pen.color, false, 0.0, &line.text);
+        } else {
+            cv.text_full(origin, text_pt, pen.color, false, lay.angle, &line.text);
+        }
     }
 }
 

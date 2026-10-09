@@ -59,6 +59,8 @@ pub use crate::dialogs::layer_display::{layer_panel, LayerPanelState};
 pub struct DockState {
     pub layers: LayerPanelState,
     pub library: LibraryBrowserState,
+    /// The Plan Agent dock (`shell::agent_panel`).
+    pub agent: super::agent_panel::AgentPanelState,
     /// Floor switches and tool changes for the app to apply.
     pub requests: Vec<DockRequest>,
     pub hotkey_dialog: Option<HotkeyDialog>,
@@ -96,6 +98,7 @@ pub fn show(ui: &mut egui::Ui, dock: Dock, cx: &mut EditorContext, st: &mut Dock
         // The dock body (library objects, or the material library) lives in
         // `library_panel`.
         Dock::Library => super::library_panel::show(ui, &mut st.library, cx, &mut st.requests),
+        Dock::Agent => super::agent_panel::show(ui, st, cx),
     }
 }
 
@@ -124,11 +127,12 @@ pub fn remember_width(slot: &mut f32, width: f32) {
     }
 }
 
-/// The three docks in tab order, with the tab's icon and short label.
-const TABS: [(Dock, &str, &str); 3] = [
+/// The docks in tab order, with the tab's icon and short label.
+const TABS: [(Dock, &str, &str); 4] = [
     (Dock::Library, "library_browser", "Library"),
     (Dock::Project, "project_browser", "Project"),
     (Dock::LayerDisplay, "layer_display", "Layers"),
+    (Dock::Agent, "auto_detail", "Agent"),
 ];
 
 const TAB_HEIGHT: f32 = 32.0;
@@ -817,7 +821,7 @@ fn layout_section(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec<
     egui::ComboBox::from_id_salt("pb_sheet_scale")
         .selected_text(cx.sheet.scale.label())
         .show_ui(ui, |ui| {
-            for s in plan_docs::Scale::ALL {
+            for s in plan_docs::Scale::choices() {
                 ui.selectable_value(&mut cx.sheet.scale, s, s.label());
             }
         });
@@ -1642,7 +1646,7 @@ mod tests {
         st.open_hotkey_dialog(&hk);
         st.open_layer_dialog();
         for _ in 0..3 {
-            for dock in [Dock::LayerDisplay, Dock::Project, Dock::Library] {
+            for dock in [Dock::LayerDisplay, Dock::Project, Dock::Library, Dock::Agent] {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::SidePanel::right("dock").show(ctx, |ui| show(ui, dock, &mut cx, &mut st));
                     show_dialogs(ctx, &mut cx, &mut st, &mut hk);

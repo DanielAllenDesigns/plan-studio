@@ -69,7 +69,6 @@ pub struct SpecDialog {
     suppliers: Vec<String>,
     layers: Vec<String>,
     selected_col: Option<MlColumn>,
-    original: ListSpec,
 }
 
 impl SpecDialog {
@@ -119,7 +118,6 @@ impl SpecDialog {
         let mut draft = spec.clone();
         draft.normalize_columns();
         Self {
-            original: draft.clone(),
             draft,
             tab: Tab::General,
             scope,
@@ -182,12 +180,6 @@ impl SpecDialog {
             s.scope = self.scope_value();
         }
         s
-    }
-
-    /// Select All / Clear All and the other edits are made on `draft`
-    /// directly; this is whether anything differs from the start.
-    pub fn changed(&self) -> bool {
-        self.result() != self.original
     }
 }
 

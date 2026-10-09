@@ -4,9 +4,13 @@ use plan_core::geometry::Point;
 use plan_core::Id;
 use serde::{Deserialize, Serialize};
 
+use plan_core::arch_block::ElevationRef;
+
 use crate::dress::{Accessories, ObjectInfo, PlanFill};
 use crate::face::{FaceItem, FaceLayout};
 use crate::geom;
+use crate::options::{BoxConstruction, Ends, Manufacturer, ShowOpen, TopSpec};
+use crate::special::Special;
 use crate::top::{treat_corners, CornerTreatment, CustomTop, Cutout, CutoutKind, EdgeProfile};
 
 /// Carcass panel thickness, inches (an appliance bay starts inside it).
@@ -235,6 +239,14 @@ pub struct Countertop {
     /// Size of that edge shape, inches.
     #[serde(default = "default_edge_size")]
     pub edge_size: f64,
+    /// Include the countertop in the schedules (Include Countertop in
+    /// Schedule).
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub in_schedule: bool,
+    /// Draw the width of the edge profile in plan (Display Molding Edges in
+    /// Plan Views).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_molding_edges: bool,
 }
 
 fn default_edge_size() -> f64 {
@@ -254,6 +266,8 @@ impl Default for Countertop {
             corner_size: crate::top::default_corner_size(),
             edge: EdgeProfile::Square,
             edge_size: default_edge_size(),
+            in_schedule: true,
+            show_molding_edges: false,
         }
     }
 }
@@ -273,6 +287,17 @@ pub struct Backsplash {
     /// `Cabinet::hand_over_top`), else 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub lift: f64,
+    /// Also stand on the side of the cabinet when it is against a wall or a
+    /// taller cabinet (Side).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub side: bool,
+    /// Present at all times, not only when the cabinet is against a wall
+    /// (Always Present).
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub always_present: bool,
+    /// Include the backsplash in the schedules.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub in_schedule: bool,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -291,6 +316,9 @@ impl Backsplash {
             thickness,
             full_height: false,
             lift: 0.0,
+            side: false,
+            always_present: true,
+            in_schedule: true,
         }
     }
 }
@@ -310,6 +338,43 @@ impl Default for ToeKick {
             height: 4.0,
             depth: 3.0,
         }
+    }
+}
+
+/// The toe kick options of the General panel beyond its size (p. 671).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToeOptions {
+    /// Flat Sides: no toe kick area at the exposed ends.
+    pub flat_sides: bool,
+    /// Flat Back: no toe kick at an exposed back.
+    pub flat_back: bool,
+    /// Closed Toe: the sides reach down over the toe kick.
+    pub closed_toe: bool,
+    /// Closed Toe stays where cabinets stand side by side.
+    pub closed_toe_always: bool,
+}
+
+impl ToeOptions {
+    pub fn is_default(&self) -> bool {
+        *self == ToeOptions::default()
+    }
+}
+
+/// Left and right stile (and the reveals at them) of the front face; `None`
+/// follows the cabinet (Side Properties, p. 677).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Stiles {
+    pub left: Option<f64>,
+    pub right: Option<f64>,
+    pub left_reveal: Option<f64>,
+    pub right_reveal: Option<f64>,
+}
+
+impl Stiles {
+    pub fn is_default(&self) -> bool {
+        *self == Stiles::default()
     }
 }
 
@@ -421,6 +486,13 @@ pub struct DoorStyle {
     /// when the library is not there.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub library: String,
+    /// Bevel width on the edges of a slab door, inches (0 = square edges;
+    /// at most 3).
+    pub slab_bevel: f64,
+    /// A stile between the leaves of a double door (Stile Between Doors).
+    pub stile_between: bool,
+    /// Centre the handle across the door instead of `handle_from_edge`.
+    pub handle_across_centered: bool,
 }
 
 impl Default for DoorStyle {
@@ -439,6 +511,9 @@ impl Default for DoorStyle {
             hinge_from_edge: 3.0,
             handle_length: 4.0,
             library: String::new(),
+            slab_bevel: 0.0,
+            stile_between: false,
+            handle_across_centered: false,
         }
     }
 }
@@ -486,6 +561,12 @@ pub struct DrawerStyle {
     /// style (see [`DoorStyle::library`]).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub library: String,
+    /// Bevel width on the edges of a slab drawer front, inches.
+    pub slab_bevel: f64,
+    /// Two handles, set in `handle_inset` from each side, instead of one
+    /// centred handle.
+    pub two_handles: bool,
+    pub handle_inset: f64,
 }
 
 impl Default for DrawerStyle {
@@ -499,6 +580,9 @@ impl Default for DrawerStyle {
             handle_from_top: 1.5,
             handle_length: 4.0,
             library: String::new(),
+            slab_bevel: 0.0,
+            two_handles: false,
+            handle_inset: 3.0,
         }
     }
 }
@@ -848,6 +932,90 @@ pub struct Cabinet {
     /// Listed in the Cabinet Schedule (Schedule tab); on unless switched off.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub in_schedule: bool,
+    /// A filler the program made between cabinets and walls (Create
+    /// Automatic Fillers). `plan_cabinets::auto_fillers` rebuilds these after
+    /// every cabinet edit; they are not picked, not scheduled and have no
+    /// label (round 16, brief 23).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_filler: bool,
+    /// Suppress Label (Label tab): the plan label is not drawn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suppress_label: bool,
+    /// Extended stiles on a framed cabinet: how far the face frame reaches
+    /// past the left and right ends, inches. They act as fillers and put XL,
+    /// XR or XLR in the label.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stile_ext_left: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stile_ext_right: f64,
+    /// A special shape: end, radius end, peninsula, angled or bow front.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub special: Option<Special>,
+    /// The `blind` end was made by the program from two cabinets meeting in
+    /// a corner (see [`crate::apply_blind_corners`]), not set by the user.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blind_auto: bool,
+    /// Bow depth of a corner cabinet's diagonal (negative for an inside
+    /// bow); 0 keeps it straight.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub corner_bow: f64,
+    /// Box Construction: top, bottom, side and back thickness, corners.
+    #[serde(default, skip_serializing_if = "BoxConstruction::is_default")]
+    pub box_construction: BoxConstruction,
+    /// Cut Room Moldings: room moldings stop where the cabinet touches a
+    /// wall.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub cut_room_moldings: bool,
+    /// Suppress Automatic Fillers beside this cabinet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suppress_fillers: bool,
+    /// Auto door items are one door up to this opening width, inches.
+    #[serde(default = "default_auto_door", skip_serializing_if = "is_default_auto_door")]
+    pub auto_door_threshold: f64,
+    /// What the to Top and to Bottom elevations of the dialog measure from.
+    #[serde(default, skip_serializing_if = "is_default_elevation_ref")]
+    pub elevation_ref: ElevationRef,
+    /// A plan fill of the countertop of its own (Fill Style, Countertop).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter_fill: Option<PlanFill>,
+    /// Manufacturer contact information of a catalog cabinet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manufacturer: Option<Manufacturer>,
+    /// Which ends touch a wall or a cabinet (see [`crate::exposures`]); none
+    /// until the editor has worked it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends: Option<Ends>,
+    /// Which front items show open.
+    #[serde(default, skip_serializing_if = "is_default_show_open")]
+    pub show_open: ShowOpen,
+    /// Edges, waterfalls and thickness of a custom countertop.
+    #[serde(default, skip_serializing_if = "TopSpec::is_default")]
+    pub top_spec: TopSpec,
+    /// Toe kick options beyond its size.
+    #[serde(default, skip_serializing_if = "ToeOptions::is_default")]
+    pub toe_options: ToeOptions,
+    /// Left and right stiles and reveals of the front.
+    #[serde(default, skip_serializing_if = "Stiles::is_default")]
+    pub stiles: Stiles,
+    /// Reverse the fixture set into the countertop, left to right.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixture_reverse: bool,
+}
+
+fn default_auto_door() -> f64 {
+    crate::face::AUTO_DOOR_THRESHOLD
+}
+
+fn is_default_auto_door(v: &f64) -> bool {
+    (*v - crate::face::AUTO_DOOR_THRESHOLD).abs() < 1e-9
+}
+
+fn is_default_elevation_ref(v: &ElevationRef) -> bool {
+    *v == ElevationRef::default()
+}
+
+fn is_default_show_open(v: &ShowOpen) -> bool {
+    *v == ShowOpen::default()
 }
 
 fn yes() -> bool {
@@ -903,6 +1071,26 @@ impl Cabinet {
             info: ObjectInfo::default(),
             accessories: Accessories::default(),
             in_schedule: true,
+            auto_filler: false,
+            suppress_label: false,
+            stile_ext_left: 0.0,
+            stile_ext_right: 0.0,
+            special: None,
+            blind_auto: false,
+            corner_bow: 0.0,
+            box_construction: BoxConstruction::default(),
+            cut_room_moldings: true,
+            suppress_fillers: false,
+            auto_door_threshold: crate::face::AUTO_DOOR_THRESHOLD,
+            elevation_ref: ElevationRef::default(),
+            counter_fill: None,
+            manufacturer: None,
+            ends: None,
+            show_open: ShowOpen::default(),
+            top_spec: TopSpec::default(),
+            toe_options: ToeOptions::default(),
+            stiles: Stiles::default(),
+            fixture_reverse: false,
         }
     }
 
@@ -1430,21 +1618,30 @@ impl Cabinet {
                     Point::new(a, d),
                     Point::new(0.0, d),
                 ],
-                CornerStyle::Diagonal => vec![
-                    Point::new(0.0, 0.0),
-                    Point::new(w, 0.0),
-                    Point::new(w, a),
-                    Point::new(a, d),
-                    Point::new(0.0, d),
-                ],
+                CornerStyle::Diagonal => {
+                    let mut ring = vec![
+                        Point::new(0.0, 0.0),
+                        Point::new(w, 0.0),
+                        Point::new(w, a),
+                    ];
+                    if self.corner_bow.abs() > 1e-9 {
+                        ring.extend(self.corner_front());
+                    }
+                    ring.extend([Point::new(a, d), Point::new(0.0, d)]);
+                    ring
+                }
             };
         }
-        vec![
-            Point::new(0.0, 0.0),
-            Point::new(w, 0.0),
-            Point::new(w, d),
-            Point::new(0.0, d),
-        ]
+        let ring = match &self.special {
+            Some(sp) => sp.footprint(w, d),
+            None => vec![
+                Point::new(0.0, 0.0),
+                Point::new(w, 0.0),
+                Point::new(w, d),
+                Point::new(0.0, d),
+            ],
+        };
+        self.treat_box_corners(ring)
     }
 
     /// [`Cabinet::footprint_local`] in plan coordinates.
@@ -1479,6 +1676,12 @@ impl Cabinet {
         }
         let t = self.countertop?;
         let (w, d) = (self.width, self.depth);
+        let bowed_corner = self.kind.is_corner()
+            && self.corner_bow.abs() > 1e-9
+            && self.corner.is_none_or(|c| c.style == CornerStyle::Diagonal);
+        if self.special.is_some() || bowed_corner {
+            return Some(self.generic_top_ring(&t, treated));
+        }
         if self.kind.is_corner() {
             let a = self.arm();
             let o = t.overhang_front;
@@ -1507,8 +1710,15 @@ impl Cabinet {
                 }
             });
         }
-        let (x0, x1) = (-t.overhang_sides, w + t.overhang_sides);
-        let (y0, y1) = (-t.overhang_back, d + t.overhang_front);
+        // Overhangs stand only where the end is exposed: a side against a
+        // wall or a cabinet gets none.
+        let ends = self.ends.unwrap_or_default();
+        let side = |mated: bool| if mated { 0.0 } else { t.overhang_sides };
+        let (x0, x1) = (-side(ends.left), w + side(ends.right));
+        let (y0, y1) = (
+            -if ends.back { 0.0 } else { t.overhang_back },
+            d + t.overhang_front,
+        );
         let ring = vec![
             Point::new(x0, y0),
             Point::new(x1, y0),
@@ -1516,9 +1726,16 @@ impl Cabinet {
             Point::new(x0, y1),
         ];
         if treated {
-            // Only the front corners are exposed.
+            // Only the exposed corners are treated: the front ones, and the
+            // back ones too when the back is exposed and ends are known.
+            let known = self.ends.is_some();
             Some(treat_corners(&ring, t.corner, t.corner_size, |p| {
-                p.y > d * 0.5
+                let front = p.y > d * 0.5;
+                let left = p.x < w * 0.5;
+                if !known {
+                    return front;
+                }
+                (if left { !ends.left } else { !ends.right }) && (front || !ends.back)
             }))
         } else {
             Some(ring)
@@ -1595,9 +1812,12 @@ impl Cabinet {
     }
 
     /// The label drawn in plan: the override with its macros expanded, or the
-    /// automatic one.
+    /// automatic one; nothing when Suppress Label is on or the cabinet is an
+    /// automatic filler.
     pub fn display_label(&self) -> String {
-        if self.label.is_empty() {
+        if self.suppress_label || self.auto_filler {
+            String::new()
+        } else if self.label.is_empty() {
             auto_label(self)
         } else {
             expand_label(&self.label, self)
@@ -1664,28 +1884,13 @@ pub fn type_code(cabinet: &Cabinet) -> String {
     }
 }
 
-/// Industry-style label: `B24`, `B36-SB` (sink base), `W3030` (width then
-/// height), `FH2484`, `BF3`, `WF330`, `BBC48`, `DW24`, `BDC36`, `SO..`,
-/// `SH..`, `PT..`. Wall-hung and tall kinds append their height.
+/// Chief's automatic label (reference manual pp. 655-657, see
+/// [`crate::label`]): `B24`, `3DB24`, `SB24R`, `W3030`, `BF3`, `WF330`,
+/// `OTC362490`, `DCB36`, `BCW2436R`; blank for shelves, partitions and the
+/// fillers the program makes. (Earlier builds wrote `B36-SB`, `FH2484` and
+/// `BBC48`.)
 pub fn auto_label(cabinet: &Cabinet) -> String {
-    let w = num(cabinet.width);
-    let h = num(cabinet.height);
-    let code = type_code(cabinet);
-    match cabinet.kind {
-        CabinetKind::Base if cabinet.appliance.is_none() && cabinet.face.has_appliance("Sink") => {
-            format!("B{w}-SB")
-        }
-        CabinetKind::Wall
-        | CabinetKind::FullHeight
-        | CabinetKind::WallFiller
-        | CabinetKind::FullHeightFiller
-        | CabinetKind::CornerWall
-        | CabinetKind::BlindWall => format!("{code}{w}{h}"),
-        CabinetKind::CustomCountertop
-        | CabinetKind::CustomBacksplash
-        | CabinetKind::CounterHole => code,
-        _ => format!("{code}{w}"),
-    }
+    crate::label::auto_label(cabinet)
 }
 
 /// Expands the label macros of `template` (Chief's cabinet label text):
@@ -1792,9 +1997,9 @@ mod tests {
     #[test]
     fn labels() {
         assert_eq!(auto_label(&Cabinet::base(36.0)), "B36");
-        assert_eq!(auto_label(&Cabinet::sink_base(36.0)), "B36-SB");
+        assert_eq!(auto_label(&Cabinet::sink_base(36.0)), "SB36");
         assert_eq!(auto_label(&Cabinet::wall(30.0)), "W3030");
-        assert_eq!(auto_label(&Cabinet::full_height(24.0)), "FH2484");
+        assert_eq!(auto_label(&Cabinet::full_height(24.0)), "U242484");
         assert_eq!(auto_label(&Cabinet::base(37.5)), "B37.5");
     }
 
@@ -1900,28 +2105,28 @@ mod tests {
         );
         assert_eq!(
             auto_label(&Cabinet::filler(CabinetKind::FullHeightFiller, 3.0)),
-            "FHF384"
+            "UF32484"
         );
         assert_eq!(
             auto_label(&Cabinet::blind_base(48.0, 15.0, BlindSide::Right)),
-            "BBC48"
+            "BCB48"
         );
         assert_eq!(
             auto_label(&Cabinet::blind_wall(36.0, 12.0, BlindSide::Left)),
-            "WBC3630"
+            "BCW3630"
         );
         assert_eq!(auto_label(&Cabinet::dishwasher_opening()), "DW24");
-        assert_eq!(auto_label(&Cabinet::range_opening(30.0)), "RNG30");
-        assert_eq!(auto_label(&Cabinet::corner_base(36.0)), "BDC36");
+        assert_eq!(auto_label(&Cabinet::range_opening(30.0)), "RB30");
+        assert_eq!(auto_label(&Cabinet::corner_base(36.0)), "DCB36");
         assert_eq!(
             auto_label(&Cabinet::corner_base(36.0).with_pie_cut(true)),
-            "BLS36"
+            "LSB36"
         );
         assert_eq!(
             auto_label(&Cabinet::corner_base(36.0).with_pie_cut(false)),
-            "BPC36"
+            "LCB36"
         );
-        assert_eq!(auto_label(&Cabinet::corner_wall(24.0)), "WDC2430");
+        assert_eq!(auto_label(&Cabinet::corner_wall(24.0)), "DCW2430");
         assert_eq!(auto_label(&Cabinet::wall(24.0)), "W2430");
         assert_eq!(auto_label(&Cabinet::new(CabinetKind::Soffit, 36.0)), "SO36");
         // Macros expand in an override; an empty override uses the automatic label.
@@ -2015,7 +2220,7 @@ mod tests {
         assert!(!c.framed);
         assert_eq!(auto_label(&c), "DW24");
         c.set_appliance(Some("Range"));
-        assert_eq!(auto_label(&c), "RNG24");
+        assert_eq!(auto_label(&c), "RB24");
         c.set_appliance(None);
         assert!(c.framed && c.appliance.is_none());
         assert_eq!(c.face, FaceLayout::base_default(c.face_height()));

@@ -173,7 +173,10 @@ impl OrderDialog {
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add_enabled(error.is_none(), egui::Button::new(RichText::new("   OK   ").strong()))
+                            .add_enabled(
+                                error.is_none(),
+                                egui::Button::new(RichText::new("   OK   ").strong()),
+                            )
                             .clicked()
                         {
                             outcome = Outcome::Ok;
@@ -337,10 +340,7 @@ mod tests {
         assert!(accept_dialog(&mut cx));
         let after = cx.project.construction_order(0, ViewType::Plan);
         assert_eq!((after[&a].as_str(), after[&b].as_str()), ("II", "I"));
-        assert_eq!(
-            cx.undo_label(),
-            Some("Construction Line Order Management")
-        );
+        assert_eq!(cx.undo_label(), Some("Construction Line Order Management"));
         cx.undo();
         assert_eq!(cx.project.construction_order(0, ViewType::Plan)[&a], "1");
         // The labels the plan draws are the ones the rule sets give.

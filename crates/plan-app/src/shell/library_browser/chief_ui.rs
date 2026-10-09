@@ -893,8 +893,10 @@ fn object_row(
             ui.painter()
                 .rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
         }
-        let preview =
-            Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::splat(super::PREVIEW_PX));
+        let preview = Rect::from_min_size(
+            rect.min + Vec2::splat(3.0),
+            Vec2::splat(super::preview_px()),
+        );
         ui.painter()
             .rect_filled(preview, 2.0, Color32::from_gray(0xEC));
         match &tex {

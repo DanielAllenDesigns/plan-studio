@@ -141,10 +141,7 @@ pub fn build_to_deck(
                 .min_by(|x, y| near(&x.polygon).total_cmp(&near(&y.polygon)))
         })
         .ok_or("Stairs to Deck: click on or near a deck or room")?;
-    let deck = decks
-        .iter()
-        .find(|d| pick.contains(d.name.anchor))
-        .cloned();
+    let deck = decks.iter().find(|d| pick.contains(d.name.anchor)).cloned();
     let outline = match &deck {
         Some(d) => d.outline.clone(),
         None if pick.inner_polygon.len() >= 3 => ccw(&pick.inner_polygon),
@@ -182,7 +179,9 @@ pub fn build_to_deck(
         ..StairParams::default()
     };
     // Where along the edge: the click's projection, kept inside the edge.
-    let t = (click - p).dot(along_edge).clamp(width * 0.5, len - width * 0.5);
+    let t = (click - p)
+        .dot(along_edge)
+        .clamp(width * 0.5, len - width * 0.5);
     let top_centre = p + along_edge * t;
     let mut rise = grade0.max(plan_stairs::MIN_RISER);
     for _ in 0..3 {
@@ -209,7 +208,12 @@ pub fn build_to_deck(
     let bottom_centre = top_centre + out * run;
     let travel = -out;
     let right = Point::new(travel.y, -travel.x);
-    let mut stair = Stair::new(0, bottom_centre - right * (width * 0.5), travel.angle(), params);
+    let mut stair = Stair::new(
+        0,
+        bottom_centre - right * (width * 0.5),
+        travel.angle(),
+        params,
+    );
     stair.floor_elevation = floor.elevation;
     stair.base = level - rise;
     let x = StairExtras {

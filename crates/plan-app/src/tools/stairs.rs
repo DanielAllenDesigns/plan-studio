@@ -125,8 +125,7 @@ impl StairsTool {
     /// Does the stair being drawn run downward: Alt held, or a right-button
     /// press? Landings and the deck tool have no direction to reverse.
     fn runs_down(&self, press_down: bool) -> bool {
-        (press_down || self.reverse)
-            && !matches!(self.kind, StairKind::Landing | StairKind::ToDeck)
+        (press_down || self.reverse) && !matches!(self.kind, StairKind::Landing | StairKind::ToDeck)
     }
 
     /// The object the tool would place for `a` and `b` right now.
@@ -223,7 +222,11 @@ impl StairsTool {
         } else {
             view::build(&cx.project, cx.floor, self.kind, self.turn, a, b)
         };
-        let label = if down { "Draw Stairs Down" } else { self.kind.name() };
+        let label = if down {
+            "Draw Stairs Down"
+        } else {
+            self.kind.name()
+        };
         self.add_object(cx, obj, label)
     }
 
@@ -419,7 +422,9 @@ impl Tool for StairsTool {
         if let Some(e) = self.edit.take() {
             cx.readout = None;
             // A click on the Starter Tread handle goes round none, one, two.
-            if e.kind == StairHandleKind::Starter && view::find(cx.floor(), e.id).as_ref() == Some(&e.orig) {
+            if e.kind == StairHandleKind::Starter
+                && view::find(cx.floor(), e.id).as_ref() == Some(&e.orig)
+            {
                 let n = view::drag_handle(&e.orig, e.kind, e.start, e.start);
                 let (id, fl) = (e.id, cx.floor);
                 view::update(&mut cx.project, fl, id, |o| *o = n.clone());
@@ -1128,20 +1133,18 @@ mod tests {
     }
 
     #[test]
-    fn flare_curve_toggles_winders_and_breakline_toggles() {
+    fn flare_curve_is_an_edit_mode_and_breakline_toggles() {
         let mut cx = new_cx();
         let mut t = StairsTool::default();
         drag(&mut t, &mut cx, (0.0, 0.0), (150.0, 0.0));
-        assert!(view::run_command(&mut cx, StairCommand::FlareCurve));
-        assert!(matches!(
-            only_stair(&cx).stair.params.shape,
-            StairShape::Winder { .. }
-        ));
-        assert!(view::run_command(&mut cx, StairCommand::FlareCurve));
-        assert!(matches!(
-            only_stair(&cx).stair.params.shape,
-            StairShape::LShaped { .. }
-        ));
+        let id = only_stair(&cx).id();
+        // Flare/Curve Stairs switches the handles; it does not change the
+        // stair, and running it again leaves the mode.
+        assert!(!view::run_command(&mut cx, StairCommand::FlareCurve));
+        assert_eq!(view::edit_mode(id), view::EditMode::FlareCurve);
+        assert_eq!(only_stair(&cx).stair.params.shape, StairShape::Straight);
+        assert!(!view::run_command(&mut cx, StairCommand::FlareCurve));
+        assert_eq!(view::edit_mode(id), view::EditMode::Normal);
         assert!(view::run_command(&mut cx, StairCommand::ToggleBreakLine));
         assert!(!only_stair(&cx).x.break_line);
         assert!(view::run_command(&mut cx, StairCommand::MakeRailing));

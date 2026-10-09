@@ -14,6 +14,7 @@
 
 mod chief_ui;
 pub mod png;
+mod search;
 mod user_ui;
 
 use super::library_panel;
@@ -22,6 +23,7 @@ use crate::tools::library::chief::{self, ChiefSettings};
 use crate::tools::ToolId;
 use chief_ui::{ChiefAction, ChiefBrowser};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
+use plan_library::browse::SortKey;
 use plan_library::{CatalogItem, CategoryNode, Library, Stroke as SymStroke, Symbol2d};
 use std::sync::Arc;
 #[cfg(test)]
@@ -29,8 +31,14 @@ pub use user_ui::preview_model;
 use user_ui::{DragItem, UserUi};
 pub use user_ui::{PanelRequest, UserAction, View};
 
-/// Edge of the square each result's preview is drawn in.
+/// Edge of the square each result's preview is drawn in when Preferences >
+/// Library Browser has not changed it (Medium).
 pub const PREVIEW_PX: f32 = 48.0;
+
+/// The preview edge in force (Preferences > Library Browser > Preview size).
+pub fn preview_px() -> f32 {
+    crate::dialogs::preferences::pages::library_preview_px()
+}
 /// Space kept around the drawing inside the preview square.
 const PREVIEW_MARGIN: f32 = 2.0;
 /// Most rows listed at once; the rest is summarized.
@@ -169,11 +177,25 @@ fn results_for<'a>(
     query: &str,
     category: &[String],
 ) -> Vec<&'a CatalogItem> {
-    let filter = user.full_filter(query, category);
+    let mut filter = user.full_filter(query, category);
     if filter.is_empty() && user.view != View::Recent {
         return Vec::new();
     }
+    // The text is matched here, under the Preferences > Library Browser
+    // options; the filter only narrows by category, type, size and so on.
+    let text = std::mem::take(&mut filter.query);
     let mut items = plan_library::browse::apply(library, &filter, &user.meta);
+    if !text.trim().is_empty() {
+        let mut catalogs: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for c in library.catalogs() {
+            for i in &c.items {
+                catalogs.entry(i.id.as_str()).or_insert(c.name.as_str());
+            }
+        }
+        let opts = crate::dialogs::preferences::pages::current().library_browser;
+        let ranked = filter.sort == SortKey::Relevance;
+        items = search::narrow(items, &catalogs, &text, &opts, ranked);
+    }
     if user.view == View::Recent {
         items.retain(|i| user.meta.recent.contains(&i.id));
     }
@@ -573,7 +595,8 @@ fn result_row(
     is_active: bool,
     user: &UserUi,
 ) -> (Option<LibraryEvent>, Option<UserAction>) {
-    let size = Vec2::new(ui.available_width(), PREVIEW_PX + 6.0);
+    let px = preview_px();
+    let size = Vec2::new(ui.available_width(), px + 6.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let visuals = ui.visuals();
     if is_active {
@@ -583,7 +606,7 @@ fn result_row(
         ui.painter()
             .rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
     }
-    let preview = Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::splat(PREVIEW_PX));
+    let preview = Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::splat(px));
     ui.painter()
         .rect_filled(preview, 2.0, Color32::from_gray(0xEC));
     let ink = Stroke::new(1.0_f32, Color32::from_gray(0x2B));
@@ -650,7 +673,7 @@ fn result_cell(
     user: &UserUi,
 ) -> (Option<LibraryEvent>, Option<UserAction>) {
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::splat(PREVIEW_PX + 8.0), Sense::click_and_drag());
+        ui.allocate_exact_size(Vec2::splat(preview_px() + 8.0), Sense::click_and_drag());
     let visuals = ui.visuals();
     if is_active {
         ui.painter()
@@ -812,6 +835,28 @@ mod tests {
             .results()
             .iter()
             .all(|i| i.category.first() == Some(&top.name)));
+    }
+
+    #[test]
+    fn the_preferences_decide_what_a_search_looks_at_and_the_preview_size() {
+        use crate::dialogs::preferences::pages::{self, PreviewSize};
+        let mut st = state();
+        st.query = "toilet".into();
+        let normal = st.results().len();
+        assert!(normal > 0);
+        pages::update(|p| {
+            p.library_browser.search_names = false;
+            p.library_browser.search_keywords = false;
+            p.library_browser.search_descriptions = false;
+            p.library_browser.search_catalog_names = false;
+        });
+        assert!(st.results().is_empty());
+        pages::update(|p| p.library_browser.search_names = true);
+        assert!(!st.results().is_empty());
+        pages::update(|p| p.library_browser.preview_size = PreviewSize::Large);
+        assert_eq!(preview_px(), PreviewSize::Large.px());
+        pages::set(pages::PagePrefs::default());
+        assert_eq!(preview_px(), PREVIEW_PX);
     }
 
     #[test]

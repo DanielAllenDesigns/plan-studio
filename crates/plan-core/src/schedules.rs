@@ -22,6 +22,9 @@ use crate::layers::{Layer, LayerSet};
 use crate::model::{Floor, Id};
 use serde::{Deserialize, Serialize};
 
+pub mod numfmt;
+pub use numfmt::{Accuracy, FractionFormat, FractionStyle, NumFormat, NumKind, NumUnit};
+
 /// Layer schedules (and their callout labels) are drawn on.
 pub const SCHEDULE_LAYER: &str = "Schedules";
 /// Text style schedule tables use when the plan has no other choice.
@@ -71,6 +74,20 @@ const fn f(id: &'static str, title: &'static str, default: bool) -> Field {
     Field { id, title, default }
 }
 
+/// The four object-preview columns (manual p. 717). Their cells are pictures
+/// drawn by the plan, so the table text of a preview column is empty.
+pub const PREVIEW_FIELDS: [&str; 4] = [
+    "callout_symbol",
+    "symbol_2d",
+    "elevation_3d",
+    "perspective_3d",
+];
+
+/// Is `id` one of the object-preview columns?
+pub fn is_preview_field(id: &str) -> bool {
+    PREVIEW_FIELDS.contains(&id)
+}
+
 const DOOR_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
     f("floor", "Floor", true),
@@ -90,6 +107,12 @@ const DOOR_FIELDS: &[Field] = &[
     f("shgc", "SHGC", false),
     f("description", "Description", false),
     f("object_id", "ID", false),
+    f("area", "Area", false),
+    f("quantity", "Quantity", false),
+    f("callout_symbol", "Callout Symbol", false),
+    f("symbol_2d", "2D Symbol", false),
+    f("elevation_3d", "3D Elevation", false),
+    f("perspective_3d", "3D Perspective", false),
 ];
 const WINDOW_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
@@ -111,6 +134,12 @@ const WINDOW_FIELDS: &[Field] = &[
     f("shgc", "SHGC", false),
     f("description", "Description", false),
     f("object_id", "ID", false),
+    f("area", "Area", false),
+    f("quantity", "Quantity", false),
+    f("callout_symbol", "Callout Symbol", false),
+    f("symbol_2d", "2D Symbol", false),
+    f("elevation_3d", "3D Elevation", false),
+    f("perspective_3d", "3D Perspective", false),
 ];
 const ROOM_FIELDS: &[Field] = &[
     f("mark", "Number", true),
@@ -122,6 +151,7 @@ const ROOM_FIELDS: &[Field] = &[
     f("floor_finish", "Floor Finish", false),
     f("ceiling_finish", "Ceiling Finish", false),
     f("floor", "Floor", false),
+    f("volume", "Volume", false),
 ];
 const WALL_FIELDS: &[Field] = &[
     f("mark", "Number", true),
@@ -143,6 +173,13 @@ const WALL_FIELDS: &[Field] = &[
     f("model", "Model", false),
     f("supplier", "Supplier", false),
     f("comment", "Comment", false),
+    // The wall legend columns (L-235).
+    f("total_width", "Total Width", false),
+    f("construction_upper", "Wall Construction, Upper", false),
+    f("construction_lower", "Wall Construction, Lower", false),
+    f("quantity", "Quantity", false),
+    f("callout_symbol", "Callout Symbol", false),
+    f("symbol_2d", "2D Symbol", false),
 ];
 const CABINET_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
@@ -158,6 +195,12 @@ const CABINET_FIELDS: &[Field] = &[
     f("drawer_style", "Drawer Style", false),
     f("finish", "Finish", false),
     f("hardware", "Hardware", false),
+    f("category", "Category", false),
+    f("quantity", "Quantity", false),
+    f("callout_symbol", "Callout Symbol", false),
+    f("symbol_2d", "2D Symbol", false),
+    f("elevation_3d", "3D Elevation", false),
+    f("perspective_3d", "3D Perspective", false),
 ];
 const ELECTRICAL_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
@@ -170,6 +213,10 @@ const ELECTRICAL_FIELDS: &[Field] = &[
     f("flags", "Flags", false),
     f("wall", "Wall", false),
     f("floor", "Floor", false),
+    f("callout_symbol", "Callout Symbol", false),
+    f("symbol_2d", "2D Symbol", false),
+    f("elevation_3d", "3D Elevation", false),
+    f("perspective_3d", "3D Perspective", false),
 ];
 const FRAMING_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
@@ -190,6 +237,14 @@ const SYMBOL_FIELDS: &[Field] = &[
     f("height", "Height", true),
     f("elevation", "Elevation", false),
     f("floor", "Floor", false),
+    f("manufacturer", "Manufacturer", false),
+    f("model", "Model", false),
+    f("comment", "Comment", false),
+    f("quantity", "Quantity", false),
+    f("callout_symbol", "Callout Symbol", false),
+    f("symbol_2d", "2D Symbol", false),
+    f("elevation_3d", "3D Elevation", false),
+    f("perspective_3d", "3D Perspective", false),
 ];
 const STAIR_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
@@ -215,6 +270,7 @@ const ROOM_FINISH_FIELDS: &[Field] = &[
     f("area", "Area sq ft", false),
     f("ceiling_height", "Ceiling height", false),
     f("floor", "Floor", false),
+    f("volume", "Volume", false),
 ];
 const NOTE_FIELDS: &[Field] = &[
     f("mark", "No.", true),
@@ -326,12 +382,59 @@ impl ScheduleKind {
         )
     }
 
-    /// The default columns: every field, the default ones visible.
+    /// The default columns: every field, the default ones visible. The
+    /// Area columns of the Door, Window and Room Finish schedules (and the
+    /// Volume of the Room Finish) start with "Calculate Total" on (p. 717).
     pub fn default_columns(self) -> Vec<ColumnSpec> {
         self.fields()
             .iter()
-            .map(|fd| ColumnSpec::new(fd.id, fd.title, fd.default))
+            .map(|fd| ColumnSpec::for_field(self, fd))
             .collect()
+    }
+
+    /// What a numeric column of this kind measures (`None` for text and
+    /// preview columns). Only these columns can carry a total, a sum of
+    /// similar rows and a number format.
+    pub fn num_kind(self, field: &str) -> Option<NumKind> {
+        use NumKind::*;
+        use ScheduleKind as K;
+        Some(match (self, field) {
+            (_, "quantity" | "count" | "qty") => Count,
+            (K::Door | K::Window, "width" | "height" | "sill" | "head") => Length,
+            (K::Door | K::Window, "area") => Area,
+            (K::Wall, "length" | "thickness" | "height" | "total_width") => Length,
+            (K::Wall, "area") => Area,
+            (K::Wall, "openings") => Count,
+            (K::Room | K::RoomFinish, "area" | "standard_area") => Area,
+            (K::Room | K::RoomFinish, "perimeter") => Feet,
+            (K::Room | K::RoomFinish, "ceiling_height") => Length,
+            (K::Room | K::RoomFinish, "volume") => Volume,
+            (K::Cabinet, "width" | "depth" | "height" | "elevation") => Length,
+            (K::Electrical, "height") => Length,
+            (K::Framing, "length") => Length,
+            (K::Framing, "linear") => Feet,
+            (K::Framing, "board_feet") => BoardFeet,
+            (K::Fixture | K::Furniture | K::Plant, "width" | "depth" | "height" | "elevation") => {
+                Length
+            }
+            (K::Stair, "treads" | "risers") => Count,
+            (K::Stair, "width" | "headroom" | "rise" | "run" | "riser" | "tread") => Length,
+            _ => return None,
+        })
+    }
+
+    /// Does the plan draw the object-preview columns for this kind?
+    pub fn has_previews(self) -> bool {
+        self.fields().iter().any(|fd| is_preview_field(fd.id))
+    }
+
+    /// Does the Totals Row apply (the schedule lists Door, Window or Room
+    /// Finish objects; manual p. 722)?
+    pub fn has_totals_row(self) -> bool {
+        matches!(
+            self,
+            ScheduleKind::Door | ScheduleKind::Window | ScheduleKind::RoomFinish
+        )
     }
 }
 
@@ -339,8 +442,59 @@ impl ScheduleKind {
 // The schedule object
 // ===================================================================
 
+/// Horizontal text alignment inside a column (Align Left, Center, Align
+/// Right, Justify edit tools; Attributes > Alignment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
+impl TextAlign {
+    pub const ALL: [TextAlign; 4] = [
+        TextAlign::Left,
+        TextAlign::Center,
+        TextAlign::Right,
+        TextAlign::Justify,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TextAlign::Left => "Left",
+            TextAlign::Center => "Center",
+            TextAlign::Right => "Right",
+            TextAlign::Justify => "Justify",
+        }
+    }
+}
+
+/// Vertical text alignment inside a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum VAlign {
+    Top,
+    #[default]
+    Middle,
+    Bottom,
+}
+
+impl VAlign {
+    pub const ALL: [VAlign; 3] = [VAlign::Top, VAlign::Middle, VAlign::Bottom];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            VAlign::Top => "Top",
+            VAlign::Middle => "Middle",
+            VAlign::Bottom => "Bottom",
+        }
+    }
+}
+
 /// One column of a schedule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ColumnSpec {
     /// Field id (see [`ScheduleKind::fields`]).
     pub field: String,
@@ -349,6 +503,21 @@ pub struct ColumnSpec {
     pub visible: bool,
     /// Column width in plan inches; `0` sizes the column to its text.
     pub width: f64,
+    /// "Calculate Total": the Totals Row adds this column up.
+    pub calc_total: bool,
+    /// "Sum Similar Rows": a row of several similar objects reports the
+    /// total of all of them in this column.
+    pub sum_similar: bool,
+    /// Number Formatting of the column (`None`: the plan's length text).
+    pub format: Option<NumFormat>,
+    /// Alignment of this column (`None` follows the schedule's).
+    pub align: Option<TextAlign>,
+}
+
+impl Default for ColumnSpec {
+    fn default() -> Self {
+        Self::new("", "", true)
+    }
 }
 
 impl ColumnSpec {
@@ -358,7 +527,24 @@ impl ColumnSpec {
             title: title.to_string(),
             visible,
             width: 0.0,
+            calc_total: false,
+            sum_similar: false,
+            format: None,
+            align: None,
         }
+    }
+
+    /// The column for `fd` as a new schedule of `kind` starts it.
+    pub fn for_field(kind: ScheduleKind, fd: &Field) -> Self {
+        let mut c = Self::new(fd.id, fd.title, fd.default);
+        c.calc_total = matches!(
+            (kind, fd.id),
+            (
+                ScheduleKind::Door | ScheduleKind::Window | ScheduleKind::RoomFinish,
+                "area"
+            ) | (ScheduleKind::RoomFinish, "volume")
+        );
+        c
     }
 }
 
@@ -384,10 +570,365 @@ pub enum Numbering {
 /// Which floors a schedule lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FloorScope {
-    /// Only the floor the schedule is placed on.
+    /// Only the floor the schedule is placed on, or the floors picked in
+    /// [`Schedule::floors`].
     #[default]
     ThisFloor,
     All,
+}
+
+/// A room picked in "Include Objects from Room": rooms have no id, so the
+/// room is the one that holds this point on that floor.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RoomRef {
+    pub floor: usize,
+    pub x: f64,
+    pub y: f64,
+}
+
+impl RoomRef {
+    pub fn at(floor: usize, p: Point) -> Self {
+        Self {
+            floor,
+            x: p.x,
+            y: p.y,
+        }
+    }
+
+    pub fn point(&self) -> Point {
+        Point::new(self.x, self.y)
+    }
+}
+
+/// How big a wrapped table may be (Wrapping).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum WrapBy {
+    /// Entries per Table: the most rows (or columns, when swapped).
+    Entries(usize),
+    /// Max Table Size: the longest table, plan inches.
+    MaxSize(f64),
+}
+
+/// Where a shorter wrapped table sits against the first (Table Alignment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TableAlign {
+    /// Top (Left when swapped).
+    #[default]
+    Start,
+    Centered,
+    /// Bottom (Right when swapped).
+    End,
+}
+
+impl TableAlign {
+    pub fn name(self, swapped: bool) -> &'static str {
+        match (self, swapped) {
+            (TableAlign::Start, false) => "Top",
+            (TableAlign::Start, true) => "Left",
+            (TableAlign::Centered, _) => "Centered",
+            (TableAlign::End, false) => "Bottom",
+            (TableAlign::End, true) => "Right",
+        }
+    }
+}
+
+/// The Wrapping group of the Columns/Rows panel: one schedule shown as
+/// several tables side by side (or stacked, when swapped).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WrapSpec {
+    pub enabled: bool,
+    pub by: WrapBy,
+    /// Wrapped Schedule Offset: the gap between tables, plan inches.
+    pub offset: f64,
+    /// Justify Wrapped Tables: stretch rows (or columns) so every table is
+    /// the same size.
+    pub justify: bool,
+    pub align: TableAlign,
+    /// Display Title on Wrapped Tables.
+    pub title_each: bool,
+    /// Display Column Headings in Wrapped Tables.
+    pub headings_each: bool,
+}
+
+impl Default for WrapSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            by: WrapBy::Entries(10),
+            offset: 12.0,
+            justify: false,
+            align: TableAlign::Start,
+            title_each: true,
+            headings_each: true,
+        }
+    }
+}
+
+/// Which colour the object previews use (Show Color).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ColorFrom {
+    /// The colour assigned to each object.
+    #[default]
+    Plan,
+    /// The colour assigned to the schedule.
+    Schedule,
+}
+
+/// Object Preview Options.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PreviewOptions {
+    pub show_color: bool,
+    pub color_from: ColorFrom,
+    /// Scale Images: previews share one scale, so sizes compare.
+    pub scale_images: bool,
+    /// Use Plan View Scale for the 2D Symbol column.
+    pub plan_view_scale: bool,
+    pub opening_indicators: bool,
+    pub casing: bool,
+    pub treatments: bool,
+}
+
+impl Default for PreviewOptions {
+    fn default() -> Self {
+        Self {
+            show_color: false,
+            color_from: ColorFrom::Plan,
+            scale_images: true,
+            plan_view_scale: false,
+            opening_indicators: false,
+            casing: true,
+            treatments: false,
+        }
+    }
+}
+
+/// Which labels an object listed in a schedule shows (Label Format).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LabelFormat {
+    #[default]
+    Both,
+    /// Callouts only; the object's own label is hidden.
+    Callout,
+    /// The object's own label only; no callouts.
+    LabelOnly,
+}
+
+impl LabelFormat {
+    pub const ALL: [LabelFormat; 3] = [
+        LabelFormat::Both,
+        LabelFormat::Callout,
+        LabelFormat::LabelOnly,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LabelFormat::Both => "Use Both Callout and Label",
+            LabelFormat::Callout => "Use Callout",
+            LabelFormat::LabelOnly => "Use Label",
+        }
+    }
+}
+
+/// The ten callout shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CalloutShape {
+    /// Text without a shape.
+    None,
+    Circle,
+    Ellipse,
+    Rectangle,
+    Capsule,
+    Diamond,
+    Triangle,
+    Pentagon,
+    Hexagon,
+    Octagon,
+}
+
+impl CalloutShape {
+    pub const ALL: [CalloutShape; 10] = [
+        CalloutShape::None,
+        CalloutShape::Circle,
+        CalloutShape::Ellipse,
+        CalloutShape::Rectangle,
+        CalloutShape::Capsule,
+        CalloutShape::Diamond,
+        CalloutShape::Triangle,
+        CalloutShape::Pentagon,
+        CalloutShape::Hexagon,
+        CalloutShape::Octagon,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CalloutShape::None => "None",
+            CalloutShape::Circle => "Circle",
+            CalloutShape::Ellipse => "Ellipse",
+            CalloutShape::Rectangle => "Rectangle",
+            CalloutShape::Capsule => "Capsule",
+            CalloutShape::Diamond => "Diamond",
+            CalloutShape::Triangle => "Triangle",
+            CalloutShape::Pentagon => "Pentagon",
+            CalloutShape::Hexagon => "Hexagon",
+            CalloutShape::Octagon => "Octagon",
+        }
+    }
+
+    /// The polygon sides of a regular shape (0 for the round and box ones).
+    pub fn sides(self) -> usize {
+        match self {
+            CalloutShape::Diamond => 4,
+            CalloutShape::Triangle => 3,
+            CalloutShape::Pentagon => 5,
+            CalloutShape::Hexagon => 6,
+            CalloutShape::Octagon => 8,
+            _ => 0,
+        }
+    }
+}
+
+/// How callout numbers are written (Schedule Numbers Format).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum NumberStyle {
+    #[default]
+    Numeric,
+    UpperAlpha,
+    LowerAlpha,
+    UpperRoman,
+    LowerRoman,
+}
+
+impl NumberStyle {
+    pub const ALL: [NumberStyle; 5] = [
+        NumberStyle::Numeric,
+        NumberStyle::UpperAlpha,
+        NumberStyle::LowerAlpha,
+        NumberStyle::UpperRoman,
+        NumberStyle::LowerRoman,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NumberStyle::Numeric => "1, 2, 3",
+            NumberStyle::UpperAlpha => "A, B, C",
+            NumberStyle::LowerAlpha => "a, b, c",
+            NumberStyle::UpperRoman => "I, II, III",
+            NumberStyle::LowerRoman => "i, ii, iii",
+        }
+    }
+}
+
+fn alpha_number(n: u32, upper: bool) -> String {
+    let base = if upper { b'A' } else { b'a' };
+    let mut n = n.max(1) - 1;
+    let mut out = Vec::new();
+    loop {
+        out.push(base + (n % 26) as u8);
+        if n < 26 {
+            break;
+        }
+        n = n / 26 - 1;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
+
+fn roman_number(mut n: u32, upper: bool) -> String {
+    const TABLE: [(u32, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut out = String::new();
+    for (v, s) in TABLE {
+        while n >= v {
+            out.push_str(s);
+            n -= v;
+        }
+    }
+    if upper {
+        out
+    } else {
+        out.to_lowercase()
+    }
+}
+
+/// The Labels panel beyond the prefix and numbering: what the callouts look
+/// like (manual pp. 726 to 728).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LabelOptions {
+    pub format: LabelFormat,
+    /// Schedule Start Number.
+    pub start_number: u32,
+    pub number_style: NumberStyle,
+    /// Include Leading Zeroes: `D01` rather than `D1`.
+    pub leading_zeros: bool,
+    /// The shape; `None` takes the kind's own (a circle for doors, a hexagon
+    /// for windows).
+    pub shape: Option<CalloutShape>,
+    pub filled: bool,
+    pub fill_color: [u8; 3],
+    /// Use the colour of the layer instead of `fill_color`.
+    pub fill_by_layer: bool,
+    /// 0 to 100 percent.
+    pub transparency: u8,
+    /// Size the shape to the text.
+    pub auto_size: bool,
+    /// Shape size when not automatic, plan inches.
+    pub size: f64,
+    /// Degrees.
+    pub shape_angle: f64,
+    pub text_angle: f64,
+    /// The text angle follows the shape angle.
+    pub auto_text_angle: bool,
+    pub follow_label: bool,
+}
+
+impl Default for LabelOptions {
+    fn default() -> Self {
+        Self {
+            format: LabelFormat::Both,
+            start_number: 1,
+            number_style: NumberStyle::Numeric,
+            leading_zeros: true,
+            shape: None,
+            filled: false,
+            fill_color: [255, 255, 255],
+            fill_by_layer: true,
+            transparency: 0,
+            auto_size: true,
+            size: 8.0,
+            shape_angle: 0.0,
+            text_angle: 0.0,
+            auto_text_angle: true,
+            follow_label: false,
+        }
+    }
+}
+
+/// The number a schedule gave one object, kept so numbers stay where they
+/// are when other objects come and go (manual p. 715).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NumRec {
+    /// The kind of the object (a General schedule lists several).
+    pub kind: ScheduleKind,
+    pub floor: usize,
+    pub id: Id,
+    /// Its place in the schedule, counted from 1.
+    pub n: u32,
 }
 
 /// A schedule placed in the plan: a table that updates live.
@@ -396,11 +937,11 @@ pub enum FloorScope {
 pub struct Schedule {
     pub id: Id,
     pub kind: ScheduleKind,
-    /// Upper-left corner of the table, plan inches.
+    /// Upper-left corner of the table, plan inches (before it is turned).
     pub position: Point,
     pub columns: Vec<ColumnSpec>,
     pub sort: SortSpec,
-    /// Name of the text style the table is set in.
+    /// Name of the text style the table body is set in (Main Text Style).
     pub text_style: String,
     /// Title row text; empty uses the kind's name ("Door Schedule").
     pub title: String,
@@ -420,6 +961,60 @@ pub struct Schedule {
     pub group_by: String,
     /// Adds a last line with the number of objects listed.
     pub totals: bool,
+    // ----- Round 16 (Schedule Specification, manual pp. 719 to 728) -----
+    /// "Display" beside the Main Title.
+    pub show_title: bool,
+    /// Display Column Headings.
+    pub show_headings: bool,
+    /// Include Objects from Floor: the floors listed when the schedule is not
+    /// on All Floors. Empty means the floor it is placed on.
+    pub floors: Vec<usize>,
+    /// Include Objects from Room: only objects whose centre lies in one of
+    /// these rooms. Empty lists the whole floor.
+    pub rooms: Vec<RoomRef>,
+    /// Ticked and unticked categories of the Categories to Include tree,
+    /// by category id (`Wall/Siding`); a category not listed here follows
+    /// [`Schedule::category_on`]'s default.
+    pub categories: std::collections::BTreeMap<String, bool>,
+    /// New Room and Wall types are ticked in a schedule that already exists
+    /// (a Note schedule does not).
+    pub new_types_included: bool,
+    /// Group Similar Objects: objects that share every shown value are one
+    /// row with a Quantity.
+    pub group_similar: bool,
+    /// Display Totals Row (the columns with Calculate Total are added up).
+    pub totals_row: bool,
+    /// The Totals Row label.
+    pub totals_label: String,
+    /// Blank rows pad the table to at least this many lines.
+    pub min_rows: usize,
+    /// Swap Rows/Columns: objects across, attributes down.
+    pub swap: bool,
+    pub wrap: WrapSpec,
+    pub previews: PreviewOptions,
+    pub fraction: FractionFormat,
+    /// Attributes > Box/Grid.
+    pub border: bool,
+    pub grid_lines: bool,
+    pub h_align: TextAlign,
+    pub v_align: VAlign,
+    /// Margins between the text and the cell border: left, right, top,
+    /// bottom, plan inches.
+    pub margins: [f64; 4],
+    /// Rotation about the table centre, degrees counter-clockwise.
+    pub angle: f64,
+    /// Line Style panel: the table's lines (`None` follows the text colour).
+    pub line_color: Option<[u8; 3]>,
+    pub line_weight: f32,
+    /// Fill Style panel: paint the table's background.
+    pub fill: bool,
+    pub fill_color: Option<[u8; 3]>,
+    /// Title Text Style and Header Text Style (empty follows the main one).
+    pub title_style: String,
+    pub header_style: String,
+    pub label: LabelOptions,
+    /// The numbers given to objects so far.
+    pub numbers: Vec<NumRec>,
 }
 
 impl Default for Schedule {
@@ -448,6 +1043,34 @@ impl Schedule {
             filter: String::new(),
             group_by: String::new(),
             totals: false,
+            show_title: true,
+            show_headings: true,
+            floors: Vec::new(),
+            rooms: Vec::new(),
+            categories: std::collections::BTreeMap::new(),
+            new_types_included: kind != ScheduleKind::Note,
+            group_similar: false,
+            totals_row: true,
+            totals_label: "Totals".to_string(),
+            min_rows: 0,
+            swap: false,
+            wrap: WrapSpec::default(),
+            previews: PreviewOptions::default(),
+            fraction: FractionFormat::default(),
+            border: true,
+            grid_lines: true,
+            h_align: TextAlign::Left,
+            v_align: VAlign::Middle,
+            margins: [2.0, 2.0, 1.2, 1.2],
+            angle: 0.0,
+            line_color: None,
+            line_weight: 1.0,
+            fill: true,
+            fill_color: None,
+            title_style: String::new(),
+            header_style: String::new(),
+            label: LabelOptions::default(),
+            numbers: Vec::new(),
         }
     }
 
@@ -499,7 +1122,9 @@ impl Schedule {
         });
         for fd in fields {
             if !self.columns.iter().any(|c| c.field == fd.id) {
-                self.columns.push(ColumnSpec::new(fd.id, fd.title, false));
+                let mut c = ColumnSpec::for_field(self.kind, fd);
+                c.visible = false;
+                self.columns.push(c);
             }
         }
     }
@@ -514,10 +1139,72 @@ impl Schedule {
         self.columns = kind.default_columns();
         self.sort = SortSpec::default();
         self.group_by.clear();
+        self.categories.clear();
+        self.numbers.clear();
+        self.new_types_included = kind != ScheduleKind::Note;
         if was_default_prefix {
             self.label_prefix = kind.default_prefix().to_string();
         }
         self.show_labels = kind.has_labels();
+    }
+
+    /// Is the category `id` ticked? `default_on` is what it is when the
+    /// schedule never recorded a choice (system categories on, custom ones
+    /// off; a Note type follows [`Schedule::new_types_included`]).
+    pub fn category_on(&self, id: &str, default_on: bool) -> bool {
+        self.categories.get(id).copied().unwrap_or(default_on)
+    }
+
+    /// Ticks or unticks category `id`.
+    pub fn set_category(&mut self, id: &str, on: bool) {
+        self.categories.insert(id.to_string(), on);
+    }
+
+    /// The number the schedule gave an object, if it recorded one.
+    pub fn number_of(&self, kind: ScheduleKind, floor: usize, id: Id) -> Option<u32> {
+        self.numbers
+            .iter()
+            .find(|r| r.kind == kind && r.floor == floor && r.id == id)
+            .map(|r| r.n)
+    }
+
+    /// The text of the `n`th schedule number (counted from 1): the start
+    /// number, the number style and the leading zero applied, without the
+    /// prefix.
+    pub fn number_text(&self, n: u32) -> String {
+        let v = n.saturating_sub(1) + self.label.start_number;
+        match self.label.number_style {
+            NumberStyle::Numeric if self.label.leading_zeros => format!("{v:02}"),
+            NumberStyle::Numeric => v.to_string(),
+            NumberStyle::UpperAlpha => alpha_number(v, true),
+            NumberStyle::LowerAlpha => alpha_number(v, false),
+            NumberStyle::UpperRoman => roman_number(v, true),
+            NumberStyle::LowerRoman => roman_number(v, false),
+        }
+    }
+
+    /// The mark of the `n`th object: prefix and number.
+    pub fn mark_text(&self, n: u32) -> String {
+        format!("{}{}", self.label_prefix, self.number_text(n))
+    }
+
+    /// The rooms picked for "Include Objects from Room" on `floor`.
+    pub fn rooms_on(&self, floor: usize) -> impl Iterator<Item = &RoomRef> {
+        self.rooms.iter().filter(move |r| r.floor == floor)
+    }
+
+    /// Is the schedule limited to chosen floors or rooms?
+    pub fn has_scope(&self) -> bool {
+        self.floor_scope == FloorScope::ThisFloor && !self.floors.is_empty() || !self.rooms.is_empty()
+    }
+
+    /// Does the schedule list objects from `floor`, placed on `home`?
+    pub fn lists_floor(&self, floor: usize, home: usize) -> bool {
+        match self.floor_scope {
+            FloorScope::All => true,
+            FloorScope::ThisFloor if self.floors.is_empty() => floor == home,
+            FloorScope::ThisFloor => self.floors.contains(&floor),
+        }
     }
 }
 
@@ -561,9 +1248,15 @@ impl ScheduleLayer {
     /// The first schedule of `kind` that shows labels: the one that governs
     /// the callouts of that kind of object on this floor.
     pub fn label_source(&self, kind: ScheduleKind) -> Option<&Schedule> {
+        self.label_sources(kind).next()
+    }
+
+    /// Every schedule of `kind` that shows labels. An object listed in more
+    /// than one of them shows a callout for each (manual p. 719).
+    pub fn label_sources(&self, kind: ScheduleKind) -> impl Iterator<Item = &Schedule> {
         self.schedules
             .iter()
-            .find(|s| s.kind == kind && s.show_labels)
+            .filter(move |s| s.kind == kind && s.show_labels)
     }
 
     /// The layer stored on `floor` (empty when it has none or the data does
@@ -585,6 +1278,170 @@ impl ScheduleLayer {
         // Records this build cannot read stay in the slot (QA-28).
         floor.schedules =
             crate::foreign::layer_slot(self, self.is_empty(), floor.schedules.as_ref());
+    }
+}
+
+// ===================================================================
+// Schedule defaults and custom categories
+// ===================================================================
+
+/// A custom schedule category (Tools > Schedules > Manage Custom Schedule
+/// Categories) and the objects assigned to it. Objects are named by their
+/// [`crate::props::PropKey`] string (`door:12`, `cabinet:7`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CustomCategory {
+    pub name: String,
+    pub members: Vec<String>,
+}
+
+/// The category id of custom category `name` in [`Schedule::categories`].
+pub fn custom_category_id(name: &str) -> String {
+    format!("Custom/{name}")
+}
+
+/// Plan-wide schedule settings: the Schedule Defaults of each kind and the
+/// custom categories. Stored in `Project.schedule_setup`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScheduleSetup {
+    /// One template per kind the user changed in Default Settings > Schedules.
+    pub defaults: Vec<Schedule>,
+    pub categories: Vec<CustomCategory>,
+}
+
+impl ScheduleSetup {
+    pub fn is_default(&self) -> bool {
+        self.defaults.is_empty() && self.categories.is_empty()
+    }
+
+    /// A new schedule of `kind` as the Schedule Defaults make it (id and
+    /// position are the caller's).
+    pub fn template(&self, kind: ScheduleKind, position: Point) -> Schedule {
+        match self.defaults.iter().find(|d| d.kind == kind) {
+            Some(d) => {
+                let mut s = d.clone();
+                s.id = 0;
+                s.position = position;
+                s.numbers.clear();
+                s.rooms.clear();
+                s.reconcile_columns();
+                s
+            }
+            None => Schedule::new(kind, position),
+        }
+    }
+
+    /// Stores `def` as the default of its kind.
+    pub fn set_default(&mut self, mut def: Schedule) {
+        def.id = 0;
+        def.position = Point::ZERO;
+        def.numbers.clear();
+        def.rooms.clear();
+        match self.defaults.iter_mut().find(|d| d.kind == def.kind) {
+            Some(slot) => *slot = def,
+            None => self.defaults.push(def),
+        }
+    }
+
+    /// Forgets the default of `kind` (back to Chief's own).
+    pub fn reset_default(&mut self, kind: ScheduleKind) -> bool {
+        let n = self.defaults.len();
+        self.defaults.retain(|d| d.kind != kind);
+        self.defaults.len() != n
+    }
+
+    pub fn category(&self, name: &str) -> Option<&CustomCategory> {
+        self.categories.iter().find(|c| c.name == name)
+    }
+
+    /// Makes a custom category. Names are short and unique.
+    pub fn add_category(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Type a name for the category".into());
+        }
+        if self.category(name).is_some() {
+            return Err(format!("There is already a category named \"{name}\""));
+        }
+        self.categories.push(CustomCategory {
+            name: name.to_string(),
+            members: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Renames a category; the schedules that ticked it follow when the
+    /// caller runs [`ScheduleSetup::rename_in`] over them.
+    pub fn rename_category(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err("Type a name for the category".into());
+        }
+        if old != new && self.category(new).is_some() {
+            return Err(format!("There is already a category named \"{new}\""));
+        }
+        match self.categories.iter_mut().find(|c| c.name == old) {
+            Some(c) => {
+                c.name = new.to_string();
+                Ok(())
+            }
+            None => Err(format!("No category named \"{old}\"")),
+        }
+    }
+
+    /// Moves a schedule's tick of category `old` to `new` after a rename.
+    pub fn rename_in(def: &mut Schedule, old: &str, new: &str) {
+        if let Some(on) = def.categories.remove(&custom_category_id(old)) {
+            def.categories.insert(custom_category_id(new), on);
+        }
+    }
+
+    pub fn delete_category(&mut self, name: &str) -> bool {
+        let n = self.categories.len();
+        self.categories.retain(|c| c.name != name);
+        self.categories.len() != n
+    }
+
+    /// Lists the object `key` in category `name`.
+    pub fn assign(&mut self, name: &str, key: &str) -> bool {
+        match self.categories.iter_mut().find(|c| c.name == name) {
+            Some(c) => {
+                if !c.members.iter().any(|m| m == key) {
+                    c.members.push(key.to_string());
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn unassign(&mut self, name: &str, key: &str) -> bool {
+        match self.categories.iter_mut().find(|c| c.name == name) {
+            Some(c) => {
+                let n = c.members.len();
+                c.members.retain(|m| m != key);
+                c.members.len() != n
+            }
+            None => false,
+        }
+    }
+
+    /// The custom categories object `key` is assigned to ("Include in
+    /// Schedule As").
+    pub fn categories_of<'a>(&'a self, key: &str) -> Vec<&'a str> {
+        self.categories
+            .iter()
+            .filter(|c| c.members.iter().any(|m| m == key))
+            .map(|c| c.name.as_str())
+            .collect()
+    }
+
+    /// Drops members for which `alive` is false (deleted objects).
+    pub fn purge(&mut self, alive: impl Fn(&str) -> bool) {
+        for c in &mut self.categories {
+            c.members.retain(|m| alive(m));
+        }
     }
 }
 

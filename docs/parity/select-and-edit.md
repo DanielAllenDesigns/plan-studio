@@ -305,7 +305,7 @@ Rows added by the Chief X18 Tutorial Guide audit, part 7 (pages 1 to 517; `docs/
 
 | ID | Chief behavior | Status | Evidence |
 |---|---|---|---|
-| S-194 | A wall drawn over its Reference Display counterpart highlights its edge lines light blue when exactly aligned (tutorial p. 53). | Missing | snap_with_reference snaps to the reference lines (LAY-9); no alignment highlight; tutorial audit (part 7). |
+| S-194 | A wall drawn over its Reference Display counterpart highlights its edge lines light blue when exactly aligned (tutorial p. 53). | Works | `editor/ref_overlay.rs` draws the light-blue edge when a wall lies exactly over a reference wall (within half an inch); test `a_wall_over_its_reference_counterpart_gets_light_blue_edges` (scenarios/s66_construction_reference.rs); snap to reference ends/crossings in `snap::snap_with_reference`. Highlight color: verify in Chief. |
 | S-195 | Ctrl overrides the 'space is occupied' restriction so an accessory can be dragged into or through its host furniture (tutorial p. 231). | Missing | S-121 covers Ctrl suspending snaps only; tutorial audit (part 7). |
 | S-196 | Bumping and pushing between framing members: moving a joist bumps and shifts crossing joists, with Edit > Snap Settings > Bumping/Pushing toggling it (tutorial p. 344). | Missing | bumping/pushing exists for cabinets (S-73, CB-4) only; tutorial audit (part 7). |
 | S-197 | Editing a symbol in a camera view with Extend handles, concentric resize by holding C, and the prompt to regenerate its 2D symbol (tutorial p. 228). | Missing | 3D view picking selects objects (s24); symbol resize handles in camera views and the regenerate prompt: not found; tutorial audit (part 7); verify in Chief. |

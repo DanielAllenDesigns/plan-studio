@@ -49,7 +49,9 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
-            all_floors: false,
+            all_floors: crate::dialogs::preferences::pages::current()
+                .materials
+                .all_floors,
             category: None,
             tab: Tab::List,
             master: None,
@@ -73,7 +75,29 @@ pub fn lines(cx: &EditorContext, all_floors: bool, master: &MasterList) -> Vec<M
     } else {
         MaterialsScope::Floor(cx.floor)
     };
-    materials_report(&cx.project, scope, Some((cx.floor, &cx.rooms)), master)
+    let prefs = crate::dialogs::preferences::pages::current().materials;
+    let waste_free;
+    let master = if prefs.apply_waste {
+        master
+    } else {
+        let mut cleared = master.clone();
+        cleared.waste.clear();
+        waste_free = cleared;
+        &waste_free
+    };
+    let mut lines = materials_report(&cx.project, scope, Some((cx.floor, &cx.rooms)), master);
+    for l in &mut lines {
+        if !prefs.round_up {
+            // The quantity to buy stays as worked out, not rounded to units.
+            l.quantity = l.net * (1.0 + l.waste_pct / 100.0);
+            l.price = l.unit_price.map(|u| u * l.quantity);
+        }
+        if !prefs.show_prices {
+            l.unit_price = None;
+            l.price = None;
+        }
+    }
+    lines
 }
 
 /// The active floor's materials list with the saved master list's waste and prices.
@@ -243,8 +267,13 @@ fn list_tab(ui: &mut Ui, cx: &mut EditorContext, st: &mut State, all: &[Material
         ));
         if shown.iter().any(|l| l.price.is_some()) {
             ui.strong(format!("Total {}", fmt_money(Some(total))));
-        } else {
+        } else if crate::dialogs::preferences::pages::current()
+            .materials
+            .show_prices
+        {
             ui.weak("No prices yet: enter them on the Master List tab");
+        } else {
+            ui.weak("Prices are hidden (Preferences > Materials List)");
         }
     });
     ui.horizontal(|ui| {
@@ -527,6 +556,41 @@ mod tests {
         assert!(csv_for_floor(&cx).contains("$120.00"));
         assert!(csv_for_floor(&cx).starts_with("Category,ID,Description"));
         assert_eq!(lines(&cx, true, &m).len(), priced.len());
+    }
+
+    #[test]
+    fn the_preferences_page_decides_waste_rounding_prices_and_the_starting_scope() {
+        use crate::dialogs::preferences::pages;
+        lw::use_memory_master_list(MasterList::default());
+        let mut cx = cx_with_house();
+        cx.rooms = plan_core::detect_rooms(&cx.project.floors[0].walls, 1.0);
+        let mut m = MasterList::default();
+        m.set_price("Doors|Door 3'-0\" x 6'-8\"", "ea", 120.0);
+        m.waste.insert("Doors".into(), 50.0);
+        lw::save_master_list(&m).unwrap();
+        let door = |cx: &EditorContext| {
+            lines_for_floor(cx)
+                .into_iter()
+                .find(|l| l.category == "Doors")
+                .unwrap()
+        };
+        let with_waste = door(&cx);
+        assert!(with_waste.quantity > with_waste.net);
+        pages::update(|p| p.materials.apply_waste = false);
+        let plain = door(&cx);
+        assert_eq!(plain.quantity, plain.net);
+        pages::update(|p| {
+            p.materials.apply_waste = true;
+            p.materials.round_up = false;
+        });
+        let exact = door(&cx);
+        assert!((exact.quantity - exact.net * 1.5).abs() < 1e-9);
+        pages::update(|p| p.materials.show_prices = false);
+        assert!(door(&cx).price.is_none() && door(&cx).unit_price.is_none());
+        pages::update(|p| p.materials.all_floors = true);
+        assert!(State::default().all_floors);
+        pages::set(pages::PagePrefs::default());
+        assert!(!State::default().all_floors);
     }
 
     #[test]

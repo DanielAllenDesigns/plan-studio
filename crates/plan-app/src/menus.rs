@@ -79,6 +79,45 @@ pub fn bar(
             Action::Custom(crate::tools::library::convert::REPLACE_FROM_LIBRARY),
             out,
         );
+        ui.menu_button("Moldings", |ui| {
+            use crate::tools::molding as mold;
+            for (label, id) in [
+                ("Add Closed Polyline as Molding Profile", mold::ADD_PROFILE),
+                (
+                    "Add Closed Polylines as Stacked Molding",
+                    mold::ADD_STACKED_PROFILE,
+                ),
+                ("Place Molding Profile", mold::PLACE_PROFILE),
+                ("Edit Molding Profile", mold::EDIT_PROFILE),
+                ("-", ""),
+                ("Replace Moldings From Library", mold::REPLACE_FROM_LIBRARY),
+                ("-", ""),
+                ("Make Room Molding Polyline", mold::MAKE_ROOM_POLYLINE),
+                (
+                    "Make Exterior Room Molding Polyline",
+                    mold::MAKE_EXTERIOR_POLYLINE,
+                ),
+                ("Make Cabinet Molding Polyline", mold::MAKE_CABINET_POLYLINE),
+                ("Reverse Direction", mold::REVERSE_DIRECTION),
+                (
+                    "Remove Molding from Selected Edge",
+                    mold::REMOVE_EDGE,
+                ),
+                ("Add Molding to Selected Edge", mold::ADD_EDGE),
+                ("Select Next Edge", mold::NEXT_EDGE),
+                ("-", ""),
+                (
+                    "Include Inside Corners for Auto Place Trim",
+                    mold::INCLUDE_INSIDE,
+                ),
+            ] {
+                if label == "-" {
+                    ui.separator();
+                } else {
+                    live(ui, label, "", false, Action::Custom(id), out);
+                }
+            }
+        });
         // The import window lives in the Library Browser: open that first.
         if ui
             .button("Import 3D Model (STL, 3DS, DAE, OBJ, glTF)\u{2026}")
@@ -449,6 +488,22 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "",
             false,
             Action::File(FileCommand::ImportLayout),
+            out,
+        );
+        live(
+            ui,
+            "Line Styles (.lin)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::line_style::IMPORT),
+            out,
+        );
+        live(
+            ui,
+            "Patterns (.pat)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::pattern_editor::IMPORT),
             out,
         );
         live(
@@ -1530,6 +1585,22 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ] {
         live(ui, label, "", false, Action::Custom(cmd), out);
     }
+    live(
+        ui,
+        "Line Style Management\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::line_style::MANAGEMENT),
+        out,
+    );
+    live(
+        ui,
+        "Line Style (Library) for Selection",
+        "",
+        false,
+        Action::Custom(crate::dialogs::line_style::ASSIGN),
+        out,
+    );
     cad_mode(ui, "Revision Cloud", CadMode::RevisionCloud, out);
     cad_mode(ui, "Spline", CadMode::Spline, out);
     ui.separator();
@@ -1539,6 +1610,37 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     toolbar::flyout_menu(ui, &toolbar::text_tools(), state, out);
     ui.menu_button("Patterns", |ui| {
         cad_mode(ui, "Hatch Closed Shape", CadMode::Hatch, out);
+        ui.separator();
+        // Custom patterns (CAD-79..CAD-81) and fill styles (CAD-73).
+        for (label, cmd) in [
+            ("Create New Pattern\u{2026}", crate::dialogs::pattern_editor::CREATE),
+            ("Edit Pattern\u{2026}", crate::dialogs::pattern_editor::EDIT),
+            ("Add Pattern to Library", crate::dialogs::pattern_editor::ADD_TO_LIBRARY),
+            ("Next Pattern Tile Group", crate::dialogs::pattern_editor::NEXT_GROUP),
+            ("Previous Pattern Tile Group", crate::dialogs::pattern_editor::PREVIOUS_GROUP),
+            ("Add Pattern Tile Group", crate::dialogs::pattern_editor::ADD_GROUP),
+            ("Delete Pattern Tile Group", crate::dialogs::pattern_editor::DELETE_GROUP),
+            ("Infinite Pattern Line", crate::dialogs::pattern_editor::INFINITE_LINE),
+        ] {
+            live(ui, label, "", false, Action::Custom(cmd), out);
+        }
+        ui.separator();
+        live(
+            ui,
+            "Fill Style\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::fill_style::APPLY),
+            out,
+        );
+        live(
+            ui,
+            "New Fill Style\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::fill_style::NEW_NAMED),
+            out,
+        );
     });
     toolbar::flyout_menu(ui, &toolbar::cad_blocks(), state, out);
     ui.menu_button("Edit CAD", |ui| {
@@ -2198,6 +2300,14 @@ fn view_menu(
     );
     live(
         ui,
+        "Plan Agent\u{2026}",
+        "",
+        dock(Dock::Agent),
+        Action::ToggleDock(Dock::Agent),
+        out,
+    );
+    live(
+        ui,
         "Walkthrough Preview",
         "",
         false,
@@ -2278,6 +2388,14 @@ fn view_menu(
         "",
         flag(ViewFlag::LineWeights),
         Action::ToggleFlag(ViewFlag::LineWeights),
+        out,
+    );
+    live(
+        ui,
+        "Poch\u{e9}",
+        "",
+        crate::dialogs::fill_style::poche_shown(),
+        Action::Custom(crate::dialogs::fill_style::POCHE),
         out,
     );
     live(
@@ -2596,6 +2714,9 @@ mod tests {
             crate::dialogs::defaults::CABINETS,
             crate::dialogs::defaults::FRAMING,
             crate::dialogs::plan_check::SETTINGS,
+            crate::tools::molding::NEXT_EDGE,
+            crate::tools::molding::INCLUDE_INSIDE,
+            crate::tools::molding::PLACE_PROFILE,
         ] {
             assert!(placed::run_command(&mut cx, id), "{id} is not handled");
         }

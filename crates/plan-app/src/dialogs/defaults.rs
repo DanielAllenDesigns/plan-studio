@@ -60,7 +60,14 @@ const CABINET_LEAVES: &[(&str, Leaf)] = &[
     ("Partition", Leaf::CabinetDefaults(5)),
     ("Countertop", Leaf::CabinetDefaults(6)),
     ("Backsplash", Leaf::CabinetDefaults(7)),
+    // The General Cabinet Defaults dialog (`cabinet_defaults.rs`); it opens
+    // from here only.
+    ("General Cabinet", Leaf::CabinetDefaults(GENERAL_CABINET_LEAF)),
 ];
+
+/// The index of the General Cabinet leaf among the cabinet leaves; it opens
+/// its own dialog instead of a tab of the Cabinet Defaults.
+const GENERAL_CABINET_LEAF: usize = 99;
 
 /// Chief's Default Settings tree: 29 groups. A leaf opens the same
 /// specification dialog an object shows, an existing window, or a page of
@@ -113,10 +120,47 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
         &[
             ("Dimensions", Leaf::Entry(DefaultsEntry::Dimensions)),
             ("General", Leaf::Page("dimension.general")),
+            ("Setup Automatic", Leaf::Page("dimension.setup_automatic")),
             ("Setup Temporary", Leaf::Page("dimension.setup_temporary")),
+            ("Secondary Format", Leaf::Page("dimension.secondary")),
+            (
+                "Extensions: Centerlines",
+                Leaf::Page("dimension.centerlines"),
+            ),
+            ("Layer", Leaf::Page("dimension.layer")),
+            ("Locate Manual", Leaf::Page("dimension.locate_manual")),
+            (
+                "Locate End to End",
+                Leaf::Page("dimension.locate_end_to_end"),
+            ),
+            (
+                "Locate Centerline",
+                Leaf::Page("dimension.locate_centerline"),
+            ),
+            ("Locate Interior", Leaf::Page("dimension.locate_interior")),
+            (
+                "Locate Auto Exterior",
+                Leaf::Page("dimension.locate_auto_exterior"),
+            ),
+            (
+                "Locate Auto Room",
+                Leaf::Page("dimension.locate_auto_room"),
+            ),
+            (
+                "Locate Auto Elevation",
+                Leaf::Page("dimension.locate_auto_elevation"),
+            ),
+            (
+                "Locate Elevations",
+                Leaf::Page("dimension.locate_elevations"),
+            ),
             (
                 "Auto Story Pole Dimensions",
                 Leaf::Page("dimension.auto_story_pole"),
+            ),
+            (
+                "Story Pole: Locate Elevations",
+                Leaf::Page("dimension.pole_elevations"),
             ),
         ],
     ),
@@ -311,6 +355,10 @@ pub(crate) fn edit_outcome(leaf: Leaf) -> DefaultsOutcome {
         Leaf::Entry(e) => DefaultsOutcome::Edit(e),
         Leaf::RoofDefaults => {
             open_roof_defaults();
+            DefaultsOutcome::Open
+        }
+        Leaf::CabinetDefaults(GENERAL_CABINET_LEAF) => {
+            super::cabinet_defaults::request_open();
             DefaultsOutcome::Open
         }
         Leaf::CabinetDefaults(tab) => {
@@ -533,6 +581,7 @@ pub fn reload_templates_page() {
 pub fn show_templates_page(ctx: &egui::Context, cx: &mut EditorContext) {
     show_roof_defaults(ctx, cx);
     show_cabinet_defaults(ctx, cx);
+    super::cabinet_defaults::show(ctx, cx);
     show_framing_defaults(ctx, cx);
     super::default_settings_terrain::show(ctx, cx);
     super::default_pages::show(ctx, cx);
@@ -914,7 +963,10 @@ fn show_cabinet_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
         super::Outcome::Open => CABINET_PAGE.with(|p| *p.borrow_mut() = Some(dlg)),
         super::Outcome::Cancel => {}
         super::Outcome::Ok => {
-            cx.defaults.cabinets = dlg.draft().clone();
+            // Dynamic defaults: cabinets that still have an old default value
+            // follow the new one (manual p. 644).
+            let old = std::mem::replace(&mut cx.defaults.cabinets, dlg.draft().clone());
+            crate::tools::cabinet::apply_dynamic_defaults(cx, &old);
             cx.mark_dirty();
             cx.status = "Saved the cabinet defaults".into();
         }
@@ -944,7 +996,9 @@ fn show_framing_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
 /// Is the Cabinet Defaults window open or asked for?
 #[cfg(test)]
 pub(crate) fn cabinet_defaults_open() -> bool {
-    OPEN_CABINETS.with(|c| c.get().is_some()) || CABINET_PAGE.with(|p| p.borrow().is_some())
+    OPEN_CABINETS.with(|c| c.get().is_some())
+        || CABINET_PAGE.with(|p| p.borrow().is_some())
+        || super::cabinet_defaults::is_open()
 }
 
 /// Is the Framing Defaults window open or asked for?

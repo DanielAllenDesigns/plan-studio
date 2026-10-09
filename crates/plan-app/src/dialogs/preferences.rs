@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
+pub mod agent_page;
 pub mod pages;
 pub mod ui;
 
@@ -193,10 +194,12 @@ pub enum Page {
     Cad,
     PlanDefaults,
     UnitConversions,
+    /// The Plan Agent: API key, model and effort (`agent_page`).
+    Agent,
 }
 
 impl Page {
-    pub const ALL: [Page; 15] = [
+    pub const ALL: [Page; 16] = [
         Page::Appearance,
         Page::Colors,
         Page::Fonts,
@@ -212,6 +215,7 @@ impl Page {
         Page::Cad,
         Page::PlanDefaults,
         Page::UnitConversions,
+        Page::Agent,
     ];
 
     pub fn label(self) -> &'static str {
@@ -231,6 +235,7 @@ impl Page {
             Page::Cad => "CAD",
             Page::PlanDefaults => "General Plan Defaults",
             Page::UnitConversions => "Unit Conversions",
+            Page::Agent => "Plan Agent",
         }
     }
 }
@@ -598,6 +603,7 @@ fn body(
                         Page::Cad => ui::cad(ui),
                         Page::PlanDefaults => ui::plan_defaults(ui, actions),
                         Page::UnitConversions => ui::units(ui),
+                        Page::Agent => agent_page::show(ui),
                     }
                 });
             });

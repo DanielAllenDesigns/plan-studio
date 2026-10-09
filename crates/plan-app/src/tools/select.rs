@@ -470,8 +470,7 @@ fn move_group_ex(cx: &mut EditorContext, items: &[ObjectRef], delta: Point, foll
                     .iter_mut()
                     .find(|x| x.id == id)
                 {
-                    dim.start = dim.start + d;
-                    dim.end = dim.end + d;
+                    dim.translate(d);
                 }
             }
             ObjectRef::Cad(id) | ObjectRef::Text(id) => {
@@ -1101,14 +1100,8 @@ impl SelectTool {
             }
             Op::DimOffset(id) => {
                 let unit = unit(cx);
-                if let Some(d) = cx.project.floors[fl]
-                    .dimensions
-                    .iter_mut()
-                    .find(|d| d.id == id)
-                {
-                    let n = d.end.sub(d.start).normalized().perp();
-                    d.offset = snap_unit_round(p.world.sub(d.start).dot(n), unit);
-                }
+                // The whole string moves its line; a curve sets its distance.
+                cx.project.floors[fl].drag_dimension_line(id, p.world, Some(unit));
             }
             Op::CadRotate(id) => {
                 let Some(c) = a.original.floors[fl].cad.iter().find(|c| c.id == id) else {
@@ -1185,8 +1178,35 @@ impl SelectTool {
             }
             Op::Cabinet(id, kind) => {
                 if let Some(orig) = placed::cabinet_by_id(&a.original.floors[fl], id) {
-                    let c = crate::tools::cabinet::apply_edit(cx, kind, &orig, a.start, p);
-                    placed::replace_cabinet(&mut cx.project, fl, &c);
+                    use crate::tools::cabinet::{apply_edit_mode, bump_mode, BumpMode};
+                    if kind == HandleKind::Move && bump_mode() == BumpMode::Push {
+                        // Push (Edit > Neighbors): a run the cabinet meets is
+                        // pushed ahead of it; every step starts from the
+                        // cabinets as they were when the drag began.
+                        let before = placed::load_cabinets(&a.original.floors[fl]);
+                        let now = placed::load_cabinets(&cx.project.floors[fl]);
+                        for o in &before {
+                            if now.iter().find(|c| c.id == o.id) != Some(o) {
+                                placed::replace_cabinet(&mut cx.project, fl, o);
+                            }
+                        }
+                        let e = apply_edit_mode(
+                            cx,
+                            BumpMode::Push,
+                            kind,
+                            &orig,
+                            a.start,
+                            p,
+                            Some(before.as_slice()),
+                        );
+                        placed::replace_cabinet(&mut cx.project, fl, &e.cab);
+                        for q in &e.pushed {
+                            placed::replace_cabinet(&mut cx.project, fl, q);
+                        }
+                    } else {
+                        let c = crate::tools::cabinet::apply_edit(cx, kind, &orig, a.start, p);
+                        placed::replace_cabinet(&mut cx.project, fl, &c);
+                    }
                 }
             }
             Op::Symbol(id, kind) => {
@@ -1989,6 +2009,13 @@ impl Tool for SelectTool {
             .any(|o| matches!(o, ObjectRef::Wall(_)))
         {
             v.push(EditAction::new(EditActionKind::FixWallConnections));
+        }
+        if crate::editor::placed::selection_has_closed_polyline(cx) {
+            v.push(EditAction::new(EditActionKind::Custom {
+                id: crate::editor::placed::SOFFIT_FROM_POLYLINE,
+                label: "Convert Polyline to Soffit",
+                icon: "",
+            }));
         }
         v
     }

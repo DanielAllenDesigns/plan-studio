@@ -212,7 +212,10 @@ fn the_walkline_shows_in_plan_when_asked() {
             .filter(|x| matches!(x, Stroke::Polyline(p, false) if p.len() == 2))
             .collect::<Vec<_>>()
     };
-    assert_eq!(open_polys(&with(true)).len(), open_polys(&with(false)).len() + 1);
+    assert_eq!(
+        open_polys(&with(true)).len(),
+        open_polys(&with(false)).len() + 1
+    );
     // 12" from the right edge of a 36" stair going +x from y = 50 is y = 38.
     let line = open_polys(&with(true))
         .into_iter()
@@ -357,7 +360,10 @@ fn centre_stringers_and_left_out_sides() {
         ..StringerOptions::default()
     };
     assert_eq!(
-        count(&stringers(with_centre, StringerStyle::Closed), StairPart::Stringer),
+        count(
+            &stringers(with_centre, StringerStyle::Closed),
+            StairPart::Stringer
+        ),
         3
     );
     // A steel stringer with concrete treads: one in the middle, none beside.
@@ -367,12 +373,18 @@ fn centre_stringers_and_left_out_sides() {
         ..StringerOptions::default()
     };
     assert_eq!(
-        count(&stringers(steel, StringerStyle::Closed), StairPart::Stringer),
+        count(
+            &stringers(steel, StringerStyle::Closed),
+            StairPart::Stringer
+        ),
         1
     );
     // A centre stringer shows even when the style has no side stringers.
     assert_eq!(
-        count(&stringers(with_centre, StringerStyle::None), StairPart::Stringer),
+        count(
+            &stringers(with_centre, StringerStyle::None),
+            StairPart::Stringer
+        ),
         1
     );
     // Open stringers cut a triangle per step per board.
@@ -459,7 +471,11 @@ fn a_runner_covers_the_treads_and_tucks_over_the_nosing() {
             .collect::<Vec<_>>(),
     );
     assert!(close(hi[2] - lo[2], 24.0), "{}", hi[2] - lo[2]);
-    assert!(close(-(hi[2] + lo[2]) / 2.0, 50.0 - 18.0) || close((hi[2] + lo[2]) / 2.0, -(50.0 + 18.0)) || close(-(hi[2] + lo[2]) / 2.0, 50.0 + 18.0));
+    assert!(
+        close(-(hi[2] + lo[2]) / 2.0, 50.0 - 18.0)
+            || close((hi[2] + lo[2]) / 2.0, -(50.0 + 18.0))
+            || close(-(hi[2] + lo[2]) / 2.0, 50.0 + 18.0)
+    );
 }
 
 #[test]
@@ -476,7 +492,10 @@ fn the_top_landing_can_have_a_nosing_and_lose_its_top_riser() {
         nosing: true,
         riser_surface: true,
     });
-    assert_eq!(count(&nosed, StairPart::Tread), count(&plain, StairPart::Tread) + 1);
+    assert_eq!(
+        count(&nosed, StairPart::Tread),
+        count(&plain, StairPart::Tread) + 1
+    );
     let bare = with(TopLanding {
         nosing: false,
         riser_surface: false,
@@ -592,7 +611,10 @@ fn a_post_to_beam_newel_reaches_down_through_the_floor() {
         post_to_beam: true,
         ..NewelParams::default()
     });
-    assert!(close(plain - dropped, NewelParams::default().beam_drop), "{plain} {dropped}");
+    assert!(
+        close(plain - dropped, NewelParams::default().beam_drop),
+        "{plain} {dropped}"
+    );
     let short = low(NewelParams {
         post_to_beam: true,
         beam_drop: 4.0,
@@ -634,7 +656,10 @@ fn a_library_post_takes_the_place_of_the_built_in_ones() {
     assert_eq!(posts.newels.len(), 2);
     assert!(posts.balusters.len() >= 14);
     assert!(close(posts.newels[0].top - posts.newels[0].foot, 40.0));
-    assert!(posts.balusters.iter().all(|b| b.top > b.foot && b.size > 0.0));
+    assert!(posts
+        .balusters
+        .iter()
+        .all(|b| b.top > b.foot && b.size > 0.0));
     // Sides without a railing have no posts.
     assert!(stair_posts(&stair(params(109.125))).newels.is_empty());
     // A landing's guarded edges have posts too.
@@ -711,7 +736,14 @@ fn flaring_the_bottom_corners_widens_the_first_treads_and_tapers_off() {
     });
     let t = tread_widths(&top);
     assert!(t[13] > t[0] + 4.0, "{t:?}");
-    assert!(Flare::default().is_none() && !Flare { curve_all: 1.0, ..Flare::default() }.is_none());
+    assert!(
+        Flare::default().is_none()
+            && !Flare {
+                curve_all: 1.0,
+                ..Flare::default()
+            }
+            .is_none()
+    );
 }
 
 #[test]
@@ -736,7 +768,12 @@ fn curved_treads_bulge_down_the_stair() {
         let (a, b) = m.1.bounds().unwrap();
         f64::from(b[0] - a[0])
     };
-    assert!(depth(&bent) > depth(&plain) + 1.0, "{} {}", depth(&bent), depth(&plain));
+    assert!(
+        depth(&bent) > depth(&plain) + 1.0,
+        "{} {}",
+        depth(&bent),
+        depth(&plain)
+    );
     // The plan draws each riser line as segments.
     let lines = |s: &Stair| {
         plan_symbol(s, None)
@@ -771,7 +808,10 @@ fn one_or_two_starter_treads_round_the_bottom_steps() {
     }));
     // Both starters reach past the stair; the second one less than the
     // first.
-    assert!(w[0] > w[1] && w[1] > 36.0 + 1.0 && w[2] <= 36.0 + 1e-6, "{w:?}");
+    assert!(
+        w[0] > w[1] && w[1] > 36.0 + 1.0 && w[2] <= 36.0 + 1e-6,
+        "{w:?}"
+    );
     // A bullnose still wins on its own end.
     let st = StairParams {
         starter: Starter::One,
@@ -812,7 +852,7 @@ fn tread_numbers_count_the_treads_from_the_bottom() {
         .into_iter()
         .filter(|x| matches!(x, Stroke::Text { text, .. } if text != "UP"))
         .count();
-    assert!(cut < 14 && cut >= 6, "{cut}");
+    assert!((6..14).contains(&cut), "{cut}");
     // An L stair numbers through the landing.
     let l = stair(StairParams {
         shape: StairShape::LShaped {
@@ -856,9 +896,8 @@ fn the_arrow_style_and_size_follow_the_arrow_panel() {
         .any(|x| matches!(x, Stroke::Polyline(p, false) if p.len() == 3)));
     // None leaves the label alone.
     let none = head(ArrowStyle::None, 6.0);
-    assert!(none
-        .iter()
-        .all(|x| !matches!(x, Stroke::Arc { .. }) && !matches!(x, Stroke::Polyline(p, false) if p.len() == 2)));
+    assert!(none.iter().all(|x| !matches!(x, Stroke::Arc { .. })
+        && !matches!(x, Stroke::Polyline(p, false) if p.len() == 2)));
     assert!(none
         .iter()
         .any(|x| matches!(x, Stroke::Text { text, .. } if text == "UP")));
@@ -900,7 +939,8 @@ fn the_break_line_style_angle_and_size_follow_the_plan_display_panel() {
         .expect("a break line")
     };
     let spread = |p: &[Point]| {
-        p.iter().map(|q| q.x).fold(f64::MIN, f64::max) - p.iter().map(|q| q.x).fold(f64::MAX, f64::min)
+        p.iter().map(|q| q.x).fold(f64::MIN, f64::max)
+            - p.iter().map(|q| q.x).fold(f64::MAX, f64::min)
     };
     assert!(close(spread(&brk(BreakStyle::Zigzag, 0.0, 3.0)), 6.0));
     assert!(close(spread(&brk(BreakStyle::Zigzag, 0.0, 5.0)), 10.0));
@@ -975,7 +1015,10 @@ fn old_files_without_the_round_15_fields_still_load() {
     let mut rail = serde_json::to_value(RailingParams::default()).unwrap();
     rail.as_object_mut().unwrap().remove("baluster_profile");
     rail["newel"].as_object_mut().unwrap().remove("profile");
-    rail["newel"].as_object_mut().unwrap().remove("post_to_beam");
+    rail["newel"]
+        .as_object_mut()
+        .unwrap()
+        .remove("post_to_beam");
     let back: RailingParams = serde_json::from_value(rail).unwrap();
     assert_eq!(back, RailingParams::default());
 }
@@ -1005,14 +1048,8 @@ fn each_landing_edge_can_force_or_drop_its_railing() {
     let sides: Vec<_> = auto.iter().map(|g| g.side).collect();
     assert!(sides.contains(&RailSide::Left) && sides.contains(&RailSide::Right));
     // Has Railing on an end adds it; No Railing on a side takes it away.
-    let left_edge = auto
-        .iter()
-        .find(|g| g.side == RailSide::Left)
-        .unwrap()
-        .edge;
-    let end_edge = (0..4)
-        .find(|i| auto.iter().all(|g| g.edge != *i))
-        .unwrap();
+    let left_edge = auto.iter().find(|g| g.side == RailSide::Left).unwrap().edge;
+    let end_edge = (0..4).find(|i| auto.iter().all(|g| g.edge != *i)).unwrap();
     let mut rails = vec![EdgeRail::Automatic; 4];
     rails[end_edge] = EdgeRail::Has;
     rails[left_edge] = EdgeRail::No;

@@ -432,9 +432,9 @@ fn object_center(cx: &EditorContext, o: ObjectRef) -> Option<plan_core::Point> {
 
 // ----------------------------------------------------------------- commands --
 
-pub use extras::open_polyline_spec;
 #[cfg(test)]
 pub use extras::export_bytes;
+pub use extras::open_polyline_spec;
 #[cfg(test)]
 pub use table::apply_edit;
 
@@ -596,14 +596,11 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         }
         _ => false,
     });
-    match id {
-        cmd::POLYLINE_TOOL => {
-            cx.requests.push(EditorRequest::SetTool(
-                crate::tools::ToolId::MaterialsPolyline,
-            ));
-            return true;
-        }
-        _ => {}
+    if id == cmd::POLYLINE_TOOL {
+        cx.requests.push(EditorRequest::SetTool(
+            crate::tools::ToolId::MaterialsPolyline,
+        ));
+        return true;
     }
     if started {
         open_window();
@@ -662,6 +659,7 @@ pub fn print_list(
 }
 
 /// Is a Materials List window up (so File > Print prints it)?
+#[allow(dead_code)] // the hook File > Print takes when it routes here
 pub fn is_active() -> bool {
     STATE.with(|s| s.try_borrow().map(|s| s.open).unwrap_or(false))
 }

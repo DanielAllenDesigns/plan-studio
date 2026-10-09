@@ -280,10 +280,7 @@ impl Default for ConstructionLine {
 impl ConstructionLine {
     /// The default record made over for the CAD line `id`.
     pub fn for_line(&self, id: Id) -> ConstructionLine {
-        ConstructionLine {
-            id,
-            ..self.clone()
-        }
+        ConstructionLine { id, ..self.clone() }
     }
 
     /// Is the line drawn infinite in `view`?
@@ -910,8 +907,7 @@ pub fn is_parallel(a1: Point, a2: Point, b1: Point, b2: Point) -> bool {
 
 /// Are the infinite lines perpendicular (within [`ANGLE_TOLERANCE_DEG`])?
 pub fn is_perpendicular(a1: Point, a2: Point, b1: Point, b2: Point) -> bool {
-    (angle_diff(line_angle_deg(a1, a2), line_angle_deg(b1, b2)) - 90.0).abs()
-        <= ANGLE_TOLERANCE_DEG
+    (angle_diff(line_angle_deg(a1, a2), line_angle_deg(b1, b2)) - 90.0).abs() <= ANGLE_TOLERANCE_DEG
 }
 
 /// The segment that stands for the infinite line a-b: very long, centered on
@@ -995,7 +991,10 @@ pub fn order_labels(lines: &[OrderLine], view: ViewType, sets: &[RuleSet]) -> Ha
         let rad = angle.to_radians();
         let normal = Point::new(rad.sin(), -rad.cos());
         let mid = Point::lerp(l.a, l.b, 0.5);
-        groups.entry(rule).or_default().push((l.id, mid.dot(normal)));
+        groups
+            .entry(rule)
+            .or_default()
+            .push((l.id, mid.dot(normal)));
     }
     let mut out = HashMap::new();
     for (rule, mut members) in groups {
@@ -1405,12 +1404,12 @@ mod tests {
 
     #[test]
     fn an_infinite_line_clips_to_the_view_edges() {
-        let (s, e) = clip_line_to_rect(p(10.0, 10.0), p(20.0, 10.0), p(0.0, 0.0), p(100.0, 50.0))
-            .unwrap();
+        let (s, e) =
+            clip_line_to_rect(p(10.0, 10.0), p(20.0, 10.0), p(0.0, 0.0), p(100.0, 50.0)).unwrap();
         assert_eq!((s, e), (p(0.0, 10.0), p(100.0, 10.0)));
         // Direction decides which end is the start.
-        let (s, e) = clip_line_to_rect(p(20.0, 10.0), p(10.0, 10.0), p(0.0, 0.0), p(100.0, 50.0))
-            .unwrap();
+        let (s, e) =
+            clip_line_to_rect(p(20.0, 10.0), p(10.0, 10.0), p(0.0, 0.0), p(100.0, 50.0)).unwrap();
         assert_eq!((s, e), (p(100.0, 10.0), p(0.0, 10.0)));
         assert!(
             clip_line_to_rect(p(0.0, 80.0), p(10.0, 80.0), p(0.0, 0.0), p(100.0, 50.0)).is_none()
@@ -1506,7 +1505,10 @@ mod tests {
         let mut only_elev = ConstructionSettings::default().rule_sets;
         only_elev.retain(|r| r.view == ViewType::Elevation);
         assert!(order_labels(&vertical, ViewType::Plan, &only_elev).is_empty());
-        assert_eq!(order_labels(&vertical, ViewType::Elevation, &only_elev)[&2], "1");
+        assert_eq!(
+            order_labels(&vertical, ViewType::Elevation, &only_elev)[&2],
+            "1"
+        );
     }
 
     #[test]
@@ -1574,7 +1576,10 @@ mod tests {
         let f = &proj.floors[0];
         assert!(f.is_construction_line(id));
         assert_eq!(f.construction.get(id).unwrap().id, id);
-        assert!(f.construction.get(id).unwrap().all_floors, "from the defaults");
+        assert!(
+            f.construction.get(id).unwrap().all_floors,
+            "from the defaults"
+        );
         assert_eq!(
             f.drawing_group_override(crate::groups::ObjectRef::Cad(id)),
             Some(DEFAULT_GROUP)
@@ -1647,9 +1652,16 @@ mod tests {
         let id = proj
             .add_construction_line(0, p(0.0, 0.0), p(10.0, 0.0), None)
             .unwrap();
-        proj.floors[0].construction.get_mut(id).unwrap().callouts.plan = CalloutEnds::Both;
+        proj.floors[0]
+            .construction
+            .get_mut(id)
+            .unwrap()
+            .callouts
+            .plan = CalloutEnds::Both;
         proj.construction.rule_sets[0].reverse = true;
-        proj.reference_table.rows.push(ReferenceRow::for_file("/tmp/x.psplan"));
+        proj.reference_table
+            .rows
+            .push(ReferenceRow::for_file("/tmp/x.psplan"));
         let json = proj.to_json().unwrap();
         let back = Project::from_json(&json).unwrap();
         assert_eq!(
@@ -1680,7 +1692,11 @@ mod tests {
         assert_eq!(Fixed(0).resolve(0, 3, false), None, "not its own reference");
         assert_eq!(Fixed(0).resolve(0, 3, true), Some(0), "another plan can");
         assert_eq!(MatchCurrent.resolve(1, 3, true), Some(1));
-        assert_eq!(MatchCurrent.resolve(2, 2, true), None, "no such level there");
+        assert_eq!(
+            MatchCurrent.resolve(2, 2, true),
+            None,
+            "no such level there"
+        );
     }
 
     #[test]
@@ -1707,7 +1723,11 @@ mod tests {
         assert!((row.angle_deg - 30.0).abs() < 1e-12);
         assert!(row.to_world(local_center).dist(center) < 1e-9);
         row.move_by(p(10.0, -4.0));
-        assert!(row.to_world(local_center).dist(p(center.x + 10.0, center.y - 4.0)) < 1e-9);
+        assert!(
+            row.to_world(local_center)
+                .dist(p(center.x + 10.0, center.y - 4.0))
+                < 1e-9
+        );
     }
 
     #[test]

@@ -926,7 +926,14 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             match_properties(cx);
             true
         }
-        _ => false,
+        // Line styles, Fill Styles (the Fill Style Painter reads and writes
+        // through `dialogs::fill_style::{read_fill, apply_fill}`) and the
+        // custom pattern commands.
+        _ => {
+            crate::dialogs::line_style::run_command(cx, id)
+                || crate::dialogs::fill_style::run_command(cx, id)
+                || crate::dialogs::pattern_editor::run_command(cx, id)
+        }
     }
 }
 

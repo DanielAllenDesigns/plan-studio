@@ -296,6 +296,7 @@ pub fn hit_cabinet(
     let cabs = load_cabinets(cx.floor());
     let near = |c: &&Cabinet| {
         cx.layers().is_visible(cabinet_layer(c.kind))
+            && !c.auto_filler
             && filter(c)
             && poly_dist(p, &c.footprint()) <= tol
     };
@@ -605,14 +606,36 @@ pub fn draw_cabinet_parts(
     merged_tops: bool,
     labels: bool,
 ) {
+    draw_cabinet_strokes(painter, cam, cab, plan_symbol(cab), color, merged_tops, labels);
+}
+
+/// [`draw_cabinet_parts`] for the given strokes (the plan symbol with the
+/// run display and the Plan Display Options applied, see
+/// `plan_cabinets::plan_strokes`).
+pub fn draw_cabinet_strokes(
+    painter: &egui::Painter,
+    cam: &Camera,
+    cab: &Cabinet,
+    strokes: Vec<CabStroke>,
+    color: Color32,
+    merged_tops: bool,
+    labels: bool,
+) {
     let stroke = egui::Stroke::new(1.2_f32, color);
-    for (i, k) in plan_symbol(cab).iter().enumerate() {
+    // The countertop outline is the stroke after the footprint; a footprint
+    // with hidden edges is several leading lines.
+    let lead = strokes
+        .iter()
+        .take_while(|k| matches!(k, CabStroke::Line(..)))
+        .count();
+    let top_index = if lead > 0 { lead } else { 1 };
+    for (i, k) in strokes.iter().enumerate() {
         match k {
             CabStroke::Line(a, b) => {
                 painter.line_segment([sc(cam, *a), sc(cam, *b)], stroke);
             }
             CabStroke::Polyline(pts, closed) => {
-                if merged_tops && cab.countertop.is_some() && i == 1 {
+                if merged_tops && cab.countertop.is_some() && i == top_index {
                     continue;
                 }
                 let s: Vec<Pos2> = pts.iter().map(|p| sc(cam, *p)).collect();
@@ -640,7 +663,7 @@ pub fn draw_cabinet_parts(
                 height,
                 angle,
             } => {
-                if labels {
+                if labels && !text.is_empty() {
                     draw_text(painter, cam, *at, text, *height, *angle, color);
                 }
             }
@@ -719,6 +742,16 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         .into_iter()
         .filter(|c| cx.layers().is_visible(cabinet_layer(c.kind)))
         .collect();
+    // Merged cabinets (side by side within 3 in, or meeting at a corner) show
+    // module lines instead of the end faces they share; the layer "Cabinets,
+    // Module Lines" turns the lines off.
+    let general = &cx.defaults.cabinets.general;
+    let display = plan_cabinets::run_display(
+        &cabs,
+        plan_cabinets::merge_reach(general.create_automatic_fillers),
+        general.show_partial_module_lines,
+    );
+    let plan_options = plan_cabinets::PlanOptions::from_general(general);
     for c in &cabs {
         let color = if cabinet_layer(c.kind) == "Cabinets, Wall" {
             pal.text.gamma_multiply(0.7)
@@ -726,7 +759,20 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             pal.text
         };
         draw_cabinet_fill(painter, cam, c);
-        draw_cabinet_parts(painter, cam, c, color, true, labels_visible);
+        let hidden = display.hidden_edges.get(&c.id).map_or(&[][..], Vec::as_slice);
+        let strokes = plan_cabinets::plan_strokes(c, hidden, &plan_options);
+        draw_cabinet_strokes(painter, cam, c, strokes, color, true, labels_visible);
+    }
+    if cx.layers().is_visible(plan_cabinets::MODULE_LINES_LAYER) {
+        let line = egui::Stroke::new(1.0_f32, pal.text.gamma_multiply(0.6));
+        for l in &display.lines {
+            let pts = [sc(cam, l.a), sc(cam, l.b)];
+            if general.show_partial_module_lines {
+                painter.line_segment(pts, line);
+            } else {
+                painter.extend(Shape::dashed_line(&pts, line, 5.0, 3.0));
+            }
+        }
     }
     let tops: Vec<Cabinet> = cabs
         .iter()
@@ -1200,6 +1246,10 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             soffits_from_polylines(cx);
             true
         }
+        crate::tools::cabinet::SET_AS_DEFAULT_COMMAND => {
+            crate::tools::cabinet::set_as_default(cx);
+            true
+        }
         crate::tools::cabinet::BUMP_MODE_COMMAND => {
             let next = crate::tools::cabinet::bump_mode().next();
             crate::tools::cabinet::set_bump_mode(next);
@@ -1482,6 +1532,8 @@ pub fn refresh_backsplashes(cx: &mut EditorContext) -> usize {
 /// [`rejoin_countertops`] when the automatic join is on; full-height
 /// backsplashes follow the wall cabinets either way.
 pub fn rejoin_if_enabled(cx: &mut EditorContext) -> usize {
+    // Automatic fillers first: the generated tops then run over them.
+    crate::tools::cabinet::sync_auto_fillers(cx);
     refresh_backsplashes(cx);
     if auto_join_enabled() {
         rejoin_countertops(cx)

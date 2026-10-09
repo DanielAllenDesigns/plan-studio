@@ -288,8 +288,10 @@ fn materials_paint_the_components_in_3d_and_reach_the_project() {
         .iter()
         .filter(|m| m.color == Some([77, 88, 99]))
         .all(|m| m.material == Material::WindowGlass));
-    // The Material Painter's per-object paint sees the same materials.
-    assert!(sim.app.cx.project.sync_opening_materials(id));
+    // The Material Painter's per-object paint sees the same materials: OK in
+    // the dialog already handed them over (`apply_opening_dialog`), so a second
+    // sync has nothing left to change.
+    assert!(!sim.app.cx.project.sync_opening_materials(id));
     assert_eq!(
         sim.app.cx.project.object_material(id, "Sash"),
         Some("Fir Framing")

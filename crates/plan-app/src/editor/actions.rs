@@ -186,6 +186,7 @@ impl EditorContext {
         self.selection.retain_existing(&self.project, fl);
         // A group left with fewer than two members goes (S-35).
         self.prune_dead_groups();
+        crate::tools::arch_block::prune_dead_blocks(self);
         self.mark_dirty();
         self.status.clear();
     }

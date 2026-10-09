@@ -26,15 +26,21 @@ use super::{
 };
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
-use plan_core::dimension::DimArrow;
+use plan_core::dimension::{
+    DimArrow, LeaderStyle, SecondFormat, TextPos, TolMode, Tolerance,
+};
+use plan_core::text_styles::{runs_from_markup, runs_plain, runs_to_markup};
 use plan_core::units::LengthUnit;
 use plan_core::{AutoGroup, DimFormat, Dimension, DimensionKind, Id, PlanDefaults};
 
 const DIM_TABS: &[Tab] = &[
     on("General"),
     on("Primary Format"),
+    on("Secondary Format"),
     on("Arrow"),
+    on("Extensions"),
     on("Text Style"),
+    on("Segments"),
     on("Layer"),
     on("Label"),
 ];
@@ -93,6 +99,11 @@ struct DimForm {
     use_override: bool,
     override_text: String,
     fields: Fields,
+    /// The label as Rich Text markup, and whether the label is formatted.
+    markup: String,
+    use_rich: bool,
+    bar: super::text::editbar::EditBarState,
+    families: Vec<String>,
 }
 
 impl DimensionDialog {
@@ -101,6 +112,8 @@ impl DimensionDialog {
             Some(t) => (true, t.clone()),
             None => (false, String::new()),
         };
+        let use_rich = !dim.look.seg.runs.is_empty();
+        let markup = runs_to_markup(&dim.look.seg.runs);
         Self {
             frame: SpecDialog::new("Dimension Specification", "dimension"),
             form: DimForm {
@@ -127,8 +140,18 @@ impl DimensionDialog {
                 use_override,
                 override_text,
                 fields: Fields::default(),
+                markup,
+                use_rich,
+                bar: Default::default(),
+                families: Vec::new(),
             },
         }
+    }
+
+    /// The font families the Rich Text Edit Bar offers.
+    pub fn with_families(mut self, families: Vec<String>) -> Self {
+        self.form.families = families;
+        self
     }
 
     /// The text styles of the plan and the sheet scale (inches per foot)
@@ -198,7 +221,8 @@ pub fn open_for(cx: &EditorContext, o: ObjectRef) -> Option<DimensionDialog> {
     let d = cx.floor().dimensions.iter().find(|d| d.id == id)?.clone();
     Some(
         DimensionDialog::new(d, &cx.defaults)
-            .with_styles(&cx.project.text_styles, cx.sheet.scale.inches_per_foot()),
+            .with_styles(&cx.project.text_styles, cx.sheet.scale.inches_per_foot())
+            .with_families(crate::fonts::catalog().families()),
     )
 }
 
@@ -209,6 +233,12 @@ impl DimForm {
         let mut d = self.draft.clone();
         d.text_override = (self.use_override && !self.override_text.is_empty())
             .then(|| self.override_text.clone());
+        d.look.seg.runs = if self.use_rich && !runs_plain(&runs_from_markup(&self.markup)).is_empty()
+        {
+            runs_from_markup(&self.markup)
+        } else {
+            Vec::new()
+        };
         let moved =
             d.start != self.orig.start || d.end != self.orig.end || d.offset != self.orig.offset;
         if moved && d.kind == DimensionKind::AutoExterior && self.orig.kind == d.kind {
@@ -424,7 +454,192 @@ impl DimForm {
             );
             l.arrow_filled = Some(filled);
         }
+    }
+
+    /// The Extensions tab: the extension lines' gap, overshoot and fixed
+    /// length, and a centerline mark on either extension line (Mark as
+    /// Centerline).
+    fn extensions(&mut self, ui: &mut Ui) {
         self.extension_lines(ui);
+        section(ui, "Centerline Marks");
+        for (k, name) in ["Start", "End"].into_iter().enumerate() {
+            ui.checkbox(
+                &mut self.draft.look.seg.centerline[k],
+                format!("Mark the {name} Extension Line as a Centerline"),
+            );
+        }
+    }
+
+    /// Secondary Format and tolerance: a second number for the same
+    /// distance in another unit or accuracy, a plus-minus tolerance, the
+    /// rounded value indicators and where the number sits on the line.
+    fn secondary_format(&mut self, ui: &mut Ui) {
+        let base = self.fmt.label;
+        let l = &mut self.draft.look;
+        let mut follow = l.second.is_none()
+            && l.tolerance.is_none()
+            && l.indicators.is_none()
+            && l.text_pos.is_none();
+        if ui
+            .checkbox(
+                &mut follow,
+                "Use the Dimension Defaults' second format and tolerance",
+            )
+            .changed()
+        {
+            if follow {
+                l.second = None;
+                l.tolerance = None;
+                l.indicators = None;
+                l.text_pos = None;
+            } else {
+                l.second = Some(base.second);
+                l.tolerance = Some(base.tolerance);
+                l.indicators = Some((base.plus_minus_after, base.tilde_before));
+                l.text_pos = Some(base.position);
+            }
+        }
+        if follow {
+            section(ui, "From the active Dimension Defaults");
+            row(ui, "Second Format", |ui| {
+                ui.label(if base.second.include { "Included" } else { "Not included" })
+            });
+            row(ui, "Tolerance", |ui| ui.label(base.tolerance.mode.label()));
+            row(ui, "Text Position", |ui| ui.label(base.position.label()));
+            return;
+        }
+        section(ui, "Second Format");
+        let mut s: SecondFormat = l.second.unwrap_or(base.second);
+        ui.checkbox(&mut s.include, "Include Second Format");
+        row(ui, "Units", |ui| {
+            egui::ComboBox::from_id_salt("dim_second_units")
+                .selected_text(unit_label(s.format.unit))
+                .show_ui(ui, |ui| {
+                    for u in UNITS {
+                        ui.selectable_value(&mut s.format.unit, u, unit_label(u));
+                    }
+                });
+        });
+        if matches!(s.format.unit, LengthUnit::FeetInches | LengthUnit::Inches) {
+            let mut frac = s.format.fraction_denominator.max(1);
+            row(ui, "Smallest Fraction", |ui| {
+                egui::ComboBox::from_id_salt("dim_second_fraction")
+                    .selected_text(format!("1/{frac}"))
+                    .show_ui(ui, |ui| {
+                        for d in FRACTIONS {
+                            ui.selectable_value(&mut frac, d, format!("1/{d}"));
+                        }
+                    });
+            });
+            s.format.fraction_denominator = frac;
+        } else {
+            row(ui, "Decimal Places", |ui| {
+                ui.add(egui::DragValue::new(&mut s.format.decimals).range(0..=6))
+            });
+            ui.checkbox(&mut s.format.trailing_zeroes, "Show Trailing Zeroes");
+        }
+        ui.checkbox(&mut s.format.unit_indicators, "Show Unit Indicators");
+        l.second = Some(s);
+
+        section(ui, "Tolerance");
+        let mut t: Tolerance = l.tolerance.unwrap_or(base.tolerance);
+        row(ui, "Style", |ui| {
+            egui::ComboBox::from_id_salt("dim_tolerance")
+                .selected_text(t.mode.label())
+                .show_ui(ui, |ui| {
+                    for m in TolMode::ALL {
+                        ui.selectable_value(&mut t.mode, m, m.label());
+                    }
+                });
+        });
+        if t.mode != TolMode::None {
+            self.fields.length_row(ui, "Plus", "tol_plus", &mut t.plus);
+            if t.mode != TolMode::Symmetric {
+                self.fields.length_row(ui, "Minus", "tol_minus", &mut t.minus);
+            }
+            t.plus = t.plus.abs();
+            t.minus = t.minus.abs();
+        }
+        l.tolerance = Some(t);
+
+        section(ui, "Rounded Value Indicators");
+        let (mut after, mut tilde) = l.indicators.unwrap_or((false, false));
+        ui.checkbox(&mut after, "+ or - After the Number");
+        ui.checkbox(&mut tilde, "~ Before the Number");
+        l.indicators = Some((after, tilde));
+
+        section(ui, "Dimension Text Position");
+        let mut pos = l.text_pos.unwrap_or(base.position);
+        row(ui, "Position", |ui| {
+            egui::ComboBox::from_id_salt("dim_text_pos")
+                .selected_text(pos.label())
+                .show_ui(ui, |ui| {
+                    for p in TextPos::ALL {
+                        ui.selectable_value(&mut pos, p, p.label());
+                    }
+                });
+        });
+        l.text_pos = Some(pos);
+        ui.weak(format!("Reads: {}", self.draft.label(&self.fmt)));
+    }
+
+    /// The Segments tab: additional text, the label's place and turn, its
+    /// leader line and the string the segment belongs to.
+    fn segments(&mut self, ui: &mut Ui) {
+        section(ui, "Dimension String");
+        match self.draft.string_id() {
+            Some(s) => {
+                row(ui, "String", |ui| ui.label(format!("Segment of the string starting at #{s}")));
+                if ui.button("Take This Segment Out of the String").clicked() {
+                    self.draft.look.seg.string = None;
+                }
+            }
+            None => {
+                ui.weak("A single dimension segment.");
+            }
+        }
+        section(ui, "Additional Text");
+        let seg = &mut self.draft.look.seg;
+        row(ui, "Leading Text", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut seg.leading).desired_width(180.0))
+        });
+        row(ui, "Trailing Text", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut seg.trailing).desired_width(180.0))
+        });
+        ui.checkbox(&mut seg.suppress_value, "Suppress Dimension Value");
+        ui.checkbox(&mut seg.blank, "Blank Segment (no label)");
+        section(ui, "Label");
+        let mut turned = seg.label_angle.is_some();
+        if ui.checkbox(&mut turned, "Turn the Label").changed() {
+            seg.label_angle = turned.then_some(0.0);
+        }
+        if let Some(a) = &mut seg.label_angle {
+            self.fields.degrees_row(ui, "Angle", "deg_label_angle", a);
+        }
+        let mut moved = seg.label_move.is_some();
+        if ui.checkbox(&mut moved, "Move the Label Off the Line").changed() {
+            seg.label_move = moved.then(|| plan_core::geometry::Point::new(0.0, 18.0));
+        }
+        if let Some(m) = &mut seg.label_move {
+            self.fields.length_row(ui, "Along the Line", "label_along", &mut m.x);
+            self.fields.length_row(ui, "Across the Line", "label_across", &mut m.y);
+            let mut style = seg.leader;
+            row(ui, "Leader Line", |ui| {
+                egui::ComboBox::from_id_salt("dim_leader")
+                    .selected_text(style.map_or("From Dimension Defaults", LeaderStyle::label))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut style, None, "From Dimension Defaults");
+                        for s in LeaderStyle::ALL {
+                            ui.selectable_value(&mut style, Some(s), s.label());
+                        }
+                    });
+            });
+            seg.leader = style;
+            let mut second = seg.leader_second_segment.unwrap_or(false);
+            if ui.checkbox(&mut second, "Include Second Segment").changed() {
+                seg.leader_second_segment = Some(second);
+            }
+        }
     }
 
     /// Gap, overshoot and fixed length of the extension lines.
@@ -578,6 +793,35 @@ impl DimForm {
             "Measured value: {}",
             self.fmt.fmt_len(self.draft.length())
         ));
+        section(ui, "Rich Text");
+        let mut rich = self.use_rich;
+        if ui
+            .checkbox(&mut rich, "Format the label (bold, italic, size, colour)")
+            .changed()
+        {
+            if rich && self.markup.is_empty() {
+                self.markup = if self.use_override {
+                    self.override_text.clone()
+                } else {
+                    self.draft.label_parts(&self.fmt).primary
+                };
+            }
+            self.use_rich = rich;
+        }
+        if self.use_rich {
+            let env = super::text::editbar::BarEnv {
+                base: self.text_height,
+                ipf: self.ipf,
+                families: &self.families,
+            };
+            let mut halign = plan_core::text_box::HAlign::Left;
+            super::text::editbar::show(ui, &mut self.markup, &mut halign, &mut self.bar, &env);
+            ui.add(
+                egui::TextEdit::multiline(&mut self.markup)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+        }
     }
 }
 
@@ -600,7 +844,10 @@ impl SpecPages for DimForm {
         match DIM_TABS[tab].name {
             "General" => self.general(ui),
             "Primary Format" => self.primary_format(ui),
+            "Secondary Format" => self.secondary_format(ui),
             "Arrow" => self.arrow(ui),
+            "Extensions" => self.extensions(ui),
+            "Segments" => self.segments(ui),
             "Text Style" => self.text_style(ui),
             "Layer" => self.layer(ui),
             "Label" => self.label(ui),

@@ -179,7 +179,7 @@ pub fn quoin_mesh(q: &Quoin, floor_elev: f64) -> Option<Mesh> {
     let mut mesh = MeshBuilder::new(material_of(&q.material, Material::Stone));
     for i in 0..q.courses() {
         let (la, lb) = q.course_lengths(i);
-        let ring = q.axes.l_polygon(q.corner, la, lb, q.depth);
+        let ring = q.axes.l_polygon(q.built_corner(), la, lb, q.depth);
         let y0 = floor_elev + q.course_base(i);
         add_prism(&mut mesh, &ring, y0, y0 + q.height);
     }
@@ -191,112 +191,16 @@ pub fn quoin_mesh(q: &Quoin, floor_elev: f64) -> Option<Mesh> {
 // ===================================================================
 
 /// A molding: the cross section swept along the line (the molding projects
-/// to the left of the drawing direction). Segments meet at mitered joints:
-/// the section is offset along the bisector of the two segments' normals, so
-/// the faces of neighbouring segments meet exactly at each corner. A closed
-/// line (last point on the first) miters at its start too; an open one is
-/// capped at its two ends.
+/// to the left of the drawing direction). Segments meet at mitred joints,
+/// see [`crate::molding`]; a closed line (last point on the first) miters at
+/// its start too and an open one is capped at its ends. Returns the mesh of
+/// the first material; a molding of several profiles and materials is
+/// [`crate::molding::molding_meshes`].
 pub fn molding_mesh(m: &MoldingLine, floor_elev: f64) -> Option<Mesh> {
-    let section = m.section();
-    if m.polyline.len() < 2 || section.len() < 3 || m.height <= 0.0 || m.width <= 0.0 {
-        return None;
-    }
-    // The line without repeated points.
-    let mut pts: Vec<Point> = Vec::with_capacity(m.polyline.len());
-    for p in &m.polyline {
-        if pts.last().is_none_or(|q| q.dist(*p) > 1e-9) {
-            pts.push(*p);
-        }
-    }
-    if pts.len() < 2 {
-        return None;
-    }
-    let n = pts.len();
-    let closed = n > 2 && pts[0].dist(pts[n - 1]) < 1e-6;
-    let seg_normal = |i: usize| (pts[i + 1] - pts[i]).normalized().perp();
-    // Where the section's offset goes at vertex `j`: the direction to offset
-    // along and the factor that keeps the faces of both segments in line.
-    let lateral = |j: usize| -> (Point, f64) {
-        let prev = if j > 0 {
-            Some(seg_normal(j - 1))
-        } else if closed {
-            Some(seg_normal(n - 2))
-        } else {
-            None
-        };
-        let next = if j + 1 < n {
-            Some(seg_normal(j))
-        } else if closed {
-            Some(seg_normal(0))
-        } else {
-            None
-        };
-        match (prev, next) {
-            (Some(p), Some(q)) => {
-                let sum = p + q;
-                if sum.length() < 1e-9 {
-                    (q, 1.0)
-                } else {
-                    let bisector = sum.normalized();
-                    (bisector, 1.0 / bisector.dot(q).max(MITER_LIMIT))
-                }
-            }
-            (Some(p), None) => (p, 1.0),
-            (None, Some(q)) => (q, 1.0),
-            (None, None) => (Point::ZERO, 1.0),
-        }
-    };
-    let mut mesh = MeshBuilder::new(material_of(&m.material, Material::Trim));
-    let base = floor_elev + m.elevation;
-    let centre = polygon_centroid(&section);
-    for i in 0..n - 1 {
-        let (a, b) = (pts[i], pts[i + 1]);
-        let len = a.dist(b);
-        let d = (b - a).normalized();
-        let nrm = d.perp();
-        let (la, ka) = lateral(i);
-        let (lb, kb) = lateral(i + 1);
-        let at_a = |s: Point| to_scene(a + la * (s.x * ka), base + s.y);
-        let at_b = |s: Point| to_scene(b + lb * (s.x * kb), base + s.y);
-        for j in 0..section.len() {
-            let (s0, s1) = (section[j], section[(j + 1) % section.len()]);
-            let e = s1 - s0;
-            if e.length() <= 1e-9 {
-                continue;
-            }
-            // Outward normal of a counter-clockwise section edge.
-            let (nu, nv) = (e.y, -e.x);
-            let l = nu.hypot(nv);
-            let (nu, nv) = (nu / l, nv / l);
-            let normal = [(nrm.x * nu) as f32, nv as f32, (-(nrm.y * nu)) as f32];
-            let u = (len / IN_PER_FT) as f32;
-            let (v0, v1) = ((s0.y / IN_PER_FT) as f32, (s1.y / IN_PER_FT) as f32);
-            mesh.quad(
-                [at_a(s0), at_b(s0), at_b(s1), at_a(s1)],
-                [[0.0, v0], [u, v0], [u, v1], [0.0, v1]],
-                normal,
-            );
-        }
-        // End caps: a fan from the section's centre, at the free ends of an
-        // open line only (the joints are closed by the neighbour).
-        for (end, sign) in [(0, -1.0_f64), (1, 1.0)] {
-            if closed || (end == 0 && i > 0) || (end == 1 && i + 2 < n) {
-                continue;
-            }
-            let normal = [(d.x * sign) as f32, 0.0, (-(d.y * sign)) as f32];
-            let at = |s: Point| if end == 0 { at_a(s) } else { at_b(s) };
-            for j in 0..section.len() {
-                let (s0, s1) = (section[j], section[(j + 1) % section.len()]);
-                mesh.tri([at(centre), at(s0), at(s1)], [[0.0, 0.0]; 3], normal);
-            }
-        }
-    }
-    finished(mesh, m.id)
+    crate::molding::molding_meshes(m, floor_elev)
+        .into_iter()
+        .next()
 }
-
-/// The least cosine between a joint's bisector and a segment normal the miter
-/// follows; sharper corners are cut off at 4 times the section's projection.
-const MITER_LIMIT: f64 = 0.25;
 
 // ===================================================================
 // Material regions
@@ -567,7 +471,13 @@ pub fn floor_detail_meshes(floor: &Floor) -> Vec<Mesh> {
             .filter_map(|b| corner_board_mesh(b, e)),
     );
     out.extend(layer.quoins.iter().filter_map(|q| quoin_mesh(q, e)));
-    out.extend(layer.moldings.iter().filter_map(|m| molding_mesh(m, e)));
+    out.extend(
+        layer
+            .moldings
+            .iter()
+            .flat_map(|m| crate::molding::molding_meshes(m, e)),
+    );
+    out.extend(crate::molding::generated_room_meshes(floor, &layer));
     // Layered regions, solids with extra spec fields and compound solids
     // (Boolean results) have their own passes.
     out.extend(crate::material_region::region_meshes(floor, &layer.regions));
@@ -755,9 +665,10 @@ mod tests {
         );
         let mesh = molding_mesh(&m, 0.0).expect("a molding mesh");
         assert_eq!(mesh.material, Material::Trim);
-        // 4 section edges x 2 triangles per segment, and a fan of 4 at each
-        // of the two free ends (the joint in the middle is mitred, not capped).
-        assert_eq!(mesh.triangle_count(), 2 * 8 + 2 * 4);
+        // 4 section edges x 2 triangles per segment, and the 2 triangles of
+        // the section at each of the two free ends (the joint in the middle
+        // is mitred, not capped).
+        assert_eq!(mesh.triangle_count(), 2 * 8 + 2 * 2);
         let (lo, hi) = mesh.bounds().unwrap();
         assert!((lo[1] - (109.125 - 4.5) as f32).abs() < 1e-3);
         assert!((hi[1] - 109.125).abs() < 1e-3);

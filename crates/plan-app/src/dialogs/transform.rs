@@ -427,6 +427,7 @@ pub fn show_edit_windows(ctx: &egui::Context, cx: &mut EditorContext) {
     super::action_history::show(ctx, cx);
     super::multiple_copy::show(ctx, cx);
     super::drawing_groups::show(ctx, cx);
+    super::arch_block::show_all(ctx, cx);
 }
 
 #[cfg(test)]

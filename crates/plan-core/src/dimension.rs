@@ -5,17 +5,26 @@ use crate::model::{Id, Opening, Wall, WallKind};
 use crate::units::{fmt_ft_in_frac, format_length, LengthFormat, LengthUnit};
 use serde::{Deserialize, Serialize};
 
+mod geom;
 mod label;
+mod layout;
+mod pole;
 mod seg;
 mod settings;
 
+pub use geom::CurveGeom;
 pub use label::{
     angle_text, grid_round, indicators, round_to_step, step_inches, DimLabelOptions, LabelParts,
     SecondFormat, TolMode, Tolerance,
 };
+pub use layout::{upright, LabelLayout, LabelLine, LabelParams};
+pub use pole::{
+    floor_marks, pole_marks, pole_strings, roof_marks, roof_slope_dimensions, section_profile,
+    section_roof_marks, ElevationMark, RoofMark,
+};
 pub use seg::{CurveKind, DimCurve, DimSeg, LeaderStyle};
 pub use settings::{
-    exterior_strings_for, mark_default, DimSetup, LocateTool, MarkKind, OffsetFrom, PoleMark,
+    exterior_strings_for, mark_default, DimSetup, DimView, LocateTool, MarkKind, OffsetFrom, PoleMark,
     PoleSetup, RoundMethod, TempWalls, TextPos, ToolLocate, ToolLocates, LOCATE_MARKS,
 };
 

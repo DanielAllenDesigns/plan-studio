@@ -14,7 +14,7 @@
 //! others to the plan and joins them.
 
 use crate::layout::Layout;
-use crate::{solve, Bullnose, Flare, Starter, Stair, StairParams, StairShape};
+use crate::{solve, Bullnose, Flare, Stair, StairParams, StairShape, Starter};
 use plan_core::Point;
 
 /// The smallest landing a complete break leaves, inches.
@@ -52,7 +52,10 @@ fn straight_piece(stair: &Stair, layout: &Layout, i: usize) -> Stair {
 /// A landing with the plan outline `pts`, its top `top` above the floor.
 fn landing_piece(stair: &Stair, pts: Vec<Point>, top: f64) -> Stair {
     let (lo, hi) = pts.iter().fold(
-        (Point::new(f64::MAX, f64::MAX), Point::new(f64::MIN, f64::MIN)),
+        (
+            Point::new(f64::MAX, f64::MAX),
+            Point::new(f64::MIN, f64::MIN),
+        ),
         |(lo, hi), p| {
             (
                 Point::new(lo.x.min(p.x), lo.y.min(p.y)),
@@ -155,7 +158,12 @@ pub fn complete_break(stair: &Stair, lower_risers: u32, landing: f64) -> Option<
         ..stair.clone()
     };
     upper.floor_elevation = stair.floor_elevation;
-    let pts = vec![at(s0, 0.0), at(s0, w), at(s0 + depth, w), at(s0 + depth, 0.0)];
+    let pts = vec![
+        at(s0, 0.0),
+        at(s0, w),
+        at(s0 + depth, w),
+        at(s0 + depth, 0.0),
+    ];
     let platform = landing_piece(stair, pts, stair.base + f64::from(k) * h);
     Some(vec![lower, platform, upper])
 }

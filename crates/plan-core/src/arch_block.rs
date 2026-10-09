@@ -374,7 +374,10 @@ impl Floor {
                 .as_ref()
                 .and_then(|e| e.get("devices"))
                 .and_then(|d| d.as_array())
-                .is_some_and(|a| a.iter().any(|d| d.get("id").and_then(|v| v.as_u64()) == Some(id))),
+                .is_some_and(|a| {
+                    a.iter()
+                        .any(|d| d.get("id").and_then(|v| v.as_u64()) == Some(id))
+                }),
             ObjectRef::Block(id) => self.blocks.get(id).is_some(),
             ObjectRef::Solid(id) => self.solid_layer.compound(id).is_some(),
             ObjectRef::Wall(id) => self.wall(id).is_some(),
@@ -506,11 +509,16 @@ impl Floor {
         let b = self.blocks.blocks.remove(at);
         // A block that held this one now holds its members instead.
         for outer in &mut self.blocks.blocks {
-            if let Some(i) = outer.members.iter().position(|m| *m == ObjectRef::Block(id)) {
+            if let Some(i) = outer
+                .members
+                .iter()
+                .position(|m| *m == ObjectRef::Block(id))
+            {
                 outer.members.splice(i..=i, b.members.iter().copied());
             }
         }
-        self.drawing_groups.retain(|e| e.object != ObjectRef::Block(id));
+        self.drawing_groups
+            .retain(|e| e.object != ObjectRef::Block(id));
         Some(b.members)
     }
 
@@ -576,7 +584,12 @@ mod tests {
         let (a, b) = (sym(&mut p, 0.0), sym(&mut p, 40.0));
         let id = p.alloc_id();
         let f = &mut p.floors[0];
-        let r = f.make_block(id, &[ObjectRef::Symbol(a), ObjectRef::Symbol(b)], BlockKind::Standard, &layer);
+        let r = f.make_block(
+            id,
+            &[ObjectRef::Symbol(a), ObjectRef::Symbol(b)],
+            BlockKind::Standard,
+            &layer,
+        );
         assert_eq!(r, Ok(id));
         assert_eq!(f.blocks.get(id).unwrap().layer, "Furniture");
         assert_eq!(f.blocks.flat_members(id).len(), 2);
@@ -589,7 +602,12 @@ mod tests {
         };
         let id2 = p.alloc_id();
         let f = &mut p.floors[0];
-        let again = f.make_block(id2, &[ObjectRef::Symbol(a), ObjectRef::Symbol(c)], BlockKind::Standard, &layer);
+        let again = f.make_block(
+            id2,
+            &[ObjectRef::Symbol(a), ObjectRef::Symbol(c)],
+            BlockKind::Standard,
+            &layer,
+        );
         assert_eq!(again, Err(BlockError::AlreadyBlocked(ObjectRef::Symbol(a))));
         let members = f.explode_block(id).unwrap();
         assert_eq!(members.len(), 2);
@@ -603,11 +621,20 @@ mod tests {
         let ids: Vec<Id> = (0..4).map(|i| sym(&mut p, i as f64 * 30.0)).collect();
         let (inner, outer) = (p.alloc_id(), p.alloc_id());
         let f = &mut p.floors[0];
-        f.make_block(inner, &[ObjectRef::Symbol(ids[0]), ObjectRef::Symbol(ids[1])], BlockKind::Standard, &layer)
-            .unwrap();
+        f.make_block(
+            inner,
+            &[ObjectRef::Symbol(ids[0]), ObjectRef::Symbol(ids[1])],
+            BlockKind::Standard,
+            &layer,
+        )
+        .unwrap();
         f.make_block(
             outer,
-            &[ObjectRef::Block(inner), ObjectRef::Symbol(ids[2]), ObjectRef::Symbol(ids[3])],
+            &[
+                ObjectRef::Block(inner),
+                ObjectRef::Symbol(ids[2]),
+                ObjectRef::Symbol(ids[3]),
+            ],
             BlockKind::Standard,
             &layer,
         )
@@ -628,11 +655,21 @@ mod tests {
         let a = sym(&mut p, 0.0);
         let id = p.alloc_id();
         let f = &mut p.floors[0];
-        let e = f.make_block(id, &[ObjectRef::Symbol(a), ObjectRef::Cad(77)], BlockKind::Standard, &layer);
+        let e = f.make_block(
+            id,
+            &[ObjectRef::Symbol(a), ObjectRef::Cad(77)],
+            BlockKind::Standard,
+            &layer,
+        );
         assert!(matches!(e, Err(BlockError::NotArchitectural(_))));
         let e = f.make_block(id, &[ObjectRef::Symbol(a)], BlockKind::Standard, &layer);
         assert_eq!(e, Err(BlockError::TooFew));
-        let e = f.make_block(id, &[ObjectRef::Symbol(a), ObjectRef::Device(5)], BlockKind::GangedElectrical, &layer);
+        let e = f.make_block(
+            id,
+            &[ObjectRef::Symbol(a), ObjectRef::Device(5)],
+            BlockKind::GangedElectrical,
+            &layer,
+        );
         assert_eq!(e, Err(BlockError::NeedDevices));
     }
 
@@ -647,11 +684,19 @@ mod tests {
             ObjectRef::Symbol(i) if i == a => Some("Furniture".to_string()),
             _ => Some("Fixtures".to_string()),
         };
-        f.make_block(id, &[ObjectRef::Symbol(a), ObjectRef::Symbol(b)], BlockKind::Standard, &mixed)
-            .unwrap();
+        f.make_block(
+            id,
+            &[ObjectRef::Symbol(a), ObjectRef::Symbol(b)],
+            BlockKind::Standard,
+            &mixed,
+        )
+        .unwrap();
         assert_eq!(f.blocks.get(id).unwrap().layer, BLOCK_LAYER);
         assert_eq!(f.prune_blocks(|r| r != ObjectRef::Symbol(a)), 0);
-        assert_eq!(f.blocks.get(id).unwrap().members, vec![ObjectRef::Symbol(b)]);
+        assert_eq!(
+            f.blocks.get(id).unwrap().members,
+            vec![ObjectRef::Symbol(b)]
+        );
         assert_eq!(f.prune_blocks(|_| false), 1);
     }
 

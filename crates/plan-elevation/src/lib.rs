@@ -39,7 +39,7 @@ mod view;
 
 pub use dims::{DimKind, DimOptions, ElevDim};
 pub use drawing::{Drawing, EdgeKind, Line2, LineWeight, Region, RegionKind};
-pub use hatch::DEFAULT_HATCH_SCALE;
+pub use hatch::{poche_hatch_lines, without_poche, DEFAULT_HATCH_SCALE, MAX_POCHE_LINES};
 pub use labels::{annotate, annotate_view, annotate_with, AnnotateOptions};
 pub use mlabels::{interior_point, material_label};
 pub use projection::{Projection, ViewDir};

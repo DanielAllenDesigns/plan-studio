@@ -538,26 +538,26 @@ fn drawing_groups_order_the_plan_and_survive_the_file() {
         shapes.iter().position(|s| shape_colors(s).contains(&c))
     };
 
-    // By default CAD draws over the walls.
+    // By default CAD starts at group 21, behind the walls at 50.
     let shapes = sim.plan_shapes();
     let (m, w) = (index(&shapes, magenta), index(&shapes, wall_fill));
     assert!(m.is_some() && w.is_some(), "{m:?} {w:?}");
-    assert!(m > w, "CAD over the walls by default");
+    assert!(m < w, "CAD behind the walls by default: {m:?} {w:?}");
 
-    // Send to Back: one undo step, and the box draws under the walls.
+    // Bring to Front: one undo step, and the box draws over the walls.
     select(&mut sim, &[id]);
-    cmd(&mut sim, ops::DG_BACK);
-    assert_eq!(sim.app.cx.undo_label(), Some("Send to Back"));
+    cmd(&mut sim, ops::DG_FRONT);
+    assert_eq!(sim.app.cx.undo_label(), Some("Bring to Front"));
     let shapes = sim.plan_shapes();
     let (m, w) = (index(&shapes, magenta), index(&shapes, wall_fill));
-    assert!(m < w, "behind the walls now: {m:?} {w:?}");
+    assert!(m > w, "over the walls now: {m:?} {w:?}");
     let t = sim.app.cx.project.drawing_group_defaults.clone();
     let group = sim
         .app
         .cx
         .floor()
         .drawing_group(&t, plan_core::ObjectRef::Cad(id));
-    assert!(group < t.group_of("Walls"), "{group}");
+    assert!(group > t.group_of("Walls"), "{group}");
 
     // The file keeps it.
     let json = serde_json::to_string(&sim.app.cx.project).unwrap();
@@ -567,11 +567,11 @@ fn drawing_groups_order_the_plan_and_survive_the_file() {
         group
     );
 
-    // Bring to Front puts it over everything again.
-    cmd(&mut sim, ops::DG_FRONT);
-    assert_eq!(sim.app.cx.undo_label(), Some("Bring to Front"));
+    // Send to Back puts it under everything again.
+    cmd(&mut sim, ops::DG_BACK);
+    assert_eq!(sim.app.cx.undo_label(), Some("Send to Back"));
     let shapes = sim.plan_shapes();
-    assert!(index(&shapes, magenta) > index(&shapes, wall_fill));
+    assert!(index(&shapes, magenta) < index(&shapes, wall_fill));
     sim.undo();
     sim.undo();
     assert!(sim.app.cx.floor().drawing_groups.is_empty());

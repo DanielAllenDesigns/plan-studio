@@ -363,6 +363,74 @@ pub struct CabinetDefaults {
     /// Edit > Default Settings > Cabinets > Backsplash.
     #[serde(default)]
     pub backsplash: BacksplashDefaults,
+    /// Edit > Default Settings > Cabinets > General Cabinet Defaults
+    /// (reference manual p. 644; Default Settings only).
+    #[serde(default)]
+    pub general: GeneralCabinetDefaults,
+}
+
+/// The General Cabinet Defaults dialog: automatic behaviors, how the resize
+/// handles step, and what the plan shows of a cabinet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeneralCabinetDefaults {
+    /// Smallest cabinet that is placed or resized to, inches (at least 1/16).
+    pub min_cabinet_width: f64,
+    /// Closest shelves inside Door and Opening face items, inches.
+    pub min_shelf_spacing: f64,
+    /// An Auto door opening this wide or narrower is one door, wider is a
+    /// pair, inches.
+    pub auto_door_threshold: f64,
+    /// Fillers generate between cabinets (and walls) within 3 in.
+    pub create_automatic_fillers: bool,
+    /// Fillers also generate in the angle where two cabinets meet at one
+    /// corner.
+    pub create_automatic_fillers_angled: bool,
+    pub create_automatic_blind_corners: bool,
+    /// Resize with the Snap Grid; off resizes by `resize_increment`.
+    pub resize_by_grid: bool,
+    /// The resize step when `resize_by_grid` is off, inches (at least 1/16).
+    pub resize_increment: f64,
+    /// Module lines are short grey ticks instead of lines across the cabinets.
+    pub show_partial_module_lines: bool,
+    pub show_closed_doors_drawers: bool,
+    pub show_pilasters: bool,
+    /// Draw the width of a countertop's edge profile in plan.
+    pub display_molding_edges: bool,
+}
+
+impl Default for GeneralCabinetDefaults {
+    fn default() -> Self {
+        Self {
+            min_cabinet_width: 3.0,
+            min_shelf_spacing: 6.0,
+            auto_door_threshold: 24.0,
+            create_automatic_fillers: true,
+            create_automatic_fillers_angled: true,
+            create_automatic_blind_corners: true,
+            resize_by_grid: false,
+            resize_increment: 3.0,
+            show_partial_module_lines: false,
+            show_closed_doors_drawers: false,
+            show_pilasters: false,
+            display_molding_edges: false,
+        }
+    }
+}
+
+impl GeneralCabinetDefaults {
+    /// The smallest width Chief allows a cabinet.
+    pub const SMALLEST: f64 = 1.0 / 16.0;
+
+    /// This record with every value brought into its allowed range.
+    pub fn clamped(&self) -> Self {
+        let mut g = self.clone();
+        g.min_cabinet_width = g.min_cabinet_width.max(Self::SMALLEST);
+        g.resize_increment = g.resize_increment.max(Self::SMALLEST);
+        g.min_shelf_spacing = g.min_shelf_spacing.max(0.0);
+        g.auto_door_threshold = g.auto_door_threshold.max(0.0);
+        g
+    }
 }
 
 /// Size of a box-like cabinet kind (soffit, shelf, partition, library types).
@@ -1328,6 +1396,7 @@ impl PlanDefaults {
                     depth: 24.0,
                     height: 84.0,
                 },
+                general: GeneralCabinetDefaults::default(),
                 filler_width: default_filler_width(),
                 corner_base_leg: default_corner_base_leg(),
                 corner_wall_leg: default_corner_wall_leg(),

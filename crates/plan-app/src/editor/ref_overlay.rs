@@ -286,7 +286,10 @@ pub fn aligned_wall_ids(cx: &EditorContext) -> Vec<Id> {
         .walls
         .iter()
         .filter(|w| !w.flags.invisible && cx.layers().is_visible(&w.layer))
-        .filter(|w| refs.iter().any(|r| same_wall((w.start, w.end, w.thickness), *r)))
+        .filter(|w| {
+            refs.iter()
+                .any(|r| same_wall((w.start, w.end, w.thickness), *r))
+        })
         .map(|w| w.id)
         .collect()
 }
@@ -295,7 +298,13 @@ pub fn aligned_wall_ids(cx: &EditorContext) -> Vec<Id> {
 pub fn draw_alignment(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     for id in aligned_wall_ids(cx) {
         if let Some(w) = cx.floor().wall(id) {
-            super::render::draw_wall_outline(painter, cam, cx, w, Stroke::new(2.5_f32, ALIGNED_BLUE));
+            super::render::draw_wall_outline(
+                painter,
+                cam,
+                cx,
+                w,
+                Stroke::new(2.5_f32, ALIGNED_BLUE),
+            );
         }
     }
 }
@@ -524,10 +533,7 @@ fn draw_callout(
     let top = painter.layout_no_wrap(texts.0.to_string(), font.clone(), text_color);
     let below = (!texts.1.is_empty())
         .then(|| painter.layout_no_wrap(texts.1.to_string(), font.clone(), text_color));
-    let text_w = top
-        .size()
-        .x
-        .max(below.as_ref().map_or(0.0, |g| g.size().x));
+    let text_w = top.size().x.max(below.as_ref().map_or(0.0, |g| g.size().x));
     let text_h = top.size().y + below.as_ref().map_or(0.0, |g| g.size().y);
     let side = if spec.auto_size {
         (text_w.max(text_h) + 10.0).max(20.0)
@@ -579,16 +585,15 @@ fn draw_callout(
     painter.add(Shape::convex_polygon(pts, fill, outline));
     match below {
         None => {
-            painter.galley(
-                at - top.size() / 2.0,
-                top,
-                text_color,
-            );
+            painter.galley(at - top.size() / 2.0, top, text_color);
         }
         Some(b) => {
             let split = at.y;
             painter.line_segment(
-                [Pos2::new(at.x - w / 2.0, split), Pos2::new(at.x + w / 2.0, split)],
+                [
+                    Pos2::new(at.x - w / 2.0, split),
+                    Pos2::new(at.x + w / 2.0, split),
+                ],
                 outline,
             );
             painter.galley(
@@ -596,7 +601,11 @@ fn draw_callout(
                 top,
                 text_color,
             );
-            painter.galley(Pos2::new(at.x - b.size().x / 2.0, split + 1.0), b, text_color);
+            painter.galley(
+                Pos2::new(at.x - b.size().x / 2.0, split + 1.0),
+                b,
+                text_color,
+            );
         }
     }
 }
@@ -638,8 +647,7 @@ pub fn draw_construction(cx: &EditorContext, painter: &egui::Painter, cam: &Came
         .iter()
         .map(|l| {
             let g = if l.floor == cx.floor {
-                cx.project.floors[l.floor]
-                    .drawing_group(table, plan_core::ObjectRef::Cad(l.id))
+                cx.project.floors[l.floor].drawing_group(table, plan_core::ObjectRef::Cad(l.id))
             } else {
                 construction::DEFAULT_GROUP
             };
@@ -658,7 +666,11 @@ pub fn draw_construction(cx: &EditorContext, painter: &egui::Painter, cam: &Came
             .line_style
             .or(layer.map(|x| x.line_style))
             .unwrap_or_default();
-        let weight = l.spec.line_weight.or(layer.map(|x| x.line_weight)).unwrap_or(25);
+        let weight = l
+            .spec
+            .line_weight
+            .or(layer.map(|x| x.line_weight))
+            .unwrap_or(25);
         let width = if weights {
             crate::editor::restyle::weight_factor(weight)
         } else {
@@ -731,8 +743,11 @@ pub fn row_floor_exists(cx: &EditorContext, row: &ReferenceRow) -> bool {
             .floor
             .resolve(cx.floor, cx.project.floors.len(), false)
             .is_some(),
-        ReferenceSource::File(p) => other_plan(p)
-            .is_some_and(|plan| row.floor.resolve(cx.floor, plan.floors.len(), true).is_some()),
+        ReferenceSource::File(p) => other_plan(p).is_some_and(|plan| {
+            row.floor
+                .resolve(cx.floor, plan.floors.len(), true)
+                .is_some()
+        }),
     }
 }
 
@@ -760,14 +775,8 @@ mod tests {
 
     fn cx_with_two_floors() -> EditorContext {
         let mut cx = EditorContext::new(crate::plan_defaults::embedded());
-        cx.project.add_wall(
-            0,
-            p(0.0, 0.0),
-            p(120.0, 0.0),
-            6.0,
-            96.0,
-            WallKind::Exterior,
-        );
+        cx.project
+            .add_wall(0, p(0.0, 0.0), p(120.0, 0.0), 6.0, 96.0, WallKind::Exterior);
         cx.project
             .floors
             .push(plan_core::Floor::new("2nd Floor", 108.0));
@@ -793,14 +802,7 @@ mod tests {
     #[test]
     fn another_plan_file_is_shown_through_its_offset_and_angle() {
         let mut other = Project::new("existing");
-        other.add_wall(
-            0,
-            p(0.0, 0.0),
-            p(100.0, 0.0),
-            6.0,
-            96.0,
-            WallKind::Exterior,
-        );
+        other.add_wall(0, p(0.0, 0.0), p(100.0, 0.0), 6.0, 96.0, WallKind::Exterior);
         let path = "/nonexistent/existing-house.psplan";
         preload_other_plan(path, other);
         let mut cx = cx_with_two_floors();
@@ -817,7 +819,9 @@ mod tests {
         assert!(w.start.dist(p(50.0, 20.0)) < 1e-6);
         // The centerlines feed the snaps.
         let segs = snap_segments(&cx);
-        assert!(segs.iter().any(|(a, b)| a.dist(w.start) < 1e-6 && b.dist(w.end) < 1e-6));
+        assert!(segs
+            .iter()
+            .any(|(a, b)| a.dist(w.start) < 1e-6 && b.dist(w.end) < 1e-6));
         // A file that cannot be read shows nothing.
         cx.project.reference_table.rows = vec![ReferenceRow::for_file("/nonexistent/none.psplan")];
         assert!(reference_layers(&cx).is_empty());
@@ -845,14 +849,9 @@ mod tests {
     #[test]
     fn a_wall_drawn_exactly_over_its_reference_counterpart_is_aligned() {
         let mut cx = cx_with_two_floors();
-        let id = cx.project.add_wall(
-            1,
-            p(120.0, 0.0),
-            p(0.0, 0.0),
-            6.0,
-            96.0,
-            WallKind::Exterior,
-        );
+        let id = cx
+            .project
+            .add_wall(1, p(120.0, 0.0), p(0.0, 0.0), 6.0, 96.0, WallKind::Exterior);
         let off = cx.project.add_wall(
             1,
             p(0.0, 50.0),
@@ -875,7 +874,12 @@ mod tests {
 
     #[test]
     fn xor_drops_identical_edges_and_marks_the_ones_laid_over_walls() {
-        let current = vec![vec![p(0.0, -3.0), p(120.0, -3.0), p(120.0, 3.0), p(0.0, 3.0)]];
+        let current = vec![vec![
+            p(0.0, -3.0),
+            p(120.0, -3.0),
+            p(120.0, 3.0),
+            p(0.0, 3.0),
+        ]];
         let edges = [
             (p(0.0, -3.0), p(120.0, -3.0)),
             (p(60.0, -20.0), p(60.0, 20.0)),
@@ -899,17 +903,31 @@ mod tests {
             .project
             .add_construction_line(1, p(0.0, 30.0), p(5.0, 30.0), None)
             .unwrap();
-        cx.project.floors[1].construction.get_mut(fin).unwrap().infinite_plan = false;
+        cx.project.floors[1]
+            .construction
+            .get_mut(fin)
+            .unwrap()
+            .infinite_plan = false;
         let segs = construction_snap_segments(&cx);
         assert_eq!(segs.len(), 1, "the finite line is a CAD line already");
         assert!(construction::is_infinite_segment(segs[0].0, segs[0].1));
         // On the floor below, a line set to all floors comes as it is drawn.
-        cx.project.floors[1].construction.get_mut(inf).unwrap().all_floors = true;
-        cx.project.floors[1].construction.get_mut(fin).unwrap().all_floors = true;
+        cx.project.floors[1]
+            .construction
+            .get_mut(inf)
+            .unwrap()
+            .all_floors = true;
+        cx.project.floors[1]
+            .construction
+            .get_mut(fin)
+            .unwrap()
+            .all_floors = true;
         cx.floor = 0;
         let segs = construction_snap_segments(&cx);
         assert_eq!(segs.len(), 2);
-        assert!(segs.iter().any(|(a, b)| !construction::is_infinite_segment(*a, *b)));
+        assert!(segs
+            .iter()
+            .any(|(a, b)| !construction::is_infinite_segment(*a, *b)));
         // A hidden layer takes its lines away.
         cx.project.layers.set_display(construction::LAYER, false);
         assert!(construction_snap_segments(&cx).is_empty());
@@ -920,10 +938,18 @@ mod tests {
         for s in CalloutShape::ALL {
             let pts = callout_outline(s, 40.0, 40.0, 0.0);
             assert!(pts.len() >= 4, "{s:?}");
-            assert!(pts.iter().all(|p| p.x.abs() <= 20.01 && p.y.abs() <= 20.01), "{s:?}");
+            assert!(
+                pts.iter().all(|p| p.x.abs() <= 20.01 && p.y.abs() <= 20.01),
+                "{s:?}"
+            );
         }
         let sq = callout_outline(CalloutShape::Square, 20.0, 20.0, 0.0);
-        let turned = callout_outline(CalloutShape::Square, 20.0, 20.0, std::f32::consts::FRAC_PI_4);
+        let turned = callout_outline(
+            CalloutShape::Square,
+            20.0,
+            20.0,
+            std::f32::consts::FRAC_PI_4,
+        );
         assert!((turned[0].x - sq[0].x).abs() > 1.0 || (turned[0].y - sq[0].y).abs() > 1.0);
         // The angle does not apply to a rectangle.
         let r0 = callout_outline(CalloutShape::Rectangle, 30.0, 16.0, 0.0);

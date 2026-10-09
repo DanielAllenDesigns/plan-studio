@@ -156,6 +156,9 @@ impl PlanApp {
     fn app_commands(&mut self, ctx: &egui::Context) {
         dialogs::app_info::set_current_path(self.path.clone());
         dialogs::app_info::show_windows(ctx, &self.cx);
+        if dialogs::room::take_room_types_request() {
+            self.lists = Some(dialogs::DefaultsList::room_types(&self.cx));
+        }
         if let Some(p) = dialogs::app_info::take_open_request() {
             self.request_file_action(files::Pending::Open(Some(p)));
         }
@@ -271,7 +274,21 @@ impl PlanApp {
         self.tools.restart(&mut self.cx);
     }
 
+    /// Runs a menu or toolbar command as ONE undo step, and none when it
+    /// changed nothing (QA-24, QA-25, QA-26): every object family a command
+    /// touches opens its own step, and the group folds them together.
     fn apply(&mut self, action: Action) {
+        self.cx.begin_undo_group();
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.apply_command(action)
+        }));
+        self.cx.end_undo_group();
+        if let Err(e) = run {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    fn apply_command(&mut self, action: Action) {
         match action {
             Action::SetTool(t) => {
                 // Plan tools work in the plan view.
@@ -529,10 +546,12 @@ impl PlanApp {
             }
             C::Clear => {
                 if editor::site_view::load_terrain(&self.cx.project).is_some() {
+                    // Only what Build Terrain generated goes (manual p. 1309):
+                    // the perimeter, elevation data and objects stay.
                     editor::site_view::edit_terrain(&mut self.cx, "Clear Terrain", |rec| {
-                        *rec = editor::site_view::TerrainRecord::new();
+                        rec.clear_generated();
                     });
-                    self.cx.status = "Cleared the terrain".into();
+                    self.cx.status = "Cleared the generated terrain".into();
                 } else {
                     self.cx.status = "There is no terrain to clear".into();
                 }
@@ -1396,14 +1415,16 @@ impl PlanApp {
         let openings: Vec<Opening> = self.cx.floor().openings_on(id).cloned().collect();
         let extras = self.cx.extras.walls.get(&id).cloned().unwrap_or_default();
         let default_height = self.cx.wall_height(wall.kind);
-        self.dialog = Some(ActiveDialog::Wall(Box::new(WallDialog::new(
+        let mut dialog = WallDialog::new(
             WallTarget::Wall(id),
             wall,
             openings,
             extras,
             default_height,
             self.cx.wall_types().to_vec(),
-        ))));
+        );
+        dialog.set_framing_retained(&[editor::framing_view::wall_retained(&self.cx.project, id)]);
+        self.dialog = Some(ActiveDialog::Wall(Box::new(dialog)));
         self.spec.arm_main_props(&self.cx, ObjectRef::Wall(id));
     }
 
@@ -1536,10 +1557,13 @@ impl PlanApp {
                     let info = self.spec.take_main_info();
                     let props = self.spec.take_main_props();
                     let depth = dialogs::property_manager::before_apply(&self.cx);
+                    // One step, and none when OK changed nothing (QA-26).
+                    self.cx.begin_undo_group();
                     match &dialog {
                         ActiveDialog::Wall(d) => self.apply_wall_dialog(d),
                         ActiveDialog::Opening(d) => self.apply_opening_dialog(d),
                     }
+                    self.cx.end_undo_group();
                     dialogs::property_manager::after_apply(&mut self.cx, props.as_ref(), depth);
                     dialogs::object_info::after_apply(&mut self.cx, info.as_ref(), depth);
                     self.cx.mark_dirty();
@@ -1625,6 +1649,10 @@ impl PlanApp {
                 if let Some(orig) = &orig_materials {
                     self.cx.project.sync_wall_materials_from(id, orig);
                 }
+                // Retain Wall Framing lives in the plan's framing settings.
+                let retain_changed = d.retain_framing_change().is_some_and(|v| {
+                    editor::framing_view::retain_walls_in(&mut self.cx.project, &[id], v) > 0
+                });
                 // OK with nothing edited leaves no undo step.
                 let same_wall = match (&orig_wall, self.cx.floor().wall(id)) {
                     (Some(a), Some(b)) => {
@@ -1642,6 +1670,7 @@ impl PlanApp {
                         .collect::<Vec<_>>()
                         == orig_offsets
                     && d.edited_types().is_empty()
+                    && !retain_changed
                 {
                     self.cx.cancel_change();
                 }
@@ -1800,6 +1829,11 @@ impl eframe::App for PlanApp {
         }
         for action in actions {
             self.apply(action);
+        }
+        // The Plan Agent works whether or not its dock is open; a finished
+        // run replaces the plan as one undo step.
+        if shell::agent_panel::pump(&mut self.docks.agent, &mut self.cx, ctx) {
+            self.tools.restart(&mut self.cx);
         }
         self.dock_panel(ctx);
         self.tools.frame(&mut self.cx, ctx);

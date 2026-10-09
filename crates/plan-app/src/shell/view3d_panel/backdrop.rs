@@ -13,9 +13,17 @@ use std::time::SystemTime;
 const EXTENSIONS: [&str; 3] = ["jpg", "jpeg", "png"];
 
 /// The folders searched for backdrop pictures, most specific first:
-/// `PLAN_STUDIO_BACKDROPS`, then Chief's Backdrops folder in the user's data.
+/// the Backdrops folder of Preferences > Folders, `PLAN_STUDIO_BACKDROPS`,
+/// then Chief's Backdrops folder in the user's data.
 pub fn backdrop_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    // Preferences > Folders > Backdrops comes first.
+    if let Some(chosen) = crate::dialogs::preferences::pages::current()
+        .folders
+        .get(crate::dialogs::preferences::pages::FolderKind::Backdrops)
+    {
+        dirs.push(PathBuf::from(chosen));
+    }
     if let Some(extra) = std::env::var_os("PLAN_STUDIO_BACKDROPS") {
         dirs.push(PathBuf::from(extra));
     }
@@ -117,6 +125,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn the_backdrops_folder_of_the_preferences_is_searched_first() {
+        use crate::dialogs::preferences::pages::{self, FolderKind};
+        let d = temp_dir("pref");
+        pages::update(|p| {
+            p.folders
+                .set(FolderKind::Backdrops, &d.display().to_string())
+        });
+        assert_eq!(backdrop_dirs().first(), Some(&d));
+        pages::set(pages::PagePrefs::default());
+        assert_ne!(backdrop_dirs().first(), Some(&d));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

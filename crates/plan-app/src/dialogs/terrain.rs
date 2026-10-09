@@ -1214,6 +1214,8 @@ mod tests {
             <trkpt lat="40.0005" lon="-74.9995"/></trkseg></trk></gpx>"#,
         );
         draw_all_pages(&mut dlg);
+        // Import As: way points as elevation data, the track as the perimeter.
+        dlg.form.gps.tracks_as = plan_terrain::GpsImportAs::Perimeter;
         let msg = dlg.press_gps_import().unwrap().unwrap();
         assert!(msg.contains("2 elevation points"), "{msg}");
         let result = dlg.gps_result().expect("a result");

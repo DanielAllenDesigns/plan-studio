@@ -1373,7 +1373,10 @@ fn steps_down_from_a_floor_use_a_negative_base_everywhere() {
         }
     }
     // Only the stringers hang below the bottom step, by their depth.
-    assert!(lo >= 80.875 - 6.0, "nothing far below the bottom step: {lo}");
+    assert!(
+        lo >= 80.875 - 6.0,
+        "nothing far below the bottom step: {lo}"
+    );
     assert!(lo < 100.0 - 19.125 + 0.1, "the steps really go down: {lo}");
     // Treads top out at the floor; only railings stand above it.
     let tread_top = parts

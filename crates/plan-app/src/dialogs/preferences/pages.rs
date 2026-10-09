@@ -606,6 +606,11 @@ pub struct PagePrefs {
     pub units: UnitPrefs,
     /// Messages the user asked not to be shown again (Reset Options clears).
     pub dont_ask_again: Vec<String>,
+    /// The Plan Agent page: `agent_api_key`, `agent_model` and `agent_effort`
+    /// sit at the top level of the file. The key is kept in this user file
+    /// only, never in a plan file.
+    #[serde(flatten)]
+    pub agent: super::agent_page::AgentPrefs,
 }
 
 /// The whole file.
@@ -715,6 +720,14 @@ thread_local! {
 pub fn apply_runtime(p: &PagePrefs) {
     crate::tools::select::set_marquee_mode(p.edit.marquee_mode());
     ICON_PX.with(|c| c.set(p.appearance.icon_size.px()));
+    // Preferences > Folders > Textures: searched before Chief's own folders
+    // (by texture stores built from now on).
+    plan_materials::textures::set_texture_folder(
+        p.folders
+            .get(FolderKind::Textures)
+            .map(PathBuf::from)
+            .filter(|d| d.is_dir()),
+    );
 }
 
 /// Lays the saved editing defaults (snaps, Edit Type, Replicate) over the
@@ -870,6 +883,26 @@ mod tests {
         f.pages.cad.show_arc_centers = false;
         write_file_at(&path, &f).unwrap();
         assert_eq!(read_file_at(&path), Some(f));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_textures_folder_is_searched_first() {
+        let dir = std::env::temp_dir().join(format!("plan-studio-texdir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        update(|p| {
+            p.folders
+                .set(FolderKind::Textures, &dir.display().to_string())
+        });
+        assert_eq!(
+            plan_materials::textures::default_texture_dirs().first(),
+            Some(&dir)
+        );
+        set(PagePrefs::default());
+        assert_ne!(
+            plan_materials::textures::default_texture_dirs().first(),
+            Some(&dir)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

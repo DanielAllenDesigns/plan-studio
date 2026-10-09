@@ -20,8 +20,9 @@ pub const GROUP_MIN: i32 = 0;
 pub const GROUP_MAX: i32 = 999;
 
 /// The kinds of the Drawing Groups table with their starting groups, back to
-/// front. CAD and Text share a group so the CAD order a plan already has is
-/// kept.
+/// front. CAD starts at 21 (Chief's manual: CAD objects sit behind walls
+/// until sent to front); Text keeps its own group, 80, in front of
+/// everything.
 pub const KINDS: [(&str, i32); 15] = [
     ("Rooms", 10),
     ("Foundation", 15),
@@ -34,7 +35,7 @@ pub const KINDS: [(&str, i32); 15] = [
     ("Electrical", 60),
     ("Framing", 65),
     ("Dimensions", 70),
-    ("CAD", 80),
+    ("CAD", 21),
     ("Text", 80),
     ("Schedules", 85),
     ("Cameras", 95),
@@ -405,17 +406,17 @@ mod tests {
         let t = &p.drawing_group_defaults;
         let f = &p.floors[0];
         assert_eq!(f.drawing_group(t, ObjectRef::Wall(ids[0])), 50);
-        assert_eq!(f.drawing_group(t, ObjectRef::Cad(ids[1])), 80);
+        assert_eq!(f.drawing_group(t, ObjectRef::Cad(ids[1])), 21);
         assert_eq!(
             f.drawing_group(t, ObjectRef::Cad(ids[3])),
             80,
-            "text shares CAD's group"
+            "text has its own group"
         );
         let order: Vec<u64> = f.cad_draw_order().iter().map(|c| c.id).collect();
         assert_eq!(order, vec![ids[1], ids[2], ids[3]]);
         let (behind, front) = f.cad_by_walls(t);
-        assert!(behind.is_empty());
-        assert_eq!(front.len(), 3);
+        assert_eq!(behind.len(), 2, "CAD at 21 sits behind the walls at 50");
+        assert_eq!(front.len(), 1, "text at 80 sits in front");
     }
 
     #[test]
@@ -434,13 +435,17 @@ mod tests {
         // Already in front: nothing changes.
         assert_eq!(p.drawing_group_to_front(0, &[r]), 0);
         assert_eq!(p.drawing_group_to_back(0, &[r]), 1);
-        assert_eq!(p.floors[0].drawing_group(&t, r), 49, "below the wall's 50");
+        assert_eq!(
+            p.floors[0].drawing_group(&t, r),
+            20,
+            "below the other circle's 21"
+        );
         let (behind, front) = p.floors[0].cad_by_walls(&t);
         assert_eq!(
             behind.iter().map(|c| c.id).collect::<Vec<_>>(),
-            vec![ids[1]]
+            vec![ids[1], ids[2]]
         );
-        assert_eq!(front.len(), 2);
+        assert_eq!(front.len(), 1);
     }
 
     #[test]
@@ -458,13 +463,13 @@ mod tests {
     #[test]
     fn the_kind_table_moves_a_whole_kind() {
         let (mut p, ids) = plan();
-        assert!(p.drawing_group_defaults.set("CAD", 20));
+        assert!(p.drawing_group_defaults.set("CAD", 60));
         assert!(!p.drawing_group_defaults.set("Nonsense", 20));
         let t = p.drawing_group_defaults.clone();
         let (behind, front) = p.floors[0].cad_by_walls(&t);
-        assert_eq!(behind.len(), 2, "the two circles now sit behind the walls");
-        assert_eq!(front.len(), 1, "text stays in its own group");
-        assert_eq!(behind[0].id, ids[1]);
+        assert!(behind.is_empty(), "the circles now sit over the walls");
+        assert_eq!(front.len(), 3);
+        assert_eq!(front[0].id, ids[1]);
         p.drawing_group_defaults.reset();
         assert!(p.drawing_group_defaults.is_default());
     }

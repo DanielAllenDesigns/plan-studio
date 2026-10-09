@@ -48,7 +48,11 @@ pub fn layered_region_meshes(r: &MaterialRegion, floor: &Floor) -> Option<Vec<Me
                     0.0
                 };
                 // `prism` works relative to a floor at height 0.
-                let tris = prism(&r.outline, top - floor.elevation + b.lo, top - floor.elevation + b.hi + lift);
+                let tris = prism(
+                    &r.outline,
+                    top - floor.elevation + b.lo,
+                    top - floor.elevation + b.hi + lift,
+                );
                 out.extend(tris_mesh(
                     &tris,
                     floor.elevation,
@@ -179,18 +183,36 @@ mod tests {
     #[test]
     fn a_wall_region_leaves_the_doorway_open() {
         let mut p = Project::new("wr");
-        let wid = p.add_wall(0, Point::new(0.0, 0.0), Point::new(120.0, 0.0), 6.5, 96.0, WallKind::Exterior);
+        let wid = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(120.0, 0.0),
+            6.5,
+            96.0,
+            WallKind::Exterior,
+        );
         let oid = p.alloc_id();
         let mut o = Opening::new(wid, 60.0, OpeningKind::Door, 36.0, 80.0, 0.0);
         o.id = oid;
         p.floors[0].openings.push(o);
         let rid = p.alloc_id();
         let mut d = DetailsLayer::default();
-        d.regions.push(MaterialRegion::wall(rid, wid, Side::Left, 0.0, 120.0, 0.0, 96.0));
+        d.regions.push(MaterialRegion::wall(
+            rid,
+            wid,
+            Side::Left,
+            0.0,
+            120.0,
+            0.0,
+            96.0,
+        ));
         p.floors[0].set_details(&d).unwrap();
         p.floors[0].set_region_structure(RegionStructure::new(
             rid,
-            vec![MaterialLayer::new("Ceramic Tile 12x12", 0.5), MaterialLayer::new("Concrete", 0.5)],
+            vec![
+                MaterialLayer::new("Ceramic Tile 12x12", 0.5),
+                MaterialLayer::new("Concrete", 0.5),
+            ],
         ));
         let f = &p.floors[0];
         let regions = DetailsLayer::load(f).regions;

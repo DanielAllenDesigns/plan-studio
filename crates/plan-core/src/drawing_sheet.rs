@@ -224,7 +224,7 @@ fn inch_text(v: f64) -> String {
         if (frac * den - n).abs() < 1e-9 && n > 0.0 && n < den {
             let mut d = den as u32;
             let mut nn = n as u32;
-            while nn % 2 == 0 && d % 2 == 0 {
+            while nn.is_multiple_of(2) && d.is_multiple_of(2) {
                 nn /= 2;
                 d /= 2;
             }

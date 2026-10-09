@@ -7,7 +7,7 @@
 //! layout slots are opaque JSON here; `plan-app`'s `s40_roundtrips` builds the
 //! same kinds with the real tools and crates).
 //!
-//! Tests marked `#[ignore = "QA-nn"]` expose a defect, see `docs/qa-findings.md`.
+//! The QA-20 to QA-23 defects of `docs/qa-findings.md` are fixed; these tests keep them fixed.
 
 use plan_core::cad::{ArrowStyle, CadAttrs, CadBlockInfo, FillAttr, PolyArc};
 use plan_core::camera::PlanLight;
@@ -970,8 +970,22 @@ fn null_in_a_number_field_reads_as_the_default() {
 #[test]
 fn sanitize_repairs_the_plan_and_a_save_never_writes_null_for_a_number() {
     let mut p = Project::new("nan");
-    let w = p.add_wall(0, pt(0.0, 0.0), pt(f64::NAN, 5.0), 6.5, 109.0, WallKind::Exterior);
-    p.add_wall(0, pt(1.0, 1.0), pt(f64::INFINITY, 5.0), 6.5, f64::NEG_INFINITY, WallKind::Exterior);
+    let w = p.add_wall(
+        0,
+        pt(0.0, 0.0),
+        pt(f64::NAN, 5.0),
+        6.5,
+        109.0,
+        WallKind::Exterior,
+    );
+    p.add_wall(
+        0,
+        pt(1.0, 1.0),
+        pt(f64::INFINITY, 5.0),
+        6.5,
+        f64::NEG_INFINITY,
+        WallKind::Exterior,
+    );
     assert_eq!(p.non_finite_count(), 3);
     let text = json_of(&p);
     let back = Project::from_json(&text).expect("what was written loads again");
@@ -1003,7 +1017,9 @@ fn validate_ids_names_a_stale_counter_and_repair_fixes_it() {
     assert!(p.validate_ids().is_empty(), "{:?}", p.validate_ids());
     let high = p.highest_id();
     // An id from a newer build in an opaque slot, above the counter.
-    p.floors[1].cabinets.push(json!({"id": high + 50, "kind": "Base"}));
+    p.floors[1]
+        .cabinets
+        .push(json!({"id": high + 50, "kind": "Base"}));
     let problems = p.validate_ids();
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("next_id"));
@@ -1014,4 +1030,12 @@ fn validate_ids_names_a_stale_counter_and_repair_fixes_it() {
     let dup = p.floors[1].walls[0].clone();
     p.floors[1].walls.push(dup);
     assert!(p.validate_ids().iter().any(|m| m.contains("used twice")));
+}
+
+#[test]
+fn a_json_array_or_scalar_is_not_a_plan() {
+    // serde would read `[]` as a struct with every field at its default.
+    for text in ["[]", "[1,2,3]", "7", "\"plan\"", "null"] {
+        assert!(Project::from_json(text).is_err(), "{text} loaded as a plan");
+    }
 }

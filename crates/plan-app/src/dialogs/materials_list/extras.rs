@@ -545,10 +545,8 @@ fn grid(ui: &mut egui::Ui, d: &mut PolyDialog) {
             ui.label("");
             for &f in &shown {
                 let on = d.sel.floors.contains(&f);
-                if ui.selectable_label(on, &d.floors[f]).clicked() {
-                    if !d.sel.floors.remove(&f) {
-                        d.sel.floors.insert(f);
-                    }
+                if ui.selectable_label(on, &d.floors[f]).clicked() && !d.sel.floors.remove(&f) {
+                    d.sel.floors.insert(f);
                 }
             }
             ui.end_row();

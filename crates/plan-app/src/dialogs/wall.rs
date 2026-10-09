@@ -123,7 +123,8 @@ fn special_type(t: &WallTypeDef) -> Option<&'static str> {
     }
 }
 
-/// The tabs of an exterior wall: its Roof tab is live.
+/// The tabs of a placed wall, exterior or interior: its Roof tab is live
+/// (an interior wall can be a gable or knee wall too).
 const WALL_TABS_EXTERIOR: &[Tab] = &[
     on("General"),
     on("Structure"),
@@ -148,6 +149,7 @@ const WALL_TABS_EXTERIOR: &[Tab] = &[
 const WALL_TABS_MULTI: &[Tab] = &[
     on("General"),
     on("Structure"),
+    on("Roof"),
     on("Foundation"),
     on("Wall Types"),
     on("Wall Cap"),
@@ -241,6 +243,16 @@ enum WallLock {
     End,
 }
 
+/// The Retain Wall Framing box: Build Framing leaves the framing of retained
+/// walls as it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Retain {
+    value: bool,
+    /// The walls disagree and the box was not clicked yet.
+    mixed: bool,
+    touched: bool,
+}
+
 /// What a dialog over several walls tracks (W-83).
 struct Multi {
     ids: Vec<Id>,
@@ -280,6 +292,8 @@ fn field_values(w: &Wall) -> Vec<(&'static str, String)> {
         ("floor_platform", format!("{:?}", st.floor_platform)),
         ("through_start", format!("{}", st.through_at_start)),
         ("through_end", format!("{}", st.through_at_end)),
+        ("bearing_wall", format!("{}", st.bearing_wall)),
+        ("roof", format!("{:?}", w.roof)),
         ("slab_footing", format!("{}", f.slab_footing)),
         ("footing", format!("{}", f.footing)),
         ("footing_width", n(f.footing_width)),
@@ -354,6 +368,8 @@ fn apply_field(key: &str, from: &Wall, to: &mut Wall, default_heights: &[f64; 2]
         "floor_platform" => ts.structure.floor_platform = fs.structure.floor_platform,
         "through_start" => ts.structure.through_at_start = fs.structure.through_at_start,
         "through_end" => ts.structure.through_at_end = fs.structure.through_at_end,
+        "bearing_wall" => ts.structure.bearing_wall = fs.structure.bearing_wall,
+        "roof" => to.roof = from.roof.clone(),
         "slab_footing" => ts.foundation.slab_footing = fs.foundation.slab_footing,
         "footing" => ts.foundation.footing = fs.foundation.footing,
         "footing_width" => ts.foundation.footing_width = fs.foundation.footing_width,
@@ -408,6 +424,9 @@ struct WallForm {
     orig_thickness: f64,
     /// Set when the dialog edits several walls at once (W-83).
     multi: Option<Multi>,
+    /// Retain Wall Framing: lives in the plan's framing settings, not in the
+    /// wall, so the dialog tracks it on its own.
+    retain: Retain,
     fields: Fields,
     /// The library the Materials and Wall Covering tabs pick from, loaded when
     /// first needed, and their search text.
@@ -463,6 +482,7 @@ impl WallDialog {
                 default_height,
                 default_top,
                 multi: None,
+                retain: Retain::default(),
                 fields: Fields::default(),
                 material_lib: None,
                 material_filter: String::new(),
@@ -530,7 +550,6 @@ impl WallDialog {
     }
 
     /// The walls a multi-wall dialog edits (`None` for a one-wall dialog).
-    #[cfg(test)]
     pub fn multi_ids(&self) -> Option<&[Id]> {
         self.form.multi.as_ref().map(|m| m.ids.as_slice())
     }
@@ -628,6 +647,23 @@ impl WallDialog {
         if self.form.multi.is_none() {
             self.form.draft.spec.structure.custom_top = !self.form.default_top;
         }
+    }
+
+    /// Hands the dialog the Retain Wall Framing state of each wall it edits
+    /// (from the plan's framing settings).
+    pub fn set_framing_retained(&mut self, states: &[bool]) {
+        let first = states.first().copied().unwrap_or(false);
+        self.form.retain = Retain {
+            value: first,
+            mixed: states.iter().any(|s| *s != first),
+            touched: false,
+        };
+    }
+
+    /// The Retain Wall Framing value to write to the dialog's walls, when the
+    /// box was clicked.
+    pub fn retain_framing_change(&self) -> Option<bool> {
+        self.form.retain.touched.then_some(self.form.retain.value)
     }
 
     /// Wall types edited or created through "Define...".
@@ -1656,9 +1692,30 @@ impl WallForm {
             section(ui, "Stud Layout");
             dis_check(ui, "Use Framing Reference", true);
             dis_check(ui, "Reverse Stud Rollout Direction", false);
+        });
+        // Framing: Retain Wall Framing is read by Build Framing; Bearing Wall
+        // is stored with the wall.
+        ui.add_enabled_ui(!is_default, |ui| {
             section(ui, "Framing");
-            dis_check(ui, "Retain Wall Framing", false);
-            dis_check(ui, "Bearing Wall", false);
+            let r = self.retain;
+            let mut v = r.value;
+            let resp = ui.add(
+                egui::Checkbox::new(&mut v, "Retain Wall Framing")
+                    .indeterminate(r.mixed && !r.touched),
+            );
+            if resp.changed() {
+                // The first click on the mixed state checks the box.
+                self.retain = Retain {
+                    value: v || (r.mixed && !r.touched),
+                    mixed: r.mixed,
+                    touched: true,
+                };
+            }
+            self.chk(ui, "bearing_wall", "Bearing Wall", |w| {
+                &mut w.spec.structure.bearing_wall
+            });
+        });
+        ui.add_enabled_ui(false, |ui| {
             dis_check(ui, "Stagger Multiple Framing Layers", true);
             dis_check(ui, "Create Wall/Footing Below", false);
             dis_check(ui, "Insert Floor Framing Below", true);
@@ -1902,6 +1959,20 @@ impl WallForm {
         }
     }
 
+    /// The Roof tab; over several walls a change marks the directive as
+    /// edited so it is written to all of them, and a directive that differs
+    /// between the walls shows as "(varies)" until then.
+    fn roof_tracked(&mut self, ui: &mut Ui) {
+        if self.mixed("roof") {
+            ui.weak("(varies) The walls have different roof settings; editing sets them all.");
+        }
+        let before = self.draft.roof.clone();
+        self.roof(ui);
+        if self.draft.roof != before {
+            self.touch("roof");
+        }
+    }
+
     /// Roof tab (RF-18..RF-27): what Build Roof does at this wall.
     fn roof(&mut self, ui: &mut Ui) {
         use plan_core::defaults::RoofWallKind as K;
@@ -2126,7 +2197,7 @@ impl SpecPages for WallForm {
     fn tabs(&self) -> &'static [Tab] {
         if self.multi.is_some() {
             WALL_TABS_MULTI
-        } else if self.draft.kind == WallKind::Exterior && !self.target.is_default() {
+        } else if !self.target.is_default() {
             WALL_TABS_EXTERIOR
         } else {
             WALL_TABS
@@ -2186,6 +2257,7 @@ impl SpecPages for WallForm {
             match self.tabs()[tab].name {
                 "General" => self.general_multi(ui),
                 "Structure" => self.structure(ui),
+                "Roof" => self.roof_tracked(ui),
                 "Foundation" => self.foundation(ui),
                 "Wall Types" => self.wall_types_multi(ui),
                 "Wall Cap" => self.cap(ui),
@@ -2199,7 +2271,7 @@ impl SpecPages for WallForm {
             "Structure" => self.structure(ui),
             "Foundation" => self.foundation(ui),
             "Wall Cap" => self.cap(ui),
-            "Roof" => self.roof(ui),
+            "Roof" => self.roof_tracked(ui),
             "Wall Types" => self.wall_types(ui),
             "Rail Style" => self.rail_style(ui),
             "Layer" => self.layer(ui),
@@ -2345,6 +2417,7 @@ mod tests {
             default_top: true,
             orig_thickness: 4.5,
             multi: None,
+            retain: Retain::default(),
             fields: Fields::default(),
             material_lib: None,
             material_filter: String::new(),
@@ -2496,8 +2569,9 @@ mod tests {
     fn the_roof_tab_of_an_exterior_wall_edits_the_directive() {
         use plan_core::defaults::RoofWallKind;
         let mut f = form(WallLock::Start);
+        // An interior wall can be a gable or knee wall: its Roof tab is live.
         f.draft.kind = WallKind::Interior;
-        assert!(f.tabs().iter().any(|t| t.name == "Roof" && !t.enabled));
+        assert!(f.tabs().iter().any(|t| t.name == "Roof" && t.enabled));
         f.draft.kind = WallKind::Exterior;
         let roof = f.tabs().iter().position(|t| t.name == "Roof").unwrap();
         assert!(f.tabs()[roof].enabled);
@@ -2772,6 +2846,52 @@ mod tests {
         // The tabs are live, not dimmed.
         assert!(f.tabs().iter().any(|t| t.name == "Foundation" && t.enabled));
         assert!(f.tabs().iter().any(|t| t.name == "Wall Cap" && t.enabled));
+    }
+
+    #[test]
+    fn several_walls_edit_the_roof_tab_and_bearing_wall_and_retain_framing() {
+        use plan_core::defaults::RoofWallKind;
+        let (mut p, ids) = three_walls();
+        p.floors[0].wall_mut(ids[0]).unwrap().roof.kind = RoofWallKind::KneeWall;
+        let mut d = multi_for(&p, &ids);
+        d.set_framing_retained(&[true, false, false]);
+        assert!(d.form.tabs().iter().any(|t| t.name == "Roof" && t.enabled));
+        assert!(d.is_mixed("roof"));
+        assert!(d.retain_framing_change().is_none() && d.form.retain.mixed);
+        // Click Full Gable Wall on the Roof tab, Bearing Wall and Retain Wall
+        // Framing on the Structure tab.
+        let ctx = egui::Context::default();
+        let roof = tab_index(&d.form, "Roof");
+        click_label(&mut d.form, &ctx, roof, "Full Gable Wall");
+        assert_eq!(d.touched(), vec!["roof"]);
+        let structure = tab_index(&d.form, "Structure");
+        click_label(&mut d.form, &ctx, structure, "Bearing Wall");
+        click_label(&mut d.form, &ctx, structure, "Retain Wall Framing");
+        assert_eq!(d.retain_framing_change(), Some(true));
+        assert_eq!(d.apply_multi(&mut p, 0), 3);
+        for id in &ids {
+            let w = p.floors[0].wall(*id).unwrap();
+            assert_eq!(w.roof.kind, RoofWallKind::FullGable);
+            assert!(w.spec.structure.bearing_wall);
+        }
+    }
+
+    #[test]
+    fn the_structure_page_draws_the_live_framing_checkboxes() {
+        let mut f = form(WallLock::Start);
+        let structure = f.tabs().iter().position(|t| t.name == "Structure").unwrap();
+        let drawn = page_texts(&mut f, structure);
+        for want in ["Retain Wall Framing", "Bearing Wall"] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        f.retain = Retain {
+            value: true,
+            mixed: false,
+            touched: true,
+        };
+        f.draft.spec.structure.bearing_wall = true;
+        let back: Wall = serde_json::from_str(&serde_json::to_string(&f.draft).unwrap()).unwrap();
+        assert!(back.spec.structure.bearing_wall);
     }
 
     fn three_walls() -> (Project, Vec<Id>) {

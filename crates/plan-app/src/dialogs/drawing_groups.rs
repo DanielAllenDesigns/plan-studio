@@ -249,19 +249,19 @@ mod tests {
         let mut d = DefaultsDialog::new(&cx);
         assert!(!d.apply(&mut cx), "nothing changed, no undo step");
         assert!(cx.undo_label().is_none());
-        d.table.set("CAD", 20);
+        d.table.set("CAD", 60);
         assert!(d.apply(&mut cx));
         assert_eq!(cx.undo_label(), Some("Drawing Group Defaults"));
-        assert_eq!(cx.project.drawing_group_defaults.group_of("CAD"), 20);
+        assert_eq!(cx.project.drawing_group_defaults.group_of("CAD"), 60);
         cx.undo();
-        assert_eq!(cx.project.drawing_group_defaults.group_of("CAD"), 80);
+        assert_eq!(cx.project.drawing_group_defaults.group_of("CAD"), 21);
     }
 
     #[test]
     fn set_drawing_group_starts_at_the_group_of_the_selection() {
         let (mut cx, id) = cx_with_circle();
         let mut d = SetDialog::new(&cx);
-        assert_eq!(d.group, 80);
+        assert_eq!(d.group, 21);
         d.group = 12;
         assert_eq!(d.apply(&mut cx).unwrap(), 1);
         let t = cx.project.drawing_group_defaults.clone();

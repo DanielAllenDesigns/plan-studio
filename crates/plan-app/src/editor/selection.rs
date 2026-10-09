@@ -56,6 +56,13 @@ pub enum ObjectRef {
     Detail(Id),
     /// A schedule table placed on the plan (`schedule_view`).
     Schedule(Id),
+    /// An architectural block (`Floor::blocks`). A click on a block member
+    /// selects the members; this addresses the block itself for its
+    /// specification and the Materials List.
+    Block(Id),
+    /// A compound 3D solid, the result of Union, Subtract or Intersect
+    /// (`Floor::solid_layer`).
+    Solid(Id),
 }
 
 impl ObjectRef {
@@ -75,6 +82,8 @@ impl ObjectRef {
             | ObjectRef::Foundation(i)
             | ObjectRef::Framing(i)
             | ObjectRef::Detail(i)
+            | ObjectRef::Block(i)
+            | ObjectRef::Solid(i)
             | ObjectRef::Schedule(i) => i,
             ObjectRef::Room(i) => i as Id,
             ObjectRef::Terrain => 0,
@@ -104,6 +113,8 @@ impl ObjectRef {
             ObjectRef::Framing(_) => "Framing Object",
             ObjectRef::Detail(_) => "Detail Object",
             ObjectRef::Schedule(_) => "Schedule",
+            ObjectRef::Block(_) => "Architectural Block",
+            ObjectRef::Solid(_) => "3D Solid",
         }
     }
 
@@ -125,6 +136,8 @@ impl ObjectRef {
             ObjectRef::Framing(i) => framing_view::find(floor, i).is_some(),
             ObjectRef::Detail(i) => DetailsLayer::load(floor).find(i).is_some(),
             ObjectRef::Schedule(i) => schedule_view::exists(floor, i),
+            ObjectRef::Block(i) => floor.blocks.get(i).is_some(),
+            ObjectRef::Solid(i) => floor.solid_layer.compound(i).is_some(),
             ObjectRef::Camera(_)
             | ObjectRef::Room(_)
             | ObjectRef::Terrain
@@ -169,6 +182,8 @@ impl ObjectRef {
             ObjectRef::Framing(i) => G::Framing(i),
             ObjectRef::Detail(i) => G::Detail(i),
             ObjectRef::Schedule(i) => G::Schedule(i),
+            ObjectRef::Block(i) => G::Block(i),
+            ObjectRef::Solid(i) => G::Solid(i),
             ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::TerrainObject(_) => return None,
         })
     }
@@ -191,6 +206,8 @@ impl ObjectRef {
             G::Framing(i) => ObjectRef::Framing(i),
             G::Detail(i) => ObjectRef::Detail(i),
             G::Schedule(i) => ObjectRef::Schedule(i),
+            G::Block(i) => ObjectRef::Block(i),
+            G::Solid(i) => ObjectRef::Solid(i),
         }
     }
 
@@ -303,6 +320,8 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
             layer.find(i).and_then(|r| layer.layer_of(r))
         }
         ObjectRef::Schedule(i) => schedule_view::layer_of(floor, i),
+        ObjectRef::Block(i) => floor.blocks.get(i).map(|b| b.layer.clone()),
+        ObjectRef::Solid(i) => floor.solid_layer.compound(i).map(|c| c.layer.clone()),
         ObjectRef::Device(_) => Some(site_view::ELECTRICAL_LAYER.to_string()),
         ObjectRef::Camera(_) => Some(camera_tool::CAMERA_LAYER.to_string()),
         // The terrain's own layer; an element's layer of its own is read from
@@ -519,6 +538,7 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
             .map(|(r, _)| ObjectRef::Detail(r.id()))
             .collect::<Vec<_>>()
     };
+    out.extend(super::solids_view::pick(cx, p, tol));
     out.extend(tier(details_view::Tier::Above));
     out.extend(wall_hits(floor, p, tol, &visible));
     out.extend(tier(details_view::Tier::Wall));
@@ -650,6 +670,12 @@ pub fn extra_in_rect(cx: &EditorContext, lo: Point, hi: Point, crossing: bool) -
     }
     for r in details_view::in_rect(cx, lo, hi, crossing) {
         let o = ObjectRef::Detail(r.id());
+        if usable(o) {
+            out.push(o);
+        }
+    }
+    // Compound 3D solids (the results of Union, Subtract and Intersect).
+    for o in super::solids_view::in_rect(cx, lo, hi, crossing) {
         if usable(o) {
             out.push(o);
         }
@@ -796,7 +822,20 @@ pub fn expand_groups(cx: &EditorContext, items: &[ObjectRef]) -> Vec<ObjectRef> 
     let floor = cx.floor();
     let mut out: Vec<ObjectRef> = Vec::new();
     for o in items {
+        // A member of an architectural block selects the whole block.
+        let block = crate::tools::arch_block::block_members_of(floor, *o);
+        // A segment of a dimension string selects the whole string.
+        let strand: Vec<ObjectRef> = match o {
+            ObjectRef::Dimension(id) => floor
+                .string_members(*id)
+                .into_iter()
+                .map(ObjectRef::Dimension)
+                .collect(),
+            _ => Vec::new(),
+        };
         let members = match o.to_group_ref() {
+            _ if !block.is_empty() => block,
+            _ if strand.len() > 1 => strand,
             Some(g) => floor
                 .group_members_of(g)
                 .into_iter()

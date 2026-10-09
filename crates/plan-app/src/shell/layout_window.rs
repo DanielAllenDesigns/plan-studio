@@ -6429,14 +6429,16 @@ mod tests {
         assert_eq!(v.page, 2);
         assert!(v.delete_current_page(&mut p).is_ok());
         assert_eq!(v.layout().unwrap().pages.len(), 4);
-        // The template page can go, the last printed page cannot.
+        // The template page stays while pages use it (round 16: LP4), the
+        // last printed page cannot go.
         v.set_page(0);
-        assert!(v.delete_current_page(&mut p).is_ok());
+        assert!(v.delete_current_page(&mut p).is_err());
+        assert_eq!(v.layout().unwrap().pages.len(), 4);
         while v.layout().unwrap().content_pages().len() > 1 {
-            v.set_page(0);
+            v.set_page(1);
             assert!(v.delete_current_page(&mut p).is_ok());
         }
-        v.set_page(0);
+        v.set_page(1);
         assert_eq!(
             v.delete_current_page(&mut p),
             Err("A layout keeps at least one page")

@@ -19,11 +19,12 @@ use crate::rooms::Room;
 use crate::units::fmt_ft_in;
 use serde::{Deserialize, Serialize};
 
+pub mod placement;
 pub mod spec;
 pub use spec::{
-    door_panel_count, Arch, ArchType, CasingProfile, ExteriorSill, HandleStyle, Hardware, Lintel,
-    LintelStyle, LiteStyle, OpeningSpec, OpeningView3d, ShutterSides, ShutterStyle, Shutters,
-    StandardWidths, StyleWidths,
+    door_panel_count, Arch, ArchType, BayRoof, BayRoofKind, CasingProfile, ExteriorSill,
+    HandleStyle, Hardware, Lintel, LintelStyle, LiteStyle, OpeningSpec, OpeningView3d,
+    ShutterSides, ShutterStyle, Shutters, StandardWidths, StyleWidths,
 };
 
 /// Minimum clear distance between an opening jamb and a wall end or another
@@ -845,23 +846,26 @@ impl Project {
         }
         let delta = (new_center - cur.center_offset)
             .clamp(OPENING_MARGIN - lo, wall_len - OPENING_MARGIN - hi);
+        // The shared placement rules (`placement`): a member keeps the end
+        // clearance from its neighbours (windows may touch) and stays out of
+        // the bodies of walls that meet the host. A member already inside a
+        // zone may move out of it but not deeper in.
         let f = &self.floors[floor];
-        // A member only collides with openings it shares wall face with: a
-        // window stacked above a door (a transom) slides along with it.
+        let Some(host) = f.wall(cur.wall_id) else {
+            return false;
+        };
         let overlaps = f
             .openings
             .iter()
-            .filter(|o| o.wall_id == cur.wall_id)
-            .any(|o| {
-                !members.contains(&o.id)
-                    && f.openings
-                        .iter()
-                        .filter(|m| members.contains(&m.id))
-                        .any(|m| {
-                            m.start_offset() + delta < o.end_offset() + OPENING_MARGIN
-                                && m.end_offset() + delta > o.start_offset() - OPENING_MARGIN
-                                && !vertically_apart(m, o)
-                        })
+            .filter(|m| members.contains(&m.id))
+            .any(|m| {
+                let (a0, a1) = (m.start_offset(), m.end_offset());
+                placement::zones_skipping(f, host, m, &members)
+                    .iter()
+                    .any(|z| {
+                        let ov = |a: f64, b: f64| (b.min(z.hi) - a.max(z.lo)).max(0.0);
+                        ov(a0 + delta, a1 + delta) > ov(a0, a1) + 1e-6
+                    })
             });
         if overlaps {
             return false;
